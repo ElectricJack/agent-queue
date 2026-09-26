@@ -29,6 +29,11 @@ EXPECTED_AGENT_COMMANDS = {
     "task_progress",
     "task_heartbeat",
     "task_handoff",
+    # Typed waits derive their owner and fence mutations against the live claim.
+    "wait_register",
+    "wait_get",
+    "wait_list",
+    "wait_cancel",
     "message_send",
     "message_inbox",
     "message_reply",
@@ -53,6 +58,12 @@ EXPECTED_AGENT_COMMANDS = {
     "review_list",
     "review_withdraw",
     "review_comment",
+    "report_get",
+    "report_list",
+    "morning_report_preview",
+    "report_brief",
+    "report_submit",
+    "github_issue_close_rejected",
 }
 
 
@@ -332,3 +343,40 @@ class TestScopeAndCapabilityCompose:
             "task_claim", principal, resolver=_Resolver(), mode="enforce"
         )
         assert decision.allowed is False
+
+
+def test_supervisor_inbox_post_is_internal_for_every_nonlocal_scope():
+    for scope in (
+        SESSION,
+        RequestScope(kind="session", session_id="global", elevated=True),
+        RequestScope(kind="session", session_id="super", project_id="p1", elevated=True),
+    ):
+        assert check_command_scope("supervisor_inbox_post", {}, scope) == (
+            "out of scope: conversation intake is daemon-internal"
+        )
+    assert check_command_scope("supervisor_inbox_post", {}, LOCAL_SCOPE) is None
+
+
+def test_supervisor_inbox_reply_requires_local_or_global_elevated_scope():
+    assert check_command_scope("supervisor_inbox_reply", {}, LOCAL_SCOPE) is None
+    assert check_command_scope("supervisor_inbox_reply", {}, RequestScope(
+        kind="session", session_id="sup", elevated=True
+    )) is None
+    for scope in (SESSION, RequestScope(kind="session", elevated=True, project_id="p1"),
+                  RequestScope(kind="session", project_id=None)):
+        assert check_command_scope("supervisor_inbox_reply", {}, scope) == (
+            "out of scope: conversation replies require local operator or global supervisor"
+        )
+
+
+def test_supervisor_inbox_reads_require_local_or_global_elevated_scope():
+    from src.api.scope import AGENT_COMMAND_SET
+
+    for command in ("supervisor_inbox_status", "supervisor_inbox_history"):
+        assert command not in AGENT_COMMAND_SET
+        assert check_command_scope(command, {}, LOCAL_SCOPE) is None
+        assert check_command_scope(command, {}, RequestScope(
+            kind="session", session_id="sup", elevated=True
+        )) is None
+        for scope in (SESSION, RequestScope(kind="session", elevated=True, project_id="p1")):
+            assert "conversation reads" in check_command_scope(command, {}, scope)

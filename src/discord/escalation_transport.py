@@ -14,6 +14,7 @@ touches a real gateway.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Any
 
 import discord
@@ -121,6 +122,44 @@ class DiscordEscalationTransport:
             raise TransportRetryable("held by the Discord invalid-request rate guard")
 
     # -- port ------------------------------------------------------------
+    async def read_history(
+        self,
+        *,
+        channel_id: str,
+        after_message_id: str | None,
+        after_ts: float,
+        before_ts: float,
+        limit: int,
+    ) -> list[Any]:
+        """Read one oldest-first recovery page, bounded by both cursor and time.
+
+        Lives here until the conversation delivery adapter owns its transport.
+        The snowflake bound keeps even a recent cursor inside the 24-hour window.
+        """
+        self._guard()
+        channel = await self._channel(channel_id)
+        after = max(
+            int(after_message_id or 0),
+            discord.utils.time_snowflake(datetime.fromtimestamp(after_ts, UTC), high=True),
+        )
+        try:
+            return [
+                message
+                async for message in channel.history(
+                    limit=limit,
+                    oldest_first=True,
+                    after=discord.Object(id=after),
+                    before=datetime.fromtimestamp(before_ts, UTC),
+                )
+            ]
+        except discord.Forbidden as exc:
+            self._record(403)
+            raise TransportUnavailable(f"cannot read history in channel {channel_id}") from exc
+        except discord.NotFound as exc:
+            raise TransportUnavailable(f"history channel {channel_id} no longer exists") from exc
+        except discord.HTTPException as exc:
+            raise self._http_error(exc) from exc
+
     async def post_root(self, *, channel_id: str, content: str) -> SendOutcome:
         self._guard()
         channel = await self._channel(channel_id)

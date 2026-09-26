@@ -459,6 +459,9 @@ async def build_messages_section(
     mark_delivered: bool = False,
     profile_id: str | None = None,
     session_name: str | None = None,
+    task: Any = None,
+    session: Any = None,
+    work_dir: str | None = None,
 ) -> PrimeSection:
     """Pending messages (design §5.2 #6) + latest ``task_context(type=handoff)``.
 
@@ -478,9 +481,7 @@ async def build_messages_section(
     """
     parts: list[str] = []
 
-    messages_enabled = bool(
-        getattr(getattr(config, "messages", None), "enabled", False)
-    )
+    messages_enabled = bool(getattr(getattr(config, "messages", None), "enabled", False))
     if messages_enabled:
         inbox_queries: list[tuple[str, str]] = [("task", task_id)]
         if profile_id:
@@ -505,7 +506,12 @@ async def build_messages_section(
             header = f"[{msg.id} from {msg.from_kind}:{msg.from_id}]"
             if getattr(msg, "subject", None):
                 header = f"{header} {msg.subject}"
-            parts.append(f"{header}\n{msg.body}")
+            body = msg.body
+            if getattr(msg, "body_kind", None) in {"wait_result", "job_result"}:
+                from src.messages.delivery import _render_nudge
+
+                body = f"{_render_nudge([msg])}\n{body}"
+            parts.append(f"{header}\n{body}")
             if mark_delivered:
                 try:
                     await db.mark_delivered(msg.id, via="prime")
@@ -514,27 +520,42 @@ async def build_messages_section(
                     # legal and non-fatal; we still rendered it above.
                     pass
 
-    rows = await db.get_task_contexts(task_id)
-    handoff_rows = [r for r in rows if r.get("type") == "handoff"]
-    if handoff_rows:
-        # No timestamp column on task_context; DB read order (insertion
-        # order under SQLite/Postgres without an explicit ORDER BY) is the
-        # best available proxy for "latest" until that table gains one.
-        latest = handoff_rows[-1]
-        try:
-            payload = json.loads(latest.get("content") or "{}")
-        except (TypeError, ValueError):
-            payload = {}
-        subject = (payload.get("subject") or "").strip()
-        detail = (payload.get("detail") or "").strip()
-        block = "**handoff note:**"
-        if subject:
-            block += f"\nsubject: {subject}"
-        if detail:
-            block += f"\n{detail}"
-        parts.append(block)
+    # Results remain available even with messaging disabled or already delivered.
+    # Reading prime never consumes terminal intent or creates another message.
+    if callable(getattr(db, "list_task_job_results", None)):
+        from src.jobs.result import bounded, result_digest
 
-    return PrimeSection(key="messages", title=SECTION_TITLES["messages"], body="\n\n".join(parts).strip())
+        try:
+            results = await db.list_task_job_results(task_id)
+            summaries = []
+            for job in results:
+                digest = result_digest(job)
+                summaries.append(
+                    f"aq job result {job['id']} --json\n"
+                    + json.dumps(digest, ensure_ascii=False)
+                )
+            if summaries:
+                parts.append("Managed job results:\n" + bounded("\n\n".join(summaries), 6000))
+        except Exception:
+            logger.debug("prime: could not read job results for %s", task_id, exc_info=True)
+
+    rows = await db.get_task_contexts(task_id)
+    from src.handoffs import collect_facts, latest_note, render_facts, render_note
+
+    selected = latest_note(rows)
+    if selected:
+        task = task or await db.get_task(task_id)
+        current = await collect_facts(db, task, session, work_dir)
+        row, payload = selected
+        # The additional wake block has an 8 KiB assertion budget + 2 KiB
+        # current-fact/pointer budget. 6 KiB remains reserved for JOB/OUTPUT
+        # summaries; those stores are outside this independent release slice.
+        parts.append(render_note(row, payload, current))
+        parts.append(render_facts(current, saved=payload.get("facts")))
+
+    return PrimeSection(
+        key="messages", title=SECTION_TITLES["messages"], body="\n\n".join(parts).strip()
+    )
 
 
 # ---------------------------------------------------------------------------

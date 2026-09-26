@@ -37,7 +37,6 @@ from src.database.migration_guard import DAEMON, set_process_scope
 from src.logging_config import setup_logging
 from src.messaging import create_messaging_adapter
 from src.runtimes import default_registry
-from src.remote_links import resolve_remote_link_base
 from src.messaging.base import MessagingAdapter
 from src.models import AgentState, TaskStatus
 from src.orchestrator import Orchestrator
@@ -320,17 +319,15 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             from src.escalations import EscalationDeliveryService
 
             handler = orch._get_handler()
-            local_base_url = (
-                config.health_check.base_url or f"http://localhost:{config.health_check.port}"
-            )
-            remote_link_base = resolve_remote_link_base(local_base_url)
+            # Every link names the dashboard server's configured origin
+            # (dashboard.server.public_url), resolved per new payload --
+            # never health_check.base_url, the daemon's own port.
             orch.escalation_delivery = EscalationDeliveryService(
                 orch.db,
                 discord_transport,
                 config=config,
                 lease_owner=f"daemon-{os.getpid()}",
-                base_url=remote_link_base.url,
-                dashboard_notice=remote_link_base.unavailable_notice,
+                links=orch.dashboard_links,
                 rate_guard=_bot_rate_guard(bot),
                 on_status=(
                     handler.emit_escalation_delivery_status if handler is not None else None
@@ -349,10 +346,15 @@ async def run(config_path: str, profile: str | None = None) -> bool:
                 discord_transport,
                 config=config,
                 lease_owner=f"daemon-{os.getpid()}",
-                base_url=remote_link_base.url,
-                dashboard_notice=remote_link_base.unavailable_notice,
+                links=orch.dashboard_links,
                 rate_guard=_bot_rate_guard(bot),
                 escalation_priority=orch.db.count_due_escalation_deliveries,
+                event_bus=orch.bus,
+                include_outbound=True,
+                authoring_ready=lambda: bool(
+                    orch.playbook_manager is not None
+                    and orch.playbook_manager.is_active("supervisor-hourly-report")
+                ),
             )
             logger.info("Digest scheduler wired to the Discord transport")
         elif bot is not None:
@@ -369,15 +371,12 @@ async def run(config_path: str, profile: str | None = None) -> bool:
         # services: start only after the adapter is ready and stop with it.
         from src.reviews.notifier import ReviewNotifier
 
-        review_base_url = config.dashboard_server.public_url or (
-            f"http://{config.dashboard_server.host}:{config.dashboard_server.port}"
-        )
         review_notifier_task = asyncio.create_task(
             ReviewNotifier(
                 orch.db,
                 discord_transport,
                 config.discord.channel_id,
-                review_base_url,
+                links=orch.dashboard_links,
             ).run(),
             name="aq-review-notifier",
         )
@@ -487,14 +486,13 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
     except Exception as e:
         checks["agents"] = {"ok": False, "error": str(e)}
 
-    # Task counts
+    # Aggregate counts avoid materializing the entire ready backlog on every probe.
     try:
-        in_progress = await orch.db.list_tasks(status=TaskStatus.IN_PROGRESS)
-        ready = await orch.db.list_tasks(status=TaskStatus.READY)
+        task_counts = await orch.db.count_tasks_by_status()
         checks["tasks"] = {
             "ok": True,
-            "in_progress": len(in_progress),
-            "ready": len(ready),
+            "in_progress": task_counts.get(TaskStatus.IN_PROGRESS.value, 0),
+            "ready": task_counts.get(TaskStatus.READY.value, 0),
         }
     except Exception as e:
         checks["tasks"] = {"ok": False, "error": str(e)}

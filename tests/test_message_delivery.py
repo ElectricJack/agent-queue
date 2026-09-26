@@ -1170,3 +1170,41 @@ class TestNudgeNamesAGrantedCommand:
     def test_the_resolver_reads_the_command_not_its_argument(self):
         text = "Handle `aq message status msg-abc123 --json`."
         assert _nudged_backend_command(text) == "message_status"
+
+
+@pytest.mark.parametrize("kind,target", [("task", "task-1"), ("session", "supervisor-p1")])
+@pytest.mark.parametrize("activity", ["idle", "busy", "absent", "sleeping"])
+async def test_wait_result_routes_to_granted_pointer(db, kind, target, activity, monkeypatch):
+    wait_id = "36ec6080-a9df-4a3e-b752-08930702d558"
+    monkeypatch.setattr("src.database.queries.message_queries._new_message_id",
+                        lambda: f"wait:{wait_id}:result")
+    msg = await _send(
+        db, to_kind=kind, to_id=target,
+        body_kind="wait_result", body=json.dumps({"wait_id": wait_id, "state": "satisfied"}),
+    )
+    manager = FakeSessionManager(activity_map={(kind, target, "p1"): activity})
+    # Only named sessions can wake. A sleeping task is parked for prime.
+    manager.ensure_started_returns = kind == "session"
+    engine = make_engine(db, manager)
+    await engine.run_delivery_pass()
+    expected = activity == "idle" or (activity == "sleeping" and kind == "session")
+    assert len(manager.nudges) == int(expected)
+    if expected:
+        assert manager.nudges[0][3] == f"Handle `aq wait show {wait_id} --json`."
+        assert (await db.get_message(msg.id)).delivered_at is not None
+        await engine.run_delivery_pass()
+        assert len(manager.nudges) == 1
+    else:
+        assert (await db.get_message(msg.id)).delivered_at is None
+
+
+@pytest.mark.parametrize("body_kind", ["wait_result", "job_result"])
+async def test_wait_result_never_fabricates_transcript_reply(db, body_kind):
+    msg = await _send(db, body_kind=body_kind)
+    await db.mark_delivered(msg.id, via="nudge")
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            sa_update(messages).where(messages.c.id == msg.id).values(delivered_at=time.time() - 999)
+        )
+    manager = FakeSessionManager(tail_map={("session", "supervisor-p1", "p1"): "next turn"})
+    assert await make_engine(db, manager).check_reply_timeouts() == 0

@@ -58,6 +58,11 @@ _SKIP_STALL_TICKS = 3
 #: publisher which has stopped collecting is caught the same working session.
 _UNCOLLECTED_AFTER_SECONDS = 60 * 60
 
+#: A completed child is assembled within a few collector ticks of its close
+#: (the collector runs every few seconds).  Five minutes covers a busy or
+#: briefly restarted daemon; past that its siblings are being held back.
+_STUCK_CHILD_AFTER_SECONDS = 5 * 60
+
 #: Cap on ``gh pr view`` calls per run.  Doctor is meant to be fast and to work
 #: offline; a backlog of 200 stranded PRs is already diagnosed by the first
 #: handful, and the count in ``data`` stays accurate regardless.
@@ -474,6 +479,86 @@ _HELD_HANDOFF_STATES = ("attached", "handoff_pending")
 #: Task statuses that mean the owning task is actually being worked.  A row
 #: held for one of these has a live writer and is none of doctor's business.
 _RUNNING_TASK_STATUSES = (TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value)
+
+
+async def _check_missing_canonical_owners(ctx: DoctorContext) -> CheckResult:
+    """Report train producers that a claim cannot attach to their own branch."""
+    check_id = "integration.missing_canonical_owners"
+    if ctx.db is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="database not initialised — branch reservations unknown",
+        )
+    from sqlalchemy import and_, or_, select
+
+    from src.database.tables import (
+        integration_branch_owners,
+        projects,
+        task_integration_checkpoints,
+        tasks,
+    )
+
+    owner = integration_branch_owners
+    checkpoint = task_integration_checkpoints
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    select(
+                        tasks.c.id,
+                        tasks.c.project_id,
+                        tasks.c.status,
+                        tasks.c.branch_name,
+                        owner.c.handoff_state,
+                    )
+                    .join(projects, projects.c.id == tasks.c.project_id)
+                    .join(
+                        checkpoint,
+                        and_(
+                            checkpoint.c.task_id == tasks.c.id,
+                            checkpoint.c.repository_id == tasks.c.repo_id,
+                            checkpoint.c.branch == tasks.c.branch_name,
+                        ),
+                    )
+                    .outerjoin(
+                        owner,
+                        and_(
+                            owner.c.repository_id == tasks.c.repo_id,
+                            owner.c.ref == tasks.c.branch_name,
+                        ),
+                    )
+                    .where(
+                        tasks.c.status.in_(("READY", "BLOCKED")),
+                        tasks.c.repo_id == projects.c.integration_repository_id,
+                        projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+                        checkpoint.c.state != "verifying",
+                        or_(owner.c.id.is_(None), owner.c.handoff_state == "released"),
+                    )
+                    .order_by(tasks.c.id)
+                    .limit(50)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    findings = [dict(row) for row in rows]
+    if not findings:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.OK,
+            detail="no READY/BLOCKED train task lacks its canonical reservation",
+        )
+    return CheckResult(
+        id=check_id,
+        severity=Severity.WARN,
+        detail=(
+            f"{len(findings)} READY/BLOCKED train task(s) lack a canonical branch "
+            "reservation; run `aq integration reserve-owner --task-id <id>` "
+            "for each task after confirming its old writer stopped."
+        ),
+        data={"count": len(findings), "tasks": findings},
+    )
 
 
 async def _find_stranded_fences(ctx: DoctorContext) -> list[dict]:
@@ -1110,6 +1195,76 @@ async def _check_stranded_delegates(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_stale_repair_intents(ctx: DoctorContext) -> CheckResult:
+    """Find live delegates whose stage or dossier still names a superseded intent."""
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.stale_repair_intents",
+            severity=Severity.WARN,
+            detail="database not initialised — repair intent state unknown",
+        )
+    from sqlalchemy import select
+
+    from src.database.tables import (
+        integration_promotion_intents,
+        integration_repair_stages,
+        tasks,
+    )
+
+    old = integration_promotion_intents
+    current = old.alias("current_repair_intent")
+    stage = integration_repair_stages
+    delegate = tasks
+    query = (
+        select(
+            old.c.id.label("old_intent_id"),
+            current.c.id.label("current_intent_id"),
+            stage.c.trigger_id,
+            stage.c.dossier,
+            stage.c.repair_task_id,
+        )
+        .select_from(old.join(current,
+            current.c.id == old.c.superseded_by_intent_id,
+        ).join(stage,
+            (stage.c.operation_id == old.c.resolution_operation_id)
+            & (stage.c.ordinal == old.c.resolution_stage_ordinal),
+        ).join(delegate, delegate.c.id == stage.c.repair_task_id))
+        .where(
+            old.c.state == "superseded",
+            old.c.superseded_by_intent_id.is_not(None),
+            current.c.state != "superseded",
+            stage.c.writer_kind == "repair_delegate",
+            stage.c.state.in_(("active", "awaiting_completion")),
+            delegate.c.status.in_(("ASSIGNED", "IN_PROGRESS", "PAUSED", "READY")),
+        )
+        .limit(200)
+    )
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(query)).mappings().all()
+    stale = []
+    for row in rows:
+        dossier = row["dossier"] or {}
+        dossier_intent = (dossier.get("current_conflict") or {}).get("intent_id")
+        if row["trigger_id"] != row["current_intent_id"] or dossier_intent != row["current_intent_id"]:
+            stale.append({
+                "task_id": row["repair_task_id"],
+                "old_intent_id": row["old_intent_id"],
+                "current_intent_id": row["current_intent_id"],
+                "stage_intent_id": row["trigger_id"],
+                "dossier_intent_id": dossier_intent,
+            })
+    return CheckResult(
+        id="integration.stale_repair_intents",
+        severity=Severity.WARN if stale else Severity.OK,
+        detail=(
+            f"{len(stale)} live repair delegate(s) name a superseded conflict intent; "
+            f"run `aq integration rebind-repair --task-id {stale[0]['task_id']}`"
+            if stale else "live repair delegates name their current conflict intents"
+        ),
+        data={"count": len(stale), "delegates": stale},
+    )
+
+
 async def _fix_stranded_delegates(ctx: DoctorContext) -> CheckResult:
     """Retire each stranded delegate and record the release.
 
@@ -1292,6 +1447,149 @@ async def _fix_stale_schedule(ctx: DoctorContext) -> CheckResult:
         fixable=True,
         fix_applied=bool(cleared),
         data={"count": len(cleared), "cleared": cleared},
+    )
+
+
+_STUCK_CHILD_CAUSES = {
+    "none": (
+        "no approved evidence pins its head; the collector records completion evidence "
+        "once the published branch proves out, so a child still here has a head that "
+        "does not (moved or unpublished branch, or an open reviewer)"
+    ),
+    "rejected": "a reviewer rejected its head; the child must be reworked",
+    "approved": (
+        "approved but not queued; the parent's collector fence or a sibling's promotion "
+        "is holding it"
+    ),
+}
+
+
+async def _find_stuck_children(ctx: DoctorContext) -> list[dict]:
+    """COMPLETED children of collecting parents that were never assembled.
+
+    Each one keeps every sibling whose ``needs`` names it out of the claim
+    frontier (``delivered_same_parent_prerequisites_when_hierarchical``), so a
+    parent can show READY children that no pool will ever claim.
+    """
+    from src.integration.child_delivery import latest_evidence_on, stuck_children_statement
+
+    now = time.time()
+    findings = []
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            await conn.execute(
+                stuck_children_statement(updated_before=now - _STUCK_CHILD_AFTER_SECONDS)
+            )
+        ).mappings().all()
+        for row in rows:
+            latest = await latest_evidence_on(
+                conn,
+                task_id=row["task_id"],
+                repository_id=row["repository_id"],
+                base_sha=row["base_sha"],
+                head_sha=row["head_sha"],
+                generation=int(row["generation"]),
+            )
+            evidence = latest["verdict"] if latest is not None else "none"
+            findings.append(
+                {
+                    "task_id": row["task_id"],
+                    "project_id": row["project_id"],
+                    "parent_task_id": row["parent_task_id"],
+                    "branch": row["branch"],
+                    "head_sha": row["head_sha"],
+                    "evidence": evidence,
+                    "cause": _STUCK_CHILD_CAUSES[evidence],
+                    "waiting_seconds": round(
+                        now - max(row["updated_at"], row["checkpoint_updated_at"])
+                    ),
+                }
+            )
+    return findings
+
+
+async def _check_blocked_collectors(ctx: DoctorContext) -> CheckResult:
+    """Expose parents that the PAUSED-only collection scan cannot see."""
+    from sqlalchemy import and_, select
+
+    from src.database.tables import (
+        integration_repair_operations,
+        projects,
+        task_integration_checkpoints,
+        tasks,
+    )
+
+    check_id = "integration.blocked_collectors"
+    if ctx.db is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="database not initialised — parent collection state unknown",
+        )
+    checkpoint = task_integration_checkpoints
+    operation = integration_repair_operations
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(
+            select(
+                tasks.c.id.label("task_id"), tasks.c.project_id,
+                checkpoint.c.episode_id, checkpoint.c.generation,
+                operation.c.id.label("operation_id"),
+                operation.c.state.label("operation_state"),
+            )
+            .join(checkpoint, checkpoint.c.task_id == tasks.c.id)
+            .join(projects, projects.c.id == tasks.c.project_id)
+            .outerjoin(operation, and_(
+                operation.c.parent_task_id == tasks.c.id,
+                operation.c.episode_id == checkpoint.c.episode_id,
+            ))
+            .where(
+                tasks.c.status == TaskStatus.BLOCKED.value,
+                checkpoint.c.state == "awaiting_children",
+                projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            )
+            .order_by(tasks.c.id)
+        )).mappings().all()
+    findings = [dict(row) for row in rows]
+    return CheckResult(
+        id=check_id,
+        severity=Severity.WARN if findings else Severity.OK,
+        detail=(
+            f"{len(findings)} BLOCKED parent(s) still await children; collection only scans "
+            "PAUSED parents. Inspect the episode, operation and transition context before "
+            "recovery; human_required repair operations need explicit integration resume"
+            if findings else "no BLOCKED parent is stranded awaiting children"
+        ),
+        data={"count": len(findings), "parents": findings},
+    )
+
+
+async def _check_stuck_children(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.stuck_children",
+            severity=Severity.INFO,
+            detail="database not initialised — child collection state unknown",
+        )
+    findings = await _find_stuck_children(ctx)
+    if not findings:
+        return CheckResult(
+            id="integration.stuck_children",
+            severity=Severity.OK,
+            detail="every completed child of a collecting parent has been assembled",
+        )
+    first = findings[0]
+    return CheckResult(
+        id="integration.stuck_children",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(findings)} completed child task(s) have waited more than "
+            f"{_STUCK_CHILD_AFTER_SECONDS // 60} minutes for their parent to assemble them "
+            f"— e.g. {first['task_id']} (parent {first['parent_task_id']}, head "
+            f"{first['head_sha'][:9]}): {first['cause']}. Siblings that need them stay "
+            "out of the claim frontier. `aq integration redrive-child <task>` says why one "
+            "is stuck; `--apply --head <sha> --reason ...` advances it"
+        ),
+        data={"count": len(findings), "children": findings},
     )
 
 
@@ -1523,6 +1821,11 @@ def integration_checks() -> list[DoctorCheck]:
             owner=OWNER,
             timeout_s=60.0,
         ),
+        DoctorCheck(
+            id="integration.missing_canonical_owners",
+            run=_check_missing_canonical_owners,
+            owner=OWNER,
+        ),
         # Report-only. A historical publisher skipped completed work when a
         # delivered blocker's branch had already been cleaned up and its close
         # listed no commits. The delivery receipt names the exact SHA an
@@ -1554,6 +1857,11 @@ def integration_checks() -> list[DoctorCheck]:
             fix=_fix_stranded_delegates,
             owner=OWNER,
         ),
+        DoctorCheck(
+            id="integration.stale_repair_intents",
+            run=_check_stale_repair_intents,
+            owner=OWNER,
+        ),
         # Fixable, and the fix is the scheduler's own release: it frees only a
         # ``stale`` request -- one whose batch ended, is gone, or promoted
         # without its lease, with no unresolved write evidence -- and never
@@ -1563,6 +1871,20 @@ def integration_checks() -> list[DoctorCheck]:
             id="integration.stale_schedule",
             run=_check_stale_schedule,
             fix=_fix_stale_schedule,
+            owner=OWNER,
+        ),
+        # Report-only.  The collector already records completion evidence
+        # for a child whose published head proves out, so a child listed here
+        # failed that proof or was held by a reviewer's verdict; advancing it
+        # anyway is the supervisor's call (``aq integration redrive-child``).
+        DoctorCheck(
+            id="integration.stuck_children",
+            run=_check_stuck_children,
+            owner=OWNER,
+        ),
+        DoctorCheck(
+            id="integration.blocked_collectors",
+            run=_check_blocked_collectors,
             owner=OWNER,
         ),
         # Fixable, unlike ``integration.stranded_fences``, because it only

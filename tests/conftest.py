@@ -158,6 +158,36 @@ async def _pg_backend():
                 await db_fixtures.restore_seed(leased, db_fixtures._SEED)
 
 
+@pytest.fixture(scope="session")
+def _initialized_databases():
+    from tests.db_fixtures import InitializedDatabases
+
+    return InitializedDatabases()
+
+
+@pytest.fixture
+async def reuse_database(_pg_backend, _initialized_databases):
+    """Session-initialized databases reset by ``_pg_backend`` per test.
+
+    The explicit dependency closes connections before the lease is reset.
+    Fresh adapters and engines preserve each test's callbacks and pool options,
+    and prevent connections crossing pytest-asyncio's function-scoped loops.
+    """
+    databases = {}
+
+    async def _get(name="test"):
+        dsn = lease_dsn(name)
+        if dsn not in databases:
+            databases[dsn] = await _initialized_databases.get(dsn)
+        return databases[dsn]
+
+    try:
+        yield _get
+    finally:
+        for database in databases.values():
+            await database.close()
+
+
 @pytest.fixture
 def unpooled_postgres(monkeypatch):
     """TestClient runs on another loop; asyncpg connections cannot cross loops."""
@@ -523,7 +553,7 @@ def orchestrator_factory(tmp_path: Path):
         o.git = MagicMock()
         o.bus = MagicMock()
         o.bus.emit = AsyncMock()
-        o.command_handler = CommandHandler(o, cfg)
+        o.set_command_handler(CommandHandler(o, cfg))
         return o
 
     return _make

@@ -13,6 +13,23 @@ This rollout is per project and defaults to disabled. It performs an in-place
 schema upgrade on the PostgreSQL database the installation already uses. It does
 not deploy, enable, or change GitHub configuration by itself.
 
+If recovery supersedes a parent conflict intent, AQ updates the repair stage
+and dossier to name the successor. To find delegates stranded by an older
+installation, run `aq doctor --check integration.stale_repair_intents`.
+The check is report-only. A local operator or the project's live supervisor
+can prove and reserve a delegate's current candidate:
+
+```bash
+aq integration rebind-repair --task-id REPAIR_TASK --dry-run
+aq integration rebind-repair --task-id REPAIR_TASK --apply --head CANDIDATE_SHA
+```
+
+Use the full `head_sha` reported by the dry run. The command refuses a stopped
+writer, expired authority, changed candidate or moved remote target. Applying
+records the reservation under the current intent; the attached repair session
+then pushes with its current fence and closes. If the writer has stopped,
+recover its attachment through the existing repair lifecycle first.
+
 The command synopsis used below is:
 
 ```text
@@ -28,6 +45,7 @@ aq integration abort OPERATION_ID --reason REASON
 aq integration retry-cleanup BATCH_ID
 aq integration clear-stale-request PROJECT_ID [--apply --request-id REQUEST_ID --reason REASON]
 aq integration redrive-root TASK_ID [--apply --head HEAD_SHA --reason REASON]
+aq integration redrive-child CHILD_TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration record-noop CHILD_TASK_ID --expected-head-sha CHECKPOINT_SHA
 aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-integration-generation GENERATION --reason REASON
 aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-generation GENERATION --reason REASON
@@ -36,6 +54,15 @@ aq project set PROJECT_ID integration-policy POLICY_JSON --expected-integration-
 Always take `GENERATION` and, for a history waiver, `BLOCKER_DIGEST` from a
 fresh `aq integration status` result. A stale result is returned as stale; the
 CLI never rereads and retries a mutation against a newer generation.
+
+`aq doctor --check integration.blocked_collectors` reports managed parents that
+are `BLOCKED` while their checkpoints still await children. For a displaced root
+whose active episode still owns a reserved collector fence, run
+`aq integration redrive-root <parent>`; a `would_collect` dry run can be applied
+with `--apply --head <reported-checkpoint-sha> --reason ...` to restore `PAUSED`
+collection. This resumes delivery through the existing collector. It leaves manual
+holds, live writers and terminal failures guarded. An operation in `human_required`
+requires its existing `aq integration resume <operation-id>` recovery instead.
 
 ## 1. Upgrade the existing backend
 
@@ -72,15 +99,17 @@ aq doctor --check integration.stranded_fences
 
 Such a row blocks every subsequent claim of the owning task with *"canonical
 branch is not reserved by this task"*, and because the task stays READY the
-scheduler keeps offering it, so the failure repeats silently until an operator
-intervenes. The check has no `--fix`, and that is deliberate: doctor sees only
-a database snapshot, which cannot show that the writer's provider is really
-stopped or that its checkout is clean and published, and a row can be rebound
-by a guarded recovery path without any of the fields doctor compares changing.
-Returning the row to `reserved` from here would hand the branch to the next
-claim on that snapshot alone. Recovery is the integration recovery path's job,
-which takes those proofs; use this check to find the wedged refs and to confirm
-afterwards that they are gone.
+scheduler keeps offering it. Its `--fix` runs guarded owner recovery, which
+proves the old writer stopped and its checkout is safe before releasing the row.
+
+`integration.missing_canonical_owners` reports READY/BLOCKED train producers
+whose checkpoint identifies a canonical branch but whose owner row is absent or
+released. After the old writer has stopped, a supervisor can restore one exact
+reservation with `aq integration reserve-owner --task-id <id>`. This command
+checks the task, checkpoint, materialized origin, session and workspace under
+the project lock and refuses an unresolved or competing branch owner. A stopped
+task's ordinary `aq task restart` performs the same check before moving it to
+READY. Doctor reports this condition but does not reserve branches itself.
 
 Do not import another database during this release. PostgreSQL is the only
 backend; the one-way carry-over importer
@@ -240,9 +269,13 @@ only under `aq integration enable`.
 
 ## 4. Roll out one mode at a time
 
-Keep `default-pipeline` enabled: its per-task reviews supply the exact approval
-evidence trains need, and its spec/proposal rules remain in use. Hierarchy/train
-mode suppresses only its legacy per-branch final-review/merge route. Retire the
+Keep `default-pipeline` enabled: its spec/proposal rules remain in use.
+Hierarchy/train mode suppresses only its legacy per-branch final-review/merge
+route. It no longer files per-task reviewers (automatic reviews were retired on
+2026-09-09), so a completed child's approval evidence comes from the collector:
+it proves the child's published head from Git and records `leaf` completion
+evidence for exactly that head and tree. A reviewer's verdict, when one exists,
+still wins: a rejected head or an open reviewer task holds the child. Retire the
 project's `pr-merge-sweep` activation after cutover; keep the template available
 for projects using legacy delivery. `ci-main-sentinel` remains a read-only
 fallback observer of existing main CI and files repair PRs through the train.
@@ -480,6 +513,24 @@ close records the finished head. The daemon retries a PR either path missed.
 root has no PR, and `--apply --head HEAD_SHA --reason REASON` opens it for
 that head. See [A completed root has no pull
 request](integration-troubleshooting.md#a-completed-root-has-no-pull-request).
+
+A collecting parent assembles a COMPLETED child only once approved evidence
+pins the child's exact head; until then its siblings' `needs` keep them out of
+the claim frontier. `aq doctor --check integration.stuck_children` lists
+children still waiting after five minutes, and `aq integration redrive-child
+CHILD_TASK_ID` says why one waits; `--apply --head HEAD_SHA --reason REASON`
+records evidence for that head and queues the parent's collection. See [A
+completed child is never assembled](integration-troubleshooting.md#a-completed-child-is-never-assembled).
+Sibling prerequisites accept a code receipt created after the child's latest
+reopen; later task-row and close bookkeeping do not invalidate a delivered child.
+`aq doctor --check tasks.ready_frontier_exclusions` lists READY tasks withheld
+from the claim frontier and their reasons. `aq task explain --task-id TASK_ID`
+evaluates the same claim filters for one READY task and names each failed
+predicate with a `frontier_*` reason, including the hierarchy origin and
+sibling-receipt checks, hold labels, and preparation backoff. Rework timestamps
+on unrelated tasks do not affect a sibling's receipt. If a child completed again at the
+same head after its receipt, `redrive-child` reports the stale receipt and
+can reissue it after proving the incorporated head remains on the parent branch.
 
 ### Stopped pool-writer handoff recovery
 

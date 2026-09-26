@@ -21,11 +21,21 @@ from .agent_metrics_by_state import AgentMetricsByState
 from .agent_question_detail import AgentQuestionDetail
 from .agent_settings import AgentSettings
 from .agent_summary import AgentSummary
+from .agent_wait_record import AgentWaitRecord
+from .agent_wait_record_digest_type_0 import AgentWaitRecordDigestType0
+from .agent_wait_record_kind import AgentWaitRecordKind
+from .agent_wait_record_match import AgentWaitRecordMatch
+from .agent_wait_record_owner_kind import AgentWaitRecordOwnerKind
+from .agent_wait_record_state import AgentWaitRecordState
 from .agent_waiting_question import AgentWaitingQuestion
 from .ai_budget_dto import AiBudgetDTO
 from .ai_node_detail_dto import AiNodeDetailDTO
 from .ai_node_detail_dto_output_schema_type_0 import AiNodeDetailDTOOutputSchemaType0
 from .ancestor_ref import AncestorRef
+from .api_perf import ApiPerf
+from .api_perf_errors import ApiPerfErrors
+from .api_perf_routes import ApiPerfRoutes
+from .api_perf_streams import ApiPerfStreams
 from .append_note_request import AppendNoteRequest
 from .append_note_response import AppendNoteResponse
 from .append_note_response_422 import AppendNoteResponse422
@@ -94,6 +104,20 @@ from .compiler_diagnostic_dto import CompilerDiagnosticDTO
 from .compiler_diagnostic_dto_severity import CompilerDiagnosticDTOSeverity
 from .contract_change_dto import ContractChangeDTO
 from .contract_change_dto_change import ContractChangeDTOChange
+from .conversation_backfill import ConversationBackfill
+from .conversation_backfill_cursors_item import ConversationBackfillCursorsItem
+from .conversation_backfill_gaps_item import ConversationBackfillGapsItem
+from .conversation_counts import ConversationCounts
+from .conversation_counts_by_state import ConversationCountsByState
+from .conversation_diagnostics import ConversationDiagnostics
+from .conversation_diagnostics_permissions_type_0 import ConversationDiagnosticsPermissionsType0
+from .conversation_history_record import ConversationHistoryRecord
+from .conversation_history_record_state import ConversationHistoryRecordState
+from .conversation_input_record import ConversationInputRecord
+from .conversation_intake import ConversationIntake
+from .conversation_intake_ignored import ConversationIntakeIgnored
+from .conversation_limits import ConversationLimits
+from .conversation_preconditions import ConversationPreconditions
 from .count_project_memory_files_request import CountProjectMemoryFilesRequest
 from .count_project_memory_files_response import CountProjectMemoryFilesResponse
 from .count_project_memory_files_response_422 import CountProjectMemoryFilesResponse422
@@ -135,6 +159,8 @@ from .dashboard_state_put_request_namespace import DashboardStatePutRequestNames
 from .dashboard_state_put_request_value import DashboardStatePutRequestValue
 from .dashboard_state_reset_request import DashboardStateResetRequest
 from .dashboard_state_reset_request_namespace import DashboardStateResetRequestNamespace
+from .db_perf import DbPerf
+from .db_perf_counters import DbPerfCounters
 from .db_preflight_hierarchy_request import DbPreflightHierarchyRequest
 from .db_preflight_hierarchy_response_422 import DbPreflightHierarchyResponse422
 from .delegation_policy_dto import DelegationPolicyDTO
@@ -169,6 +195,8 @@ from .digest_status_response_delivery_health import DigestStatusResponseDelivery
 from .digest_window_bounds import DigestWindowBounds
 from .digest_window_record import DigestWindowRecord
 from .discord_cutover_status import DiscordCutoverStatus
+from .discord_intake_diagnostics import DiscordIntakeDiagnostics
+from .discord_intake_diagnostics_ignored import DiscordIntakeDiagnosticsIgnored
 from .discord_purge_channel_request import DiscordPurgeChannelRequest
 from .discord_purge_channel_response import DiscordPurgeChannelResponse
 from .discord_purge_channel_response_422 import DiscordPurgeChannelResponse422
@@ -423,6 +451,10 @@ from .git_create_pr_response_422 import GitCreatePrResponse422
 from .git_diff_request import GitDiffRequest
 from .git_diff_response import GitDiffResponse
 from .git_diff_response_422 import GitDiffResponse422
+from .git_hub_issue_close_rejected_response import GitHubIssueCloseRejectedResponse
+from .git_hub_issue_fix_approved_response import GitHubIssueFixApprovedResponse
+from .git_hub_issue_rejection_response import GitHubIssueRejectionResponse
+from .git_hub_issue_triage_response import GitHubIssueTriageResponse
 from .git_log_request import GitLogRequest
 from .git_log_response import GitLogResponse
 from .git_log_response_422 import GitLogResponse422
@@ -440,6 +472,14 @@ from .git_remote_url_response import GitRemoteUrlResponse
 from .git_remote_url_response_422 import GitRemoteUrlResponse422
 from .github_auth_status_response import GithubAuthStatusResponse
 from .github_auth_status_response_credential_mode import GithubAuthStatusResponseCredentialMode
+from .github_issue_close_rejected_request import GithubIssueCloseRejectedRequest
+from .github_issue_close_rejected_response_422 import GithubIssueCloseRejectedResponse422
+from .github_issue_fix_approved_request import GithubIssueFixApprovedRequest
+from .github_issue_fix_approved_response_422 import GithubIssueFixApprovedResponse422
+from .github_issue_rejection_request import GithubIssueRejectionRequest
+from .github_issue_rejection_response_422 import GithubIssueRejectionResponse422
+from .github_issue_triage_request import GithubIssueTriageRequest
+from .github_issue_triage_response_422 import GithubIssueTriageResponse422
 from .github_owner import GithubOwner
 from .github_owner_kind import GithubOwnerKind
 from .github_repository import GithubRepository
@@ -481,6 +521,8 @@ from .grep_response import GrepResponse
 from .grep_response_422 import GrepResponse422
 from .grid_position_dto import GridPositionDTO
 from .hierarchy_refusal_response import HierarchyRefusalResponse
+from .histogram import Histogram
+from .host_perf import HostPerf
 from .http_validation_error import HTTPValidationError
 from .idempotency_dto import IdempotencyDTO
 from .import_portable_config_request import ImportPortableConfigRequest
@@ -502,6 +544,22 @@ from .intelligence_class_model import IntelligenceClassModel
 from .intelligence_class_model_mapping import IntelligenceClassModelMapping
 from .intelligence_class_reference import IntelligenceClassReference
 from .intelligence_class_reference_kind import IntelligenceClassReferenceKind
+from .job_error_response import JobErrorResponse
+from .job_error_response_result_type_0 import JobErrorResponseResultType0
+from .job_get_args import JobGetArgs
+from .job_list_args import JobListArgs
+from .job_list_response import JobListResponse
+from .job_list_response_jobs_item import JobListResponseJobsItem
+from .job_logs_args import JobLogsArgs
+from .job_logs_response import JobLogsResponse
+from .job_logs_response_chunks_item import JobLogsResponseChunksItem
+from .job_logs_response_gaps_item import JobLogsResponseGapsItem
+from .job_response import JobResponse
+from .job_response_job import JobResponseJob
+from .job_result_args import JobResultArgs
+from .job_result_response import JobResultResponse
+from .job_result_response_result_type_0 import JobResultResponseResultType0
+from .job_submit_args import JobSubmitArgs
 from .layout_edge import LayoutEdge
 from .layout_job import LayoutJob
 from .layout_node import LayoutNode
@@ -591,7 +649,9 @@ from .log_entry import LogEntry
 from .loop_iteration_overlay_dto import LoopIterationOverlayDTO
 from .loop_node_detail_dto import LoopNodeDetailDTO
 from .loop_node_detail_dto_failure_policy import LoopNodeDetailDTOFailurePolicy
+from .loop_perf import LoopPerf
 from .machine_metrics import MachineMetrics
+from .manual_check import ManualCheck
 from .manual_position import ManualPosition
 from .mcp_server_summary import McpServerSummary
 from .memory_save_request import MemorySaveRequest
@@ -622,6 +682,14 @@ from .message_status_response_422 import MessageStatusResponse422
 from .metrics_sample import MetricsSample
 from .metrics_series_response import MetricsSeriesResponse
 from .model_tokens import ModelTokens
+from .morning_report_preview_request import MorningReportPreviewRequest
+from .morning_report_preview_response import MorningReportPreviewResponse
+from .morning_report_preview_response_422 import MorningReportPreviewResponse422
+from .morning_report_preview_response_brief import MorningReportPreviewResponseBrief
+from .morning_report_record import MorningReportRecord
+from .morning_report_tick_request import MorningReportTickRequest
+from .morning_report_tick_response import MorningReportTickResponse
+from .morning_report_tick_response_422 import MorningReportTickResponse422
 from .nav_folder import NavFolder
 from .nav_organization import NavOrganization
 from .nav_organization_assignments import NavOrganizationAssignments
@@ -665,6 +733,8 @@ from .pending_event_replay_dto_policy import PendingEventReplayDTOPolicy
 from .pending_pull_request import PendingPullRequest
 from .pending_pull_request_state import PendingPullRequestState
 from .pending_pull_requests_response import PendingPullRequestsResponse
+from .perf_metrics import PerfMetrics
+from .perf_sampler_cost import PerfSamplerCost
 from .phase_create_request import PhaseCreateRequest
 from .phase_create_response import PhaseCreateResponse
 from .phase_create_response_422 import PhaseCreateResponse422
@@ -800,6 +870,7 @@ from .plugin_summary import PluginSummary
 from .plugin_update_request import PluginUpdateRequest
 from .plugin_update_response import PluginUpdateResponse
 from .plugin_update_response_422 import PluginUpdateResponse422
+from .pool_gauges import PoolGauges
 from .pool_instance_status import PoolInstanceStatus
 from .pool_project_cap import PoolProjectCap
 from .pool_project_status import PoolProjectStatus
@@ -826,6 +897,8 @@ from .pr_merge_ci_verdict import PrMergeCiVerdict
 from .pr_merge_request import PrMergeRequest
 from .pr_merge_response import PrMergeResponse
 from .pr_merge_response_422 import PrMergeResponse422
+from .pressure_entry import PressureEntry
+from .pressure_perf import PressurePerf
 from .preview_portable_config_request import PreviewPortableConfigRequest
 from .preview_portable_config_response_422 import PreviewPortableConfigResponse422
 from .probe_mcp_server_request import ProbeMcpServerRequest
@@ -940,6 +1013,8 @@ from .record_file_inspection_response_422 import RecordFileInspectionResponse422
 from .redaction_row_dto import RedactionRowDTO
 from .redaction_row_dto_policy import RedactionRowDTOPolicy
 from .reflow_failed_scope import ReflowFailedScope
+from .relay_perf import RelayPerf
+from .relay_perf_upstream_failures import RelayPerfUpstreamFailures
 from .release_project_constraint_request import ReleaseProjectConstraintRequest
 from .release_project_constraint_response import ReleaseProjectConstraintResponse
 from .release_project_constraint_response_422 import ReleaseProjectConstraintResponse422
@@ -966,6 +1041,32 @@ from .reopen_with_feedback_response_422 import ReopenWithFeedbackResponse422
 from .reparent_task_request import ReparentTaskRequest
 from .reparent_task_response import ReparentTaskResponse
 from .reparent_task_response_422 import ReparentTaskResponse422
+from .report_brief_request import ReportBriefRequest
+from .report_brief_response import ReportBriefResponse
+from .report_brief_response_422 import ReportBriefResponse422
+from .report_brief_response_active_item import ReportBriefResponseActiveItem
+from .report_brief_response_brief import ReportBriefResponseBrief
+from .report_brief_response_facts_item import ReportBriefResponseFactsItem
+from .report_content import ReportContent
+from .report_content_coverage import ReportContentCoverage
+from .report_content_omitted import ReportContentOmitted
+from .report_get_request import ReportGetRequest
+from .report_get_response import ReportGetResponse
+from .report_get_response_422 import ReportGetResponse422
+from .report_item import ReportItem
+from .report_list_request import ReportListRequest
+from .report_list_response import ReportListResponse
+from .report_list_response_422 import ReportListResponse422
+from .report_project import ReportProject
+from .report_reconcile_request import ReportReconcileRequest
+from .report_reconcile_response import ReportReconcileResponse
+from .report_reconcile_response_422 import ReportReconcileResponse422
+from .report_request_request import ReportRequestRequest
+from .report_request_response import ReportRequestResponse
+from .report_request_response_422 import ReportRequestResponse422
+from .report_submit_request import ReportSubmitRequest
+from .report_submit_response import ReportSubmitResponse
+from .report_submit_response_422 import ReportSubmitResponse422
 from .reroute_decision import RerouteDecision
 from .reroute_undo_refusal import RerouteUndoRefusal
 from .reroute_undone import RerouteUndone
@@ -1025,6 +1126,8 @@ from .right_surface_activity_tab import RightSurfaceActivityTab
 from .right_surface_kind_type_0 import RightSurfaceKindType0
 from .right_surface_pane import RightSurfacePane
 from .right_surface_pane_args import RightSurfacePaneArgs
+from .route_perf import RoutePerf
+from .route_perf_status import RoutePerfStatus
 from .rule_cluster_dto import RuleClusterDTO
 from .rule_cluster_dto_trigger_filter_type_0 import RuleClusterDTOTriggerFilterType0
 from .rule_diff_dto import RuleDiffDTO
@@ -1141,6 +1244,8 @@ from .stop_task_response import StopTaskResponse
 from .stop_task_response_422 import StopTaskResponse422
 from .stream_kill_response import StreamKillResponse
 from .stream_metadata import StreamMetadata
+from .stream_perf import StreamPerf
+from .stream_perf_outcome import StreamPerfOutcome
 from .stream_start_request import StreamStartRequest
 from .stream_start_response import StreamStartResponse
 from .stub_overflow import StubOverflow
@@ -1155,6 +1260,14 @@ from .subagent_event_response_422 import SubagentEventResponse422
 from .subagent_metrics import SubagentMetrics
 from .subagent_metrics_by_session import SubagentMetricsBySession
 from .subagent_rollup import SubagentRollup
+from .supervisor_inbox_error_response import SupervisorInboxErrorResponse
+from .supervisor_inbox_history_request import SupervisorInboxHistoryRequest
+from .supervisor_inbox_history_request_states_type_0_item import SupervisorInboxHistoryRequestStatesType0Item
+from .supervisor_inbox_history_response import SupervisorInboxHistoryResponse
+from .supervisor_inbox_reply_request import SupervisorInboxReplyRequest
+from .supervisor_inbox_reply_response import SupervisorInboxReplyResponse
+from .supervisor_inbox_status_request import SupervisorInboxStatusRequest
+from .supervisor_inbox_status_response import SupervisorInboxStatusResponse
 from .tail_api_streams_stream_id_tail_get_response_tail_api_streams_stream_id_tail_get import (
     TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet,
 )
@@ -1265,6 +1378,7 @@ from .task_subtask_with_context import TaskSubtaskWithContext
 from .task_subtasks_request import TaskSubtasksRequest
 from .task_subtasks_response import TaskSubtasksResponse
 from .task_subtasks_response_422 import TaskSubtasksResponse422
+from .test_slots_perf import TestSlotsPerf
 from .throughput_metrics import ThroughputMetrics
 from .tidy_request import TidyRequest
 from .tidy_response import TidyResponse
@@ -1281,6 +1395,7 @@ from .token_metrics_by_model import TokenMetricsByModel
 from .token_usage_dto import TokenUsageDTO
 from .transcript_entry_model import TranscriptEntryModel
 from .transcript_entry_model_usage_type_0 import TranscriptEntryModelUsageType0
+from .ungated_perf import UngatedPerf
 from .update_and_restart_request import UpdateAndRestartRequest
 from .update_and_restart_response import UpdateAndRestartResponse
 from .update_and_restart_response_422 import UpdateAndRestartResponse422
@@ -1293,11 +1408,21 @@ from .update_playbook_source_response import UpdatePlaybookSourceResponse
 from .update_playbook_source_response_422 import UpdatePlaybookSourceResponse422
 from .validation_error import ValidationError
 from .validation_error_context import ValidationErrorContext
+from .wait_cancel_request import WaitCancelRequest
+from .wait_cancel_response_422 import WaitCancelResponse422
 from .wait_facts_dto import WaitFactsDTO
 from .wait_facts_dto_deadline_source_type_0 import WaitFactsDTODeadlineSourceType0
 from .wait_facts_dto_wait_kind import WaitFactsDTOWaitKind
+from .wait_get_request import WaitGetRequest
+from .wait_get_response_422 import WaitGetResponse422
+from .wait_list_request import WaitListRequest
+from .wait_list_response import WaitListResponse
+from .wait_list_response_422 import WaitListResponse422
 from .wait_node_detail_dto import WaitNodeDetailDTO
 from .wait_node_detail_dto_wait_kind import WaitNodeDetailDTOWaitKind
+from .wait_register_request import WaitRegisterRequest
+from .wait_register_response_422 import WaitRegisterResponse422
+from .wait_response import WaitResponse
 from .withheld_task import WithheldTask
 from .workspace_doctor_request import WorkspaceDoctorRequest
 from .workspace_doctor_response_422 import WorkspaceDoctorResponse422
@@ -1334,10 +1459,20 @@ __all__ = (
     "AgentSettings",
     "AgentSummary",
     "AgentWaitingQuestion",
+    "AgentWaitRecord",
+    "AgentWaitRecordDigestType0",
+    "AgentWaitRecordKind",
+    "AgentWaitRecordMatch",
+    "AgentWaitRecordOwnerKind",
+    "AgentWaitRecordState",
     "AiBudgetDTO",
     "AiNodeDetailDTO",
     "AiNodeDetailDTOOutputSchemaType0",
     "AncestorRef",
+    "ApiPerf",
+    "ApiPerfErrors",
+    "ApiPerfRoutes",
+    "ApiPerfStreams",
     "AppendNoteRequest",
     "AppendNoteResponse",
     "AppendNoteResponse422",
@@ -1406,6 +1541,20 @@ __all__ = (
     "CompilerDiagnosticDTOSeverity",
     "ContractChangeDTO",
     "ContractChangeDTOChange",
+    "ConversationBackfill",
+    "ConversationBackfillCursorsItem",
+    "ConversationBackfillGapsItem",
+    "ConversationCounts",
+    "ConversationCountsByState",
+    "ConversationDiagnostics",
+    "ConversationDiagnosticsPermissionsType0",
+    "ConversationHistoryRecord",
+    "ConversationHistoryRecordState",
+    "ConversationInputRecord",
+    "ConversationIntake",
+    "ConversationIntakeIgnored",
+    "ConversationLimits",
+    "ConversationPreconditions",
     "CountProjectMemoryFilesRequest",
     "CountProjectMemoryFilesResponse",
     "CountProjectMemoryFilesResponse422",
@@ -1447,6 +1596,8 @@ __all__ = (
     "DashboardStatePutRequestValue",
     "DashboardStateResetRequest",
     "DashboardStateResetRequestNamespace",
+    "DbPerf",
+    "DbPerfCounters",
     "DbPreflightHierarchyRequest",
     "DbPreflightHierarchyResponse422",
     "DelegationPolicyDTO",
@@ -1481,6 +1632,8 @@ __all__ = (
     "DigestWindowBounds",
     "DigestWindowRecord",
     "DiscordCutoverStatus",
+    "DiscordIntakeDiagnostics",
+    "DiscordIntakeDiagnosticsIgnored",
     "DiscordPurgeChannelRequest",
     "DiscordPurgeChannelResponse",
     "DiscordPurgeChannelResponse422",
@@ -1731,6 +1884,18 @@ __all__ = (
     "GitDiffResponse422",
     "GithubAuthStatusResponse",
     "GithubAuthStatusResponseCredentialMode",
+    "GithubIssueCloseRejectedRequest",
+    "GitHubIssueCloseRejectedResponse",
+    "GithubIssueCloseRejectedResponse422",
+    "GithubIssueFixApprovedRequest",
+    "GitHubIssueFixApprovedResponse",
+    "GithubIssueFixApprovedResponse422",
+    "GithubIssueRejectionRequest",
+    "GitHubIssueRejectionResponse",
+    "GithubIssueRejectionResponse422",
+    "GithubIssueTriageRequest",
+    "GitHubIssueTriageResponse",
+    "GithubIssueTriageResponse422",
     "GithubOwner",
     "GithubOwnerKind",
     "GithubRepository",
@@ -1787,6 +1952,8 @@ __all__ = (
     "GrepResponse422",
     "GridPositionDTO",
     "HierarchyRefusalResponse",
+    "Histogram",
+    "HostPerf",
     "HTTPValidationError",
     "IdempotencyDTO",
     "ImportPortableConfigRequest",
@@ -1808,6 +1975,22 @@ __all__ = (
     "IntelligenceClassModelMapping",
     "IntelligenceClassReference",
     "IntelligenceClassReferenceKind",
+    "JobErrorResponse",
+    "JobErrorResponseResultType0",
+    "JobGetArgs",
+    "JobListArgs",
+    "JobListResponse",
+    "JobListResponseJobsItem",
+    "JobLogsArgs",
+    "JobLogsResponse",
+    "JobLogsResponseChunksItem",
+    "JobLogsResponseGapsItem",
+    "JobResponse",
+    "JobResponseJob",
+    "JobResultArgs",
+    "JobResultResponse",
+    "JobResultResponseResultType0",
+    "JobSubmitArgs",
     "LayoutEdge",
     "LayoutJob",
     "LayoutNode",
@@ -1895,7 +2078,9 @@ __all__ = (
     "LoopIterationOverlayDTO",
     "LoopNodeDetailDTO",
     "LoopNodeDetailDTOFailurePolicy",
+    "LoopPerf",
     "MachineMetrics",
+    "ManualCheck",
     "ManualPosition",
     "McpServerSummary",
     "MemorySaveRequest",
@@ -1926,6 +2111,14 @@ __all__ = (
     "MetricsSample",
     "MetricsSeriesResponse",
     "ModelTokens",
+    "MorningReportPreviewRequest",
+    "MorningReportPreviewResponse",
+    "MorningReportPreviewResponse422",
+    "MorningReportPreviewResponseBrief",
+    "MorningReportRecord",
+    "MorningReportTickRequest",
+    "MorningReportTickResponse",
+    "MorningReportTickResponse422",
     "NavFolder",
     "NavOrganization",
     "NavOrganizationAssignments",
@@ -1969,6 +2162,8 @@ __all__ = (
     "PendingPullRequest",
     "PendingPullRequestsResponse",
     "PendingPullRequestState",
+    "PerfMetrics",
+    "PerfSamplerCost",
     "PhaseCreateRequest",
     "PhaseCreateResponse",
     "PhaseCreateResponse422",
@@ -2104,6 +2299,7 @@ __all__ = (
     "PluginUpdateRequest",
     "PluginUpdateResponse",
     "PluginUpdateResponse422",
+    "PoolGauges",
     "PoolInstanceStatus",
     "PoolProjectCap",
     "PoolProjectStatus",
@@ -2123,6 +2319,8 @@ __all__ = (
     "PoolStatusRow",
     "PortableConfigResponse",
     "PostMessageApiMessagesSendPostResponsePostMessageApiMessagesSendPost",
+    "PressureEntry",
+    "PressurePerf",
     "PreviewPortableConfigRequest",
     "PreviewPortableConfigResponse422",
     "PrMergeBaseFreshness",
@@ -2242,6 +2440,8 @@ __all__ = (
     "RedactionRowDTO",
     "RedactionRowDTOPolicy",
     "ReflowFailedScope",
+    "RelayPerf",
+    "RelayPerfUpstreamFailures",
     "ReleaseProjectConstraintRequest",
     "ReleaseProjectConstraintResponse",
     "ReleaseProjectConstraintResponse422",
@@ -2268,6 +2468,32 @@ __all__ = (
     "ReparentTaskRequest",
     "ReparentTaskResponse",
     "ReparentTaskResponse422",
+    "ReportBriefRequest",
+    "ReportBriefResponse",
+    "ReportBriefResponse422",
+    "ReportBriefResponseActiveItem",
+    "ReportBriefResponseBrief",
+    "ReportBriefResponseFactsItem",
+    "ReportContent",
+    "ReportContentCoverage",
+    "ReportContentOmitted",
+    "ReportGetRequest",
+    "ReportGetResponse",
+    "ReportGetResponse422",
+    "ReportItem",
+    "ReportListRequest",
+    "ReportListResponse",
+    "ReportListResponse422",
+    "ReportProject",
+    "ReportReconcileRequest",
+    "ReportReconcileResponse",
+    "ReportReconcileResponse422",
+    "ReportRequestRequest",
+    "ReportRequestResponse",
+    "ReportRequestResponse422",
+    "ReportSubmitRequest",
+    "ReportSubmitResponse",
+    "ReportSubmitResponse422",
     "RerouteDecision",
     "RerouteUndone",
     "RerouteUndoRefusal",
@@ -2327,6 +2553,8 @@ __all__ = (
     "RightSurfaceKindType0",
     "RightSurfacePane",
     "RightSurfacePaneArgs",
+    "RoutePerf",
+    "RoutePerfStatus",
     "RuleClusterDTO",
     "RuleClusterDTOTriggerFilterType0",
     "RuleDiffDTO",
@@ -2443,6 +2671,8 @@ __all__ = (
     "StopTaskResponse422",
     "StreamKillResponse",
     "StreamMetadata",
+    "StreamPerf",
+    "StreamPerfOutcome",
     "StreamStartRequest",
     "StreamStartResponse",
     "StubOverflow",
@@ -2457,6 +2687,14 @@ __all__ = (
     "SubagentMetrics",
     "SubagentMetricsBySession",
     "SubagentRollup",
+    "SupervisorInboxErrorResponse",
+    "SupervisorInboxHistoryRequest",
+    "SupervisorInboxHistoryRequestStatesType0Item",
+    "SupervisorInboxHistoryResponse",
+    "SupervisorInboxReplyRequest",
+    "SupervisorInboxReplyResponse",
+    "SupervisorInboxStatusRequest",
+    "SupervisorInboxStatusResponse",
     "TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet",
     "TaskActivityAttempt",
     "TaskActivityItem",
@@ -2565,6 +2803,7 @@ __all__ = (
     "TaskSubtaskUpdateResponse",
     "TaskSubtaskUpdateResponse422",
     "TaskSubtaskWithContext",
+    "TestSlotsPerf",
     "ThroughputMetrics",
     "TidyRequest",
     "TidyResponse",
@@ -2581,6 +2820,7 @@ __all__ = (
     "TokenUsageDTO",
     "TranscriptEntryModel",
     "TranscriptEntryModelUsageType0",
+    "UngatedPerf",
     "UpdateAndRestartRequest",
     "UpdateAndRestartResponse",
     "UpdateAndRestartResponse422",
@@ -2593,11 +2833,21 @@ __all__ = (
     "UpdatePlaybookSourceResponse422",
     "ValidationError",
     "ValidationErrorContext",
+    "WaitCancelRequest",
+    "WaitCancelResponse422",
     "WaitFactsDTO",
     "WaitFactsDTODeadlineSourceType0",
     "WaitFactsDTOWaitKind",
+    "WaitGetRequest",
+    "WaitGetResponse422",
+    "WaitListRequest",
+    "WaitListResponse",
+    "WaitListResponse422",
     "WaitNodeDetailDTO",
     "WaitNodeDetailDTOWaitKind",
+    "WaitRegisterRequest",
+    "WaitRegisterResponse422",
+    "WaitResponse",
     "WithheldTask",
     "WorkspaceDoctorRequest",
     "WorkspaceDoctorResponse422",

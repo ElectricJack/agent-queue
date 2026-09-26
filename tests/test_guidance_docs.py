@@ -42,8 +42,10 @@ PRIME_TEMPLATES_DIR = _REPO_ROOT / "src" / "prime" / "templates"
 OPERATOR_DOCS = (
     _REPO_ROOT / "docs" / "guides" / "discord-migration.md",
     _REPO_ROOT / "docs" / "guides" / "discord-commands.md",
+    _REPO_ROOT / "docs" / "guides" / "discord-conversations.md",
     _REPO_ROOT / "docs" / "guides" / "discord-replacement-checklist.md",
     _REPO_ROOT / "docs" / "guides" / "escalations.md",
+    _REPO_ROOT / "docs" / "guides" / "reviews.md",
 )
 #: The CLI reference itself.  Its whole job is to show the reader the current
 #: command surface, so a leaf that has been renamed or an option that has been
@@ -164,8 +166,12 @@ def _problems(source: str, lineno: int, command: str) -> list[str]:
 
     positional = 0
     remaining = iter(rest)
+    after_separator = False
     for token in remaining:
-        if token.startswith("-") and token != "-":
+        if token == "--" and not after_separator:
+            after_separator = True
+            continue
+        if not after_separator and token.startswith("-") and token != "-":
             option = token.split("=", 1)[0]
             if option in flags:
                 continue
@@ -295,3 +301,11 @@ def test_invocations_are_read_from_shell_blocks_and_inline_code_only():
         (1, "aq task show <id>"),
         (4, 'aq task close <id> --outcome pass --summary "..."'),
     ]
+
+
+def test_the_guard_honors_the_end_of_options_separator():
+    assert _problems("x.md", 1, 'aq job submit --preset test -- -k "term" tests/') == []
+    assert "has no option --nope" in _problems(
+        "x.md", 1, "aq job submit --nope -- -k term"
+    )[0]
+    assert "takes 0 positional" in _problems("x.md", 1, "aq task list -- --nope")[0]

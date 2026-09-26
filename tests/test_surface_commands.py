@@ -727,3 +727,133 @@ class TestTaskHandoff:
         messages = next(s for s in result["sections"] if s["key"] == "messages")
         assert "s" in messages["body"]
         assert "d" in messages["body"]
+
+
+class TestStructuredHandoff:
+    async def test_empty_auto_preserves_useful_note(self, prime_handler, db, task):
+        saved = await prime_handler.execute(
+            "task_handoff",
+            {
+                "task_id": task.id,
+                "auto": True,
+                "goal": "Fix compaction",
+                "next_step": "Run the renderer tests",
+                "uncertainties": ["Check quoting"],
+            },
+        )
+        for _ in range(3):
+            result = await prime_handler.execute(
+                "task_handoff",
+                {
+                    "task_id": task.id,
+                    "auto": True,
+                    "detail": "  ",
+                    "completed": [""],
+                },
+            )
+            assert result["noop"] and result["handoff_id"] is None
+        rows = await db.get_task_contexts(task.id)
+        assert len(rows) == 1 and rows[0]["id"] == saved["handoff_id"]
+        body = (await prime_handler.execute("prime", {"task_id": task.id}))["body"]
+        assert "Run the renderer tests" in body
+        assert "Check quoting" in body
+        assert "Current daemon facts" in body
+
+    async def test_keyed_retries_are_atomic_and_emit_restart_once(self, prime_handler, db, task):
+        import asyncio
+
+        received = []
+        prime_handler.orchestrator.bus.subscribe(
+            "session.restart_requested", lambda data: received.append(data)
+        )
+        args = {"task_id": task.id, "next_step": "Continue", "idempotency_key": "hook-1"}
+        results = await asyncio.gather(
+            *(prime_handler.execute("task_handoff", args) for _ in range(4))
+        )
+        assert all(r.get("success") for r in results), results
+        assert len({r["handoff_id"] for r in results}) == 1
+        assert sum(r["created"] for r in results) == 1
+        assert len(received) == 1
+        assert len(await db.get_task_contexts(task.id)) == 1
+        await db.update_task(task.id, claim_epoch=1)
+        result = await prime_handler.execute("task_handoff", args)
+        assert result["created"] and result["handoff_id"] != results[0]["handoff_id"]
+
+    @pytest.mark.parametrize(
+        "fields",
+        [
+            {"next_step": "😀" * 2049},
+            {"subject": "a" * 4096, "detail": "b" * 4097},
+            {"uncertainties": ["u"] * 21},
+            {"completed": ["c"] * 21},
+            {"schema_version": 2},
+            {"facts": {"head": "forged"}},
+            {"claim_epoch": "invalid"},
+        ],
+    )
+    async def test_invalid_note_does_not_write(self, prime_handler, db, task, fields):
+        result = await prime_handler.execute("task_handoff", {"task_id": task.id, **fields})
+        assert "error" in result
+        assert await db.get_task_contexts(task.id) == []
+
+    async def test_annotation_uses_real_checkout_and_current_claim(
+        self, prime_handler, db, task, tmp_path
+    ):
+        import subprocess
+
+        for cmd in (
+            ["git", "init", "-b", "actual"],
+            ["git", "config", "user.email", "test@example.com"],
+            ["git", "config", "user.name", "Test"],
+            ["git", "commit", "--allow-empty", "-m", "base"],
+        ):
+            subprocess.run(cmd, cwd=tmp_path, check=True, capture_output=True)
+        for i in range(25):
+            (tmp_path / f"dirty {i}.txt").write_text("dirty")
+        await db.set_task_meta(task.id, "work_dir", str(tmp_path))
+        await db.update_task(task.id, branch_name="wrong-task-branch", claim_epoch=7)
+        result = await prime_handler.execute(
+            "task_handoff",
+            {
+                "task_id": task.id,
+                "files": ["asserted.py"],
+                "next_step": "Continue",
+                "auto": True,
+            },
+        )
+        assert result.get("success"), result
+        row = (await db.get_task_contexts(task.id))[0]
+        payload = json.loads(row["content"])
+        assert payload["schema_version"] == 1
+        assert payload["agent"]["files"] == ["asserted.py"]
+        assert payload["facts"]["branch"] == "actual"
+        assert len(payload["facts"]["head"]) == 40
+        assert payload["facts"]["claim_epoch"] == row["claim_epoch"] == 7
+        assert payload["facts"]["dirty_path_count"] == 25
+        assert len(payload["facts"]["dirty_paths"]) == 20
+        assert payload["created_at"] == row["created_at"]
+        assert payload["facts"]["subtasks"] == {"total": 0, "settled": 0}
+        await db.update_task(task.id, claim_epoch=8)
+        body = (await prime_handler.execute("prime", {"task_id": task.id}))["body"]
+        assert "Stale handoff files/checkout" in body
+        assert "claim_epoch: 8" in body
+        assert "actual" in body
+
+    async def test_write_rechecks_epoch_after_fact_capture(
+        self, prime_handler, db, task, monkeypatch
+    ):
+        from src import handoffs
+
+        original = handoffs.collect_facts
+
+        async def race(*args, **kwargs):
+            facts = await original(*args, **kwargs)
+            await db.update_task(task.id, claim_epoch=1)
+            return facts
+
+        monkeypatch.setattr(handoffs, "collect_facts", race)
+        result = await prime_handler.execute(
+            "task_handoff", {"task_id": task.id, "goal": "Continue"}
+        )
+        assert "stale_claim" in result["error"]
+        assert await db.get_task_contexts(task.id) == []

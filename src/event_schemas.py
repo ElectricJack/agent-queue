@@ -276,8 +276,20 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
 _ASSIGNMENT_SCHEMAS: dict[str, EventSchema] = {}
 
 CONTRACTED_EVENT_TYPES: frozenset[str] = frozenset(
-    {"task.completed", "spec.approved", "proposal.ready", "gate.resolved"}
+    {"task.completed", "spec.approved", "proposal.ready", "gate.resolved", "digest.window_ready"}
 )
+
+_REPORT_SCHEMAS: dict[str, EventSchema] = {
+    "digest.window_ready": {
+        "required": ["window_id", "request_id"],
+        "optional": [],
+        "types": {"window_id": str, "request_id": str},
+        "fields": {
+            "window_id": {"type": "string", "description": "reserved digest window"},
+            "request_id": {"type": "string", "description": "durable report request"},
+        },
+    }
+}
 
 # ---------------------------------------------------------------------------
 # Work-graph events  (docs/specs/design/work-graph.md §10.2)
@@ -1414,6 +1426,7 @@ _METRICS_SCHEMAS: dict[str, EventSchema] = {
             "throughput",
             "merges_per_hour",
             "sampler",
+            "perf",
         ],
     },
 }
@@ -1737,10 +1750,23 @@ _DASHBOARD_STATE_SCHEMAS: dict[str, EventSchema] = {
 }
 
 EVENT_SCHEMAS: dict[str, EventSchema] = {
+    "conversation.reply_queued.v1": {
+        "required": ["conversation_id", "input_id", "reply_message_id", "delivery_dedup_key", "created"],
+        "optional": [],
+        "types": {"conversation_id": str, "input_id": str, "reply_message_id": str,
+                  "delivery_dedup_key": str, "created": bool},
+    },
+    "conversation.input_received.v1": {
+        "required": ["conversation_id", "input_id", "transport", "verified_actor", "created", "source"],
+        "optional": [],
+        "types": {"conversation_id": str, "input_id": str, "transport": str,
+                  "verified_actor": str, "created": bool, "source": str},
+    },
     "agent.created": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.updated": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.deleted": {"required": ["agent_id"], "optional": ["event_type"]},
     **_TASK_SCHEMAS,
+    **_REPORT_SCHEMAS,
     **_ASSIGNMENT_SCHEMAS,
     **_WORK_GRAPH_SCHEMAS,
     **_NOTE_SCHEMAS,

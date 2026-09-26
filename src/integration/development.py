@@ -174,6 +174,7 @@ class DevelopmentIntegration:
         git: GitManager,
         confirm_stopped=None,
         owner_recovery: Any | None = None,
+        job_client=None,
     ):
         self.db = db
         self.data_dir = Path(data_dir) / "development-integration"
@@ -184,11 +185,9 @@ class DevelopmentIntegration:
         self._project_faults = {}
         self.confirm_stopped = confirm_stopped
         self.owner_recovery = owner_recovery
-        #: How often a running validation is checked against its budgets, and
-        #: how far past ``slot_wait_seconds`` a queued command may go before
-        #: the publisher stops it (``aq test`` normally gives up first).
+        self.job_client = job_client
+        #: Poll durable completion; the runner owns all execution budgets.
         self.validation_poll_seconds = 1.0
-        self.slot_wait_grace_seconds = 10.0
 
     async def on_task_completed(self, event):
         """Wake delivery without doing Git or validation in the completion path.
@@ -411,7 +410,7 @@ class DevelopmentIntegration:
                     f"remote write {row['id']} needs reconciliation: target changed"
                 )
 
-    async def validate(self, store, policy):
+    async def validate(self, store, policy, *, project_id=None, operation_id=None, attempt=0):
         """Run the selected validation and classify it.
 
         ``evidence["conclusion"]`` is ``passed``, ``failed`` (tests ran and
@@ -424,16 +423,17 @@ class DevelopmentIntegration:
         if policy.validation == "none":
             evidence["conclusion"] = "not_run"
             return evidence, True
-        reports = self.data_dir / "slot-reports"
-        for command in policy.commands:
+        head = await self.run_git(store, "rev-parse", "HEAD")
+        for index, command in enumerate(policy.commands):
             check = await run_validation_check(
                 command,
                 cwd=store,
                 timeout_seconds=policy.timeout_seconds,
                 slot_wait_seconds=policy.slot_wait_seconds,
-                report_path=reports / f"{uuid4()}.jsonl",
+                job_client=self.job_client, project_id=project_id,
+                operation_id=operation_id, input_ref=head,
+                idempotency_key=f"{operation_id}:{attempt}:{index}",
                 poll_seconds=self.validation_poll_seconds,
-                slot_grace_seconds=self.slot_wait_grace_seconds,
             )
             evidence["checks"].append(check)
             if check["outcome"] == validation_outcomes.INFRASTRUCTURE:
@@ -1352,7 +1352,14 @@ class DevelopmentIntegration:
                 await self.reconcile_parked(repo, store, base)
                 return {"outcome": "idle", "parked": conflicts}
             head = await self.run_git(store, "rev-parse", "HEAD")
-            evidence, passed = await self.validate(store, policy)
+            operation = "development-" + hashlib.sha256(
+                (repo.id + head + policy.model_dump_json()).encode()
+            ).hexdigest()
+            deferral = self._open_deferral(history, repo.id)
+            attempt = (deferral or {}).get("evidence", {}).get("consecutive", 0)
+            evidence, passed = await self.validate(
+                store, policy, project_id=project_id, operation_id=operation, attempt=attempt
+            )
             evidence["head_sha"] = head
             if await self.run_git(store, "rev-parse", "HEAD") != head or await self.run_git(
                 store, "status", "--porcelain", "--untracked-files=no"

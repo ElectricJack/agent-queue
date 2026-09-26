@@ -1,7 +1,7 @@
 import { useRef, useState, type RefObject } from "react";
 import { useIntelligenceClasses, useProfiles } from "../../api/hooks";
 
-export type ReviewDecision = "approve" | "request_changes";
+export type ReviewDecision = "approve" | "request_changes" | "reject";
 
 export type ResponseRoute = {
   kind: string;
@@ -45,8 +45,8 @@ export function DecisionBar({
     try {
       await onDecide(
         decision, note.trim(),
-        decision === "request_changes" ? responderClass : "",
-        decision === "request_changes" ? responderProfile : "",
+        decision !== "approve" ? responderClass : "",
+        decision !== "approve" ? responderProfile : "",
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not record the decision.");
@@ -85,6 +85,14 @@ export function DecisionBar({
           className="rounded bg-red-800 px-3 py-2 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Request changes
+        </button>
+        <button
+          type="button"
+          onClick={() => void decide("reject")}
+          disabled={disabled || !note.trim()}
+          className="rounded bg-gray-700 px-3 py-2 text-sm font-medium text-white hover:bg-gray-600 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Reject
         </button>
       </div>
       {showRevisionOptions && (

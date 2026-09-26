@@ -95,6 +95,10 @@ _URL_CREDENTIALS = re.compile(
     r"(?P<prefix>[A-Za-z][A-Za-z0-9+.\-]*://[^\s:/?#@]*:)(?P<password>[^\s@/?#]+)(?P<suffix>@)"
 )
 
+# Shared with request-evidence sanitizers: redact an entire line if either
+# pattern matches, before the line can leave the daemon.
+SECRET_LINE_PATTERNS = (_SECRET_VALUE, _URL_CREDENTIALS)
+
 
 # ---------------------------------------------------------------------------
 # Read side

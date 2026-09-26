@@ -69,6 +69,10 @@ _UNSET = object()
 #: Project integration modes whose tasks need the designated repository, including
 #: observe tasks that may later enter the train.
 REPOSITORY_BOUND_MODES = frozenset({"observe", "hierarchy", "train", "development"})
+# A delivered receipt is invalidated only when a completed task enters a new
+# work incarnation.  Task-row updated_at and close-record time can both move
+# after delivery, so neither is a safe freshness boundary.
+INTEGRATION_REWORK_AT_KEY = "integration_rework_at"
 
 
 def task_repository_id(mode: str | None, integration_repository_id: str | None) -> str | None:
@@ -537,7 +541,6 @@ class TaskQueryMixin:
         layout stale until the next full pass.
         """
         values = self._coerce_task_values(kwargs)
-        values["updated_at"] = time.time()
         async with self._engine.begin() as conn:
             comment_source_project = None
             if "project_id" in kwargs:
@@ -581,6 +584,13 @@ class TaskQueryMixin:
                         values["repo_id"] = await self._moved_task_repo_id(
                             conn, task_id, values["project_id"]
                         )
+            previous_status = None
+            if "status" in values:
+                previous_status = (
+                    await conn.execute(
+                        select(tasks.c.status).where(tasks.c.id == task_id).with_for_update()
+                    )
+                ).scalar_one_or_none()
             if "branch_name" in values:
                 # Lock the task before reading the checkpoint. Origin
                 # establishment writes this row too, so the two updates
@@ -597,11 +607,20 @@ class TaskQueryMixin:
                         f"Task '{task_id}' has canonical integration branch '{canonical_branch}'; "
                         "branch_name cannot rename it"
                     )
+            values["updated_at"] = time.time()
             stmt = update(tasks).where(tasks.c.id == task_id)
             lifecycle = {"status", "resume_after", "assigned_agent_id", "retry_count", "claim_epoch"}
             if lifecycle & kwargs.keys():
                 stmt = stmt.where(_not_manually_paused())
             result = await conn.execute(stmt.values(**values))
+            if (
+                result.rowcount == 1
+                and previous_status == TaskStatus.COMPLETED.value
+                and values.get("status") != TaskStatus.COMPLETED.value
+            ):
+                await self._upsert_meta(
+                    task_id, INTEGRATION_REWORK_AT_KEY, values["updated_at"], conn=conn
+                )
             if result.rowcount == 0 and lifecycle & kwargs.keys():
                 paused = (await conn.execute(select(tasks.c.id).where(
                     tasks.c.id == task_id, ~_not_manually_paused()
@@ -899,6 +918,25 @@ class TaskQueryMixin:
                 TaskStatus.IN_PROGRESS if await self.is_container(task_id, conn=conn)
                 else TaskStatus.READY
             )
+        # Removing an operator hold does not authorize aggregate verification.
+        # A managed container stays with its collector; IN_PROGRESS here used
+        # to bypass the READY-only wake guard and orphan recovery subsequently
+        # blocked it against the previous worker's stopped session.
+        managed_episode = await conn.scalar(
+            select(task_integration_checkpoints.c.task_id)
+            .join(tasks, tasks.c.id == task_integration_checkpoints.c.task_id)
+            .join(projects, projects.c.id == tasks.c.project_id)
+            .where(
+                tasks.c.id == task_id,
+                task_integration_checkpoints.c.episode_id.is_not(None),
+                task_integration_checkpoints.c.state == "awaiting_children",
+                projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            )
+        )
+        if managed_episode is not None and prior in {
+            TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
+        }:
+            prior = TaskStatus.PAUSED
         await conn.execute(delete(task_metadata).where(
             task_metadata.c.task_id == task_id,
             task_metadata.c.key == "manual_pause_withholds_children",
@@ -1233,7 +1271,9 @@ class TaskQueryMixin:
                     ):
                         result.ready.append((tid, "unblocked"))
         else:
-            if current_status == TaskStatus.PAUSED and new_status == TaskStatus.READY:
+            if current_status == TaskStatus.PAUSED and new_status in {
+                TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
+            }:
                 managed_parent = (
                     await conn.execute(
                         select(task_integration_checkpoints.c.task_id).where(
@@ -1341,6 +1381,11 @@ class TaskQueryMixin:
                 # claim fence).  Nothing was written, so there is nothing to
                 # project or announce.
                 return result
+
+            if current_status == TaskStatus.COMPLETED and new_status != TaskStatus.COMPLETED:
+                await self._upsert_meta(
+                    task_id, INTEGRATION_REWORK_AT_KEY, values["updated_at"], conn=conn
+                )
 
             # Layout only cares about crossing the finished boundary (a
             # finished task leaves the ``active`` variant and restyles in
@@ -1910,9 +1955,65 @@ class TaskQueryMixin:
                     type=type,
                     label=label,
                     content=content,
+                    created_at=time.time(),
                 )
             )
         return ctx_id
+
+
+    async def add_task_handoff(
+        self,
+        task_id: str,
+        *,
+        content: str,
+        claim_epoch: int,
+        session_id: str | None,
+        idempotency_key: str | None,
+        created_at: float,
+    ) -> tuple[str, bool]:
+        """Append once per claim/key, fencing annotations collected before this write."""
+        async with self._engine.begin() as conn:
+            current = (
+                await conn.execute(
+                    select(tasks.c.claim_epoch).where(tasks.c.id == task_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if current is None or current != claim_epoch:
+                raise ValueError("stale_claim: ownership changed while recording handoff")
+            if session_id:
+                held = (
+                    await conn.execute(
+                        select(sessions.c.task_id).where(sessions.c.id == session_id)
+                    )
+                ).scalar_one_or_none()
+                if held != task_id:
+                    raise ValueError("stale_claim: session no longer holds this task")
+            if idempotency_key:
+                existing = (
+                    await conn.execute(
+                        select(task_context.c.id).where(
+                            task_context.c.task_id == task_id,
+                            task_context.c.claim_epoch == claim_epoch,
+                            task_context.c.idempotency_key == idempotency_key,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing:
+                    return existing, False
+            ctx_id = str(uuid.uuid4())[:12]
+            await conn.execute(
+                insert(task_context).values(
+                    id=ctx_id,
+                    task_id=task_id,
+                    type="handoff",
+                    label="handoff",
+                    content=content,
+                    claim_epoch=claim_epoch,
+                    idempotency_key=idempotency_key,
+                    created_at=created_at,
+                )
+            )
+            return ctx_id, True
 
     async def get_task_contexts(self, task_id: str) -> list[dict]:
         """Return all task_context rows for *task_id* as dicts."""
@@ -1924,7 +2025,12 @@ class TaskQueryMixin:
                     task_context.c.type,
                     task_context.c.label,
                     task_context.c.content,
-                ).where(task_context.c.task_id == task_id)
+                    task_context.c.created_at,
+                    task_context.c.claim_epoch,
+                    task_context.c.idempotency_key,
+                )
+                .where(task_context.c.task_id == task_id)
+                .order_by(task_context.c.created_at, task_context.c.id)
             )
             return [dict(r) for r in result.mappings().fetchall()]
 

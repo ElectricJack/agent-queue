@@ -22,6 +22,7 @@ class CreateProfileRequest:
         harness (None | str | Unset): CLI harness id (for example 'codex' or 'claude')
         permission_mode (None | str | Unset): Permission mode override (optional)
         codex_full_auto (bool | None | Unset): Enable Codex --full-auto (requires harness 'codex')
+        codex_service_tier (None | str | Unset): Codex launch service tier override (optional)
         claude_dangerously_skip_permissions (bool | None | Unset): Let Claude skip permission prompts (requires harness
             'claude')
         allowed_tools (list[Any] | None | Unset): Tool whitelist (e.g. ['Read', 'Glob', 'Grep', 'Bash'])
@@ -37,6 +38,7 @@ class CreateProfileRequest:
     harness: None | str | Unset = UNSET
     permission_mode: None | str | Unset = UNSET
     codex_full_auto: bool | None | Unset = UNSET
+    codex_service_tier: None | str | Unset = UNSET
     claude_dangerously_skip_permissions: bool | None | Unset = UNSET
     allowed_tools: list[Any] | None | Unset = UNSET
     mcp_servers: list[Any] | None | Unset = UNSET
@@ -77,6 +79,12 @@ class CreateProfileRequest:
             codex_full_auto = UNSET
         else:
             codex_full_auto = self.codex_full_auto
+
+        codex_service_tier: None | str | Unset
+        if isinstance(self.codex_service_tier, Unset):
+            codex_service_tier = UNSET
+        else:
+            codex_service_tier = self.codex_service_tier
 
         claude_dangerously_skip_permissions: bool | None | Unset
         if isinstance(self.claude_dangerously_skip_permissions, Unset):
@@ -126,6 +134,8 @@ class CreateProfileRequest:
             field_dict["permission_mode"] = permission_mode
         if codex_full_auto is not UNSET:
             field_dict["codex_full_auto"] = codex_full_auto
+        if codex_service_tier is not UNSET:
+            field_dict["codex_service_tier"] = codex_service_tier
         if claude_dangerously_skip_permissions is not UNSET:
             field_dict["claude_dangerously_skip_permissions"] = claude_dangerously_skip_permissions
         if allowed_tools is not UNSET:
@@ -189,6 +199,15 @@ class CreateProfileRequest:
 
         codex_full_auto = _parse_codex_full_auto(d.pop("codex_full_auto", UNSET))
 
+        def _parse_codex_service_tier(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        codex_service_tier = _parse_codex_service_tier(d.pop("codex_service_tier", UNSET))
+
         def _parse_claude_dangerously_skip_permissions(data: object) -> bool | None | Unset:
             if data is None:
                 return data
@@ -251,6 +270,7 @@ class CreateProfileRequest:
             harness=harness,
             permission_mode=permission_mode,
             codex_full_auto=codex_full_auto,
+            codex_service_tier=codex_service_tier,
             claude_dangerously_skip_permissions=claude_dangerously_skip_permissions,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,

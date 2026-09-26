@@ -29,6 +29,7 @@ from src.escalations.transport import (
     TransportUnavailable,
 )
 from src.models import Project, Task, TaskCompletion
+from src.remote_links import DashboardLink
 from tests.db_fixtures import lease_dsn
 
 CHANNEL = "424242424242424242"
@@ -319,6 +320,84 @@ async def test_disabling_the_digest_sends_nothing_and_says_so(db):
     assert await windows(db) == []
 
 
+# ------------------------------------------------- report candidate links
+
+
+class StubLinks:
+    """A stub for the daemon's dashboard link resolver."""
+
+    def __init__(self, link) -> None:
+        self._link = link
+
+    async def resolve(self):
+        return self._link
+
+
+def _reports_config(enabled: bool = True, full_fleet: bool = True):
+    from src.config import HourlyReportsConfig, ReportsConfig
+
+    return ReportsConfig(
+        timezone="UTC",
+        hourly=HourlyReportsConfig(enabled=enabled, full_fleet_visibility=full_fleet),
+    )
+
+
+async def _evaluated_window(db, service, transport):
+    await complete(db, "t1", at=BASE + 600, summary="finished the migration")
+    service._anchors[(f"discord:{CHANNEL}", schedule_for(make_config()).generation)] = BASE
+    await service.evaluate()
+    rows = await windows(db)
+    assert len(rows) == 1
+    return rows[0]
+
+
+async def test_the_report_brief_carries_the_resolved_dashboard_link(db):
+    """One resolver serves the brief: the stub's origin, not the empty default."""
+    link = DashboardLink(url="https://queue.ts.example")
+    config = make_config()
+    config.reports = _reports_config()
+    clock = Clock(BASE + HOUR + 30)
+    service = make_service(
+        db,
+        transport := SinkTransport(),
+        config=config,
+        clock=clock,
+        links=StubLinks(link),
+        authoring_ready=lambda: True,
+    )
+    row = await _evaluated_window(db, service, transport)
+
+    request = await db.get_report_request("report-hourly-" + row["id"])
+    assert request is not None
+    brief = request["brief"]
+    assert brief["dashboard_url"] == "https://queue.ts.example"
+    assert [fact["source_url"] for fact in brief["facts"]] == [
+        "https://queue.ts.example/tasks/t1"
+    ]
+
+
+async def test_an_unresolvable_dashboard_link_leaves_the_brief_without_one(db):
+    link = DashboardLink(reason="tailscale_unavailable", detail="tailscale is not running")
+    config = make_config()
+    config.reports = _reports_config()
+    clock = Clock(BASE + HOUR + 30)
+    service = make_service(
+        db,
+        transport := SinkTransport(),
+        config=config,
+        clock=clock,
+        links=StubLinks(link),
+        authoring_ready=lambda: True,
+    )
+    row = await _evaluated_window(db, service, transport)
+
+    request = await db.get_report_request("report-hourly-" + row["id"])
+    assert request is not None
+    assert request["brief"]["dashboard_url"] == ""
+    assert request["brief"]["dashboard_notice"] == link.unavailable_notice
+    assert all(fact["source_url"] == "" for fact in request["brief"]["facts"])
+
+
 # --------------------------------------------------------------- delivery
 
 
@@ -420,13 +499,15 @@ async def test_unreconcilable_ambiguity_is_recorded_unknown_not_reposted(db):
 
     transport.post_root = ambiguous
     first = await service.pump()
-    assert first.retried == 1
+    assert first.unknown == 1
+    assert first.retried == 0
     stored = await db.get_digest_window(row["id"])
+    assert stored["send_status"] == "unknown"
     assert stored["last_error"].startswith("ambiguous:")
 
     clock.now = stored["due_at"]
     second = await service.pump()
-    assert second.unknown == 1
+    assert second.unknown == 0  # unknown sends are never automatically reclaimed
     assert transport.messages == {}
     final = await db.get_digest_window(row["id"])
     assert final["send_status"] == "unknown"

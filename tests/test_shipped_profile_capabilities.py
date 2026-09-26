@@ -144,6 +144,9 @@ def test_supervisor_holds_every_operator_integration_control():
     # (noble-harbor-74); the profile tells the supervisor when to run it.
     assert "integration_redrive_root" in OPERATOR_INTEGRATION_CONTROLS
     assert "integration_redrive_root" in granted
+    # Its twin for a completed child its parent never assembled (vivid-ridge).
+    assert "integration_redrive_child" in OPERATOR_INTEGRATION_CONTROLS
+    assert "integration_redrive_child" in granted
     assert sorted(OPERATOR_INTEGRATION_CONTROLS - granted) == []
 
 
@@ -163,6 +166,17 @@ def test_supervisor_can_rebind_a_reused_task_identity():
     assert "aq integration rebind-reused-identity --task-id" in text
     confirm_first = text[text.index("**Explain before acting.**"):]
     assert "`aq integration rebind-reused-identity --discard-tip`" in confirm_first
+
+
+def test_supervisor_inbox_grants_exclude_internal_intake():
+    granted = set(_parsed("supervisor").capabilities["aq_commands"])
+    assert {
+        "supervisor_inbox_history",
+        "supervisor_inbox_reply",
+        "supervisor_inbox_status",
+    } <= granted
+    assert "supervisor_inbox_post" not in granted
+    assert granted <= _builtin_command_names()
 
 
 # ---------------------------------------------------------------------------

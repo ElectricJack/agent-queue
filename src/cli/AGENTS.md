@@ -22,8 +22,9 @@ daemon.py          `aq start` / `stop` / `restart` — the daemon, plus the dash
                    `--no-dashboard-server` leaves the server alone)
 dashboard.py       Hand-written `aq dashboard` group (the generated `state-*` commands merge
                    into it): `serve` (foreground) and `start|stop|restart|status` (background,
-                   via src/dashboard_server/process.py); also the helpers `aq start|stop|
-                   restart|status` call, so the PID/log/config paths come from daemon.py
+                   via src/dashboard_server/process.py), plus the read-only `link` (the origin
+                   Discord links name, via src/remote_links.py); also the helpers `aq start|
+                   stop|restart|status` call, so the PID/log/config paths come from daemon.py
 db.py              `aq db` — the operator's migration door (`current`, `upgrade`)
 doctor.py          `aq doctor` and `aq costs`
 envelope.py        Versioned JSON envelope: envelope(), error_envelope(), emit(),
@@ -38,6 +39,7 @@ install.py         `aq install` — the daemon-free installer: builds the step r
                    runs src/install's engine in-process, maps outcomes to exit codes;
                    `--repair` / `--upgrade` reconcile an existing installation
 inventory.py       Reproducible CLI command inventory and ownership classification
+jobs.py            `aq job {submit,show,list,cancel,result,logs,attach}` and `aq run` preset alias
 logs.py            `aq logs` — tail/filter JSONL log file directly (no daemon needed)
 menus.py           Interactive prompts (task wizard, fuzzy select, confirm)
 messages.py        `aq message *`, `aq inbox`, `aq reply`, `aq chat`
@@ -45,6 +47,7 @@ playbook.py        `aq playbook` — compile, run, HITL, health
 plugins.py         `aq plugin {list,info,install,remove,enable,disable,update,config,logs,...}`
 projects.py        Hand-crafted `aq project` commands needing composite logic or UX sugar
 questions.py       `aq question {list,answer,escalate}` — identity-based worker questions
+reports.py         `aq report {morning,request,brief,submit}` — evidence preview, durable reads and file submission
 reviews.py         `aq review` — document-review queue, decisions, revisions, and comments
 sessions.py        `aq session` — the session-runtime CLI group
 streams.py         `aq stream start|tail|kill`
@@ -58,6 +61,7 @@ uninstall.py       `aq uninstall` — plans and removes installer-owned resource
 update.py          `aq update` — stop the daemon, fast-forward the source checkout, then hand
                    reinstall / rebuild / restart to a fresh process on the new code
                    (src/install/update_finish.py); rolls back on any failure (src/install/update.py)
+waits.py           `aq wait {register,show,list,cancel}` — typed, claim-fenced durable waits
 vault.py           `aq vault {migrate,reset-harness}`
 ```
 

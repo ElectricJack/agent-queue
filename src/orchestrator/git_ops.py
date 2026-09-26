@@ -2325,7 +2325,8 @@ class GitOpsMixin:
                     return PhaseResult.STOP
 
                 merged = await self.git.amerge_branch(
-                    base_path, branch, default_branch
+                    base_path, branch, default_branch,
+                    repository_url=repository_url if has_remote else None,
                 )
                 if not merged:
                     # Should be rare after a successful merge, but treat

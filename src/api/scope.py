@@ -35,6 +35,16 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # the row to ``scope.session_id`` and ignores any session named in
         # the payload.
         "subagent_event",
+        "job_submit",
+        "job_get",
+        "job_list",
+        "job_cancel",
+        "job_result",
+        "job_logs",
+        "wait_register",
+        "wait_get",
+        "wait_list",
+        "wait_cancel",
         "message_send",
         "message_inbox",
         "message_reply",
@@ -92,6 +102,14 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "review_list",
         "review_withdraw",
         "review_comment",
+        "report_get",
+        "report_list",
+        "morning_report_preview",
+        "report_brief",
+        "report_submit",
+        # The command checks the held revision task and Jack's explicit
+        # rejection before it reaches the repository-bound GitHub client.
+        "github_issue_close_rejected",
     }
 )
 
@@ -139,6 +157,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_release_stale_owners",
         "integration_clear_stale_request",
         "integration_redrive_root",
+        "integration_redrive_child",
         "integration_rebind_reused_identity",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
@@ -183,6 +202,14 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     """
     if scope.kind == "local":
         return None
+    if command == "supervisor_inbox_post":
+        return "out of scope: conversation intake is daemon-internal"
+    if command == "supervisor_inbox_reply" and not (scope.elevated and scope.project_id is None):
+        return "out of scope: conversation replies require local operator or global supervisor"
+    if command in {"supervisor_inbox_status", "supervisor_inbox_history"} and not (
+        scope.elevated and scope.project_id is None
+    ):
+        return "out of scope: conversation reads require local operator or global supervisor"
     if command in OPERATOR_INTEGRATION_CONTROLS and not scope.elevated:
         return "out of scope: integration control requires local operator or supervisor"
     if command in LOCAL_REVIEW_CONTROLS:

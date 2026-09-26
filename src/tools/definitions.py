@@ -87,8 +87,16 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_reply": "escalation",
     "escalation_update": "escalation",
     "escalation_apply_reply": "escalation",
+    "supervisor_inbox_post": "supervisor_inbox",
+    "supervisor_inbox_reply": "supervisor_inbox",
+    "supervisor_inbox_status": "supervisor_inbox",
+    "supervisor_inbox_history": "supervisor_inbox",
     # document reviews
     "review_submit": "review",
+    "github_issue_triage": "github_issue",
+    "github_issue_fix_approved": "github_issue",
+    "github_issue_rejection": "github_issue",
+    "github_issue_close_rejected": "github_issue",
     "review_show": "review",
     "review_list": "review",
     "review_withdraw": "review",
@@ -100,6 +108,24 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # digest — hourly activity digest preview and schedule health
     "digest_preview": "digest",
     "digest_status": "digest",
+    "job_submit": "job",
+    "job_get": "job",
+    "job_list": "job",
+    "job_cancel": "job",
+    "job_result": "job",
+    "job_logs": "job",
+    "wait_register": "wait",
+    "wait_get": "wait",
+    "wait_list": "wait",
+    "wait_cancel": "wait",
+    "report_request": "report",
+    "report_reconcile": "report",
+    "report_brief": "report",
+    "morning_report_preview": "report",
+    "morning_report_tick": "report",
+    "report_get": "report",
+    "report_list": "report",
+    "report_submit": "report",
     # dashboard — durable shared and roaming UI state
     "dashboard_state_list": "dashboard",
     "dashboard_state_get": "dashboard",
@@ -2964,6 +2990,11 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "boolean",
                     "description": "Enable Codex --full-auto (requires harness 'codex')",
                 },
+                "codex_service_tier": {
+                    "type": "string",
+                    "enum": ["default", "fast"],
+                    "description": "Codex launch service tier override (optional)",
+                },
                 "claude_dangerously_skip_permissions": {
                     "type": "boolean",
                     "description": (
@@ -3019,6 +3050,11 @@ _ALL_TOOL_DEFINITIONS = [
                 "codex_full_auto": {
                     "type": "boolean",
                     "description": "Enable or disable Codex --full-auto",
+                },
+                "codex_service_tier": {
+                    "type": "string",
+                    "enum": ["default", "fast"],
+                    "description": "Codex service tier override; null clears it",
                 },
                 "claude_dangerously_skip_permissions": {
                     "type": "boolean",
@@ -5067,9 +5103,10 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_handoff",
         "description": (
-            "Record a handoff note on the current task; requests a session restart "
-            "unless `auto` is set (design §6.1). `auto` is wired to the PreCompact "
-            "hook and never requests a restart. Backs `aq handoff`."
+            "Record a structured handoff (8 KiB combined UTF-8 agent text, at most 20 "
+            "items per list), with daemon-observed ownership and checkout facts. "
+            "Legacy subject/detail remain accepted. Empty auto hooks are no-ops. "
+            "Non-auto records a restart request without performing a restart. Backs `aq handoff`."
         ),
         "input_schema": {
             "type": "object",
@@ -5084,6 +5121,16 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "subject": {"type": "string", "description": "Short handoff subject (optional)."},
                 "detail": {"type": "string", "description": "Handoff detail (optional)."},
+                "schema_version": {"type": "integer", "enum": [1]},
+                "goal": {"type": "string"},
+                "next_step": {"type": "string"},
+                "waiting_for": {"type": "string"},
+                "completed": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "files": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "decisions": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "do_not_repeat": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "uncertainties": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
                 "auto": {
                     "type": "boolean",
                     "description": (
@@ -6426,7 +6473,7 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "project_id": {"type": "string"},
                     "state": {
                         "type": "string",
-                        "enum": ["in_review", "changes_requested", "approved", "withdrawn"],
+                        "enum": ["in_review", "changes_requested", "rejected", "approved", "withdrawn"],
                     },
                     "kind": {"type": "string", "enum": ["spec", "plan", "other"]},
                     "task_id": {"type": "string"},
@@ -6446,16 +6493,16 @@ _ALL_TOOL_DEFINITIONS.extend(
         },
         {
             "name": "review_decide",
-            "description": "Approve a review or request changes on its current revision.",
+            "description": "Approve, request changes, or reject a current review revision.",
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "review_id": {"type": "string"},
                     "revision": {"type": "integer", "minimum": 1},
-                    "decision": {"type": "string", "enum": ["approve", "request_changes"]},
+                    "decision": {"type": "string", "enum": ["approve", "request_changes", "reject"]},
                     "note": {"type": "string"},
-                    "responder_class": {"type": "string", "description": "Who revises after feedback: intelligence class for the new revision task (request_changes only)."},
-                    "responder_profile": {"type": "string", "description": "Optional worker profile for that revision class (request_changes only)."},
+                    "responder_class": {"type": "string", "description": "Who revises after request_changes or reject: intelligence class for the new revision task."},
+                    "responder_profile": {"type": "string", "description": "Optional worker profile for that revision class."},
                 },
                 "required": ["review_id", "revision", "decision"],
                 "additionalProperties": False,
@@ -6514,6 +6561,59 @@ _ALL_TOOL_DEFINITIONS.extend(
                 "type": "object",
                 "properties": {"review_id": {"type": "string"}},
                 "required": ["review_id"],
+                "additionalProperties": False,
+            },
+        },
+    ]
+)
+
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "github_issue_triage",
+            "description": "File up to five oldest untriaged issues on agent-queue's bound GitHub repository.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"project_id": {"type": "string", "enum": ["agent-queue"]}},
+                "required": ["project_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "github_issue_fix_approved",
+            "description": "File or reuse a fix task for an approved GitHub issue investigation review.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "enum": ["agent-queue"]},
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                },
+                "required": ["project_id", "review_id", "revision"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "github_issue_close_rejected",
+            "description": "Close a rejected investigation issue only when Jack explicitly requested it.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"review_id": {"type": "string"}},
+                "required": ["review_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "github_issue_rejection",
+            "description": "Apply only an explicit closure request in Jack's rejected issue review.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string", "enum": ["agent-queue"]},
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                },
+                "required": ["project_id", "review_id", "revision"],
                 "additionalProperties": False,
             },
         },
@@ -6768,3 +6868,313 @@ _ALL_TOOL_DEFINITIONS.extend(
         },
     ]
 )
+
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "morning_report_tick",
+            "description": "Reserve/recover a daily morning report (service/system playbook only).",
+            "input_schema": {
+                "type": "object",
+                "properties": {"now": {"type": "number"}},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "report_get",
+            "description": "Read an immutable stored morning report in project scope.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"report_id": {"type": "string"}},
+                "required": ["report_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "report_list",
+            "description": "List stored morning reports in project scope.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "morning_report_preview",
+            "description": "Read bounded morning evidence without writes, model calls or sends.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "now": {"type": "number"},
+                    "since": {"type": "number"},
+                    "until": {"type": "number"},
+                    "project_ids": {"type": "array", "items": {"type": "string"},
+                                    "minItems": 1, "maxItems": 100},
+                    "max_lookback_hours": {"type": "integer", "minimum": 1, "maximum": 72},
+                },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "report_reconcile",
+            "description": "Recover reserved hourly report requests; install-wide service only.",
+            "input_schema": {
+                "type": "object", "properties": {}, "additionalProperties": False,
+            },
+        },
+        {
+            "name": "report_request",
+            "description": "Queue one supervisor author turn for a reserved report request.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"request_id": {"type": "string"}},
+                "required": ["request_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "report_brief",
+            "description": "Read a paged, bounded report brief and its CAS version.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "request_id": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "required": ["request_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "report_submit",
+            "description": "Submit one supervisor-authored hourly report before its deadline.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "request_id": {"type": "string"},
+                    "brief_hash": {"type": "string"},
+                    "expected_version": {"type": "integer", "minimum": 1},
+                    "text": {"type": "string"},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["request_id", "brief_hash", "expected_version", "text"],
+                "additionalProperties": False,
+            },
+        },
+    ]
+)
+
+# Intake is daemon-internal. Identity comes from the execution principal,
+# never from these fields, and both API dispatch paths exclude this command.
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "supervisor_inbox_post",
+    "description": "Internal gateway intake of a verified Discord supervisor conversation.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "envelope": {
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "transport": {"type": "string", "enum": ["discord"]},
+                    "guild_id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+                    "channel_id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+                    "external_message_id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+                    "external_root_message_id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+                    "external_thread_id": {"type": ["string", "null"]},
+                    "author_id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+                    "text": {"type": "string"}, "received_at": {"type": "number"},
+                    "mentions_bot": {"type": "boolean"},
+                },
+                "required": ["transport", "guild_id", "channel_id", "external_message_id",
+                             "external_root_message_id", "author_id", "text", "received_at",
+                             "mentions_bot"],
+            },
+            "conversation_id": {"type": "string"},
+            "source": {"type": "string", "enum": ["gateway", "backfill"]},
+            "provenance": {"type": "string", "enum": ["replay", "test"]},
+        },
+        "required": ["envelope"], "additionalProperties": False,
+    },
+})
+
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "supervisor_inbox_reply",
+    "description": "Explicit conversation reply from the live global supervisor or local operator.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "conversation_id": {"type": "string", "minLength": 1},
+            "input_id": {"type": "string", "minLength": 1},
+            "text": {"type": "string", "minLength": 1, "maxLength": 16000},
+            "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
+        },
+        "required": ["conversation_id", "input_id", "text", "idempotency_key"],
+        "additionalProperties": False,
+    },
+})
+
+_ALL_TOOL_DEFINITIONS.extend([
+    {
+        "name": "supervisor_inbox_status",
+        "description": "Read global supervisor conversation health, limits and intake diagnostics.",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "supervisor_inbox_history",
+        "description": "Page conversations or one conversation's inputs, newest first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "conversation_id": {"type": "string", "minLength": 1},
+                "states": {
+                    "type": "array", "items": {"type": "string", "enum": [
+                        "opening", "open", "closed", "delivery_blocked"
+                    ]},
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+                "before": {
+                    "type": "number",
+                    "description": "Exclusive epoch-second boundary; alone, a strict time filter.",
+                },
+                "before_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Row id breaking ties at --before (pass next_before_id).",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+])
+
+_ALL_TOOL_DEFINITIONS.extend([
+    {
+        "name": "wait_register",
+        "description": "Register a bounded typed wait and end the turn until its result pointer arrives.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["kind", "idempotency_key"],
+            "properties": {
+                "kind": {"type": "string", "enum": ["job", "task", "message", "timer"]},
+                "ref": {"type": "string", "maxLength": 256},
+                "after_seq": {"type": "integer", "minimum": 0},
+                "due_at": {"type": "number"},
+                "timeout": {"type": "number", "exclusiveMinimum": 0, "maximum": 86400},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+                "claim_epoch": {"type": "integer", "minimum": 0},
+                "project_id": {"type": "string"},
+                "task_id": {"type": "string"},
+                "session_id": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "wait_get", "description": "Read a durable wait and its bounded result pointer.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False, "required": ["wait_id"],
+            "properties": {"wait_id": {"type": "string", "minLength": 1},
+                           "project_id": {"type": "string"}, "task_id": {"type": "string"},
+                           "session_id": {"type": "string"}},
+        },
+    },
+    {
+        "name": "wait_list", "description": "List the owner's durable wait history.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                           "offset": {"type": "integer", "minimum": 0},
+                           "project_id": {"type": "string"}, "task_id": {"type": "string"},
+                           "session_id": {"type": "string"}},
+        },
+    },
+    {
+        "name": "wait_cancel", "description": "Cancel a current-claim wait and queue its result.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False, "required": ["wait_id"],
+            "properties": {"wait_id": {"type": "string", "minLength": 1},
+                           "claim_epoch": {"type": "integer", "minimum": 0},
+                           "project_id": {"type": "string"}, "task_id": {"type": "string"},
+                           "session_id": {"type": "string"}},
+        },
+    },
+])
+
+
+# Internal scan remains excluded from MCP/API; the daemon supplies its clock.
+_FALLBACK_INPUT_SCHEMAS["reconcile_agent_waits"] = {
+    "type": "object",
+    "properties": {"now": {"type": "number"}, "wait_id": {"type": ["string", "null"]}},
+    "additionalProperties": False,
+}
+
+
+_JOB_INPUT_SCHEMAS: dict[str, dict] = {
+    # Managed jobs: typed public contracts and finite preset commands.
+    "job_submit": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string"},
+            "task_id": {"type": "string"},
+            "session_id": {"type": "string"},
+            "claim_epoch": {"type": "integer"},
+            "preset": {"type": "string"},
+            "argv": {"type": "array", "items": {"type": "string"}},
+            "idempotency_key": {"type": "string"},
+            "wait": {"type": "boolean"},
+        },
+        "required": ["preset", "idempotency_key"],
+    },
+    "job_list": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string"},
+            "task_id": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+    },
+    "job_get": {
+        "type": "object",
+        "properties": {"job_id": {"type": "string", "format": "uuid"}},
+        "required": ["job_id"],
+    },
+    "job_cancel": {
+        "type": "object",
+        "properties": {"job_id": {"type": "string", "format": "uuid"}},
+        "required": ["job_id"],
+    },
+    "job_result": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "format": "uuid"},
+            "max_bytes": {"type": "integer", "minimum": 0, "maximum": 8192},
+        },
+        "required": ["job_id"],
+    },
+    "job_logs": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "format": "uuid"},
+            "after": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        },
+        "required": ["job_id"],
+    },
+}
+
+
+# Public managed job tools use the same finite schemas on every transport.
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": name, "description": description, "input_schema": _JOB_INPUT_SCHEMAS[name]}
+    for name, description in (
+        ("job_submit", "Submit a finite preset, optionally with an atomic durable wait."),
+        ("job_get", "Read a scoped managed job."),
+        ("job_list", "List this owner's managed jobs."),
+        ("job_cancel", "Cancel a job and verify cleanup before releasing its pin."),
+        ("job_result", "Read a job's immutable result and bounded excerpt."),
+        ("job_logs", "Read retained output ranges with explicit gaps."),
+    )
+])

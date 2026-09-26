@@ -691,6 +691,53 @@
         }
       }
     },
+    "/api/jobs/{job_id}/output": {
+      "get": {
+        "summary": "Output",
+        "operationId": "output_api_jobs__job_id__output_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "After"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}/files": {
       "get": {
         "summary": "List Files",
@@ -5388,6 +5435,194 @@
         }
       }
     },
+    "/api/github_issue/close-rejected": {
+      "post": {
+        "tags": [
+          "github_issue"
+        ],
+        "summary": "Close a rejected investigation issue only when Jack explicitly requested it.",
+        "description": "Close a rejected investigation issue only when Jack explicitly requested it.",
+        "operationId": "github_issue_close_rejected",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GithubIssueCloseRejectedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubIssueCloseRejectedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/github_issue/fix-approved": {
+      "post": {
+        "tags": [
+          "github_issue"
+        ],
+        "summary": "File or reuse a fix task for an approved GitHub issue investigation review.",
+        "description": "File or reuse a fix task for an approved GitHub issue investigation review.",
+        "operationId": "github_issue_fix_approved",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GithubIssueFixApprovedRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubIssueFixApprovedResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/github_issue/rejection": {
+      "post": {
+        "tags": [
+          "github_issue"
+        ],
+        "summary": "Apply only an explicit closure request in Jack's rejected issue review.",
+        "description": "Apply only an explicit closure request in Jack's rejected issue review.",
+        "operationId": "github_issue_rejection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GithubIssueRejectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubIssueRejectionResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/github_issue/triage": {
+      "post": {
+        "tags": [
+          "github_issue"
+        ],
+        "summary": "File up to five oldest untriaged issues on agent-queue's bound GitHub repository.",
+        "description": "File up to five oldest untriaged issues on agent-queue's bound GitHub repository.",
+        "operationId": "github_issue_triage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GithubIssueTriageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubIssueTriageResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/graph/layout-rebuild": {
       "post": {
         "tags": [
@@ -5522,6 +5757,258 @@
                     }
                   },
                   "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/job/cancel": {
+      "post": {
+        "tags": [
+          "job"
+        ],
+        "summary": "Cancel a job and verify cleanup before releasing its pin.",
+        "description": "Cancel a job and verify cleanup before releasing its pin.",
+        "operationId": "job_cancel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobGetArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/job/get": {
+      "post": {
+        "tags": [
+          "job"
+        ],
+        "summary": "Read a scoped managed job.",
+        "description": "Read a scoped managed job.",
+        "operationId": "job_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobGetArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/job/list": {
+      "post": {
+        "tags": [
+          "job"
+        ],
+        "summary": "List this owner's managed jobs.",
+        "description": "List this owner's managed jobs.",
+        "operationId": "job_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobListArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/job/logs": {
+      "post": {
+        "tags": [
+          "job"
+        ],
+        "summary": "Read retained output ranges with explicit gaps.",
+        "description": "Read retained output ranges with explicit gaps.",
+        "operationId": "job_logs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobLogsArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobLogsResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/job/result": {
+      "post": {
+        "tags": [
+          "job"
+        ],
+        "summary": "Read a job's immutable result and bounded excerpt.",
+        "description": "Read a job's immutable result and bounded excerpt.",
+        "operationId": "job_result",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobResultArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResultResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/job/submit": {
+      "post": {
+        "tags": [
+          "job"
+        ],
+        "summary": "Submit a finite preset, optionally with an atomic durable wait.",
+        "description": "Submit a finite preset, optionally with an atomic durable wait.",
+        "operationId": "job_submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JobSubmitArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobErrorResponse"
                 }
               }
             }
@@ -10263,6 +10750,382 @@
         }
       }
     },
+    "/api/report/morning-preview": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Read bounded morning evidence without writes, model calls or sends.",
+        "description": "Read bounded morning evidence without writes, model calls or sends.",
+        "operationId": "morning_report_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MorningReportPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MorningReportPreviewResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/morning-tick": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Reserve/recover a daily morning report (service/system playbook only).",
+        "description": "Reserve/recover a daily morning report (service/system playbook only).",
+        "operationId": "morning_report_tick",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MorningReportTickRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MorningReportTickResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/brief": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Read a paged, bounded report brief and its CAS version.",
+        "description": "Read a paged, bounded report brief and its CAS version.",
+        "operationId": "report_brief",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportBriefRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportBriefResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/get": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Read an immutable stored morning report in project scope.",
+        "description": "Read an immutable stored morning report in project scope.",
+        "operationId": "report_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportGetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/list": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "List stored morning reports in project scope.",
+        "description": "List stored morning reports in project scope.",
+        "operationId": "report_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/reconcile": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Recover reserved hourly report requests; install-wide service only.",
+        "description": "Recover reserved hourly report requests; install-wide service only.",
+        "operationId": "report_reconcile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportReconcileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/request": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Queue one supervisor author turn for a reserved report request.",
+        "description": "Queue one supervisor author turn for a reserved report request.",
+        "operationId": "report_request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportRequestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportRequestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/submit": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Submit one supervisor-authored hourly report before its deadline.",
+        "description": "Submit one supervisor-authored hourly report before its deadline.",
+        "operationId": "report_submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/comment": {
       "post": {
         "tags": [
@@ -10315,8 +11178,8 @@
         "tags": [
           "review"
         ],
-        "summary": "Approve a review or request changes on its current revision.",
-        "description": "Approve a review or request changes on its current revision.",
+        "summary": "Approve, request changes, or reject a current review revision.",
+        "description": "Approve, request changes, or reject a current review revision.",
         "operationId": "review_decide",
         "requestBody": {
           "content": {
@@ -10679,6 +11542,132 @@
                     }
                   },
                   "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/supervisor_inbox/history": {
+      "post": {
+        "tags": [
+          "supervisor_inbox"
+        ],
+        "summary": "Page conversations or one conversation's inputs, newest first.",
+        "description": "Page conversations or one conversation's inputs, newest first.",
+        "operationId": "supervisor_inbox_history",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorInboxHistoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/supervisor_inbox/reply": {
+      "post": {
+        "tags": [
+          "supervisor_inbox"
+        ],
+        "summary": "Explicit conversation reply from the live global supervisor or local operator.",
+        "description": "Explicit conversation reply from the live global supervisor or local operator.",
+        "operationId": "supervisor_inbox_reply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorInboxReplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxReplyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/supervisor_inbox/status": {
+      "post": {
+        "tags": [
+          "supervisor_inbox"
+        ],
+        "summary": "Read global supervisor conversation health, limits and intake diagnostics.",
+        "description": "Read global supervisor conversation health, limits and intake diagnostics.",
+        "operationId": "supervisor_inbox_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorInboxStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxErrorResponse"
                 }
               }
             }
@@ -15387,6 +16376,194 @@
           }
         }
       }
+    },
+    "/api/wait/cancel": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Cancel a current-claim wait and queue its result.",
+        "description": "Cancel a current-claim wait and queue its result.",
+        "operationId": "wait_cancel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitCancelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/get": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Read a durable wait and its bounded result pointer.",
+        "description": "Read a durable wait and its bounded result pointer.",
+        "operationId": "wait_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/list": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "List the owner's durable wait history.",
+        "description": "List the owner's durable wait history.",
+        "operationId": "wait_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/register": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Register a bounded typed wait and end the turn until its result pointer arrives.",
+        "description": "Register a bounded typed wait and end the turn until its result pointer arrives.",
+        "operationId": "wait_register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -16428,6 +17605,164 @@
         ],
         "title": "AgentSummary"
       },
+      "AgentWaitRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "task",
+              "supervisor"
+            ],
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "type": "string",
+            "title": "Owner Id"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "session_instance_token": {
+            "type": "string",
+            "title": "Session Instance Token"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "title": "Claim Epoch"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "job",
+              "task",
+              "message",
+              "timer"
+            ],
+            "title": "Kind"
+          },
+          "match": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Match"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "satisfied",
+              "expired",
+              "cancelled"
+            ],
+            "title": "State"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "deadline_at": {
+            "type": "number",
+            "title": "Deadline At"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "wait_resumed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Resumed At"
+          },
+          "checked_at": {
+            "type": "number",
+            "title": "Checked At",
+            "default": 0
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          },
+          "digest": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "result_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Message Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "owner_kind",
+          "owner_id",
+          "session_id",
+          "session_instance_token",
+          "claim_epoch",
+          "kind",
+          "match",
+          "state",
+          "version",
+          "created_at",
+          "deadline_at",
+          "idempotency_key"
+        ],
+        "title": "AgentWaitRecord",
+        "description": "Persisted wait/result shape shared by contracts and generated clients."
+      },
       "AgentWaitingQuestion": {
         "properties": {
           "id": {
@@ -16637,6 +17972,45 @@
           "h"
         ],
         "title": "AncestorRef"
+      },
+      "ApiPerf": {
+        "properties": {
+          "all": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "routes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RoutePerf"
+            },
+            "type": "object",
+            "title": "Routes",
+            "default": {}
+          },
+          "streams": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StreamPerf"
+            },
+            "type": "object",
+            "title": "Streams",
+            "default": {}
+          },
+          "errors": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Errors",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "ApiPerf",
+        "description": "Bounded route-template tables and totals from PerfRegistry.snapshot."
       },
       "AppendNoteRequest": {
         "properties": {
@@ -18730,6 +20104,396 @@
         ],
         "title": "ContractChangeDTO"
       },
+      "ConversationBackfill": {
+        "properties": {
+          "cursors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Cursors"
+          },
+          "gaps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Gaps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursors",
+          "gaps"
+        ],
+        "title": "ConversationBackfill"
+      },
+      "ConversationCounts": {
+        "properties": {
+          "by_state": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By State"
+          },
+          "inputs_pending_supervisor": {
+            "type": "integer",
+            "title": "Inputs Pending Supervisor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "by_state",
+          "inputs_pending_supervisor"
+        ],
+        "title": "ConversationCounts"
+      },
+      "ConversationDiagnostics": {
+        "properties": {
+          "message_content_intent": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Content Intent"
+          },
+          "permissions": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "boolean"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permissions"
+          },
+          "outbox_bound": {
+            "type": "boolean",
+            "title": "Outbox Bound"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message_content_intent",
+          "permissions",
+          "outbox_bound"
+        ],
+        "title": "ConversationDiagnostics"
+      },
+      "ConversationHistoryRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport"
+          },
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
+          },
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
+          },
+          "external_root_message_id": {
+            "type": "string",
+            "title": "External Root Message Id"
+          },
+          "external_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Thread Id"
+          },
+          "thread_id": {
+            "type": "string",
+            "title": "Thread Id"
+          },
+          "created_by": {
+            "type": "string",
+            "title": "Created By"
+          },
+          "audience": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Audience"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "opening",
+              "open",
+              "closed",
+              "delivery_blocked"
+            ],
+            "title": "State"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationInputRecord"
+            },
+            "type": "array",
+            "title": "Inputs"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before",
+            "description": "`before` for this conversation's next input page; null when exhausted."
+          },
+          "next_before_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before Id",
+            "description": "`before_id` paired with `next_before`."
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "transport",
+          "guild_id",
+          "channel_id",
+          "external_root_message_id",
+          "external_thread_id",
+          "thread_id",
+          "created_by",
+          "audience",
+          "state",
+          "created_at",
+          "updated_at",
+          "closed_at",
+          "inputs",
+          "next_before",
+          "next_before_id"
+        ],
+        "title": "ConversationHistoryRecord"
+      },
+      "ConversationInputRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "conversation_id": {
+            "type": "string",
+            "title": "Conversation Id"
+          },
+          "verified_actor": {
+            "type": "string",
+            "title": "Verified Actor"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "text_expired": {
+            "type": "boolean",
+            "title": "Text Expired"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "received_at": {
+            "type": "number",
+            "title": "Received At"
+          },
+          "reply_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply Message Id"
+          },
+          "reply_body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply Body"
+          },
+          "reply_created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply Created At"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "conversation_id",
+          "verified_actor",
+          "text",
+          "text_expired",
+          "state",
+          "received_at",
+          "reply_message_id",
+          "reply_body",
+          "reply_created_at"
+        ],
+        "title": "ConversationInputRecord"
+      },
+      "ConversationIntake": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "window_seconds": {
+            "type": "integer",
+            "title": "Window Seconds"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "ignored": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Ignored"
+          }
+        },
+        "type": "object",
+        "required": [
+          "available",
+          "window_seconds",
+          "total",
+          "ignored"
+        ],
+        "title": "ConversationIntake"
+      },
+      "ConversationLimits": {
+        "properties": {
+          "max_input_chars": {
+            "type": "integer",
+            "title": "Max Input Chars"
+          },
+          "author_window_limit": {
+            "type": "integer",
+            "title": "Author Window Limit"
+          },
+          "channel_window_limit": {
+            "type": "integer",
+            "title": "Channel Window Limit"
+          },
+          "window_seconds": {
+            "type": "integer",
+            "title": "Window Seconds"
+          },
+          "max_reply_chars": {
+            "type": "integer",
+            "title": "Max Reply Chars"
+          }
+        },
+        "type": "object",
+        "required": [
+          "max_input_chars",
+          "author_window_limit",
+          "channel_window_limit",
+          "window_seconds",
+          "max_reply_chars"
+        ],
+        "title": "ConversationLimits"
+      },
+      "ConversationPreconditions": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "unmet": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unmet"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok",
+          "unmet"
+        ],
+        "title": "ConversationPreconditions"
+      },
       "CountProjectMemoryFilesRequest": {
         "properties": {
           "project_id": {
@@ -19224,6 +20988,18 @@
             ],
             "title": "Codex Full Auto",
             "description": "Enable Codex --full-auto (requires harness 'codex')"
+          },
+          "codex_service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Service Tier",
+            "description": "Codex launch service tier override (optional)"
           },
           "claude_dangerously_skip_permissions": {
             "anyOf": [
@@ -20326,6 +22102,43 @@
         ],
         "title": "DashboardStateResetRequest"
       },
+      "DbPerf": {
+        "properties": {
+          "pool_wait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "counters": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Counters",
+            "default": {}
+          },
+          "pool": {
+            "$ref": "#/components/schemas/PoolGauges",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "DbPerf",
+        "description": "Pool-wait and query observations from the engine's perf observers."
+      },
       "DbPreflightHierarchyRequest": {
         "properties": {},
         "type": "object",
@@ -21044,6 +22857,15 @@
               }
             ]
           },
+          "intake": {
+            "$ref": "#/components/schemas/DiscordIntakeDiagnostics",
+            "default": {
+              "available": false,
+              "window_seconds": 3600,
+              "total": 0,
+              "ignored": {}
+            }
+          },
           "settings_errors": {
             "items": {
               "type": "string"
@@ -21203,6 +23025,36 @@
           "status"
         ],
         "title": "DiscordCutoverStatus"
+      },
+      "DiscordIntakeDiagnostics": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "default": false
+          },
+          "window_seconds": {
+            "type": "integer",
+            "title": "Window Seconds",
+            "default": 3600
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total",
+            "default": 0
+          },
+          "ignored": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Ignored",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "DiscordIntakeDiagnostics",
+        "description": "Inbound Discord messages the gateway ignored, counted by reason code.\n\nIn-memory and sliding: it covers the last ``window_seconds`` and is empty\nafter a restart.  ``available`` is false when no gateway is connected."
       },
       "DiscordPurgeChannelRequest": {
         "properties": {
@@ -21951,6 +23803,18 @@
             ],
             "title": "Codex Full Auto",
             "description": "Enable or disable Codex --full-auto"
+          },
+          "codex_service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Service Tier",
+            "description": "Codex service tier override; null clears it"
           },
           "claude_dangerously_skip_permissions": {
             "anyOf": [
@@ -26431,6 +28295,17 @@
             "title": "Codex Full Auto",
             "default": false
           },
+          "codex_service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Service Tier"
+          },
           "claude_dangerously_skip_permissions": {
             "type": "boolean",
             "title": "Claude Dangerously Skip Permissions",
@@ -27899,6 +29774,121 @@
         ],
         "title": "GitDiffResponse"
       },
+      "GitHubIssueCloseRejectedResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "number": {
+            "type": "integer",
+            "title": "Number"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome",
+          "number"
+        ],
+        "title": "GitHubIssueCloseRejectedResponse"
+      },
+      "GitHubIssueFixApprovedResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "title": "GitHubIssueFixApprovedResponse"
+      },
+      "GitHubIssueRejectionResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Number"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome"
+        ],
+        "title": "GitHubIssueRejectionResponse"
+      },
+      "GitHubIssueTriageResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "filed": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Filed"
+          },
+          "recovered": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Recovered"
+          },
+          "remaining_capacity": {
+            "type": "integer",
+            "title": "Remaining Capacity"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filed",
+          "recovered",
+          "remaining_capacity"
+        ],
+        "title": "GitHubIssueTriageResponse"
+      },
       "GitLogRequest": {
         "properties": {
           "project_id": {
@@ -28384,6 +30374,86 @@
         },
         "type": "object",
         "title": "GithubAuthStatusResponse"
+      },
+      "GithubIssueCloseRejectedRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id"
+        ],
+        "title": "GithubIssueCloseRejectedRequest"
+      },
+      "GithubIssueFixApprovedRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "review_id",
+          "revision"
+        ],
+        "title": "GithubIssueFixApprovedRequest"
+      },
+      "GithubIssueRejectionRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "review_id",
+          "revision"
+        ],
+        "title": "GithubIssueRejectionRequest"
+      },
+      "GithubIssueTriageRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "GithubIssueTriageRequest"
       },
       "GithubOwner": {
         "properties": {
@@ -29452,6 +31522,89 @@
         "title": "HierarchyRefusalResponse",
         "description": "The 422 body a task/project removal answers a refusal with.\n\nThese refusals are contracts, not prose: a surface branches on ``code``\nand renders the detail keys. ``branch_discard_required`` names the\n``branches`` it wants a choice about, and integration removal refusals\nname their owner, cleanup blockers, undelivered work, or retained history.\n``extra: allow`` keeps\nthe rarer keys (e.g. ``live_descendants``' ``sessions``) on the wire, and\n``src.api.codegen.DETAILED_ERROR_COMMANDS`` is what stops the generic\nenvelope from discarding all of them."
       },
+      "Histogram": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": "hist"
+          },
+          "counts": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Counts",
+            "default": []
+          },
+          "count": {
+            "type": "number",
+            "title": "Count",
+            "default": 0
+          },
+          "sum": {
+            "type": "number",
+            "title": "Sum",
+            "default": 0
+          },
+          "max": {
+            "type": "number",
+            "title": "Max",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "Histogram",
+        "description": "Fixed millisecond buckets from src.metrics.histogram, merged by addition."
+      },
+      "HostPerf": {
+        "properties": {
+          "psi": {
+            "$ref": "#/components/schemas/PressurePerf",
+            "default": {}
+          },
+          "test_slots": {
+            "$ref": "#/components/schemas/TestSlotsPerf",
+            "default": {}
+          },
+          "ungated": {
+            "$ref": "#/components/schemas/UngatedPerf",
+            "default": {
+              "unattributed_slots": []
+            }
+          },
+          "host_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host Ms"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale",
+            "default": false
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "title": "HostPerf",
+        "description": "Slow-tier HostSampler snapshot, including its cost and staleness."
+      },
       "IdempotencyDTO": {
         "properties": {
           "supported": {
@@ -29949,6 +32102,360 @@
           "name"
         ],
         "title": "IntelligenceClassReference"
+      },
+      "JobErrorResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": false
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "JobErrorResponse"
+      },
+      "JobGetArgs": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Job Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "title": "JobGetArgs"
+      },
+      "JobListArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 50
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "JobListArgs"
+      },
+      "JobListResponse": {
+        "properties": {
+          "jobs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Jobs"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "jobs"
+        ],
+        "title": "JobListResponse"
+      },
+      "JobLogsArgs": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Job Id"
+          },
+          "after": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "After",
+            "default": 0
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 1048576.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 65536
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "title": "JobLogsArgs"
+      },
+      "JobLogsResponse": {
+        "properties": {
+          "chunks": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Chunks"
+          },
+          "gaps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Gaps"
+          },
+          "next": {
+            "type": "integer",
+            "title": "Next"
+          },
+          "seen": {
+            "type": "integer",
+            "title": "Seen"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "chunks",
+          "gaps",
+          "next",
+          "seen"
+        ],
+        "title": "JobLogsResponse"
+      },
+      "JobResponse": {
+        "properties": {
+          "job": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Job"
+          },
+          "wait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentWaitRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job"
+        ],
+        "title": "JobResponse"
+      },
+      "JobResultArgs": {
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Job Id"
+          },
+          "max_bytes": {
+            "type": "integer",
+            "maximum": 8192.0,
+            "minimum": 0.0,
+            "title": "Max Bytes",
+            "default": 8192
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "job_id"
+        ],
+        "title": "JobResultArgs"
+      },
+      "JobResultResponse": {
+        "properties": {
+          "result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "result"
+        ],
+        "title": "JobResultResponse"
+      },
+      "JobSubmitArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
+          "preset": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Preset"
+          },
+          "argv": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Argv"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          },
+          "wait": {
+            "type": "boolean",
+            "title": "Wait",
+            "default": false
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "preset",
+          "idempotency_key"
+        ],
+        "title": "JobSubmitArgs"
       },
       "LayoutEdge": {
         "properties": {
@@ -31807,6 +34314,34 @@
         "title": "LoopNodeDetailDTO",
         "description": "ForEachStep only."
       },
+      "LoopPerf": {
+        "properties": {
+          "drift": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "probe_interval_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probe Interval Ms"
+          }
+        },
+        "type": "object",
+        "title": "LoopPerf",
+        "description": "Event-loop drift observed by the registry's LoopLagProbe."
+      },
       "MachineMetrics": {
         "properties": {
           "load1": {
@@ -31890,6 +34425,52 @@
         "type": "object",
         "title": "MachineMetrics",
         "description": "Nulls mean the platform does not expose the value, not zero."
+      },
+      "ManualCheck": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "surface": {
+            "type": "string",
+            "title": "Surface"
+          },
+          "expected_result": {
+            "type": "string",
+            "title": "Expected Result"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Refs"
+          },
+          "prior_verification": {
+            "type": "string",
+            "title": "Prior Verification"
+          },
+          "confidence": {
+            "type": "string",
+            "title": "Confidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action",
+          "surface",
+          "expected_result",
+          "reason",
+          "refs",
+          "prior_verification",
+          "confidence"
+        ],
+        "title": "ManualCheck"
       },
       "ManualPosition": {
         "properties": {
@@ -32492,6 +35073,17 @@
             ],
             "title": "Created At"
           },
+          "created_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created Seq"
+          },
           "delivered_at": {
             "anyOf": [
               {
@@ -32959,6 +35551,35 @@
             "default": {
               "collect_ms": 0.0
             }
+          },
+          "perf": {
+            "$ref": "#/components/schemas/PerfMetrics",
+            "default": {
+              "enabled": false,
+              "loop": {},
+              "api": {
+                "errors": {},
+                "routes": {},
+                "streams": {}
+              },
+              "db": {
+                "counters": {},
+                "pool": {}
+              },
+              "host": {
+                "psi": {},
+                "stale": false,
+                "test_slots": {},
+                "ungated": {
+                  "unattributed_slots": []
+                }
+              },
+              "relay": {
+                "available": false,
+                "upstream_failures": {}
+              },
+              "sampler": {}
+            }
           }
         },
         "type": "object",
@@ -33036,6 +35657,289 @@
         "type": "object",
         "title": "ModelTokens",
         "description": "One model's share of the window, scaled to per minute.\n\n``total_per_min`` is that model's whole ledger volume \u2014 the other four\nfields are its breakdown, and cache is usually most of it."
+      },
+      "MorningReportPreviewRequest": {
+        "properties": {
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Now",
+            "description": ""
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since",
+            "description": ""
+          },
+          "until": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Until",
+            "description": ""
+          },
+          "project_ids": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Ids",
+            "description": ""
+          },
+          "max_lookback_hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Lookback Hours",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "MorningReportPreviewRequest"
+      },
+      "MorningReportPreviewResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "brief": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Brief"
+          },
+          "brief_hash": {
+            "type": "string",
+            "title": "Brief Hash"
+          },
+          "would_suppress": {
+            "type": "boolean",
+            "title": "Would Suppress"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "brief",
+          "brief_hash",
+          "would_suppress",
+          "reason"
+        ],
+        "title": "MorningReportPreviewResponse"
+      },
+      "MorningReportRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "local_date": {
+            "type": "string",
+            "title": "Local Date"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone"
+          },
+          "planned_at": {
+            "type": "number",
+            "title": "Planned At"
+          },
+          "window_start": {
+            "type": "number",
+            "title": "Window Start"
+          },
+          "window_end": {
+            "type": "number",
+            "title": "Window End"
+          },
+          "brief_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brief Hash"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "finalized_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized At"
+          },
+          "author_deadline": {
+            "type": "number",
+            "title": "Author Deadline"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReportContent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_fallback": {
+            "type": "boolean",
+            "title": "Is Fallback"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "state",
+          "reason",
+          "local_date",
+          "timezone",
+          "planned_at",
+          "window_start",
+          "window_end",
+          "brief_hash",
+          "created_at",
+          "finalized_at",
+          "author_deadline",
+          "report",
+          "is_fallback"
+        ],
+        "title": "MorningReportRecord"
+      },
+      "MorningReportTickRequest": {
+        "properties": {
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Now",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "MorningReportTickRequest"
+      },
+      "MorningReportTickResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "report_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "next_due_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Due At"
+          },
+          "cancelled": {
+            "type": "integer",
+            "title": "Cancelled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "report_id",
+          "state",
+          "reason",
+          "next_due_at",
+          "cancelled"
+        ],
+        "title": "MorningReportTickResponse"
       },
       "NavFolder": {
         "properties": {
@@ -34280,6 +37184,77 @@
           "pull_requests"
         ],
         "title": "PendingPullRequestsResponse"
+      },
+      "PerfMetrics": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": false
+          },
+          "loop": {
+            "$ref": "#/components/schemas/LoopPerf",
+            "default": {}
+          },
+          "api": {
+            "$ref": "#/components/schemas/ApiPerf",
+            "default": {
+              "routes": {},
+              "streams": {},
+              "errors": {}
+            }
+          },
+          "db": {
+            "$ref": "#/components/schemas/DbPerf",
+            "default": {
+              "counters": {},
+              "pool": {}
+            }
+          },
+          "host": {
+            "$ref": "#/components/schemas/HostPerf",
+            "default": {
+              "psi": {},
+              "test_slots": {},
+              "ungated": {
+                "unattributed_slots": []
+              },
+              "stale": false
+            }
+          },
+          "relay": {
+            "$ref": "#/components/schemas/RelayPerf",
+            "default": {
+              "available": false,
+              "upstream_failures": {}
+            }
+          },
+          "sampler": {
+            "$ref": "#/components/schemas/PerfSamplerCost",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "PerfMetrics",
+        "description": "MetricsSampler's daemon and dashboard-server performance blocks."
+      },
+      "PerfSamplerCost": {
+        "properties": {
+          "perf_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Perf Ms"
+          }
+        },
+        "type": "object",
+        "title": "PerfSamplerCost",
+        "description": "Instrumentation-only cost measured by MetricsSampler."
       },
       "PhaseCreateRequest": {
         "properties": {
@@ -37192,6 +40167,46 @@
         ],
         "title": "PluginUpdateResponse"
       },
+      "PoolGauges": {
+        "properties": {
+          "checked_out": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked Out"
+          },
+          "overflow": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overflow"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          }
+        },
+        "type": "object",
+        "title": "PoolGauges",
+        "description": "Local engine pool readings from metrics_pool_gauges, without a query."
+      },
       "PoolInstanceStatus": {
         "properties": {
           "session_id": {
@@ -37804,6 +40819,17 @@
             "type": "string",
             "title": "Profile Id"
           },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Tier"
+          },
           "enabled": {
             "type": "boolean",
             "title": "Enabled",
@@ -38141,6 +41167,83 @@
         "title": "PrMergeResponse",
         "description": "Response model for the ``pr_merge`` command."
       },
+      "PressureEntry": {
+        "properties": {
+          "some_avg10": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Some Avg10"
+          },
+          "full_avg10": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Avg10"
+          }
+        },
+        "type": "object",
+        "title": "PressureEntry",
+        "description": "One kernel PSI resource reading from the host reader."
+      },
+      "PressurePerf": {
+        "properties": {
+          "cpu": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PressureEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "io": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PressureEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PressureEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "title": "PressurePerf",
+        "description": "HostSampler's kernel pressure readings, or null with a reason."
+      },
       "PreviewPortableConfigRequest": {
         "properties": {},
         "type": "object",
@@ -38375,6 +41478,17 @@
             "type": "boolean",
             "title": "Codex Full Auto",
             "default": false
+          },
+          "codex_service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Service Tier"
           },
           "claude_dangerously_skip_permissions": {
             "type": "boolean",
@@ -38741,6 +41855,17 @@
             "type": "boolean",
             "title": "Codex Full Auto",
             "default": false
+          },
+          "codex_service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Service Tier"
           },
           "claude_dangerously_skip_permissions": {
             "type": "boolean",
@@ -41712,6 +44837,66 @@
         "title": "ReflowFailedScope",
         "description": "A single failed deferred reflow request, as reported by ``graph_reflow_status``."
       },
+      "RelayPerf": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "default": false
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "http": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ws_handshake": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "upstream_failures": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Upstream Failures",
+            "default": {}
+          },
+          "relays_open": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relays Open"
+          }
+        },
+        "type": "object",
+        "title": "RelayPerf",
+        "description": "Dashboard-server relay deltas; unavailable until the relay is polled."
+      },
       "ReleaseProjectConstraintRequest": {
         "properties": {
           "project_id": {
@@ -42223,6 +45408,502 @@
           "task_id"
         ],
         "title": "ReparentTaskResponse"
+      },
+      "ReportBriefRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "description": ""
+          },
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offset",
+            "description": ""
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "title": "ReportBriefRequest"
+      },
+      "ReportBriefResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "deadline": {
+            "type": "number",
+            "title": "Deadline"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "brief_hash": {
+            "type": "string",
+            "title": "Brief Hash"
+          },
+          "brief": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Brief"
+          },
+          "facts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Facts"
+          },
+          "active": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Active"
+          },
+          "total_facts": {
+            "type": "integer",
+            "title": "Total Facts"
+          },
+          "total_active": {
+            "type": "integer",
+            "title": "Total Active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "state",
+          "deadline",
+          "version",
+          "brief_hash",
+          "brief",
+          "facts",
+          "active",
+          "total_facts",
+          "total_active"
+        ],
+        "title": "ReportBriefResponse"
+      },
+      "ReportContent": {
+        "properties": {
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/ReportProject"
+            },
+            "type": "array",
+            "title": "Projects"
+          },
+          "coverage": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Coverage"
+          },
+          "global_facts": {
+            "items": {
+              "$ref": "#/components/schemas/ReportItem"
+            },
+            "type": "array",
+            "title": "Global Facts",
+            "default": []
+          },
+          "omitted": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Omitted",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "summary",
+          "projects",
+          "coverage"
+        ],
+        "title": "ReportContent"
+      },
+      "ReportGetRequest": {
+        "properties": {
+          "report_id": {
+            "type": "string",
+            "title": "Report Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "report_id"
+        ],
+        "title": "ReportGetRequest"
+      },
+      "ReportGetResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "report": {
+            "$ref": "#/components/schemas/MorningReportRecord"
+          }
+        },
+        "type": "object",
+        "required": [
+          "report"
+        ],
+        "title": "ReportGetResponse"
+      },
+      "ReportItem": {
+        "properties": {
+          "refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Refs"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "late": {
+            "type": "boolean",
+            "title": "Late",
+            "default": false
+          },
+          "shipment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shipment"
+          },
+          "prior_verification": {
+            "type": "string",
+            "title": "Prior Verification",
+            "default": ""
+          },
+          "verification_label": {
+            "type": "string",
+            "title": "Verification Label",
+            "default": "agent-reported"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refs",
+          "text"
+        ],
+        "title": "ReportItem"
+      },
+      "ReportListRequest": {
+        "properties": {
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offset",
+            "description": ""
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "ReportListRequest"
+      },
+      "ReportListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "reports": {
+            "items": {
+              "$ref": "#/components/schemas/MorningReportRecord"
+            },
+            "type": "array",
+            "title": "Reports"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reports"
+        ],
+        "title": "ReportListResponse"
+      },
+      "ReportProject": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "landed": {
+            "items": {
+              "$ref": "#/components/schemas/ReportItem"
+            },
+            "type": "array",
+            "title": "Landed"
+          },
+          "pending": {
+            "items": {
+              "$ref": "#/components/schemas/ReportItem"
+            },
+            "type": "array",
+            "title": "Pending"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/ReportItem"
+            },
+            "type": "array",
+            "title": "Failures"
+          },
+          "manual_checks": {
+            "items": {
+              "$ref": "#/components/schemas/ManualCheck"
+            },
+            "type": "array",
+            "title": "Manual Checks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "landed",
+          "pending",
+          "failures",
+          "manual_checks"
+        ],
+        "title": "ReportProject"
+      },
+      "ReportReconcileRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "ReportReconcileRequest"
+      },
+      "ReportReconcileResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "requested": {
+            "type": "integer",
+            "title": "Requested"
+          }
+        },
+        "type": "object",
+        "required": [
+          "requested"
+        ],
+        "title": "ReportReconcileResponse"
+      },
+      "ReportRequestRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "title": "ReportRequestRequest"
+      },
+      "ReportRequestResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "message_id": {
+            "type": "string",
+            "title": "Message Id"
+          },
+          "deadline": {
+            "type": "number",
+            "title": "Deadline"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "state",
+          "message_id",
+          "deadline"
+        ],
+        "title": "ReportRequestResponse"
+      },
+      "ReportSubmitRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "description": ""
+          },
+          "brief_hash": {
+            "type": "string",
+            "title": "Brief Hash",
+            "description": ""
+          },
+          "expected_version": {
+            "type": "integer",
+            "title": "Expected Version",
+            "description": ""
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": ""
+          },
+          "evidence_refs": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Refs",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "brief_hash",
+          "expected_version",
+          "text"
+        ],
+        "title": "ReportSubmitRequest"
+      },
+      "ReportSubmitResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "window_id": {
+            "type": "string",
+            "title": "Window Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "window_id",
+          "state",
+          "version"
+        ],
+        "title": "ReportSubmitResponse"
       },
       "RerouteDecision": {
         "properties": {
@@ -42751,7 +46432,7 @@
               }
             ],
             "title": "Responder Class",
-            "description": "Who revises after feedback: intelligence class for the new revision task (request_changes only)."
+            "description": "Who revises after request_changes or reject: intelligence class for the new revision task."
           },
           "responder_profile": {
             "anyOf": [
@@ -42763,7 +46444,7 @@
               }
             ],
             "title": "Responder Profile",
-            "description": "Optional worker profile for that revision class (request_changes only)."
+            "description": "Optional worker profile for that revision class."
           }
         },
         "type": "object",
@@ -43578,6 +47259,29 @@
           "view"
         ],
         "title": "RightSurfacePane"
+      },
+      "RoutePerf": {
+        "properties": {
+          "latency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Status",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "RoutePerf",
+        "description": "Latency and status-class counters from the route middleware."
       },
       "RuleClusterDTO": {
         "properties": {
@@ -46752,6 +50456,40 @@
         ],
         "title": "StreamMetadata"
       },
+      "StreamPerf": {
+        "properties": {
+          "handshake": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Outcome",
+            "default": {}
+          },
+          "open": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open"
+          }
+        },
+        "type": "object",
+        "title": "StreamPerf",
+        "description": "Handshake counters and open-stream gauge from the route middleware."
+      },
       "StreamStartRequest": {
         "properties": {
           "command": {
@@ -46786,6 +50524,17 @@
               }
             ],
             "title": "Project Id"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
           }
         },
         "type": "object",
@@ -47229,6 +50978,269 @@
         "type": "object",
         "title": "SubagentRollup",
         "description": "Sub-agent totals across a set of agents.\n\n``complete`` is a conjunction: one live session without harness hooks\nmakes every number here a lower bound, and callers must say so rather\nthan present a floor as a total."
+      },
+      "SupervisorInboxErrorResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": false
+          },
+          "error_code": {
+            "type": "string",
+            "title": "Error Code"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "error_code",
+          "error"
+        ],
+        "title": "SupervisorInboxErrorResponse"
+      },
+      "SupervisorInboxHistoryRequest": {
+        "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "states": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "opening",
+                    "open",
+                    "closed",
+                    "delivery_blocked"
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "States"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 50
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before",
+            "description": "Exclusive epoch-second boundary; alone, a strict time filter."
+          },
+          "before_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Id",
+            "description": "Row id breaking ties at `before`; requires `before`."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SupervisorInboxHistoryRequest"
+      },
+      "SupervisorInboxHistoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "conversations": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationHistoryRecord"
+            },
+            "type": "array",
+            "title": "Conversations"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before",
+            "description": "`before` for the next page; null when exhausted."
+          },
+          "next_before_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before Id",
+            "description": "`before_id` paired with `next_before`."
+          }
+        },
+        "type": "object",
+        "required": [
+          "conversations",
+          "next_before",
+          "next_before_id"
+        ],
+        "title": "SupervisorInboxHistoryResponse"
+      },
+      "SupervisorInboxReplyRequest": {
+        "properties": {
+          "conversation_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Conversation Id"
+          },
+          "input_id": {
+            "type": "string",
+            "minLength": 1,
+            "title": "Input Id"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 16000,
+            "minLength": 1,
+            "title": "Text"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "conversation_id",
+          "input_id",
+          "text",
+          "idempotency_key"
+        ],
+        "title": "SupervisorInboxReplyRequest"
+      },
+      "SupervisorInboxReplyResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          },
+          "reply_message_id": {
+            "type": "string",
+            "title": "Reply Message Id"
+          },
+          "delivery_dedup_key": {
+            "type": "string",
+            "title": "Delivery Dedup Key"
+          },
+          "discord_text_chars": {
+            "type": "integer",
+            "title": "Discord Text Chars"
+          },
+          "truncated": {
+            "type": "boolean",
+            "title": "Truncated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "created",
+          "reply_message_id",
+          "delivery_dedup_key",
+          "discord_text_chars",
+          "truncated"
+        ],
+        "title": "SupervisorInboxReplyResponse"
+      },
+      "SupervisorInboxStatusRequest": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SupervisorInboxStatusRequest"
+      },
+      "SupervisorInboxStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "preconditions": {
+            "$ref": "#/components/schemas/ConversationPreconditions"
+          },
+          "diagnostics": {
+            "$ref": "#/components/schemas/ConversationDiagnostics"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/ConversationLimits"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/ConversationCounts"
+          },
+          "backfill": {
+            "$ref": "#/components/schemas/ConversationBackfill"
+          },
+          "intake": {
+            "$ref": "#/components/schemas/ConversationIntake"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "preconditions",
+          "diagnostics",
+          "limits",
+          "counts",
+          "backfill",
+          "intake"
+        ],
+        "title": "SupervisorInboxStatusResponse"
       },
       "TaskActivityAttempt": {
         "properties": {
@@ -50948,6 +54960,68 @@
         ],
         "title": "TaskSubtasksResponse"
       },
+      "TestSlotsPerf": {
+        "properties": {
+          "used": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          },
+          "waiting": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting"
+          },
+          "orphaned": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orphaned"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "title": "TestSlotsPerf",
+        "description": "Test-slot occupancy from the host reader's resource semaphore snapshot."
+      },
       "ThroughputMetrics": {
         "properties": {
           "completions_per_hour": {
@@ -51385,6 +55459,43 @@
         ],
         "title": "TranscriptEntryModel"
       },
+      "UngatedPerf": {
+        "properties": {
+          "pytest_processes": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pytest Processes"
+          },
+          "unattributed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unattributed"
+          },
+          "unattributed_slots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unattributed Slots",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "UngatedPerf",
+        "description": "Host reader's process attribution counts and bounded worktree slot names."
+      },
       "UpdateAndRestartRequest": {
         "properties": {
           "reason": {
@@ -51765,6 +55876,68 @@
         ],
         "title": "ValidationError"
       },
+      "WaitCancelRequest": {
+        "properties": {
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "wait_id"
+        ],
+        "title": "WaitCancelRequest"
+      },
       "WaitFactsDTO": {
         "properties": {
           "wait_kind": {
@@ -51843,6 +56016,149 @@
         ],
         "title": "WaitFactsDTO"
       },
+      "WaitGetRequest": {
+        "properties": {
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "wait_id"
+        ],
+        "title": "WaitGetRequest"
+      },
+      "WaitListRequest": {
+        "properties": {
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": ""
+          },
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offset",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "WaitListRequest"
+      },
+      "WaitListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "waits": {
+            "items": {
+              "$ref": "#/components/schemas/AgentWaitRecord"
+            },
+            "type": "array",
+            "title": "Waits"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "waits",
+          "count"
+        ],
+        "title": "WaitListResponse"
+      },
       "WaitNodeDetailDTO": {
         "properties": {
           "wait_kind": {
@@ -51894,6 +56210,151 @@
         ],
         "title": "WaitNodeDetailDTO",
         "description": "WaitStep only."
+      },
+      "WaitRegisterRequest": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": ""
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref",
+            "description": ""
+          },
+          "after_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Seq",
+            "description": ""
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At",
+            "description": ""
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "idempotency_key"
+        ],
+        "title": "WaitRegisterRequest"
+      },
+      "WaitResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "wait": {
+            "$ref": "#/components/schemas/AgentWaitRecord"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait"
+        ],
+        "title": "WaitResponse"
       },
       "WithheldTask": {
         "properties": {

@@ -1,5 +1,33 @@
 # Integration identity diagnostics
 
+## Superseded repair intents
+
+Recovery of an unwritten parent conflict resolution preserves the old intent
+for audit and creates a successor. In the same transaction it rebinds the
+repair stage's trigger, dossier and delegate description to that successor.
+It preserves branch ownership and its fence; the next attached writer uses
+the current fence rather than a token copied from the old reservation.
+
+`integration.stale_repair_intents` is a report-only doctor check for active
+repair stages whose trigger or conflict dossier names a superseded intent.
+It reports the delegate task and both intent identities, without changing
+the stage, ownership or Git refs.
+
+`aq integration rebind-repair --task-id TASK --dry-run` lets the local
+operator or a live project supervisor prove a stranded delegate's candidate.
+It resolves authority from the attached owner and live session, checks the
+stage's subject and deadline, and verifies the frozen repository identity,
+the exact linear candidate range and the unchanged remote target. Stopped
+writers, missing session instance tokens, reassigned workspaces, malformed
+candidates and moved targets are refused.
+
+`--apply --head SHA` repeats that proof for the exact previewed head, rebinds
+the stage and dossier if needed, and records the resolution reservation under
+the current intent. A changed head returns `changed` without mutation. Repeating
+an unchanged reservation returns `already_reserved`. The attached repair
+session still owns the fenced push and successful close; the operator control
+does not push or close another session's task.
+
 `integration.reused_task_identity` is a report-only doctor check for tasks
 created before task naming reserved identifiers retained by integration history.
 A deleted task can leave an origin and checkpoint that a later task with the

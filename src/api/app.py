@@ -36,6 +36,7 @@ from src.api.task_files import router as task_files_router
 from src.api.task_sessions import router as task_sessions_router
 from src.api.workspace_files import router as workspace_files_router
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
+from src.api.perf_middleware import RouteLatencyMiddleware
 from src.api.terminal_stream import build_terminal_router
 from src.api.websocket import WebSocketManager
 
@@ -129,6 +130,10 @@ def create_app(
     # ``request.state.scope`` before request-context binds ``session_id``.
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(TokenAuthMiddleware)
+    # Registered last, so outermost: a route's latency includes token
+    # resolution and a 401 is still timed.  Pure ASGI, so it never buffers an
+    # SSE pane (spec 2026-09-24 dashboard performance §4.1).
+    app.add_middleware(RouteLatencyMiddleware)
 
     # Register routers — backward-compat and health first
     app.include_router(execute_router)
@@ -205,15 +210,11 @@ def create_app(
     # from dashboard.server alone — never the request's Host — with a wildcard
     # bind rendered as 127.0.0.1.
     def _dashboard_hint_url() -> str | None:
-        server = config.dashboard_server
-        if not server.enabled:
-            return None
-        host = server.host
-        if host in {"0.0.0.0", "::"}:
-            host = "127.0.0.1"
-        if ":" in host:
-            host = f"[{host}]"
-        return f"http://{host}:{server.port}/"
+        # The link resolver's local mode: a pointer for a browser on this
+        # machine, never the public origin external links name.
+        from src.remote_links import local_dashboard_url
+
+        return local_dashboard_url(config)
 
     @app.api_route("/dashboard", methods=["GET", "HEAD"], include_in_schema=False)
     @app.api_route("/dashboard/{rest:path}", methods=["GET", "HEAD"], include_in_schema=False)

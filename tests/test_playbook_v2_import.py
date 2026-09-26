@@ -40,6 +40,7 @@ PLAYBOOK_IDS = (
     "ci-main-sentinel",
     "blocked-task-escalation",
     "supervisor-failure-triage",
+    "morning-report",
 )
 
 

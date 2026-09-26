@@ -53,6 +53,7 @@ def message_to_dict(msg: Message) -> dict:
         "body": msg.body,
         "priority": msg.priority,
         "created_at": msg.created_at,
+        "created_seq": msg.created_seq,
         "delivered_at": msg.delivered_at,
         "read_at": msg.read_at,
         "read": msg.read_at is not None,

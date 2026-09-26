@@ -28,6 +28,9 @@ from src.database.tables import (
     api_session_tokens,
     archived_tasks,
     chat_analyzer_suggestions,
+    conversation_backfill_cursors,
+    conversation_inputs,
+    conversation_intake_gaps,
     dashboard_state_documents,
     development_deliveries,
     digest_windows,
@@ -108,6 +111,8 @@ from src.database.tables import (
     repos,
     sessions,
     subagent_events,
+    supervisor_conversations,
+    supervisor_report_requests,
     system_config,
     task_assignment_routes,
     task_branch_origins,
@@ -148,9 +153,20 @@ logger = logging.getLogger(__name__)
 #
 # Circular and self-referential FKs are handled by inserting the offending
 # columns as NULL (see ``_DEFERRED_COLS``) and restoring them afterwards.
-# No tables are excluded today. If a future table should not be copied, name it
-# here with a reason so its omission is explicit and reviewable.
-_EXCLUDED_TABLES: frozenset[str] = frozenset()
+# If a future table should not be copied, name it here with a reason so its
+# omission is explicit and reviewable.
+_EXCLUDED_TABLES: frozenset[str] = frozenset(
+    {
+        # PostgreSQL-era tables added after legacy SQLite databases stopped
+        # existing (SQLite removal 1cae290cb, 2026-09-07 predates commit
+        # fca6f0eb7, 2026-09-25): a legacy SQLite file can never contain
+        # them, so there is nothing to import and copying them would only
+        # fail on columns SQLite never had (JSON, partial unique indexes).
+        "test_selections",
+        "test_selection_observations",
+        "test_selection_promotions",
+    }
+)
 
 _ORDERED_TABLES = [
     # No FK dependencies
@@ -171,6 +187,8 @@ _ORDERED_TABLES = [
     task_completion_records,
     task_comments,
     task_session_attempts,
+    conversation_backfill_cursors,
+    conversation_intake_gaps,
     # No FK to tasks: checklist rows survive archive like task_comments.
     task_subtasks,
     # Soft-referenced audit of retired integration delegates; no FKs.
@@ -195,6 +213,8 @@ _ORDERED_TABLES = [
     layout_tidy_requests,
     task_layout_cells,
     digest_windows,
+    # Durable report authoring history; owner/session/message references are soft.
+    supervisor_report_requests,
     # FK → playbook_artifacts
     playbook_activations,
     playbook_v2_runs,
@@ -223,6 +243,9 @@ _ORDERED_TABLES = [
     escalation_actions,
     # FK -> escalations, escalation_messages
     escalation_deliveries,
+    # FK -> messages (conversation_inputs also -> supervisor_conversations)
+    supervisor_conversations,
+    conversation_inputs,
     # FK → repos (current_task_id deferred)
     agents,
     # FK → projects, repos, agents, agent_profiles, workflows

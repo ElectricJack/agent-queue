@@ -30,6 +30,8 @@ from src.api.models.dashboard import (
     DashboardStateErrorResponse,
 )
 from src.api.models.escalation import EscalationErrorResponse
+from src.api.models.job import JobErrorResponse
+from src.api.models.supervisor_inbox import SupervisorInboxErrorResponse
 from src.api.models.system import (
     DeleteIntelligenceClassConflictResponse,
     EditIntelligenceClassConflictResponse,
@@ -52,6 +54,10 @@ logger = logging.getLogger(__name__)
 # route is generated, and in ``/api/execute`` (``src/api/execute.py``), which
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
+    "reconcile_agent_waits",  # internal scan; never callable over HTTP
+    "job_reconcile",
+    "job_submit_integration",
+
     "load_tools",
     "reply_to_user",
     # Runs an LLM-authored string through /bin/sh on the daemon host
@@ -63,6 +69,8 @@ API_EXCLUDED = {
     # ``POST /api/sessions/{name}/message`` (src/api/messages.py); the
     # codegen route would duplicate it and confuse the dashboard chat page.
     "message_send",
+    # Gateway-authenticated conversation provenance is never an HTTP body.
+    "supervisor_inbox_post",
     # Daemon-internal compatibility hook for the retired blocked-task
     # subscriber. ``task_failure_triage_notify`` is the reviewed successor.
     "task_recovery_notify",
@@ -120,8 +128,26 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "escalation_reply",
             "escalation_update",
             "escalation_apply_reply",
+            "supervisor_inbox_reply",
+            "supervisor_inbox_post",
+            "supervisor_inbox_status",
+            "supervisor_inbox_history",
             "digest_preview",
             "digest_status",
+            "job_submit",
+            "job_get",
+            "job_list",
+            "job_cancel",
+            "job_result",
+            "job_logs",
+            "report_request",
+            "report_reconcile",
+            "morning_report_preview",
+            "morning_report_tick",
+            "report_get",
+            "report_list",
+            "report_brief",
+            "report_submit",
             "delete_task",
             "archive_task",
             "delete_project",
@@ -473,8 +499,12 @@ def build_category_routers() -> list[APIRouter]:
                             **(
                                 {"model": DashboardStateErrorResponse}
                                 if cmd_name in DASHBOARD_STATE_COMMANDS
+                                else {"model": JobErrorResponse}
+                                if cmd_name.startswith("job_")
                                 else {"model": EscalationErrorResponse}
                                 if cmd_name.startswith(("escalation_", "digest_"))
+                                else {"model": SupervisorInboxErrorResponse}
+                                if cmd_name.startswith("supervisor_inbox_")
                                 else {"model": HierarchyRefusalResponse}
                                 if cmd_name in HIERARCHY_REFUSAL_COMMANDS
                                 else {

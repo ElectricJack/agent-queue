@@ -732,6 +732,59 @@ async def test_replaying_the_same_line_still_yields_one_row(tmp_path, db, bus):
     assert len(series) == 1
 
 
+@pytest.mark.parametrize("checkpointed", [False, True])
+async def test_restart_discovers_local_date_rollout_and_backfills_quota_without_replay(
+    tmp_path, db, bus, checkpointed,
+):
+    from datetime import datetime, timezone
+
+    from src.providers.snapshot import ProviderUsageSnapshot
+
+    launched = datetime(2026, 9, 26, 3, 35, 33, tzinfo=timezone.utc).timestamp()
+    work_dir = "/work/codex-recovery"
+    directory = tmp_path / ".codex/sessions/2026/09/25"
+    directory.mkdir(parents=True)
+    path = directory / f"rollout-2026-09-25T20-35-33-{CODEX_UUID}.jsonl"
+    _append(path, [{"type": "session_meta", "timestamp": launched,
+        "payload": {"id": CODEX_UUID, "cwd": work_dir, "timestamp": launched,
+                    "cli_version": "0.157.0", "source": "cli"}},
+        {"type": "turn_context", "payload": {"service_tier": "fast"}},
+        *[{"type": "event_msg", "timestamp": launched + i + 1,
+           "payload": {"type": "token_count",
+               "info": {"last_token_usage": {"input_tokens": 10, "output_tokens": 5}},
+               "rate_limits": {**CODEX_RATE_LIMITS, "primary": {
+                   "used_percent": float(13 + i), "resets_at": 1790959903,
+               }}}} for i in range(3)],
+    ])
+    await _make_codex_session(db, work_dir, task_id="t-recovery")
+    await db.update_session("sc", started_at=launched, lifecycle="pool", epoch="adopted")
+    if checkpointed:
+        await db.set_transcript_checkpoint(str(path), byte_offset=path.stat().st_size)
+    await db.record_provider_usage([ProviderUsageSnapshot(
+        provider="codex", window="primary", used_percent=1.0,
+        observed_at=launched - 3600, source="transcript", account_label="pro",
+    )])
+    watcher = TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path, startup_replay_limit=0)
+    await watcher.tick()
+    assert (await db.get_session("sc")).session_key == CODEX_UUID
+    assert "session.transcript_missing" not in bus.types()
+    latest = (await db.latest_provider_usage("codex"))[0]
+    assert latest["used_percent"] == 15.0
+    assert latest["observed_at"] == latest["last_seen_at"] == launched + 3
+    assert latest["account_label"] == "pro"
+    assert latest["source"] == "transcript"
+    assert latest["resets_at"] == 1790959903
+    assert await db.get_cost_rollup(project_id="p1") == []
+    assert bus.payloads("notify.task_message") == []
+    mark = await db.get_transcript_checkpoint(str(path))
+    assert mark["byte_offset"] == path.stat().st_size
+    await watcher.tick()
+    await TranscriptWatcher(db=db, bus=bus, base_dir=tmp_path).tick()
+    assert len(await db.provider_usage_series("codex", "primary")) == 2
+    assert await db.get_cost_rollup(project_id="p1") == []
+    assert bus.payloads("notify.task_message") == []
+
+
 @pytest.mark.asyncio
 async def test_a_quota_reading_is_stored_even_with_no_agent_to_bill(tmp_path, db, bus):
     """A provider quota is an account-wide fact, not this agent's spend.

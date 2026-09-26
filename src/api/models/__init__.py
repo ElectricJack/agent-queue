@@ -66,10 +66,14 @@ def _category_modules() -> tuple[object, ...]:
         project,
         project_onboarding,
         review,
+        report,
         provider,
         session,
+        supervisor_inbox,
         system,
         task,
+        wait,
+        job,
     )
 
     return (
@@ -88,13 +92,17 @@ def _category_modules() -> tuple[object, ...]:
         playbook,
         playbook_v2,
         session,
+        supervisor_inbox,
         gate,
         message,
         discord,
         digest,
+        report,
         escalation,
         graph,
         provider,
+        wait,
+        job,
     )
 
 

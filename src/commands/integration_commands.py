@@ -590,6 +590,26 @@ class IntegrationCommandsMixin:
             outcome = "not_eligible"
         return {"success": True, "outcome": outcome, "outcomes": serialized}
 
+    async def _cmd_integration_reserve_owner(self, args: dict) -> dict:
+        """Restore one stopped producer's missing canonical branch reservation."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationReserveOwnerArgs
+        from src.integration.canonical_reservation import reserve_canonical_task_branch
+
+        try:
+            request = IntegrationReserveOwnerArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("not_eligible", f"invalid reservation request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("not_found", "task does not exist")
+        _principal, refusal = await integration_operator(self.db, task.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        result = await reserve_canonical_task_branch(self.db, task.id)
+        return {"success": result["outcome"] in {"acquired", "already_reserved"}, **result}
+
     async def _cmd_integration_release_stale_owners(self, args: dict) -> dict:
         """Release a project's provably safe reserved owners; report every other."""
         from pydantic import ValidationError
@@ -668,7 +688,47 @@ class IntegrationCommandsMixin:
             operator_id=principal,
         )
         return {
-            "success": result["outcome"] in {"would_open", "opened", "nothing_to_redrive"},
+            "success": result["outcome"] in {
+                "would_open", "opened", "would_collect", "collecting", "nothing_to_redrive",
+            },
+            "dry_run": request.dry_run,
+            **result,
+        }
+
+    async def _cmd_integration_redrive_child(self, args: dict) -> dict:
+        """Diagnose a completed child its parent never assembled; advance it for the head."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRedriveChildArgs
+        from src.integration.child_delivery import ChildDelivery
+
+        try:
+            request = IntegrationRedriveChildArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid child redrive request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        principal, refusal = await integration_operator(
+            self.db, task.project_id if task is not None else None
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        collection = getattr(self.orchestrator, "integration_collection", None)
+        collect = None
+        if collection is not None:
+            async def collect(parent_id: str) -> str | None:
+                return await collection.collect_parent(parent_id, time.time())
+
+        result = await ChildDelivery(
+            self.db, self._integration_promotion_service(), collect=collect
+        ).run(
+            request.task_id,
+            dry_run=request.dry_run,
+            expected_head_sha=request.expected_head_sha,
+            reason=request.reason,
+            operator_id=principal,
+        )
+        return {
+            "success": result["outcome"] in {"would_advance", "advanced", "nothing_to_redrive"},
             "dry_run": request.dry_run,
             **result,
         }
@@ -703,6 +763,37 @@ class IntegrationCommandsMixin:
         )
         return {
             "success": result["outcome"] in {"rebound", "would_rebind", "nothing_to_rebind"},
+            **result,
+        }
+
+    async def _cmd_integration_rebind_repair(self, args: dict) -> dict:
+        """Prove a live repair candidate and reserve it under the current intent."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRebindRepairArgs
+        from src.integration.promotion import PromotionError
+        from src.integration.repair_rebind import RepairRebind
+
+        try:
+            request = IntegrationRebindRepairArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("blocked", f"invalid repair rebind request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("not_found", f"task {request.task_id} not found")
+        _principal, refusal = await integration_operator(self.db, task.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await RepairRebind(self._integration_promotion_service()).run(
+                request.task_id,
+                dry_run=request.dry_run,
+                expected_head_sha=request.expected_head_sha,
+            )
+        except (PromotionError, GitError, ValueError) as exc:
+            return _failure("blocked", str(exc))
+        return {
+            "success": result["outcome"] in {"would_rebind", "rebound", "already_reserved"},
             **result,
         }
 
@@ -2217,11 +2308,13 @@ class IntegrationCommandsMixin:
 
     def _development_integration(self):
         from src.integration.development import DevelopmentIntegration
+        from src.jobs.adapters import PublisherJobs
         service = getattr(self.orchestrator, "development_integration", None)
         if service is not None:
+            service.job_client = PublisherJobs(self)
             return service
         return DevelopmentIntegration(self.db, data_dir=self.config.data_dir,
-                                      git=self.orchestrator.git)
+                                      git=self.orchestrator.git, job_client=PublisherJobs(self))
 
     async def _cmd_integration_develop(self, args: dict) -> dict:
         operator_id, refusal = await integration_operator(

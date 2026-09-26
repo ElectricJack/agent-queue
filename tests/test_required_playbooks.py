@@ -655,7 +655,7 @@ async def test_health_reads_the_recomputed_required_status():
     orch.required_playbook_status = {"ok": False, "required": {}}
     orch.refresh_required_playbook_status = AsyncMock(return_value=fresh)
     orch.db.list_agents = AsyncMock(return_value=[])
-    orch.db.list_tasks = AsyncMock(return_value=[])
+    orch.db.count_tasks_by_status = AsyncMock(return_value={})
     adapter = MagicMock()
 
     checks = await _health_checks(orch, adapter)

@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_EXCLUDED_COMMANDS = {
+    "reconcile_agent_waits",  # daemon-only bounded durable scan
+    "job_reconcile",
+    "job_submit_integration",
+
     "shutdown",
     "restart_daemon",
     "update_and_restart",

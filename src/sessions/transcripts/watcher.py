@@ -159,6 +159,12 @@ class TranscriptWatcher:
         state.missing_emitted = False
         uncheckpointed_adoption = False
         if state.last_path != path:
+            # Quota is an account fact, independent of billed turns. Recover
+            # it even if a checkpoint or the historical replay guard skips
+            # the token_count line during restart adoption.
+            quota = await reader.read_latest_provider_usage(path)
+            if quota is not None:
+                await self._record_provider_usage(quota)
             # First sight of this file for this session, or a rotation onto
             # a different one.  Either way the in-process offset belongs to
             # some other file, so it is replaced by whatever has already

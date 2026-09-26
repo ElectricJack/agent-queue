@@ -8,6 +8,7 @@ import { loadWorkspaceGraph, loadWorkspaceTasks } from "./routeChunks";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
+const GlobalChat = lazy(() => import("./pages/GlobalChat"));
 const CommandCenterGraph = lazy(loadWorkspaceGraph);
 const CommandCenterTasks = lazy(loadWorkspaceTasks);
 
@@ -33,6 +34,7 @@ const ProjectSessions = lazy(() => import("./pages/project/Sessions"));
 const TaskDetail = lazy(() => import("./pages/TaskDetail"));
 const PlaybookDetail = lazy(() => import("./pages/PlaybookDetail"));
 const SessionDetail = lazy(() => import("./pages/SessionDetail"));
+const MorningReportPage = lazy(() => import("./pages/reports/MorningReportPage"));
 const TaskFiles = lazy(() => import("./pages/TaskFiles"));
 
 /** Index redirects must retain the shared URL-backed task filters. */
@@ -147,6 +149,7 @@ export default function App() {
           <Route element={<AppShellV2 />}>
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
+            <Route path="conversations" element={<GlobalChat />} />
             <Route path="metrics" element={<Metrics />} />
             <Route path="reviews" element={<ReviewsInbox />} />
             <Route path="reviews/:reviewId" element={<ReviewPage />} />
@@ -196,6 +199,7 @@ export default function App() {
               <Route path="config" element={<ProjectConfig />} />
             </Route>
 
+            <Route path="reports/:reportId" element={<MorningReportPage />} />
             <Route path="tasks/:taskId" element={<TaskDetail />} />
             <Route path="tasks/:taskId/files" element={<TaskFiles />} />
             <Route path="sessions/:sessionId" element={<SessionDetail />} />

@@ -329,6 +329,7 @@ class SurfaceCommandsMixin:
             "sections": [{"key": s.key, "title": s.title, "body": s.body} for s in doc.sections],
             "source": doc.source,
             "tokens_est": doc.tokens_est(),
+            "tokens_est_method": "estimated characters / 4; not a measured token count",
         }
 
     # ------------------------------------------------------------------
@@ -345,7 +346,16 @@ class SurfaceCommandsMixin:
         owns restart mechanics (recycle now vs. later, wake_mode) — this
         command only records intent.
         """
-        task_id = args.get("task_id")
+        from pydantic import ValidationError
+
+        from src.commands.contracts.handoff import TaskHandoffArgs
+        from src.handoffs import agent_note, collect_facts, meaningful
+
+        try:
+            validated = TaskHandoffArgs.model_validate(args)
+        except ValidationError as exc:
+            return {"error": f"Invalid handoff: {exc}"}
+        task_id = validated.task_id
         scope = getattr(self, "_current_scope", None) or {}
         if not task_id:
             task_id = scope.get("task_id")
@@ -358,7 +368,7 @@ class SurfaceCommandsMixin:
             }
 
         err = await self._assert_session_owns(
-            task_id, session_id=scope.get("session_id"), claim_epoch=args.get("claim_epoch")
+            task_id, session_id=scope.get("session_id"), claim_epoch=validated.claim_epoch
         )
         if err:
             return err
@@ -367,21 +377,54 @@ class SurfaceCommandsMixin:
         if not task:
             return {"error": f"Task '{task_id}' not found"}
 
-        auto = bool(args.get("auto", False))
-        session_id = args.get("session_id") or scope.get("session_id")
+        auto = validated.auto
+        note = agent_note(validated.model_dump())
+        if auto and not meaningful(note):
+            return {
+                "success": True,
+                "handoff_id": None,
+                "restart_requested": False,
+                "created": False,
+                "noop": True,
+            }
+
+        # A bearer session's identity always comes from daemon scope.
+        session_id = scope.get("session_id") or validated.session_id
+        session = await self.db.get_session(session_id) if session_id else None
+        if session and session.task_id != task_id:
+            return {"error": "session does not hold this task"}
+        work_dir = getattr(session, "work_dir", None)
+        if not work_dir and not session_id:
+            work_dir = await self.db.get_task_meta(task_id, "work_dir")
+        now = time.time()
+        facts = await collect_facts(self.db, task, session, work_dir)
         payload = {
-            "subject": args.get("subject") or "",
-            "detail": args.get("detail") or "",
+            "schema_version": 1,
+            # Keep the legacy fields readable by old prime versions on rollback.
+            "subject": note["subject"],
+            "detail": note["detail"],
+            "agent": note,
+            "facts": facts,
             "session_id": session_id,
             "auto": auto,
-            "ts": time.time(),
+            "ts": now,
+            "created_at": now,
+            "facts_only": not meaningful(note),
         }
-        handoff_id = await self.db.add_task_context(
-            task_id, type="handoff", label="handoff", content=json.dumps(payload)
-        )
+        try:
+            handoff_id, created = await self.db.add_task_handoff(
+                task_id,
+                content=json.dumps(payload),
+                claim_epoch=task.claim_epoch,
+                session_id=session_id,
+                idempotency_key=validated.idempotency_key,
+                created_at=now,
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
 
         restart_requested = False
-        if not auto:
+        if not auto and created:
             bus = getattr(self.orchestrator, "bus", None)
             if bus is not None:
                 await bus.emit(
@@ -399,6 +442,8 @@ class SurfaceCommandsMixin:
             "success": True,
             "handoff_id": handoff_id,
             "restart_requested": restart_requested,
+            "created": created,
+            "noop": False,
         }
 
     # ------------------------------------------------------------------

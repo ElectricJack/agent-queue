@@ -42,7 +42,16 @@ control today would lose a capability.
 | `/gates` | Gates drawer (`/command-center/tasks?openDrawer=gates`) | Ready |
 | `/peek`, `/attach` | `SessionDetail` transcript/terminal and `aq session logs` | Ready |
 | Per-execution task threads and streamed output | Live session view and recorded attempts | Ready |
-| General channel chat / mention routing | Dashboard supervisor chat (`/agents`) | Ready |
+| General channel chat / mention routing | Dashboard supervisor chat (`/agents`); opt-in Discord conversations, see [discord-conversations.md](discord-conversations.md) | Ready (opt-in) |
+
+The 2026-09-24 mention-routing exception deliberately relaxes the original
+simplification behind `discord.conversation.enabled: false` by default. A real
+bot mention from an allowlisted operator in the configured channel may open a
+thread with the elevated global supervisor. Enabling treats those identities as
+trusted operator correspondents; there is no sandboxed chatbot or enforced
+read-only chat boundary. Escalation threads remain exclusive, and the retired
+slash commands, controls, worker routing, DMs and unrestricted channel chat
+remain removed.
 
 ## Cutover-complete controls
 
@@ -75,6 +84,6 @@ control today would lose a capability.
   any doc names `auto_create_channels`, `per_project_channels`, `channel_overrides`,
   `aq-discord.yaml` or a project-channel lookup in a section that does not say it is gone,
   and the tool tables are resolved against the live `CommandHandler`.
-- Surviving direct mutation paths: `rg '_handler\.execute\(' src/discord/` returns only
-  the narrow `escalation_reply` adapter boundary; task, gate, playbook, worker-input and
-  project mutation commands are absent.
+- Surviving command boundaries: inspect `escalation_reply` in the escalation adapter
+  and internal-only `supervisor_inbox_post` in the conversation router. Neither
+  adapter executes task, gate, playbook, worker-input or project mutation commands.

@@ -33,6 +33,7 @@ class MessageModel:
         subject (None | str | Unset):
         priority (int | Unset):  Default: 100.
         created_at (float | None | Unset):
+        created_seq (int | None | Unset):
         delivered_at (float | None | Unset):
         read_at (float | None | Unset):
         read (bool | Unset):  Default: False.
@@ -58,6 +59,7 @@ class MessageModel:
     subject: None | str | Unset = UNSET
     priority: int | Unset = 100
     created_at: float | None | Unset = UNSET
+    created_seq: int | None | Unset = UNSET
     delivered_at: float | None | Unset = UNSET
     read_at: float | None | Unset = UNSET
     read: bool | Unset = False
@@ -122,6 +124,12 @@ class MessageModel:
             created_at = UNSET
         else:
             created_at = self.created_at
+
+        created_seq: int | None | Unset
+        if isinstance(self.created_seq, Unset):
+            created_seq = UNSET
+        else:
+            created_seq = self.created_seq
 
         delivered_at: float | None | Unset
         if isinstance(self.delivered_at, Unset):
@@ -199,6 +207,8 @@ class MessageModel:
             field_dict["priority"] = priority
         if created_at is not UNSET:
             field_dict["created_at"] = created_at
+        if created_seq is not UNSET:
+            field_dict["created_seq"] = created_seq
         if delivered_at is not UNSET:
             field_dict["delivered_at"] = delivered_at
         if read_at is not UNSET:
@@ -295,6 +305,15 @@ class MessageModel:
 
         created_at = _parse_created_at(d.pop("created_at", UNSET))
 
+        def _parse_created_seq(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        created_seq = _parse_created_seq(d.pop("created_seq", UNSET))
+
         def _parse_delivered_at(data: object) -> float | None | Unset:
             if data is None:
                 return data
@@ -386,6 +405,7 @@ class MessageModel:
             subject=subject,
             priority=priority,
             created_at=created_at,
+            created_seq=created_seq,
             delivered_at=delivered_at,
             read_at=read_at,
             read=read,

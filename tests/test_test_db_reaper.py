@@ -94,13 +94,29 @@ def test_reaper_requires_a_separate_postgres_maintenance_dsn(monkeypatch):
 
 
 def test_cleanup_reserves_every_test_slot_and_releases_them(tmp_path):
+    from src.resources.box_lock import BoxLock
+
     semaphore = SlotSemaphore(tmp_path, 2)
     with reserve_all_test_slots(tmp_path, 2):
         assert semaphore.try_acquire() is None
         assert all(slot["held"] for slot in semaphore.snapshot()["slots"])
+        assert BoxLock(tmp_path, 2).snapshot()["box"]["mode"] == "exclusive"
     acquired = semaphore.try_acquire()
     assert acquired is not None
     os.close(acquired[1])
+
+
+def test_cleanup_refuses_an_active_shared_box_and_releases_turnstile(tmp_path):
+    from src.resources.box_lock import BoxLock
+
+    box = BoxLock(tmp_path, 2)
+    with box.acquire(timeout=0):
+        with pytest.raises(RuntimeError, match="occupied; refusing cleanup"):
+            with reserve_all_test_slots(tmp_path, 2):
+                pytest.fail("cleanup overlaps tests")
+        assert not box.snapshot()["turnstile"]["held"]
+        with box.acquire(timeout=0):
+            pass
 
 
 def test_occupied_slot_releases_partial_reservation(tmp_path):

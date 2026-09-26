@@ -117,6 +117,11 @@ def _client(result):
             {"task_id": "task-1", "dry_run": True},
         ),
         (
+            ["reserve-owner", "--task-id", "task-1"],
+            "integration_reserve_owner",
+            {"task_id": "task-1"},
+        ),
+        (
             ["release-stale-owners", "--project-id", "p"],
             "integration_release_stale_owners",
             {"project_id": "p", "dry_run": False},
@@ -153,6 +158,22 @@ def _client(result):
             },
         ),
         (
+            ["redrive-child", "sharp-impact.1"],
+            "integration_redrive_child",
+            {"task_id": "sharp-impact.1", "dry_run": True},
+        ),
+        (
+            [
+                "redrive-child", "sharp-impact.1", "--apply",
+                "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--reason", "child never assembled",
+            ],
+            "integration_redrive_child",
+            {
+                "task_id": "sharp-impact.1", "dry_run": False,
+                "expected_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "reason": "child never assembled",
+            },
+        ),
+        (
             [
                 "clear-stale-request", "p", "--apply",
                 "--request-id", "integration-sweep:p:53", "--reason", "aborted batch",
@@ -167,6 +188,16 @@ def _client(result):
             ["rebind-reused-identity", "--task-id", "t"],
             "integration_rebind_reused_identity",
             {"task_id": "t", "dry_run": True},
+        ),
+        (
+            ["rebind-repair", "--task-id", "repair-t", "--dry-run"],
+            "integration_rebind_repair",
+            {"task_id": "repair-t", "dry_run": True},
+        ),
+        (
+            ["rebind-repair", "--task-id", "repair-t", "--apply", "--head", "a" * 40],
+            "integration_rebind_repair",
+            {"task_id": "repair-t", "dry_run": False, "expected_head_sha": "a" * 40},
         ),
         (
             [
@@ -368,7 +399,9 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "integration_bind_legacy_repositories",
         "integration_clear_stale_request",
         "integration_redrive_root",
+        "integration_redrive_child",
         "integration_rebind_reused_identity",
+        "integration_rebind_repair",
         "integration_resolve_candidate_member",
     }
     assert expected <= HANDCRAFTED_COVERAGE
@@ -386,13 +419,29 @@ def test_integration_cli_is_handcrafted_and_has_no_deferred_probe_command():
         "bind-legacy-repositories",
         "clear-stale-request",
         "redrive-root",
+        "redrive-child",
         "rebind-reused-identity",
+        "rebind-repair",
         "release-owner",
         "resolve-candidate-member",
         "recover-candidate-member",
     ):
         assert command in result.output
     assert "probe" not in result.output
+
+
+def test_rebind_repair_apply_requires_previewed_head_before_transport():
+    from src.cli.app import cli
+
+    client = _client({"outcome": "rebound"})
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli, ["integration", "rebind-repair", "--task-id", "repair-t", "--apply"]
+        )
+
+    assert result.exit_code == 2
+    assert "--apply requires --head from dry-run" in result.output
+    client.execute.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -511,6 +560,8 @@ def test_clear_stale_request_apply_needs_the_request_and_a_reason(argv):
     (
         ["redrive-root", "r1", "--apply", "--reason", "stuck"],
         ["redrive-root", "r1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        ["redrive-child", "c1", "--apply", "--reason", "stuck"],
+        ["redrive-child", "c1", "--apply", "--head", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
     ),
 )
 def test_redrive_root_apply_needs_the_head_and_a_reason(argv):

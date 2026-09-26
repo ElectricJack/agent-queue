@@ -2340,12 +2340,20 @@ class GitManager:
         self,
         checkout_path: str,
         branch_name: str | None = None,
+        *,
+        repository_url: str | None = None,
     ) -> str:
         if not branch_name:
             branch_name = await self.aget_current_branch(checkout_path)
             if not branch_name:
                 raise GitError("Could not determine current branch")
         _validate_ref(branch_name)
+        if self.github_access is not None and self.github_access.auth.mode is GitHubCredentialMode.APP:
+            await self.afetch_origin(checkout_path, repository_url=repository_url or "")
+            await self._arun(
+                ["merge", f"refs/remotes/origin/{branch_name}"], cwd=checkout_path
+            )
+            return branch_name
         await self._arun(["pull", "origin", branch_name], cwd=checkout_path)
         return branch_name
 
@@ -2487,15 +2495,29 @@ class GitManager:
         checkout_path: str,
         branch_name: str,
         default_branch: str = "main",
+        *,
+        repository_url: str | None = None,
     ) -> bool:
         _validate_ref(branch_name)
         _validate_ref(default_branch, field="default branch")
         await self._arun(["checkout", default_branch], cwd=checkout_path)
-        try:
-            await self._arun(["fetch", "origin"], cwd=checkout_path)
-            await self._arun(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
-        except GitError:
-            pass
+        if self.github_access is not None and self.github_access.auth.mode is GitHubCredentialMode.APP:
+            has_remote = await self.ahas_remote(checkout_path, strict=True)
+            if has_remote is None:
+                raise GitError("could not inspect origin before App merge")
+            if has_remote:
+                await self.afetch_origin(checkout_path, repository_url=repository_url or "")
+                await self._arun(
+                    ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path
+                )
+        else:
+            try:
+                await self._arun(["fetch", "origin"], cwd=checkout_path)
+                await self._arun(
+                    ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path
+                )
+            except GitError:
+                pass
         try:
             await self._arun(["merge", branch_name], cwd=checkout_path)
             return True
@@ -3743,8 +3765,7 @@ class GitManager:
         so the remote sends only what the destination lacks rather than the
         commit's whole history.  A commit the destination already holds with
         everything it references is pinned without the network: ``git fetch``
-        would skip the transfer anyway, and an App credential that is never
-        requested reads as a failure.  A shallow or partial destination (the
+        would skip the transfer anyway.  A shallow or partial destination (the
         PR-diff cache after an existing-login ``--filter=blob:none`` fetch)
         keeps the full download.
         """
@@ -3945,6 +3966,7 @@ class GitManager:
             authority = "https://x-access-token@github.com"
             broker_channel = request_channel = None
             broker_task: asyncio.Task[bool] | None = None
+            credential_requested = asyncio.Event()
             process: asyncio.subprocess.Process | None = None
             stderr = b""
             broker_timeout: float | None = None
@@ -4008,9 +4030,10 @@ class GitManager:
                     command.extend(["-c", "credential.helper=!gh auth git-credential"])
                 if repository_url.startswith("file://"):
                     command.extend(["-c", "protocol.file.allow=always"])
-                # A username without a password makes Git request the broker
-                # credential before a public repository can answer anonymously.
-                # The token itself is never placed in a URL or argument.
+                # The username names the credential Git asks the broker for
+                # once the remote demands authentication; a public repository
+                # answers a read anonymously and Git never asks.  The token
+                # itself is never placed in a URL or argument.
                 git_url = (
                     repository_url.replace("https://", "https://x-access-token@", 1)
                     if not uses_existing_auth and repository_url.startswith("https://")
@@ -4051,6 +4074,7 @@ class GitManager:
                                 remote_url=git_url,
                                 prompt=f"Password for '{authority}': ",
                                 timeout=broker_timeout,
+                                requested=credential_requested,
                             )
                         )
                         broker_channel = None
@@ -4105,7 +4129,12 @@ class GitManager:
                     request_channel.close()
                 if broker_channel is not None:
                     broker_channel.close()
-            if process.returncode != 0 or (repository_url.startswith("https://") and not served):
+            # With every inherited helper cleared the broker is Git's only
+            # credential source, so a command that succeeds without asking for
+            # it was answered anonymously (a public repository's reads).  A
+            # request the broker refused still fails even if Git exits 0.
+            unserved = repository_url.startswith("https://") and not served
+            if process.returncode != 0 or (unserved and credential_requested.is_set()):
                 if process.returncode != 0 and b"Operation too slow. Less than " in stderr:
                     failure_time = loop.time()
                     broker_state = "not_started" if uses_existing_auth else (
@@ -4124,11 +4153,12 @@ class GitManager:
                 reasons = []
                 if process.returncode != 0:
                     reasons.append(f"git exited with returncode {process.returncode}")
-                if repository_url.startswith("https://") and not served:
+                if unserved:
                     remaining = max(0.0, deadline - asyncio.get_running_loop().time())
                     reasons.append(
                         "credential broker did not serve token "
-                        f"(timeout={broker_timeout:.1f}s, "
+                        f"(credential_requested={credential_requested.is_set()}, "
+                        f"timeout={broker_timeout:.1f}s, "
                         f"budget_at_start={broker_budget:.1f}s, "
                         f"remaining_push_budget={remaining:.1f}s)"
                     )
@@ -4491,6 +4521,8 @@ class GitManager:
                     broker_channel.close()
             if process.returncode != 0:
                 raise GitError("authenticated Git push failed")
+            # Unlike a read, a push is never anonymous on GitHub: one the
+            # broker did not authenticate was not made as the App.
             if destination_url.startswith("https://") and not broker_served:
                 raise GitError("authenticated Git push failed")
         return tip_oid or expected_old_oid
@@ -4869,6 +4901,29 @@ class GitManager:
             return await self._arun(["status"], cwd=checkout_path)
         except GitError:
             return ""
+
+
+    async def aget_dirty_paths(self, checkout_path: str) -> list[str] | None:
+        """Dirty destination paths, preserving spaces/newlines; None means unknown."""
+        try:
+            result = await self._arun_subprocess(
+                ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        records = iter(result.stdout.split("\0"))
+        paths = []
+        for record in records:
+            if len(record) < 4:
+                continue
+            paths.append(record[3:])
+            if "R" in record[:2] or "C" in record[:2]:
+                next(records, None)  # -z puts the source after the destination.
+        return paths
 
     async def areserved_paths_in_diff(
         self,
@@ -5329,6 +5384,8 @@ class GitManager:
                 return branch
             except GitError:
                 continue
+        if self.github_access is not None and self.github_access.auth.mode is GitHubCredentialMode.APP:
+            raise GitError("authorized GitHub repository is required for App default branch discovery")
         try:
             remote_branches = await self._arun(
                 ["ls-remote", "--heads", "origin"], cwd=checkout_path

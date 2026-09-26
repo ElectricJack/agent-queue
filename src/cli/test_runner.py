@@ -16,7 +16,7 @@ What it does, in order:
    argument. Refuse before taking a slot when configuration is absent or a
    path does not exist, rather than producing hundreds of fixture errors or
    xdist's misleading "no tests ran".
-3. Take one of N ``flock`` slots, printing a "waiting" line every poll so a
+3. Take shared box admission and one of N ``flock`` slots, printing a "waiting" line so a
    queued agent looks queued rather than hung.  A run that selects the
    whole suite first takes the box-wide full-suite lock (capacity one), so
    at most one slot is ever spent on the whole suite: three agents each
@@ -506,7 +506,10 @@ def _holder_verdicts(lock_dir) -> dict[int, str]:
 
 
 def _render_status(
-    snapshot: dict, full_suite: dict, verdicts: Mapping[int, str] | None = None
+    snapshot: dict,
+    full_suite: dict,
+    verdicts: Mapping[int, str] | None = None,
+    protocol: dict | None = None,
 ) -> None:
     from rich.markup import escape
     from rich.table import Table
@@ -534,6 +537,16 @@ def _render_status(
         session = f"[{_VERDICT_STYLE.get(verdict, 'dim')}]{verdict}[/]" if verdict else "?"
         table.add_row(str(row["slot"]), state, escape(str(who)), session, held_for)
     console.print(table)
+    if protocol is not None:
+        box = protocol["box"]
+        console.print(
+            f"Box-lock protocol v{protocol['version']}: {box['mode'] if box['held'] else 'free'}"
+        )
+        for row in protocol["incompatible_slots"]:
+            console.print(
+                f"[yellow]Slot {row['slot']}: incompatible slot-only client.[/] "
+                "Upgrade local entry points and drain old runs before exclusive work."
+            )
     if "orphaned" in verdicts.values():
         console.print(
             "[red]A slot is held by a run whose session is gone.[/] "
@@ -628,6 +641,9 @@ def _reap_orphans(lock_dir, *, apply: bool) -> int:
         "help_option_names": ["--aq-help"],
     },
 )
+@click.option("--aq-detach", is_flag=True, help="Submit to the managed queue and return its ID.")
+@click.option("--aq-wait", is_flag=True, help="With --aq-detach, register a durable job wait.")
+@click.option("--aq-idempotency-key", default=None, help="Replay a detached submission safely.")
 @click.option("--aq-status", is_flag=True, help="Show slot and full-suite lock occupancy and exit.")
 @click.option(
     "--aq-no-wait",
@@ -657,6 +673,9 @@ def _reap_orphans(lock_dir, *, apply: bool) -> int:
 @click.pass_context
 def test_command(
     ctx: click.Context,
+    aq_detach: bool,
+    aq_wait: bool,
+    aq_idempotency_key: str | None,
     aq_status: bool,
     aq_no_wait: bool,
     aq_workers: int | None,
@@ -690,6 +709,38 @@ def test_command(
     starts (exit 4), and a run that collected nothing exits nonzero and
     says so.
     """
+    if aq_wait and not aq_detach:
+        raise click.UsageError("--aq-wait requires --aq-detach")
+    if aq_idempotency_key and not aq_detach:
+        raise click.UsageError("--aq-idempotency-key requires --aq-detach")
+    if aq_detach:
+        if (
+            aq_status
+            or aq_no_wait
+            or aq_timeout is not None
+            or aq_workers is not None
+            or aq_dry_run
+            or aq_reap_orphans
+            or aq_apply
+        ):
+            raise click.UsageError("Detached jobs use server-owned admission and resource caps")
+        if not pytest_args:
+            raise click.UsageError("Name the tests to submit")
+        from .jobs import submit
+        from .envelope import emit
+        from .app import _handle_errors
+
+        args = list(pytest_args)
+        if aq_all_markers and not any(
+            a in {"-m", "--markexpr"} or a.startswith("--markexpr=") for a in args
+        ):
+            args += ["-m", ""]
+        result = _handle_errors(submit)(
+            ctx, preset="test", argv=args, wait=aq_wait, idempotency_key=aq_idempotency_key
+        )
+        emit(ctx, result)
+        return
+
     from src.resources.semaphore import (
         SlotSemaphore,
         SlotTimeout,
@@ -697,6 +748,7 @@ def test_command(
         full_suite_lock_dir,
     )
     from src.resources.slot_report import REPORT_ENV, append_event
+    from src.resources.box_lock import BoxLock, IncompatibleLockClient
 
     config = _load_config()
     resources = getattr(config, "resources", None)
@@ -713,10 +765,13 @@ def test_command(
 
     lock_dir = default_lock_dir(config)
     sem = SlotSemaphore(lock_dir, slots)
+    box_lock = BoxLock(lock_dir, slots)
     full_lock = SlotSemaphore(full_suite_lock_dir(sem.lock_dir), 1)
 
     if aq_status:
-        _render_status(sem.snapshot(), full_lock.snapshot(), _holder_verdicts(lock_dir))
+        _render_status(
+            sem.snapshot(), full_lock.snapshot(), _holder_verdicts(lock_dir), box_lock.snapshot()
+        )
         return
 
     if aq_apply and not aq_reap_orphans:
@@ -832,14 +887,17 @@ def test_command(
                         full_lock.snapshot(), waited_for=None if aq_no_wait else budget
                     )
                     ctx.exit(75)  # EX_TEMPFAIL, like a full box
-            slot = held.enter_context(
-                sem.acquire(
+            admitted_slots = held.enter_context(
+                # Phase 1 preserves the current policy: even full suites
+                # use shared box admission, after their separate full lock.
+                box_lock.acquire(
                     timeout=max(0.0, budget - (time.monotonic() - queued_at)),
                     poll=poll,
                     meta=meta,
                     on_wait=_on_wait,
                 )
             )
+            slot = admitted_slots[0]
             if report:
                 append_event(
                     report, "acquired", waited=round(time.monotonic() - queued_at, 3), slot=slot
@@ -866,7 +924,7 @@ def test_command(
                 "Check the paths, -k expression and marker deselects."
             )
         ctx.exit(returncode)
-    except SlotTimeout as exc:
+    except (SlotTimeout, IncompatibleLockClient) as exc:
         if report:
             append_event(report, "slot_timeout", waited=round(time.monotonic() - queued_at, 3))
         console.print(f"[red]aq test:[/] {exc}")

@@ -197,6 +197,44 @@ def test_project_set_forwards_guarded_integration_configuration(runner):
         client.execute.assert_awaited_once_with("edit_project", expected)
 
 
+def test_project_set_review_delegate_to_forwards_and_clears(runner):
+    """`review-delegate-to` maps to `review_delegate_to`; user/supervisor/clear."""
+    from src.cli.app import cli
+
+    for argv, expected in (
+        (
+            ["project", "set", "p1", "review-delegate-to", "supervisor"],
+            ("edit_project", {"project_id": "p1", "review_delegate_to": "supervisor"}),
+        ),
+        (
+            ["project", "set", "p1", "review-delegate-to", "user"],
+            ("edit_project", {"project_id": "p1", "review_delegate_to": "user"}),
+        ),
+        (
+            ["project", "set", "p1", "review-delegate-to", "clear"],
+            ("edit_project", {"project_id": "p1", "review_delegate_to": None}),
+        ),
+    ):
+        client = _client({"edit_project": {"success": True}})
+        with patch("src.cli.projects._get_client", return_value=client):
+            result = runner.invoke(cli, argv)
+        assert result.exit_code == 0, (argv, result.output)
+        assert client.execute.await_args_list == [((expected[0], expected[1]),)]
+
+
+def test_project_set_review_delegate_to_rejects_invalid_values(runner):
+    """`review-delegate-to` only accepts user, supervisor, or clear."""
+    from src.cli.app import cli
+
+    for bad in ("manager", "self", "supervisor;rm"):
+        client = _client({})
+        with patch("src.cli.projects._get_client", return_value=client):
+            result = runner.invoke(cli, ["project", "set", "p1", "review-delegate-to", bad])
+        assert result.exit_code == 2, (bad, result.output)
+        assert "review-delegate-to" in result.output
+        client.execute.assert_not_awaited()
+
+
 def test_project_set_rejects_unguarded_or_invalid_integration_configuration(runner):
     from src.cli.app import cli
 

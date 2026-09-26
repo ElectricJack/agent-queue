@@ -153,6 +153,7 @@ Extras group features that aren't needed for the minimal install:
 | `mcp`           | MCP server dependencies (`mcp>=1.28.1,<2`)                              |
 | `cli`           | `aq` CLI (`click`, `prompt-toolkit`, `agent-queue-api-client`)          |
 | `dev`           | Test + lint tools — see §3.4                                            |
+| `test-selection-dynamic` | `pytest-testmon==2.2.0` for the evidence-only testmon experiment (`tests/test_selection_testmon_experiment.py`); deliberately not in `dev` |
 
 There is no `gemini` extra (the Google one is `google`) and no `memory` extra —
 semantic memory ships as the external `aq-memory` plugin, installed with

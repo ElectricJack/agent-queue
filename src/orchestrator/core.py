@@ -317,6 +317,7 @@ class Orchestrator(
         # Terminal onboarding records share the hourly operational retention
         # cadence, but remain independent of Playbook V2 being enabled.
         self._last_operational_event_retention_sweep: float = 0.0
+        self._last_conversation_maintenance: float = 0.0
         # Playbook V2 retention sweep, interval-limited by configuration.
         self._last_playbook_retention_sweep: float = 0.0
         self._last_worktree_reaper: float = 0.0
@@ -369,11 +370,21 @@ class Orchestrator(
         # escalation surface", which never affects scheduling or the durable
         # escalation records themselves.
         self.escalation_delivery = None
+        # Intake fails closed until the shared delivery adapter binds this port.
+        from src.conversations.outbox import UnboundOutbox
+
+        self.conversation_outbox = UnboundOutbox()
         # Hourly digest scheduler (discord-simplification §8).  Also wired by
         # ``main.py``; ``None`` means no external routine surface.  Evaluation
         # and delivery both live in the service, so nothing about the cycle
         # depends on whether Discord is reachable.
         self.digest_schedule = None
+        # The one dashboard origin every externally posted link names
+        # (escalations, digest, reviews, digest_preview).  Reads config per
+        # call, so a hot-reloaded ``dashboard.server`` bites at once.
+        from src.remote_links import DashboardLinkResolver
+
+        self.dashboard_links = DashboardLinkResolver(lambda: self.config)
         # MCP server registry — populated from vault/mcp-servers/*.md and
         # vault/projects/*/mcp-servers/*.md on startup, kept current by the
         # vault watcher.  Resolves the ``list[str]`` of names on each
@@ -573,6 +584,7 @@ class Orchestrator(
         self.integration_cleanup_service = None
         self.integration_control_service = None
         self.root_promotion_service = None
+        self.integration_collection = None
         # Reference to the command handler, set by the bot after initialization.
         # Used to pass handler references to interactive Discord views (e.g.
         # Retry/Skip buttons on failed task notifications).
@@ -1318,6 +1330,25 @@ class Orchestrator(
             # before we issue our own DB queries.
             await asyncio.wait({bg_task}, timeout=5.0)
 
+        project = await self.db.get_project(task.project_id)
+        if (
+            project is not None
+            and project.hierarchical_integration_mode in {"hierarchy", "train"}
+            and project.integration_repository_id == task.repo_id
+            and task.branch_name
+        ):
+            # The handoff proof needs the session/task binding and workspace
+            # lock. Do it before ordinary stop tears either one down. This is
+            # an external stop, so it must use the provider-backed proof even
+            # when the writer belongs to a pool session.
+            from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES
+
+            released = await self.arelease_integration_writer_for_retry(
+                task, reason="stop_task", roles=REQUEUE_INTEGRATION_OWNER_ROLES
+            )
+            if released is not True:
+                return "Integration branch handoff is unproven; task resources were retained"
+
         # Clean up sentinel and release workspace lock (worktree-aware)
         ws = await self.db.get_workspace_for_task(task_id)
         if ws:
@@ -1823,6 +1854,7 @@ class Orchestrator(
             return await self.root_promotion_service.reconcile(row["id"])
 
         from src.integration.candidate_ci import CandidateCIService
+        from src.integration.child_delivery import ChildDelivery
         from src.integration.collection import CollectionService
         from src.integration.parent_ci import ParentCIService
 
@@ -1830,8 +1862,12 @@ class Orchestrator(
             self.integration_attestation_service, self.github_repository_binding_resolver
         )
         collection = CollectionService(
-            self.db, hierarchy_service_factory=self._branch_materialization_hierarchy
+            self.db,
+            hierarchy_service_factory=self._branch_materialization_hierarchy,
+            child_delivery=ChildDelivery(self.db, self.promotion_service),
         )
+        # ``aq integration redrive-child`` queues a parent's collection now.
+        self.integration_collection = collection
         async def candidate_service_for_row(row):
             if self._command_handler is None:
                 return None
@@ -1852,9 +1888,12 @@ class Orchestrator(
             return await provider.confirm_stopped(SessionHandle(
                 name=session["name"], provider=session["provider"], instance_token=session["instance_token"]))
 
+        from src.jobs.adapters import PublisherJobs
+
         self.development_integration = DevelopmentIntegration(
             self.db, data_dir=self.config.data_dir, git=self.git,
             confirm_stopped=development_confirm_stopped,
+            job_client=PublisherJobs(lambda: self._command_handler),
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
@@ -2760,6 +2799,12 @@ class Orchestrator(
         the daemon — it logs the error and retries on the next cycle.
         """
         try:
+            handler = getattr(self, "_command_handler", None)
+            if getattr(type(handler), "_cmd_job_reconcile", None):
+                try:
+                    await handler._cmd_job_reconcile({})
+                except Exception:
+                    logger.error("Job reconciliation error", exc_info=True)
             # ── Phase 1: Promotion cascade ──────────────────────────────────
             # These steps form a "promotion cascade": a resolved gate can
             # immediately unblock a DEFINED task in the same cycle.  Breaking
@@ -2937,6 +2982,10 @@ class Orchestrator(
             # failed cleanup must not interrupt scheduling.
             await self._sweep_operational_event_retention()
 
+            # Conversation retention runs even with intake disabled when old
+            # rows remain. Delay notices go through the currently bound outbox.
+            await self._maintain_conversations(now=now)
+
             # 10. Auto-archive stale terminal tasks (~once per hour).
             await self._auto_archive_tasks()
 
@@ -2980,6 +3029,23 @@ class Orchestrator(
             await self._revoke_expired_tokens()
         except Exception:
             logger.error("Scheduler cycle error", exc_info=True)
+
+    async def _maintain_conversations(self, *, now: float) -> None:
+        """Hourly maintenance; an outbox or database outage cannot stop scheduling."""
+        if now - self._last_conversation_maintenance < 3600:
+            return
+        self._last_conversation_maintenance = now
+        try:
+            outbox = self.conversation_outbox
+            if not outbox.bound and not await self.db.list_conversations(limit=1):
+                return
+            from src.conversations.maintenance import ConversationMaintenance
+
+            result = await ConversationMaintenance(db=self.db, outbox=outbox).tick(now=now)
+            if any(result.values()):
+                logger.info("Conversation maintenance: %s", result)
+        except Exception:
+            logger.warning("Conversation maintenance failed", exc_info=True)
 
     # -----------------------------------------------------------------------
     # Framework-overhaul cascade stubs (Wave 0 substrate).
@@ -3340,6 +3406,19 @@ class Orchestrator(
             await self.agent_questions.tick()
         except Exception:
             logger.error("AgentQuestionService tick failed", exc_info=True)
+        if self._command_handler is not None:
+            try:
+                from src.agent_waits import AgentWaitReconciler
+
+                result = await AgentWaitReconciler(self._command_handler).tick()
+                if not result.get("success"):
+                    logger.error("AgentWaitReconciler tick refused: %s", result)
+            except Exception:
+                logger.error("AgentWaitReconciler tick failed", exc_info=True)
+        else:
+            # main.py installs the handler before the first cycle; without one
+            # no durable wait can resolve, so say so rather than skip silently.
+            logger.warning("AgentWaitReconciler skipped: no command handler installed")
         await self.session_reconciler.tick()
         from src.integration.completion_recovery import schedule_ready_owner_recovery
 

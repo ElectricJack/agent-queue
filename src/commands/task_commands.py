@@ -2961,6 +2961,13 @@ class TaskCommandsMixin:
                             labels=labels,
                             routing_policy=routing_policy,
                         )
+                    # Every other creation path runs the internal post-create
+                    # writer in its own transaction; a hierarchy/train filing
+                    # must too, or its row commits without the metadata the
+                    # writer owns (a review revision task's
+                    # ``review_response``, a review dispatch record).
+                    if after_create_on is not None:
+                        await after_create_on(conn, created["task_id"], task.parent_task_id)
                 task_id = created["task_id"]
                 gate_id = created.get("gate_id")
                 hierarchy_created = True
@@ -4478,6 +4485,18 @@ class TaskCommandsMixin:
             return {"error": f"Task '{args['task_id']}' not found"}
         if task.status == TaskStatus.IN_PROGRESS:
             return {"error": "Task is currently in progress. Stop it first."}
+        project = await self.db.get_project(task.project_id)
+        if (
+            task.status == TaskStatus.BLOCKED
+            and project is not None
+            and project.hierarchical_integration_mode in {"hierarchy", "train"}
+            and await self.db.get_integration_checkpoint(task.id)
+        ):
+            from src.integration.canonical_reservation import reserve_canonical_task_branch
+
+            reservation = await reserve_canonical_task_branch(self.db, task.id)
+            if reservation["outcome"] not in {"acquired", "already_reserved"}:
+                return {"error": f"Cannot restart integration task: {reservation['reason']}"}
         old_status = task.status.value
         await self.db.transition_task(
             args["task_id"],
@@ -5320,6 +5339,10 @@ class TaskCommandsMixin:
         for lbl in labels:
             if lbl.startswith("hold:"):
                 reasons.append(Reason(code="held", detail=f"label '{lbl}' withholds task", ref=lbl))
+
+        # Evaluate the claim query itself: graph blockedness and capacity
+        # snapshots do not include hierarchy receipt/origin fences.
+        reasons.extend(await self.db.claim_frontier_exclusions(str(task_id)))
 
         # A phase is deliberately stricter than a normal container: a failed
         # direct child never settles it, and every later phase stays closed.

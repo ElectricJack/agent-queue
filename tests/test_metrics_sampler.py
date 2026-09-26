@@ -9,6 +9,7 @@ sweep that quietly keeps everything.
 from __future__ import annotations
 
 import json
+import asyncio
 import time
 
 import pytest
@@ -16,6 +17,8 @@ import pytest
 from src.config import AppConfig
 from src.database import Database
 from src.event_bus import EventBus
+from src.metrics.histogram import new_hist, observe
+from src.metrics.perf import PerfRegistry
 from src.metrics.sampler import (
     METRIC_TICK_EVENT,
     MetricsSampler,
@@ -684,3 +687,226 @@ async def test_stored_payload_is_compact_json(db):
     # colon — a few percent of every row, forever.
     assert ", " not in stored
     assert json.loads(stored)["agents"]["total"] == 0
+
+
+async def test_a_sample_carries_a_perf_block_fed_by_the_registry(db, monkeypatch):
+    # The probe has its own lifecycle tests. Keep this snapshot assertion
+    # independent of how long the database reads take on a busy box.
+    monkeypatch.setattr("src.metrics.sampler.LoopLagProbe.start", lambda self: None)
+    reg = PerfRegistry()
+    reg.observe_route("GET /api/x", 5.0, 200)
+    reg.observe_loop_drift(3.0)
+    sampler = MetricsSampler(db, AppConfig(), clock=Clock(), registry=reg)
+    try:
+        perf = (await sampler.collect())["perf"]
+        assert perf["enabled"] is True
+        assert perf["api"]["routes"]["GET /api/x"]["latency"]["count"] == 1
+        assert perf["loop"]["drift"]["count"] == 1
+        assert set(perf["db"]["pool"]) == {"checked_out", "overflow", "size"}
+        assert "psi" in perf["host"] and perf["host"]["stale"] is False
+        assert perf["relay"] == {"available": False, "reason": "not_polled"}
+        assert perf["sampler"]["perf_ms"] >= perf["host"]["host_ms"]
+        assert (await sampler.collect())["perf"]["api"]["all"]["count"] == 0
+    finally:
+        await sampler.stop()
+
+
+async def test_perf_cost_includes_host_work_only_when_refreshed(db, monkeypatch):
+    from types import SimpleNamespace
+
+    clock = Clock()
+    elapsed = Clock(0)
+
+    def read_host():
+        elapsed.advance(0.025)
+        return {"stale": False, "host_ms": 25.0}
+
+    monkeypatch.setattr("src.metrics.sampler.time", SimpleNamespace(perf_counter=elapsed))
+    sampler = MetricsSampler(
+        db, AppConfig(), clock=clock, registry=PerfRegistry(),
+        host=SimpleNamespace(sample=read_host),
+    )
+    try:
+        assert (await sampler.collect())["perf"]["sampler"]["perf_ms"] == 25
+        clock.advance(1)
+        assert (await sampler.collect())["perf"]["sampler"]["perf_ms"] == 0
+    finally:
+        await sampler.stop()
+
+
+async def test_perf_disabled_yields_a_stub_and_starts_no_probe(db):
+    from unittest.mock import Mock
+
+    host = Mock()
+    config = AppConfig()
+    config.metrics.perf_enabled = False
+    registry = PerfRegistry()
+    sampler = MetricsSampler(db, config, clock=Clock(), registry=registry, host=host)
+    await sampler.start()
+    try:
+        assert sampler._probe is None
+        assert registry.enabled is False
+        assert (await sampler.collect())["perf"] == {"enabled": False}
+        host.sample.assert_not_called()
+    finally:
+        await sampler.stop()
+
+
+async def test_the_probe_follows_the_flag_on_hot_reload(db):
+    from src.config import MetricsConfig
+
+    sampler = make_sampler(db)
+    await sampler.start()
+    try:
+        assert sampler._probe is not None
+        first = sampler._probe
+        sampler.config.metrics = MetricsConfig(perf_enabled=False)
+        assert (await sampler.collect())["perf"] == {"enabled": False}
+        assert sampler._probe is None
+        assert first._task is None
+        sampler.config.metrics = MetricsConfig(perf_loop_probe_ms=200, perf_slow_query_ms=25)
+        await sampler.collect()
+        assert sampler._probe is not None and sampler._probe is not first
+        assert sampler._probe.interval_ms == 200
+        assert sampler._registry.slow_query_threshold_ms == 25
+    finally:
+        await sampler.stop()
+    assert sampler._probe is None
+
+
+async def test_perf_host_is_refreshed_only_on_the_slow_tier(db):
+    from unittest.mock import Mock
+
+    clock = Clock()
+    host = Mock()
+    host.sample.side_effect = [
+        {"stale": False, "host_ms": 0.0, "psi": {}},
+        {"stale": True, "host_ms": 0.0, "psi": {}},
+    ]
+    sampler = MetricsSampler(db, AppConfig(), clock=clock, registry=PerfRegistry(), host=host)
+    try:
+        assert (await sampler.collect())["perf"]["host"]["stale"] is False
+        clock.advance(1)
+        assert (await sampler.collect())["perf"]["host"]["stale"] is False
+        assert host.sample.call_count == 1
+        clock.advance(5)
+        assert (await sampler.collect())["perf"]["host"]["stale"] is True
+        assert host.sample.call_count == 2
+    finally:
+        await sampler.stop()
+
+
+async def test_roll_up_merges_perf_histograms_by_addition(db):
+    sampler = make_sampler(db, clock=Clock(MINUTE))
+    for i in range(60):
+        hist = new_hist()
+        observe(hist, 10 if i < 59 else 900)
+        await db.write_metrics_sample(
+            "1s", MINUTE + i, {"perf": {"enabled": True, "loop": {"drift": hist}}}
+        )
+    # Hot reload can switch the probes off before this minute closes.
+    await db.write_metrics_sample("1s", MINUTE + 59.5, {"perf": {"enabled": False}})
+    await sampler.roll_up(MINUTE + 120)
+    rows = await db.read_metrics_samples("1m", MINUTE, MINUTE)
+    drift = rows[0]["perf"]["loop"]["drift"]
+    assert drift["count"] == 60 and drift["max"] == 900 and sum(drift["counts"]) == 60
+    assert rows[0]["perf"]["enabled"] is False
+
+
+async def test_perf_disabled_does_not_replay_counters_on_reenable(db):
+    registry = PerfRegistry()
+    config = AppConfig()
+    sampler = MetricsSampler(db, config, clock=Clock(), registry=registry)
+    try:
+        registry.observe_route("GET /api/x", 5, 200)
+        config.metrics.perf_enabled = False
+        await sampler.collect()
+        registry.observe_route("GET /api/x", 5, 200)
+        config.metrics.perf_enabled = True
+        assert (await sampler.collect())["perf"]["api"]["all"]["count"] == 0
+    finally:
+        await sampler.stop()
+
+
+async def test_a_relay_delta_is_recorded_exactly_once(db):
+    class FakeRelay:
+        polls = 0
+
+        async def poll(self):
+            self.polls += 1
+            hist = new_hist()
+            observe(hist, 7)
+            return {"available": True, "reason": None, "relays_open": 1, "http": hist}
+
+    relay = FakeRelay()
+    clock = Clock()
+    config = AppConfig()
+    config.metrics.perf_relay_poll_seconds = 5
+    sampler = MetricsSampler(db, config, clock=clock, relay=relay)
+    try:
+        first = await sampler.collect()
+        assert first["perf"]["relay"] == {"available": False, "reason": "not_polled"}
+        await asyncio.sleep(0)
+        second = await sampler.collect()
+        third = await sampler.collect()
+        assert second["perf"]["relay"]["http"]["count"] == 1
+        assert third["perf"]["relay"] == {"available": True, "reason": "between_polls"}
+        assert aggregate_samples([first, second, third])["perf"]["relay"]["http"]["count"] == 1
+        clock.advance(6)
+        await sampler.collect()
+        await asyncio.sleep(0)
+        assert relay.polls == 2
+    finally:
+        await sampler.stop()
+
+
+@pytest.mark.parametrize("disable", [False, True])
+async def test_relay_poll_is_background_single_flight_and_cancelled(db, disable):
+    from unittest.mock import AsyncMock
+
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def poll():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    relay = AsyncMock()
+    relay.poll.side_effect = poll
+    clock = Clock(0)
+    sampler = MetricsSampler(db, AppConfig(), clock=clock, relay=relay)
+    try:
+        await sampler.collect()
+        await asyncio.wait_for(started.wait(), 5)
+        clock.advance(6)
+        await sampler.collect()
+        assert relay.poll.await_count == 1
+        if disable:
+            sampler.config.metrics.perf_enabled = False
+            assert (await sampler.collect())["perf"] == {"enabled": False}
+        else:
+            await sampler.stop()
+        assert cancelled.is_set()
+    finally:
+        await sampler.stop()
+
+
+async def test_relay_pending_delta_is_discarded_on_perf_rollback(db):
+    from unittest.mock import AsyncMock
+
+    relay = AsyncMock()
+    relay.poll.return_value = {"available": True, "reason": None, "relays_open": 1}
+    sampler = MetricsSampler(db, AppConfig(), clock=Clock(), relay=relay)
+    try:
+        await sampler.collect()
+        await asyncio.sleep(0)
+        sampler.config.metrics.perf_enabled = False
+        await sampler.collect()
+        sampler.config.metrics.perf_enabled = True
+        assert (await sampler.collect())["perf"]["relay"] == {
+            "available": False, "reason": "not_polled",
+        }
+    finally:
+        await sampler.stop()

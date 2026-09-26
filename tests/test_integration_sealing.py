@@ -12,7 +12,6 @@ from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
-from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     gates,
@@ -46,7 +45,6 @@ from src.integration.models import (
 )
 from src.models import Project, RepoConfig, RepoSourceType, TaskStatus
 from src.profiles.capabilities import CapabilityPolicy
-from tests.db_fixtures import lease_dsn
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.pg_trigger_helpers import injected_trigger
 
@@ -99,9 +97,8 @@ def _policy() -> dict:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("integration-sealing.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("integration-sealing.db")
     await database.create_project(Project(id="p", name="integration project"))
     await database.create_repo(
         RepoConfig(
@@ -112,13 +109,11 @@ async def db(tmp_path):
         )
     )
     yield database
-    await database.close()
 
 
 @pytest.fixture
-async def concurrent_db(request, tmp_path):
-    database = Database(lease_dsn("integration-sealing-concurrent.db"))
-    await database.initialize()
+async def concurrent_db(request, tmp_path, reuse_database):
+    database = await reuse_database("integration-sealing-concurrent.db")
     await database.create_project(Project(id="p", name="integration project"))
     await database.create_repo(
         RepoConfig(

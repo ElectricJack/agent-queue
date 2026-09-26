@@ -149,13 +149,17 @@ def test_the_catalog_holds_the_claude_usage_check_and_the_availability_checks():
     by_id = {c.id: c for c in provider_checks.CHECKS}
     assert set(by_id) == {
         CHECK_ID,
+        "providers.usage_activity_gap",
         "providers.availability",
         "providers.recovery_stuck",
         "providers.failover_playbook",
         "providers.held_tasks",
     }
     assert by_id[CHECK_ID].owner == "provider-usage"
-    assert {c.owner for c in by_id.values() if c.id != CHECK_ID} == {"provider-failover"}
+    assert by_id["providers.usage_activity_gap"].owner == "provider-usage"
+    assert {c.owner for c in by_id.values() if c.id not in {
+        CHECK_ID, "providers.usage_activity_gap",
+    }} == {"provider-failover"}
 
 
 def test_the_check_is_report_only():

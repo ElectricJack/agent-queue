@@ -8,7 +8,6 @@ import pytest
 from sqlalchemy import insert, select, update
 from sqlalchemy.exc import DBAPIError
 
-from src.database import Database
 from src.database.tables import (
     integration_batches,
     integration_attestation_publications,
@@ -26,7 +25,6 @@ from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload
 from src.integration.main_promotion import RootAttestationSubject
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType
-from tests.db_fixtures import lease_dsn
 
 
 SHA = "a" * 40
@@ -114,9 +112,8 @@ def attestation_payload() -> AttestationPayload:
 
 
 @pytest.fixture
-async def attestation_db(tmp_path):
-    db = Database(lease_dsn("attestation.db"))
-    await db.initialize()
+async def attestation_db(tmp_path, reuse_database):
+    db = await reuse_database("attestation.db")
     await db.create_project(Project(id="p", name="project"))
     await db.create_repo(
         RepoConfig(
@@ -236,7 +233,6 @@ async def attestation_db(tmp_path):
             )
         )
     yield db
-    await db.close()
 
 
 class ExactTreeGit:

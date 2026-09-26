@@ -21,6 +21,7 @@ class ProfileSummary:
         harness (None | str | Unset):
         default_class (str | Unset):  Default: ''.
         codex_full_auto (bool | Unset):  Default: False.
+        codex_service_tier (None | str | Unset):
         claude_dangerously_skip_permissions (bool | Unset):  Default: False.
         allowed_tools (list[str] | Unset):
         mcp_servers (list[str] | Unset):
@@ -37,6 +38,7 @@ class ProfileSummary:
     harness: None | str | Unset = UNSET
     default_class: str | Unset = ""
     codex_full_auto: bool | Unset = False
+    codex_service_tier: None | str | Unset = UNSET
     claude_dangerously_skip_permissions: bool | Unset = False
     allowed_tools: list[str] | Unset = UNSET
     mcp_servers: list[str] | Unset = UNSET
@@ -63,6 +65,12 @@ class ProfileSummary:
         default_class = self.default_class
 
         codex_full_auto = self.codex_full_auto
+
+        codex_service_tier: None | str | Unset
+        if isinstance(self.codex_service_tier, Unset):
+            codex_service_tier = UNSET
+        else:
+            codex_service_tier = self.codex_service_tier
 
         claude_dangerously_skip_permissions = self.claude_dangerously_skip_permissions
 
@@ -112,6 +120,8 @@ class ProfileSummary:
             field_dict["default_class"] = default_class
         if codex_full_auto is not UNSET:
             field_dict["codex_full_auto"] = codex_full_auto
+        if codex_service_tier is not UNSET:
+            field_dict["codex_service_tier"] = codex_service_tier
         if claude_dangerously_skip_permissions is not UNSET:
             field_dict["claude_dangerously_skip_permissions"] = claude_dangerously_skip_permissions
         if allowed_tools is not UNSET:
@@ -152,6 +162,15 @@ class ProfileSummary:
         default_class = d.pop("default_class", UNSET)
 
         codex_full_auto = d.pop("codex_full_auto", UNSET)
+
+        def _parse_codex_service_tier(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        codex_service_tier = _parse_codex_service_tier(d.pop("codex_service_tier", UNSET))
 
         claude_dangerously_skip_permissions = d.pop("claude_dangerously_skip_permissions", UNSET)
 
@@ -197,6 +216,7 @@ class ProfileSummary:
             harness=harness,
             default_class=default_class,
             codex_full_auto=codex_full_auto,
+            codex_service_tier=codex_service_tier,
             claude_dangerously_skip_permissions=claude_dangerously_skip_permissions,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,

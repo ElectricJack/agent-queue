@@ -158,6 +158,10 @@ command shapes and gotchas. Use them instead of re-deriving:
 - **aq-workspaces-and-git** — workspace ops + git via CLI.
 - **aq-playbooks-and-gates** — playbook runs and human-in-the-loop
   gates.
+- **aq-reviews** — document reviews: submitting, revising, reviewing
+  when dispatched, and the cross-family adversarial review recipe.
+- **aq-mini-projects** — explicitly requested quick ideation in one task:
+  frozen brief, proposal/critique/synthesis and a roadmap for human plan review.
 
 If a workflow needs a command none of those cover, come back here and
 use the discovery workflow above.

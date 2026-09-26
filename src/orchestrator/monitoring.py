@@ -683,10 +683,10 @@ class MonitoringMixin:
         """
         if not self.config.playbooks.enabled:
             return
-        if not hasattr(self, "command_handler") or self.command_handler is None:
+        if self._command_handler is None:
             return
         try:
-            for r in await self.command_handler.reconcile_playbook_child_tasks():
+            for r in await self._command_handler.reconcile_playbook_child_tasks():
                 logger.info("Playbook run %s resumed on its child task", r["run_id"])
         except Exception as e:  # noqa: BLE001 - a sweep failure never aborts a cycle
             logger.warning("Playbook child-task reconciliation failed: %s", e)
@@ -710,10 +710,10 @@ class MonitoringMixin:
         """
         if not self.config.playbooks.enabled:
             return
-        if not hasattr(self, "command_handler") or self.command_handler is None:
+        if self._command_handler is None:
             return
         try:
-            results = await self.command_handler.check_paused_playbook_timeouts()
+            results = await self._command_handler.check_paused_playbook_timeouts()
             for r in results:
                 # The V2 sweep reports the run and what happened to it, nothing
                 # else: the V1 ``timeout_seconds`` / ``on_timeout`` keys went

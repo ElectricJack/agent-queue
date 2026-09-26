@@ -256,6 +256,21 @@ tests protect the child; the resumed parent verifies the aggregate.
 
 ### 6.5 Waking and verifying the parent
 
+An integration-owned parent awaiting children remains `PAUSED` while collection is
+active. Graph blockedness is an independent projection, not a reason to terminate
+collection. Doctor must report a `BLOCKED` parent whose checkpoint still awaits
+children, including its episode and operation state, so the supervisor can distinguish
+a displaced collector from a repair that actually requires human intervention.
+Removing a manual hold restores this integration-owned pause; it does not put the
+parent in `IN_PROGRESS`, `ASSIGNED` or `READY` without the guarded verifier wake.
+`aq integration redrive-root` may restore a wrongly `BLOCKED` root to collecting:
+the dry run reports `would_collect` with its checkpoint SHA, and applying requires
+that SHA and an audit reason. Recovery rechecks the current episode, active operation,
+canonical repository and branch, and detached collector fence under the project lock.
+It refuses a live task holder, a manual hold, a terminal failure, an unrelated attention
+flag or a `human_required` repair. It preserves branch refs, episode and generation;
+normal collection supplies child receipts and verifier wake afterwards.
+
 The parent wakes only when every child in the current generation is successfully delivered, is
 a verified no-op, or has an explicit accepted abandonment disposition. The playbook input
 `on_failed_child` supports `block` or `ask`; the shipped default is `block`, while `ask` creates a

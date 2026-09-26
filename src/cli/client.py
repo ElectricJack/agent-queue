@@ -19,6 +19,7 @@ without schema setup or data migrations.
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import pkgutil
@@ -393,15 +394,45 @@ class CLIClient:
         return resp.json()
 
     # -- Streams (console-stream pane view) --------------------------------
+
+    async def job_output(self, job_id: str, *, after: int = 0):
+        """Yield retained-output SSE frames with logical byte cursors."""
+        try:
+            async with self._http.stream(
+                "GET", f"/api/jobs/{job_id}/output", params={"after": after}, timeout=None,
+            ) as response:
+                if response.status_code != 200:
+                    await response.aread()
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = None
+                    detail = payload.get("detail") if isinstance(payload, dict) else None
+                    if isinstance(detail, dict) and detail.get("error"):
+                        # 410 carries the immutable result; name the error only.
+                        raise CommandError("job_output", detail["error"])
+                    raise CommandError("job_output", _relay_error(response))
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        yield json.loads(line[6:])
+        except httpx.ConnectError as exc:
+            raise DaemonNotRunningError(str(exc)) from exc
+
     # Bespoke router, not /api/execute — mirrors send_session_message's
     # direct-httpx pattern above.
 
     async def start_stream(
         self, command: list[str], cwd: str, *,
         title: str | None = None, session_id: str, project_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict:
         assert self._http is not None, "CLIClient not connected"
-        payload: dict = {"command": command, "cwd": cwd, "session_id": session_id}
+        import uuid
+
+        payload: dict = {
+            "command": command, "cwd": cwd, "session_id": session_id,
+            "idempotency_key": idempotency_key or "stream-" + uuid.uuid4().hex,
+        }
         if title:
             payload["title"] = title
         if project_id:

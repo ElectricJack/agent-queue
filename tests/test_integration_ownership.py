@@ -8,24 +8,20 @@ import time
 import pytest
 from sqlalchemy import insert, update
 
-from src.database import Database
 from src.database.tables import integration_branch_owners
 from src.integration.models import BranchKey, Fence
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
 from src.models import Project, RepoSourceType, Task, Workspace
-from tests.db_fixtures import lease_dsn
 
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("ownership.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("ownership.db")
     await database.create_project(Project(id="p", name="p"))
     yield database
-    await database.close()
 
 
 async def test_collector_cannot_acquire_a_branch_while_parent_is_active(db):

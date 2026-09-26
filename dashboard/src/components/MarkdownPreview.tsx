@@ -29,7 +29,8 @@ export interface MarkdownPreviewProps {
 const InlineCodeContext = createContext(true);
 
 function commandCodeComponents(inlineCodeLinks: ReadonlyMap<string, string>): Components {
-  function Pre({ children, node: _node, ...props }: ComponentProps<"pre"> & ExtraProps) {
+  function Pre({ children, ...props }: ComponentProps<"pre"> & ExtraProps) {
+    delete props.node;
     return (
       <InlineCodeContext.Provider value={false}>
         <pre {...props}>{children}</pre>
@@ -37,7 +38,8 @@ function commandCodeComponents(inlineCodeLinks: ReadonlyMap<string, string>): Co
     );
   }
 
-  function Code({ children, node: _node, ...props }: ComponentProps<"code"> & ExtraProps) {
+  function Code({ children, ...props }: ComponentProps<"code"> & ExtraProps) {
+    delete props.node;
     const docsUrl = useContext(InlineCodeContext)
       ? inlineCodeLinks.get(String(children))
       : undefined;

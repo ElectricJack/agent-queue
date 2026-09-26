@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
@@ -180,6 +181,7 @@ export default function Messaging() {
   const statusData = status.data;
   const health = statusData?.delivery_health ?? {};
   const attention = Object.entries(health).filter(([, count]) => (count ?? 0) > 0);
+  const conversationsEnabled = (loaded?.conversation as { enabled?: boolean } | undefined)?.enabled === true;
 
   return (
     <div className="space-y-6">
@@ -190,6 +192,12 @@ export default function Messaging() {
           Replies always go to the owning project supervisor.
         </p>
       </header>
+
+      {conversationsEnabled && (
+        <Link to="/conversations" className="inline-block text-sm text-indigo-300 hover:underline">
+          Supervisor conversations
+        </Link>
+      )}
 
       {!escalation.enabled && (
         <div

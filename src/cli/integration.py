@@ -252,6 +252,15 @@ def integration_release_owner(
     _execute(ctx, "integration_release_owner", args)
 
 
+@integration.command("reserve-owner")
+@click.option("--task-id", required=True)
+@click.pass_context
+@_handle_errors
+def integration_reserve_owner(ctx: click.Context, task_id: str) -> None:
+    """Restore a stopped train task's missing canonical branch reservation."""
+    _execute(ctx, "integration_reserve_owner", {"task_id": task_id})
+
+
 @integration.command("release-stale-owners")
 @click.option("--project-id", required=True)
 @click.option("--dry-run", is_flag=True, help="Report what would be released; change nothing.")
@@ -432,7 +441,9 @@ def integration_redrive_root(
     and whether that head is already on the default branch, and answers
     `would_open`, `nothing_to_redrive`, `blocked` or `not_eligible` with the
     reason and the head.  `--apply` needs that head and a reason, and opens
-    the PR only for it.
+    the PR only for it. A wrongly BLOCKED collecting root instead reports
+    `would_collect`; applying restores PAUSED under its existing collector
+    fence and episode. Operator holds and terminal repair failures stay guarded.
     """
     if apply and not (expected_head_sha and reason):
         raise click.UsageError("--apply requires --head and --reason")
@@ -442,6 +453,46 @@ def integration_redrive_root(
     if reason is not None:
         args["reason"] = reason
     _execute(ctx, "integration_redrive_root", args)
+
+
+@integration.command("redrive-child")
+@click.argument("task_id")
+@click.option(
+    "--apply", is_flag=True, help="Advance the child into assembly; default is a dry run."
+)
+@click.option(
+    "--head",
+    "expected_head_sha",
+    help="The head the dry run reported; required with --apply.",
+)
+@click.option("--reason", help="Required audit reason when applying.")
+@click.pass_context
+@_handle_errors
+def integration_redrive_child(
+    ctx: click.Context,
+    task_id: str,
+    apply: bool,
+    expected_head_sha: str | None,
+    reason: str | None,
+) -> None:
+    """Say why completed child TASK_ID was never assembled into its parent; advance it.
+
+    A collecting parent assembles a COMPLETED child only once approved evidence
+    pins the child's exact checkpoint head.  The dry run reads the child and its
+    parent, proves the head from Git (the remote branch tip, descended from the
+    child's origin base) and answers `would_advance`, `nothing_to_redrive`,
+    `blocked` or `not_eligible` with the reason and the head.  `--apply` needs
+    that head and a reason: it records approved evidence for exactly that head
+    and queues the parent's collection.
+    """
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_redrive_child", args)
 
 
 @integration.command("rebind-reused-identity")
@@ -492,6 +543,28 @@ def integration_rebind_reused_identity(
     if reason is not None:
         args["reason"] = reason
     _execute(ctx, "integration_rebind_reused_identity", args)
+
+
+@integration.command("rebind-repair")
+@click.option("--task-id", required=True)
+@click.option("--dry-run/--apply", default=True, help="Prove only, or reserve the proven candidate.")
+@click.option("--head", "expected_head_sha", help="Exact candidate head reported by dry-run; required with --apply.")
+@click.pass_context
+@_handle_errors
+def integration_rebind_repair(
+    ctx: click.Context, task_id: str, dry_run: bool, expected_head_sha: str | None
+) -> None:
+    """Prove a live delegate's candidate against its current conflict intent.
+
+    Apply refreshes a stale stage and reserves the exact candidate under the
+    current intent. The attached repair session then performs the fenced push.
+    """
+    if not dry_run and not expected_head_sha:
+        raise click.UsageError("--apply requires --head from dry-run")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": dry_run}
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    _execute(ctx, "integration_rebind_repair", args)
 
 
 @integration.command("release-delegates")

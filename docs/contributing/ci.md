@@ -14,8 +14,8 @@ to appear.
 
 ## Vocabulary
 
-* **Suite arm** — one entry in the test job's matrix. Four run in parallel,
-  each with its own pytest command.
+* **Suite arm** — one entry in the test job's matrix. Eleven run in parallel:
+  eight default shards and three specialized arms, each with its own command.
 * **Integration branch** — a branch AQ's integration service creates to assemble
   and test candidate work before it reaches `main`; its refs look like
   `aq/integration/p-<32 hex>/r-<32 hex>`. The train promotes the exact SHA
@@ -34,7 +34,7 @@ build](#there-is-no-documentation-build).
 
 | Workflow | Triggers | What it does |
 |---|---|---|
-| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch` | A four-arm test matrix against a real PostgreSQL service. |
+| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services. |
 | [`macos-acceptance.yml`](../../.github/workflows/macos-acceptance.yml) | Push to `ci/macos-acceptance**`; `workflow_dispatch` | The native macOS install journey, recorded by a human rather than gating a merge. |
 
 > **Note.** No workflow runs on a push to `main`. Everything that reaches
@@ -53,9 +53,10 @@ flowchart TD
     S -->|no| C[test matrix]
     B[push to aq/integration or aq/parent,<br/>or workflow_dispatch] --> C
     C --> E[cli-conformance]
-    C --> F[default]
+    C --> F[default: shards 1–8]
     C --> G[migration-and-slow]
     C --> H[postgres-integration]
+    C --> I[E2E CLI: claims, cli, graphs, failover]
 ```
 
 ### Which pull requests run
@@ -73,19 +74,40 @@ alike, with two exceptions decided by the job's `if:`:
 The job checks out the exact event SHA (the PR's merge with its base, for a
 `pull_request` event) and asserts it with `git rev-parse HEAD`.
 
-### The four suite arms
+### The suite arms
 
 | Arm | Command |
 |---|---|
-| `cli-conformance` | `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py` |
-| `default` | `pytest tests/ -n auto --dist loadfile` |
-| `migration-and-slow` | `pytest tests/ -n auto --dist loadfile -m "migration or slow"` |
-| `postgres-integration` | `pytest tests/ -n auto --dist loadfile -m "integration or perf"` |
+| `cli-conformance` | `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py -n 2 --dist loadfile` |
+| `default-1/8` … `default-8/8` | `pytest tests/ -n 4 --dist loadfile --splits 8 --group N --splitting-algorithm least_duration` |
+| `migration-and-slow` | `pytest tests/ -n 4 --dist loadfile -m "migration or slow"` |
+| `postgres-integration` | `pytest tests/ -n 4 --dist loadfile -m "integration or perf" --ignore=tests/test_e2e_cli_stateful.py` |
 
-`fail-fast: false`, so one red arm does not hide the others; the job times out
-at 30 minutes.
+Every arm appends `--timeout=120 --durations=50 -rfE` to its command.
+`pytest-timeout` (installed by the `dev` extra) limits each test to 120 seconds,
+including fixture setup and teardown. A timeout names the failed test and dumps
+thread stacks; `-rfE` keeps failed/error node IDs in the final summary, and
+`--durations=50` reports the 50 slowest setup, call and teardown phases.
 
-The `default` arm inherits the marker deselects from `pyproject.toml`'s
+Known slow tests may use a bounded `@pytest.mark.timeout(seconds)` override.
+Each stateful CLI group has a 540-second local test limit covering its
+setup (180s), smoke subprocess (270s) and cleanup (90s) deadlines. This does not extend the job deadline.
+See [pytest-timeout's documentation](https://github.com/pytest-dev/pytest-timeout)
+for marker precedence and timeout behavior.
+
+`fail-fast: false`, so one red arm does not hide the others; each job times out
+at 10 minutes, including installation and migrations. These limits bound
+failures and improve diagnostics. Profiling on 2026-09-26 measured the
+unsharded default suite at about 21 minutes; it now runs in eight shards as
+described below. The original stateful CLI smoke measured 11–16 minutes; its scenarios now
+run in four separate jobs with five-minute caps, as described below. Hosted
+runner timings must confirm that the groups finish within those caps. A longer test marker does not make that job fit within its cap.
+
+Worker counts are explicit: four for the broad suite arms, matching the
+profiled hosted runner, and two for the two CLI test files. Local `aq test`
+runs still use the box's resource caps; these counts apply to CI.
+
+The default shards inherit the marker deselects from `pyproject.toml`'s
 `addopts`, which is why the other two arms exist: they select exactly what the
 default one drops. The `cli-conformance` arm is separated so a CLI-surface
 change fails visibly instead of inside fourteen thousand other results, and it
@@ -96,9 +118,124 @@ Wall-clock budgets still skip in the `postgres-integration` arm: they need
 them measure the runner rather than the code. Statement-count budgets, which
 are deterministic, do run. See [testing](testing.md#latency-budgets).
 
+### Default shard timings and refresh
+
+[`pytest-split`](https://github.com/jerry-git/pytest-split) selects each default
+shard using the committed [`.test_durations`](../../.test_durations) map. The
+`least_duration` algorithm balances the sum of test times, including fixture
+setup and teardown. Selection happens before xdist assigns the selected files
+to four workers with `--dist loadfile`. The eight groups are disjoint and
+together select the complete default suite. New test IDs use the average
+stored duration; removed IDs do not affect selection.
+
+The target is at most 4.5 minutes per default shard job, leaving headroom below
+the five-minute CI job goal. Stored test seconds are summed across workers;
+they are a balancing input, not a wall-clock guarantee. Check the actual job
+times after changing the shard count or refreshing the map. The separately
+selected integration and migration suites retain their own commands.
+
+The initial map comes from the 2026-09-26 local default profile with eight
+workers (`local-default-n8.txt` in the task's CI profiling data). It sums the
+reported setup, call, and teardown phases. That run had failures and setup
+errors, so these are seed timings, not passing-test evidence. Pytest hid phases
+below 0.005 seconds; collected IDs without reported timings are seeded with
+0.015 seconds (three phases at that reporting threshold). The map is filtered
+to the default test IDs collected when it was created.
+
+Each default shard uploads a `default-durations-N-ATTEMPT` artifact with measured
+setup, call, and teardown times for its selected tests. Download all eight from
+one completed, passing default matrix run and one run attempt, then refresh:
+
+```bash
+python scripts/merge_test_durations.py /path/to/downloaded-artifacts
+```
+
+The helper accepts extracted artifacts in subdirectories. It rejects missing or
+duplicate shards, overlapping test IDs, and invalid durations before replacing
+the map. Review the test result, collected ID count, and `.test_durations` diff,
+then commit it. Use a complete successful run; interrupted or failing runs may
+record only some phases and are unsuitable for balancing.
+
+Alternatively, refresh from an unsharded default run on the disposable
+PostgreSQL test service:
+
+```bash
+aq test tests/ --store-durations --clean-durations
+```
+
+This uses the normal test slot, full-suite lock, and worker cap, and replaces
+the map with measured setup, call, and teardown times while removing stale IDs.
+Do not add `--splits` or `--group` to this refresh command: a cleaned map
+from a single shard would discard the other seven shards' measurements.
+
+Every shard has its own check name. The parent and root required-check lists
+in [the train policy](../config/agent-queue-train-policy.json) must include all
+eight. Existing installations using the former `Tests (default)` name need the
+operator to rebind that policy and update any explicit merge-required checks
+or GitHub branch rules when adopting this workflow.
+
+### Dependency cache
+
+The suite arms share an `actions/cache` entry for `.venv`, keyed by runner
+OS, architecture, the resolved Python patch version, and both Python package
+manifests (plus Python lockfiles when present). There are no fallback restore
+keys: a dependency or interpreter change creates a fresh environment. On a
+miss, CI creates the venv and installs `.[dev,cli]` and the generated client's
+build backend, `poetry-core`.
+
+Every run adds `.venv/bin` to `PATH` and reinstalls both local packages as
+editable with `--no-deps --no-build-isolation`. This keeps the current source,
+entry points and generated client in use even when their code changed without
+a dependency change. Cached dependencies need no download or resolution on a
+hit. Bump the `venv-v1` key prefix to rebuild unchanged dependency manifests.
+
+This removes repeated setup work; it does not establish a five-minute job
+budget. The default shards and the integration smoke tests still need their
+test time measured on hosted runners after any performance changes.
+
+### Stateful CLI scenario groups
+
+The `e2e-cli` job runs the [Tier 1 end-to-end kit](../guides/e2e-swarm.md) on
+the same PR, candidate and parent events. Its four matrix entries run in
+parallel, with a five-minute budget per job and `fail-fast: false`:
+
+| Group | Scenarios |
+|---|---|
+| `claims` | S1–S3, S6–S7, S19 |
+| `cli` | S5, S8–S9, S12, S17 |
+| `graphs` | S10, S16b, S18 |
+| `failover` | S4, S11, S13–S15, S16a |
+
+Each runner selects one parametrized node from `tests/test_e2e_cli_stateful.py`
+with `-m integration -s`. It creates and cleans up its own database, daemon,
+port, vault and repositories. S16a covers outage detection and rerouting;
+S16b prepares its own outage to cover recovery, undo and every provider down.
+Together they retain the original S16 assertions. No xdist workers or other test suites share
+these runners, and successful runs print every scenario's duration.
+`--durations=0` also reports the complete group call, including environment
+setup and cleanup, alongside pytest fixture setup and teardown.
+Fixture registration/cleanup and background state inspection use the public
+command API to avoid repeated Python CLI startup. Scenario mutations, scope
+refusals and explicit CLI output assertions still run through the CLI.
+
+Both boundaries in [the train policy](../config/agent-queue-train-policy.json)
+require all four `E2E CLI (...)` checks. Existing installations must rebind
+the updated policy and add these names to any explicit merge-required checks
+or GitHub branch rules; a green `postgres-integration` check now covers the
+remaining integration tests.
+
 ### Environment
 
-* A `postgres:18` service container, with `POSTGRES_TEST_DSN` pointed at it.
+* Each job starts a disposable `postgres:18` container with `docker run`, with
+  `POSTGRES_TEST_DSN` pointed at its localhost port. GitHub Actions service
+  containers do not accept PostgreSQL server arguments. The server runs with
+  `max_connections=300` so concurrent xdist workers can lease databases without
+  exhausting the default 100 connections. It also uses `fsync=off`,
+  `synchronous_commit=off`, and `full_page_writes=off` to reduce checkpoint and
+  database-teardown costs for this disposable data. These settings are confined
+  to CI. A bounded TCP readiness check runs before migrations or tests; failed
+  jobs print the PostgreSQL logs, and an always-run step removes the container
+  and its volumes.
   [`tests/pg_dsn.py`](../../tests/pg_dsn.py) rewrites that DSN per xdist worker
   (`…_gw0`, `…_gw1`, …) and creates each worker's database on first use —
   sharing one database across concurrent workers would let one worker's reset
@@ -107,11 +244,13 @@ are deterministic, do run. See [testing](testing.md#latency-budgets).
   outside normal pytest startup.
 * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` identities, because the Git-integration
   tests create real commits and hosted runners ship with none.
-* A separate step applies the whole Alembic chain to a scratch database
-  (`ci_migration_check`) before the tests run, so a migration that only works
-  against an already-populated database fails loudly. The SQLite half of this
-  check went away with the backend — it was never a proxy for production, since
-  SQLite accepted DDL PostgreSQL rejects outright.
+* The `migration-and-slow` arm applies the whole Alembic chain to a scratch
+  database (`ci_migration_check`) before the tests run, so a migration that
+  only works against an already-populated database fails loudly. Other arms
+  skip this standalone check; their test fixtures still provision PostgreSQL
+  normally. The SQLite half of this check went away with the backend — it was
+  never a proxy for production, since SQLite accepted DDL PostgreSQL rejects
+  outright.
 
 ### Concurrency
 
@@ -184,7 +323,8 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
   *server*'s Python suites (`tests/test_dashboard_server_*.py`) do run, in the
   default arm like any other test file; they stage a small synthetic bundle
   rather than building the real one.
-* It does not run the [end-to-end kit](scripts.md#supported-end-to-end-kit).
+* It does not run Tier 2 of the [end-to-end kit](scripts.md#supported-end-to-end-kit),
+  which launches real provider sessions. The four E2E CLI groups run Tier 1.
 * It does not publish anything. There is no release workflow and no
   documentation deploy — see [builds and releases](releases.md) and
   [above](#there-is-no-documentation-build).
@@ -193,15 +333,15 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 
 | Input | Output |
 |---|---|
-| A PR into `main` opened, updated, reopened or marked ready | Four check runs on the PR's merge with its base |
-| A push to `aq/integration/**` or `aq/parent/**` | Four check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
+| A PR into `main` opened, updated, reopened or marked ready | Fifteen check runs on the PR's merge with its base |
+| A push to `aq/integration/**` or `aq/parent/**` | Fifteen check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
 | A draft PR, or a same-repository PR from `aq/integration/**` | A skipped job; the push run covers the integration head |
 | `workflow_dispatch` | The same matrix, on demand, from the Actions tab |
 
 ## State ownership
 
-CI owns nothing durable. Every database it creates lives in an ephemeral
-service container, and no job writes back to the repository. The workflow holds
+CI owns nothing durable. Every database it creates lives in a disposable
+PostgreSQL container, and no job writes back to the repository. The workflow holds
 only `contents: read`; the test job's checkout uses the default token and
 pushes nothing.
 
@@ -220,7 +360,7 @@ pushes nothing.
 ## Related pages
 
 * [Local checks](checks.md) — how to be reasonably sure before you push.
-* [Testing](testing.md) — the markers the four arms slice by.
+* [Testing](testing.md) — the markers the suite arms slice by.
 * [Code generation](codegen.md) — the drift guards CI enforces.
 * [Pull requests and delivery](pull-requests.md) — how work actually reaches `main`.
 * [CI at integration boundaries](../guides/integration-ci-boundaries.md) — the

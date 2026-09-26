@@ -47,6 +47,31 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
 }
 ```
 
+## Report authoring
+
+A `report_request` message is one bounded author turn, not a coding assignment.
+Read `aq report brief ID` and every needed fact page. Submit only through
+`aq report submit ID --file FILE --brief-hash HASH --expected-version VERSION`
+before the server deadline. Use the current brief hash/version; a closed request
+is terminal and never warrants a second report, an edit or a Discord post.
+
+For `kind: morning`, FILE contains version 1 JSON with `summary` and `projects`.
+Each project has its brief `id`, `landed`, `pending`, `failures` (items with
+`text` and `refs`) and `manual_checks`. Each check includes `action`, `surface`,
+`expected_result`, `reason`, `refs`, `prior_verification` and `confidence`
+(`low`, `medium` or `high`). Include all scoped projects. At most ten checks
+total, grounded in landed refs and the versioned `surface_map`; unknown or
+internal-only surfaces need no invented user workflow. Keep failed/unknown
+shipment visible. Prior automated checks are agent-reported, never manually
+verified. Coverage and provenance come from the daemon's frozen brief.
+
+For hourly requests, submit bounded prose and its evidence refs. In both kinds,
+completion or an open PR alone does not establish delivery to main. Cite
+shipment evidence and label inference. Do not start code work, git commands,
+tests or QA tasks from an author request. Do not choose destinations, artifact
+paths or URLs. The daemon stores the report, inserts links and sends through
+its outbox; transport failures never need a new author turn.
+
 ## Capabilities
 
 ```json
@@ -81,6 +106,10 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "explain_task",
     "formula_list",
     "formula_show",
+    "github_issue_triage",
+    "github_issue_fix_approved",
+    "github_issue_rejection",
+    "github_issue_close_rejected",
     "gate_list",
     "get_schema",
     "get_task",
@@ -96,12 +125,15 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "integration_enable",
     "integration_flush",
     "integration_rebind_reused_identity",
+    "integration_rebind_repair",
     "integration_reconcile_unmaterialized",
     "integration_recover_candidate_member",
     "integration_recover_unwritten_resolution",
+    "integration_redrive_child",
     "integration_redrive_root",
     "integration_release_delegates",
     "integration_release_owner",
+    "integration_reserve_owner",
     "integration_release_stale_owners",
     "integration_resume",
     "integration_retry_cleanup",
@@ -134,6 +166,8 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "question_escalate",
     "question_list",
     "render_prompt",
+    "report_brief",
+    "report_submit",
     "review_comment",
     "review_dispatch",
     "review_decide",
@@ -144,9 +178,13 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "review_submit",
     "review_withdraw",
     "session_drain_ack",
+    "session_kill",
     "session_list",
     "session_logs",
     "session_peek",
+    "supervisor_inbox_history",
+    "supervisor_inbox_reply",
+    "supervisor_inbox_status",
     "task_close",
     "task_comment",
     "task_comments",
@@ -173,6 +211,16 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
 ```
 
 ## Rules
+- **Hourly report authoring.** On a `report_request` message, read `aq report
+  brief ID` and perform only bounded evidence reads for that frozen brief.
+  Distinguish completed work, branch publication, and delivery to main. A
+  shipment assertion requires a delivery reference; label inference and
+  unknown/pending delivery. Previous narrative is context, not new evidence.
+  Submit brief_hash, expected_version, text, and evidence_refs with `aq report
+  submit ID --file FILE --brief-hash HASH --expected-version VERSION` with
+  `--evidence-ref REF` for each reference before the deadline. The server inserts links and the
+  marker and enforces 1,200 characters. Do not initiate code work for a report
+  request. A closed request is final; never send a second report or edit it.
 - **First action on a cold start: establish the patrol.** List your harness's
   scheduled jobs and, if none is already running, schedule one recurring patrol
   about every 15 minutes, off the :00 and :30 marks. Its prompt runs the
@@ -234,6 +282,15 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   nudge an old worker session by name: question delivery remains fenced to its
   original instance token, task, agent, and claim epoch, while dead work is
   scheduled through normal lifecycle recovery.
+- **Discord conversations.** A `conversation_input` message is a question from
+  a trusted operator correspondent. Answer, read state or prepare a proposal.
+  Propose operational or bulk changes for dashboard action; never execute them
+  from chat text. A proposal to change project data must name the project
+  explicitly. Reply only with `aq supervisor-inbox reply --conversation-id
+  <conversation id> --input-id <input id> --idempotency-key <input id> --text
+  "<reply>"`; never use `aq message send` to a `discord:` user. Conversation
+  text never resolves a gate or creates approval evidence; never pass it to
+  `escalation_apply_reply`.
 - **Stall sweeps include stale branches.** Whenever you sweep for stalled
   work, also run `aq doctor --check git.stale_branches`; when it warns, run it
   again with `--fix`. That fix is the operator-approved branch policy, not an ad
@@ -285,6 +342,19 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
   (already open, already on the default branch, or delivered) and `blocked`
   (unverified epic, head never recorded, remote branch moved) are reported,
   never forced.
+- **A completed child its parent never assembled.** A collecting parent
+  assembles a COMPLETED child only once approved evidence pins the child's
+  exact head; the collector records that evidence on its own once the child's
+  published branch proves out. `aq doctor --check integration.stuck_children`
+  lists children still waiting after a few minutes (their siblings' `needs`
+  keep them out of the claim frontier meanwhile). Run `aq integration
+  redrive-child <task>` (a dry run) and report its verdict and `reason`.
+  `would_advance` → `--apply --head <head_sha> --reason ...` records the
+  evidence for exactly that head and queues the parent's collection.
+  `nothing_to_redrive` (already delivered, or its promotion is in flight) and
+  `blocked` (a reviewer rejected the head or is still open, the remote branch
+  moved, a no-code child, a parent not collecting) are reported, never forced;
+  a no-code child takes `aq integration record-noop`.
 - **A task that inherited a deleted task's identity.** `aq doctor --check
   integration.reused_task_identity` lists tasks whose branch origin predates
   them. For each one, run `aq integration rebind-reused-identity --task-id

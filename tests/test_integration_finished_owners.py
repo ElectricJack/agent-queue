@@ -21,7 +21,6 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy import insert, select, update
 
-from src.database import Database
 from src.database.tables import (
     archived_tasks,
     events,
@@ -46,19 +45,16 @@ from src.integration.finished_owners import (
     release_finished_branch_owners,
 )
 from src.models import Project, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 CHECK = "integration.finished_branch_owners"
 
 
 @pytest.fixture
-async def db():
-    d = Database(lease_dsn("finished-owners.db"))
-    await d.initialize()
+async def db(reuse_database):
+    d = await reuse_database("finished-owners.db")
     await d.create_project(Project(id="p", name="P"))
     await _mode(d, "development")
     yield d
-    await d.close()
 
 
 async def _mode(db, mode: str, *, desired: str | None = None) -> None:

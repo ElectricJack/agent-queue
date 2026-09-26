@@ -70,19 +70,7 @@ def _make_orchestrator(**overrides):
     # Database stubs
     orch.db = AsyncMock()
     orch.db.list_agents = AsyncMock(return_value=overrides.get("agents", []))
-    in_progress = overrides.get("in_progress_tasks", [])
-    ready_tasks = overrides.get("ready_tasks", [])
-
-    async def mock_list_tasks(status=None):
-        from src.models import TaskStatus
-
-        if status == TaskStatus.IN_PROGRESS:
-            return in_progress
-        elif status == TaskStatus.READY:
-            return ready_tasks
-        return []
-
-    orch.db.list_tasks = mock_list_tasks
+    orch.db.count_tasks_by_status = AsyncMock(return_value=overrides.get("task_counts", {}))
     return orch
 
 

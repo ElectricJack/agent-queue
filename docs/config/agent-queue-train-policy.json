@@ -2,12 +2,23 @@
   "version": 1,
   "parent": {
     "required_checks": {
-      "version": "tests-yml-v1",
+      "version": "tests-yml-v3",
       "names": [
         "Tests (cli-conformance)",
-        "Tests (default)",
+        "Tests (default-1/8)",
+        "Tests (default-2/8)",
+        "Tests (default-3/8)",
+        "Tests (default-4/8)",
+        "Tests (default-5/8)",
+        "Tests (default-6/8)",
+        "Tests (default-7/8)",
+        "Tests (default-8/8)",
         "Tests (migration-and-slow)",
-        "Tests (postgres-integration)"
+        "Tests (postgres-integration)",
+        "E2E CLI (claims)",
+        "E2E CLI (cli)",
+        "E2E CLI (graphs)",
+        "E2E CLI (failover)"
       ],
       "producer_id": "github-actions"
     },
@@ -42,12 +53,23 @@
   },
   "root": {
     "required_checks": {
-      "version": "tests-yml-v1",
+      "version": "tests-yml-v3",
       "names": [
         "Tests (cli-conformance)",
-        "Tests (default)",
+        "Tests (default-1/8)",
+        "Tests (default-2/8)",
+        "Tests (default-3/8)",
+        "Tests (default-4/8)",
+        "Tests (default-5/8)",
+        "Tests (default-6/8)",
+        "Tests (default-7/8)",
+        "Tests (default-8/8)",
         "Tests (migration-and-slow)",
-        "Tests (postgres-integration)"
+        "Tests (postgres-integration)",
+        "E2E CLI (claims)",
+        "E2E CLI (cli)",
+        "E2E CLI (graphs)",
+        "E2E CLI (failover)"
       ],
       "producer_id": "github-actions"
     },

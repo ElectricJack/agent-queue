@@ -124,6 +124,37 @@ def make_state(**kw):
 
 
 class TestExplainCommand:
+    async def test_ready_task_explains_the_live_pool_frontier_predicates(self, handler, db):
+        from src.models import RepoConfig, RepoSourceType
+
+        await db.create_repo(RepoConfig(
+            id="frontier-repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK,
+        ))
+        await mktask(db, "frontier-held", status=TaskStatus.READY)
+        await db.add_task_label("frontier-held", "hold:operator")
+        await db.set_task_meta("frontier-held", "claim_prepare_backoff_until", time.time() + 300)
+        # No hierarchy origin exists; this must be explained even when the
+        # graph row is unblocked and no scheduler snapshot is available.
+        await db.update_project(
+            PROJECT_ID, hierarchical_integration_mode="train",
+            integration_repository_id="frontier-repo",
+        )
+        result = await handler._cmd_explain_task({"task_id": "frontier-held"})
+        exclusions = {r["code"]: r for r in result["reasons"] if r["code"].startswith("frontier_")}
+        assert set(exclusions) == {
+            "frontier_origin_not_materialized", "frontier_hold_label", "frontier_claim_prepare_backoff"
+        }
+        assert "materialized_origin_when_hierarchical()" in exclusions[
+            "frontier_origin_not_materialized"
+        ]["detail"]
+        assert "claim_prepare_backoff_until" in exclusions["frontier_claim_prepare_backoff"]["detail"]
+        assert all(r["ref"] == "frontier-held" for r in exclusions.values())
+        await db.update_project(PROJECT_ID, hierarchical_integration_mode="disabled")
+        await db.remove_task_label("frontier-held", "hold:operator")
+        await db.set_task_meta("frontier-held", "claim_prepare_backoff_until", 0)
+        cleared = await handler._cmd_explain_task({"task_id": "frontier-held"})
+        assert not any(code.startswith("frontier_") for code in cleared["reason_codes"])
+
     async def test_unrouted_ready_task_reports_awaiting_intelligence_route(
         self, handler, db
     ):

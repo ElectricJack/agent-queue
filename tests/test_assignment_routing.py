@@ -8,7 +8,7 @@ The orchestrator reads ``tasks.intelligence_class`` and emits
 """
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -17,7 +17,7 @@ from src.commands.routing_commands import build_route_options, profile_for_class
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, AgentState, Project, Task, TaskStatus
+from src.models import Agent, AgentProfile, AgentState, Project, ProjectStatus, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.orchestrator.provider_distribution import ProviderDistributionMixin
 from src.orchestrator.route_needed import ROUTE_NEEDED_INTERVAL_SECONDS
@@ -297,6 +297,33 @@ async def test_provider_distribution_skips_disabled_pool_but_preserves_explicit_
 
 
 # -- the cascade's only routing job: emit task.route_needed ------------------
+
+
+@pytest.mark.parametrize("project_status", [ProjectStatus.PAUSED, ProjectStatus.ARCHIVED])
+@pytest.mark.parametrize("task_status", [TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.DEFINED])
+async def test_route_needed_skips_inactive_projects_before_loading_tasks(
+    orch, project_status, task_status,
+):
+    await orch.db.create_project(Project(id="inactive", name="Inactive", status=project_status))
+    await orch.db.create_task(_task(id="inactive-task", project_id="inactive", status=task_status))
+    await _create(orch.db, "active-task")
+    row_to_task = orch.db._row_to_task
+
+    def load_active_row(row):
+        assert row["project_id"] == "p", "inactive backlog must not be materialized"
+        return row_to_task(row)
+
+    with patch.object(orch.db, "_row_to_task", side_effect=load_active_row) as load:
+        assert await orch._emit_route_needed_events() == 1
+        assert load.call_count == 1
+    emitted = orch.bus.emit.call_args.args[1]
+    assert emitted["task_id"] == "active-task"
+    assert "inactive-task" not in orch._route_needed_emitted
+
+    # Reactivation makes the held work eligible without waiting for a throttle.
+    await orch.db.update_project("inactive", status=ProjectStatus.ACTIVE)
+    assert await orch._emit_route_needed_events() == 1
+    assert orch.bus.emit.call_args.args[1]["task_id"] == "inactive-task"
 
 
 async def test_route_needed_is_emitted_once_per_interval_for_unrouted_work(orch):

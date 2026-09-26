@@ -391,19 +391,26 @@ class SessionReconciler:
         for row in live:
             if row.lifecycle == "pool":
                 # Pool sessions never send a provider-side drain ack -- an
-                # idle one (no held task) marked stopped or sleeping is
-                # simply done and gets torn down the pool way.  ``sleep`` is
-                # intentionally deferred while a claim is active: public
-                # session control must not interrupt a worker's task.
-                if row.desired_state in ("stopped", "sleeping") and row.task_id is None:
-                    if self.orchestrator is None:
-                        logger.warning(
-                            "Pool session %s wants draining but no orchestrator is wired "
-                            "— skipping", row.id,
-                        )
+                # idle one marked stopped or sleeping is torn down the pool
+                # way. A task pointer left from a released claim can name a
+                # task already requeued or claimed by another worker; detach
+                # it using the current assignment before deciding to wait.
+                if row.desired_state not in ("stopped", "sleeping"):
+                    continue
+                if row.task_id is not None:
+                    if not await self.db.release_displaced_pool_claim(row.id, now=now):
                         continue
-                    reason = "sleeping" if row.desired_state == "sleeping" else "drained"
-                    await self.orchestrator._terminate_pool_session(row, reason=reason)
+                    row = await self.db.get_session(row.id)
+                    if row is None:
+                        continue
+                if self.orchestrator is None:
+                    logger.warning(
+                        "Pool session %s wants draining but no orchestrator is wired "
+                        "— skipping", row.id,
+                    )
+                    continue
+                reason = "sleeping" if row.desired_state == "sleeping" else "drained"
+                await self.orchestrator._terminate_pool_session(row, reason=reason)
                 continue
             provider = self._provider_for(row)
             if provider is None:
@@ -489,6 +496,9 @@ class SessionReconciler:
                 # treated as already stuck, not as fresh -- ``or 0.0``, not
                 # ``or now``.
                 if (s.claim_phase_at or 0.0) > now - timeout:
+                    continue
+                waiting, _ = await self._wait_lease(s, now)
+                if waiting:
                     continue
                 preparations = getattr(self.orchestrator, "claim_preparations", {})
                 preparation = preparations.get((s.id, s.task_id, s.last_claim_epoch))
@@ -577,6 +587,9 @@ class SessionReconciler:
             if not idle_pool_claim_loop_stalled(
                 observed, now=now, stall_seconds=stall_seconds
             ) or self._is_deferred(observed.name):
+                continue
+            waiting, _ = await self._wait_lease(observed, now)
+            if waiting:
                 continue
             # Do not tear down based on an observation alone.  The guarded
             # update proves this exact running instance remains unclaimed;
@@ -1232,6 +1245,44 @@ class SessionReconciler:
             return False
         return await service.is_waiting(row, now=now)
 
+    async def _wait_lease(self, row, now) -> tuple[bool, float]:
+        """Bounded dormancy and consumption grace without inventing activity.
+
+        Use the task's current epoch even for task-lifecycle sessions whose
+        last_claim_epoch is unset. The database additionally checks instance,
+        ownership and task status. Death and explicit stops are never exempt.
+        """
+        if not row.task_id:
+            return False, 0.0
+        task = await self.db.get_task(row.task_id)
+        if task is None:
+            return False, 0.0
+        wait = await self.db.agent_wait_for_claim(row, task.claim_epoch)
+        if wait is None:
+            return False, 0.0
+        if await self.db.blocking_wait_for(row, task.claim_epoch, now):
+            return True, 0.0
+        # The global scan is bounded. Resolve this owner's overdue/completed
+        # wait through the command boundary before evaluating a stale lease,
+        # even when it fell outside that cycle's first 100 candidates.
+        handler = getattr(self.orchestrator, "_command_handler", None)
+        if handler is not None and wait["state"] == "active":
+            from src.agent_waits import AgentWaitReconciler
+
+            result = await AgentWaitReconciler(handler).tick(now=now, wait_id=wait["id"])
+            if not result.get("success"):
+                raise RuntimeError(f"wait reconciliation failed: {result}")
+            wait = await self.db.agent_wait_for_claim(row, task.claim_epoch)
+        resumed = wait["wait_resumed_at"] if wait else None
+        if resumed is not None:
+            last_action = float(
+                await self.db.get_task_meta(row.task_id, META_STALL_LAST_ACTION) or 0.0
+            )
+            if last_action < resumed:
+                await self.db.set_task_meta(row.task_id, META_STALL_NUDGES, "0")
+                await self.db.set_task_meta(row.task_id, META_STALL_LAST_ACTION, str(resumed))
+        return False, resumed or 0.0
+
     # -- step 4: stall ladder ---------------------------------------------
 
     async def _exit_usage_limit_screen(
@@ -1318,7 +1369,10 @@ class SessionReconciler:
                 continue
             if await self._waiting_for_question(row, now):
                 continue
-            last = row.last_activity or row.started_at
+            waiting, resumed = await self._wait_lease(row, now)
+            if waiting:
+                continue
+            last = max(row.last_activity or row.started_at or 0.0, resumed)
             if now - last <= ttl:
                 continue
             if await self._still_live(row) is None:
@@ -1495,6 +1549,9 @@ class SessionReconciler:
             if fresh is None:
                 continue  # an earlier step in this tick already handled it
             row = fresh
+            waiting, _ = await self._wait_lease(row, now)
+            if waiting:
+                continue
             task = await self.db.get_task(row.task_id) if row.task_id else None
             still_open = task is not None and is_live_pool_claim_task_status(task.status)
             if still_open:
@@ -1614,6 +1671,9 @@ class SessionReconciler:
             if row is None:
                 # Never launched as a session (legacy runtime, or the
                 # scheduler is mid-launch).  Not ours to touch.
+                continue
+            waiting, _ = await self._wait_lease(row, now)
+            if waiting:
                 continue
             if row.state in _LIVE_STATES:
                 continue
@@ -1837,8 +1897,14 @@ class SessionReconciler:
                 continue
             if await self._waiting_for_question(row, now):
                 continue
+            waiting, resumed = await self._wait_lease(row, now)
+            if waiting:
+                continue
+            if resumed and now - resumed <= float(self.sessions_config.lease_ttl_seconds):
+                continue  # one full lease interval to consume the result
             if row.lifecycle == "pool":
                 last = row.last_activity if row.last_activity is not None else row.started_at
+                last = max(last or 0.0, resumed)
                 elapsed = now - (last or now)
             else:
                 baseline = row.started_at
@@ -1847,6 +1913,7 @@ class SessionReconciler:
                     resumed_at = await questions.backstop_activity_at(row)
                     if resumed_at is not None:
                         baseline = resumed_at
+                baseline = max(baseline or 0.0, resumed)
                 elapsed = now - (baseline or now)
             if elapsed <= limit:
                 continue

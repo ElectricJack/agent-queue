@@ -42,6 +42,11 @@ from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
+from src.metrics.histogram import is_hist, is_sum, merge_hists, merge_sums
+from src.metrics.host import HostSampler
+from src.metrics.perf import LoopLagProbe, PerfRegistry, perf_registry
+from src.metrics.relay import RelayReader
+
 logger = logging.getLogger(__name__)
 
 #: The bus event carrying one live sample.  Never persisted through
@@ -132,7 +137,9 @@ def aggregate_samples(samples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     minute or per hour.  Summing them would turn "12 agents for 60 seconds"
     into 720 agents.  Non-numeric leaves (booleans like
     ``subagents.complete``, strings) take the **last** value: for a
-    completeness flag the newest reading is the honest one.
+    completeness flag the newest reading is the honest one.  A ``kind: hist``
+    leaf merges by adding buckets and a ``kind: sum`` leaf by adding counters
+    — a latency percentile cannot be averaged.
 
     Keys absent from some samples are still carried: the average is over the
     samples that actually had the key, so a series that started mid-minute is
@@ -155,7 +162,12 @@ def aggregate_samples(samples: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             out[key] = None
             continue
         if all(isinstance(v, Mapping) for v in values):
-            out[key] = aggregate_samples(values)
+            if all(is_hist(v) for v in values):
+                out[key] = merge_hists(values)
+            elif all(is_sum(v) for v in values):
+                out[key] = merge_sums(values)
+            else:
+                out[key] = aggregate_samples(values)
         elif all(isinstance(v, bool) for v in values):
             out[key] = values[-1]
         elif all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in values):
@@ -178,7 +190,17 @@ class MetricsSampler:
         clock: injected ``time.time`` replacement for deterministic tests.
     """
 
-    def __init__(self, db, config, bus=None, *, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        db,
+        config,
+        bus=None,
+        *,
+        clock: Callable[[], float] = time.time,
+        registry: PerfRegistry | None = None,
+        host: HostSampler | None = None,
+        relay: RelayReader | None = None,
+    ) -> None:
         self.db = db
         self.config = config
         self.bus = bus
@@ -210,6 +232,17 @@ class MetricsSampler:
         # Per-tick wall-clock cost of ``collect`` — surfaced in the sample so
         # the sampler's own overhead is one of the things you can graph.
         self._last_collect_ms: float = 0.0
+        self._registry = registry if registry is not None else perf_registry()
+        self._host = host if host is not None else HostSampler(config)
+        self._probe: LoopLagProbe | None = None
+        self._host_last: dict[str, Any] = {}
+        self._perf_host_ms = 0.0
+        self._relay = relay if relay is not None else RelayReader(config)
+        self._relay_task: asyncio.Task | None = None
+        self._relay_pending: dict[str, Any] | None = None
+        self._relay_at: float | None = None
+        self._relay_available = False
+        self._relay_polled = False
 
     @property
     def _settings(self):
@@ -230,6 +263,7 @@ class MetricsSampler:
             logger.info("Metrics sampler disabled by config")
             return
         self.subscribe()
+        await self._sync_perf()
         try:
             self._daemon_starts = await self.db.bump_daemon_start_count()
         except Exception:
@@ -247,10 +281,104 @@ class MetricsSampler:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await self._task
             self._task = None
+        await self._stop_probe()
+        await self._stop_relay()
         # After the loop is down, so the final flush cannot race a tick that
         # is still appending to the buffer.
         with contextlib.suppress(Exception):
             await self.flush()
+
+    def _perf_enabled(self) -> bool:
+        return bool(getattr(self._settings, "perf_enabled", True))
+
+    async def _sync_perf(self) -> None:
+        """Apply the live flag to every writer before collecting any data."""
+        enabled = self._perf_enabled()
+        was_enabled = self._registry.enabled
+        self._registry.enabled = enabled
+        self._registry.slow_query_threshold_ms = float(
+            getattr(self._settings, "perf_slow_query_ms", 100.0) or 100.0
+        )
+        if enabled:
+            self._sync_probe_start()
+        else:
+            await self._stop_probe()
+            await self._stop_relay()
+            if was_enabled:
+                # Do not replay the previous enabled interval after rollback.
+                self._registry.snapshot()
+
+    def _sync_probe_start(self) -> None:
+        if self._probe is None and self._perf_enabled():
+            interval = int(getattr(self._settings, "perf_loop_probe_ms", 100) or 100)
+            self._probe = LoopLagProbe(self._registry, interval_ms=interval)
+            self._probe.start()
+
+    async def _stop_probe(self) -> None:
+        probe, self._probe = self._probe, None
+        if probe is not None:
+            await probe.stop()
+
+    async def _collect_perf(self, now: float) -> dict[str, Any]:
+        """Snapshot per-tick counters and carry the slow-tier host reading."""
+        started = time.perf_counter()
+        await self._sync_perf()
+        if not self._perf_enabled():
+            return {"enabled": False}
+        perf = self._registry.snapshot()
+        gauges = getattr(self.db, "metrics_pool_gauges", None)
+        perf["db"]["pool"] = gauges() if callable(gauges) else {
+            "checked_out": None,
+            "overflow": None,
+            "size": None,
+        }
+        perf["host"] = dict(self._host_last) if self._host_last else {
+            "stale": True,
+            "reason": "not_sampled_yet",
+        }
+        pending, self._relay_pending = self._relay_pending, None
+        if pending is not None:
+            self._relay_available = bool(pending.get("available"))
+            self._relay_polled = True
+            perf["relay"] = pending
+        else:
+            perf["relay"] = {
+                "available": self._relay_available,
+                "reason": "between_polls" if self._relay_polled else "not_polled",
+            }
+        poll_every = float(getattr(self._settings, "perf_relay_poll_seconds", 5.0) or 5.0)
+        if self._relay_task is None and (self._relay_at is None or now - self._relay_at >= poll_every):
+            self._relay_at = now
+            self._relay_task = asyncio.create_task(self._poll_relay(), name="aq-metrics-relay-poll")
+        perf["enabled"] = True
+        # Count host work only on the tick that performed it, not every tick
+        # carrying its cached reading. No fleet DB reads enter this cost.
+        perf["sampler"] = {
+            "perf_ms": round(self._perf_host_ms + (time.perf_counter() - started) * 1000, 3),
+        }
+        return perf
+
+    async def _poll_relay(self) -> None:
+        try:
+            self._relay_pending = await self._relay.poll()
+        except Exception:
+            self._relay_pending = {"available": False, "reason": "dashboard_server_unreachable"}
+        finally:
+            self._relay_task = None
+
+    async def _stop_relay(self) -> None:
+        task = self._relay_task
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        self._relay_task = None
+        self._relay_pending = None
+        self._relay_at = None
+        self._relay_available = False
+        self._relay_polled = False
+        if isinstance(self._relay, RelayReader):
+            self._relay.reset()
 
     def subscribe(self) -> None:
         """Start counting the bus-only events (nudges, kills, merges)."""
@@ -334,6 +462,8 @@ class MetricsSampler:
         """Build one sample of the current fleet state."""
         started = time.perf_counter()
         now = self._clock()
+        self._perf_host_ms = 0.0
+        await self._sync_perf()
         live = await self.db.metrics_live_counts()
 
         slow_every = float(getattr(self._settings, "slow_interval_seconds", 5.0) or 5.0)
@@ -360,6 +490,7 @@ class MetricsSampler:
             **self._slow,
             **self._hourly,
         }
+        sample["perf"] = await self._collect_perf(now)
         self._last_collect_ms = round((time.perf_counter() - started) * 1000, 3)
         sample["sampler"] = {"collect_ms": self._last_collect_ms}
         return sample
@@ -404,6 +535,10 @@ class MetricsSampler:
 
     async def _collect_slow(self, now: float) -> dict[str, Any]:
         """The tier that range-scans append-only tables.  Cached between ticks."""
+        if self._perf_enabled():
+            started = time.perf_counter()
+            self._host_last = self._host.sample()
+            self._perf_host_ms = (time.perf_counter() - started) * 1000
         token_window = self._window("token_window_seconds", 300.0)
         spawn_window = self._window("subagent_window_seconds", _HOUR)
         snapshot = await self.db.metrics_slow_snapshot(

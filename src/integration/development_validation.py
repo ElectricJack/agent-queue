@@ -16,27 +16,23 @@ So every run is classified:
 ``infrastructure``  could not finish validating.  The publisher defers the
                     batch to the next tick; no park, no repair.
 
-The run budget (``timeout_seconds``) covers the run only.  Time the command
-spends queued for a slot is read from the report ``aq test`` writes
-(:mod:`src.resources.slot_report`) and bounded separately by
-``slot_wait_seconds``.
+The queue owns execution and reports queue and run durations separately.
+The publisher never spawns a command or cancels one on viewer disconnection.
 """
 
 from __future__ import annotations
 
-import asyncio
-import os
-import re
-import signal
-import time
-from dataclasses import dataclass
-from pathlib import Path
 
-from src.resources.slot_report import REPORT_ENV, WAIT_TIMEOUT_ENV, read_slot_wait
-
-PASSED = "passed"
-FAILED = "failed"
-INFRASTRUCTURE = "infrastructure"
+from src.integration.development_result_parser import (
+    FAILED,
+    INFRASTRUCTURE,
+    MAX_FAILING_TESTS,
+    PASSED,
+    classify_report,
+    parse_pytest_output,
+)
+from src.jobs.adapters import finite_command
+from src.jobs.policy import JobError
 
 #: ``evidence.kind`` of the journal row recording a streak of deferrals.
 DEFERRAL_KIND = "validation_deferred"
@@ -44,147 +40,21 @@ DEFERRAL_KIND = "validation_deferred"
 #: supervisor and to ``aq doctor --check integration.development_publisher_stalled``.
 INFRA_ALERT_AFTER = 3
 
-#: Characters of combined output kept on each check (the tail).
-OUTPUT_TAIL_CHARS = 8000
-#: Bytes of output kept in memory while running, for finding failing tests.
-_PARSE_TAIL_BYTES = 256 * 1024
-#: Failing test ids kept per check.
-MAX_FAILING_TESTS = 100
-
-#: Exit codes that say nothing was verified.  ``3``/``4``/``5`` are pytest's
-#: internal error, usage error and "no tests collected" (``aq test`` also
-#: uses ``4`` for a missing path or test DSN); ``75`` is ``aq test``'s
-#: EX_TEMPFAIL when no slot came free; ``124`` is ``timeout(1)``'s and the
-#: publisher's own timeout code; ``126``/``127`` mean the command could not
-#: be executed at all.
-_EXIT_REASONS = {
-    3: "test_runner_error",
-    4: "test_runner_error",
-    5: "no_tests_collected",
-    75: "slot_unavailable",
-    124: "timeout",
-    126: "command_unavailable",
-    127: "command_unavailable",
-}
-#: Signals that mean something outside the run stopped it.
-_KILL_SIGNALS = {signal.SIGHUP, signal.SIGINT, signal.SIGKILL, signal.SIGTERM}
-
-#: Failure text that names the validation environment rather than the code
-#: under test: the test database, the box, the wrapper's container.
-_INFRASTRUCTURE_PATTERNS = (
-    r"connection refused",
-    r"connect call failed",
-    r"could not connect to server",
-    r"too many (?:clients|connections)",
-    r"remaining connection slots are reserved",
-    r"the database system is (?:starting up|shutting down|in recovery mode)",
-    r"server closed the connection unexpectedly",
-    r"terminating connection due to administrator command",
-    r"CannotConnectNowError",
-    r"TooManyConnectionsError",
-    r"ConnectionDoesNotExistError",
-    r"connection was closed in the middle of operation",
-    r"no space left on device",
-    r"too many open files",
-    r"POSTGRES_TEST_DSN is not set",
-    r"no test slot free",
-    r"could not clean owned PostgreSQL test databases",
-    r"could not drop leased PostgreSQL test databases",
-    r"PostgreSQL test database cleanup deadline exceeded",
-    r"Cannot connect to the Docker daemon",
-    r"Error response from daemon",
-)
-INFRASTRUCTURE_SIGNATURES = re.compile("|".join(_INFRASTRUCTURE_PATTERNS), re.IGNORECASE)
-
-#: pytest's short test summary: ``FAILED <node id> - <reason>``.  The node id
-#: must be a ``.py`` path, so captured output and log lines that merely start
-#: with FAILED/ERROR are never taken for tests.
-_FAILURE_LINE = re.compile(
-    r"^(?:FAILED|ERROR) (?P<id>[^\s:]+\.py(?:::.*?)?)(?: - (?P<reason>.*))?$"
-)
-_SUMMARY_LINE = re.compile(
-    r"^=*\s*(?P<counts>\d+ [a-z]+(?:, \d+ [a-z]+)*) in [\d.]+s\b.*$", re.MULTILINE
-)
-_SUMMARY_COUNT = re.compile(r"(\d+) ([a-z]+)")
-_NO_TESTS_RAN = re.compile(r"^=*\s*no tests ran\b", re.MULTILINE)
-_COUNT_KEYS = {"error": "errors", "warning": "warnings"}
-
-
-@dataclass(frozen=True)
-class PytestReport:
-    #: ``[{"id": ..., "reason": ...}]`` from pytest's short test summary.
-    failing: list[dict]
-    #: The final ``N failed, M passed`` counts, or ``None`` when absent.
-    summary: dict | None
-    no_tests_ran: bool
-
-
-def parse_pytest_output(text: str) -> PytestReport:
-    """Failing test ids and the final counts from pytest output, if any."""
-    failing, seen = [], set()
-    for line in text.splitlines():
-        match = _FAILURE_LINE.match(line.strip())
-        if match is None:
-            continue
-        test_id = match.group("id").strip()
-        if test_id in seen:
-            continue
-        seen.add(test_id)
-        failing.append({"id": test_id, "reason": (match.group("reason") or "").strip()})
-    summary = None
-    lines = _SUMMARY_LINE.findall(text)
-    if lines:
-        summary = {
-            _COUNT_KEYS.get(word, word): int(count)
-            for count, word in _SUMMARY_COUNT.findall(lines[-1])
-        }
-    return PytestReport(failing, summary, bool(_NO_TESTS_RAN.search(text)))
-
-
-def _killed_by(code: int) -> bool:
-    if code < 0:
-        return -code in _KILL_SIGNALS
-    return code > 128 and code - 128 in _KILL_SIGNALS
-
-
 def classify(exit_code: int, output: str) -> tuple[str, str | None, list[dict]]:
-    """``(outcome, infra_reason, failing_tests)`` for one finished command.
-
-    Only evidence that tests ran and failed makes a ``failed``: a failing
-    test whose reason is not an environment outage, or — for a command that
-    prints nothing pytest-shaped — a nonzero exit that no infrastructure
-    signature explains.  Everything that verified nothing is
-    ``infrastructure``.
-    """
-    report = parse_pytest_output(output)
-    failing = report.failing[:MAX_FAILING_TESTS]
-    if exit_code in _EXIT_REASONS:
-        return INFRASTRUCTURE, _EXIT_REASONS[exit_code], failing
-    if _killed_by(exit_code):
-        return INFRASTRUCTURE, "killed", failing
-    if report.no_tests_ran:
-        return INFRASTRUCTURE, "no_tests_collected", failing
-    if exit_code == 0:
-        return PASSED, None, []
-    if failing:
-        if all(INFRASTRUCTURE_SIGNATURES.search(test["reason"]) for test in failing):
-            return INFRASTRUCTURE, "infrastructure_error", failing
-        return FAILED, None, failing
-    if INFRASTRUCTURE_SIGNATURES.search(output):
-        return INFRASTRUCTURE, "infrastructure_error", []
-    return FAILED, None, []
+    """Compatibility classifier for development validation's exit-5 deferrals."""
+    return classify_report(exit_code, parse_pytest_output(output), legacy_no_tests=True)
 
 
 def _detail(outcome, reason, exit_code, check) -> str:
     if outcome == PASSED:
         return "passed"
-    if reason == "timeout":
+    if reason in {"timeout", "run_timeout"}:
         return (
             f"timed out after running {check['run_seconds']:.0f}s "
             f"(budget {check['timeout_seconds']}s, plus {check['slot_wait_seconds']:.0f}s "
             "queued for a test slot)"
         )
-    if reason == "slot_unavailable":
+    if reason in {"slot_unavailable", "queue_timeout"}:
         return (
             f"no test slot came free within {check['slot_wait_seconds']:.0f}s "
             f"(bound {check['slot_wait_bound_seconds']}s)"
@@ -197,114 +67,72 @@ def _detail(outcome, reason, exit_code, check) -> str:
     return f"{reason.replace('_', ' ')} (exit {exit_code})"
 
 
-def _kill(process) -> None:
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-
-
 async def run_check(
     command: str,
     *,
     cwd,
     timeout_seconds: float,
     slot_wait_seconds: float,
-    report_path,
+    job_client=None,
+    project_id=None,
+    operation_id=None,
+    input_ref=None,
+    idempotency_key=None,
     poll_seconds: float = 1.0,
-    slot_grace_seconds: float = 10.0,
 ) -> dict:
-    """Run *command* under ``bash -c`` and return its classified evidence.
+    """Submit a finite preset and consume the queue's immutable result.
 
-    The command runs in its own session so a timeout can kill its whole
-    process group.  Its output is collected as it arrives, so a run that is
-    stopped still leaves its tail behind.  ``aq test`` inside the command
-    bounds its own slot wait via :data:`WAIT_TIMEOUT_ENV`; the publisher
-    stops the command itself once the reported wait passes that bound by
-    *slot_grace_seconds*.
+    Cancellation or loss of this caller leaves execution owned by the queue.
+    Unsupported commands and disabled admission defer validation; there is no
+    shell fallback, including after an ambiguous submission response.
     """
-    report_path = Path(report_path)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.unlink(missing_ok=True)
-    env = {
-        **os.environ,
-        REPORT_ENV: str(report_path),
-        WAIT_TIMEOUT_ENV: str(max(0, int(slot_wait_seconds))),
-    }
-    started = time.time()
-    process = await asyncio.create_subprocess_exec(
-        "/bin/bash",
-        "-c",
-        command,
-        cwd=str(cwd),
-        env=env,
-        start_new_session=True,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    buffer = bytearray()
-
-    async def pump():
-        while chunk := await process.stdout.read(65536):
-            buffer.extend(chunk)
-            if len(buffer) > _PARSE_TAIL_BYTES:
-                del buffer[: len(buffer) - _PARSE_TAIL_BYTES]
-
-    reader = asyncio.ensure_future(pump())
-    exited = asyncio.ensure_future(process.wait())
-    stopped = None
+    job_id = None
     try:
-        while True:
-            done, _pending = await asyncio.wait({exited}, timeout=poll_seconds)
-            if done:
-                break
-            now = time.time()
-            wait = read_slot_wait(report_path, now=now)
-            if wait.total_seconds > slot_wait_seconds + slot_grace_seconds:
-                stopped = "slot_unavailable"
-            elif (now - started) - wait.total_seconds > timeout_seconds:
-                stopped = "timeout"
-            if stopped:
-                _kill(process)
-                await exited
-                break
-    except asyncio.CancelledError:
-        _kill(process)
-        await process.wait()
-        reader.cancel()
-        report_path.unlink(missing_ok=True)
-        raise
-    # Killing the group closes every writer; a grandchild that escaped the
-    # group must not hold the evidence hostage.
-    try:
-        await asyncio.wait_for(reader, 5)
-    except TimeoutError:
-        reader.cancel()
-    finished = time.time()
-    wait = read_slot_wait(report_path, now=finished)
-    report_path.unlink(missing_ok=True)
-    output = buffer.decode(errors="replace")
-    exit_code = {"timeout": 124, "slot_unavailable": 75}.get(stopped, process.returncode)
-    outcome, reason, failing = classify(exit_code, output)
-    if stopped:
-        outcome, reason = INFRASTRUCTURE, stopped
-    if wait.timed_out and outcome == INFRASTRUCTURE:
-        reason = "slot_unavailable"
-    duration = finished - started
-    summary = parse_pytest_output(output).summary
+        if job_client is None:
+            raise JobError("jobs.disabled")
+        preset, argv = finite_command(command)
+        job = await job_client.submit(
+            project_id=project_id, operation_id=operation_id, store=str(cwd),
+            input_ref=input_ref, preset=preset, argv=argv,
+            idempotency_key=idempotency_key,
+            queue_seconds=slot_wait_seconds, run_seconds=timeout_seconds,
+        )
+        job_id = job["id"]
+        job = await job_client.wait(job, poll_seconds=poll_seconds)
+        result = job.get("result")
+        if not result:
+            raise JobError("jobs.result_missing")
+        outcome = result["outcome"]
+        reason = result.get("infra_reason")
+        if outcome in {"lost", "cancelled"}:
+            outcome, reason = INFRASTRUCTURE, outcome
+        # An attestation must describe the candidate the publisher submitted.
+        # A modified tracked input or a different HEAD cannot be published.
+        if outcome == PASSED and (
+            result.get("input_ref") != input_ref
+            or result.get("input_stability") != "stable"
+        ):
+            outcome, reason = INFRASTRUCTURE, "snapshot_modified"
+        exit_code = result.get("exit_code")
+        queued, ran = result.get("queue_seconds") or 0, result.get("run_seconds") or 0
+    except JobError as exc:
+        result = {}
+        outcome, reason, exit_code, queued, ran = INFRASTRUCTURE, str(exc), None, 0, 0
     check = {
-        "command": command,
-        "exit_code": exit_code,
-        "outcome": outcome,
+        "command": command, "job_id": job_id,
+        "exit_code": exit_code, "outcome": outcome,
         "infra_reason": reason if outcome == INFRASTRUCTURE else None,
-        "duration_seconds": round(duration, 3),
-        "slot_wait_seconds": round(wait.total_seconds, 3),
-        "run_seconds": round(max(0.0, duration - wait.total_seconds), 3),
-        "timeout_seconds": timeout_seconds,
-        "slot_wait_bound_seconds": slot_wait_seconds,
-        "failing_tests": failing,
-        "summary": summary,
-        "output": output[-OUTPUT_TAIL_CHARS:],
+        "duration_seconds": round(queued + ran, 3),
+        "slot_wait_seconds": round(queued, 3), "run_seconds": round(ran, 3),
+        "timeout_seconds": timeout_seconds, "slot_wait_bound_seconds": slot_wait_seconds,
+        "failing_tests": result.get("failing_tests") or [],
+        "summary": result.get("summary"),
+        "omitted_failure_count": result.get("omitted_failure_count", 0),
+        "parser_source": result.get("parser_source"),
+        "result_hash": result.get("result_hash"),
+        "input_ref": result.get("input_ref"),
+        "input_mode": result.get("input_mode"),
+        "output": result.get("excerpt", ""),
     }
     check["detail"] = _detail(outcome, check["infra_reason"], exit_code, check)
     return check

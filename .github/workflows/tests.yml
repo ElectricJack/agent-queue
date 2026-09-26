@@ -45,43 +45,50 @@ jobs:
        !(github.event.pull_request.head.repo.full_name == github.repository &&
          startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         suite:
           - name: cli-conformance
-            command: aq test tests/test_cli_inventory.py tests/test_cli_conformance.py
-          - name: default
-            command: pytest tests/ -n auto --dist loadfile
+            command: aq test tests/test_cli_inventory.py tests/test_cli_conformance.py -n 2 --dist loadfile
+          # Each shard selects a disjoint, timing-balanced subset before xdist
+          # distributes its files across four workers. Refresh .test_durations
+          # with the command documented in docs/contributing/ci.md.
+          - name: default-1/8
+            group: 1
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 1 --splitting-algorithm least_duration --store-durations --clean-durations
+          - name: default-2/8
+            group: 2
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 2 --splitting-algorithm least_duration --store-durations --clean-durations
+          - name: default-3/8
+            group: 3
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 3 --splitting-algorithm least_duration --store-durations --clean-durations
+          - name: default-4/8
+            group: 4
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 4 --splitting-algorithm least_duration --store-durations --clean-durations
+          - name: default-5/8
+            group: 5
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 5 --splitting-algorithm least_duration --store-durations --clean-durations
+          - name: default-6/8
+            group: 6
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 6 --splitting-algorithm least_duration --store-durations --clean-durations
+          - name: default-7/8
+            group: 7
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 7 --splitting-algorithm least_duration --store-durations --clean-durations
+          - name: default-8/8
+            group: 8
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 8 --splitting-algorithm least_duration --store-durations --clean-durations
           - name: migration-and-slow
-            command: pytest tests/ -n auto --dist loadfile -m "migration or slow"
+            command: pytest tests/ -n 4 --dist loadfile -m "migration or slow"
           - name: postgres-integration
-            command: pytest tests/ -n auto --dist loadfile -m "integration or perf"
-
-    # Postgres backend for the perf/claim-query suite's Postgres parametrisation
-    # (tests/perf/conftest.py's ``any_db``, tests/test_claim_queries.py's ``db``) —
-    # spec §15.2 asserts the statement/latency budgets on Postgres, not just SQLite.
-    services:
-      postgres:
-        image: postgres:18
-        env:
-          POSTGRES_USER: agent_queue
-          POSTGRES_PASSWORD: agent_queue
-          POSTGRES_DB: agent_queue
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+            command: pytest tests/ -n 4 --dist loadfile -m "integration or perf" --ignore=tests/test_e2e_cli_stateful.py
 
     env:
       # Base DSN -- ``tests/pg_dsn.py`` rewrites this per xdist worker
       # process (``postgresql+asyncpg://.../agent_queue_gw0``, ``..._gw1``,
       # ...), creating each worker's database on first use. With
-      # ``-n auto`` and three suites (tests/perf, tests/test_claim_queries.py,
+      # multiple workers and three suites (tests/perf, tests/test_claim_queries.py,
       # tests/test_database_postgresql.py) each truncating/reseting a
       # Postgres database against this DSN, sharing one database across
       # concurrent workers would let one worker's reset_for_tests() truncate
@@ -109,15 +116,61 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
+      # Service containers cannot pass server arguments. Preserve PR #640's
+      # connection headroom and disable durability only for disposable CI data.
+      - name: Start PostgreSQL
+        run: |
+          docker run --detach --name ci-postgres \
+            --publish 127.0.0.1:5432:5432 \
+            --env POSTGRES_USER=agent_queue \
+            --env POSTGRES_PASSWORD=agent_queue \
+            --env POSTGRES_DB=agent_queue \
+            postgres:18 \
+            -c max_connections=300 \
+            -c fsync=off \
+            -c synchronous_commit=off \
+            -c full_page_writes=off
+          for attempt in {1..60}; do
+            # The entrypoint's temporary initialization server listens only on
+            # a Unix socket; require TCP so migrations see the final server.
+            if docker exec ci-postgres pg_isready \
+              -h 127.0.0.1 -U agent_queue -d agent_queue; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::PostgreSQL did not become ready after $attempt attempts"
+          exit 1
+
       - name: Set up Python
+        id: python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
-      - name: Install project
-        run: pip install -e ".[dev,cli]"
+      # Share installed dependencies between suite arms and commits. Use only
+      # exact matches: a changed manifest or interpreter needs a fresh venv.
+      - name: Cache virtual environment
+        id: venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'packages/aq-client/pyproject.toml', 'uv.lock', 'poetry.lock', 'packages/aq-client/poetry.lock') }}
+
+      - name: Install dependencies on cache miss
+        if: steps.venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"
+
+      - name: Use virtual environment
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      # The cli extra installs aq-client from a local wheel. Refresh both
+      # editable packages even on a hit so generated client/source changes
+      # use this checkout, rather than the commit that populated the cache.
+      - name: Refresh local packages
+        run: python -m pip install --no-deps --no-build-isolation -e packages/aq-client -e .
 
       # The SQLite half of this check is gone with the backend.  It was never
       # a proxy for production anyway: it stored booleans as integers and
@@ -125,6 +178,7 @@ jobs:
       # ``BOOLEAN DEFAULT 0``, which upgraded cleanly on SQLite and failed
       # every Postgres run with DatatypeMismatchError).
       - name: Apply migrations to a scratch PostgreSQL database
+        if: matrix.suite.name == 'migration-and-slow'
         env:
           PGPASSWORD: agent_queue
           AGENT_QUEUE_DB_URL: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/ci_migration_check
@@ -135,4 +189,117 @@ jobs:
           alembic upgrade head
 
       - name: Run tests
-        run: ${{ matrix.suite.command }}
+        id: tests
+        # Include fixture setup/teardown in the per-test deadline. Keep the
+        # failed/error node IDs and the slowest phases visible in every arm.
+        run: ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE
+
+      # Each default shard records only its selected tests. Keep the committed
+      # map as the selection input; merge all eight outputs to refresh it.
+      - name: Prepare shard timings
+        if: ${{ always() && matrix.suite.group && steps.tests.outcome != 'skipped' }}
+        env:
+          SHARD: ${{ matrix.suite.group }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/test-durations"
+          cp .test_durations "$RUNNER_TEMP/test-durations/default-$SHARD.json"
+
+      - name: Upload shard timings
+        if: ${{ always() && matrix.suite.group && steps.tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: default-durations-${{ matrix.suite.group }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/test-durations/default-${{ matrix.suite.group }}.json
+          if-no-files-found: error
+
+      - name: PostgreSQL logs on failure
+        if: failure()
+        run: docker logs ci-postgres || true
+
+      - name: Remove PostgreSQL
+        if: always()
+        run: docker rm --force --volumes ci-postgres || true
+
+  e2e-cli:
+    name: E2E CLI (${{ matrix.group }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       !(github.event.pull_request.head.repo.full_name == github.repository &&
+         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        # IDs in tests/test_e2e_cli_stateful.py; together these cover S1-S19.
+        group: [claims, cli, graphs, failover]
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: agent_queue
+          POSTGRES_PASSWORD: agent_queue
+          POSTGRES_DB: agent_queue
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U agent_queue -d agent_queue"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 60
+
+    env:
+      POSTGRES_TEST_DSN: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/agent_queue
+      AQ_REQUIRE_POSTGRES_TESTS: "1"
+      GIT_AUTHOR_NAME: CI
+      GIT_AUTHOR_EMAIL: ci@example.invalid
+      GIT_COMMITTER_NAME: CI
+      GIT_COMMITTER_EMAIL: ci@example.invalid
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Share installed dependencies between suite arms and commits. Use only
+      # exact matches: a changed manifest or interpreter needs a fresh venv.
+      - name: Cache virtual environment
+        id: venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'packages/aq-client/pyproject.toml', 'uv.lock', 'poetry.lock', 'packages/aq-client/poetry.lock') }}
+
+      - name: Install dependencies on cache miss
+        if: steps.venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"
+
+      - name: Use virtual environment
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      # The cli extra installs aq-client from a local wheel. Refresh both
+      # editable packages even on a hit so generated client/source changes
+      # use this checkout, rather than the commit that populated the cache.
+      - name: Refresh local packages
+        run: python -m pip install --no-deps --no-build-isolation -e packages/aq-client -e .
+
+      # The smoke setup migrates its own unique disposable database. Run only
+      # this group's node, with no xdist workers or other suites competing.
+      - name: Run scenario group
+        run: pytest 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_stateful_cli_smoke[${{ matrix.group }}]' -m integration -s --durations=0

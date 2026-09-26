@@ -142,9 +142,17 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "update, and apply verified reply evidence"
         ),
     ),
+    "supervisor_inbox": CategoryMeta(
+        name="supervisor_inbox",
+        description="Durable Discord conversations with the global supervisor",
+    ),
     "review": CategoryMeta(
         name="review",
         description="Document reviews: submit specs and plans for Jack's approval",
+    ),
+    "github_issue": CategoryMeta(
+        name="github_issue",
+        description="Repository-bound GitHub issue triage and reviewed fixes",
     ),
     "digest": CategoryMeta(
         name="digest",
@@ -152,6 +160,12 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "Hourly activity digest — dry preview of the current window and the "
             "configured schedule's destination, generation and delivery health"
         ),
+    ),
+    "job": CategoryMeta(name="job", description="Finite managed jobs, durable results and logs"),
+    "wait": CategoryMeta(name="wait", description="Durable typed agent waits and result history"),
+    "report": CategoryMeta(
+        name="report",
+        description="Durable supervisor report requests, paged briefs and submissions",
     ),
     "dashboard": CategoryMeta(
         name="dashboard",

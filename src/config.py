@@ -26,6 +26,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -209,6 +210,113 @@ class DiscordDigestConfig:
         return errors
 
 
+_REPORT_CLOCK = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+
+
+@dataclass
+class ReportQuietHoursConfig:
+    """Local wall-clock interval during which hourly author wakes are skipped."""
+
+    start: str = ""
+    end: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        if (
+            not isinstance(self.start, str)
+            or not isinstance(self.end, str)
+            or not _REPORT_CLOCK.fullmatch(self.start)
+            or not _REPORT_CLOCK.fullmatch(self.end)
+        ):
+            return [ConfigError("reports.hourly.quiet_hours", "start/end", "use HH:MM (24-hour)")]
+        if self.start == self.end:
+            return [ConfigError("reports.hourly.quiet_hours", "start/end", "must differ")]
+        return []
+
+
+@dataclass
+class HourlyReportsConfig:
+    """Opt-in supervisor authoring policy for the existing digest window."""
+
+    enabled: bool = False
+    full_fleet_visibility: bool = False
+    grace_minutes: int = 5
+    max_requests_per_day: int = 12
+    quiet_hours: ReportQuietHoursConfig | None = None
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not 1 <= self.grace_minutes <= 60:
+            errors.append(ConfigError("reports.hourly", "grace_minutes", "must be 1–60"))
+        if not 1 <= self.max_requests_per_day <= 24:
+            errors.append(ConfigError("reports.hourly", "max_requests_per_day", "must be 1–24"))
+        if self.quiet_hours is not None:
+            errors.extend(self.quiet_hours.validate())
+        return errors
+
+
+@dataclass
+class MorningReportsConfig:
+    """Opt-in zoned daily schedule; identity survives config edits."""
+
+    enabled: bool = False
+    time: str = "07:00"
+    late_cutoff_minutes: int = 120
+    max_lookback_hours: int = 72
+    author_deadline_minutes: int = 15
+    project_ids: list[str] = field(default_factory=list)
+    destination: str = ""
+    full_fleet_visibility: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not isinstance(self.enabled, bool):
+            errors.append(ConfigError("reports.morning", "enabled", "must be a boolean"))
+        if not isinstance(self.full_fleet_visibility, bool):
+            errors.append(
+                ConfigError("reports.morning", "full_fleet_visibility", "must be a boolean")
+            )
+        if not isinstance(self.time, str) or not _REPORT_CLOCK.fullmatch(self.time):
+            errors.append(ConfigError("reports.morning", "time", "use HH:MM (24-hour)"))
+        for name, upper in (
+            ("late_cutoff_minutes", 1440),
+            ("max_lookback_hours", 72),
+            ("author_deadline_minutes", 60),
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= upper:
+                errors.append(ConfigError("reports.morning", name, f"must be 1–{upper}"))
+        if (
+            not isinstance(self.project_ids, list)
+            or len(self.project_ids) > 100
+            or any(not isinstance(value, str) or not value.strip() for value in self.project_ids)
+        ):
+            errors.append(
+                ConfigError("reports.morning", "project_ids", "use up to 100 project ids")
+            )
+        if not isinstance(self.destination, str) or (
+            self.destination and not re.fullmatch(r"discord:[0-9]{17,20}", self.destination)
+        ):
+            errors.append(ConfigError("reports.morning", "destination", "use discord:<channel id>"))
+        return errors
+
+
+@dataclass
+class ReportsConfig:
+    """Shared report zone and hourly/daily report settings."""
+
+    timezone: str = "UTC"
+    hourly: HourlyReportsConfig = field(default_factory=HourlyReportsConfig)
+    morning: MorningReportsConfig = field(default_factory=MorningReportsConfig)
+
+    def validate(self) -> list[ConfigError]:
+        errors = self.hourly.validate() + self.morning.validate()
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, TypeError, ValueError):
+            errors.append(ConfigError("reports", "timezone", "must be an IANA time zone"))
+        return errors
+
+
 @dataclass
 class DiscordEscalationConfig:
     """Immediate escalation-thread settings (discord-simplification §7, §9).
@@ -270,6 +378,23 @@ class DiscordEscalationConfig:
 
 
 @dataclass
+class DiscordConversationConfig:
+    """Opt-in @mention conversations with the global supervisor (mention-routing spec §4).
+
+    Off by default.  Enabling means the ``discord.authorized_users`` identities
+    are trusted operator correspondents of the *elevated* global supervisor;
+    there is no sandboxed chatbot.  Every numeric bound is fixed in
+    :mod:`src.conversations.limits`, not configured here, and the runtime
+    preconditions are :func:`src.conversations.preconditions.conversation_preconditions`.
+    """
+
+    enabled: bool = False
+
+    def validate(self) -> list[ConfigError]:
+        return []
+
+
+@dataclass
 class DiscordConfig:
     """Discord bot connection and the one shared destination."""
 
@@ -282,6 +407,7 @@ class DiscordConfig:
     channel_id: str = ""
     digest: DiscordDigestConfig = field(default_factory=DiscordDigestConfig)
     escalation: DiscordEscalationConfig = field(default_factory=DiscordEscalationConfig)
+    conversation: DiscordConversationConfig = field(default_factory=DiscordConversationConfig)
     # Invalid request rate guard thresholds (Discord bans IPs at 10,000
     # invalid responses per 10 minutes).
     rate_guard_warn: int = 1000
@@ -308,6 +434,15 @@ class DiscordConfig:
         """Whether old control/notification settings name multiple channels."""
         return len(self.legacy_destination_names) > 1
 
+    @property
+    def has_allowlist(self) -> bool:
+        """Whether ``authorized_users`` names anyone (blank entries name no one).
+
+        The gateway's legacy check treats an empty list as "everyone"; the
+        conversation route fails closed on it instead.
+        """
+        return any(str(user).strip() for user in self.authorized_users)
+
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if not self.bot_token:
@@ -329,6 +464,18 @@ class DiscordConfig:
             )
         errors.extend(self.digest.validate())
         errors.extend(self.escalation.validate())
+        errors.extend(self.conversation.validate())
+        if self.conversation.enabled and not (
+            self.has_allowlist and self.guild_id and self.channel_id
+        ):
+            errors.append(
+                ConfigError(
+                    "discord",
+                    "conversation.enabled",
+                    "discord.conversation.enabled requires a non-empty "
+                    "discord.authorized_users allowlist, a guild_id and a channel_id",
+                )
+            )
         return errors
 
     def warnings(self) -> list[str]:
@@ -347,6 +494,12 @@ class DiscordConfig:
             )
         if not self.digest.enabled:
             notes.append("Hourly digests are disabled; no routine activity message is sent.")
+        if self.conversation.enabled:
+            notes.append(
+                "Discord conversations are enabled: an @mention from an authorized_users "
+                "identity reaches the elevated global supervisor. This is not a sandboxed "
+                "chatbot; keep it off where chat must be read-only."
+            )
         if self.legacy_destination_conflict and not self.channel_id:
             notes.append(
                 "Legacy Discord destinations conflict: choose one explicit channel_id before "
@@ -365,7 +518,7 @@ class AgentsDefaultConfig:
     """Default timeouts for agent health monitoring and graceful shutdown."""
 
     heartbeat_interval_seconds: int = 30
-    stuck_timeout_seconds: int = 1800  # 30 min; 0 = no timeout
+    stuck_timeout_seconds: int = 0  # disabled; explicit limits remain honored
     graceful_shutdown_timeout_seconds: int = 30
 
     def validate(self) -> list[ConfigError]:
@@ -2165,6 +2318,118 @@ class ResourceCgroupConfig:
 
 
 @dataclass
+class JobsConfig:
+    """Managed execution rollout; admission remains opt-in during phase 2."""
+
+    enabled: bool = False
+    test_database_url: str = ""
+    max_queued: int = 100
+    per_task_queued: int = 10
+    per_task_active: int = 2
+    shared_queue_seconds: int = 1800
+    exclusive_queue_seconds: int = 5400
+    run_seconds: int = 7200
+    head_bytes: int = 1024 * 1024
+    tail_bytes: int = 63 * 1024 * 1024
+    log_budget_bytes: int = 2 * 1024**3
+    log_days: int = 14
+    result_days: int = 90
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if not isinstance(self.enabled, bool):
+            errors.append(ConfigError("resources.jobs", "enabled", "must be a boolean"))
+        if not isinstance(self.test_database_url, str) or (
+            self.test_database_url and not is_postgres_url(self.test_database_url)
+        ):
+            errors.append(
+                ConfigError(
+                    "resources.jobs", "test_database_url", "must be a disposable PostgreSQL DSN"
+                )
+            )
+        for name in (
+            "max_queued",
+            "per_task_queued",
+            "per_task_active",
+            "shared_queue_seconds",
+            "exclusive_queue_seconds",
+            "run_seconds",
+            "head_bytes",
+            "tail_bytes",
+            "log_budget_bytes",
+            "log_days",
+            "result_days",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                errors.append(ConfigError("resources.jobs", name, "must be a positive integer"))
+        if (isinstance(self.head_bytes, int) and self.head_bytes > 1024**2) or (
+            isinstance(self.tail_bytes, int) and self.tail_bytes > 63 * 1024**2
+        ):
+            errors.append(
+                ConfigError("resources.jobs", "head_bytes", "per-job output cap is 64 MiB")
+            )
+        if (
+            isinstance(self.result_days, int)
+            and isinstance(self.log_days, int)
+            and self.result_days < self.log_days
+        ):
+            errors.append(ConfigError("resources.jobs", "result_days", "must cover log retention"))
+        return errors
+
+
+@dataclass
+class TestSelectionConfig:
+    """Smart test selection; selection, network access and enforcement ship off."""
+
+    enabled: bool = False
+    jev_enabled: bool = False
+    enforce_enabled: bool = False
+    model: str = "jev-1.13.0"
+    api_key_env: str = "TYPESAFE_API_KEY"
+    base_url: str | None = None
+    rpc_deadline_seconds: float = 2.0
+    max_requests: int = 4
+    request_concurrency: int = 2
+    max_total_tokens: int = 64000
+    max_state_plus_question_tokens: int = 32000
+    excerpt_lines: int = 40
+    static_timeout_seconds: float = 60.0
+    default_base_ref: str | None = None
+    retention_days: int = 90
+    cache_entries: int = 256
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for key in ("enabled", "jev_enabled", "enforce_enabled"):
+            if not isinstance(getattr(self, key), bool):
+                errors.append(ConfigError("test_selection", key, "must be a boolean"))
+        for key in ("max_requests", "request_concurrency", "max_total_tokens",
+                    "max_state_plus_question_tokens", "excerpt_lines", "retention_days",
+                    "cache_entries"):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                errors.append(ConfigError("test_selection", key, "must be a positive integer"))
+        for key in ("rpc_deadline_seconds", "static_timeout_seconds"):
+            value = getattr(self, key)
+            if (isinstance(value, bool) or not isinstance(value, int | float)
+                    or not math.isfinite(value) or value <= 0):
+                errors.append(ConfigError("test_selection", key, "must be finite and positive"))
+        if not isinstance(self.model, str) or not self.model.strip():
+            errors.append(ConfigError("test_selection", "model", "must be non-empty"))
+        if (not isinstance(self.api_key_env, str) or len(self.api_key_env) > 64
+                or not re.fullmatch(r"[A-Z][A-Z0-9_]*", self.api_key_env)):
+            errors.append(ConfigError(
+                "test_selection", "api_key_env", "name the variable, not the key (A-Z, 0-9, _)"
+            ))
+        for key in ("base_url", "default_base_ref"):
+            value = getattr(self, key)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                errors.append(ConfigError("test_selection", key, "must be non-empty or null"))
+        return errors
+
+
+@dataclass
 class ResourcesConfig:
     """Resource gating so N concurrent agents cannot saturate one box.
 
@@ -2214,6 +2479,7 @@ class ResourcesConfig:
     #: processes box-wide.
     max_pytest_processes: int = 24
     cgroups: ResourceCgroupConfig = field(default_factory=ResourceCgroupConfig)
+    jobs: JobsConfig = field(default_factory=JobsConfig)
 
     def core_count(self) -> int:
         """The core budget: configured ``cores``, else the machine's."""
@@ -2257,6 +2523,7 @@ class ResourcesConfig:
         if self.load_warn_ratio <= 0:
             errors.append(ConfigError("resources", "load_warn_ratio", "must be positive"))
         errors.extend(self.cgroups.validate())
+        errors.extend(self.jobs.validate())
         return errors
 
 
@@ -2361,6 +2628,21 @@ class MetricsConfig:
     retain_seconds_1s: int = 3600
     retain_seconds_1m: int = 30 * 86400
     retain_seconds_1h: int = 365 * 86400
+    #: Performance probes (spec 2026-09-24 dashboard performance §4.1): the
+    #: loop-drift probe, route latency, pool wait and query duration, the host
+    #: reader's budget and the dashboard-relay poll.  ``perf_enabled: false``
+    #: is the rollback switch: the probes stop recording and the sample's
+    #: ``perf`` block drops to ``{"enabled": false}``.
+    perf_enabled: bool = True
+    #: Period of the event-loop drift probe; each wake-up records how late it was.
+    perf_loop_probe_ms: int = 100
+    #: A query slower than this counts toward ``perf.db.counters.slow_queries``.
+    perf_slow_query_ms: float = 100.0
+    #: Wall-clock budget for one host read (PSI, test slots, ungated load);
+    #: an overrun backs the reader off and marks the host block stale.
+    perf_host_budget_ms: float = 20.0
+    #: How often the sampler polls the dashboard server's relay counters.
+    perf_relay_poll_seconds: float = 5.0
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2394,6 +2676,19 @@ class MetricsConfig:
         for key in ("retain_seconds_1s", "retain_seconds_1m", "retain_seconds_1h"):
             if getattr(self, key) < 0:
                 errors.append(ConfigError("metrics", key, "must be >= 0"))
+        if not 10 <= self.perf_loop_probe_ms <= 1000:
+            errors.append(
+                ConfigError("metrics", "perf_loop_probe_ms", "must be between 10 and 1000")
+            )
+        for key in ("perf_slow_query_ms", "perf_host_budget_ms"):
+            if getattr(self, key) <= 0:
+                errors.append(ConfigError("metrics", key, "must be > 0"))
+        # The poll runs on the sampler's tick, so it cannot be more frequent
+        # than one poll per sample.
+        if self.perf_relay_poll_seconds < self.interval_seconds:
+            errors.append(
+                ConfigError("metrics", "perf_relay_poll_seconds", "must be >= interval_seconds")
+            )
         return errors
 
 
@@ -2831,9 +3126,15 @@ class DashboardServerConfig:
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = DEFAULT_DASHBOARD_SERVER_PORT
-    #: Public dashboard origin used in links sent outside the local machine.
-    #: Empty preserves the local host-and-port URL.
+    #: The dashboard origin that links sent off this machine name (Discord
+    #: escalations, digests, reviews) -- e.g. the operator's authenticated
+    #: tailnet reverse proxy.  An http(s) origin with no path, query or
+    #: credentials, never loopback.  Empty: links carry an "unavailable"
+    #: notice unless ``host`` is this machine's Tailscale address
+    #: (``src/remote_links.py``).  Also accepted as ``dashboard.public_url``.
     public_url: str = ""
+    #: The Tailscale CLI used to confirm a tailnet ``host``; empty means ``PATH``.
+    tailscale_path: str = ""
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2852,6 +3153,21 @@ class DashboardServerConfig:
             ))
         if not isinstance(self.public_url, str):
             errors.append(ConfigError("dashboard", "public_url", "must be a string"))
+        elif self.public_url.strip():
+            from src.remote_links import normalise_public_origin
+
+            _origin, why = normalise_public_origin(self.public_url)
+            if why:
+                # A warning, not an error: a bad link origin must not keep the
+                # daemon down.  Links carry the "unavailable" notice instead,
+                # and `aq doctor --check dashboard.remote_link` names it.
+                errors.append(ConfigError(
+                    "dashboard.server", "public_url",
+                    f"{why}; external dashboard links are disabled until it is fixed",
+                    severity="warning",
+                ))
+        if not isinstance(self.tailscale_path, str):
+            errors.append(ConfigError("dashboard.server", "tailscale_path", "must be a string"))
         return errors
 
 
@@ -2866,10 +3182,41 @@ def dashboard_server_config_from_raw(raw: Mapping[str, object]) -> DashboardServ
     nested = dashboard.get("server") if isinstance(dashboard, Mapping) else None
     section = nested if isinstance(nested, Mapping) else raw.get("dashboard_server")
     kwargs = _dataclass_kwargs(DashboardServerConfig, section)
-    if isinstance(dashboard, Mapping) and "public_url" in dashboard:
-        kwargs["public_url"] = dashboard["public_url"]
+    if isinstance(dashboard, Mapping) and dashboard.get("public_url") is not None:
+        # The alias fills in; it never silently replaces a different canonical
+        # value -- load_config refuses that (dashboard_public_url_conflict).
+        kwargs.setdefault("public_url", dashboard["public_url"])
     kwargs.setdefault("port", default_dashboard_server_port(raw))
     return DashboardServerConfig(**kwargs)
+
+
+def dashboard_public_url_conflict(raw: Mapping[str, object]) -> str | None:
+    """Why ``dashboard.public_url`` and ``dashboard.server.public_url`` disagree, else ``None``.
+
+    Both spellings stay accepted; two different values are ambiguous, so the
+    daemon's loader rejects them rather than pick one.  Values equal as
+    origins (``https://q.example/`` and ``https://q.example``) agree.
+    """
+    dashboard = raw.get("dashboard")
+    if not isinstance(dashboard, Mapping):
+        return None
+    nested = dashboard.get("server")
+    section = nested if isinstance(nested, Mapping) else raw.get("dashboard_server")
+    alias = dashboard.get("public_url")
+    canonical = section.get("public_url") if isinstance(section, Mapping) else None
+    if alias is None or canonical is None:
+        return None
+    if not isinstance(alias, str) or not isinstance(canonical, str):
+        return None if alias == canonical else "the two public_url values differ"
+    from src.remote_links import normalise_public_origin
+
+    def _key(value: str) -> str:
+        origin, _why = normalise_public_origin(value)
+        return origin or value.strip()
+
+    if _key(alias) == _key(canonical):
+        return None
+    return "dashboard.public_url and dashboard.server.public_url name different origins; keep one"
 
 
 @dataclass
@@ -2917,6 +3264,7 @@ class AppConfig:
     validate_events: bool = True
     messaging_platform: str = "discord"  # "discord" or "none"
     discord: DiscordConfig = field(default_factory=DiscordConfig)
+    reports: ReportsConfig = field(default_factory=ReportsConfig)
     agents_config: AgentsDefaultConfig = field(default_factory=AgentsDefaultConfig)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -2947,6 +3295,7 @@ class AppConfig:
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
+    test_selection: TestSelectionConfig = field(default_factory=TestSelectionConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     provider_failover: ProviderFailoverConfig = field(default_factory=ProviderFailoverConfig)
@@ -3138,6 +3487,7 @@ class AppConfig:
         # Only validate the active messaging platform's config
         if self.messaging_platform == "discord":
             errors.extend(self.discord.validate())
+        errors.extend(self.reports.validate())
 
         errors.extend(self.agents_config.validate())
         errors.extend(self.scheduling.validate())
@@ -3165,6 +3515,7 @@ class AppConfig:
         errors.extend(self.integration.validate())
         errors.extend(self.swarm.validate())
         errors.extend(self.resources.validate())
+        errors.extend(self.test_selection.validate())
         errors.extend(self.metrics.validate())
         errors.extend(self.providers.validate())
         errors.extend(self.provider_failover.validate())
@@ -3200,6 +3551,12 @@ class AppConfig:
                     "enabled",
                     "requires messages.enabled and sessions.enabled",
                 )
+            )
+        # A conversation input is delivered as a message to
+        # ``session:supervisor-global`` (mention-routing spec §4.1).
+        if self.discord.conversation.enabled and not self.messages.enabled:
+            errors.append(
+                ConfigError("discord", "conversation.enabled", "requires messages.enabled")
             )
         # Agent profiles
         for profile in self.agent_profiles:
@@ -3275,6 +3632,7 @@ class AppConfig:
         updated.work_graph = fresh.work_graph
         updated.swarm = fresh.swarm
         updated.resources = fresh.resources
+        updated.test_selection = fresh.test_selection
         updated.pricing = fresh.pricing
         updated.surface = fresh.surface
         updated.providers = fresh.providers
@@ -3317,6 +3675,7 @@ HOT_RELOADABLE_SECTIONS = {
     "work_graph",
     "swarm",
     "resources",
+    "test_selection",  # read per test_select call
     "metrics",
     # Both consumers read it per use -- the API resolves the staleness horizon
     # on each request, the probe resolves its binary on each run -- so an edit
@@ -3339,6 +3698,7 @@ HOT_RELOADABLE_SECTIONS = {
 
 RESTART_REQUIRED_SECTIONS = {
     "discord",
+    "reports",
     "messaging_platform",
     "data_dir",
     "workspace_dir",
@@ -3980,6 +4340,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                 esc.get("supervisor_delivery_timeout_minutes", 15)
             ),
         )
+        conv = d.get("conversation", {}) or {}
+        conversation_cfg = DiscordConversationConfig(enabled=bool(conv.get("enabled", False)))
         config.discord = DiscordConfig(
             bot_token=d.get("bot_token", ""),
             guild_id=d.get("guild_id", ""),
@@ -3987,6 +4349,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             channel_id=str(d.get("channel_id", "") or ""),
             digest=digest_cfg,
             escalation=escalation_cfg,
+            conversation=conversation_cfg,
             rate_guard_warn=int(d.get("rate_guard_warn", 1000)),
             rate_guard_critical=int(d.get("rate_guard_critical", 5000)),
             rate_guard_halt=int(d.get("rate_guard_halt", 8000)),
@@ -3994,6 +4357,42 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.discord._legacy_destination_names = destination_names
         config.discord._legacy_inventory_names = inventory_names
         config.discord._legacy_per_project_channels = bool(d.get("per_project_channels"))
+
+    if "reports" in raw:
+        report_raw = raw["reports"] or {}
+        if not isinstance(report_raw, Mapping):
+            raise ConfigValidationError(["[reports] must be a mapping"])
+        hourly_raw = report_raw.get("hourly") or {}
+        if not isinstance(hourly_raw, Mapping):
+            raise ConfigValidationError(["[reports.hourly] must be a mapping"])
+        morning_raw = report_raw.get("morning") or {}
+        if not isinstance(morning_raw, Mapping):
+            raise ConfigValidationError(["[reports.morning] must be a mapping"])
+        quiet_raw = hourly_raw.get("quiet_hours")
+        quiet = None
+        if quiet_raw is not None:
+            if not isinstance(quiet_raw, Mapping):
+                raise ConfigValidationError(["[reports.hourly.quiet_hours] must be a mapping"])
+            quiet = ReportQuietHoursConfig(
+                start=quiet_raw.get("start", ""), end=quiet_raw.get("end", "")
+            )
+        config.reports = ReportsConfig(
+            timezone=report_raw.get("timezone", "UTC"),
+            morning=MorningReportsConfig(
+                **{
+                    name: morning_raw[name]
+                    for name in MorningReportsConfig.__dataclass_fields__
+                    if name in morning_raw
+                }
+            ),
+            hourly=HourlyReportsConfig(
+                enabled=bool(hourly_raw.get("enabled", False)),
+                full_fleet_visibility=bool(hourly_raw.get("full_fleet_visibility", False)),
+                grace_minutes=int(hourly_raw.get("grace_minutes", 5)),
+                max_requests_per_day=int(hourly_raw.get("max_requests_per_day", 12)),
+                quiet_hours=quiet,
+            ),
+        )
 
     if "agents" in raw:
         a = raw["agents"]
@@ -4335,6 +4734,12 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             load_warn_ratio=float(res.get("load_warn_ratio", 1.0)),
             max_pytest_processes=int(res.get("max_pytest_processes", 24)),
             cgroups=cgroups,
+            jobs=JobsConfig(**_dataclass_kwargs(JobsConfig, res.get("jobs"))),
+        )
+
+    if "test_selection" in raw:
+        config.test_selection = TestSelectionConfig(
+            **_dataclass_kwargs(TestSelectionConfig, raw["test_selection"])
         )
 
     if "metrics" in raw:
@@ -4374,6 +4779,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     )
 
     config.dashboard_server = dashboard_server_config_from_raw(raw)
+    public_url_conflict = dashboard_public_url_conflict(raw)
 
     if "agent_profiles" in raw:
         profiles = []
@@ -4426,6 +4832,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     # validate() returns ConfigError list; convert fatal errors to exception
     # for backward compatibility.
     config_errors = config.validate()
+    if public_url_conflict:
+        config_errors.append(ConfigError("dashboard", "public_url", public_url_conflict))
     fatal_errors = [str(e) for e in config_errors if e.severity == "error"]
     if fatal_errors:
         raise ConfigValidationError(fatal_errors)

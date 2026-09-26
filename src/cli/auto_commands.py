@@ -86,6 +86,10 @@ HANDCRAFTED_COVERAGE = {
     # envelope, which the generated `aq system prime` cannot do.
     "prime",
     # questions.py — exact question identity and the authenticated daemon scope.
+    "wait_register",
+    "wait_get",
+    "wait_list",
+    "wait_cancel",
     "question_list",
     "question_answer",
     "question_escalate",
@@ -110,10 +114,13 @@ HANDCRAFTED_COVERAGE = {
     "integration_cancel_preserving",
     "integration_retry_cleanup",
     "integration_release_owner",
+    "integration_reserve_owner",
     "integration_release_stale_owners",
     "integration_clear_stale_request",
     "integration_redrive_root",
+    "integration_redrive_child",
     "integration_rebind_reused_identity",
+    "integration_rebind_repair",
     "integration_adopt_legacy_deliveries",
     "integration_bind_legacy_repositories",
     "integration_release_delegates",
@@ -136,10 +143,22 @@ HANDCRAFTED_COVERAGE = {
     # auto-generation (no interesting args).
     "formula_show",
     "formula_cook",
+    "job_submit",
+    "job_get",
+    "job_list",
+    "job_cancel",
+    "job_result",
+    "job_logs",
+    "report_request",
+    "report_brief",
+    "report_submit",
 }
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
+    "job_reconcile",
+    "job_submit_integration",
+
     "shutdown",
     "restart_daemon",
     "update_and_restart",
@@ -172,7 +191,9 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "mcp": "mcp",
     "message": "message",
     "escalation": "escalation",
+    "supervisor_inbox": "supervisor-inbox",
     "review": "review",
+    "github_issue": "github-issue",
     "digest": "digest",
     "dashboard": "dashboard",
     "discord": "discord",
@@ -191,7 +212,9 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "mcp": "MCP server registry and tool catalog.",
     "message": "Inter-agent and user message queue.",
     "escalation": "Durable human escalations and supervisor-owned resolution.",
+    "supervisor-inbox": "Supervisor conversations — status, history, and explicit replies.",
     "review": "Document reviews: submit specs and plans for Jack's approval",
+    "github-issue": "GitHub issue triage and review actions for the bound project.",
     "digest": "Hourly activity digest — dry preview and schedule health.",
     "dashboard": "Durable shared and roaming dashboard state.",
     "discord": "Explicit Discord historical-message housekeeping.",
@@ -414,6 +437,8 @@ def _make_auto_command(
     input_schema = tool_def.get("input_schema", {})
     properties = input_schema.get("properties", {})
     required = set(input_schema.get("required", []))
+    if cmd_name == "supervisor_inbox_reply":
+        required.discard("text")  # The callback enforces --text XOR --file.
 
     params: list[click.Parameter] = []
     for prop_name, prop_schema in properties.items():
@@ -448,6 +473,24 @@ def _make_auto_command(
                 )
             )
 
+    if cmd_name == "supervisor_inbox_history":
+        params.append(
+            click.Option(
+                ["--state", "history_states"],
+                multiple=True,
+                type=click.Choice(["opening", "open", "closed", "delivery_blocked"]),
+                help="Conversation state filter; repeat for multiple states.",
+            )
+        )
+    if cmd_name == "supervisor_inbox_reply":
+        params.append(
+            click.Option(
+                ["--file", "reply_file"],
+                type=click.Path(exists=True, dir_okay=False),
+                help="Read reply text from a UTF-8 file (exclusive with --text).",
+            )
+        )
+
     def _make_callback(name: str):
         from .formatter_registry import apply_formatter, command_output
 
@@ -457,6 +500,23 @@ def _make_auto_command(
             from . import app as _app
 
             api_url = ctx.obj.get("api_url") if ctx.obj else None
+            if name == "supervisor_inbox_history":
+                states = kwargs.pop("history_states", ())
+                if states:
+                    if kwargs.get("states") is not None:
+                        raise click.UsageError("Use either --state or --states.")
+                    kwargs["states"] = list(states)
+            if name == "supervisor_inbox_reply":
+                from pathlib import Path
+
+                reply_file = kwargs.pop("reply_file", None)
+                if (kwargs.get("text") is None) == (reply_file is None):
+                    raise click.UsageError("Provide exactly one of --text or --file.")
+                if reply_file is not None:
+                    try:
+                        kwargs["text"] = Path(reply_file).read_text(encoding="utf-8")
+                    except (OSError, UnicodeError) as exc:
+                        raise click.UsageError(f"Cannot read reply file: {exc}") from exc
             # ``None`` means "option not given" and is dropped; an option
             # given as literal JSON ``null`` arrives as EXPLICIT_NULL and
             # is sent as a real ``None`` (see the sentinel's docstring).

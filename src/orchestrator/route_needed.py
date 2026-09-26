@@ -18,10 +18,11 @@ from sqlalchemy import and_, literal, or_, select
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.tables import (
     gates as gates_table,
+    projects as projects_table,
     task_gates as task_gates_table,
     tasks as tasks_table,
 )
-from src.models import TaskStatus
+from src.models import ProjectStatus, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,9 @@ class RouteNeededMixin:
         READY / BLOCKED tasks, plus DEFINED tasks that are unblocked or whose
         only blocker is their own open ``routing`` gate (a worker-filed root
         is born that way, swarm work model §12).  Unassigned, not a plan
-        subtask, and missing ``intelligence_class`` or ``profile_id``.
+        subtask, in an active project, and missing ``intelligence_class`` or
+        ``profile_id``. Exclude inactive backlogs in SQL so they cannot spawn
+        routing playbooks or delay other work on the event loop.
         """
         open_routing_gate = (
             select(literal(1))
@@ -57,7 +60,10 @@ class RouteNeededMixin:
             )
             .exists()
         )
-        statement = select(tasks_table).where(
+        statement = select(tasks_table).join(
+            projects_table, projects_table.c.id == tasks_table.c.project_id,
+        ).where(
+            projects_table.c.status == ProjectStatus.ACTIVE.value,
             or_(
                 tasks_table.c.status.in_([TaskStatus.READY.value, TaskStatus.BLOCKED.value]),
                 and_(

@@ -251,6 +251,110 @@ One installation-wide durable evaluation per destination/configuration generatio
 
 Unique: (`destination`, `config_generation`, `window_start`, `window_end`). Index: `idx_digest_windows_due`.
 
+### Table: `supervisor_report_requests`
+
+Durable author requests for supervisor-written digest reports: one row per reserved report window, `reserved` when the scheduler claims an author slot, `requested` once the wake message is queued, and — on submit — the report text lands on the owning `digest_windows` row while this row records the submission.  Each state move bumps `version` for the caller's CAS (`brief_hash` and `expected_version` guard submit against a changed brief); `deadline` bounds the live window (`idx_supervisor_report_requests_state_deadline` walks open work).  `uq_supervisor_report_requests_owner` keeps one request per (`kind`, `owner_ref`) — the digest `window_id` for hourly requests.  Revision `a00000000026` creates the table; its downgrade refuses to drop stored submissions.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY, `report-hourly-<window_id>` |
+| `kind` | TEXT | NOT NULL, one of `hourly`, `morning` (`ck_supervisor_report_requests_kind`) |
+| `owner_ref` | TEXT | NOT NULL, the `digest_windows.id` the request authors; unique with `kind` (`uq_supervisor_report_requests_owner`) |
+| `destination` | TEXT | NOT NULL, copied from the owned window |
+| `visibility` | JSON | NOT NULL, the delivery visibility generation at reservation (`invalidate_hourly_visibility` retires stale rows) |
+| `brief` | JSON | NOT NULL, the bounded, paged brief an author reads |
+| `brief_hash` | TEXT | NOT NULL, digest of `brief`; submit must match it, so an edited brief invalidates a stale author |
+| `fallback_text` | TEXT | NOT NULL, what is delivered if no submission lands before the deadline |
+| `author_session_id` | TEXT | NOT NULL, the supervisor session that may read the brief and submit |
+| `state` | TEXT | NOT NULL, `reserved` (server default), then `requested` when the wake message exists, then `submitted` / `fallback` or `cancelled` (`ck_supervisor_report_requests_state`) |
+| `deadline` | FLOAT | NOT NULL, wall time after which the request is closed and the fallback stands; indexed with `state` |
+| `version` | INTEGER | NOT NULL, server default 1 (`ck_supervisor_report_requests_version`); bumped on every state move, submitted via `expected_version` |
+| `request_message_id` | TEXT | nullable, the queued wake message while `requested` |
+| `submitted_text` | TEXT | nullable, the submitted report, mirrored onto the owned window's `payload.text` |
+| `submitted_hash` | TEXT | nullable, its digest, recorded as the window's `output_hash` |
+| `evidence_refs` | JSON | nullable, evidence cited by the submission; every ref must resolve against the request's `brief` facts at submit |
+| `source_links` | JSON | nullable, the `source_url` of each cited evidence ref, resolved server-side at submit |
+| `submitted_at` | FLOAT | nullable, set with the submission |
+| `skip_reason` | TEXT | nullable, why an open request was retired without a submission (`authoring_disabled`, `visibility_changed`) |
+| `created_at` | FLOAT | NOT NULL |
+| `updated_at` | FLOAT | NOT NULL |
+
+### Table: `supervisor_conversations`
+
+One operator conversation with the global supervisor, opened by an allowlisted @mention of the bot in the configured channel (Discord mention-routing spec §4.1, opt-in via `discord.conversation.enabled`). The row, its first input and the supervisor notice are written in one transaction before any transport side effect. `thread_id` is the internal `messages.thread_id` both directions share; `external_thread_id` is set, and the state moves `opening` → `open`, only when the thread-open delivery confirms.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY, `conv-<uuid4>` |
+| `transport` | TEXT | NOT NULL |
+| `guild_id` | TEXT | NOT NULL configured guild |
+| `channel_id` | TEXT | NOT NULL configured channel |
+| `external_root_message_id` | TEXT | NOT NULL, the opening mention |
+| `external_thread_id` | TEXT | nullable until the thread is confirmed |
+| `thread_id` | TEXT | NOT NULL UNIQUE, `conversation:<id>` |
+| `created_by` | TEXT | NOT NULL verified actor, `human:discord:<id>` |
+| `audience` | JSON | NOT NULL allowlist snapshot at open |
+| `state` | TEXT | opening, open, closed or delivery_blocked |
+| `created_at` | FLOAT | NOT NULL |
+| `updated_at` | FLOAT | NOT NULL, bumped by each input and reply |
+| `closed_at` | FLOAT | nullable |
+
+Unique: (`transport`, `external_root_message_id`), `thread_id`, and (`transport`, `external_thread_id`) where the thread is set. Index: `idx_supervisor_conversations_state`.
+
+### Table: `conversation_inputs`
+
+One accepted operator message in a conversation. Transport/external-message uniqueness collapses gateway, backfill and replay duplicates, and the row outlives its text: after 30 days `text` is nulled (`text_expired_at` set, an unanswered input becomes `expired`) and the row stays as the dedup tombstone until it is deleted after 90 days, so expired text cannot replay into fresh work. `supervisor_message_id` is the deterministic `msg-<input id>` notice inserted in the same transaction; `reply_message_id` points at the supervisor's latest recorded answer.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY, `cinput-<uuid4>` |
+| `conversation_id` | TEXT | NOT NULL, REFERENCES supervisor_conversations(id) ON DELETE CASCADE |
+| `transport` | TEXT | NOT NULL |
+| `external_message_id` | TEXT | NOT NULL |
+| `verified_actor` | TEXT | NOT NULL, `human:discord:<id>` |
+| `author_id` | TEXT | NOT NULL bare author id, for rate limits |
+| `channel_id` | TEXT | NOT NULL, for rate limits |
+| `text` | TEXT | nullable once expired |
+| `text_sha256` | TEXT | NOT NULL |
+| `char_count` | INTEGER | NOT NULL, 1–4000 |
+| `received_at` | FLOAT | NOT NULL |
+| `source` | TEXT | gateway, backfill, replay or test |
+| `state` | TEXT | accepted, answered, expired or revoked |
+| `supervisor_message_id` | TEXT | nullable, REFERENCES messages(id) |
+| `reply_message_id` | TEXT | nullable, REFERENCES messages(id) |
+| `delay_notified_at` | FLOAT | nullable, set once by the delay watchdog |
+| `text_expired_at` | FLOAT | nullable |
+| `created_at` | FLOAT | NOT NULL |
+
+Unique: (`transport`, `external_message_id`). Indexes: `idx_conversation_inputs_history`, `idx_conversation_inputs_author_window`, `idx_conversation_inputs_channel_window`.
+
+### Table: `conversation_backfill_cursors`
+
+Reconnect backfill position for the configured channel and each bound conversation thread. The cursor advances only after the page it covers is persisted.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `transport` | TEXT | PRIMARY KEY (with `channel_id`) |
+| `channel_id` | TEXT | PRIMARY KEY (with `transport`), channel or thread id |
+| `last_external_message_id` | TEXT | NOT NULL |
+| `advanced_at` | FLOAT | NOT NULL |
+
+### Table: `conversation_intake_gaps`
+
+A stretch of channel history the reconnect backfill could not read, recorded so status reports possibly missed messages instead of claiming delivery.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY, `gap-<uuid4>` |
+| `transport` | TEXT | NOT NULL |
+| `channel_id` | TEXT | NOT NULL |
+| `gap_from` | FLOAT | NOT NULL |
+| `gap_to` | FLOAT | NOT NULL |
+| `reason` | TEXT | cursor_expired, history_forbidden or pass_cap |
+| `recorded_at` | FLOAT | NOT NULL |
+
+Index: `idx_conversation_intake_gaps_channel`.
+
 ### Table: `message_discord_receipts`
 
 Records successful Discord delivery per AQ message. The message ID is the primary key so repeated event processing does not repost an acknowledged reply.
@@ -2633,8 +2737,93 @@ values.
 | `proof` | TEXT | NOT NULL | One of: development_delivery, branch_tip, content_equivalent, superseded, operator_accepted, abandoned (`ck_integration_legacy_deliveries_proof`) |
 | `development_delivery_id` | TEXT | nullable | The `development_deliveries` row a `development_delivery` (or `content_equivalent`) proof used |
 | `operator_id` | TEXT | NOT NULL | Audit label of the local operator or supervisor session that ran the command |
-| `reason` | TEXT | NOT NULL | The supplied reason, or `legacy delivery proven by <proof>` |
+ | `reason` | TEXT | NOT NULL | The supplied reason, or `legacy delivery proven by <proof>` |
+ | `created_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `test_selections`
+
+Immutable smart-test-selection record: one row per selection request, capturing the exact change snapshot, the provenance digests (catalogue, rules, policy), the module decision with its stage breakdown, and the execution/usage metadata.  Result evidence (local runs, CI, replays) is never amended into it — it is appended to `test_selection_observations` instead.  `task_id` is a soft reference (no foreign key): archive removes the live task row, so the selection history is preserved until retention expires, as escalation audit rows are.  `src/database/queries/test_selection_queries.py` is the sole reader/writer.  Revision `a00000000028` creates the table.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Selection id |
+| `project_id` | TEXT | NOT NULL, FK `projects.id` | Project; indexed with `created_at` (`idx_test_selections_project_created`) |
+| `task_id` | TEXT | nullable | Soft ref so archive keeps the row; indexed with `created_at` (`idx_test_selections_task_created`) |
+| `session_id` | TEXT | nullable | Session that produced the selection |
+| `claim_epoch` | INTEGER | nullable | Claim epoch for the session |
+| `mode` | TEXT | NOT NULL | One of: plan_only, shadow, enforce (`ck_test_selections_mode`) |
+| `workspace` | TEXT | NOT NULL | Workspace root the selection ran against |
+| `base_ref` | TEXT | NOT NULL | Base ref (e.g. `refs/heads/main`) |
+| `base_sha` | TEXT | NOT NULL | Base commit |
+| `head_sha` | TEXT | NOT NULL | Head commit |
+| `dirty_fingerprint` | TEXT | NOT NULL | Fingerprint of dirty/untracked files |
+| `snapshot_fingerprint` | TEXT | NOT NULL | Fingerprint of the change snapshot |
+| `snapshot_complete` | BOOLEAN | NOT NULL DEFAULT true | FALSE only when `incomplete_reason` explains the gap |
+| `incomplete_reason` | TEXT | nullable | Why the snapshot was incomplete |
+| `catalogue_digest` | TEXT | NOT NULL | Selection catalogue digest in force |
+| `rules_digest` | TEXT | NOT NULL | Selection rules digest |
+| `policy_digest` | TEXT | NOT NULL | Omission policy digest |
+| `question_schema_version` | INTEGER | NOT NULL | Question-schema generation the model answered |
+| `static_engine` | TEXT | NOT NULL | Static-engine identifier |
+| `marker_policy` | TEXT | NOT NULL DEFAULT 'default' | One of: default, all (`ck_test_selections_marker_policy`) |
+| `cache_key` | TEXT | NOT NULL | Cache key over the selection inputs |
+| `jev_requested_model` | TEXT | nullable | Model name requested from the provider |
+| `jev_returned_model` | TEXT | nullable | Model name the provider actually returned |
+| `jev_status` | TEXT | NOT NULL | One of: ok, partial, disabled, unconfigured, unavailable, invalid, over_budget, timeout, model_drift (`ck_test_selections_jev_status`) |
+| `fallback_reason` | TEXT | nullable | Why the static fallback engaged, if it did |
+| `full_required` | BOOLEAN | NOT NULL DEFAULT false | The change mandates the full suite regardless of selection |
+| `jev_used_for_omission` | BOOLEAN | NOT NULL DEFAULT false | The model's answer shaped module omission |
+| `promotion_id` | TEXT | nullable | Soft ref to the `test_selection_promotions` row whose policy shaped the run |
+| `area_decisions` | JSON | NOT NULL | Per-area decision trace |
+| `mandatory_modules` | JSON | NOT NULL | Modules required by hard rules |
+| `static_modules` | JSON | NOT NULL | Modules added by the static engine |
+| `jev_modules` | JSON | nullable | Modules the model answered for |
+| `fallback_modules` | JSON | NOT NULL | Modules added on fallback, if any |
+| `final_modules` | JSON | NOT NULL | The complete final selection |
+| `reasons` | JSON | NOT NULL | Per-module reasons (`mandatory_rule`, `jev_unknown`, `fallback_timeout`, …) |
+| `pending_obligations` | JSON | NOT NULL | Obligations the selection deferred |
+| `argv` | JSON | NOT NULL | The resolved pytest argv |
+| `elapsed_ms` | JSON | NOT NULL | Per-stage elapsed time |
+| `usage` | JSON | NOT NULL | Provider usage metadata |
 | `created_at` | REAL | NOT NULL | Unix timestamp |
+
+Indexes: `idx_test_selections_project_created` (`project_id`, `created_at`); `idx_test_selections_task_created` (`task_id`, `created_at`).
+
+### Table: `test_selection_observations`
+
+Evidence rows appended to a selection after the run: the local execution, the CI result, and any replay.  Appends only, never edits, so an observation always records what happened, not what the selection claimed.  `selection_id` is a real foreign key with `ON DELETE CASCADE`, and reads are ordered by (`selection_id`, `observed_at`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Observation id |
+| `selection_id` | TEXT | NOT NULL, FK `test_selections.id` (`ON DELETE CASCADE`) | The selection this is evidence for; indexed with `observed_at` (`idx_test_selection_observations_selection`) |
+| `kind` | TEXT | NOT NULL | One of: execution, ci, replay (`ck_test_selection_observations_kind`) |
+| `source` | TEXT | NOT NULL | Provenance label (runner, CI provider, replay origin) |
+| `exit_code` | INTEGER | nullable | Exit code the run produced |
+| `duration_ms` | INTEGER | nullable | Wall-clock duration |
+| `executed_modules` | JSON | NOT NULL | Modules that actually ran |
+| `failed_node_ids` | JSON | NOT NULL | Failed node ids, if any |
+| `payload` | JSON | NOT NULL | Runner-specific detail |
+| `observed_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `test_selection_promotions`
+
+Append-only (except revocation) record of an omission policy a project earned: the model, question-schema version and the catalogue/rules/policy digests the policy was computed under, plus the evidence that justified promoting it.  A project has at most one active promotion — the partial unique index `uq_test_selection_promotions_active` on `project_id` WHERE `revoked_at IS NULL` enforces it, and `insert_test_selection_promotion` lands with `ON CONFLICT DO NOTHING` on that index, so re-promoting the same policy is idempotent while revoking it is not.  `test_selections.promotion_id` references these rows by id (soft, no foreign key) when the selection ran under a promoted policy.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Promotion id |
+| `project_id` | TEXT | NOT NULL, FK `projects.id` | Project; active-promotion uniqueness (`uq_test_selection_promotions_active`, `revoked_at IS NULL`) |
+| `model` | TEXT | NOT NULL | Model the policy was earned under |
+| `question_schema_version` | INTEGER | NOT NULL | Question-schema generation — a version change invalidates the policy |
+| `catalogue_digest` | TEXT | NOT NULL | Catalogue digest the policy was computed under |
+| `rules_digest` | TEXT | NOT NULL | Rules digest the policy was computed under |
+| `policy_digest` | TEXT | NOT NULL | The policy itself, digested |
+| `evidence` | JSON | NOT NULL | The held-out evidence that justified the promotion |
+| `promoted_by` | TEXT | NOT NULL | Operator/supervisor session id that promoted it |
+| `promoted_at` | REAL | NOT NULL | Unix timestamp |
+| `revoked_at` | REAL | nullable | NULL while active |
+| `revoke_reason` | TEXT | nullable | Why it was revoked |
 
 ---
 

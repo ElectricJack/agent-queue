@@ -34,6 +34,7 @@ class MessageModel(BaseModel):
     body: str
     priority: int = 100
     created_at: float | None = None
+    created_seq: int | None = None
     delivered_at: float | None = None
     read_at: float | None = None
     read: bool = False

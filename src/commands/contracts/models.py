@@ -81,6 +81,9 @@ class EffectSubject(StrEnum):
     ESCALATION = "escalation"
     ESCALATION_REPLY = "escalation_reply"
     ESCALATION_ACTION = "escalation_action"
+    CONVERSATION = "conversation"
+    CONVERSATION_INPUT = "conversation_input"
+    CONVERSATION_REPLY = "conversation_reply"
 
 
 class ClausePredicate(BaseModel):

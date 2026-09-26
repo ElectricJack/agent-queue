@@ -23,6 +23,7 @@ New to AQ? Start with [Install](../tutorials/install.md) and
 | [Default tuning](default-tuning.md) | The resource-aware defaults a fresh install gets, why each value, and how to override. |
 | [Install, move defaults, or recover AQ](../tutorials/install.md#platform-quickstarts) | Choose the supported Windows/WSL2 or macOS path; export/import portable policy; repair, upgrade, or safely inspect uninstall. |
 | [Escalations and the hourly digest](escalations.md) | Configuring the one Discord channel and answering escalation threads. |
+| [Discord supervisor conversations](discord-conversations.md) | Enabling opt-in bot mentions, understanding the trust decision, and diagnosing missed conversation input. |
 | [Migration policy](migrations.md) | Who may run Alembic, against which database, and what to do when refused. |
 | [CI at integration boundaries](integration-ci-boundaries.md) | Understanding which pushes launch the full test suite. |
 | [End-to-end testing the swarm](e2e-swarm.md) | Proving claims, pools, formulas or the task hierarchy still compose, against a real daemon. |

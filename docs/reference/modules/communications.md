@@ -25,6 +25,22 @@ which of the three delivery paths, and what happens when nobody is listening.
 | [src/messages/delivery.py](../../../src/messages/delivery.py) | Runs one delivery pass per cascade cycle: dispatches by recipient kind, nudges idle sessions, skips busy ones, parks stale session mail, and sweeps unanswered messages into transcript-tail replies. | [concepts/messaging.md](../../concepts/messaging.md) | `tests/test_message_delivery.py`. Reads and writes only through the public message-query surface — no private engine access. |
 | [src/messages/session_lens.py](../../../src/messages/session_lens.py) | The narrow window into the session runtime: coarse `idle`/`busy`/`sleeping`/`absent` activity, on-demand supervisor cold start, nudging, and the last assistant turn. | [concepts/sessions.md](../../concepts/sessions.md) | `tests/test_session_lens.py`. Translates the messaging address `supervisor-<pid>` to the runtime session name `n-supervisor--<pid>`; only supervisor-named sessions are wake-able. |
 
+## Supervisor conversations — `src/conversations/`
+
+The optional Discord mention route to the global supervisor. These modules
+own the intake boundary and outbound delivery port; the command layer owns
+durable conversation state.
+
+| Module | Purpose | Component | Notes |
+|---|---|---|---|
+| [src/conversations/\_\_init\_\_.py](../../../src/conversations/__init__.py) | Marks the optional supervisor conversation package and its authority boundary. | [concepts/messaging.md](../../concepts/messaging.md#optional-supervisor-conversations) | Disabled by default. |
+| [src/conversations/envelope.py](../../../src/conversations/envelope.py) | Validates gateway-observed Discord provenance, identifiers and top-level root mentions. | [concepts/messaging.md](../../concepts/messaging.md#optional-supervisor-conversations) | An HTTP request body cannot establish gateway identity. |
+| [src/conversations/intake.py](../../../src/conversations/intake.py) | Classifies observed messages as new conversations, follow-ups or silent ignores, and normalizes input text. | [concepts/messaging.md](../../concepts/messaging.md#optional-supervisor-conversations) | `tests/test_conversation_intake.py`. Escalation threads retain precedence. |
+| [src/conversations/limits.py](../../../src/conversations/limits.py) | Defines shared input, reply, rate, backfill, delay and retention bounds. | [concepts/messaging.md](../../concepts/messaging.md#optional-supervisor-conversations) | `tests/test_conversation_limits.py`. |
+| [src/conversations/outbox.py](../../../src/conversations/outbox.py) | Defines the idempotent outbound queue port, its refusing unbound implementation and an in-memory test implementation. | [concepts/messaging.md](../../concepts/messaging.md#optional-supervisor-conversations) | `tests/test_conversation_outbox.py`. Commands enqueue through this port. |
+| [src/conversations/preconditions.py](../../../src/conversations/preconditions.py) | Names unmet configuration and daemon prerequisites before intake may proceed. | [concepts/messaging.md](../../concepts/messaging.md#optional-supervisor-conversations) | `tests/test_conversation_preconditions.py`. An empty author allowlist disables the route. |
+| [src/conversations/render.py](../../../src/conversations/render.py) | Renders supervisor input briefs, fixed refusal notices and dashboard conversation pointers. | [concepts/messaging.md](../../concepts/messaging.md#optional-supervisor-conversations) | Pure text rendering. |
+
 ## The messaging port — `src/messaging/`
 
 The platform-agnostic seam. The orchestrator and `main.py` talk only to these
@@ -112,7 +128,7 @@ operator's browser without ever advertising a loopback-only address.
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
-| [src/remote_links.py](../../../src/remote_links.py) | Resolves a safe, non-loopback dashboard base URL for links sent to remote operators. | [concepts/messaging.md](../../concepts/messaging.md) | `tests/test_remote_links.py`. Returns no link when the configured URL is not safe to expose. |
+| [src/remote_links.py](../../../src/remote_links.py) | The one dashboard origin that escalations, the digest, reviews and `digest_preview` link to: `dashboard.server.public_url`, else a Tailscale-confirmed `dashboard.server.host`, else an explicit notice. Never `health_check.base_url`. Cached async resolver, plus the diagnostics behind `aq dashboard link` and `dashboard.remote_link`. | [guides/dashboard.md](../../guides/dashboard.md#dashboard-links-in-discord-posts) | `tests/test_remote_links.py`. A configured origin is never reported as verified reachable. |
 
 ## Command and configuration surfaces
 

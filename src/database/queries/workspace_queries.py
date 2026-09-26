@@ -8,6 +8,7 @@ import time
 from sqlalchemy import case, delete, func, insert, nulls_first, select, true, update
 
 from src.database.tables import workspaces
+from src.database.queries.job_queries import unpinned_workspace
 from src.models import (
     KIND_MODE_WORKTREE,
     RepoSourceType,
@@ -122,7 +123,9 @@ class WorkspaceQueryMixin:
     async def delete_workspace(self, workspace_id: str) -> None:
         """Delete a workspace record."""
         async with self._engine.begin() as conn:
-            await conn.execute(delete(workspaces).where(workspaces.c.id == workspace_id))
+            await conn.execute(
+                delete(workspaces).where(workspaces.c.id == workspace_id, unpinned_workspace())
+            )
 
     async def acquire_workspace(
         self,
@@ -232,13 +235,14 @@ class WorkspaceQueryMixin:
 
                 # Optimistic lock
                 lock_result = await conn.execute(
-                    update(workspaces)
+                    update(workspaces).where(unpinned_workspace())
                     .where(
                         (workspaces.c.id == row["id"]) & (workspaces.c.locked_by_agent_id.is_(None))
                     )
                     .values(
                         locked_by_agent_id=agent_id,
                         locked_by_task_id=task_id,
+                        generation=workspaces.c.generation + 1,
                         locked_at=now,
                         lock_mode=lock_mode.value,
                     )
@@ -428,7 +432,7 @@ class WorkspaceQueryMixin:
 
                 # Atomic lock attempt — UPDATE with WHERE locked IS NULL.
                 result = await conn.execute(
-                    update(workspaces)
+                    update(workspaces).where(unpinned_workspace())
                     .where(
                         (workspaces.c.id == ws_row["id"])
                         & (workspaces.c.locked_by_agent_id.is_(None))
@@ -436,6 +440,7 @@ class WorkspaceQueryMixin:
                     .values(
                         locked_by_agent_id=locked_by_agent_id,
                         locked_by_task_id=locked_by_task_id,
+                        generation=workspaces.c.generation + 1,
                         locked_at=now,
                         lock_mode=lock_mode_value,
                     )
@@ -504,7 +509,7 @@ class WorkspaceQueryMixin:
         """Clear lock columns on a workspace."""
         async with self._engine.begin() as conn:
             await conn.execute(
-                update(workspaces)
+                update(workspaces).where(unpinned_workspace())
                 .where(workspaces.c.id == workspace_id)
                 .values(
                     locked_by_agent_id=None,
@@ -517,7 +522,7 @@ class WorkspaceQueryMixin:
     async def release_workspaces_for_agent(self, agent_id: str, *, conn=None) -> int:
         """Release all workspace locks held by an agent. Returns count released."""
         stmt = (
-            update(workspaces)
+            update(workspaces).where(unpinned_workspace())
             .where(workspaces.c.locked_by_agent_id == agent_id)
             .values(
                 locked_by_agent_id=None,
@@ -548,7 +553,7 @@ class WorkspaceQueryMixin:
         """Release all workspace locks held by a task. Returns count released."""
         async with self._engine.begin() as conn:
             result = await conn.execute(
-                update(workspaces)
+                update(workspaces).where(unpinned_workspace())
                 .where(workspaces.c.locked_by_task_id == task_id)
                 .values(
                     locked_by_agent_id=None,

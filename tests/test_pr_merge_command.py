@@ -253,13 +253,16 @@ async def test_pr_identity_fails_closed_when_resource_is_a_different_pr(monkeypa
         await gm.aget_pr_identity("/some/checkout", _PR_URL, repository=REPOSITORY)
 
 
-@pytest.mark.integration
-@pytest.mark.asyncio
-async def test_pr_identity_resolves_against_a_real_gh():
-    """The faked-subprocess tests cannot catch a gh field gh does not serve.
+_LIVE_PR_URL = "https://github.com/cli/cli/pull/1"
+
+
+async def _live_cli_cli_manager():
+    """An existing-login manager and its verified ``cli/cli`` binding.
 
     Needs a ``gh`` on PATH that is logged in and can reach github.com; skips
-    otherwise.  cli/cli#1 is a merged, immutable public PR.
+    otherwise.  The binding is minted the way the daemon mints a project's —
+    :meth:`GitManager.bind_github_repository` reads the repository id through
+    ``gh`` — so the live reads pass the same repository authority guard.
     """
     import asyncio
     import shutil
@@ -274,7 +277,21 @@ async def test_pr_identity_resolves_against_a_real_gh():
     if await auth.wait() != 0:
         pytest.skip("gh is not authenticated")
 
-    identity = await GitManager().aget_pr_identity(os.getcwd(), "https://github.com/cli/cli/pull/1")
+    gm = GitManager(GitHubAccess.from_config(None))
+    repository = await gm.bind_github_repository("https://github.com/cli/cli")
+    assert repository == GitHubRepositoryBinding(212613049, "cli/cli")
+    return gm, repository
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_pr_identity_resolves_against_a_real_gh():
+    """The faked-subprocess tests cannot catch a gh field gh does not serve.
+
+    cli/cli#1 is a merged, immutable public PR.
+    """
+    gm, repository = await _live_cli_cli_manager()
+    identity = await gm.aget_pr_identity(os.getcwd(), _LIVE_PR_URL, repository=repository)
     assert identity.repository == "cli/cli"
     assert identity.number == 1
     assert identity.base_ref == "prototype"
@@ -704,27 +721,11 @@ async def test_pr_validation_detects_a_changed_file_count_between_snapshots(monk
 async def test_pr_validation_derives_the_diff_against_a_real_repository(tmp_path):
     """The faked git cannot prove GitHub serves a fetch by OID with gh's credentials.
 
-    Needs a ``gh`` on PATH that is logged in and can reach github.com; skips
-    otherwise.  cli/cli#1 is a merged, immutable public PR whose one changed
-    file is ``command/pr.go``.
+    cli/cli#1 is a merged, immutable public PR whose one changed file is
+    ``command/pr.go``.
     """
-    import asyncio
-    import shutil
-
-    from src.git.manager import GitManager
-
-    if shutil.which("gh") is None:
-        pytest.skip("gh is not installed")
-    auth = await asyncio.create_subprocess_exec(
-        "gh", "auth", "status", stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-    )
-    if await auth.wait() != 0:
-        pytest.skip("gh is not authenticated")
-
-    gm = GitManager()
-    identity = await gm.avalidate_pr_for_merge(
-        str(tmp_path), "https://github.com/cli/cli/pull/1", repository=REPOSITORY
-    )
+    gm, repository = await _live_cli_cli_manager()
+    identity = await gm.avalidate_pr_for_merge(str(tmp_path), _LIVE_PR_URL, repository=repository)
     assert identity.head_oid == "e9a3253762e768badaa1d4a5b3d267416d1e42f4"
     cache = tmp_path / "pr-diff-cache" / "github.com" / "cli" / "cli.git"
     assert (cache / "HEAD").is_file()

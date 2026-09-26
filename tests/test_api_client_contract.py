@@ -36,8 +36,9 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
-from tests.db_fixtures import lease_dsn
+
 from src.config import DatabaseConfig
+from tests.db_fixtures import lease_dsn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = REPO_ROOT / "packages" / "aq-client"
@@ -664,3 +665,90 @@ def test_generated_client_boilerplate_matches_the_recorded_digests():
         "openapi-python-client (regenerate with the pinned one):\n"
         "  ./scripts/regenerate-api-client.sh --offline"
     )
+
+
+async def test_generated_supervisor_inbox_reads_and_refusals_round_trip(live_app):
+    _import_repo_client()
+    from agent_queue_api_client.api.supervisor_inbox import (
+        supervisor_inbox_history,
+        supervisor_inbox_status,
+    )
+    from agent_queue_api_client.client import Client
+    from agent_queue_api_client.models.supervisor_inbox_error_response import (
+        SupervisorInboxErrorResponse,
+    )
+    from agent_queue_api_client.models.supervisor_inbox_history_request import (
+        SupervisorInboxHistoryRequest,
+    )
+    from agent_queue_api_client.models.supervisor_inbox_history_response import (
+        SupervisorInboxHistoryResponse,
+    )
+    from agent_queue_api_client.models.supervisor_inbox_status_request import (
+        SupervisorInboxStatusRequest,
+    )
+    from agent_queue_api_client.models.supervisor_inbox_status_response import (
+        SupervisorInboxStatusResponse,
+    )
+
+    app, db = live_app
+    accepted = await db.accept_conversation_input(
+        transport="discord",
+        guild_id="111111111111111111",
+        channel_id="222222222222222222",
+        external_message_id="900000000000000000",
+        external_root_message_id="900000000000000000",
+        external_thread_id=None,
+        author_id="333333333333333333",
+        verified_actor="human:discord:333333333333333333",
+        text="original operator text",
+        audience=["333333333333333333"],
+        source="test",
+        received_at=1000,
+        conversation_id=None,
+        brief="verified input",
+        now=1000,
+    )
+    await db.expire_conversation_text(older_than=1001, now=1002)
+    client = Client(base_url="http://test", raise_on_unexpected_status=False)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as http:
+        client.set_async_httpx_client(http)
+        status = await supervisor_inbox_status.asyncio(
+            client=client, body=SupervisorInboxStatusRequest()
+        )
+        assert isinstance(status, SupervisorInboxStatusResponse), status
+        assert status.enabled is False
+        assert status.counts.by_state.to_dict()["opening"] == 1
+        history = await supervisor_inbox_history.asyncio(
+            client=client,
+            body=SupervisorInboxHistoryRequest(conversation_id=accepted["conversation"]["id"]),
+        )
+        assert isinstance(history, SupervisorInboxHistoryResponse), history
+        item = history.conversations[0].inputs[0]
+        assert item.text is None and item.text_expired is True
+        assert history.next_before is None and history.next_before_id is None
+        assert history.conversations[0].next_before_id is None
+        assert SupervisorInboxHistoryRequest(before=1.0, before_id="conv-x").to_dict() == {
+            "limit": 50,
+            "before": 1.0,
+            "before_id": "conv-x",
+        }
+        refusal = await supervisor_inbox_history.asyncio(
+            client=client,
+            body=SupervisorInboxHistoryRequest(conversation_id="missing"),
+        )
+        assert isinstance(refusal, SupervisorInboxErrorResponse), refusal
+        assert refusal.error_code == "conversation_not_found"
+        # Generic execution and typed dispatch retain the same refusal facts.
+        response = await http.post(
+            "/api/execute",
+            json={
+                "command": "supervisor_inbox_history",
+                "args": {"conversation_id": "missing"},
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["ok"] is False
+        assert response.json()["details"]["error_code"] == "conversation_not_found"

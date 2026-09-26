@@ -523,6 +523,7 @@ class TestMergeBranch:
             checkout_path,
             "feature/done",
             "main",
+            repository_url="",
         )
 
     async def test_conflict_scenario(self, handler, mock_git, project_with_repo):
@@ -623,6 +624,7 @@ class TestMergeBranch:
             checkout_path,
             "feature/custom-default",
             "develop",
+            repository_url="",
         )
 
     async def test_warns_if_tasks_in_progress(self, handler, db, mock_git, project_with_repo):
@@ -1039,7 +1041,9 @@ class TestActiveProjectFallback:
         assert "error" not in result
         assert result["pulled"] == "main"
         assert result["project_id"] == project_id
-        mock_git.apull_branch.assert_called_once_with(checkout_path, None)
+        mock_git.apull_branch.assert_called_once_with(
+            checkout_path, None, repository_url=""
+        )
 
     async def test_git_pull_with_branch(self, handler, mock_git, project_with_repo):
         """git_pull with explicit branch should pass it through."""
@@ -1051,7 +1055,9 @@ class TestActiveProjectFallback:
 
         assert "error" not in result
         assert result["pulled"] == "feature/xyz"
-        mock_git.apull_branch.assert_called_once_with(checkout_path, "feature/xyz")
+        mock_git.apull_branch.assert_called_once_with(
+            checkout_path, "feature/xyz", repository_url=""
+        )
 
     async def test_git_pull_error(self, handler, mock_git, project_with_repo):
         """git_pull should return error when pull fails."""

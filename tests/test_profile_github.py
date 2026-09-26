@@ -15,6 +15,7 @@ from src.commands.profile_commands import ProfileCommandsMixin
 from src.config import GitHubAppConfig
 from src.git.github import GitHubAccess
 from src.git.github_contracts import GitHubAccessError
+from src.models import AgentProfile
 
 
 GIST_ID = "a" * 32
@@ -32,20 +33,7 @@ class _ProfileCommands(ProfileCommandsMixin):
     async def _get_profile(profile_id: str):
         if profile_id != "demo":
             return None
-        return SimpleNamespace(
-            id="demo",
-            name="Demo",
-            description="",
-            default_class="",
-            harness=None,
-            permission_mode="",
-            codex_full_auto=False,
-            claude_dangerously_skip_permissions=False,
-            allowed_tools=[],
-            mcp_servers={},
-            system_prompt_suffix="",
-            install={},
-        )
+        return AgentProfile(id="demo", name="Demo")
 
 
 def _fake_gh(tmp_path: Path) -> Path:

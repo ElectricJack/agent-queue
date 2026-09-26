@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-83 commands are registered.
+112 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -101,6 +101,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
 | [`integration_promote_main`](integration_promote_main.md) | Promote exact root candidate | Reconcile and fast-forward main to the exact trusted green candidate. |
 | [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md) | Push conflict resolution | Push a frozen conflict resolution under the current repair writer fence. |
+| [`integration_rebind_repair`](integration_rebind_repair.md) | Integration Rebind Repair | Authenticated hierarchical integration operational control. |
 | [`integration_rebind_reused_identity`](integration_rebind_reused_identity.md) | Integration Rebind Reused Identity | Authenticated hierarchical integration operational control. |
 | [`integration_reconcile_promotion`](integration_reconcile_promotion.md) | Reconcile prepared promotion | Compare a durable prepared intent with the remote and finalize its receipt. |
 | [`integration_reconcile_unmaterialized`](integration_reconcile_unmaterialized.md) | Integration Reconcile Unmaterialized | Authenticated hierarchical integration operational control. |
@@ -108,6 +109,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_record_repair`](integration_record_repair.md) | Integration Record Repair | Record one exact repair check attempt against the current stage budget. |
 | [`integration_recover_candidate_member`](integration_recover_candidate_member.md) | Resolve pushed candidate member | Accept one valid frozen repair or retain its failed invariant for a fresh recovery. |
 | [`integration_recover_unwritten_resolution`](integration_recover_unwritten_resolution.md) | Recover unwritten conflict resolution | Supersede a malformed reservation only after an operator proves no remote write occurred. |
+| [`integration_redrive_child`](integration_redrive_child.md) | Integration Redrive Child | Authenticated hierarchical integration operational control. |
 | [`integration_redrive_root`](integration_redrive_root.md) | Integration Redrive Root | Authenticated hierarchical integration operational control. |
 | [`integration_release`](integration_release.md) | Release terminal root train | Release terminal root train |
 | [`integration_release_delegates`](integration_release_delegates.md) | Integration Release Delegates | Authenticated hierarchical integration operational control. |
@@ -117,6 +119,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_repair_dispatch`](integration_repair_dispatch.md) | Integration Repair Dispatch | Create the repair task and hand the current branch writer fence to it. |
 | [`integration_repair_start`](integration_repair_start.md) | Integration Repair Start | Activate or durably continue one operation's bounded repair stage. |
 | [`integration_repair_timeout`](integration_repair_timeout.md) | Integration Repair Timeout | Expire the current repair stage once its absolute deadline has passed. |
+| [`integration_reserve_owner`](integration_reserve_owner.md) | Integration Reserve Owner | Authenticated hierarchical integration operational control. |
 | [`integration_resolve_candidate_member`](integration_resolve_candidate_member.md) | Resolve candidate member | Reserve, publish, accept, and continue the exact conflicted candidate member owned by the authenticated repair session. |
 | [`integration_resolve_conflict`](integration_resolve_conflict.md) | Reserve conflict resolution | Freeze an active repair session's exact conflict resolution before push. |
 | [`integration_resume`](integration_resume.md) | Integration Resume | Authenticated hierarchical integration operational control. |
@@ -134,12 +137,38 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`ci_baseline_status`](ci_baseline_status.md) | Read the default branch's CI verdict | Judge the head commit's check runs, name the failing checks and tests, and derive the repair task keyed by their failure signature. |
 | [`ci_repair_adopt`](ci_repair_adopt.md) | Adopt a task as the CI repair | Key a live task as the repair for a red branch and record the failing tests it owns, so the CI sentinel reuses it instead of filing another. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
+| [`github_issue_fix_approved`](github_issue_fix_approved.md) | File an approved issue fix | Create or reuse the fix task for an approved investigation. |
+| [`github_issue_rejection`](github_issue_rejection.md) | Apply an explicit issue closure request | Close an issue only when Jack explicitly asks in a rejected review. |
+| [`github_issue_triage`](github_issue_triage.md) | Triage GitHub issues | File bounded investigations and label the corresponding issues. |
+| [`job_cancel`](job_cancel.md) | Job Cancel | Cancel a job and verify cleanup before releasing its pin. |
+| [`job_get`](job_get.md) | Job Get | Read a scoped managed job. |
+| [`job_list`](job_list.md) | Job List | List this owner's managed jobs. |
+| [`job_logs`](job_logs.md) | Job Logs | Read retained output ranges with explicit gaps. |
+| [`job_result`](job_result.md) | Job Result | Read a job's immutable result and bounded excerpt. |
+| [`job_submit`](job_submit.md) | Job Submit | Submit a finite preset, optionally with an atomic durable wait. |
 | [`list_projects`](list_projects.md) | List projects | Read the configured projects without changing them. |
+| [`morning_report_preview`](morning_report_preview.md) | Morning Report Preview | Read bounded overnight evidence without writes or model calls. |
+| [`morning_report_tick`](morning_report_tick.md) | Morning Report Tick | Reserve and recover the zoned daily report and deadline fallback. |
 | [`provider_availability_notify`](provider_availability_notify.md) | Announce a provider's availability change | Message the global supervisor and the human once when a provider moves between launchable and unavailable; a repeat for the same change sends nothing. |
 | [`provider_reroute`](provider_reroute.md) | Re-route work off an unavailable provider | Move queued work whose provider is unavailable to the same intelligence class on an available provider, a few tasks at a time; pinned tasks and single-provider classes hold. |
 | [`provider_usage_probe`](provider_usage_probe.md) | Probe a provider's remaining quota | Ask a provider's own CLI what is left of the account's limit windows and record the reading. Free to run and never billed against the quota it reports. |
 | [`render_prompt`](render_prompt.md) | Render a prompt | Render a bundled or project prompt with explicit variables. |
+| [`report_brief`](report_brief.md) | Report Brief | Read a bounded, paged report brief and its CAS version. |
+| [`report_get`](report_get.md) | Report Get | Read a stored morning report in project scope. |
+| [`report_list`](report_list.md) | Report List | List stored morning reports in project scope. |
+| [`report_reconcile`](report_reconcile.md) | Report Reconcile | Recover reserved hourly report requests after lost events. |
+| [`report_request`](report_request.md) | Report Request | Queue one author wake for a reserved report. |
+| [`report_submit`](report_submit.md) | Report Submit | Submit one authored report before its deadline. |
+| [`supervisor_inbox_history`](supervisor_inbox_history.md) | Supervisor Inbox History | Page conversations by update time or one conversation's inputs by receipt time. |
+| [`supervisor_inbox_post`](supervisor_inbox_post.md) | Supervisor Inbox Post | Accept verified gateway input or local test/replay provenance into the global inbox. |
+| [`supervisor_inbox_reply`](supervisor_inbox_reply.md) | Supervisor Inbox Reply | Record an explicit live global-supervisor answer and queue its Discord delivery. |
+| [`supervisor_inbox_status`](supervisor_inbox_status.md) | Supervisor Inbox Status | Read installation-wide conversation preconditions, limits, counts and intake health. |
 | [`task_failure_triage_notify`](task_failure_triage_notify.md) | Wake supervisor failure triage | Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident. |
+| [`task_handoff`](task_handoff.md) | Record a task handoff | Store bounded agent assertions with current daemon facts. Auto is note-only; non-auto records a restart request, without performing a restart. |
+| [`wait_cancel`](wait_cancel.md) | Wait Cancel | Cancel a current-claim wait and queue its result. |
+| [`wait_get`](wait_get.md) | Wait Get | Read a durable wait and its bounded result pointer. |
+| [`wait_list`](wait_list.md) | Wait List | List wait history for the current task or supervisor project. |
+| [`wait_register`](wait_register.md) | Wait Register | Register one bounded typed wait and end the turn. |
 
 <!-- aq:generated:end -->
 

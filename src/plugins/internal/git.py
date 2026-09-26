@@ -978,7 +978,9 @@ class GitPlugin(InternalPlugin):
             return err
         branch = args.get("branch") or None
         try:
-            pulled = await self._git.apull_branch(checkout_path, branch)
+            pulled = await self._git.apull_branch(
+                checkout_path, branch, repository_url=project.repo_url if project else None
+            )
         except GitError as e:
             return {"error": str(e)}
         return {"project_id": args.get("project_id", ""), "pulled": pulled}
@@ -1022,7 +1024,10 @@ class GitPlugin(InternalPlugin):
             or "main"
         )
         try:
-            success = await self._git.amerge_branch(checkout_path, branch_name, default_branch)
+            success = await self._git.amerge_branch(
+                checkout_path, branch_name, default_branch,
+                repository_url=project.repo_url if project else None,
+            )
         except GitError as e:
             return {"error": str(e)}
         if not success:
@@ -1076,6 +1081,11 @@ class GitPlugin(InternalPlugin):
                 repository_url = publication.repository_url
                 if not _is_github_repository(repository_url):
                     return {"error": "Project has no authorized GitHub repository"}
+                from src.commands.github_issue_commands import with_fix_closing_line
+
+                held_task = await self._db._db.get_task(principal.task_id)
+                key = held_task.dedup_key if held_task else None
+                body = with_fix_closing_line(body, key)
             repository = await git.bind_github_repository(repository_url)
             pr_url = await git.acreate_pr(
                 checkout_path,
@@ -1294,7 +1304,10 @@ class GitPlugin(InternalPlugin):
             return err
         default_branch = project.repo_default_branch if project else "main"
         try:
-            success = await self._git.amerge_branch(checkout_path, branch_name, default_branch)
+            success = await self._git.amerge_branch(
+                checkout_path, branch_name, default_branch,
+                repository_url=project.repo_url if project else None,
+            )
         except GitError as e:
             return {"error": str(e)}
         warning = await self._warn_if_in_progress(args["project_id"])

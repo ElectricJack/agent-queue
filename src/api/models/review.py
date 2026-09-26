@@ -106,6 +106,31 @@ class ReviewImportEditsResponse(BaseModel):
     revision: int
 
 
+class GitHubIssueTriageResponse(BaseModel):
+    success: bool = True
+    filed: list[int]
+    recovered: list[int]
+    remaining_capacity: int
+
+
+class GitHubIssueFixApprovedResponse(BaseModel):
+    success: bool = True
+    outcome: str
+    task_id: str | None = None
+
+
+class GitHubIssueCloseRejectedResponse(BaseModel):
+    success: bool = True
+    outcome: str
+    number: int
+
+
+class GitHubIssueRejectionResponse(BaseModel):
+    success: bool = True
+    outcome: str
+    number: int | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "review_submit": ReviewSubmitResponse,
     "review_show": ReviewShowResponse,
@@ -116,4 +141,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "review_delegate": ReviewDelegateResponse,
     "review_dispatch": ReviewDispatchResponse,
     "review_import_edits": ReviewImportEditsResponse,
+    "github_issue_triage": GitHubIssueTriageResponse,
+    "github_issue_fix_approved": GitHubIssueFixApprovedResponse,
+    "github_issue_close_rejected": GitHubIssueCloseRejectedResponse,
+    "github_issue_rejection": GitHubIssueRejectionResponse,
 }

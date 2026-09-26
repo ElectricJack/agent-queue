@@ -1,0 +1,19 @@
+[
+  {
+    "id": "digest-1",
+    "destination": "discord:123",
+    "config_generation": 0,
+    "window_start": 86400,
+    "window_end": 90008,
+    "due_at": 90008,
+    "payload": {
+      "reported_keys": [
+        "completion:c1"
+      ]
+    },
+    "send_status": "suppressed",
+    "created_at": 90008,
+    "updated_at": 90008,
+    "suppression_reason": "no_activity"
+  }
+]

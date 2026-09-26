@@ -72,19 +72,20 @@ CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
 #: ``{}`` fields: task_id, work_dir.
 #:
 #: The heartbeat line is load-bearing, not advice.  With the transcript
-#: reader deferred the lease has exactly two feeds — the provider's
+#: reader deferred the activity lease has two feeds — the provider's
 #: ``last_activity`` and an explicit ``aq task heartbeat`` — and on the
 #: subprocess provider ``last_activity`` is log-file mtime.  A long quiet
 #: tool call therefore climbs the stall ladder, and a provider without
 #: ``Cap.NUDGE`` skips straight to interrupt+kill.  Nothing else in the
-#: system tells the agent to heartbeat, so this prompt has to.
+#: system tells the agent to heartbeat, so this prompt has to. A registered
+#: durable wait exempts a quiet owner until its bounded result is available.
 BOOTSTRAP_PROMPT = (
     "You are running task {task_id} in {work_dir}.\n"
     "Run `aq prime` first and follow what it tells you.\n"
-    "Before any command that will run quiet for more than a few minutes "
-    "(long builds, full test suites, large installs), call "
-    "`aq task heartbeat {task_id}` — silence past the lease is read as a "
-    "stall and the daemon will interrupt you.\n"
+    "Before a command quiet for minutes, run `aq task heartbeat {task_id}`; "
+    "silence past the lease triggers interruption.\n"
+    "For supported waits, use `aq wait register` and end the turn. Your lease "
+    "is held without heartbeats until the result pointer arrives.\n"
     "When the work is done, close the task explicitly:\n"
     "  aq task close {task_id} --outcome pass --work-outcome shipped\n"
     "  aq session drain-ack\n"
@@ -198,6 +199,19 @@ def _is_codex_cli(harness) -> bool:
         getattr(harness, "id", "") == "codex"
         and Path(getattr(harness, "command", "")).name in {"codex", "codex.exe"}
     )
+
+
+def codex_service_tier_for(profile, class_config: dict) -> str | None:
+    """Resolve a launch's explicit tier; an unset value inherits Codex config."""
+    tier = getattr(profile, "codex_service_tier", None)
+    if tier is None:
+        tier = class_config.get("service_tier")
+    if tier is None:
+        return None
+    if isinstance(tier, str) and tier in {"default", "fast"}:
+        return tier
+    logger.warning("Unsupported Codex service tier %r; not applied", tier)
+    return None
 
 
 def _is_claude_cli(harness) -> bool:
@@ -664,6 +678,9 @@ class SessionSpecBuilder:
                     argv.extend(["-c", f'model_reasoning_effort="{reasoning}"'])
                 else:
                     logger.warning("Unsupported Codex reasoning effort %r; not applied", reasoning)
+            tier = codex_service_tier_for(profile, class_config)
+            if tier is not None:
+                argv.extend(["-c", f'service_tier="{tier}"'])
 
         tools = self._resolve_allowed_tools(profile, harness)
         if tools:

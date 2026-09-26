@@ -114,6 +114,38 @@ class EnsureTaskValue(CommandValue):
     parent_id: str | None = None
 
 
+class GitHubIssueTriageArgs(CommandArgs):
+    project_id: str
+
+
+class GitHubIssueTriageValue(CommandValue):
+    filed: list[int]
+    recovered: list[int]
+    remaining_capacity: int
+
+
+class GitHubIssueFixApprovedArgs(CommandArgs):
+    project_id: str
+    review_id: str
+    revision: int
+
+
+class GitHubIssueFixApprovedValue(CommandValue):
+    outcome: str
+    task_id: str | None = None
+
+
+class GitHubIssueRejectionArgs(CommandArgs):
+    project_id: str
+    review_id: str
+    revision: int
+
+
+class GitHubIssueRejectionValue(CommandValue):
+    outcome: str
+    number: int | None = None
+
+
 class EditTaskArgs(CommandArgs):
     task_id: str
     project_id: str | None = None
@@ -671,6 +703,14 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         return outcome if outcome in {"adopted", "recorded", "unchanged"} else "rejected"
     if name == "ensure_task":
         return "created" if raw.get("created") else "reused"
+    if name == "github_issue_triage":
+        return "swept"
+    if name == "github_issue_fix_approved":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in {"created", "reused", "ignored"} else "rejected"
+    if name == "github_issue_rejection":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in {"closed", "ignored"} else "rejected"
     if name == "task_route_options":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _ROUTE_OPTION_OUTCOMES else "rejected"
@@ -931,6 +971,31 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         outcome_labels={"created": "Created", "reused": "Reused", "rejected": "Rejected"},
         result_labels={"task_id": "Task", "created": "Was created"},
         subject_labels={"task": "a task"},
+    ),
+    "github_issue_triage": CommandPresentation(
+        title="Triage GitHub issues",
+        summary="File bounded investigations and label the corresponding issues.",
+        arg_labels={"project_id": "Project"},
+        outcome_labels={"swept": "Scanned", "rejected": "Rejected"},
+        result_labels={"filed": "Filed issues", "recovered": "Recovered labels"},
+        subject_labels={"task": "investigation tasks"},
+    ),
+    "github_issue_fix_approved": CommandPresentation(
+        title="File an approved issue fix",
+        summary="Create or reuse the fix task for an approved investigation.",
+        arg_labels={"project_id": "Project", "review_id": "Review", "revision": "Revision"},
+        outcome_labels={"created": "Created", "reused": "Reused", "ignored": "Ignored",
+                        "rejected": "Rejected"},
+        result_labels={"task_id": "Fix task"},
+        subject_labels={"task": "a fix task"},
+    ),
+    "github_issue_rejection": CommandPresentation(
+        title="Apply an explicit issue closure request",
+        summary="Close an issue only when Jack explicitly asks in a rejected review.",
+        arg_labels={"project_id": "Project", "review_id": "Review", "revision": "Revision"},
+        outcome_labels={"closed": "Closed", "ignored": "Left open", "rejected": "Rejected"},
+        result_labels={"number": "Issue number"},
+        subject_labels={},
     ),
     "edit_task": CommandPresentation(
         title="Edit a task",
@@ -1409,6 +1474,36 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             True,
         ),
         (
+            "github_issue_triage",
+            GitHubIssueTriageArgs,
+            GitHubIssueTriageValue,
+            _outcomes("swept"),
+            SideEffectClass.COMPOSITE,
+            (CreateClause(subject=EffectSubject.TASK),),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "github_issue_fix_approved",
+            GitHubIssueFixApprovedArgs,
+            GitHubIssueFixApprovedValue,
+            _outcomes("created", "reused", "ignored"),
+            SideEffectClass.CREATE,
+            (CreateClause(subject=EffectSubject.TASK),),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "github_issue_rejection",
+            GitHubIssueRejectionArgs,
+            GitHubIssueRejectionValue,
+            _outcomes("closed", "ignored"),
+            SideEffectClass.COMPOSITE,
+            (),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
             "edit_task",
             EditTaskArgs,
             EditTaskValue,
@@ -1654,6 +1749,19 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             )
     from src.commands.contracts.integration import register_integration_contracts
     from src.commands.contracts.escalation import register_escalation_contracts
+    from src.commands.contracts.report import register_report_contracts
+    from src.commands.contracts.supervisor_inbox import register_supervisor_inbox_contracts
 
     register_integration_contracts(registry)
     register_escalation_contracts(registry)
+    register_report_contracts(registry)
+    register_supervisor_inbox_contracts(registry)
+    from src.commands.contracts.wait import register_wait_contracts
+
+    register_wait_contracts(registry)
+    from src.commands.contracts.job import register_job_contracts
+
+    register_job_contracts(registry)
+    from src.commands.contracts.handoff import register_handoff_contract
+
+    register_handoff_contract(registry)

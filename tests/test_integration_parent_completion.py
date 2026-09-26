@@ -9,7 +9,6 @@ import pytest
 from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from src.database import Database
 from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database.tables import (
@@ -48,16 +47,13 @@ from src.integration.ownership import BranchOwnership
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus
 from src.profiles.capabilities import DENY_ALL
 from src.database.queries.task_queries import StaleClaim
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("parent-completion.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("parent-completion.db")
     await database.create_project(Project(id="p", name="integration project"))
     yield database
-    await database.close()
 
 
 async def _enable_project(db, *, on_failed_child: str = "block") -> dict:

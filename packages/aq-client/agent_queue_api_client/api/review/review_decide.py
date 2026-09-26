@@ -65,9 +65,9 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: ReviewDecideRequest,
 ) -> Response[ReviewDecideResponse | ReviewDecideResponse422]:
-    """Approve a review or request changes on its current revision.
+    """Approve, request changes, or reject a current review revision.
 
-     Approve a review or request changes on its current revision.
+     Approve, request changes, or reject a current review revision.
 
     Args:
         body (ReviewDecideRequest):
@@ -96,9 +96,9 @@ def sync(
     client: AuthenticatedClient | Client,
     body: ReviewDecideRequest,
 ) -> ReviewDecideResponse | ReviewDecideResponse422 | None:
-    """Approve a review or request changes on its current revision.
+    """Approve, request changes, or reject a current review revision.
 
-     Approve a review or request changes on its current revision.
+     Approve, request changes, or reject a current review revision.
 
     Args:
         body (ReviewDecideRequest):
@@ -122,9 +122,9 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: ReviewDecideRequest,
 ) -> Response[ReviewDecideResponse | ReviewDecideResponse422]:
-    """Approve a review or request changes on its current revision.
+    """Approve, request changes, or reject a current review revision.
 
-     Approve a review or request changes on its current revision.
+     Approve, request changes, or reject a current review revision.
 
     Args:
         body (ReviewDecideRequest):
@@ -151,9 +151,9 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: ReviewDecideRequest,
 ) -> ReviewDecideResponse | ReviewDecideResponse422 | None:
-    """Approve a review or request changes on its current revision.
+    """Approve, request changes, or reject a current review revision.
 
-     Approve a review or request changes on its current revision.
+     Approve, request changes, or reject a current review revision.
 
     Args:
         body (ReviewDecideRequest):

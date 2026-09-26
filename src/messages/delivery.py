@@ -27,7 +27,7 @@ import time
 from typing import Any
 
 from src.messages.session_lens import Activity, SessionManagerProto
-from src.models import Message
+from src.models import Message, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +91,12 @@ class MessageDeliveryEngine:
             if not pending:
                 continue
 
+            if to_kind == "task" and pending[0].body_kind in {"wait_result", "job_result"}:
+                task = await self._db.get_task(to_id)
+                if task and task.status == TaskStatus.PAUSED:
+                    # Terminal output does not authorize resuming a manual pause.
+                    continue
+
             if to_kind == "user":
                 delivered += await self._deliver_to_user(pending)
                 continue
@@ -121,6 +127,8 @@ class MessageDeliveryEngine:
                 continue
 
             if activity == "sleeping":
+                if to_kind == "task" and pending[0].body_kind in {"wait_result", "job_result"}:
+                    continue
                 started = await self._sessions.ensure_started(
                     kind=kind, target_id=target_id, project_id=resolved_project
                 )
@@ -195,7 +203,7 @@ class MessageDeliveryEngine:
         for msg in candidates:
             # Internal question handoffs use explicit question commands;
             # never fabricate a user reply from the supervisor's transcript.
-            if msg.body_kind in {"agent_question", "task_recovery"}:
+            if msg.body_kind in {"agent_question", "task_recovery", "wait_result", "job_result"}:
                 continue
             if msg.delivered_at is None or msg.delivered_at > cutoff:
                 continue
@@ -391,4 +399,12 @@ def _render_nudge(batch: list[Message]) -> str:
         # Task comments are operational guidance, so the worker must see the
         # bounded body and metadata without issuing a second inbox command.
         return batch[0].body
+    if batch[0].body_kind == "wait_result":
+        # The durable message identity is also the wait pointer. Worker
+        # grants include wait_get; no generic message command is needed.
+        wait_id = batch[0].id.removeprefix("wait:").removesuffix(":result")
+        return f"Handle `aq wait show {shlex.quote(wait_id)} --json`."
+    if batch[0].body_kind == "job_result":
+        job_id = batch[0].id.removeprefix("job:").removesuffix(":terminal")
+        return f"Handle `aq job result {shlex.quote(job_id)} --json`."
     return f"Handle `aq message status {shlex.quote(batch[0].id)} --json`."

@@ -1168,6 +1168,12 @@ class PoolsMixin:
         if current is None or current.state == "stopped":
             return
         session = current
+        # Re-check the shared exemption before timeout-driven cleanup. Death,
+        # operator intent and provider failover still stop a waiting session.
+        if reason in {"stalled", "stuck_timeout", "claim_loop_stalled", "prepare_timeout"}:
+            task = await self.db.get_task(session.task_id) if session.task_id else None
+            if task and await self.db.blocking_wait_for(session, task.claim_epoch, time.time()):
+                return
         await self.db.update_session(session.id, desired_state="stopped")
         other_live = [row for row in await self.db.list_sessions(agent_id=session.agent_id, live_only=True)
                       if row.id != session.id] if session.agent_id else []

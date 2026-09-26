@@ -171,15 +171,26 @@ Maps to `DiscordConfig`. Discord uses one shared destination.
 | `bot_token` | `str` | `""` | Discord bot token. |
 | `guild_id` | `str` | `""` | Discord server ID. |
 | `channel_id` | `str` | `""` | Numeric shared channel ID for digests and escalation roots. |
-| `authorized_users` | `list[str]` | `[]` | Discord user IDs allowed to reply in escalation threads. |
+| `authorized_users` | `list[str]` | `[]` | Discord user IDs allowed to reply in escalation threads and, when enabled, correspond with the global supervisor. |
 | `digest` | object | enabled, 60 minutes | Digest interval, project visibility, categories and catch-up horizon. |
 | `escalation` | object | enabled | Mention allowlists, reminders and supervisor-delivery timeout. |
+| `conversation` | object | `enabled: false` | Opt-in bot-mention conversations with the existing elevated global supervisor. |
 | `rate_guard_*` | `int` | 1000/5000/8000 | Invalid-request warning, critical and halt thresholds. |
 
 `digest.interval_minutes` is 15–1440 and `catchup_hours` is 1–168.
 `digest.project_ids: []` means all projects visible to this destination.
 `escalation.mention_user_ids`, `mention_role_ids`, and `channel_id` use
 numeric Discord IDs.
+
+`discord.conversation.enabled` is a boolean, false by default. Enabling it
+requires a non-empty `authorized_users` allowlist and configured `guild_id` and
+`channel_id`; validation rejects missing values. Runtime intake also requires
+`messages.enabled`, `sessions.enabled`, completed Discord cutover and a bound
+conversation outbox. Both gateway and command re-check all eight prerequisites.
+Settings warn that allowlisted identities reach the elevated global supervisor;
+this is not a sandboxed chatbot. Deployments requiring enforced read-only chat
+keep it off. Numeric conversation limits are fixed, not YAML settings; see
+[Discord supervisor conversations](../guides/discord-conversations.md).
 
 Old `channels.control`, `channels.notifications` and
 `channels.agent_questions` names are retained only as one-way migration
@@ -191,6 +202,100 @@ creation.
 Disabling external escalation or digest delivery never disables the core
 escalation inbox, supervisor routing, scheduler, or dashboard.
 
+### 4.2.1 `reports` Section
+
+`reports.timezone` is the one installation-wide IANA time zone used for report
+daily limits, quiet hours and morning report boundaries. It defaults to
+`UTC`. An invalid zone fails configuration loading. The section requires a
+daemon restart when edited.
+
+```yaml
+reports:
+  timezone: America/Los_Angeles
+  hourly:
+    enabled: false
+    full_fleet_visibility: false
+    grace_minutes: 5
+    max_requests_per_day: 12
+    quiet_hours:
+      start: "22:00"
+      end: "07:00"
+  morning:
+    enabled: false
+    full_fleet_visibility: false
+    time: "07:00"
+    late_cutoff_minutes: 120
+    max_lookback_hours: 72
+    author_deadline_minutes: 15
+    project_ids: []
+    destination: "" # empty inherits the shared destination in the delivery layer
+```
+
+Hourly supervisor authoring is opt-in and defaults off. `full_fleet_visibility`
+must be explicitly true, and `discord.digest.project_ids` must be empty, before
+the global supervisor can author text for the shared destination. Quiet hours
+use local `HH:MM` times, may cross midnight, and suppress author wakes while
+the deterministic digest remains eligible to send. Omitting `quiet_hours`
+disables that suppression. `grace_minutes` is 1–60; `max_requests_per_day` is
+1–24, with reservations counted even when a report falls back. An inactive
+authoring playbook keeps delivery deterministic. The request/CAS slice does
+not activate an authoring playbook by itself.
+
+Morning scheduling is opt-in. `time` must be a zero-padded local `HH:MM`;
+`late_cutoff_minutes` is 1–1440, `max_lookback_hours` is 1–72 and
+`author_deadline_minutes` is 1–60. `project_ids` selects up to 100 projects
+(empty means the fleet). A nonempty destination is `discord:<channel id>`.
+The report tick runs only from a daemon service or system playbook, uses the
+report zone instead of host-local cron, moves a nonexistent DST time to the
+first valid minute, and chooses the first occurrence of a repeated time.
+
+The durable `morning-daily` schedule reserves one row per local date even if
+the time is edited. A zone edit cannot reserve a report whose planned instant
+is within 20 hours of the last daily reservation. A restart after the late
+cutoff records `skipped:late_start` without advancing coverage. Within cutoff,
+the window still ends at the planned instant, while the full author deadline
+starts at reservation. Interrupted builds recover their stored window and
+source context; ready briefs and their hashes are never rebuilt.
+
+Per-source coverage and default-branch heads advance on finalization, separately
+from transport receipts. Failed sources retain their cursor for recovery;
+lookback caps disclose the omitted interval. Morning fact membership deduplicates
+the 72-hour replay independently of hourly digests. Changed project selections
+have separate source cursors so they do not consume unseen project evidence.
+Healthy quiet days finalize as suppressed immediately, without an author turn.
+Expired ready reports finalize their deterministic fallback; disabling the
+schedule cancels pending rows and leaves stored reports readable. Report rows
+and their fact membership are retained for 90 days; coverage anchors survive.
+
+`aq report morning --dry-run` reads the latest configured boundary without writes.
+`aq report show ID` and `aq report list` read stored reports, also available at
+`/reports/:id` in the dashboard. Reads enforce the caller's project visibility;
+the page separates landed changes, pending/unknown shipment, failures and source
+gaps, and labels prior verification as agent-reported. Project-scoped readers
+receive scoped deterministic evidence rather than global supervisor prose.
+
+The optional reviewed system playbook `morning-report` calls
+`morning_report_tick` on `timer.1m`. It is neither required for readiness nor
+activated by default; the operator imports and activates the reviewed bundle
+separately. Morning authoring requires `full_fleet_visibility: true`, an empty
+project selection and a configured Discord destination. Restricted destinations
+use the deterministic report without waking the global supervisor. The author
+reads `aq report brief ID` and submits version 1 JSON with
+`aq report submit ID --file FILE --brief-hash HASH --expected-version VERSION`.
+The server validates project/evidence references, caps manual checks at ten
+grounded landed changes with known surfaces, and owns coverage and links.
+
+Final reports reserve one immutable summary in `outbound_deliveries`; the shared
+dispatcher sends at most 1,500 characters including a stable marker and a link
+to `/reports/:id` when an external dashboard origin is configured. Escalations
+and the rate guard retain priority. Delivery failure never rebuilds evidence or
+creates another author request. Ambiguous sends reconcile their marker or remain
+unknown without blind reposting. Disable, destination edits and visibility edits
+cancel queued author messages and unsent summaries; cancellation survives
+re-enabling the schedule. Final content remains readable. An operator applies
+the outbound cancellation migration during deployment; workers do not migrate
+the operator database or activate the playbook.
+
 ### 4.3 `agents` Section
 
 Maps to `AgentsDefaultConfig`. The YAML key is `agents`.
@@ -198,7 +303,7 @@ Maps to `AgentsDefaultConfig`. The YAML key is `agents`.
 | YAML key | Type | Default | Description |
 |---|---|---|---|
 | `heartbeat_interval_seconds` | `int` | `30` | How often (in seconds) a running agent must emit a heartbeat to be considered alive. |
-| `stuck_timeout_seconds` | `int` | `0` | Seconds without a heartbeat before an agent is declared stuck. `0` disables the timeout entirely (no stuck detection). |
+| `stuck_timeout_seconds` | `int` | `0` | Session backstop: task sessions use age since launch or question/wait resumption; pool sessions use inactivity. Active current-claim waits are exempt and their results grant a fresh lease interval. `0` disables this backstop; the inactivity ladder remains enabled. |
 | `graceful_shutdown_timeout_seconds` | `int` | `30` | Maximum seconds to wait for an agent to finish cleanly during shutdown before forcibly terminating it. |
 
 ### 4.4 `scheduling` Section
@@ -631,6 +736,11 @@ Maps to `MetricsConfig`. The YAML key is `metrics`. Full behaviour in
 | `retain_seconds_1s` | `int` | `3600` | Retention horizon for per-second samples. Must be `>= 0`. |
 | `retain_seconds_1m` | `int` | `2592000` | Retention horizon for per-minute roll-ups (30 days). Must be `>= 0`. |
 | `retain_seconds_1h` | `int` | `31536000` | Retention horizon for per-hour roll-ups (365 days). Must be `>= 0`. |
+| `perf_enabled` | `bool` | `True` | Whether the performance probes record: the event-loop drift probe, route latency by route template, connection-pool wait and query duration. `false` is the rollback switch — the probes stop recording and each sample's `perf` block drops to `{"enabled": false}`; routing, the dashboard server and stored samples are untouched. Hot-reloadable. Spec: `2026-09-24-dashboard-performance-under-load-and-separation` §4.1. |
+| `perf_loop_probe_ms` | `int` | `100` | Period of the event-loop drift probe: it sleeps this long and records how late each wake-up was. Must be between `10` and `1000`. |
+| `perf_slow_query_ms` | `float` | `100.0` | A query that takes longer than this counts toward `perf.db.counters.slow_queries`. The statement text is never recorded. Must be `> 0`. |
+| `perf_host_budget_ms` | `float` | `20.0` | Wall-clock budget for one host read (pressure-stall information, test-slot occupancy, ungated load). An overrun backs the reader off and marks the host block `stale` with reason `over_budget`. Must be `> 0`. |
+| `perf_relay_poll_seconds` | `float` | `5.0` | How often the sampler polls the dashboard server's relay counters (`GET /__aq/metrics`) and records their deltas. The poll runs on the sampler tick. Must be `>= interval_seconds`. |
 
 ---
 

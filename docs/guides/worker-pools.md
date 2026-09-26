@@ -318,6 +318,13 @@ only after the pool has been continuously in surplus for
 claim attempt returns `drain_requested`. A busy worker is never drained
 mid-task.
 
+A pool session with `desired_state='stopped'` drains once it no longer owns a task
+assignment. An old
+`session.task_id` does not keep it alive after that task is reopened or claimed
+elsewhere: reconciliation detaches the stale pointer without changing the new
+holder's task. An active claim or attached integration writer still retains its
+ownership fence until release completes.
+
 `aq pool scale --now` is the exception: it terminates idle sessions above the
 new effective max immediately, oldest first, skipping the grace window.
 
@@ -928,6 +935,15 @@ and nothing can be routed to it. The runnable workers are exactly the rungs.
 **Adding a class.** Drop a file in `vault/intelligence-classes/` and its rungs
 appear at the next daemon start (or `aq install`) — one per harness whose
 provider it has a slice for.
+
+**Codex service tier.** A class's `codex` mapping may set
+`"service_tier": "fast"` (or `"default"`). A Codex pool profile can override
+it with `"codex_service_tier": "default"` or `"fast"` in its Config block;
+the dashboard profile editor exposes the same override. An absent value
+inherits the class, and if both are absent AQ sends no tier flag. Each new
+Codex session receives `-c service_tier="…"` when a value is set; existing
+sessions keep their launch setting, and `~/.codex/config.toml` is untouched.
+`aq pool status` and the dashboard pool row show the effective explicit tier.
 
 **Removing a class.** Its rungs are *disabled*, not deleted: a rung can own a
 running pool session, an in-flight task and an agent row, and removing the

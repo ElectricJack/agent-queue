@@ -449,6 +449,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Terminal pane registry."),
     ("src/claim_file.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
      "`.aq/claim.json` read/write helpers."),
+    ("src/handoffs.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
+     "Structured handoff notes and the bounded wake context replacing transcripts."),
     ("src/env_scrub.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
      "Removes operator secrets from worker environments."),
 
@@ -590,6 +592,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
 
     ("src/messages/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
      "Message delivery to sessions, users and tasks."),
+    ("src/conversations/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
+     "Supervisor conversation intake, preconditions, bounds and outbound delivery port."),
     ("src/messaging/**", "communications", "docs/concepts/messaging.md",
      PRODUCTION, "Transport-neutral messaging port."),
     ("src/notifications/**", "communications", "docs/concepts/messaging.md",
@@ -601,6 +605,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Discord gateway: digest delivery, escalation threads and intake."),
     ("src/digest/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
      "Activity digest facts, eligibility, rendering and dispatch."),
+    ("src/reports/**", "communications", "docs/concepts/messaging.md",
+     PRODUCTION, "Durable supervisor report requests and the hourly report policy."),
     ("src/escalations/**", "communications", "docs/concepts/messaging.md",
      PRODUCTION, "Escalation incidents, delivery outbox and inbound intake."),
 
@@ -659,6 +665,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "End-to-end smoke driver."),
     ("scripts/**", "contributing", "docs/contributing/scripts.md", SUPPORTING,
      "Repository script."),
+    (".test_durations", "contributing", "docs/contributing/ci.md", SUPPORTING,
+     "Pytest duration data used to balance the default CI shards."),
     (".github/workflows/**", "contributing", "docs/contributing/ci.md", SUPPORTING,
      "GitHub Actions workflow."),
     (".github/**", "contributing", "docs/contributing/ci.md", SUPPORTING,

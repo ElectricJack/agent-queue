@@ -51,6 +51,7 @@ CONFIG_KNOWN_KEYS = frozenset(
     {
         "permission_mode",
         "codex_full_auto",
+        "codex_service_tier",
         "claude_dangerously_skip_permissions",
         "max_tokens_per_task",
         # Named-session fields (supervisor-agent spec §7).  ``workspaces``
@@ -535,6 +536,13 @@ def _validate_config(config: dict) -> list[str]:
             errors.append(f"Config '{key}' must be a boolean, got {type(value).__name__}")
         elif value and config.get("harness") != required_harness:
             errors.append(f"Config '{key}: true' requires harness '{required_harness}'")
+
+    if "codex_service_tier" in config:
+        tier = config["codex_service_tier"]
+        if tier not in ("default", "fast") or not isinstance(tier, str):
+            errors.append("Config 'codex_service_tier' must be 'default' or 'fast'")
+        elif config.get("harness") != "codex":
+            errors.append("Config 'codex_service_tier' requires harness 'codex'")
 
     # --- max_tokens_per_task ---
     if "max_tokens_per_task" in config:
@@ -1108,6 +1116,8 @@ def parsed_profile_to_agent_profile(parsed: ParsedProfile) -> dict:
     for key in ("codex_full_auto", "claude_dangerously_skip_permissions"):
         if key in parsed.config:
             result[key] = parsed.config[key]
+    if "codex_service_tier" in parsed.config:
+        result["codex_service_tier"] = parsed.config["codex_service_tier"]
 
     if "default_class" in parsed.config:
         result["default_class"] = parsed.config["default_class"]
@@ -1252,6 +1262,7 @@ def agent_profile_to_markdown(
     permission_mode: str = "",
     harness: str | None = None,
     codex_full_auto: bool = False,
+    codex_service_tier: str | None = None,
     claude_dangerously_skip_permissions: bool = False,
     allowed_tools: list[str] | None = None,
     mcp_servers: list[str] | dict[str, dict] | None = None,
@@ -1320,6 +1331,11 @@ def agent_profile_to_markdown(
     ):
         if not isinstance(value, bool):
             raise ValueError(f"{key} must be a boolean, got {type(value).__name__}")
+    if codex_service_tier is not None:
+        if codex_service_tier not in ("default", "fast"):
+            raise ValueError("codex_service_tier must be 'default' or 'fast'")
+        if harness != "codex":
+            raise ValueError("codex_service_tier requires harness 'codex'")
 
     lines: list[str] = []
 
@@ -1363,6 +1379,8 @@ def agent_profile_to_markdown(
         config["permission_mode"] = permission_mode
     if codex_full_auto:
         config["codex_full_auto"] = True
+    if codex_service_tier is not None:
+        config["codex_service_tier"] = codex_service_tier
     if claude_dangerously_skip_permissions:
         config["claude_dangerously_skip_permissions"] = True
     if default_class:

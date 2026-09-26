@@ -248,11 +248,59 @@ class TestExits:
     async def test_idle_pool_drain_ack_stops_session(self, db, reconciler):
         sid = await held_pool_session(db)
         await db.release_claim(sid, task_status=TaskStatus.READY, context="x", now=time.time())
+        assert (await db.get_session(sid)).task_id is None
         await db.update_session(sid, desired_state="stopped")
         live, now = await observe(reconciler)
         await reconciler._step_drain_ack(live, now)
         assert (await db.get_session(sid)).state == "stopped"
         assert (await db.get_agent("agent-1")).state == AgentState.IDLE
+
+    @pytest.mark.parametrize("reclaimed", [False, True])
+    async def test_draining_pool_stops_after_task_is_reclaimed_elsewhere(
+        self, db, reconciler, provider, reclaimed
+    ):
+        sid = await held_pool_session(db)
+        await db.create_agent(Agent(id="agent-2", name="agent-2", profile_id="worker",
+                                    state=AgentState.BUSY))
+        status = TaskStatus.IN_PROGRESS if reclaimed else TaskStatus.READY
+        new_agent = "agent-2" if reclaimed else None
+        await db.update_task("t1", status=status, assigned_agent_id=new_agent, claim_epoch=2)
+        await db.update_agent("agent-2", current_task_id="t1" if reclaimed else None)
+        await db.update_session(sid, state="draining", desired_state="stopped",
+                                last_claim_epoch=1)
+        provider.stop = AsyncMock(wraps=provider.stop)
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+
+        session = await db.get_session(sid)
+        task = await db.get_task("t1")
+        assert (session.state, session.task_id, session.claim_phase) == (
+            "stopped", None, None
+        )
+        assert (task.status, task.assigned_agent_id, task.claim_epoch) == (
+            status, new_agent, 2
+        )
+        assert (await db.get_agent("agent-2")).current_task_id == ("t1" if reclaimed else None)
+        assert await db.get_workspace_for_agent("agent-1") is None
+        provider.stop.assert_awaited_once()
+
+    async def test_draining_pool_keeps_its_active_claim(self, db, reconciler):
+        sid = await held_pool_session(db)
+        await db.update_task("t1", claim_epoch=1)
+        await db.update_session(sid, state="draining", desired_state="stopped",
+                                last_claim_epoch=1)
+        session = await db.get_session(sid)
+        task = await db.get_task("t1")
+        assert (session.last_claim_epoch, task.claim_epoch, task.assigned_agent_id) == (
+            1, 1, "agent-1"
+        )
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+        session = await db.get_session(sid)
+        assert (session.state, session.task_id, session.claim_phase) == (
+            "draining", "t1", "active"
+        )
 
 
 class TestBackstop:
@@ -326,6 +374,7 @@ class TestOrphans:
         """An attached branch owner is durable evidence that cleanup must wait."""
         sid = await held_pool_session(db)
         await db.transition_task("t1", status, context="test", force=True)
+        await db.update_session(sid, state="draining", desired_state="stopped")
         async with db.immediate() as conn:
             await conn.execute(
                 insert(integration_branch_owners).values(
@@ -344,6 +393,7 @@ class TestOrphans:
             )
 
         live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
         await reconciler._step_orphans(live, now)
 
         session = await db.get_session(sid)

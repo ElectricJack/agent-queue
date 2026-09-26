@@ -21,12 +21,14 @@ stays silent when nothing happened, and an escalation that names one decision
 and waits for an answer. Both go to one configured Discord channel and nowhere
 else.
 
-> **Discord is notification-only.** There are no AQ slash commands, no task
+> **Discord is notification-only by default.** There are no AQ slash commands, no task
 > controls, no buttons and no per-project channels. The six former slash
 > commands were retired and the control views, the notification handler and
 > the Discord command mirror were deleted; the dashboard and the `aq` CLI own
-> every read and control surface now. The one thing Discord can still send
-> *into* AQ is a reply typed in an escalation thread. See
+> the operational read and control surfaces. Escalation-thread replies reach
+> the owning project supervisor; the deliberate opt-in exception is
+> [supervisor conversations](../guides/discord-conversations.md), where an
+> allowlisted bot mention reaches the elevated global supervisor. See
 > [what Discord no longer does](#what-discord-no-longer-does).
 
 ## Vocabulary
@@ -45,6 +47,29 @@ terms this page leans on.
 | **Escalation** | A durable incident that needs a human decision; it gets one channel post and one thread. |
 | **Delivery** | A row in an outbox recording one intended external send, and what happened to it. |
 | **Transport** | The narrow port that actually talks to a chat platform. Today there is one: Discord. |
+
+## Optional supervisor conversations
+
+The `src/conversations/` package supports an opt-in Discord mention route to
+the global supervisor, controlled by `discord.conversation.enabled` (false by
+default). Intake classifies gateway-observed provenance and normalized text;
+the envelope validates Discord identifiers and the root mention. Replies in
+escalation threads stay with escalation intake.
+
+The route requires an explicit author allowlist, configured guild and channel,
+enabled messages and sessions, completed Discord cutover, and a bound outbound
+queue. Both the gateway and intake command check these prerequisites. The
+package supplies a refusing `UnboundOutbox` until a delivery implementation is
+bound, plus `RecordingOutbox` for tests. Shared constants define message sizes,
+rate windows and retention; pure renderers produce supervisor briefs, fixed
+notices and dashboard pointers. Conversation text does not resolve gates or
+approve work.
+
+Enabling treats the allowlisted identities as trusted operator correspondents
+of the existing elevated session. There is no sandboxed chatbot: deployments
+requiring enforced read-only chat keep this feature off. See
+[Discord supervisor conversations](../guides/discord-conversations.md) for
+enabling, limits and diagnostics.
 
 ## The three lanes
 
@@ -75,8 +100,8 @@ Three things to take from the picture:
   into it, rather than by poking a process;
 * the **digest** and **escalations** share one channel and one transport but
   keep separate outboxes, so an outage in one cannot stall the other;
-* the only arrow pointing back *into* AQ from Discord is a reply inside an
-  escalation thread.
+* by default, the arrow back *into* AQ is an escalation-thread reply. The
+  opt-in conversation route also persists input through the message queue.
 
 ## A realistic example
 

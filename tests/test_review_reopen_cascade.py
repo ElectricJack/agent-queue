@@ -170,7 +170,7 @@ async def test_reopen_cascade_only_cancels_reviewer_profiles(command_handler_fac
 @pytest.mark.asyncio
 async def test_task_gate_sweep_resolves_on_failed_review(orchestrator_factory):
     orch = await orchestrator_factory()
-    h = orch.command_handler
+    h = orch._command_handler
     await h.db.create_project(Project(id="p", name="P"))
     await h.db.upsert_profile(AgentProfile(id="worker", name="W"))
 
@@ -199,7 +199,7 @@ async def test_pr_merged_sweep_unblocks_downstream(orchestrator_factory, monkeyp
     """After a final-reviewer merges a PR, `_sweep_resolve_pr_ci_gates` resolves
     the downstream task's `pr-merged` gate so it can be worked on."""
     orch = await orchestrator_factory()
-    h = orch.command_handler
+    h = orch._command_handler
     await h.db.create_project(Project(id="p", name="P"))
     await h.db.upsert_profile(AgentProfile(id="worker", name="W"))
 

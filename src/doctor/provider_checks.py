@@ -2,9 +2,10 @@
 
 The provider-usage feature (``docs/superpowers/specs/2026-09-07-provider-usage-design.md``)
 puts each provider's own account of its limit windows on the Metrics tab.
-Codex's half needs no supervision: its numbers ride in on transcript lines
-the watcher already reads, and a Codex reading that stops moving means an
-idle fleet, which T6 renders honestly as ``stale``.
+Codex's numbers ride in on transcript lines the watcher reads. A frozen
+reading can mean either an idle fleet or failed transcript discovery;
+``providers.usage_activity_gap`` distinguishes these by comparing quota
+confirmation times with independently observed live session activity.
 
 Claude's half is the fragile one.  It depends on a ten-minute playbook timer
 calling ``provider_usage_probe``, which shells out to ``claude -p "/usage"``
@@ -50,6 +51,8 @@ from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 OWNER = "provider-usage"
 
 CHECK_ID = "providers.claude_usage"
+ACTIVITY_GAP_CHECK_ID = "providers.usage_activity_gap"
+ACTIVITY_GAP_SECONDS = 30 * 60
 
 #: Fallback horizon when the config object predates ``stale_after_seconds``.
 #: Matches :class:`~src.config.ClaudeProviderConfig`'s default so a test
@@ -284,6 +287,78 @@ async def _check_claude_usage(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_usage_activity_gap(ctx: DoctorContext) -> CheckResult:
+    """Warn on a quota feed that trails live activity by over 30 minutes."""
+    if ctx.db is None:
+        return CheckResult(
+            id=ACTIVITY_GAP_CHECK_ID, severity=Severity.INFO,
+            detail="database not initialised — usage/activity comparison unavailable",
+        )
+    try:
+        snapshots = await ctx.db.latest_provider_usage()
+        sessions = await ctx.db.list_sessions(live_only=True)
+    except Exception:
+        return CheckResult(
+            id=ACTIVITY_GAP_CHECK_ID, severity=Severity.INFO,
+            detail="usage or session data unavailable — usage/activity comparison skipped",
+        )
+
+    newest: dict[str, float] = {}
+    for snapshot in snapshots:
+        provider = str(snapshot["provider"])
+        seen_at = float(snapshot.get("last_seen_at") or snapshot.get("observed_at") or 0)
+        newest[provider] = max(newest.get(provider, 0), seen_at)
+
+    # SessionRecord.provider is a process backend (tmux/subprocess), not the
+    # account provider. Use harness identity, including inherited harnesses.
+    from src.providers.availability import provider_key
+
+    orchestrator = getattr(ctx.handler, "orchestrator", None)
+    registry = getattr(orchestrator, "harness_registry", None)
+    live: dict[str, dict] = {}
+    for session in sessions:
+        harness = registry.get(session.harness, session.project_id) if registry else None
+        provider = provider_key(harness) if harness is not None else session.harness
+        if provider not in {"claude", "codex"} and provider not in newest:
+            continue  # no quota feed for this provider
+        if provider == "claude" and not getattr(_claude_config(ctx), "usage_probe_enabled", True):
+            continue
+        activity = float(session.last_activity or session.started_at or 0)
+        started = float(session.started_at or activity)
+        item = live.setdefault(provider, {
+            "provider": provider, "activity_at": activity,
+            "started_at": started, "session_id": session.id,
+        })
+        item["started_at"] = min(item["started_at"], started)
+        if activity > item["activity_at"]:
+            item.update(activity_at=activity, session_id=session.id)
+
+    gaps = []
+    for provider, item in sorted(live.items()):
+        seen_at = newest.get(provider)
+        gap = item["activity_at"] - (seen_at if seen_at is not None else item["started_at"])
+        if gap > ACTIVITY_GAP_SECONDS:
+            gaps.append({**item, "last_seen_at": seen_at, "gap_seconds": gap})
+    data = {"threshold_seconds": ACTIVITY_GAP_SECONDS, "gaps": gaps}
+    if gaps:
+        details = "; ".join(
+            f"{item['provider']}: "
+            + ("no usage snapshot" if item["last_seen_at"] is None else "newest usage snapshot")
+            + f" trails live session activity by {_age(item['gap_seconds'])}"
+            for item in gaps
+        )
+        return CheckResult(
+            id=ACTIVITY_GAP_CHECK_ID, severity=Severity.WARN,
+            detail=details + " — inspect transcript discovery and the provider quota feed",
+            data=data,
+        )
+    return CheckResult(
+        id=ACTIVITY_GAP_CHECK_ID, severity=Severity.OK,
+        detail="no provider usage feed trails live session activity by more than 30m",
+        data=data,
+    )
+
+
 def provider_checks() -> list[DoctorCheck]:
     # Report-only: no ``fix``.  See the module docstring — a stalled timer and
     # a moved CLI wording both need a human, and an automatic probe would hide
@@ -293,6 +368,7 @@ def provider_checks() -> list[DoctorCheck]:
 
     return [
         DoctorCheck(id=CHECK_ID, run=_check_claude_usage, owner=OWNER),
+        DoctorCheck(id=ACTIVITY_GAP_CHECK_ID, run=_check_usage_activity_gap, owner=OWNER),
         *provider_availability_checks(),
     ]
 

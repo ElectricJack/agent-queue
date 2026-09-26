@@ -91,6 +91,13 @@ checkpoint's branch. This permits restoring a task row that drifted from its
 canonical branch while refusing a rename that would make the task unclaimable.
 The branch check happens before any other `task set` field is written.
 
+For READY/BLOCKED hierarchy or train producers missing a canonical branch owner,
+`aq integration reserve-owner --task-id <id>` is a supervisor control. It
+rechecks the task's branch against its checkpoint and materialized origin,
+requires no live session or held workspace, and acquires only an unowned or
+released branch. `aq task restart` applies this reservation check before moving
+a BLOCKED checkpointed producer to READY.
+
 > **Retired (2026-09-08):** the never-implemented `ask_human` / `aq task
 > ask-human` surface was removed. Live worker questions are recorded by the
 > claim-fenced `AgentQuestionService` from completed native transcript turns
@@ -380,9 +387,13 @@ their native config formats, referenced from `vault/harnesses/<name>.md`.
 
 ### 6.1 `aq handoff [--auto] [subject] [detail]`
 
-Writes a `task_context(type=handoff)` row on the current task (subject + detail + timestamp +
-session id). The next `aq prime` for that task renders it in section 6 — this is how work
-state survives compaction and session recycling while memory is paused (Workstream E).
+Writes a `task_context(type=handoff)` row on the current task. Legacy subject/detail
+remain accepted; version 1 adds goal, completed, next step, waiting-for, files,
+decisions, do-not-repeat, and uncertainties (8 KiB combined UTF-8 agent text;
+20 items per list). Server timestamp and row id define the latest meaningful
+note; optional task/claim retry keys prevent duplicate rows. Empty auto hooks
+preserve the existing note. Prime section 6 quotes a bounded projection separately
+from current daemon facts. See [handoff and wake budgets](../../guides/wake-context-compaction.md).
 
 - `--auto` (wired to `PreCompact`): **note only, never a restart** — Gas City's `gc-flp1`
   lesson: restarting on every compaction loops forever.

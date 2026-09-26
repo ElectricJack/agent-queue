@@ -1,0 +1,20 @@
+[
+  {
+    "id": "e1",
+    "project_id": "p",
+    "task_id": "t3",
+    "source_kind": "task_recovery",
+    "source_identity": "recovery-1",
+    "incident_key": "task-recovery:recovery-1",
+    "supervisor_owner": "supervisor-p",
+    "task_title": "Failed task",
+    "task_status": "FAILED",
+    "summary": "Needs investigation",
+    "investigation": "Investigate timeout",
+    "decision_requested": "Retry?",
+    "severity": "high",
+    "state": "needs_human",
+    "created_at": 90005,
+    "updated_at": 90005
+  }
+]

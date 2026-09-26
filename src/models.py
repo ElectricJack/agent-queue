@@ -977,6 +977,8 @@ class AgentProfile:
     # read as 0 — no project holds a reservation open by default.
     min_per_project: int | None = None
     max_claims_per_session: int | None = None
+    # None inherits the class/CLI setting; "default" explicitly disables fast mode.
+    codex_service_tier: str | None = None
 
 
 @dataclass
@@ -1011,6 +1013,7 @@ class Message:
     via: str | None = None
     body_kind: str | None = None
     pane_open: str | None = None  # JSON-encoded {view, args}
+    created_seq: int | None = None  # server sequence for typed message waits
 
 
 #: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).

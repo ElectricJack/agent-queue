@@ -209,6 +209,64 @@ async def test_stop_timeout_is_not_release_evidence(orchestrator_factory, tmp_pa
     assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
 
 
+async def test_stop_task_returns_train_owner_to_reserved_before_teardown(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    await orchestrator.db.update_project(
+        "p", hierarchical_integration_mode="train", integration_repository_id="repo"
+    )
+    await orchestrator.db.transition_task(
+        "task", TaskStatus.IN_PROGRESS, force=True, assigned_agent_id="agent"
+    )
+    events: list[str] = []
+    monkeypatch.setattr(
+        orchestrator.session_providers, "create", lambda *_args: _provider(events)
+    )
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+    orchestrator.git._arun = AsyncMock(return_value="a" * 40)
+    orchestrator._get_default_branch = AsyncMock(return_value="main")
+
+    error = await orchestrator.stop_task("task")
+
+    assert error is None
+    assert (await orchestrator.db.get_task("task")).status is TaskStatus.BLOCKED
+    owner = await BranchOwnership(orchestrator.db).get_owner(
+        BranchKey(repository_id="repo", branch="aq/parent")
+    )
+    assert owner["owner_id"] == "task"
+    assert owner["handoff_state"] == "reserved"
+    assert owner["fence_token"] == 5
+    assert events.index("confirm") < events.index("detach")
+
+
+async def test_stop_task_retains_train_workspace_when_handoff_is_unproven(
+    orchestrator_factory, tmp_path, monkeypatch
+):
+    orchestrator = await _orchestrator(orchestrator_factory, tmp_path)
+    await orchestrator.db.update_project(
+        "p", hierarchical_integration_mode="train", integration_repository_id="repo"
+    )
+    await orchestrator.db.transition_task(
+        "task", TaskStatus.IN_PROGRESS, force=True, assigned_agent_id="agent"
+    )
+    events: list[str] = []
+    monkeypatch.setattr(
+        orchestrator.session_providers, "create", lambda *_args: _provider(events, stopped=False)
+    )
+    current_branch, run = _clean_git(events)
+    orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
+    orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
+
+    error = await orchestrator.stop_task("task")
+
+    assert "unproven" in error
+    assert (await orchestrator.db.get_task("task")).status is TaskStatus.IN_PROGRESS
+    assert (await orchestrator.db.get_workspace("slot")).locked_by_task_id == "task"
+
+
 async def test_dirty_slot_is_not_detached_or_released(
     orchestrator_factory, tmp_path, monkeypatch
 ):
@@ -414,7 +472,7 @@ async def test_released_handoff_recovers_after_crash_without_touching_a_new_hold
             description="",
         )
     )
-    result = await orchestrator.command_handler.execute(
+    result = await orchestrator._command_handler.execute(
         "integration_transfer_owner",
         {
             "target": {"repository_id": "repo", "branch": "aq/parent"},
@@ -1086,7 +1144,7 @@ async def test_public_transfer_recovers_a_stopped_stale_pool_writer(
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
 
-    result = await orchestrator.command_handler.execute(
+    result = await orchestrator._command_handler.execute(
         "integration_transfer_owner",
         {
             "target": {"repository_id": "repo", "branch": "aq/parent"},
@@ -1886,7 +1944,7 @@ async def test_stopped_verifier_recovery_preserves_detached_published_baseline(
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
     if published:
-        result = await orchestrator.command_handler.execute("integration_transfer_owner", {
+        result = await orchestrator._command_handler.execute("integration_transfer_owner", {
             "target": {"repository_id": "repo", "branch": "aq/parent"},
             "expected_token": 4, "next_owner_id": "task", "next_role": "worker",
         })

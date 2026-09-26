@@ -217,6 +217,46 @@ class TestActivity:
         got = await lens.activity(kind="task", target_id=row.task_id, project_id="proj1")
         assert got == "idle"
 
+    @pytest.mark.parametrize("invalid", [None, "epoch", "phase", "paused", "agent", "project"])
+    async def test_task_address_resolves_only_current_pool_holder(self, db, providers, lens, invalid):
+        from sqlalchemy import update
+        from src.database.tables import tasks
+        from src.models import Agent, TaskStatus
+        from src.sessions.provider import SessionSpec
+
+        row, _ = await _seed_running_task(db, providers)
+        await db.create_agent(Agent(id="holder", name="Holder", profile_id="claude"))
+        await db.update_task(row.task_id, status=TaskStatus.IN_PROGRESS, assigned_agent_id="holder")
+        async with db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == row.task_id).values(claim_epoch=1))
+        await db.update_session(
+            row.id, name="p-independent-worker", lifecycle="pool", agent_id="holder",
+            claim_phase="active", last_claim_epoch=1,
+        )
+        fake = providers.create("fake")
+        await fake.start(SessionSpec(
+            session_name="p-independent-worker", work_dir=row.work_dir,
+            command=("codex",), instance_token=row.instance_token,
+        ))
+        fake.sessions["p-independent-worker"].activity = time.time() - 300
+        if invalid == "epoch":
+            await db.update_session(row.id, last_claim_epoch=0)
+        elif invalid == "phase":
+            await db.update_session(row.id, claim_phase=None)
+        elif invalid == "paused":
+            await db.update_task(row.task_id, status=TaskStatus.PAUSED)
+        elif invalid == "agent":
+            await db.update_session(row.id, agent_id=None)
+        project_id = "other-project" if invalid == "project" else "proj1"
+
+        assert await lens.activity(kind="task", target_id=row.task_id, project_id=project_id) == (
+            "absent" if invalid else "idle"
+        )
+        assert await lens.nudge(
+            kind="task", target_id=row.task_id, project_id=project_id, text="result pointer",
+        ) is (invalid is None)
+        assert fake.sent_nudges == ([] if invalid else [("p-independent-worker", "result pointer")])
+
     async def test_session_kind_resolves_supervisor_by_address(self, db, providers, lens):
         # The messaging *address* is ``supervisor-<pid>``; the row is
         # named ``n-supervisor--<pid>``. Lens must translate and still

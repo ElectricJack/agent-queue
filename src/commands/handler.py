@@ -40,8 +40,10 @@ from src.orchestrator import Orchestrator
 from src.logging_config import CorrelationContext
 
 # Mixin imports — each provides one domain of _cmd_* methods
+from src.commands.job_commands import JobCommandsMixin
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
+from src.commands.wait_commands import WaitCommandsMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
@@ -84,9 +86,12 @@ from src.commands.git_commands import GitCommandsMixin
 from src.commands.ci_commands import CiCommandsMixin
 from src.commands.provider_commands import ProviderCommandsMixin
 from src.commands.digest_commands import DigestCommandsMixin
+from src.commands.report_commands import ReportCommandsMixin
 from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
+from src.commands.conversation_commands import ConversationCommandsMixin
 from src.commands.review_commands import ReviewCommandsMixin
+from src.commands.github_issue_commands import GitHubIssueCommandsMixin
 
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
@@ -330,6 +335,7 @@ def _is_memory_command(name: str) -> bool:
 
 
 class CommandHandler(
+    JobCommandsMixin,
     ClaimCommandsMixin,
     QuestionCommandsMixin,
     SystemCommandsMixin,
@@ -367,8 +373,12 @@ class CommandHandler(
     ProviderCommandsMixin,
     DashboardStateCommandsMixin,
     DigestCommandsMixin,
+    ReportCommandsMixin,
+    WaitCommandsMixin,
     EscalationCommandsMixin,
+    ConversationCommandsMixin,
     ReviewCommandsMixin,
+    GitHubIssueCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
     TaskProposalCommandsMixin,
     SpecCommandsMixin,
@@ -429,6 +439,7 @@ class CommandHandler(
     ):
         self.orchestrator = orchestrator
         self.config = config
+        self._clock = time.time
         # Optional DoctorRegistry override.  Normally None: the daemon-wide
         # registry is built in ``src/main.py`` and attached to the
         # orchestrator, which ``OpsCommandsMixin.doctor_registry`` falls back
@@ -926,6 +937,8 @@ class CommandHandler(
                     "data": "<redacted-config-data>",
                 }
                 if name == "update_config"
+                else {"envelope": "<redacted-conversation-envelope>", "source": args.get("source")}
+                if name == "supervisor_inbox_post"
                 else args
             )
             if mutating:

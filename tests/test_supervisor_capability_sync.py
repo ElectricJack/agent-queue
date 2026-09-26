@@ -298,6 +298,46 @@ def test_the_real_shipped_supervisor_restores_the_2026_09_24_denials(data_dir):
     assert sync_profile_capabilities(data_dir, "supervisor").status == STATUS_CURRENT
 
 
+def test_the_real_shipped_supervisor_syncs_inbox_grants_with_a_backup(data_dir):
+    shipped = Path(shipped_profile_path("supervisor")).read_text(encoding="utf-8")
+    inbox_grants = [
+        "supervisor_inbox_history",
+        "supervisor_inbox_reply",
+        "supervisor_inbox_status",
+    ]
+    stale = shipped
+    for name in inbox_grants:
+        stale = stale.replace(f'    "{name}",\n', "", 1)
+    stale = stale.replace(
+        '"aq_commands": [\n',
+        '"aq_commands": [\n    "operator_custom_command",\n',
+        1,
+    ).replace(
+        "You are a supervisor in Agent Queue.",
+        "Operator-authored supervisor role.",
+        1,
+    )
+    vault = _vault(data_dir)
+    _write(vault, stale)
+
+    result = sync_profile_capabilities(data_dir, "supervisor")
+
+    assert result.status == STATUS_SYNCED
+    assert result.added == {"aq_commands": inbox_grants}
+    assert result.backup_path is not None
+    assert _backups(vault) == [Path(result.backup_path)]
+    assert Path(result.backup_path).read_text(encoding="utf-8") == stale
+    commands = _aq_commands(vault)
+    assert set(inbox_grants) <= set(commands)
+    assert "operator_custom_command" in commands
+    assert "supervisor_inbox_post" not in commands
+    merged = vault.read_text(encoding="utf-8")
+    assert merged.split("## Capabilities")[0] == stale.split("## Capabilities")[0]
+    assert merged.split("## Rules")[1] == stale.split("## Rules")[1]
+    assert sync_profile_capabilities(data_dir, "supervisor").status == STATUS_CURRENT
+    assert _backups(vault) == [Path(result.backup_path)]
+
+
 # --- logging and the event --------------------------------------------------
 
 

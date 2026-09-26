@@ -21,6 +21,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Identity,
     Integer,
     MetaData,
     PrimaryKeyConstraint,
@@ -544,6 +545,18 @@ task_context = Table(
     Column("type", Text, nullable=False),
     Column("label", Text, nullable=True),
     Column("content", Text, nullable=False),
+    Column(
+        "created_at",
+        Float,
+        nullable=False,
+        server_default=text("EXTRACT(EPOCH FROM clock_timestamp())"),
+    ),
+    Column("claim_epoch", BigInteger, nullable=True),
+    Column("idempotency_key", Text, nullable=True),
+    Index("idx_task_context_latest", "task_id", "type", "created_at", "id"),
+    UniqueConstraint(
+        "task_id", "claim_epoch", "idempotency_key", name="uq_task_context_handoff_retry"
+    ),
 )
 
 task_comments = Table(
@@ -675,7 +688,7 @@ task_gates = Table(
 # ---------------------------------------------------------------------------
 
 DOC_REVIEW_KINDS = ("spec", "plan", "other")
-DOC_REVIEW_STATES = ("in_review", "changes_requested", "approved", "withdrawn")
+DOC_REVIEW_STATES = ("in_review", "changes_requested", "rejected", "approved", "withdrawn")
 DOC_REVIEW_DECIDERS = ("user", "user_or_supervisor")
 
 
@@ -1008,6 +1021,8 @@ system_config = Table(
 workspaces = Table(
     "workspaces",
     metadata,
+    Column("generation", Integer, nullable=False, server_default="0"),
+    Column("job_pin_count", Integer, nullable=False, server_default="0"),
     Column("id", Text, primary_key=True),
     Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
     Column("workspace_path", Text, nullable=False),
@@ -1112,6 +1127,7 @@ agent_profiles = Table(
     Column("model", Text, nullable=False, server_default=""),
     Column("permission_mode", Text, nullable=False, server_default=""),
     Column("codex_full_auto", Boolean, nullable=False, server_default=false()),
+    Column("codex_service_tier", Text, nullable=True),
     Column(
         "claude_dangerously_skip_permissions",
         Boolean,
@@ -1291,6 +1307,7 @@ messages = Table(
     "messages",
     metadata,
     Column("id", Text, primary_key=True),  # "msg-<uuid7>"
+    Column("created_seq", BigInteger, Identity(), nullable=False),
     Column("project_id", Text, ForeignKey("projects.id"), nullable=True),
     Column("from_kind", Text, nullable=False),  # session|user|system
     Column("from_id", Text, nullable=False),
@@ -1320,6 +1337,7 @@ messages = Table(
     Index("idx_messages_pending", "to_kind", "to_id", "delivered_at"),
     Index("idx_messages_project_created", "project_id", "created_at"),
     Index("idx_messages_thread", "thread_id"),
+    Index("idx_messages_thread_sequence", "project_id", "thread_id", "created_seq"),
 )
 
 # Transport-neutral human escalation state.  ``task_id`` and the source
@@ -1553,6 +1571,119 @@ escalation_deliveries = Table(
     Index("idx_escalation_deliveries_escalation", "escalation_id", "created_at"),
 )
 
+# An operator @mention of the bot opens one conversation with the global
+# supervisor (Discord mention-routing spec §4.1).  The root message and, once
+# the thread-open delivery confirms, the external thread are each unique per
+# transport; ``thread_id`` is the internal ``messages.thread_id`` both
+# directions of the conversation share.
+supervisor_conversations = Table(
+    "supervisor_conversations",
+    metadata,
+    Column("id", Text, primary_key=True),  # conv-<uuid4>
+    Column("transport", Text, nullable=False),
+    Column("guild_id", Text, nullable=False),
+    Column("channel_id", Text, nullable=False),
+    Column("external_root_message_id", Text, nullable=False),
+    Column("external_thread_id", Text, nullable=True),
+    Column("thread_id", Text, nullable=False),  # conversation:<id>
+    Column("created_by", Text, nullable=False),  # human:discord:<id>
+    Column("audience", JSON, nullable=False),  # allowlist snapshot at open
+    Column("state", Text, nullable=False, server_default="opening"),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    Column("closed_at", Float, nullable=True),
+    UniqueConstraint(
+        "transport", "external_root_message_id", name="uq_supervisor_conversations_root"
+    ),
+    UniqueConstraint("thread_id", name="uq_supervisor_conversations_thread"),
+    Index(
+        "uq_supervisor_conversations_external_thread",
+        "transport",
+        "external_thread_id",
+        unique=True,
+        postgresql_where=text("external_thread_id IS NOT NULL"),
+    ),
+    CheckConstraint(
+        "state IN ('opening','open','closed','delivery_blocked')",
+        name="ck_supervisor_conversations_state",
+    ),
+    Index("idx_supervisor_conversations_state", "state", "updated_at"),
+)
+
+# One accepted operator message.  The unique external message id is the dedup
+# tombstone: it outlives the text (nulled after 30 days) so gateway, backfill
+# and replay can never turn the same message into fresh supervisor work.
+conversation_inputs = Table(
+    "conversation_inputs",
+    metadata,
+    Column("id", Text, primary_key=True),  # cinput-<uuid4>
+    Column(
+        "conversation_id",
+        Text,
+        ForeignKey("supervisor_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("transport", Text, nullable=False),
+    Column("external_message_id", Text, nullable=False),
+    Column("verified_actor", Text, nullable=False),
+    Column("author_id", Text, nullable=False),  # bare snowflake, for rate limits
+    Column("channel_id", Text, nullable=False),
+    Column("text", Text, nullable=True),  # NULL once expired (tombstone)
+    Column("text_sha256", Text, nullable=False),
+    Column("char_count", Integer, nullable=False),
+    Column("received_at", Float, nullable=False),
+    Column("source", Text, nullable=False, server_default="gateway"),
+    Column("state", Text, nullable=False, server_default="accepted"),
+    Column("supervisor_message_id", Text, ForeignKey("messages.id"), nullable=True),
+    Column("reply_message_id", Text, ForeignKey("messages.id"), nullable=True),
+    Column("delay_notified_at", Float, nullable=True),
+    Column("text_expired_at", Float, nullable=True),
+    Column("created_at", Float, nullable=False),
+    UniqueConstraint("transport", "external_message_id", name="uq_conversation_inputs_external"),
+    CheckConstraint(
+        "state IN ('accepted','answered','expired','revoked')",
+        name="ck_conversation_inputs_state",
+    ),
+    CheckConstraint("char_count BETWEEN 1 AND 4000", name="ck_conversation_inputs_char_count"),
+    CheckConstraint(
+        "source IN ('gateway','backfill','replay','test')",
+        name="ck_conversation_inputs_source",
+    ),
+    Index("idx_conversation_inputs_history", "conversation_id", "received_at", "id"),
+    Index("idx_conversation_inputs_author_window", "author_id", "received_at"),
+    Index("idx_conversation_inputs_channel_window", "channel_id", "received_at"),
+)
+
+# Reconnect backfill position per configured channel or bound thread.  The
+# cursor only advances after the page it covers is persisted.
+conversation_backfill_cursors = Table(
+    "conversation_backfill_cursors",
+    metadata,
+    Column("transport", Text, primary_key=True),
+    Column("channel_id", Text, primary_key=True),
+    Column("last_external_message_id", Text, nullable=False),
+    Column("advanced_at", Float, nullable=False),
+)
+
+# A stretch of history backfill could not read.  Recorded so status can say
+# messages may have been missed instead of claiming they were delivered.
+conversation_intake_gaps = Table(
+    "conversation_intake_gaps",
+    metadata,
+    Column("id", Text, primary_key=True),  # gap-<uuid4>
+    Column("transport", Text, nullable=False),
+    Column("channel_id", Text, nullable=False),
+    Column("gap_from", Float, nullable=False),
+    Column("gap_to", Float, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("recorded_at", Float, nullable=False),
+    CheckConstraint(
+        "reason IN ('cursor_expired','history_forbidden','pass_cap')",
+        name="ck_conversation_intake_gaps_reason",
+    ),
+    Index("idx_conversation_intake_gaps_channel", "transport", "channel_id", "recorded_at"),
+)
+
 # One row is one evaluated installation-wide digest window, including silent
 # windows.  Uniqueness prevents restarts or concurrent schedulers from
 # evaluating the same configured window twice; the cursor is a durable JSON
@@ -1609,6 +1740,108 @@ digest_windows = Table(
         name="ck_digest_windows_sent_receipt",
     ),
     Index("idx_digest_windows_due", "send_status", "due_at"),
+)
+
+
+# One durable author turn per report owner.  Hourly reports keep their
+# delivery identity in digest_windows; morning reports can share this request
+# contract without changing that established outbox.
+supervisor_report_requests = Table(
+    "supervisor_report_requests",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("kind", Text, nullable=False),
+    Column("owner_ref", Text, nullable=False),
+    Column("destination", Text, nullable=False),
+    Column("visibility", JSON, nullable=False),
+    Column("brief", JSON, nullable=False),
+    Column("brief_hash", Text, nullable=False),
+    Column("fallback_text", Text, nullable=False),
+    Column("author_session_id", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="reserved"),
+    Column("deadline", Float, nullable=False),
+    Column("version", Integer, nullable=False, server_default="1"),
+    Column("request_message_id", Text, nullable=True),
+    Column("submitted_text", Text, nullable=True),
+    Column("submitted_hash", Text, nullable=True),
+    Column("evidence_refs", JSON, nullable=True),
+    Column("source_links", JSON, nullable=True),
+    Column("submitted_at", Float, nullable=True),
+    Column("skip_reason", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("kind", "owner_ref", name="uq_supervisor_report_requests_owner"),
+    CheckConstraint(
+        "kind IN ('hourly','morning')", name="ck_supervisor_report_requests_kind"
+    ),
+    CheckConstraint(
+        "state IN ('reserved','requested','submitted','fallback','cancelled')",
+        name="ck_supervisor_report_requests_state",
+    ),
+    CheckConstraint("version >= 1", name="ck_supervisor_report_requests_version"),
+    Index("idx_supervisor_report_requests_state_deadline", "state", "deadline"),
+)
+
+morning_reports = Table(
+    "morning_reports",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("schedule_id", Text, nullable=False),
+    Column("local_date", Text, nullable=False),
+    Column("config_snapshot", JSON, nullable=False),
+    Column("scope_key", Text, nullable=False),
+    Column("timezone", Text, nullable=False),
+    Column("planned_at", Float, nullable=False),
+    Column("window_start", Float, nullable=False),
+    Column("window_end", Float, nullable=False),
+    Column("build_context", JSON, nullable=False),
+    Column("brief", JSON, nullable=True),
+    Column("brief_hash", Text, nullable=True),
+    Column("source_cursors", JSON, nullable=True),
+    Column("source_heads", JSON, nullable=True),
+    Column("state", Text, nullable=False, server_default="building"),
+    Column("reason", Text, nullable=True),
+    Column("fallback", JSON, nullable=True),
+    Column("report", JSON, nullable=True),
+    Column("coverage", JSON, nullable=True),
+    Column("author_deadline", Float, nullable=False),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("finalized_at", Float, nullable=True),
+    UniqueConstraint("schedule_id", "local_date", name="uq_morning_reports_day"),
+    CheckConstraint(
+        "state IN ('building','ready','authoring','final','suppressed','skipped','failed')",
+        name="ck_morning_reports_state",
+    ),
+    CheckConstraint("window_end > window_start", name="ck_morning_reports_window"),
+    Index("idx_morning_reports_state_deadline", "state", "author_deadline"),
+)
+
+# Coverage is independent of external transport receipts. Scope-specific
+# cursors prevent a changed project selection from consuming unseen evidence.
+morning_report_coverage = Table(
+    "morning_report_coverage",
+    metadata,
+    Column("schedule_id", Text, primary_key=True),
+    Column("scope_key", Text, primary_key=True),
+    Column("source", Text, primary_key=True),
+    Column("covered_until", Float, nullable=False),
+    Column("head_sha", Text, nullable=True),
+    Column("report_id", Text, nullable=False),
+)
+
+morning_report_facts = Table(
+    "morning_report_facts",
+    metadata,
+    Column("report_id", Text, ForeignKey("morning_reports.id", ondelete="CASCADE"),
+           primary_key=True),
+    Column("fact_key", Text, primary_key=True),
+    Column("source", Text, nullable=False),
+    Column("record_id", Text, nullable=False),
+    Column("project_id", Text, nullable=True),
+    Column("at", Float, nullable=False),
+    Index("idx_morning_report_facts_key", "fact_key"),
 )
 
 api_session_tokens = Table(
@@ -4345,4 +4578,288 @@ integration_legacy_deliveries = Table(
         name="ck_integration_legacy_deliveries_delivered_sha",
     ),
     Index("idx_integration_legacy_deliveries_parent", "project_id", "parent_task_id"),
+)
+
+
+# Immutable recommendations; execution/CI evidence is appended separately.
+test_selections = Table(
+    "test_selections",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    # Archive removes the live task row. Preserve its identity in immutable
+    # selection history until retention expires, as escalation audit rows do.
+    Column("task_id", Text, nullable=True),
+    Column("session_id", Text, nullable=True),
+    Column("claim_epoch", Integer, nullable=True),
+    Column("mode", Text, nullable=False),
+    Column("workspace", Text, nullable=False),
+    Column("base_ref", Text, nullable=False),
+    Column("base_sha", Text, nullable=False),
+    Column("head_sha", Text, nullable=False),
+    Column("dirty_fingerprint", Text, nullable=False),
+    Column("snapshot_fingerprint", Text, nullable=False),
+    Column("snapshot_complete", Boolean, nullable=False, server_default=true()),
+    Column("incomplete_reason", Text, nullable=True),
+    Column("catalogue_digest", Text, nullable=False),
+    Column("rules_digest", Text, nullable=False),
+    Column("policy_digest", Text, nullable=False),
+    Column("question_schema_version", Integer, nullable=False),
+    Column("static_engine", Text, nullable=False),
+    Column("marker_policy", Text, nullable=False, server_default="default"),
+    Column("cache_key", Text, nullable=False),
+    Column("jev_requested_model", Text, nullable=True),
+    Column("jev_returned_model", Text, nullable=True),
+    Column("jev_status", Text, nullable=False),
+    Column("fallback_reason", Text, nullable=True),
+    Column("full_required", Boolean, nullable=False, server_default=false()),
+    Column("jev_used_for_omission", Boolean, nullable=False, server_default=false()),
+    Column("promotion_id", Text, nullable=True),
+    Column("area_decisions", JSON, nullable=False),
+    Column("mandatory_modules", JSON, nullable=False),
+    Column("static_modules", JSON, nullable=False),
+    Column("jev_modules", JSON, nullable=True),
+    Column("fallback_modules", JSON, nullable=False),
+    Column("final_modules", JSON, nullable=False),
+    Column("reasons", JSON, nullable=False),
+    Column("pending_obligations", JSON, nullable=False),
+    Column("argv", JSON, nullable=False),
+    Column("elapsed_ms", JSON, nullable=False),
+    Column("usage", JSON, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint("mode IN ('plan_only','shadow','enforce')", name="ck_test_selections_mode"),
+    CheckConstraint(
+        "jev_status IN ('ok','partial','disabled','unconfigured','unavailable',"
+        "'invalid','over_budget','timeout','model_drift')",
+        name="ck_test_selections_jev_status",
+    ),
+    CheckConstraint(
+        "marker_policy IN ('default','all')", name="ck_test_selections_marker_policy"
+    ),
+    Index("idx_test_selections_project_created", "project_id", "created_at"),
+    Index("idx_test_selections_task_created", "task_id", "created_at"),
+)
+
+test_selection_observations = Table(
+    "test_selection_observations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column(
+        "selection_id", Text, ForeignKey("test_selections.id", ondelete="CASCADE"), nullable=False
+    ),
+    Column("kind", Text, nullable=False),
+    Column("source", Text, nullable=False),
+    Column("exit_code", Integer, nullable=True),
+    Column("duration_ms", Integer, nullable=True),
+    Column("executed_modules", JSON, nullable=False),
+    Column("failed_node_ids", JSON, nullable=False),
+    Column("payload", JSON, nullable=False),
+    Column("observed_at", Float, nullable=False),
+    CheckConstraint(
+        "kind IN ('execution','ci','replay')", name="ck_test_selection_observations_kind"
+    ),
+    Index("idx_test_selection_observations_selection", "selection_id", "observed_at"),
+)
+
+test_selection_promotions = Table(
+    "test_selection_promotions",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("model", Text, nullable=False),
+    Column("question_schema_version", Integer, nullable=False),
+    Column("catalogue_digest", Text, nullable=False),
+    Column("rules_digest", Text, nullable=False),
+    Column("policy_digest", Text, nullable=False),
+    Column("evidence", JSON, nullable=False),
+    Column("promoted_by", Text, nullable=False),
+    Column("promoted_at", Float, nullable=False),
+    Column("revoked_at", Float, nullable=True),
+    Column("revoke_reason", Text, nullable=True),
+    Index(
+        "uq_test_selection_promotions_active",
+        "project_id",
+        unique=True,
+        postgresql_where=text("revoked_at IS NULL"),
+    ),
+)
+
+
+# Durable agent-owned waits. Soft owner/source references survive archival and
+# claim turnover; delivery receipts live exclusively on the result message.
+agent_waits = Table(
+    "agent_waits",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("session_id", Text, nullable=False),
+    Column("session_instance_token", Text, nullable=False),
+    Column("claim_epoch", Integer, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("match", JSON, nullable=False),
+    Column("state", Text, nullable=False, server_default="active"),
+    Column("version", Integer, nullable=False, server_default="1"),
+    Column("created_at", Float, nullable=False),
+    Column("deadline_at", Float, nullable=False),
+    Column("resolved_at", Float, nullable=True),
+    Column("wait_resumed_at", Float, nullable=True),
+    Column("checked_at", Float, nullable=False, server_default="0"),
+    Column("result_ref", Text, nullable=True),
+    Column("digest", JSON, nullable=True),
+    Column("idempotency_key", Text, nullable=False),
+    Column("result_message_id", Text, nullable=True),
+    CheckConstraint("owner_kind IN ('task','supervisor')", name="ck_agent_waits_owner_kind"),
+    CheckConstraint("kind IN ('job','task','message','timer')", name="ck_agent_waits_kind"),
+    CheckConstraint(
+        "state IN ('active','satisfied','expired','cancelled')", name="ck_agent_waits_state"
+    ),
+    CheckConstraint("version >= 1 AND claim_epoch >= 0", name="ck_agent_waits_version_epoch"),
+    CheckConstraint(
+        "deadline_at > created_at AND deadline_at <= created_at + 86400",
+        name="ck_agent_waits_deadline",
+    ),
+    UniqueConstraint(
+        "project_id", "owner_kind", "owner_id", "claim_epoch", "idempotency_key",
+        name="uq_agent_waits_idempotency",
+    ),
+    Index(
+        "uq_agent_waits_active_claim", "owner_id", "claim_epoch", unique=True,
+        postgresql_where=text("state = 'active' AND owner_kind = 'task'"),
+    ),
+    Index("idx_agent_waits_scan", "state", "checked_at", "deadline_at"),
+    Index("idx_agent_waits_owner", "project_id", "owner_kind", "owner_id", "created_at"),
+    Index("idx_agent_waits_session", "session_id", "claim_epoch", "state"),
+)
+
+
+# Managed jobs are independent of harness sessions. Pins have no expiry: only
+# verified process cleanup may release them, including after a lost receipt.
+jobs = Table(
+    "jobs",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("task_id", Text, nullable=True),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("submitter_session_id", Text, nullable=True),
+    Column("claim_epoch", Integer, nullable=True),
+    Column("integration_operation_id", Text, nullable=True),
+    Column("idempotency_key", Text, nullable=False),
+    Column("request_hash", Text, nullable=False),
+    Column("preset", Text, nullable=False),
+    Column("preset_version", Integer, nullable=False),
+    Column("argv", JSON, nullable=False),
+    Column("contract", JSON, nullable=False),
+    Column("workspace_id", Text, nullable=False),
+    Column("workspace_generation", Integer, nullable=False),
+    Column("input_mode", Text, nullable=False),
+    Column("input_ref", Text, nullable=True),
+    Column("input_fingerprint", Text, nullable=True),
+    Column("input_stability", Text, nullable=False, server_default="unverified"),
+    Column("job_class", Text, nullable=False),
+    Column("weight", Integer, nullable=False),
+    Column("priority_band", Integer, nullable=False),
+    Column("state", Text, nullable=False, server_default="queued"),
+    Column("state_version", Integer, nullable=False, server_default="0"),
+    Column("submitted_at", Float, nullable=False),
+    Column("launch_at", Float, nullable=True),
+    Column("started_at", Float, nullable=True),
+    Column("ended_at", Float, nullable=True),
+    Column("queue_deadline", Float, nullable=False),
+    Column("run_timeout", Float, nullable=False),
+    Column("run_deadline", Float, nullable=True),
+    Column("runner_nonce", Text, nullable=False),
+    Column("boot_id", Text, nullable=True),
+    Column("pid", Integer, nullable=True),
+    Column("start_ticks", BigInteger, nullable=True),
+    Column("exit_code", Integer, nullable=True),
+    Column("signal", Integer, nullable=True),
+    Column("infra_reason", Text, nullable=True),
+    Column("measurements", JSON, nullable=True),
+    Column("result_version", Integer, nullable=True),
+    Column("result_ref", Text, nullable=True),
+    Column("result", JSON, nullable=True),
+    Column("output_retention", Text, nullable=False, server_default="reserved"),
+    Column("output_reservation_bytes", BigInteger, nullable=False, server_default="67108864"),
+    Column("cleanup_blocked", Boolean, nullable=False, server_default=false()),
+    Column("retry_of", Text, nullable=True),
+    UniqueConstraint(
+        "project_id", "owner_kind", "owner_id", "idempotency_key", name="uq_jobs_owner_key"
+    ),
+    CheckConstraint("owner_kind IN ('task','integration')", name="ck_jobs_owner_kind"),
+    CheckConstraint("input_mode IN ('live','snapshot')", name="ck_jobs_input_mode"),
+    CheckConstraint("job_class IN ('shared','exclusive')", name="ck_jobs_class"),
+    CheckConstraint("weight > 0 AND priority_band BETWEEN 0 AND 2", name="ck_jobs_capacity"),
+    CheckConstraint(
+        "state IN ('queued','starting','running','cancelling','succeeded','failed','cancelled','lost')",
+        name="ck_jobs_state",
+    ),
+    Index("idx_jobs_state_submitted", "state", "submitted_at"),
+    Index("idx_jobs_task_submitted", "task_id", "submitted_at"),
+)
+
+job_workspace_pins = Table(
+    "job_workspace_pins",
+    metadata,
+    Column("job_id", Text, ForeignKey("jobs.id"), primary_key=True),
+    Column("workspace_id", Text, ForeignKey("workspaces.id"), nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Index("idx_job_pins_workspace", "workspace_id"),
+)
+job_outbox = Table(
+    "job_outbox",
+    metadata,
+    Column("key", Text, primary_key=True),
+    Column("job_id", Text, ForeignKey("jobs.id"), nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("payload", JSON, nullable=False),
+    Column("delivered_at", Float, nullable=True),
+)
+
+
+# Shared outbox for new report/conversation lifecycles. Digest and escalation
+# identities remain in their established domain tables.
+outbound_deliveries = Table(
+    "outbound_deliveries", metadata,
+    Column("id", Text, primary_key=True),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("dedup_key", Text, nullable=False),
+    Column("destination", JSON, nullable=False),
+    Column("payload", JSON, nullable=False),
+    Column("payload_hash", Text, nullable=False),
+    Column("marker", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="pending"),
+    Column("due_at", Float, nullable=False),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("attempt_count", Integer, nullable=False, server_default="0"),
+    Column("external_receipt_id", Text, nullable=True),
+    Column("receipt_confirmed_at", Float, nullable=True),
+    Column("last_error", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("dedup_key", name="uq_outbound_deliveries_dedup"),
+    UniqueConstraint("marker", name="uq_outbound_deliveries_marker"),
+    CheckConstraint(
+        "state IN ('pending','sending','sent','retry','unknown','cancelled')",
+        name="ck_outbound_deliveries_state",
+    ),
+    CheckConstraint("attempt_count >= 0", name="ck_outbound_deliveries_attempts"),
+    CheckConstraint(
+        "(state = 'sending' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL) "
+        "OR (state <> 'sending' AND lease_owner IS NULL AND lease_expires_at IS NULL)",
+        name="ck_outbound_deliveries_lease",
+    ),
+    CheckConstraint(
+        "state <> 'sent' OR (external_receipt_id IS NOT NULL "
+        "AND receipt_confirmed_at IS NOT NULL)",
+        name="ck_outbound_deliveries_receipt",
+    ),
+    Index("idx_outbound_deliveries_due", "state", "due_at"),
+    Index("idx_outbound_deliveries_owner", "owner_kind", "owner_id", "created_at"),
 )

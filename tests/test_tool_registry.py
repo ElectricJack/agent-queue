@@ -125,6 +125,7 @@ def test_registry_has_categories(registry):
         "mcp",
         "message",
         "escalation",
+        "supervisor_inbox",
         "review",
         "digest",
         "dashboard",
@@ -133,6 +134,10 @@ def test_registry_has_categories(registry):
         "provider",
         "formula",
         "graph",
+        "github_issue",
+        "report",
+        "wait",
+        "job",
     }
 
     for cat in categories:
