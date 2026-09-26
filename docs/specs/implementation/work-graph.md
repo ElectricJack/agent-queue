@@ -228,6 +228,9 @@ state_machine:
 work_graph:
   gate_sweep_interval_seconds: 30
   conditional_autoclose: true
+  container_sweep_interval_seconds: 60     # settlement backstop, incl. stale BLOCKED/PAUSED containers
+  lifecycle_sweep_interval_seconds: 300    # stale-open re-check + obsolete-close cleanup retries
+  stale_open_after_seconds: 21600          # BLOCKED/PAUSED this long is unblocked or flagged stale_open
 ```
 
 The former shadow rollout notes are historical. No new data migration or compatibility framework is introduced by this collapse: current graph writes already maintain the projection, and terminal/attention fences remain explicit in the cascade.
