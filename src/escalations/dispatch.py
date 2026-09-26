@@ -64,6 +64,7 @@ from src.escalations.transport import (
     TransportError,
     TransportMissing,
 )
+from src.remote_links import DashboardLinkSource
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ class EscalationDeliveryService:
         lease_owner: str,
         base_url: str = "",
         dashboard_notice: str = "",
+        links: DashboardLinkSource | None = None,
         clock: Callable[[], float] = time.time,
         rate_guard: Callable[[], bool] | None = None,
         on_status: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
@@ -113,8 +115,11 @@ class EscalationDeliveryService:
         self.transport = transport
         self._config = config
         self._lease_owner = lease_owner
+        # ``links`` (the daemon's DashboardLinkResolver) wins; the fixed
+        # ``base_url`` / ``dashboard_notice`` pair serves callers without one.
         self._base_url = base_url
         self._dashboard_notice = dashboard_notice
+        self._links = links
         self._clock = clock
         self._rate_guard = rate_guard
         self._on_status = on_status
@@ -136,6 +141,13 @@ class EscalationDeliveryService:
 
     def _mentions(self) -> MentionPolicy:
         return MentionPolicy.from_config(self._settings)
+
+    async def _dashboard(self) -> tuple[str, str]:
+        """``(base_url, notice)`` for the payload about to be rendered."""
+        if self._links is None:
+            return self._base_url, self._dashboard_notice
+        link = await self._links.resolve()
+        return link.url, link.unavailable_notice
 
     # -- public entry points -------------------------------------------
     async def tick(self, *, limit: int = 20) -> TickReport:
@@ -415,19 +427,20 @@ class EscalationDeliveryService:
         dedup_key = str(row["dedup_key"])
         marker = marker_for(dedup_key)
         replacement = bool((row.get("payload") or {}).get("replacement"))
+        base_url, dashboard_notice = await self._dashboard()
         content = (
             render_resolved_root(
                 facts,
-                base_url=self._base_url,
+                base_url=base_url,
                 dedup_key=dedup_key,
-                dashboard_notice=self._dashboard_notice,
+                dashboard_notice=dashboard_notice,
             )
             if facts.is_terminal
             else render_root(
                 facts,
                 mentions=self._mentions(),
-                base_url=self._base_url,
-                dashboard_notice=self._dashboard_notice,
+                base_url=base_url,
+                dashboard_notice=dashboard_notice,
                 dedup_key=dedup_key,
                 replacement=replacement,
             )
@@ -546,15 +559,16 @@ class EscalationDeliveryService:
             )
 
         opener_key = f"{dedup_key}:thread"
+        base_url, dashboard_notice = await self._dashboard()
         outcome, error = await self._send_thread_text(
             row,
             report,
             binding=current,
             content=render_thread_opener(
                 facts,
-                base_url=self._base_url,
+                base_url=base_url,
                 dedup_key=opener_key,
-                dashboard_notice=self._dashboard_notice,
+                dashboard_notice=dashboard_notice,
             ),
             dedup_key=opener_key,
             reconcile=opener_may_exist,
@@ -760,6 +774,7 @@ class EscalationDeliveryService:
         dedup_key = str(row["dedup_key"])
         receipt: str | None = None
         thread_note: str | None = None
+        base_url, dashboard_notice = await self._dashboard()
         if binding.has_thread:
             outcome, error = await self._send_thread_text(
                 row,
@@ -767,9 +782,9 @@ class EscalationDeliveryService:
                 binding=binding,
                 content=render_resolution(
                     facts,
-                    base_url=self._base_url,
+                    base_url=base_url,
                     dedup_key=dedup_key,
-                    dashboard_notice=self._dashboard_notice,
+                    dashboard_notice=dashboard_notice,
                 ),
                 dedup_key=dedup_key,
             )
@@ -793,9 +808,9 @@ class EscalationDeliveryService:
                 root_message_id=str(binding.root_message_id),
                 content=render_resolved_root(
                     facts,
-                    base_url=self._base_url,
+                    base_url=base_url,
                     dedup_key=f"{dedup_key}:root",
-                    dashboard_notice=self._dashboard_notice,
+                    dashboard_notice=dashboard_notice,
                 ),
             )
         except TransportMissing as exc:

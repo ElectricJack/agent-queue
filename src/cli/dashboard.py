@@ -10,12 +10,14 @@ the daemon is down.
 :mod:`src.dashboard_server.process`, and ``aq start`` / ``aq stop`` /
 ``aq restart`` / ``aq status`` call the same helpers (defined here, so the
 PID file, log and config paths come from one place: ``src/cli/daemon.py``).
+``link`` reports the origin externally posted links name
+(:mod:`src.remote_links`), read-only.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import click
 from rich.markup import escape
@@ -262,3 +264,92 @@ def dashboard_status(ctx: click.Context) -> None:
             console.print(f"  log: {status.log_file}", style="dim", highlight=False, markup=False)
 
     emit(ctx, status.to_dict(), render=_render)
+
+
+@dashboard_group.command("link")
+@click.pass_context
+def dashboard_link(ctx: click.Context) -> None:
+    """Show the dashboard origin Discord links name, and why (read-only).
+
+    The same resolver the daemon's senders use, read from config.yaml:
+    dashboard.server.public_url when it is a valid non-loopback origin, else
+    a dashboard.server.host that is this machine's Tailscale address, else
+    the notice posts carry instead.  health_check.base_url is never used.
+    Also reports whether the dashboard server's edge answers for that origin
+    (api_auth.trusted_dashboard_origins) and the server's state.  Reaching
+    the origin from another device is always reported as unverified.
+    Works while the daemon is down.
+    """
+    import asyncio
+
+    import yaml
+
+    from src.remote_links import LinkSettings, describe_link, resolve_dashboard_link
+
+    from .envelope import emit, emit_error
+
+    def _fail(code: str, message: str, error: Exception) -> NoReturn:
+        if (ctx.find_root().obj or {}).get("json"):
+            emit_error(code, message, {"path": str(path)})
+        else:
+            console.print(f"[bold red]Error:[/] {escape(message)}", highlight=False)
+        raise SystemExit(1) from error
+
+    path = server_files().config
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except (OSError, yaml.YAMLError) as error:
+        _fail("config_unreadable", f"cannot read {path}: {error}", error)
+    raw = raw if isinstance(raw, dict) else {}
+    try:
+        settings = LinkSettings.from_raw(raw)
+    except (TypeError, ValueError) as error:
+        _fail("config_invalid", f"dashboard.server: {error}", error)
+    link = asyncio.run(resolve_dashboard_link(settings))
+    discord = raw.get("discord")
+    posting = bool(discord.get("channel_id")) if isinstance(discord, dict) else False
+    status = dashboard_server_status(api_url=_api_url(ctx))
+    report = describe_link(
+        settings, link, server_health=status.state, discord_channel_configured=posting,
+    )
+
+    def _render(data: dict[str, Any]) -> None:
+        if link.url:
+            console.print(
+                f"[bold]Dashboard link:[/] [green]{escape(link.url)}[/] "
+                f"[dim](from {escape(link.source)})[/]",
+                highlight=False,
+            )
+        else:
+            console.print(
+                f"[bold]Dashboard link:[/] [yellow]unavailable[/] -- {escape(link.detail)}",
+                highlight=False,
+            )
+            console.print(
+                f"  posts carry: {link.unavailable_notice}", style="dim", highlight=False,
+                markup=False,
+            )
+        edge = data["edge"]
+        if link.url:
+            verdict = (
+                "answers for it" if edge["host_allowed"] and edge["origin_allowed"]
+                else "refuses it -- add it to api_auth.trusted_dashboard_origins"
+            )
+            console.print(f"  edge: {verdict}", style="dim", highlight=False, markup=False)
+        server = data["server"]
+        console.print(
+            f"  dashboard server: {server['health']} (local {server['local_url'] or 'n/a'})",
+            style="dim", highlight=False, markup=False,
+        )
+        cli_state = data["tailscale_cli"]
+        if cli_state["consulted"]:
+            console.print(
+                f"  tailscale CLI: {cli_state['path'] or cli_state['problem']}",
+                style="dim", highlight=False, markup=False,
+            )
+        console.print(
+            "  remote reachability: unverified (open the link from the other device)",
+            style="dim", highlight=False, markup=False,
+        )
+
+    emit(ctx, report, render=_render)

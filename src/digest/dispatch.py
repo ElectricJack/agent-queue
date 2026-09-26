@@ -59,6 +59,7 @@ from src.escalations.transport import (
     TransportRetryable,
     TransportUnavailable,
 )
+from src.remote_links import DashboardLinkSource
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ class DigestScheduleService:
         lease_owner: str,
         base_url: str = "",
         dashboard_notice: str = "",
+        links: DashboardLinkSource | None = None,
         clock: Callable[[], float] = time.time,
         rate_guard: Callable[[], bool] | None = None,
         escalation_priority: Callable[[float], Awaitable[int]] | None = None,
@@ -155,8 +157,11 @@ class DigestScheduleService:
         self.transport = transport
         self._config = config
         self._lease_owner = lease_owner
+        # ``links`` (the daemon's DashboardLinkResolver) wins; the fixed
+        # ``base_url`` / ``dashboard_notice`` pair serves callers without one.
         self._base_url = base_url
         self._dashboard_notice = dashboard_notice
+        self._links = links
         self._clock = clock
         self._rate_guard = rate_guard
         self._escalation_priority = escalation_priority
@@ -309,12 +314,16 @@ class DigestScheduleService:
             provider_facts=provider_facts_enabled(self._config),
         )
         categories = frozenset(c for c in schedule.categories if c in CATEGORIES)
+        dashboard_url, dashboard_notice = self._base_url, self._dashboard_notice
+        if self._links is not None:
+            link = await self._links.resolve()
+            dashboard_url, dashboard_notice = link.url, link.unavailable_notice
         return build_digest(
             inputs,
             project_ids=frozenset(schedule.project_ids) if schedule.project_ids else None,
             categories=categories or None,
-            dashboard_url=self._base_url,
-            dashboard_notice=self._dashboard_notice,
+            dashboard_url=dashboard_url,
+            dashboard_notice=dashboard_notice,
             max_chars=MAX_CHARS - MARKER_RESERVE,
         )
 

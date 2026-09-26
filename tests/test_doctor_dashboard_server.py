@@ -100,10 +100,13 @@ def _fix(check_id: str, ctx: DoctorContext):
 def test_the_checks_are_registered_by_the_default_registry():
     ids = set(default_registry().ids())
 
-    assert {checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE} <= ids
+    assert {checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE, checks.REMOTE_LINK} <= ids
 
 
-@pytest.mark.parametrize("check_id", [checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE])
+@pytest.mark.parametrize(
+    "check_id",
+    [checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE, checks.REMOTE_LINK],
+)
 def test_a_disabled_dashboard_server_is_info_everywhere(check_id, monkeypatch):
     monkeypatch.setattr(checks, "_probe", lambda url: pytest.fail("no probe when disabled"))
 
@@ -355,6 +358,65 @@ def _registry():
     for check in checks.dashboard_server_checks():
         registry.register(check)
     return registry
+
+
+# ---------------------------------------------------------------------------
+# dashboard.remote_link
+# ---------------------------------------------------------------------------
+
+
+def _link_ctx(*, channel: str = "123456789012345678", origins=(), **server: Any) -> DoctorContext:
+    from src.config import ApiAuthConfig, HealthCheckConfig
+
+    config = SimpleNamespace(
+        dashboard_server=DashboardServerConfig(**server),
+        api_auth=ApiAuthConfig(trusted_dashboard_origins=list(origins)),
+        discord=SimpleNamespace(channel_id=channel),
+        # The daemon's own port: the check must never offer it as a link.
+        health_check=HealthCheckConfig(base_url="http://100.99.1.2:8081"),
+    )
+    return DoctorContext(config=config)  # type: ignore[arg-type]
+
+
+def test_a_trusted_public_origin_is_ok_and_reachability_stays_unverified(monkeypatch):
+    seen = _probe(monkeypatch, ("ours", {"pid": 1}))
+    origin = "https://queue.tail1234.ts.net"
+
+    result = _run(checks.REMOTE_LINK, _link_ctx(public_url=origin + "/", origins=[origin]))
+
+    assert result.severity is Severity.OK
+    assert origin in result.detail and "unverified" in result.detail
+    assert result.data["url"] == origin
+    assert result.data["source"] == "dashboard.server.public_url"
+    assert result.data["remote_reachability"] == "unverified"
+    assert result.data["server"]["health"] == "running"
+    assert seen == ["http://127.0.0.1:8082/"]
+
+
+def test_a_public_origin_the_edge_refuses_warns_with_the_fix(monkeypatch):
+    _probe(monkeypatch, ("none", None))
+    origin = "https://queue.tail1234.ts.net"
+
+    result = _run(checks.REMOTE_LINK, _link_ctx(public_url=origin))
+
+    assert result.severity is Severity.WARN
+    assert "api_auth.trusted_dashboard_origins" in result.detail
+    assert result.data["server"]["health"] == "not_running"
+
+
+def test_no_origin_warns_when_discord_posts_and_never_offers_the_health_port(monkeypatch):
+    _probe(monkeypatch, ("ours", {"pid": 1}))
+
+    posting = _run(checks.REMOTE_LINK, _link_ctx())
+    silent = _run(checks.REMOTE_LINK, _link_ctx(channel=""))
+
+    assert posting.severity is Severity.WARN
+    assert "dashboard.server.public_url" in posting.detail
+    assert "docs/guides/dashboard.md#dashboard-links-in-discord-posts" in posting.detail
+    assert silent.severity is Severity.INFO and "discord.channel_id" in silent.detail
+    for result in (posting, silent):
+        assert result.data["url"] is None
+        assert "8081" not in json.dumps(result.data) and "8081" not in result.detail
 
 
 # ---------------------------------------------------------------------------
