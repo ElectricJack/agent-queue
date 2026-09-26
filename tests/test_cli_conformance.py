@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from unittest.mock import AsyncMock, patch
 
 import click
@@ -42,8 +43,23 @@ def _text_value(param_type: click.ParamType) -> str:
     return "value"
 
 
-def _required_argv(command: click.Command) -> list[str]:
+def _required_argv(command: click.Command) -> tuple[list[str], set[str]]:
+    """Build argv covering every required option.
+
+    Returns (argv, supplied) where supplied names click-optional parameters
+    that the callback enforces as alternatives and that we chose anyway.
+    """
+    supplied: set[str] = set()
     argv: list[str] = []
+    if getattr(command, "_aq_backend_command", None) == "supervisor_inbox_reply":
+        # --text and --file are both click-optional, but the callback requires
+        # exactly one; satisfy the alternative through the file input.
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as reply_file:
+            reply_file.write("value")
+        argv.extend(["--file", reply_file.name])
+        supplied.add("text")
     for param in command.params:
         if not param.required:
             continue
@@ -52,7 +68,7 @@ def _required_argv(command: click.Command) -> list[str]:
             argv.append(param.opts[0])
         else:
             argv.extend([param.opts[0], _text_value(param.type)])
-    return argv
+    return argv, supplied
 
 
 def _client(result: dict | Exception):
@@ -100,17 +116,18 @@ SUCCESS_PAYLOAD = {
 def test_every_generated_leaf_dispatches_required_and_omits_optional(path, command):
     """The historical help-only audit now executes every generated callback."""
     client = _client(SUCCESS_PAYLOAD)
-    argv = _required_argv(command)
+    argv, supplied = _required_argv(command)
     with patch("src.cli.app._get_client", return_value=client):
         result = CliRunner().invoke(command, argv, obj={})
     assert result.exit_code == 0, f"{path}: {result.output}\n{result.exception!r}"
     client.execute.assert_awaited_once()
     backend, payload = client.execute.await_args.args
-    assert backend == getattr(command, "_aq_backend_command")
+    assert backend == command._aq_backend_command
     required = {param.name for param in command.params if param.required}
     optional = {param.name for param in command.params if not param.required}
     assert required <= set(payload)
-    assert optional.isdisjoint(payload)
+    assert supplied <= set(payload)
+    assert optional.isdisjoint(set(payload) - supplied)
 
 
 def test_required_structured_optional_and_explicit_null_reach_the_transport():
