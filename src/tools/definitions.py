@@ -7153,6 +7153,28 @@ _JOB_INPUT_SCHEMAS: dict[str, dict] = {
         },
         "required": ["preset", "idempotency_key"],
     },
+    "job_submit_integration": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string"},
+            "operation_id": {"type": "string"},
+            "store": {"type": "string"},
+            "input_ref": {"type": "string"},
+            "preset": {"type": "string"},
+            "argv": {"type": "array", "items": {"type": "string"}},
+            "idempotency_key": {"type": "string"},
+            "queue_seconds": {"type": "number", "minimum": 0},
+            "run_seconds": {"type": "number", "minimum": 0},
+        },
+        "required": [
+            "project_id",
+            "operation_id",
+            "store",
+            "input_ref",
+            "preset",
+            "idempotency_key",
+        ],
+    },
     "job_list": {
         "type": "object",
         "properties": {
@@ -7196,6 +7218,7 @@ _ALL_TOOL_DEFINITIONS.extend([
     {"name": name, "description": description, "input_schema": _JOB_INPUT_SCHEMAS[name]}
     for name, description in (
         ("job_submit", "Submit a finite preset, optionally with an atomic durable wait."),
+        ("job_submit_integration", "Submit an integration job: provision a detached snapshot and run at band zero."),
         ("job_get", "Read a scoped managed job."),
         ("job_list", "List this owner's managed jobs."),
         ("job_cancel", "Cancel a job and verify cleanup before releasing its pin."),
