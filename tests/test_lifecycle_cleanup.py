@@ -402,3 +402,329 @@ class TestStaleOpenReevaluation:
         orch.retry_obsolete_cleanup.assert_awaited_once()
         await orch._sweep_lifecycle()  # inside the interval: no second pass
         orch.retry_obsolete_cleanup.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# 3. Obsolete close: COMPLETED, never published, owners and batches released
+# ---------------------------------------------------------------------------
+
+
+async def owner_row(db, task_id, *, row_id="own-1", state="attached", ref="refs/heads/aq/dup"):
+    from src.database.tables import integration_branch_owners
+
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id=row_id, repository_id="dev-repo", ref=ref, owner_id=task_id,
+                owner_role="worker", fence_token=1, handoff_state=state, session_id=None,
+                workspace_id=None, confirmed_workspace_id=None, expires_at=None,
+                created_at=now, updated_at=now,
+            )
+        )
+
+
+async def owner_state(db, row_id="own-1"):
+    from src.database.tables import integration_branch_owners
+
+    async with db._engine.connect() as conn:
+        return await conn.scalar(
+            select(integration_branch_owners.c.handoff_state).where(
+                integration_branch_owners.c.id == row_id
+            )
+        )
+
+
+async def batch_row(db, row_id):
+    async with db._engine.connect() as conn:
+        return (
+            await conn.execute(
+                select(development_deliveries).where(development_deliveries.c.id == row_id)
+            )
+        ).mappings().one()
+
+
+def fake_release(db, *, outcome="released", reason=None):
+    """Stand-in for the release-owner proof: releases the row, or refuses."""
+    from src.database.tables import integration_branch_owners
+    from src.integration.owner_recovery import RecoveryOutcome
+
+    calls: list[tuple[str, str]] = []
+
+    async def release(row_id, principal):
+        calls.append((row_id, principal))
+        if outcome == "released":
+            async with db._engine.begin() as conn:
+                await conn.execute(
+                    update(integration_branch_owners)
+                    .where(integration_branch_owners.c.id == row_id)
+                    .values(handoff_state="released")
+                )
+        return RecoveryOutcome(row_id, outcome, reason, {"detail": f"fake {reason}"})
+
+    release.calls = calls
+    return release
+
+
+async def superseded(db, *, batch_state="parked", status_=TaskStatus.BLOCKED):
+    """The solid-cascade shape: a BLOCKED dev task with an owner row and a batch."""
+    await dev_project(db)
+    await mktask(
+        db, "dup", status=status_, project_id=DEV_PROJECT, repo_id="dev-repo",
+        branch_name="aq/dup",
+    )
+    await db.save_task_completion(
+        TaskCompletion(id="close-dup", task_id="dup", outcome="fail", commits=[SHA],
+                       completed_at=time.time())
+    )
+    await mktask(
+        db, "other", status=TaskStatus.COMPLETED, project_id=DEV_PROJECT, repo_id="dev-repo",
+        branch_name="aq/other",
+    )
+    await owner_row(db, "dup")
+    await delivery(db, "batch-p", state=batch_state, members=[("dup", SHA), ("other", SHA)])
+
+
+def service(db, release=None):
+    from src.integration.obsolete_close import ObsoleteClose
+
+    return ObsoleteClose(db, release_owner=release)
+
+
+class TestObsoleteClose:
+    async def test_superseded_task_closes_releases_everything_and_can_be_deleted(self, db):
+        from src.database.queries.hierarchy_queries import HierarchyError
+
+        await superseded(db)
+        await mktask(db, "next", status=TaskStatus.DEFINED, project_id=DEV_PROJECT)
+        await db.add_dependency("next", "dup", "blocks")
+        assert (await db.get_task("next")).is_blocked
+        with pytest.raises(HierarchyError):
+            await db.delete_task("dup")
+
+        release = fake_release(db)
+        result = await service(db, release).close(
+            "dup", reason="superseded by PR #639", principal="human:local-operator"
+        )
+
+        assert result["outcome"] == "closed" and result["previous_status"] == "BLOCKED"
+        assert result["cleanup"]["state"] == "done"
+        assert result["cleanup"]["dropped_batches"] == [{"batch_id": "batch-p", "state": "parked"}]
+        assert release.calls == [("own-1", "human:local-operator")]
+        assert await status(db, "dup") == TaskStatus.COMPLETED
+        assert await db.get_task_meta("dup", "work_outcome") == "abandoned"
+        marker = await db.get_task_meta("dup", "obsolete")
+        assert marker["reason"] == "superseded by PR #639"
+        assert marker["cleanup"]["state"] == "done"
+        # Superseded work satisfies its dependents without being delivered.
+        assert not (await db.get_task("next")).is_blocked
+        parked = await batch_row(db, "batch-p")
+        assert parked["state"] == "cancelled"
+        assert parked["evidence"]["released"]["conclusion"] == "obsolete_member"
+        assert await owner_state(db) == "released"
+
+        await db.delete_task("dup")
+        assert await db.get_task("dup") is None
+
+    async def test_obsolete_work_is_never_published(self, db, tmp_path):
+        from src.integration.development import DevelopmentIntegration
+
+        await dev_project(db)
+        await mktask(
+            db, "dup", status=TaskStatus.COMPLETED, project_id=DEV_PROJECT, repo_id="dev-repo",
+            branch_name="aq/dup",
+        )
+        publisher = DevelopmentIntegration(db, data_dir=tmp_path, git=MagicMock())
+        repo = await db.get_repo("dev-repo")
+        assert await publisher._has_pending_work(DEV_PROJECT, repo, now=time.time())
+
+        await service(db).close("dup", reason="duplicate", principal="human:local-operator")
+
+        assert not await publisher._has_pending_work(DEV_PROJECT, repo, now=time.time())
+        assert await db.obsolete_task_ids(["dup", "missing"]) == {"dup"}
+
+    async def test_publishing_batch_is_left_alone_and_retried_after_it_parks(self, db):
+        await superseded(db, batch_state="publishing")
+        closer = service(db, fake_release(db))
+
+        result = await closer.close("dup", reason="duplicate", principal="human:local-operator")
+
+        pending = result["cleanup"]["pending"]
+        assert [(p["kind"], p["reason"]) for p in pending] == [("development_batch", "publishing")]
+        assert (await batch_row(db, "batch-p"))["state"] == "publishing"
+        assert (await closer.retry_pending())[0]["state"] == "pending"
+
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(development_deliveries)
+                .where(development_deliveries.c.id == "batch-p")
+                .values(state="parked")
+            )
+        retried = await closer.retry_pending()
+
+        assert retried[0]["state"] == "done"
+        assert (await batch_row(db, "batch-p"))["state"] == "cancelled"
+        assert await closer.retry_pending() == []
+
+    async def test_open_repair_keeps_the_parked_batch(self, db):
+        await superseded(db)
+        await mktask(db, "development-repair-abc", status=TaskStatus.READY, project_id=DEV_PROJECT)
+        await db.set_task_meta(
+            "development-repair-abc", "development_repair_sources",
+            [{"task_id": "dup", "source_sha": SHA}],
+        )
+
+        result = await service(db, fake_release(db)).close(
+            "dup", reason="duplicate", principal="human:local-operator"
+        )
+
+        reasons = {p["reason"] for p in result["cleanup"]["pending"]}
+        assert reasons == {"repair_in_flight"}
+        assert (await batch_row(db, "batch-p"))["state"] == "parked"
+
+    async def test_refused_owner_proof_stays_pending_with_its_reason(self, db):
+        await superseded(db, batch_state="delivered")
+        release = fake_release(db, outcome="not_eligible", reason="writer_live")
+
+        result = await service(db, release).close(
+            "dup", reason="duplicate", principal="human:local-operator"
+        )
+
+        assert result["cleanup"]["pending"] == [
+            {
+                "kind": "branch_owner", "owner_row_id": "own-1", "ref": "refs/heads/aq/dup",
+                "handoff_state": "attached", "reason": "writer_live", "detail": "fake writer_live",
+            }
+        ]
+        assert await owner_state(db) == "attached"
+
+    async def test_closing_again_only_reruns_the_cleanup(self, db):
+        await superseded(db, batch_state="delivered")
+        closer = service(db, fake_release(db))
+        first = await closer.close("dup", reason="duplicate", principal="human:local-operator")
+        again = await closer.close("dup", reason="other words", principal="human:local-operator")
+        assert first["outcome"] == "closed"
+        assert again["outcome"] == "already_obsolete"
+        assert again["reason"] == "duplicate" and again["cleanup"]["state"] == "done"
+
+    async def test_operator_hold_is_superseded_by_the_close(self, db):
+        await mktask(db, "held", status=TaskStatus.READY)
+        await db.pause_task("held")
+        await service(db).close("held", reason="plan changed", principal="human:local-operator")
+        assert await status(db, "held") == TaskStatus.COMPLETED
+        assert await db.get_task_meta("held", "manual_pause") is None
+
+    async def test_refusals(self, db):
+        from src.integration.obsolete_close import ObsoleteCloseRefused
+
+        closer = service(db)
+        await mktask(db, "live", status=TaskStatus.IN_PROGRESS)
+        now = time.time()
+        await db.create_session(
+            SessionRecord(
+                id="s-live", task_id="live", project_id=PROJECT_ID, profile_id="worker",
+                harness="claude", provider="fake", name="s-live", lifecycle="pool",
+                state="running", work_dir="/tmp", epoch="e", instance_token="t",
+                started_at=now, last_activity=now,
+            )
+        )
+        await mktask(db, "parent", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "parent.1", status=TaskStatus.READY)
+        await db.add_dependency("parent.1", "parent", "parent-child")
+        await db.create_project(Project(id="p-train", name="Train"))
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(projects).where(projects.c.id == "p-train")
+                .values(hierarchical_integration_mode="hierarchy")
+            )
+        await mktask(db, "train-task", status=TaskStatus.READY, project_id="p-train")
+
+        cases = {
+            ("live", "why"): "obsolete.live_session",
+            ("parent", "why"): "obsolete.open_children",
+            ("train-task", "why"): "obsolete.unsupported_mode",
+            ("parent.1", "  "): "obsolete.reason_required",
+            ("missing", "why"): "obsolete.not_found",
+        }
+        for (task_id, reason), code in cases.items():
+            with pytest.raises(ObsoleteCloseRefused) as refused:
+                await closer.close(task_id, reason=reason, principal="human:local-operator")
+            assert refused.value.code == code, task_id
+        assert await status(db, "live") == TaskStatus.IN_PROGRESS
+
+    async def test_release_owner_proof_takes_a_reserved_row(self, db):
+        from src.integration.obsolete_close import ObsoleteOwnerRelease
+        from src.integration.owner_recovery import (
+            NOT_RECOVERABLE_STATE,
+            RELEASED,
+            OwnerRecovery,
+            _Plan,
+        )
+
+        await dev_project(db)
+        await mktask(db, "dup", status=TaskStatus.COMPLETED, project_id=DEV_PROJECT)
+        await owner_row(db, "dup", state="reserved")
+
+        base = OwnerRecovery(db, MagicMock(), None, confirm_stopped=AsyncMock())
+        refused = await base.recover("own-1", principal="human:local-operator")
+        assert refused.reason == NOT_RECOVERABLE_STATE
+
+        proof = ObsoleteOwnerRelease(db, MagicMock(), None, confirm_stopped=AsyncMock())
+        proof._secure_branch = AsyncMock(return_value=_Plan(preserved=False, workspace_clean=True))
+        released = await proof.recover("own-1", principal="human:local-operator")
+
+        assert released.outcome == RELEASED
+        proof._secure_branch.assert_awaited_once()
+        assert await owner_state(db) == "released"
+
+
+class TestObsoleteCloseCommand:
+    def handler(self, db):
+        from types import SimpleNamespace
+
+        from src.commands.session_commands import SessionCommandsMixin
+
+        class Handler(SessionCommandsMixin):
+            pass
+
+        handler = Handler()
+        handler.db = db
+        handler.orchestrator = SimpleNamespace(db=db, git=None)
+        handler._emit_task_graph_change = AsyncMock()
+        return handler
+
+    async def test_operator_closes_obsolete_and_the_task_is_commented(self, db):
+        await mktask(db, "t", status=TaskStatus.BLOCKED)
+        handler = self.handler(db)
+
+        result = await handler._cmd_task_close(
+            {"task_id": "t", "obsolete": True, "reason": "superseded by main"}
+        )
+
+        assert result["success"] is True and result["outcome"] == "closed"
+        assert await status(db, "t") == TaskStatus.COMPLETED
+        comments = (await db.list_task_comments("t"))["comments"]
+        assert any("Closed as obsolete" in c["body"] for c in comments)
+        handler._emit_task_graph_change.assert_awaited_once()
+
+    async def test_worker_session_is_refused(self, db):
+        from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+        from src.profiles.capabilities import DENY_ALL
+
+        await mktask(db, "t", status=TaskStatus.BLOCKED)
+        worker = ExecutionPrincipal(
+            kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id="w", project_id=PROJECT_ID
+        )
+        with principal_context(worker):
+            result = await self.handler(db)._cmd_task_close(
+                {"task_id": "t", "obsolete": True, "reason": "mine now"}
+            )
+        assert result["success"] is False and result["code"] == "obsolete.not_authorized"
+        assert await status(db, "t") == TaskStatus.BLOCKED
+
+    async def test_obsolete_and_outcome_do_not_mix(self, db):
+        await mktask(db, "t", status=TaskStatus.BLOCKED)
+        result = await self.handler(db)._cmd_task_close(
+            {"task_id": "t", "obsolete": True, "reason": "x", "outcome": "pass"}
+        )
+        assert result["code"] == "obsolete.outcome_conflict"

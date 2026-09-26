@@ -211,3 +211,15 @@ class LifecycleMixin:
             "reason": reason,
             "hold": hold,
         }
+
+    async def retry_obsolete_cleanup(self) -> list[dict]:
+        """Retry the cleanup every obsolete close still owes (``aq task close --obsolete``).
+
+        A publishing batch, an open development repair or a refused owner proof
+        leaves an obsolete task's cleanup pending; this finishes it once the
+        holder lets go.
+        """
+        from src.integration.obsolete_close import ObsoleteClose, obsolete_owner_release_for
+
+        service = ObsoleteClose(self.db, release_owner=obsolete_owner_release_for(self))
+        return await service.retry_pending()

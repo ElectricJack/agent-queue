@@ -111,3 +111,19 @@ class LifecycleQueryMixin:
                 conn=conn,
             )
         return True
+
+    async def obsolete_task_ids(self, task_ids) -> set[str]:
+        """Of *task_ids*, the ones closed as obsolete (live tasks only)."""
+        from src.database.queries.blocked_state import OBSOLETE_META_KEY
+
+        ids = sorted({str(task_id) for task_id in task_ids or () if task_id})
+        if not ids:
+            return set()
+        async with self._engine.connect() as conn:
+            rows = await conn.execute(
+                select(task_metadata.c.task_id).where(
+                    task_metadata.c.task_id.in_(ids),
+                    task_metadata.c.key == OBSOLETE_META_KEY,
+                )
+            )
+            return {row[0] for row in rows}

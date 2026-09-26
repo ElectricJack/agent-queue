@@ -19,7 +19,11 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, insert, select, text, update
 
-from src.database.queries.blocked_state import _development_delivery_pending, blocked_predicate
+from src.database.queries.blocked_state import (
+    _development_delivery_pending,
+    blocked_predicate,
+    obsolete_marker,
+)
 from src.database.tables import archived_tasks, projects, sessions, tasks
 from src.database.tables import development_deliveries as deliveries
 from src.git.manager import GitError, GitManager, is_valid_git_oid
@@ -165,6 +169,26 @@ class DevelopmentBusy(RuntimeError):
     pass
 
 
+@asynccontextmanager
+async def publisher_exclusion(db, repository_id):
+    """Hold *repository_id*'s development publisher lock, or raise ``DevelopmentBusy``.
+
+    A dedicated connection owns a session advisory lock across short DB
+    commits.  A process death releases it; durable publishing rows retain
+    ambiguous writes.  Anything that rewrites a batch row outside the
+    publisher (an obsolete close dropping a parked batch) takes it too.
+    """
+    key = int.from_bytes(hashlib.sha256(repository_id.encode()).digest()[:8], "big", signed=True)
+    async with db._engine.connect() as conn:
+        acquired = await conn.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": key})
+        if not acquired:
+            raise DevelopmentBusy("repository publisher is already running")
+        try:
+            yield
+        finally:
+            await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+
+
 class DevelopmentIntegration:
     def __init__(
         self,
@@ -199,21 +223,8 @@ class DevelopmentIntegration:
         """
         self.next_due.pop(event.get("project_id"), None)
 
-    @asynccontextmanager
-    async def exclusion(self, repository_id):
-        # Dedicated connection owns a session advisory lock across short DB commits.
-        # A process death releases it; durable publishing rows retain ambiguous writes.
-        key = int.from_bytes(
-            hashlib.sha256(repository_id.encode()).digest()[:8], "big", signed=True
-        )
-        async with self.db._engine.connect() as conn:
-            acquired = await conn.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": key})
-            if not acquired:
-                raise DevelopmentBusy("repository publisher is already running")
-            try:
-                yield
-            finally:
-                await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+    def exclusion(self, repository_id):
+        return publisher_exclusion(self.db, repository_id)
 
     async def run_git(self, store, *args):
         result = await self.git.arun_git_result(list(args), cwd=str(store))
@@ -899,6 +910,8 @@ class DevelopmentIntegration:
                                 tasks.c.status == "COMPLETED",
                                 (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
                                 has_publishable_artifact(tasks.c.branch_name),
+                                # Superseded work is never published.
+                                ~obsolete_marker(tasks),
                                 *([tasks.c.id == isolated_child] if isolated_child else []),
                                 # Completion chains can be assembled in this
                                 # batch. Keep gates and unfinished dependencies,
@@ -1055,6 +1068,12 @@ class DevelopmentIntegration:
                             )
                         ).all()
                         branch_by_id.update(archived)
+
+            # An obsolete dependency's work was superseded, not delivered;
+            # like a branchless task it has no source to wait for.
+            branch_by_id.update(
+                dict.fromkeys(await self.db.obsolete_task_ids(artifact_ids))
+            )
 
             def requires_publication(task_id):
                 # Missing tasks remain unavailable; only a known branchless
