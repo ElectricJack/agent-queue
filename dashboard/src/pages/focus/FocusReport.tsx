@@ -1,8 +1,11 @@
 import { useParams } from "react-router-dom";
-import { FocusUnavailable } from "./FocusNotice";
+import { MorningReportContent } from "../reports/MorningReportPage";
+import { useFocusChrome } from "./focusChrome";
+import { focusTaskHref } from "./routes";
 
-/** Replaced by Task 6 (the focus report). */
+/** `/focus/reports/:reportId` — the read page's content; task evidence stays in focus. */
 export default function FocusReport() {
   const { reportId = "" } = useParams();
-  return <FocusUnavailable title="Report" fullHref={`/reports/${encodeURIComponent(reportId)}`} />;
+  useFocusChrome({ title: "Morning report", fullHref: `/reports/${encodeURIComponent(reportId)}` });
+  return <MorningReportContent reportId={reportId} taskHref={focusTaskHref} />;
 }
