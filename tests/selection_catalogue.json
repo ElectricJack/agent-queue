@@ -659,6 +659,7 @@
         "tests/test_migration_string_defaults.py",
         "tests/test_migration_subagent_events.py",
         "tests/test_migration_supervisor_conversations.py",
+        "tests/test_migration_test_selections.py",
         "tests/test_migration_token_cache_columns.py",
         "tests/test_migration_workspaces_v2.py",
         "tests/test_missing_fk_migration.py",
@@ -1061,6 +1062,7 @@
         "tests/test_selection_catalogue.py",
         "tests/test_selection_mandatory.py",
         "tests/test_selection_policy.py",
+        "tests/test_selection_queries.py",
         "tests/test_selection_questions.py",
         "tests/test_selection_snapshot.py",
         "tests/test_selection_static_impact.py",
@@ -1214,7 +1216,7 @@
       ]
     }
   },
-  "digest": "sha256:67fa2e876894a4af7aa3f62fb4b6c692b6d8f341b7ff34dd23cc30d22ed03541",
+  "digest": "sha256:f1e7611d1f156b0c8241f7ee15202476e04ac82aa6d1a7b3866914d488fe421e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8022,6 +8024,20 @@
       ],
       "summary": "The supervisor-conversation revision upgrades idempotently on PostgreSQL."
     },
+    "tests/test_migration_test_selections.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Conditional selection-table upgrade and downgrade on disposable PostgreSQL."
+    },
     "tests/test_migration_token_cache_columns.py": {
       "areas": [
         "migrations"
@@ -10536,6 +10552,22 @@
         "parametrize"
       ],
       "summary": "Pure policy composition: proposals, promoted omission and mandatory invariants."
+    },
+    "tests/test_selection_queries.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.queries.test_selection_queries",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Selection history, appended observations and promotion fences on PostgreSQL."
     },
     "tests/test_selection_questions.py": {
       "areas": [
