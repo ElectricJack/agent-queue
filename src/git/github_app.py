@@ -40,6 +40,7 @@ _PERMISSIONS = {
     "pull_requests": "write",
     "issues": "write",
     "actions_variables": "read",
+    "workflows": "write",
 }
 
 
