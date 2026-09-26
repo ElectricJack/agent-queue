@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useState, type ReactNode } from "react";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Outlet, useLocation, useParams, useNavigate } from "react-router-dom";
 import { useShellPaneStore } from "./panes/store";
@@ -48,6 +48,12 @@ vi.mock("./shell/palette/Palette", async () => {
   };
 });
 vi.mock("./shell/hotkeys/CheatSheetModal", () => ({ default: () => null }));
+// The focus shell has no pane surface; its banner is on every focus route, so it
+// carries the pane-store probe there (inside App's ShellPaneProvider).
+vi.mock("./components/ConnectionBanner", async (importOriginal) => {
+  const { default: Banner } = await importOriginal<typeof import("./components/ConnectionBanner")>();
+  return { default: () => <><Banner /><PaneState /></> };
+});
 vi.mock("./pages/command-center/Graph", () => ({ default: () => <WorkspaceProbe title="Command Center graph" /> }));
 vi.mock("./pages/command-center/Tasks", () => ({ default: () => <WorkspaceProbe title="Command Center tasks" /> }));
 vi.mock("./pages/command-center/TaskWorkspace", () => ({ TaskWorkspaceProvider: ({ children }: { children: ReactNode }) => <>{children}</> }));
@@ -86,6 +92,10 @@ function PaneProbe() {
     <button onClick={() => navigate("/projects/p1/tasks?q=kept", { state: { restoreTaskPane: { taskId: "task-p1" } } })}>Return from session history</button>
     <button onClick={pane.close}>Close task pane</button>
     <button onClick={() => pane.open("contextual-settings", { subject: "project", subjectId: "p1" })}>Open settings pane</button></>;
+}
+
+function PaneState() {
+  return <output aria-label="Pane state">{useShellPaneStore().state.kind}</output>;
 }
 
 function Location() {
@@ -445,5 +455,56 @@ describe("Roaming shell preferences", () => {
     await screen.findByRole("heading", { name: "Command Center graph" });
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/projects/p1/graph");
     expect(screen.getByRole("button", { name: "Projects" })).toHaveAttribute("aria-expanded", "true");
+  });
+});
+
+describe("focus routes", () => {
+  function renderFocus(path: string) {
+    return render(
+      <QueryClientProvider client={testQueryClient()}>
+        <TestDashboardState server={server}>
+          <MemoryRouter initialEntries={[path]}><App /><Location /></MemoryRouter>
+        </TestDashboardState>
+      </QueryClientProvider>,
+    );
+  }
+  beforeEach(() => {
+    // A desktop left the task pane and a wide surface open (roaming).
+    server.write("shell_preferences", {
+      ...SHELL_PREFERENCE_DEFAULTS,
+      right_surface: { ...SHELL_PREFERENCE_DEFAULTS.right_surface, kind: "pane", width: 760,
+        pane: { view: "task-detail", args: { taskId: "task-p1" } } },
+    });
+  });
+  const puts = () => server.calls.filter((call) => call.op === "put");
+
+  it.each(["/focus", "/focus/tasks/t1", "/focus/sessions/s1", "/focus/reports/r1"])(
+    "%s renders the focus shell, not the rail", async (path) => {
+      renderFocus(path);
+      expect(await screen.findByRole("banner")).toBeInTheDocument();
+      expect(screen.queryByText("Global flock sidebar")).toBeNull();
+    });
+
+  it("never restores or writes the roaming pane on a focus route", async () => {
+    renderFocus("/focus/tasks/t1");
+    await screen.findByRole("link", { name: "Open in full dashboard" });
+    await waitFor(() => expect(server.calls.some((call) => call.op === "list")).toBe(true));
+    await act(async () => { await new Promise((done) => setTimeout(done, 50)); });
+    expect(screen.getByLabelText("Pane state")).toHaveTextContent("closed");
+    expect(puts()).toEqual([]);
+  });
+
+  it("still restores the roaming pane on a desktop route", async () => {
+    renderFocus("/agents");
+    await waitFor(() => expect(screen.getByLabelText("Current pane")).toHaveTextContent('"kind":"open"'));
+  });
+
+  it("Back from a cold deep link, and an unknown focus path, land on the focus home", async () => {
+    renderFocus("/focus/tasks/t1");
+    act(() => screen.getByRole("button", { name: "Back" }).click());
+    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(/^\/focus$/));
+    cleanup();
+    renderFocus("/focus/nope");
+    await waitFor(() => expect(screen.getByLabelText("Current location")).toHaveTextContent(/^\/focus$/));
   });
 });

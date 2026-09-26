@@ -1,10 +1,11 @@
-import { lazy, Suspense, useEffect, useRef } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { Routes, Route, Navigate, Link, useLocation, useParams, type Params } from "react-router-dom";
 import { ShellPaneProvider, useShellPaneStore } from "./panes/store";
 import { projectNavigation, workspaceHref } from "./shell/projectNavigation";
 import { useProjects } from "./api/hooks";
 import { useShellPreferences } from "./shell/useShellPreferences";
 import { loadWorkspaceGraph, loadWorkspaceTasks } from "./routeChunks";
+import { isFocusPath } from "./pages/focus/routes";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
@@ -37,6 +38,12 @@ const SessionDetail = lazy(() => import("./pages/SessionDetail"));
 const MorningReportPage = lazy(() => import("./pages/reports/MorningReportPage"));
 const TaskFiles = lazy(() => import("./pages/TaskFiles"));
 
+const FocusShell = lazy(() => import("./pages/focus/FocusShell"));
+const FocusHome = lazy(() => import("./pages/focus/FocusHome"));
+const FocusTask = lazy(() => import("./pages/focus/FocusTask"));
+const FocusSession = lazy(() => import("./pages/focus/FocusSession"));
+const FocusReport = lazy(() => import("./pages/focus/FocusReport"));
+
 /** Index redirects must retain the shared URL-backed task filters. */
 function WorkspaceIndexRedirect() {
   const { projectId } = useParams();
@@ -47,6 +54,7 @@ function WorkspaceIndexRedirect() {
 /** Tracks project scope and clears task panes when switching projects. */
 function ProjectScopePaneSync() {
   const location = useLocation();
+  const focus = isFocusPath(location.pathname);
   const { projectId } = projectNavigation(location.pathname);
   const restoreTaskId = (location.state as { restoreTaskPane?: { taskId?: string } } | null)?.restoreTaskPane?.taskId;
   const restoredLocation = useRef<string | null>(null);
@@ -55,9 +63,11 @@ function ProjectScopePaneSync() {
   const { update: updatePreferences } = useShellPreferences();
   // The last project is the user's roaming preference on the daemon.
   useEffect(() => {
-    if (projectId) void updatePreferences((current) => ({ ...current, last_project_id: projectId }));
-  }, [projectId, updatePreferences]);
+    if (projectId && !focus) void updatePreferences((current) => ({ ...current, last_project_id: projectId }));
+  }, [projectId, focus, updatePreferences]);
   useEffect(() => {
+    // Focus routes neither restore nor write the roaming pane (mobile dashboard §4.2).
+    if (focus) return;
     if (previousProject.current !== projectId) {
       previousProject.current = projectId;
       if (pane.state.kind === "open" && pane.state.view === "task-detail") pane.close();
@@ -68,7 +78,7 @@ function ProjectScopePaneSync() {
       restoredLocation.current = location.key;
       pane.open("task-detail", { taskId: restoreTaskId });
     }
-  }, [projectId, pane, restoreTaskId, location.key]);
+  }, [focus, projectId, pane, restoreTaskId, location.key]);
   return null;
 }
 
@@ -141,11 +151,23 @@ function RouteFallback() {
 }
 
 export default function App() {
+  const location = useLocation();
+  // Decided once, at first render: a page that loads on a focus route never
+  // gets the desktop's roaming pane popped over it.
+  const [suppressRestore] = useState(() => isFocusPath(location.pathname));
   return (
-    <ShellPaneProvider>
+    <ShellPaneProvider suppressRestore={suppressRestore}>
       <ProjectScopePaneSync />
       <Suspense fallback={<RouteFallback />}>
         <Routes>
+          {/* Focus routes sit outside the three-column shell (mobile dashboard §4.1). */}
+          <Route path="focus" element={<FocusShell />}>
+            <Route index element={<FocusHome />} />
+            <Route path="tasks/:taskId" element={<FocusTask />} />
+            <Route path="sessions/:sessionId" element={<FocusSession />} />
+            <Route path="reports/:reportId" element={<FocusReport />} />
+            <Route path="*" element={<Navigate to="/focus" replace />} />
+          </Route>
           <Route element={<AppShellV2 />}>
             <Route index element={<Navigate to="/command-center" replace />} />
             <Route path="agents" element={<AgentWorkspace />} />
