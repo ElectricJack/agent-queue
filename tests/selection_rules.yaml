@@ -57,7 +57,8 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - ".superpowers/**"
   - "vault/**"
   - ".github/agent-queue-integration.example.json"
-  - "scripts/dashboard-perf/**"
+  - "scripts/dashboard-perf/README.md"
+  - "scripts/dashboard-perf/*.mjs"
   - "scripts/acceptance/**"
   - "scripts/check-outdated-deps.py"
   - "scripts/inflate_llm_logs.py"
@@ -82,6 +83,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["dashboard/src/pages/playbook-graph-v2/__tests__/graph.fixture.json"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
   - { paths: ["packages/**", "openapi.json"], areas: ["api-contract", "file-access"] }
   - { paths: [".github/workflows/**"], areas: ["ci-sentinel", "epic-trains"] }
+  - { paths: [".test_durations", "scripts/merge_test_durations.py"], areas: ["ci-sentinel"] }
   - { paths: ["setup.sh"], areas: ["install"] }
   - { paths: ["scripts/e2e*", "scripts/e2e/**"], areas: ["e2e-kit"] }
   - { paths: ["scripts/regenerate-api-client.sh", "scripts/regenerate-ts-client.sh", "scripts/openapi-python-client.yaml", "scripts/aq-client-boilerplate.sha256"], areas: ["api-contract"] }
@@ -93,6 +95,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/migrate_task_records.py"], areas: ["database"] }
   - { paths: ["scripts/reap_test_databases.py"], areas: ["test-substrate"] }
   - { paths: ["scripts/seed_layout_perf.py"], areas: ["graph-layout"] }
+  - { paths: ["scripts/dashboard-perf/*.py"], areas: ["metrics"] }
   - { paths: ["scripts/pkg5_scenarios/**"], areas: ["playbook-engine"] }
   - { paths: ["scripts/generate-playbook-schema.py"], areas: ["playbook-definition"] }
   - { paths: ["scripts/rebuild-reviewed-playbook-artifacts.py"], areas: ["shipped-playbooks"] }
@@ -130,6 +133,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/assignment_routing.py", "src/explain.py"], areas: ["task-routing", "work-graph"] }
   - { paths: ["src/claim_file.py", "src/pool_claims.py"], areas: ["claims", "worker-pools"] }
   - { paths: ["src/config_editor.py", "src/config_secrets.py", "src/config_tuning.py", "src/portable_config.py"], areas: ["config"] }
+  - { paths: ["src/conversations/**"], areas: ["discord-conversations"] }
   - { paths: ["src/deliverables.py", "src/state_machine.py", "src/task_summary.py", "src/task_names.py"], areas: ["task-lifecycle"] }
   - { paths: ["src/docs_urls.py"], areas: ["docs-guards", "playbook-authoring"] }
   - { paths: ["src/embedded_mcp.py", "src/mcp_interfaces.py", "src/mcp_registration.py", "src/known_tools.py"], areas: ["tools-mcp"] }
@@ -220,6 +224,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/commands/proposal_commands.py", "src/commands/review_commands.py", "src/commands/spec_commands.py"], areas: ["document-reviews"] }
   - { paths: ["src/commands/provider_commands.py"], areas: ["provider-failover"] }
   - { paths: ["src/commands/question_commands.py"], areas: ["agent-questions"] }
+  - { paths: ["src/commands/report_commands.py"], areas: ["digest"] }
   - { paths: ["src/commands/routing_commands.py"], areas: ["task-routing"] }
   - { paths: ["src/commands/session_commands.py"], areas: ["session-runtime", "claims"] }
   - { paths: ["src/commands/task_commands.py", "src/commands/helpers.py"], areas: ["task-lifecycle", "task-hierarchy", "task-dependencies", "task-archive"] }
@@ -243,6 +248,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/database/queries/blocked_state.py", "src/database/queries/gate_queries.py", "src/database/queries/event_queries.py"], areas: ["work-graph"] }
   - { paths: ["src/database/queries/chat_queries.py"], areas: ["metrics"] }
   - { paths: ["src/database/queries/claim_queries.py"], areas: ["claims", "worker-pools"] }
+  - { paths: ["src/database/queries/conversation_queries.py"], areas: ["discord-conversations"] }
   - { paths: ["src/database/queries/dashboard_state_queries.py", "src/database/queries/layout_queries.py"], areas: ["dashboard-state", "graph-layout"] }
   - { paths: ["src/database/queries/dependency_queries.py"], areas: ["task-dependencies"] }
   - { paths: ["src/database/queries/digest_queries.py"], areas: ["digest"] }
