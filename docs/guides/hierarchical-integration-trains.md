@@ -13,6 +13,23 @@ This rollout is per project and defaults to disabled. It performs an in-place
 schema upgrade on the PostgreSQL database the installation already uses. It does
 not deploy, enable, or change GitHub configuration by itself.
 
+If recovery supersedes a parent conflict intent, AQ updates the repair stage
+and dossier to name the successor. To find delegates stranded by an older
+installation, run `aq doctor --check integration.stale_repair_intents`.
+The check is report-only. A local operator or the project's live supervisor
+can prove and reserve a delegate's current candidate:
+
+```bash
+aq integration rebind-repair --task-id REPAIR_TASK --dry-run
+aq integration rebind-repair --task-id REPAIR_TASK --apply --head CANDIDATE_SHA
+```
+
+Use the full `head_sha` reported by the dry run. The command refuses a stopped
+writer, expired authority, changed candidate or moved remote target. Applying
+records the reservation under the current intent; the attached repair session
+then pushes with its current fence and closes. If the writer has stopped,
+recover its attachment through the existing repair lifecycle first.
+
 The command synopsis used below is:
 
 ```text

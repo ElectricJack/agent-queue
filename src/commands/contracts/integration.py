@@ -79,6 +79,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_redrive_root",
         "integration_redrive_child",
         "integration_rebind_reused_identity",
+        "integration_rebind_repair",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_resolve_candidate_member",
@@ -255,6 +256,32 @@ class IntegrationRebindReusedIdentityArgs(CommandArgs):
         ):
             raise ValueError("applying requires expected_origin_ids and reason")
         return self
+
+
+class IntegrationRebindRepairArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
+    dry_run: bool = True
+    expected_head_sha: str | None = None
+
+    @model_validator(mode="after")
+    def apply_requires_proved_head(self) -> IntegrationRebindRepairArgs:
+        if self.expected_head_sha is not None and not is_valid_git_oid(self.expected_head_sha):
+            raise ValueError("expected_head_sha must be a full commit id")
+        if not self.dry_run and self.expected_head_sha is None:
+            raise ValueError("apply requires the candidate head from dry-run")
+        return self
+
+
+class IntegrationRebindRepairValue(CommandValue):
+    task_id: str | None = None
+    intent_id: str | None = None
+    head_sha: str | None = None
+    tree_sha: str | None = None
+    repair_commit_shas: tuple[str, ...] = ()
+    fence_token: int | None = None
+    session_id: str | None = None
+    reason: str | None = None
+    next_step: str | None = None
 
 
 class IntegrationAdoptLegacyDeliveriesArgs(CommandArgs):
@@ -1040,6 +1067,15 @@ INTEGRATION_REBIND_REUSED_IDENTITY = _operational_contract(
     REBIND_REUSED_IDENTITY_OUTCOMES,
     successes=frozenset({"rebound", "would_rebind", "nothing_to_rebind"}),
     side_effect=SideEffectClass.UPDATE,
+)
+
+INTEGRATION_REBIND_REPAIR = _operational_contract(
+    "integration_rebind_repair",
+    IntegrationRebindRepairArgs,
+    ("would_rebind", "rebound", "already_reserved", "changed", "blocked", "not_found"),
+    successes=frozenset({"would_rebind", "rebound", "already_reserved"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationRebindRepairValue,
 )
 
 ADOPT_LEGACY_DELIVERIES_OUTCOMES = (
@@ -2502,6 +2538,16 @@ async def _rebind_reused_identity_adapter(
     )
 
 
+async def _rebind_repair_adapter(args: IntegrationRebindRepairArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_rebind_repair",
+        args,
+        ctx,
+        IntegrationRebindRepairValue,
+        {"would_rebind", "rebound", "already_reserved", "changed", "blocked", "not_found"},
+    )
+
+
 async def _adopt_legacy_deliveries_adapter(
     args: IntegrationAdoptLegacyDeliveriesArgs, ctx: CommandContext | None
 ):
@@ -2591,6 +2637,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_REDRIVE_ROOT, _redrive_root_adapter),
         (INTEGRATION_REDRIVE_CHILD, _redrive_child_adapter),
         (INTEGRATION_REBIND_REUSED_IDENTITY, _rebind_reused_identity_adapter),
+        (INTEGRATION_REBIND_REPAIR, _rebind_repair_adapter),
         (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
         (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),
         (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),

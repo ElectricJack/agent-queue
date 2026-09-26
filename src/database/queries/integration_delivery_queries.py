@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
     integration_promotion_intents,
+    integration_repair_stages,
     integration_review_evidence,
     integration_repair_operations,
     projects,
@@ -397,16 +398,51 @@ class IntegrationDeliveryQueriesMixin:
         )
         if changed.rowcount != 1:  # pragma: no cover - locked row guards this
             raise ValueError("resolution changed during recovery")
-        # Bind the existing guarded repair stage to the new intent atomically.
-        # The old intent remains immutable and can no longer pass stage scope.
-        from src.database.tables import integration_repair_stages
-        await conn.execute(
+        # Keep the stage's human-facing dossier in step with its authority.
+        # A trigger-only update strands a resumed delegate on the old intent.
+        stage = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == intent["resolution_operation_id"],
+                    integration_repair_stages.c.ordinal == intent["resolution_stage_ordinal"],
+                ).with_for_update()
+            )
+        ).mappings().one_or_none()
+        if stage is None or stage["trigger_id"] != intent_id:
+            raise ValueError("resolution repair stage changed during recovery")
+        dossier = dict(stage["dossier"] or {})
+        conflict = dict(dossier.get("current_conflict") or {})
+        if conflict.get("intent_id") not in {None, intent_id}:
+            raise ValueError("resolution repair dossier names another conflict")
+        conflict["intent_id"] = successor_id
+        dossier["current_conflict"] = conflict
+        dossier["trigger_id"] = successor_id
+        dossier["superseded_conflict_intent_id"] = intent_id
+        changed = await conn.execute(
             update(integration_repair_stages).where(
-                integration_repair_stages.c.operation_id == intent["resolution_operation_id"],
-                integration_repair_stages.c.ordinal == intent["resolution_stage_ordinal"],
+                integration_repair_stages.c.operation_id == stage["operation_id"],
+                integration_repair_stages.c.ordinal == stage["ordinal"],
                 integration_repair_stages.c.trigger_id == intent_id,
-            ).values(trigger_id=successor_id)
+            ).values(trigger_id=successor_id, dossier=dossier)
         )
+        if changed.rowcount != 1:
+            raise ValueError("resolution repair stage changed during recovery")
+        if stage["repair_task_id"]:
+            delegate = (
+                await conn.execute(select(tasks).where(
+                    tasks.c.id == stage["repair_task_id"]
+                ).with_for_update())
+            ).mappings().one_or_none()
+            if delegate is None or delegate["created_by_id"] != stage["operation_id"]:
+                raise ValueError("resolution repair delegate changed during recovery")
+            notice = (
+                f"Current conflict intent: {successor_id} (supersedes {intent_id}). "
+                "Use the current attached repair fence.\n\n"
+            )
+            await conn.execute(
+                update(tasks).where(tasks.c.id == delegate["id"])
+                .values(description=notice + delegate["description"])
+            )
         return successor_values
 
     async def record_integration_resolution_push_on(

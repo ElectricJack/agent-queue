@@ -116,6 +116,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_redrive_root",
     "integration_redrive_child",
     "integration_rebind_reused_identity",
+    "integration_rebind_repair",
     "integration_adopt_legacy_deliveries",
     "integration_bind_legacy_repositories",
     "integration_release_delegates",

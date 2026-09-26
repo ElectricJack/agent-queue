@@ -706,6 +706,8 @@ async def conflict_resolution_case(db, promotion_case):
             status=TaskStatus.IN_PROGRESS,
             repo_id="repo",
             branch_name="aq/parent",
+            created_by_kind="integration_repair",
+            created_by_id="resolution-op",
         )
     )
     async with db.immediate() as conn:
@@ -2646,6 +2648,16 @@ async def test_operator_recovers_malformed_unwritten_resolution_with_fresh_succe
     assert successor["state"] == "conflict"
     assert successor["supersedes_intent_id"] == case["intent_id"]
     assert successor["resolution_head_sha"] is None
+    async with db._engine.connect() as conn:
+        stage = (await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "resolution-op",
+            integration_repair_stages.c.ordinal == 0,
+        ))).mappings().one()
+    assert stage["trigger_id"] == successor_id
+    assert stage["dossier"]["current_conflict"]["intent_id"] == successor_id
+    assert stage["dossier"]["superseded_conflict_intent_id"] == case["intent_id"]
+    delegate = await db.get_task("repair-task")
+    assert f"Current conflict intent: {successor_id}" in delegate.description
     assert (
         _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
         == case["target"]
@@ -2662,6 +2674,177 @@ async def test_operator_recovers_malformed_unwritten_resolution_with_fresh_succe
         _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
         == case["resolved_head"]
     )
+
+
+async def test_supervisor_rebind_repair_proves_and_reserves_current_intent(
+    db, conflict_resolution_case, command_handler_factory
+):
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.doctor.integration_checks import run_check
+    from src.doctor.models import Severity
+    from src.integration.promotion import PromotionService, PromotionTargetMoved
+    from src.profiles.capabilities import CapabilityPolicy
+
+    case = conflict_resolution_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(_resolution_request(case))
+    async with db.immediate() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "resolution-session")
+                           .values(state="stopped", desired_state="stopped"))
+    successor, _ = await service.recover_unwritten_resolution(case["intent_id"])
+    handler = await command_handler_factory()
+    await handler.orchestrator.db.close()
+    handler.orchestrator.db = db
+    handler.orchestrator.promotion_service = service
+    stopped = await handler.execute("integration_rebind_repair", {
+        "task_id": "repair-task", "dry_run": True,
+    })
+    assert stopped["outcome"] == "blocked"
+    async with db.immediate() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "resolution-session")
+                           .values(state="running", desired_state="running"))
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == "repo",
+            integration_branch_owners.c.ref == "aq/parent",
+        ).values(fence_token=4))
+        stage = (await conn.execute(select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "resolution-op",
+            integration_repair_stages.c.ordinal == 0,
+        ))).mappings().one()
+        dossier = dict(stage["dossier"])
+        dossier["current_conflict"] = {"intent_id": case["intent_id"]}
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "resolution-op",
+            integration_repair_stages.c.ordinal == 0,
+        ).values(trigger_id=case["intent_id"], dossier=dossier))
+    finding = await run_check(db, "integration.stale_repair_intents")
+    assert finding.severity is Severity.WARN
+    assert finding.data["delegates"][0]["task_id"] == "repair-task"
+    preview = await handler.execute("integration_rebind_repair", {
+        "task_id": "repair-task", "dry_run": True,
+    })
+    assert preview["outcome"] == "would_rebind"
+    assert preview["intent_id"] == successor.intent_id
+    assert preview["head_sha"] == case["resolved_head"]
+    assert preview["fence_token"] == 4
+    assert (await db.get_integration_promotion_intent(successor.intent_id))["state"] == "conflict"
+    changed = await handler.execute("integration_rebind_repair", {
+        "task_id": "repair-task", "dry_run": False, "expected_head_sha": "f" * 40,
+    })
+    assert changed["outcome"] == "changed"
+    await db.create_session(SessionRecord(
+        id="rebind-supervisor", project_id="project", profile_id="supervisor",
+        harness="fake", provider="fake", name="supervisor-project", lifecycle="named",
+        state="running", desired_state="running", work_dir=str(case["work"]),
+        epoch="epoch", instance_token="supervisor-instance", started_at=3.0,
+    ))
+    supervisor = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["integration_rebind_repair"]),
+        session_id="rebind-supervisor", session_instance_token="supervisor-instance",
+        project_id="project", profile_id="supervisor", elevated=True,
+    )
+    with principal_context(supervisor):
+        applied = await handler.execute("integration_rebind_repair", {
+            "task_id": "repair-task", "dry_run": False,
+            "expected_head_sha": preview["head_sha"],
+        })
+    assert applied["outcome"] == "rebound"
+    assert (await db.get_integration_promotion_intent(successor.intent_id))[
+        "resolution_head_sha"
+    ] == case["resolved_head"]
+    assert (await run_check(db, "integration.stale_repair_intents")).severity is Severity.OK
+    replayed = await handler.execute("integration_rebind_repair", {
+        "task_id": "repair-task", "dry_run": False,
+        "expected_head_sha": preview["head_sha"],
+    })
+    assert replayed["outcome"] == "already_reserved"
+    with principal_context(_resolution_principal()):
+        with pytest.raises(PromotionTargetMoved, match="authority is stale"):
+            await service.push_resolution(
+                successor.intent_id, Fence(**case["resolution_fence"])
+            )
+        current_fence = Fence(**{**case["resolution_fence"], "token": preview["fence_token"]})
+        await service.push_resolution(successor.intent_id, current_fence)
+    await service.reconcile(successor.intent_id)
+    assert _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0] == (
+        case["resolved_head"]
+    )
+
+
+@pytest.mark.parametrize("blocker", [
+    "expired", "missing_instance", "workspace_reassigned", "owner_reassigned",
+    "repository_moved", "target_moved", "malformed_candidate",
+])
+async def test_rebind_repair_refuses_stale_or_unproven_candidate_without_mutation(
+    db, conflict_resolution_case, command_handler_factory, blocker
+):
+    from src.commands.principal import principal_context
+    from src.database.tables import repos
+    from src.integration.promotion import PromotionService
+
+    case = conflict_resolution_case
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=GitManager())
+    with principal_context(_resolution_principal()):
+        await service.reserve_resolution(_resolution_request(case))
+    async with db.immediate() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "resolution-session")
+                           .values(state="stopped", desired_state="stopped"))
+    successor, _ = await service.recover_unwritten_resolution(case["intent_id"])
+    async with db.immediate() as conn:
+        await conn.execute(update(sessions).where(sessions.c.id == "resolution-session")
+                           .values(state="running", desired_state="running"))
+        stage_query = select(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "resolution-op",
+            integration_repair_stages.c.ordinal == 0,
+        )
+        stage = (await conn.execute(stage_query)).mappings().one()
+        dossier = dict(stage["dossier"])
+        dossier["current_conflict"] = {"intent_id": case["intent_id"]}
+        await conn.execute(update(integration_repair_stages).where(
+            integration_repair_stages.c.operation_id == "resolution-op",
+            integration_repair_stages.c.ordinal == 0,
+        ).values(trigger_id=case["intent_id"], dossier=dossier))
+        if blocker == "expired":
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == "resolution-op",
+            ).values(deadline_at=1.0))
+        elif blocker == "missing_instance":
+            await conn.execute(update(sessions).where(sessions.c.id == "resolution-session")
+                               .values(instance_token=""))
+        elif blocker == "workspace_reassigned":
+            await conn.execute(update(workspaces).where(workspaces.c.id == "resolution-workspace")
+                               .values(locked_by_task_id="parent"))
+        elif blocker == "owner_reassigned":
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.repository_id == "repo",
+                integration_branch_owners.c.ref == "aq/parent",
+            ).values(owner_id="parent"))
+        elif blocker == "repository_moved":
+            await conn.execute(update(repos).where(repos.c.id == "repo")
+                               .values(url=str(case["work"] / "other-origin.git")))
+        before_stage = dict((await conn.execute(stage_query)).mappings().one())
+    if blocker == "target_moved":
+        _git(["push", "origin", "HEAD:refs/heads/aq/parent"], case["work"])
+    elif blocker == "malformed_candidate":
+        _git(["reset", "--hard", case["target"]], case["work"])
+    before_intent = await db.get_integration_promotion_intent(successor.intent_id)
+    handler = await command_handler_factory()
+    await handler.orchestrator.db.close()
+    handler.orchestrator.db = db
+    handler.orchestrator.promotion_service = service
+
+    result = await handler.execute("integration_rebind_repair", {
+        "task_id": "repair-task", "dry_run": False,
+        "expected_head_sha": _git(["rev-parse", "HEAD"], case["work"]),
+    })
+
+    assert result["success"] is False
+    assert result["outcome"] == "blocked"
+    assert await db.get_integration_promotion_intent(successor.intent_id) == before_intent
+    async with db._engine.connect() as conn:
+        assert dict((await conn.execute(stage_query)).mappings().one()) == before_stage
 
 
 @pytest.mark.parametrize("blocker", ["push_started", "remote_moved"])

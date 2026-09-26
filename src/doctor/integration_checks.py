@@ -1195,6 +1195,76 @@ async def _check_stranded_delegates(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_stale_repair_intents(ctx: DoctorContext) -> CheckResult:
+    """Find live delegates whose stage or dossier still names a superseded intent."""
+    if ctx.db is None:
+        return CheckResult(
+            id="integration.stale_repair_intents",
+            severity=Severity.WARN,
+            detail="database not initialised — repair intent state unknown",
+        )
+    from sqlalchemy import select
+
+    from src.database.tables import (
+        integration_promotion_intents,
+        integration_repair_stages,
+        tasks,
+    )
+
+    old = integration_promotion_intents
+    current = old.alias("current_repair_intent")
+    stage = integration_repair_stages
+    delegate = tasks
+    query = (
+        select(
+            old.c.id.label("old_intent_id"),
+            current.c.id.label("current_intent_id"),
+            stage.c.trigger_id,
+            stage.c.dossier,
+            stage.c.repair_task_id,
+        )
+        .select_from(old.join(current,
+            current.c.id == old.c.superseded_by_intent_id,
+        ).join(stage,
+            (stage.c.operation_id == old.c.resolution_operation_id)
+            & (stage.c.ordinal == old.c.resolution_stage_ordinal),
+        ).join(delegate, delegate.c.id == stage.c.repair_task_id))
+        .where(
+            old.c.state == "superseded",
+            old.c.superseded_by_intent_id.is_not(None),
+            current.c.state != "superseded",
+            stage.c.writer_kind == "repair_delegate",
+            stage.c.state.in_(("active", "awaiting_completion")),
+            delegate.c.status.in_(("ASSIGNED", "IN_PROGRESS", "PAUSED", "READY")),
+        )
+        .limit(200)
+    )
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(query)).mappings().all()
+    stale = []
+    for row in rows:
+        dossier = row["dossier"] or {}
+        dossier_intent = (dossier.get("current_conflict") or {}).get("intent_id")
+        if row["trigger_id"] != row["current_intent_id"] or dossier_intent != row["current_intent_id"]:
+            stale.append({
+                "task_id": row["repair_task_id"],
+                "old_intent_id": row["old_intent_id"],
+                "current_intent_id": row["current_intent_id"],
+                "stage_intent_id": row["trigger_id"],
+                "dossier_intent_id": dossier_intent,
+            })
+    return CheckResult(
+        id="integration.stale_repair_intents",
+        severity=Severity.WARN if stale else Severity.OK,
+        detail=(
+            f"{len(stale)} live repair delegate(s) name a superseded conflict intent; "
+            f"run `aq integration rebind-repair --task-id {stale[0]['task_id']}`"
+            if stale else "live repair delegates name their current conflict intents"
+        ),
+        data={"count": len(stale), "delegates": stale},
+    )
+
+
 async def _fix_stranded_delegates(ctx: DoctorContext) -> CheckResult:
     """Retire each stranded delegate and record the release.
 
@@ -1785,6 +1855,11 @@ def integration_checks() -> list[DoctorCheck]:
             id="integration.stranded_delegates",
             run=_check_stranded_delegates,
             fix=_fix_stranded_delegates,
+            owner=OWNER,
+        ),
+        DoctorCheck(
+            id="integration.stale_repair_intents",
+            run=_check_stale_repair_intents,
             owner=OWNER,
         ),
         # Fixable, and the fix is the scheduler's own release: it frees only a

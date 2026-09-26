@@ -288,6 +288,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_redrive_root",
         "integration_redrive_child",
         "integration_rebind_reused_identity",
+        "integration_rebind_repair",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
         "integration_recover_candidate_member",

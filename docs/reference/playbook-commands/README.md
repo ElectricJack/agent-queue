@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-89 commands are registered.
+93 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -101,6 +101,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
 | [`integration_promote_main`](integration_promote_main.md) | Promote exact root candidate | Reconcile and fast-forward main to the exact trusted green candidate. |
 | [`integration_push_conflict_resolution`](integration_push_conflict_resolution.md) | Push conflict resolution | Push a frozen conflict resolution under the current repair writer fence. |
+| [`integration_rebind_repair`](integration_rebind_repair.md) | Integration Rebind Repair | Authenticated hierarchical integration operational control. |
 | [`integration_rebind_reused_identity`](integration_rebind_reused_identity.md) | Integration Rebind Reused Identity | Authenticated hierarchical integration operational control. |
 | [`integration_reconcile_promotion`](integration_reconcile_promotion.md) | Reconcile prepared promotion | Compare a durable prepared intent with the remote and finalize its receipt. |
 | [`integration_reconcile_unmaterialized`](integration_reconcile_unmaterialized.md) | Integration Reconcile Unmaterialized | Authenticated hierarchical integration operational control. |
@@ -144,6 +145,9 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`provider_reroute`](provider_reroute.md) | Re-route work off an unavailable provider | Move queued work whose provider is unavailable to the same intelligence class on an available provider, a few tasks at a time; pinned tasks and single-provider classes hold. |
 | [`provider_usage_probe`](provider_usage_probe.md) | Probe a provider's remaining quota | Ask a provider's own CLI what is left of the account's limit windows and record the reading. Free to run and never billed against the quota it reports. |
 | [`render_prompt`](render_prompt.md) | Render a prompt | Render a bundled or project prompt with explicit variables. |
+| [`report_brief`](report_brief.md) | Report Brief | Read a bounded, paged report brief and its CAS version. |
+| [`report_request`](report_request.md) | Report Request | Queue one author wake for a reserved report. |
+| [`report_submit`](report_submit.md) | Report Submit | Submit one authored report before its deadline. |
 | [`task_failure_triage_notify`](task_failure_triage_notify.md) | Wake supervisor failure triage | Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident. |
 | [`task_handoff`](task_handoff.md) | Record a task handoff | Store bounded agent assertions with current daemon facts. Auto is note-only; non-auto records a restart request, without performing a restart. |
 

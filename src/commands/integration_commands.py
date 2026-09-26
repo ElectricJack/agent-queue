@@ -766,6 +766,37 @@ class IntegrationCommandsMixin:
             **result,
         }
 
+    async def _cmd_integration_rebind_repair(self, args: dict) -> dict:
+        """Prove a live repair candidate and reserve it under the current intent."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationRebindRepairArgs
+        from src.integration.promotion import PromotionError
+        from src.integration.repair_rebind import RepairRebind
+
+        try:
+            request = IntegrationRebindRepairArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("blocked", f"invalid repair rebind request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("not_found", f"task {request.task_id} not found")
+        _principal, refusal = await integration_operator(self.db, task.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        try:
+            result = await RepairRebind(self._integration_promotion_service()).run(
+                request.task_id,
+                dry_run=request.dry_run,
+                expected_head_sha=request.expected_head_sha,
+            )
+        except (PromotionError, GitError, ValueError) as exc:
+            return _failure("blocked", str(exc))
+        return {
+            "success": result["outcome"] in {"would_rebind", "rebound", "already_reserved"},
+            **result,
+        }
+
     async def _cmd_integration_adopt_legacy_deliveries(self, args: dict) -> dict:
         """Record provable pre-train deliveries of children no train will collect."""
         from pydantic import ValidationError
