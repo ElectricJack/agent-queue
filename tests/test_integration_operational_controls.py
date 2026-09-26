@@ -1211,6 +1211,7 @@ async def test_daemon_functional_preflight_mints_token_with_actions_variables_re
         "pull_requests": "write",
         "issues": "write",
         "actions_variables": "read",
+        "workflows": "write",
     }
 
 
