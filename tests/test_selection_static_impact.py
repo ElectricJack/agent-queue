@@ -142,7 +142,7 @@ def test_pyproject_pins_the_engine_the_adapter_expects():
     data = tomllib.loads((ROOT / "pyproject.toml").read_text())
     extras = data["project"]["optional-dependencies"]
     pin = "pytest-impacted==" + PINNED_ENGINE.split()[-1]
-    assert extras["test-selection"] == [pin]
+    assert extras["test-selection"] == [pin, "typesafe-sdk==0.7.1"]
     assert pin in extras["dev"]
     assert extras["test-selection-fast"] == [
         "pytest-impacted[fast]==" + PINNED_ENGINE.split()[-1],
