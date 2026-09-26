@@ -44,12 +44,15 @@ import signal
 import subprocess
 import sys
 import time
-import tomllib
 from collections.abc import Mapping
 from contextlib import ExitStack
 from pathlib import Path
 
 import click
+
+from src.test_selection.discovery import SKIP_DIRS
+from src.test_selection.discovery import pytest_rootdir as _pytest_rootdir
+from src.test_selection.discovery import test_modules as _test_modules
 
 from .app import cli, console
 
@@ -282,7 +285,7 @@ _COLLECT_ONLY_FLAGS = frozenset({"--co", "--collect-only", "--collectonly"})
 _LAST_FAILED_FLAGS = frozenset({"--lf", "--last-failed"})
 
 #: Directories never worth walking for test modules.
-_SKIP_DIRS = frozenset({"__pycache__", "node_modules"})
+_SKIP_DIRS = SKIP_DIRS
 
 
 def _flags(args: tuple[str, ...]) -> list[str]:
@@ -340,43 +343,6 @@ def _expression_is_broad(expression: str) -> bool:
         return bool(grammar.Expression.compile(expression).evaluate(lambda _name, **_kw: False))
     except unparseable:
         return False
-
-
-def _pytest_rootdir(cwd: Path) -> tuple[Path, list[Path]]:
-    """``(rootdir, testpaths)`` from the nearest ``pyproject.toml`` configuring pytest.
-
-    ``(cwd, [])`` when no such file is found above *cwd*.
-    """
-    for directory in (cwd, *cwd.parents):
-        pyproject = directory / "pyproject.toml"
-        if not pyproject.is_file():
-            continue
-        try:
-            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        section = data.get("tool", {}).get("pytest")
-        if not isinstance(section, dict):
-            continue
-        # ``[tool.pytest.ini_options]``, or pytest 9's native ``[tool.pytest]``.
-        options = section.get("ini_options", section)
-        testpaths = options.get("testpaths") if isinstance(options, dict) else None
-        if isinstance(testpaths, str):
-            testpaths = testpaths.split()
-        return directory, [(directory / entry).resolve() for entry in testpaths or []]
-    return cwd, []
-
-
-def _test_modules(roots: list[Path]) -> set[Path]:
-    """Every ``test_*.py`` / ``*_test.py`` under *roots* (pytest's default ``python_files``)."""
-    modules: set[Path] = set()
-    for root in roots:
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS]
-            for name in filenames:
-                if name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py")):
-                    modules.add(Path(dirpath, name))
-    return modules
 
 
 def _last_failed_is_a_slice(rootdir: Path) -> bool:

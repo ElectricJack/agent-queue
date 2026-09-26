@@ -1,0 +1,399 @@
+# Smart test selection: the reviewed mandatory rules (spec §4.1, §4.2).
+#
+# A change to a path is mapped, in this order, by: a global invalidator (the
+# whole universe runs), a catalogued test module (it runs), a scoped conftest
+# (its subtree runs), a non_behavioral glob (nothing more for that path), an
+# ownership rule (every module of the named areas runs), a source-scanning
+# trigger (the named modules run), or a direct import of a src/ file by a test
+# module.  A path none of these map forces the whole universe.
+#
+# tests/test_selection_catalogue.py checks that every tracked file is mapped,
+# that no non_behavioral glob shadows an owning rule, that every rule matches
+# some tracked file and that every module and area named here exists.  Globs
+# are anchored posix paths: "*" stays within one segment, "**" crosses them.
+version: 1
+
+global_invalidators:            # any change -> M = U (spec §4.2)
+  - "pyproject.toml"
+  - "alembic.ini"
+  - "tests/__init__.py"
+  - "tests/conftest.py"
+  - "tests/pg_dsn.py"
+  - "tests/db_fixtures.py"
+  - "tests/alembic_revisions.py"
+  - "migrations/**"
+  - "src/__init__.py"
+  - "src/database/__init__.py"
+  - "src/database/base.py"
+  - "src/database/engine.py"
+  - "src/database/tables.py"
+  - "src/database/adapters/**"
+  - "src/models.py"
+  - "src/config.py"
+  - "src/commands/handler.py"
+
+scoped_conftests:
+  - { path: "tests/perf/conftest.py", subtree: "tests/perf" }
+
+non_behavioral:                 # never forces fallback, adds nothing; no test reads these
+  - "LICENSE"
+  - ".gitignore"
+  - ".gitattributes"
+  - ".ignore"
+  - ".mcp.json"
+  - ".pre-commit-config.yaml"
+  - ".vibecop.yml"
+  - "docker-compose.yml"
+  - "goals.md"
+  - "notes.md"
+  - "profile.md"
+  - "requirements.md"
+  - "test-coverage-impl-platform.md"
+  - "run_tests.sh"
+  - "test_suite.bat"
+  - "uninstall.sh"
+  - "notes/**"
+  - "reports/**"
+  - ".superpowers/**"
+  - "vault/**"
+  - ".github/agent-queue-integration.example.json"
+  - "scripts/dashboard-perf/**"
+  - "scripts/acceptance/**"
+  - "scripts/check-outdated-deps.py"
+  - "scripts/inflate_llm_logs.py"
+  - "scripts/setup-cgroup-delegation.sh"
+
+ownership:                      # path globs -> areas whose modules join M
+  # ---- repository files outside src/
+  - { paths: ["AGENTS.md", "CLAUDE.md", "README.md"], areas: ["docs-guards"] }
+  - { paths: ["AGENTS.md"], areas: ["dashboard-state"] }
+  - { paths: ["docs/**"], areas: ["docs-guards"] }
+  - { paths: ["docs/reference/cli-command-inventory.json"], areas: ["cli-framework"] }
+  - { paths: ["docs/reference/cli/**"], areas: ["cli-framework", "install"] }
+  - { paths: ["docs/reference/configuration*"], areas: ["config"] }
+  - { paths: ["docs/config/**"], areas: ["epic-trains"] }
+  - { paths: ["docs/guides/hierarchical-integration-trains.md", "docs/guides/integration-troubleshooting.md"], areas: ["integration-controls"] }
+  - { paths: ["docs/guides/discord-*.md", "docs/guides/escalations.md", "docs/specs/mcp-server.md"], areas: ["discord", "escalations"] }
+  - { paths: ["docs/contributing/installer-testing.md"], areas: ["install"] }
+  - { paths: ["docs/validation/**"], areas: ["packaging"] }
+  - { paths: ["docs/playbooks/**"], areas: ["shipped-playbooks"] }
+  - { paths: ["dashboard/**"], areas: ["dashboard-state"] }
+  - { paths: ["dashboard/package.json", "dashboard/vite.config.ts", "dashboard/index.html", "package.json", "package-lock.json"], areas: ["install", "packaging", "dashboard-server"] }
+  - { paths: ["dashboard/src/pages/playbook-graph-v2/__tests__/graph.fixture.json"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
+  - { paths: ["packages/**", "openapi.json"], areas: ["api-contract", "file-access"] }
+  - { paths: [".github/workflows/**"], areas: ["ci-sentinel", "epic-trains"] }
+  - { paths: ["setup.sh"], areas: ["install"] }
+  - { paths: ["scripts/e2e*", "scripts/e2e/**"], areas: ["e2e-kit"] }
+  - { paths: ["scripts/regenerate-api-client.sh", "scripts/regenerate-ts-client.sh", "scripts/openapi-python-client.yaml", "scripts/aq-client-boilerplate.sha256"], areas: ["api-contract"] }
+  - { paths: ["scripts/gen-command-docs.py", "scripts/check-docs.py"], areas: ["docs-guards"] }
+  - { paths: ["scripts/generate-config-schema-inventory.py"], areas: ["config"] }
+  - { paths: ["scripts/generate-cli-command-inventory.py"], areas: ["cli-framework"] }
+  - { paths: ["scripts/build_release_artifact.py"], areas: ["packaging", "dashboard-server", "install"] }
+  - { paths: ["scripts/check-merge-conflicts.sh"], areas: ["git-manager"] }
+  - { paths: ["scripts/migrate_task_records.py"], areas: ["database"] }
+  - { paths: ["scripts/reap_test_databases.py"], areas: ["test-substrate"] }
+  - { paths: ["scripts/seed_layout_perf.py"], areas: ["graph-layout"] }
+  - { paths: ["scripts/pkg5_scenarios/**"], areas: ["playbook-engine"] }
+  - { paths: ["scripts/generate-playbook-schema.py"], areas: ["playbook-definition"] }
+  - { paths: ["scripts/rebuild-reviewed-playbook-artifacts.py"], areas: ["shipped-playbooks"] }
+  - { paths: ["scripts/install.sh", "scripts/install-wsl.sh", "scripts/install-windows.ps1"], areas: ["install"] }
+  - { paths: ["scripts/generate-selection-catalogue.py"], areas: ["test-selection"] }
+
+  # ---- test helpers, fixtures and the selection artifacts
+  - { paths: ["tests/selection_*"], areas: ["test-selection"] }
+  - { paths: ["tests/assignment_routing_helpers.py"], areas: ["orchestrator", "task-lifecycle", "task-routing"] }
+  - { paths: ["tests/dashboard_server_helpers.py"], areas: ["dashboard-server", "install"] }
+  - { paths: ["tests/git_mock_helpers.py"], areas: ["workspaces", "git-manager"] }
+  - { paths: ["tests/installer_machine.py"], areas: ["install"] }
+  - { paths: ["tests/llm/**"], areas: ["llm-client"] }
+  - { paths: ["tests/perf/__init__.py"], areas: ["claims", "formulas", "task-hierarchy", "graph-layout"] }
+  - { paths: ["tests/task_graph/**"], areas: ["graph-layout"] }
+  - { paths: ["tests/pg_trigger_helpers.py"], areas: ["integration-promotion", "integration-trains"] }
+  - { paths: ["tests/playbook_fixture_activation.py"], areas: ["shipped-playbooks"] }
+  - { paths: ["tests/playbook_v2_engine_helpers.py"], areas: ["ci-sentinel", "epic-trains", "integration-promotion", "playbook-engine", "shipped-playbooks", "task-routing"] }
+  - { paths: ["tests/playbook_v2_helpers.py"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
+  - { paths: ["tests/session_dispatch_helpers.py"], areas: ["integration-promotion", "memory-facts", "orchestrator", "profiles", "prompts", "provider-failover", "task-lifecycle"] }
+  - { paths: ["tests/fixtures/contracts/**"], areas: ["ci-sentinel", "playbook-engine", "provider-failover", "shipped-playbooks"] }
+  - { paths: ["tests/fixtures/fake_gh/**"], areas: ["projects", "github"] }
+  - { paths: ["tests/fixtures/formulas/**"], areas: ["formulas", "intelligence-classes", "e2e-kit"] }
+  - { paths: ["tests/fixtures/harnesses/**"], areas: ["harnesses"] }
+  - { paths: ["tests/fixtures/playbooks/**"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine", "shipped-playbooks", "ci-sentinel", "supervisor", "task-routing", "epic-trains", "integration-promotion", "document-reviews", "docs-guards"] }
+  - { paths: ["tests/fixtures/provider_failover/**"], areas: ["provider-failover", "e2e-kit"] }
+  - { paths: ["tests/fixtures/task_graphs/**"], areas: ["task-graph-creation", "intelligence-classes", "integration-trains"] }
+  - { paths: ["tests/fixtures/transcripts/**"], areas: ["transcripts"] }
+
+  # ---- src/ top-level modules
+  - { paths: ["src/_compat.py"], areas: ["packaging"] }
+  - { paths: ["src/agent_names.py", "src/agents/**"], areas: ["agent-roster"] }
+  - { paths: ["src/aq_uri.py", "src/wiki_links.py", "src/vault_*.py", "src/file_watcher.py", "src/readme_handler.py", "src/override_handler.py", "src/reference_stub_enricher.py", "src/workspace_spec_watcher.py"], areas: ["vault"] }
+  - { paths: ["src/vault.py"], areas: ["vault", "profiles", "intelligence-classes", "harnesses"] }
+  - { paths: ["src/assignment_routing.py", "src/explain.py"], areas: ["task-routing", "work-graph"] }
+  - { paths: ["src/claim_file.py", "src/pool_claims.py"], areas: ["claims", "worker-pools"] }
+  - { paths: ["src/config_editor.py", "src/config_secrets.py", "src/config_tuning.py", "src/portable_config.py"], areas: ["config"] }
+  - { paths: ["src/deliverables.py", "src/state_machine.py", "src/task_summary.py", "src/task_names.py"], areas: ["task-lifecycle"] }
+  - { paths: ["src/docs_urls.py"], areas: ["docs-guards", "playbook-authoring"] }
+  - { paths: ["src/embedded_mcp.py", "src/mcp_interfaces.py", "src/mcp_registration.py", "src/known_tools.py"], areas: ["tools-mcp"] }
+  - { paths: ["src/env_scrub.py"], areas: ["capabilities", "session-runtime"] }
+  - { paths: ["src/event_bus.py", "src/event_schemas.py"], areas: ["events"] }
+  - { paths: ["src/facts_handler.py", "src/facts_parser.py"], areas: ["memory-facts"] }
+  - { paths: ["src/llm_logger.py", "src/logging_config.py"], areas: ["logging"] }
+  - { paths: ["src/main.py"], areas: ["orchestrator", "daemon-cli"] }
+  - { paths: ["src/orphan_workflow_recovery.py", "src/workflow_pipeline_view.py", "src/workflow_stage_resume_handler.py"], areas: ["orchestrator"] }
+  - { paths: ["src/prompt_builder.py", "src/prompt_manager.py"], areas: ["prompts"] }
+  - { paths: ["src/remote_links.py"], areas: ["messaging-adapters", "digest"] }
+  - { paths: ["src/review_keys.py"], areas: ["document-reviews"] }
+  - { paths: ["src/schedule.py", "src/scheduler.py", "src/timer_service.py"], areas: ["scheduling"] }
+  - { paths: ["src/surface_schema.py"], areas: ["command-dispatch"] }
+  - { paths: ["src/workspace_names.py"], areas: ["workspaces"] }
+  - { paths: ["src/playbook_schema.json", "src/playbook_v2_schema.json"], areas: ["playbook-definition"] }
+
+  # ---- src/ packages
+  - { paths: ["src/api/**"], areas: ["api-contract", "api-scope"] }
+  - { paths: ["src/api/graph_layout.py", "src/api/models/graph_layout.py"], areas: ["graph-layout"] }
+  - { paths: ["src/api/graph.py", "src/api/models/graph.py", "src/api/models/dashboard.py"], areas: ["dashboard-state"] }
+  - { paths: ["src/api/metrics.py", "src/api/models/metrics.py"], areas: ["metrics"] }
+  - { paths: ["src/api/providers.py", "src/api/models/provider.py"], areas: ["provider-failover", "provider-usage"] }
+  - { paths: ["src/api/pull_requests.py", "src/api/models/git.py"], areas: ["github"] }
+  - { paths: ["src/api/task_files.py", "src/api/workspace_files.py", "src/api/file_serving.py", "src/api/task_attachments.py", "src/api/models/files.py"], areas: ["file-access"] }
+  - { paths: ["src/api/pane_stream.py", "src/api/streams.py", "src/api/sessions.py", "src/api/terminal_stream.py", "src/api/task_sessions.py", "src/api/models/session.py"], areas: ["panes-streams", "session-runtime", "tmux-terminals"] }
+  - { paths: ["src/api/messages.py", "src/api/models/message.py"], areas: ["messages"] }
+  - { paths: ["src/api/websocket.py"], areas: ["events", "agent-questions"] }
+  - { paths: ["src/api/routers/proposals.py", "src/api/models/review.py"], areas: ["document-reviews"] }
+  - { paths: ["src/api/models/playbook*.py"], areas: ["playbook-authoring"] }
+  - { paths: ["src/api/models/escalation.py"], areas: ["escalations"] }
+  - { paths: ["src/api/models/digest.py", "src/api/models/discord.py"], areas: ["digest", "discord"] }
+  - { paths: ["src/api/models/project*.py"], areas: ["projects"] }
+  - { paths: ["src/api/models/agent.py"], areas: ["agent-roster"] }
+  - { paths: ["src/api/models/task.py", "src/api/models/gate.py"], areas: ["task-lifecycle", "work-graph"] }
+  - { paths: ["src/api/models/mcp.py"], areas: ["tools-mcp"] }
+  - { paths: ["src/api/models/memory.py"], areas: ["memory-facts"] }
+  - { paths: ["src/api/models/plugin.py"], areas: ["plugins"] }
+  - { paths: ["src/api/health.py", "src/api/app.py"], areas: ["dashboard-server", "daemon-cli"] }
+
+  - { paths: ["src/cli/**"], areas: ["cli-framework"] }
+  - { paths: ["src/cli/agent_surface.py", "src/cli/agent_messages.py"], areas: ["prime", "messages"] }
+  - { paths: ["src/cli/claim_epoch.py"], areas: ["claims"] }
+  - { paths: ["src/cli/daemon.py"], areas: ["daemon-cli"] }
+  - { paths: ["src/cli/dashboard.py"], areas: ["dashboard-server"] }
+  - { paths: ["src/cli/doctor.py"], areas: ["doctor"] }
+  - { paths: ["src/cli/formulas.py"], areas: ["formulas"] }
+  - { paths: ["src/cli/install.py", "src/cli/uninstall.py", "src/cli/update.py"], areas: ["install"] }
+  - { paths: ["src/cli/integration.py"], areas: ["integration-controls"] }
+  - { paths: ["src/cli/logs.py"], areas: ["logging"] }
+  - { paths: ["src/cli/messages.py"], areas: ["messages"] }
+  - { paths: ["src/cli/playbook.py"], areas: ["playbook-authoring"] }
+  - { paths: ["src/cli/plugins.py"], areas: ["plugins"] }
+  - { paths: ["src/cli/projects.py"], areas: ["projects"] }
+  - { paths: ["src/cli/questions.py"], areas: ["agent-questions"] }
+  - { paths: ["src/cli/reviews.py"], areas: ["document-reviews"] }
+  - { paths: ["src/cli/sessions.py"], areas: ["session-runtime"] }
+  - { paths: ["src/cli/streams.py"], areas: ["panes-streams"] }
+  - { paths: ["src/cli/system_config.py"], areas: ["config"] }
+  - { paths: ["src/cli/tasks.py"], areas: ["task-lifecycle", "task-comments", "task-subtasks", "workspaces", "integration-trains"] }
+  - { paths: ["src/cli/test_runner.py"], areas: ["cli-test-runner", "resource-gating"] }
+  - { paths: ["src/cli/vault.py"], areas: ["vault", "harnesses"] }
+
+  - { paths: ["src/commands/**"], areas: ["command-dispatch"] }
+  - { paths: ["src/commands/contracts/**", "src/commands/authorization.py", "src/commands/principal.py", "src/commands/supervisor_authority.py"], areas: ["capabilities", "playbook-authoring", "docs-guards"] }
+  - { paths: ["src/commands/agent_commands.py", "src/commands/flock_commands.py"], areas: ["agent-roster"] }
+  - { paths: ["src/commands/ci_commands.py"], areas: ["ci-sentinel"] }
+  - { paths: ["src/commands/claim_commands.py"], areas: ["claims", "worker-pools"] }
+  - { paths: ["src/commands/dashboard_state_commands.py"], areas: ["dashboard-state"] }
+  - { paths: ["src/commands/digest_commands.py"], areas: ["digest"] }
+  - { paths: ["src/commands/discord_commands.py"], areas: ["discord"] }
+  - { paths: ["src/commands/escalation_commands.py"], areas: ["escalations"] }
+  - { paths: ["src/commands/event_commands.py"], areas: ["events"] }
+  - { paths: ["src/commands/formula_commands.py"], areas: ["formulas"] }
+  - { paths: ["src/commands/gate_commands.py"], areas: ["work-graph"] }
+  - { paths: ["src/commands/git_commands.py"], areas: ["git-manager", "github"] }
+  - { paths: ["src/commands/graph_commands.py"], areas: ["graph-layout", "task-graph-creation"] }
+  - { paths: ["src/commands/integration_commands.py"], areas: ["integration-controls", "integration-ownership"] }
+  - { paths: ["src/commands/mcp_commands.py", "src/commands/tool_commands.py"], areas: ["tools-mcp"] }
+  - { paths: ["src/commands/message_commands.py"], areas: ["messages"] }
+  - { paths: ["src/commands/notes_commands.py"], areas: ["plugins", "vault"] }
+  - { paths: ["src/commands/ops_commands.py"], areas: ["provider-usage", "metrics"] }
+  - { paths: ["src/commands/phase_commands.py"], areas: ["task-hierarchy"] }
+  - { paths: ["src/commands/playbook_commands.py", "src/commands/playbook_v2_commands.py"], areas: ["playbook-authoring", "playbook-engine"] }
+  - { paths: ["src/commands/plugin_commands.py"], areas: ["plugins"] }
+  - { paths: ["src/commands/profile_commands.py"], areas: ["profiles", "intelligence-classes"] }
+  - { paths: ["src/commands/project_commands.py", "src/commands/project_onboarding_commands.py"], areas: ["projects"] }
+  - { paths: ["src/commands/proposal_commands.py", "src/commands/review_commands.py", "src/commands/spec_commands.py"], areas: ["document-reviews"] }
+  - { paths: ["src/commands/provider_commands.py"], areas: ["provider-failover"] }
+  - { paths: ["src/commands/question_commands.py"], areas: ["agent-questions"] }
+  - { paths: ["src/commands/routing_commands.py"], areas: ["task-routing"] }
+  - { paths: ["src/commands/session_commands.py"], areas: ["session-runtime", "claims"] }
+  - { paths: ["src/commands/task_commands.py", "src/commands/helpers.py"], areas: ["task-lifecycle", "task-hierarchy", "task-dependencies", "task-archive"] }
+  - { paths: ["src/commands/task_comment_commands.py"], areas: ["task-comments"] }
+  - { paths: ["src/commands/task_subtask_commands.py"], areas: ["task-subtasks"] }
+  - { paths: ["src/commands/workflow_commands.py"], areas: ["orchestrator"] }
+  - { paths: ["src/commands/worktree_commands.py"], areas: ["worktree-slots", "workspaces"] }
+
+  - { paths: ["src/dashboard_assets/**", "src/dashboard_server/**"], areas: ["dashboard-server"] }
+  - { paths: ["src/dashboard_state/**"], areas: ["dashboard-state"] }
+
+  - { paths: ["src/database/**"], areas: ["database"] }
+  - { paths: ["src/database/migration_guard.py", "src/database/schema_key.py", "src/database/hierarchy_migration.py"], areas: ["migrations"] }
+  - { paths: ["src/database/legacy_sqlite_import.py"], areas: ["database"] }
+  - { paths: ["src/database/queries/activity_queries.py"], areas: ["task-activity"] }
+  - { paths: ["src/database/queries/agent_queries.py", "src/database/queries/subagent_queries.py"], areas: ["agent-roster"] }
+  - { paths: ["src/database/queries/agent_question_queries.py"], areas: ["agent-questions"] }
+  - { paths: ["src/database/queries/api_session_token_queries.py"], areas: ["api-scope"] }
+  - { paths: ["src/database/queries/archive_queries.py"], areas: ["task-archive"] }
+  - { paths: ["src/database/queries/assignment_route_queries.py", "src/database/queries/triage_queries.py"], areas: ["task-routing"] }
+  - { paths: ["src/database/queries/blocked_state.py", "src/database/queries/gate_queries.py", "src/database/queries/event_queries.py"], areas: ["work-graph"] }
+  - { paths: ["src/database/queries/chat_queries.py"], areas: ["metrics"] }
+  - { paths: ["src/database/queries/claim_queries.py"], areas: ["claims", "worker-pools"] }
+  - { paths: ["src/database/queries/dashboard_state_queries.py", "src/database/queries/layout_queries.py"], areas: ["dashboard-state", "graph-layout"] }
+  - { paths: ["src/database/queries/dependency_queries.py"], areas: ["task-dependencies"] }
+  - { paths: ["src/database/queries/digest_queries.py"], areas: ["digest"] }
+  - { paths: ["src/database/queries/escalation_queries.py"], areas: ["escalations"] }
+  - { paths: ["src/database/queries/hierarchy_queries.py", "src/database/queries/task_identity.py", "src/database/queries/task_references.py"], areas: ["task-hierarchy", "task-archive"] }
+  - { paths: ["src/database/queries/integration_*.py", "src/database/queries/pull_request_queries.py", "src/database/queries/repo_queries.py"], areas: ["integration-trains", "integration-ownership", "integration-promotion"] }
+  - { paths: ["src/database/queries/merge_slot_queries.py"], areas: ["git-manager"] }
+  - { paths: ["src/database/queries/message_queries.py"], areas: ["messages"] }
+  - { paths: ["src/database/queries/metrics_queries.py", "src/database/queries/token_queries.py"], areas: ["metrics", "provider-usage"] }
+  - { paths: ["src/database/queries/onboarding_queries.py", "src/database/queries/project_queries.py"], areas: ["projects"] }
+  - { paths: ["src/database/queries/playbook_*.py", "src/database/queries/workflow_queries.py"], areas: ["playbook-engine", "playbook-authoring"] }
+  - { paths: ["src/database/queries/plugin_queries.py"], areas: ["plugins"] }
+  - { paths: ["src/database/queries/profile_queries.py"], areas: ["profiles"] }
+  - { paths: ["src/database/queries/proposal_queries.py", "src/database/queries/review_queries.py"], areas: ["document-reviews"] }
+  - { paths: ["src/database/queries/provider_*.py", "src/database/queries/task_reroute_queries.py"], areas: ["provider-failover", "provider-usage"] }
+  - { paths: ["src/database/queries/result_queries.py", "src/database/queries/task_queries.py", "src/database/queries/transaction_queries.py"], areas: ["task-lifecycle"] }
+  - { paths: ["src/database/queries/session_queries.py", "src/database/queries/task_session_queries.py", "src/database/queries/transcript_queries.py"], areas: ["session-runtime", "agent-roster", "transcripts"] }
+  - { paths: ["src/database/queries/task_comment_queries.py"], areas: ["task-comments"] }
+  - { paths: ["src/database/queries/task_recovery_queries.py"], areas: ["supervisor"] }
+  - { paths: ["src/database/queries/task_requirements_queries.py", "src/database/queries/workspace_*.py"], areas: ["workspaces", "worktree-slots"] }
+  - { paths: ["src/database/queries/task_subtask_queries.py"], areas: ["task-subtasks"] }
+
+  - { paths: ["src/digest/**"], areas: ["digest"] }
+  - { paths: ["src/discord/**"], areas: ["discord"] }
+  - { paths: ["src/discord/escalation_*.py"], areas: ["escalations"] }
+  - { paths: ["src/doctor/**"], areas: ["doctor"] }
+  - { paths: ["src/doctor/capability_checks.py"], areas: ["capabilities"] }
+  - { paths: ["src/doctor/dashboard_*.py"], areas: ["dashboard-server", "dashboard-state"] }
+  - { paths: ["src/doctor/db_checks.py"], areas: ["migrations"] }
+  - { paths: ["src/doctor/formula_checks.py"], areas: ["formulas"] }
+  - { paths: ["src/doctor/git_checks.py", "src/doctor/integration_checks.py"], areas: ["integration-controls", "integration-ownership", "development-delivery"] }
+  - { paths: ["src/doctor/hierarchy_checks.py"], areas: ["task-hierarchy"] }
+  - { paths: ["src/doctor/intelligence_class_checks.py"], areas: ["intelligence-classes"] }
+  - { paths: ["src/doctor/playbook_v2_checks.py"], areas: ["playbook-authoring"] }
+  - { paths: ["src/doctor/pool_checks.py"], areas: ["worker-pools", "agent-roster"] }
+  - { paths: ["src/doctor/profile_checks.py"], areas: ["profiles"] }
+  - { paths: ["src/doctor/project_checks.py"], areas: ["projects"] }
+  - { paths: ["src/doctor/provider_*.py"], areas: ["provider-failover", "provider-usage"] }
+  - { paths: ["src/doctor/resource_checks.py"], areas: ["resource-gating"] }
+  - { paths: ["src/doctor/review_checks.py"], areas: ["document-reviews"] }
+  - { paths: ["src/doctor/session_checks.py"], areas: ["session-runtime"] }
+  - { paths: ["src/doctor/task_checks.py"], areas: ["task-lifecycle"] }
+  - { paths: ["src/doctor/workspace_checks.py", "src/doctor/worktree_checks.py"], areas: ["workspaces", "worktree-slots"] }
+  - { paths: ["src/editor/**"], areas: ["level-editor"] }
+  - { paths: ["src/escalations/**"], areas: ["escalations"] }
+  - { paths: ["src/git/**"], areas: ["git-manager", "github"] }
+  - { paths: ["src/install/**"], areas: ["install"] }
+  - { paths: ["src/install/pools.py"], areas: ["worker-pools"] }
+
+  - { paths: ["src/integration/**"], areas: ["integration-trains"] }
+  - { paths: ["src/integration/ownership.py", "src/integration/owner_recovery.py", "src/integration/stale_owners.py", "src/integration/finished_owners.py", "src/integration/identity_rebind.py", "src/integration/delegate_release.py", "src/integration/live_operations.py", "src/integration/release.py", "src/integration/removal_guard.py", "src/integration/recovery_controls.py"], areas: ["integration-ownership"] }
+  - { paths: ["src/integration/promotion.py", "src/integration/main_promotion.py", "src/integration/parent_completion.py", "src/integration/parent_ci.py", "src/integration/root_pull_requests.py", "src/integration/repair.py", "src/integration/review_evidence.py", "src/integration/legacy_*.py", "src/integration/collection.py", "src/integration/github_review_poll.py"], areas: ["integration-promotion"] }
+  - { paths: ["src/integration/controls.py", "src/integration/status.py"], areas: ["integration-controls"] }
+  - { paths: ["src/integration/epic_*.py", "src/integration/candidate_ci.py", "src/integration/candidates.py"], areas: ["epic-trains"] }
+  - { paths: ["src/integration/development*.py", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
+
+  - { paths: ["src/integrations/**"], areas: ["plugins"] }
+  - { paths: ["src/intelligence_classes/**"], areas: ["intelligence-classes"] }
+  - { paths: ["src/llm/**"], areas: ["llm-client"] }
+  - { paths: ["src/messages/**"], areas: ["messages"] }
+  - { paths: ["src/messaging/**", "src/notifications/**"], areas: ["messaging-adapters"] }
+  - { paths: ["src/metrics/**"], areas: ["metrics"] }
+
+  - { paths: ["src/orchestrator/**"], areas: ["orchestrator"] }
+  - { paths: ["src/orchestrator/agent_reconciler.py"], areas: ["agent-roster"] }
+  - { paths: ["src/orchestrator/base_workspace.py", "src/orchestrator/workspace*.py"], areas: ["workspaces"] }
+  - { paths: ["src/orchestrator/worktree_manager.py", "src/orchestrator/workspace.py"], areas: ["worktree-slots"] }
+  - { paths: ["src/orchestrator/git_ops.py", "src/orchestrator/merge_slot.py", "src/orchestrator/sync_workflow.py"], areas: ["git-manager"] }
+  - { paths: ["src/orchestrator/layout_step.py"], areas: ["graph-layout"] }
+  - { paths: ["src/orchestrator/pools.py"], areas: ["worker-pools"] }
+  - { paths: ["src/orchestrator/pr_polling.py"], areas: ["github"] }
+  - { paths: ["src/orchestrator/provider_*.py"], areas: ["provider-failover"] }
+  - { paths: ["src/orchestrator/route_needed.py", "src/orchestrator/triage.py"], areas: ["task-routing"] }
+  - { paths: ["src/orchestrator/stranded_work.py", "src/orchestrator/task_checkpoint.py"], areas: ["development-delivery"] }
+
+  - { paths: ["src/panes/**"], areas: ["panes-streams"] }
+  - { paths: ["src/playbooks/**"], areas: ["playbook-engine"] }
+  - { paths: ["src/playbooks/definition.py", "src/playbooks/expressions.py", "src/playbooks/validation.py", "src/playbooks/explanation.py", "src/playbooks/graph_projection.py", "src/playbooks/artifact_*.py", "src/playbooks/semantic_diff.py", "src/playbooks/pipeline_lowering.py"], areas: ["playbook-definition"] }
+  - { paths: ["src/playbooks/authoring.py", "src/playbooks/proposal.py", "src/playbooks/activation.py", "src/playbooks/required.py", "src/playbooks/profiles.py"], areas: ["playbook-authoring", "shipped-playbooks"] }
+  - { paths: ["src/playbooks/routing.py"], areas: ["task-routing"] }
+  - { paths: ["src/plugins/**"], areas: ["plugins"] }
+  - { paths: ["src/plugins/internal/files.py"], areas: ["file-access"] }
+  - { paths: ["src/plugins/internal/notes.py", "src/plugins/internal/vibecop.py", "src/plugins/internal/inbox/**"], areas: ["plugins"] }
+  - { paths: ["src/prime/**"], areas: ["prime"] }
+  - { paths: ["src/prime/templates/**"], areas: ["docs-guards", "shipped-playbooks"] }
+
+  - { paths: ["src/profiles/**"], areas: ["profiles"] }
+  - { paths: ["src/profiles/capabilit*.py"], areas: ["capabilities"] }
+  - { paths: ["src/profiles/catalog.py", "src/profiles/class_retirement.py", "src/profiles/default_selection.py", "src/profiles/intelligence.py", "src/profiles/model_pin_migration.py"], areas: ["intelligence-classes"] }
+  - { paths: ["src/profiles/mcp_*.py"], areas: ["tools-mcp"] }
+  - { paths: ["src/profiles/workspace_kind_*.py"], areas: ["workspaces"] }
+  - { paths: ["src/profiles/task_execution.py"], areas: ["task-routing"] }
+  - { paths: ["src/profiles/defaults/**"], areas: ["capabilities", "api-scope", "prime", "document-reviews", "supervisor", "worker-pools", "intelligence-classes", "messages", "github", "workspaces", "docs-guards", "shipped-playbooks"] }
+
+  - { paths: ["src/projects/**"], areas: ["projects"] }
+  - { paths: ["src/projects/github.py"], areas: ["github"] }
+  - { paths: ["src/prompts/**"], areas: ["prompts", "shipped-playbooks"] }
+  - { paths: ["src/prompts/default_intelligence_classes/**"], areas: ["intelligence-classes", "task-routing", "provider-failover", "worker-pools", "session-runtime", "profiles"] }
+  - { paths: ["src/prompts/default_playbooks/**", "src/prompts/project_playbooks/**", "src/prompts/reviewed_playbooks/**"], areas: ["playbook-authoring", "supervisor", "task-routing", "ci-sentinel", "epic-trains", "provider-failover", "docs-guards"] }
+  - { paths: ["src/prompts/memory_*.py"], areas: ["memory-facts"] }
+  - { paths: ["src/providers/**"], areas: ["provider-failover", "provider-usage"] }
+  - { paths: ["src/resources/**"], areas: ["resource-gating", "cli-test-runner"] }
+  - { paths: ["src/resources/test_db_reaper.py"], areas: ["test-substrate"] }
+  - { paths: ["src/resources/slot_report.py"], areas: ["development-delivery"] }
+  - { paths: ["src/reviews/**"], areas: ["document-reviews"] }
+  - { paths: ["src/runtimes/**"], areas: ["session-runtime"] }
+  - { paths: ["src/services/**"], areas: ["plugins"] }
+
+  - { paths: ["src/sessions/**"], areas: ["session-runtime"] }
+  - { paths: ["src/sessions/tmux.py", "src/sessions/dialogs.py", "src/sessions/input_prompts.py", "src/sessions/terminal_pty.py", "src/sessions/usage_limit_screen.py", "src/sessions/proctable.py", "src/sessions/subprocess.py"], areas: ["tmux-terminals"] }
+  - { paths: ["src/sessions/transcripts/**"], areas: ["transcripts"] }
+  - { paths: ["src/sessions/pane_broadcaster.py"], areas: ["panes-streams"] }
+  - { paths: ["src/sessions/questions.py"], areas: ["agent-questions"] }
+  - { paths: ["src/sessions/harness_*.py", "src/sessions/default_harnesses/**"], areas: ["harnesses", "intelligence-classes"] }
+  - { paths: ["src/sessions/default_harnesses/**"], areas: ["tmux-terminals", "provider-failover"] }
+  - { paths: ["src/sessions/fake*.py"], areas: ["provider-failover"] }
+  - { paths: ["src/skills/**"], areas: ["doctor", "docs-guards", "worker-pools"] }
+
+  - { paths: ["src/task_graph/**"], areas: ["task-graph-creation"] }
+  - { paths: ["src/task_graph/layout/**"], areas: ["graph-layout"] }
+  - { paths: ["src/task_graph/formulas.py"], areas: ["formulas"] }
+  - { paths: ["src/test_selection/**"], areas: ["test-selection"] }
+  - { paths: ["src/test_selection/discovery.py"], areas: ["cli-test-runner"] }
+  - { paths: ["src/tokens/**"], areas: ["provider-usage"] }
+  - { paths: ["src/tools/**"], areas: ["tools-mcp", "api-contract"] }
+
+source_scanning:                # tests that read the tree; any matching trigger adds them
+  - { modules: ["tests/test_v1_removal.py"], triggers: ["src/**/*.py", "tests/**/test_*.py"] }
+  - modules:
+      - "tests/test_sqlite_removal.py"
+      - "tests/test_metadata_cast_safety.py"
+      - "tests/test_command_surface.py"
+      - "tests/test_emit_schema_compliance.py"
+      - "tests/test_event_schema_registry_validation.py"
+      - "tests/test_github_launcher_architecture.py"
+    triggers: ["src/**/*.py"]
+  - { modules: ["tests/test_cli_module_map.py"], triggers: ["src/cli/*.py", "src/cli/AGENTS.md"] }
+  - modules: ["tests/test_guidance_docs.py", "tests/test_cli_inventory.py"]
+    triggers: ["src/cli/**", "src/tools/definitions.py", "src/prime/templates/**", "src/skills/**", "docs/guides/**", "docs/reference/cli/**", "docs/reference/cli-command-inventory.json", "AGENTS.md"]
+  - { modules: ["tests/test_command_docs.py"], triggers: ["src/commands/contracts/**", "docs/reference/playbook-commands/**", "scripts/gen-command-docs.py"] }
+  - { modules: ["tests/test_config_schema_inventory.py"], triggers: ["docs/reference/configuration-schema.json", "scripts/generate-config-schema-inventory.py"] }
+  - { modules: ["tests/test_api_client_contract.py", "tests/test_response_model_registry.py"], triggers: ["src/api/**", "src/tools/**", "openapi.json", "packages/aq-client/**"] }
+  - { modules: ["tests/test_dashboard_browser_storage.py", "tests/test_pane_registry_parity.py"], triggers: ["dashboard/src/**"] }
+  - { modules: ["tests/test_factory_policy_instructions.py"], triggers: ["AGENTS.md", "docs/concepts/**", "src/prime/templates/**", "src/profiles/defaults/**", "src/prompts/default_playbooks/**", "src/prompts/project_playbooks/**", "src/skills/**", "tests/fixtures/playbooks/v2/**"] }
+  - { modules: ["tests/test_shipped_playbook_sources.py", "tests/test_default_playbook_v2_artifacts.py"], triggers: ["src/prompts/**", "tests/fixtures/playbooks/**", "docs/playbooks/**"] }
+  - { modules: ["tests/test_packaging_entry_points.py"], triggers: ["src/**/__init__.py", "src/main.py", "src/cli/app.py"] }
+
+critical:                       # always in M when any behavioural path changed
+  - "tests/test_api_scope.py"
+  - "tests/test_claim_commands.py"
+  - "tests/test_migration_single_head.py"
+  - "tests/test_case_insensitive_paths.py"
+  - "tests/test_import_cycles.py"
+  - "tests/test_selection_catalogue.py"
