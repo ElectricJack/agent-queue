@@ -105,11 +105,15 @@ class _GitHubStandIn:
         self.authorizations: list[str | None] = []
         self.port = 0
         self._server: asyncio.base_events.Server | None = None
+        self._connections: set[asyncio.StreamWriter] = set()
+        self._connection_opened = asyncio.Event()
 
     async def __aenter__(self) -> Self:
         tls = _local_tls_context(self.tmp_path)
 
         async def tunnel(reader, writer):
+            self._connections.add(writer)
+            self._connection_opened.set()
             try:
                 target = (await reader.readuntil(b"\r\n\r\n")).split(b"\r\n", 1)[0].decode()
                 self.tunnels.append(target)
@@ -123,6 +127,7 @@ class _GitHubStandIn:
             except (asyncio.IncompleteReadError, ConnectionError, ssl.SSLError):
                 pass
             finally:
+                self._connections.discard(writer)
                 writer.close()
 
         self._server = await asyncio.start_server(tunnel, "127.0.0.1", 0)
@@ -132,7 +137,9 @@ class _GitHubStandIn:
     async def __aexit__(self, *_exc) -> None:
         assert self._server is not None
         self._server.close()
-        await self._server.wait_closed()
+        for writer in tuple(self._connections):
+            writer.close()
+        await asyncio.wait_for(self._server.wait_closed(), timeout=10)
 
     def git_options(self) -> list[str]:
         return ["-c", f"http.proxy=http://127.0.0.1:{self.port}", "-c", "http.sslVerify=false"]
@@ -181,7 +188,13 @@ class _GitHubStandIn:
             "git", "http-backend", env=environment,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
         )
-        output, _ = await backend.communicate(body)
+        try:
+            output, _ = await asyncio.wait_for(backend.communicate(body), timeout=10)
+        except BaseException:
+            if backend.returncode is None:
+                backend.kill()
+            await asyncio.wait_for(backend.communicate(), timeout=10)
+            raise
         cgi_head, _, payload = output.partition(b"\r\n\r\n")
         status = b"200 OK"
         response_headers = []
@@ -235,6 +248,17 @@ def _route_app_git_through(manager: GitManager, stand_in: _GitHubStandIn, monkey
         return await original([*stand_in.git_options(), *args], **kwargs)
 
     monkeypatch.setattr(manager, "_arun_authenticated_git_once", through_stand_in)
+
+
+@pytest.mark.asyncio
+async def test_github_stand_in_closes_idle_connection_on_exit(tmp_path):
+    async with _GitHubStandIn(tmp_path, tmp_path, required_token=None) as stand_in:
+        reader, writer = await asyncio.open_connection("127.0.0.1", stand_in.port)
+        await asyncio.wait_for(stand_in._connection_opened.wait(), timeout=2)
+
+    assert await asyncio.wait_for(reader.read(), timeout=2) == b""
+    writer.close()
+    await asyncio.wait_for(writer.wait_closed(), timeout=2)
 
 
 class _BoundAppAccess:
