@@ -45,6 +45,7 @@ from typing import Any
 from src.metrics.histogram import is_hist, is_sum, merge_hists, merge_sums
 from src.metrics.host import HostSampler
 from src.metrics.perf import LoopLagProbe, PerfRegistry, perf_registry
+from src.metrics.relay import RelayReader
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +199,7 @@ class MetricsSampler:
         clock: Callable[[], float] = time.time,
         registry: PerfRegistry | None = None,
         host: HostSampler | None = None,
+        relay: RelayReader | None = None,
     ) -> None:
         self.db = db
         self.config = config
@@ -235,6 +237,12 @@ class MetricsSampler:
         self._probe: LoopLagProbe | None = None
         self._host_last: dict[str, Any] = {}
         self._perf_host_ms = 0.0
+        self._relay = relay if relay is not None else RelayReader(config)
+        self._relay_task: asyncio.Task | None = None
+        self._relay_pending: dict[str, Any] | None = None
+        self._relay_at: float | None = None
+        self._relay_available = False
+        self._relay_polled = False
 
     @property
     def _settings(self):
@@ -274,6 +282,7 @@ class MetricsSampler:
                 await self._task
             self._task = None
         await self._stop_probe()
+        await self._stop_relay()
         # After the loop is down, so the final flush cannot race a tick that
         # is still appending to the buffer.
         with contextlib.suppress(Exception):
@@ -294,6 +303,7 @@ class MetricsSampler:
             self._sync_probe_start()
         else:
             await self._stop_probe()
+            await self._stop_relay()
             if was_enabled:
                 # Do not replay the previous enabled interval after rollback.
                 self._registry.snapshot()
@@ -326,7 +336,20 @@ class MetricsSampler:
             "stale": True,
             "reason": "not_sampled_yet",
         }
-        perf["relay"] = {"available": False, "reason": "not_polled"}
+        pending, self._relay_pending = self._relay_pending, None
+        if pending is not None:
+            self._relay_available = bool(pending.get("available"))
+            self._relay_polled = True
+            perf["relay"] = pending
+        else:
+            perf["relay"] = {
+                "available": self._relay_available,
+                "reason": "between_polls" if self._relay_polled else "not_polled",
+            }
+        poll_every = float(getattr(self._settings, "perf_relay_poll_seconds", 5.0) or 5.0)
+        if self._relay_task is None and (self._relay_at is None or now - self._relay_at >= poll_every):
+            self._relay_at = now
+            self._relay_task = asyncio.create_task(self._poll_relay(), name="aq-metrics-relay-poll")
         perf["enabled"] = True
         # Count host work only on the tick that performed it, not every tick
         # carrying its cached reading. No fleet DB reads enter this cost.
@@ -334,6 +357,28 @@ class MetricsSampler:
             "perf_ms": round(self._perf_host_ms + (time.perf_counter() - started) * 1000, 3),
         }
         return perf
+
+    async def _poll_relay(self) -> None:
+        try:
+            self._relay_pending = await self._relay.poll()
+        except Exception:
+            self._relay_pending = {"available": False, "reason": "dashboard_server_unreachable"}
+        finally:
+            self._relay_task = None
+
+    async def _stop_relay(self) -> None:
+        task = self._relay_task
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        self._relay_task = None
+        self._relay_pending = None
+        self._relay_at = None
+        self._relay_available = False
+        self._relay_polled = False
+        if isinstance(self._relay, RelayReader):
+            self._relay.reset()
 
     def subscribe(self) -> None:
         """Start counting the bus-only events (nudges, kills, merges)."""

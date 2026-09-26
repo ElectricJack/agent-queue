@@ -449,6 +449,8 @@ async def test_daemon_unreachable_is_503_with_retry_after_and_our_header(client)
                 assert response.headers["cache-control"] == "no-store"
                 assert response.headers[DASHBOARD_SERVER_HEADER] == VERSION
         assert await proxy.upstream_ok() is False
+    assert proxy.stats.snapshot()["upstream_failures"]["daemon_unreachable"] == 2
+    assert proxy.stats.snapshot()["http"]["count"] == 0
 
 
 async def test_upstream_ok_is_true_whenever_the_daemon_answers(stack):
@@ -468,6 +470,7 @@ async def test_daemon_that_sends_no_headers_in_time_is_504(client):
             }
             assert response.headers[DASHBOARD_SERVER_HEADER] == VERSION
             assert response.headers["cache-control"] == "no-store"
+        assert stack.proxy.stats.snapshot()["upstream_failures"]["daemon_timeout"] == 1
         # The abandoned request was cancelled upstream, not left running.  (On
         # a box too loaded to deliver it within the timeout there is nothing
         # upstream to cancel; the disconnect test covers cancellation alone.)
@@ -497,6 +500,7 @@ async def test_requests_after_close_are_refused_by_the_proxy_itself(stack, clien
     assert denied.value.response.status_code == 503
     assert stack.daemon.requests == []
     assert stack.daemon.websockets == []
+    assert stack.proxy.stats.snapshot()["upstream_failures"]["dashboard_server_stopping"] == 2
 
 
 async def test_a_garbled_daemon_answer_is_502(client):
@@ -523,9 +527,71 @@ async def test_a_garbled_daemon_answer_is_502(client):
                 async with ws_connect("ws" + url[len("http") :] + "/ws/events"):
                     pytest.fail("the browser's handshake was accepted")
             assert denied.value.response.status_code == 502
+        assert proxy.stats.snapshot()["upstream_failures"]["daemon_bad_response"] == 2
     finally:
         garbler.close()
         await garbler.wait_closed()
+
+
+async def test_relay_stats_measure_headers_and_handshake_before_streams_end(monkeypatch):
+    from types import SimpleNamespace
+
+    readings = iter([0.0, 0.005, 1.0, 1.007])
+    monkeypatch.setattr(
+        "src.dashboard_server.proxy.time", SimpleNamespace(perf_counter=lambda: next(readings)),
+    )
+    async with proxied() as stack, aiohttp.ClientSession() as client:
+        async with client.get(f"{stack.url}/api/sse") as response:
+            await asyncio.wait_for(response.content.readuntil(b"\n\n"), GUARD)
+            snapshot = stack.proxy.stats.snapshot()
+            assert snapshot["http"]["count"] == 1
+            assert snapshot["http"]["sum"] == pytest.approx(5)
+            assert snapshot["relays_open"] == 1
+            assert not stack.daemon.sse_release.is_set()
+            stack.daemon.sse_release.set()
+            await response.read()
+        async with ws_connect(f"{stack.ws_url}/ws/echo") as ws:
+            await ws.send("ping")
+            assert await asyncio.wait_for(ws.recv(), GUARD) == "ping"
+            snapshot = stack.proxy.stats.snapshot()
+            assert snapshot["ws_handshake"]["count"] == 1
+            assert snapshot["ws_handshake"]["sum"] == pytest.approx(7)
+            assert snapshot["relays_open"] >= 1
+    snapshot = stack.proxy.stats.snapshot()
+    assert snapshot["http"]["count"] == snapshot["ws_handshake"]["count"] == 1
+    assert snapshot["relays_open"] == 0
+    assert not any(snapshot["upstream_failures"].values())
+
+
+def test_relay_stats_ignore_unknown_failures_and_copy_cumulative_buckets():
+    from src.dashboard_server.relay_stats import FAILURES, RelayStats
+
+    stats = RelayStats(clock=lambda: 123)
+    stats.observe_http(5)
+    stats.observe_ws_handshake(7)
+    for name in FAILURES:
+        stats.failure(name)
+    stats.failure("daemon_refused")
+    snapshot = stats.snapshot()
+    snapshot["http"]["counts"][0] = 100
+    snapshot["upstream_failures"]["daemon_timeout"] = 100
+    second = stats.snapshot()
+    assert second["epoch"] == second["now"] == 123
+    assert second["http"]["count"] == sum(second["http"]["counts"]) == 1
+    assert second["upstream_failures"] == dict.fromkeys(FAILURES, 1)
+
+
+async def test_relay_instrumentation_failure_does_not_fail_requests(monkeypatch, stack, client):
+    def broken_observe(*args):
+        raise RuntimeError("broken telemetry")
+
+    monkeypatch.setattr("src.dashboard_server.relay_stats.observe", broken_observe)
+    async with client.get(f"{stack.url}/api/fixed") as response:
+        assert response.status == 200
+        await response.read()
+    async with ws_connect(f"{stack.ws_url}/ws/echo") as ws:
+        await ws.send("still works")
+        assert await asyncio.wait_for(ws.recv(), GUARD) == "still works"
 
 
 # ---------------------------------------------------------------------------
