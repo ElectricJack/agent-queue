@@ -35,11 +35,16 @@ vault, different database, different API port (8099), different tmux socket
 
 ```bash
 docker compose up -d postgres          # the dev PostgreSQL on :5533
+docker compose up -d postgres-test     # managed validation's disposable test server on :5534
 pip install -e ".[dev,cli]"            # and packages/aq-client
 git --version                          # any recent git
 ```
 
 Tier 2 additionally needs `tmux` and a `claude` binary on `PATH`.
+
+The generated config enables managed jobs for development validation. Its test
+maintenance DSN uses `POSTGRES_TEST_DSN` when supplied, otherwise the compose
+`postgres-test` server on `:5534`; it is separate from the e2e daemon database.
 
 ## Tier 1 — the scripted run
 
@@ -322,6 +327,13 @@ modified.
 including a missing-project refusal. Vault migration is invoked only with
 `--dry-run --data-dir "$AQ_E2E_HOME"`; database upgrade and operator-daemon
 control remain explicitly untested.
+
+**S15 — development integration.** The disposable source repository commits a
+pytest check that its README is a file. Development validation runs that check
+through the managed `test` preset before publishing. The scenario verifies the
+delivery journal contains a passing job receipt and result hash for the exact
+snapshot SHA published to the remote, then checks dependency release and operator
+adoption. S17 uses the same supported validation command in its development policy.
 
 **S16 — provider failover.** The end-to-end check of
 [provider failover](../specs/provider-failover.md) (D23), against the fake

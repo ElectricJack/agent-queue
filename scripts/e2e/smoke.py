@@ -1615,6 +1615,18 @@ def s14_graph_and_vault(state: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+DEVELOPMENT_VALIDATION_COMMAND = "pytest test_validation.py -q"
+
+
+def _seed_development_validation(source: Path) -> None:
+    """Seed a finite pytest equivalent of the fixtures' README file check."""
+    (source / "test_validation.py").write_text(
+        "from pathlib import Path\n\n\n"
+        "def test_readme_exists():\n"
+        "    assert Path('README.md').is_file()\n"
+    )
+
+
 def s15_development_delivery(state: dict) -> str:
     """Operator configure → real published branch → AQ validation/promotion → adoption."""
     from pathlib import Path
@@ -1625,13 +1637,14 @@ def s15_development_delivery(state: dict) -> str:
     _git_text(str(source), "config", "user.name", "AQ E2E")
     _git_text(str(source), "config", "user.email", "e2e@example.test")
     (source / "README.md").write_text("development fixture\n")
+    _seed_development_validation(source)
     _git_text(str(source), "add", ".")
     _git_text(str(source), "commit", "-m", "base")
     _git_text(str(source), "push", "origin", "main")
     aq_text("project", "onboard", "--request-id", "e2e-development", "--source-mode", "link",
             "--root-id", "e2e-onboarding", "--relative-path", "development-source",
             "--project-name", "Development", "--project-id", "e2e-development")
-    configured = aq("integration", "develop", "e2e-development", "--command", "test -f README.md",
+    configured = aq("integration", "develop", "e2e-development", "--command", DEVELOPMENT_VALIDATION_COMMAND,
                     "--interval-seconds", "86400", "--reason", "isolated acceptance")
     check(configured.get("outcome") == "configured", str(configured))
     _git_text(str(source), "checkout", "-b", "fixture-feature")
@@ -1659,6 +1672,19 @@ def s15_development_delivery(state: dict) -> str:
     check(result.get("outcome") == "delivered", str(result))
     check(_git_text(str(remote), "rev-parse", "main") == head, "AQ did not promote exact checked commit")
     check(not task_show(successor_id)["is_blocked"], "publication did not release the successor")
+    status = aq("integration", "status", "e2e-development")
+    delivery = next((row for row in status.get("deliveries", []) if row["id"] == result["id"]), None)
+    check(delivery is not None, f"missing delivery receipt: {status}")
+    evidence = delivery["evidence"]
+    checks = evidence.get("checks", [])
+    check(evidence.get("conclusion") == "passed" and len(checks) == 1,
+          f"validation did not pass: {evidence}")
+    validation = checks[0]
+    check(validation.get("command") == DEVELOPMENT_VALIDATION_COMMAND
+          and bool(validation.get("job_id")) and bool(validation.get("result_hash"))
+          and validation.get("exit_code") == 0 and validation.get("outcome") == "passed"
+          and validation.get("input_ref") == head and validation.get("input_mode") == "snapshot",
+          f"validation receipt does not attest the published snapshot: {validation}")
     adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
                  "--head-sha", head, "--reason", "prove repeatable operator reconciliation")
     check(adopted.get("outcome") == "adopted", str(adopted))
@@ -1677,7 +1703,7 @@ def s15_development_delivery(state: dict) -> str:
         return deleted.get("deleted") == successor_id
 
     wait_for(_delete_successor, what=f"S15 successor {successor_id} to be removed")
-    return "local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication"
+    return "managed pytest snapshot validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication"
 
 
 # ---------------------------------------------------------------------------
@@ -2218,6 +2244,7 @@ def _ensure_phased_development_project() -> tuple[str, Path, Path]:
         _git_text(str(source), "config", "user.name", "AQ E2E")
         _git_text(str(source), "config", "user.email", "e2e@example.test")
         (source / "README.md").write_text("phased graph fixture\n")
+        _seed_development_validation(source)
         _git_text(str(source), "add", ".")
         _git_text(str(source), "commit", "-m", "base")
         _git_text(str(source), "push", "origin", "main")
@@ -2246,7 +2273,7 @@ def _ensure_phased_development_project() -> tuple[str, Path, Path]:
         "develop",
         project_id,
         "--command",
-        "test -f README.md",
+        DEVELOPMENT_VALIDATION_COMMAND,
         "--interval-seconds",
         "86400",
         "--reason",
