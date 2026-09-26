@@ -1566,6 +1566,119 @@ escalation_deliveries = Table(
     Index("idx_escalation_deliveries_escalation", "escalation_id", "created_at"),
 )
 
+# An operator @mention of the bot opens one conversation with the global
+# supervisor (Discord mention-routing spec §4.1).  The root message and, once
+# the thread-open delivery confirms, the external thread are each unique per
+# transport; ``thread_id`` is the internal ``messages.thread_id`` both
+# directions of the conversation share.
+supervisor_conversations = Table(
+    "supervisor_conversations",
+    metadata,
+    Column("id", Text, primary_key=True),  # conv-<uuid4>
+    Column("transport", Text, nullable=False),
+    Column("guild_id", Text, nullable=False),
+    Column("channel_id", Text, nullable=False),
+    Column("external_root_message_id", Text, nullable=False),
+    Column("external_thread_id", Text, nullable=True),
+    Column("thread_id", Text, nullable=False),  # conversation:<id>
+    Column("created_by", Text, nullable=False),  # human:discord:<id>
+    Column("audience", JSON, nullable=False),  # allowlist snapshot at open
+    Column("state", Text, nullable=False, server_default="opening"),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    Column("closed_at", Float, nullable=True),
+    UniqueConstraint(
+        "transport", "external_root_message_id", name="uq_supervisor_conversations_root"
+    ),
+    UniqueConstraint("thread_id", name="uq_supervisor_conversations_thread"),
+    Index(
+        "uq_supervisor_conversations_external_thread",
+        "transport",
+        "external_thread_id",
+        unique=True,
+        postgresql_where=text("external_thread_id IS NOT NULL"),
+    ),
+    CheckConstraint(
+        "state IN ('opening','open','closed','delivery_blocked')",
+        name="ck_supervisor_conversations_state",
+    ),
+    Index("idx_supervisor_conversations_state", "state", "updated_at"),
+)
+
+# One accepted operator message.  The unique external message id is the dedup
+# tombstone: it outlives the text (nulled after 30 days) so gateway, backfill
+# and replay can never turn the same message into fresh supervisor work.
+conversation_inputs = Table(
+    "conversation_inputs",
+    metadata,
+    Column("id", Text, primary_key=True),  # cinput-<uuid4>
+    Column(
+        "conversation_id",
+        Text,
+        ForeignKey("supervisor_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("transport", Text, nullable=False),
+    Column("external_message_id", Text, nullable=False),
+    Column("verified_actor", Text, nullable=False),
+    Column("author_id", Text, nullable=False),  # bare snowflake, for rate limits
+    Column("channel_id", Text, nullable=False),
+    Column("text", Text, nullable=True),  # NULL once expired (tombstone)
+    Column("text_sha256", Text, nullable=False),
+    Column("char_count", Integer, nullable=False),
+    Column("received_at", Float, nullable=False),
+    Column("source", Text, nullable=False, server_default="gateway"),
+    Column("state", Text, nullable=False, server_default="accepted"),
+    Column("supervisor_message_id", Text, ForeignKey("messages.id"), nullable=True),
+    Column("reply_message_id", Text, ForeignKey("messages.id"), nullable=True),
+    Column("delay_notified_at", Float, nullable=True),
+    Column("text_expired_at", Float, nullable=True),
+    Column("created_at", Float, nullable=False),
+    UniqueConstraint("transport", "external_message_id", name="uq_conversation_inputs_external"),
+    CheckConstraint(
+        "state IN ('accepted','answered','expired','revoked')",
+        name="ck_conversation_inputs_state",
+    ),
+    CheckConstraint("char_count BETWEEN 1 AND 4000", name="ck_conversation_inputs_char_count"),
+    CheckConstraint(
+        "source IN ('gateway','backfill','replay','test')",
+        name="ck_conversation_inputs_source",
+    ),
+    Index("idx_conversation_inputs_history", "conversation_id", "received_at", "id"),
+    Index("idx_conversation_inputs_author_window", "author_id", "received_at"),
+    Index("idx_conversation_inputs_channel_window", "channel_id", "received_at"),
+)
+
+# Reconnect backfill position per configured channel or bound thread.  The
+# cursor only advances after the page it covers is persisted.
+conversation_backfill_cursors = Table(
+    "conversation_backfill_cursors",
+    metadata,
+    Column("transport", Text, primary_key=True),
+    Column("channel_id", Text, primary_key=True),
+    Column("last_external_message_id", Text, nullable=False),
+    Column("advanced_at", Float, nullable=False),
+)
+
+# A stretch of history backfill could not read.  Recorded so status can say
+# messages may have been missed instead of claiming they were delivered.
+conversation_intake_gaps = Table(
+    "conversation_intake_gaps",
+    metadata,
+    Column("id", Text, primary_key=True),  # gap-<uuid4>
+    Column("transport", Text, nullable=False),
+    Column("channel_id", Text, nullable=False),
+    Column("gap_from", Float, nullable=False),
+    Column("gap_to", Float, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("recorded_at", Float, nullable=False),
+    CheckConstraint(
+        "reason IN ('cursor_expired','history_forbidden','pass_cap')",
+        name="ck_conversation_intake_gaps_reason",
+    ),
+    Index("idx_conversation_intake_gaps_channel", "transport", "channel_id", "recorded_at"),
+)
+
 # One row is one evaluated installation-wide digest window, including silent
 # windows.  Uniqueness prevents restarts or concurrent schedulers from
 # evaluating the same configured window twice; the cursor is a durable JSON
