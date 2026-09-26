@@ -1,6 +1,9 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { supervisorInboxHistory, type ConversationHistoryRecord } from "../../api/client";
 
+/** `(before, before_id)` pages rows that share a timestamp without skipping any. */
+type HistoryCursor = { before: number; before_id: string | null };
+
 function label(conversation: ConversationHistoryRecord): string {
   const creator = conversation.created_by.startsWith("human:discord:")
     ? `Discord · ${conversation.created_by.slice("human:discord:".length)}`
@@ -18,17 +21,23 @@ export default function ConversationPicker({ threadId, onSelect }: {
 }) {
   const history = useInfiniteQuery({
     queryKey: ["supervisor-inbox", "history"],
-    initialPageParam: undefined as number | undefined,
+    initialPageParam: undefined as HistoryCursor | undefined,
     queryFn: async ({ pageParam }) => {
       const { data } = await supervisorInboxHistory({
-        body: { limit: 50, ...(pageParam === undefined ? {} : { before: pageParam }) },
+        body: {
+          limit: 50,
+          ...(pageParam === undefined ? {} : { before: pageParam.before }),
+          ...(pageParam?.before_id == null ? {} : { before_id: pageParam.before_id }),
+        },
       });
       if (!data || !data.success || !("conversations" in data)) {
         throw new Error(data && "error" in data && typeof data.error === "string" ? data.error : "Failed to load conversations");
       }
       return data;
     },
-    getNextPageParam: (page) => page.next_before ?? undefined,
+    getNextPageParam: (page): HistoryCursor | undefined => page.next_before == null
+      ? undefined
+      : { before: page.next_before, before_id: page.next_before_id },
     staleTime: 15_000,
     refetchInterval: 30_000,
     retry: 1,

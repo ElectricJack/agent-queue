@@ -34,12 +34,23 @@ describe("ConversationPicker", () => {
 
   it("loads older conversations using the history cursor", async () => {
     vi.mocked(supervisorInboxHistory)
+      .mockResolvedValueOnce(historyResult([], 100, "conv-tied"))
+      .mockResolvedValueOnce(historyResult());
+    renderPicker();
+    fireEvent.click(await screen.findByRole("button", { name: "Load older conversations" }));
+    await waitFor(() => expect(supervisorInboxHistory).toHaveBeenLastCalledWith({
+      body: { limit: 50, before: 100, before_id: "conv-tied" },
+    }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Load older conversations" })).not.toBeInTheDocument());
+  });
+
+  it("pages by time alone when the cursor carries no tie-break id", async () => {
+    vi.mocked(supervisorInboxHistory)
       .mockResolvedValueOnce(historyResult([], 100))
       .mockResolvedValueOnce(historyResult());
     renderPicker();
     fireEvent.click(await screen.findByRole("button", { name: "Load older conversations" }));
     await waitFor(() => expect(supervisorInboxHistory).toHaveBeenLastCalledWith({ body: { limit: 50, before: 100 } }));
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Load older conversations" })).not.toBeInTheDocument());
   });
 
   it("shows errors while keeping the dashboard conversation available", async () => {

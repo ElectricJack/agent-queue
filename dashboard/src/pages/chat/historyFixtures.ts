@@ -14,13 +14,16 @@ export function historyConversation(overrides: Partial<ConversationHistoryRecord
     external_root_message_id: "root", external_thread_id: "external-thread",
     thread_id: "conversation:conv-one", created_by: "human:discord:111", audience: ["111"],
     state: "open", created_at: 100, updated_at: 100, closed_at: null,
-    inputs: [], next_before: null, ...overrides,
+    inputs: [], next_before: null, next_before_id: null, ...overrides,
   };
 }
 
-export function historyResult(conversations: ConversationHistoryRecord[] = [], nextBefore: number | null = null) {
+export function historyResult(
+  conversations: ConversationHistoryRecord[] = [], nextBefore: number | null = null,
+  nextBeforeId: string | null = null,
+) {
   return {
-    data: { success: true, conversations, next_before: nextBefore }, error: undefined,
+    data: { success: true, conversations, next_before: nextBefore, next_before_id: nextBeforeId }, error: undefined,
     request: new Request("http://localhost/api/supervisor_inbox/history"), response: new Response(),
   };
 }
