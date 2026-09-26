@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 
 from sqlalchemy import and_, delete, func, insert, literal, null, select, update
@@ -64,6 +65,10 @@ _OPERATOR_ADOPTION_TOKEN = object()
 _INTEGRATION_WAKE_TOKEN = object()
 #: "Argument not passed" for nullable keyword arguments where ``None`` means clear.
 _UNSET = object()
+#: Rows hydrated into ``Task`` models between event-loop yields.  About 14 us a
+#: row, so a slice holds the loop for single-digit milliseconds where a 10k-row
+#: list held it for 150-300 ms in one span (wise-ember.16 profile).
+_HYDRATE_SLICE = 500
 
 
 #: Project integration modes whose tasks need the designated repository, including
@@ -345,27 +350,54 @@ class TaskQueryMixin:
         *,
         labels: list[str] | None = None,
         any_label: list[str] | None = None,
+        statuses: Collection[TaskStatus] | None = None,
+        task_ids: Collection[str] | None = None,
     ) -> list[Task]:
         """List tasks with optional project/status/label filters.
 
         ``labels`` is all-of, ``any_label`` is any-of (work-graph design §6).
         Neither filters ``hold:*`` — listing shows what *exists*; only the
         ready frontier filters what to *do*.
+
+        ``statuses`` (any-of) and ``task_ids`` narrow the read for callers
+        that need a few rows, not the table; an empty collection matches
+        nothing.
         """
+        if (statuses is not None and not statuses) or (task_ids is not None and not task_ids):
+            return []
         stmt = select(tasks)
         conditions = []
         if project_id:
             conditions.append(tasks.c.project_id == project_id)
         if status:
             conditions.append(tasks.c.status == status.value)
+        if statuses is not None:
+            conditions.append(tasks.c.status.in_(sorted(s.value for s in statuses)))
+        if task_ids is not None:
+            conditions.append(tasks.c.id.in_(sorted(task_ids)))
         if conditions:
             stmt = stmt.where(and_(*conditions))
         if labels or any_label:
             stmt = apply_label_filters(stmt, labels=labels, any_label=any_label)
         stmt = stmt.order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
         async with self._engine.begin() as conn:
-            result = await conn.execute(stmt)
-            return [self._row_to_task(r) for r in result.mappings().fetchall()]
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return await self._hydrate_tasks(rows)
+
+    async def _hydrate_tasks(self, rows: Sequence) -> list[Task]:
+        """``_row_to_task`` over *rows*, yielding to the event loop between slices.
+
+        Whole-list reads (the scheduler snapshot, ``task_list``) hydrate every
+        row of a large project; one uninterrupted pass stalled the loop for
+        hundreds of milliseconds per call. The connection is already back in
+        the pool, and the list is complete before it is returned.
+        """
+        out: list[Task] = []
+        for start in range(0, len(rows), _HYDRATE_SLICE):
+            if start:
+                await asyncio.sleep(0)
+            out.extend(self._row_to_task(r) for r in rows[start:start + _HYDRATE_SLICE])
+        return out
 
     _GRAPH_NODE_COLUMNS = (
         "id",
@@ -442,8 +474,8 @@ class TaskQueryMixin:
             stmt = stmt.where(and_(*conditions))
         stmt = stmt.order_by(tasks.c.priority.asc(), tasks.c.created_at.asc())
         async with self._engine.begin() as conn:
-            result = await conn.execute(stmt)
-            return [self._row_to_task(r) for r in result.mappings().fetchall()]
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return await self._hydrate_tasks(rows)
 
     async def list_active_tasks_all_projects(self) -> list[Task]:
         """Return all non-completed tasks across every project."""

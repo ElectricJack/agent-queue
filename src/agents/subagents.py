@@ -110,7 +110,8 @@ async def subagent_counts(
 ) -> dict:
     """Count this agent's active children across all of its sessions.
 
-    ``tasks`` must contain only live (not archived) task rows. A task tree is
+    ``tasks`` must contain only live (not archived) task rows; only rows in an
+    active status (``_ACTIVE_TASKS``) are ever consulted. A task tree is
     not delegation provenance: only its authenticated creating session links
     a worker to the parent. Read this from old sessions too, since children
     can outlive the parent's current session.

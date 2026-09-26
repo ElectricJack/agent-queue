@@ -389,6 +389,26 @@ def test_committed_openapi_json_matches_the_live_app_surface():
     )
 
 
+def test_task_detail_list_defaults_are_fresh_per_row_and_documented_empty():
+    """``TaskDetail``'s list fields default through a factory, not a copied literal.
+
+    ``task_list`` rows omit all five, and a literal ``[]`` default is
+    deep-copied per row -- 50k copies in one event-loop span for a 10k-task
+    list (wise-ember.16).  The published schema still documents ``[]``.
+    """
+    from src.api.models.task import ListTasksResponse, TaskDetail
+
+    fields = ("attachments", "deliverables", "depends_on", "blocks", "subtasks")
+    first, second = ListTasksResponse.model_validate(
+        {"tasks": [{"id": "a", "project_id": "p", "title": "A"},
+                   {"id": "b", "project_id": "p", "title": "B"}]}
+    ).tasks
+    for name in fields:
+        assert getattr(first, name) == [] and getattr(first, name) is not getattr(second, name)
+        assert TaskDetail.model_fields[name].default_factory is list
+        assert TaskDetail.model_json_schema()["properties"][name]["default"] == []
+
+
 def test_generator_version_pin_agrees_between_the_script_and_the_dev_extra():
     """The client generator is pinned exactly, in both places that install it.
 
