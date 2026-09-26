@@ -39,7 +39,7 @@ install.py         `aq install` — the daemon-free installer: builds the step r
                    runs src/install's engine in-process, maps outcomes to exit codes;
                    `--repair` / `--upgrade` reconcile an existing installation
 inventory.py       Reproducible CLI command inventory and ownership classification
-jobs.py            `aq job {submit,show,list,cancel,result,logs}` and `aq run` preset alias
+jobs.py            `aq job {submit,show,list,cancel,result,logs,attach}` and `aq run` preset alias
 logs.py            `aq logs` — tail/filter JSONL log file directly (no daemon needed)
 menus.py           Interactive prompts (task wizard, fuzzy select, confirm)
 messages.py        `aq message *`, `aq inbox`, `aq reply`, `aq chat`

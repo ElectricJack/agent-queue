@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
 import click
 
 from .app import _get_client, _handle_errors, _run, cli
@@ -119,7 +120,59 @@ def job_result(ctx, **params):
 @click.argument("job_id")
 @click.option("--after", type=click.IntRange(min=0), default=0)
 @click.option("--limit", type=click.IntRange(1, 1048576), default=65536)
+@click.option("--follow", is_flag=True, help="Attach to retained output until completion.")
 @click.pass_context
 @_handle_errors
-def job_logs(ctx, **params):
-    emit(ctx, _execute(ctx, "job_logs", params))
+def job_logs(ctx, follow, **params):
+    if follow:
+        _attach(ctx, params["job_id"], params["after"])
+    else:
+        emit(ctx, _execute(ctx, "job_logs", params))
+
+
+def _attach(ctx, job_id, after):
+    from src.jobs.result import clean
+
+    async def follow():
+        cursor = after
+        async with _get_client((ctx.obj or {}).get("api_url")) as client:
+            while True:
+                reconnect = False
+                async for frame in client.job_output(job_id, after=cursor):
+                    if (ctx.obj or {}).get("json"):
+                        emit(ctx, frame)
+                    elif frame["type"] == "line":
+                        click.echo(clean(frame.get("text") or ""))
+                    elif frame["type"] == "gap" and frame["next"] > frame["after"]:
+                        click.echo(f"[output omitted: bytes {frame['after']}..{frame['next']}]")
+                    if frame["type"] in {"exit", "killed"}:
+                        return frame
+                    if frame["type"] == "gap" and frame["next"] == frame["after"]:
+                        # An empty gap is the slow-reader disconnect: resume
+                        # from the last byte delivered here, not the queue's.
+                        reconnect = True
+                        break
+                    cursor = frame.get("next", cursor)
+                if not reconnect:
+                    raise click.ClickException(
+                        f"Attachment disconnected at byte {cursor}; resume with "
+                        f"aq job logs {job_id} --follow --after {cursor}"
+                    )
+
+    try:
+        return _run(follow())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        click.echo(
+            f"\nDetached from job {job_id}; execution continues. Cancel with aq job cancel {job_id}.",
+            err=True,
+        )
+
+
+@job.command("attach")
+@click.argument("job_id")
+@click.option("--after", type=click.IntRange(min=0), default=0)
+@click.pass_context
+@_handle_errors
+def job_attach(ctx, job_id, after):
+    """Watch a job's retained output; Ctrl+C detaches without cancellation."""
+    _attach(ctx, job_id, after)

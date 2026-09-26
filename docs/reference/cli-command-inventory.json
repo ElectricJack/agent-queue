@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 419,
+    "leaf_commands": 420,
     "registration": {
       "generated": 278,
-      "handwritten": 141
+      "handwritten": 142
     },
     "ownership": {
-      "core": 380,
+      "core": 381,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 418
+      "supported": 419
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 278,
-      "registration": 127
+      "registration": 128
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 359
+      "untested": 360
     }
   },
   "commands": [
@@ -4158,6 +4158,37 @@
       }
     },
     {
+      "path": "aq job attach",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.jobs.job_attach",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "job_id"
+        ],
+        "optional": [
+          "--after",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq job cancel",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -4242,6 +4273,7 @@
         "optional": [
           "--after",
           "--limit",
+          "--follow",
           "--json",
           "--brief",
           "--api-url"

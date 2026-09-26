@@ -3,8 +3,9 @@
 Implements plan (2) of the approved 2026-09-24 exclusive job queue and managed
 long-running command specs in the agent-queue project vault. Phases 2 and 3 leave
 `resources.jobs.enabled: false`. Phase 3 exposes scoped CLI/MCP/typed API
-commands, atomic job waits and existing wait-result delivery; publisher and finite
-stream adapters belong to phase 4. The internal reconciler remains excluded from public transports. There is one executor and one
+commands, atomic job waits and existing wait-result delivery. Phase 4 adds retained
+output attachments and publisher/finite-stream adapters. The internal reconciler
+remains excluded from public transports. There is one executor and one
 identity: `jobs.id`, `AQ_JOB_ID`, and `<data_dir>/runs/<uuid>/`.
 
 `src/jobs/service.py` orders accepted jobs by aged band, timestamp and id. An
@@ -141,3 +142,13 @@ uses the same SSE viewer. Two attachments per principal/job and bounded queues
 prevent slow clients from blocking execution; a slow attachment disconnects with
 a resume cursor. Expired output returns 410 with result metadata. Explicit stream
 kill delegates cancellation to the queue's verified cleanup path.
+
+`aq job logs ID --follow [--after OFFSET]` and `aq job attach ID` read the same
+viewer. They print lines and omitted ranges, stop at the exit or killed frame, and
+on a slow-reader disconnect (an empty gap) reconnect from the last byte they
+printed rather than the queue's cursor. Ctrl+C detaches without cancelling and
+names the job's cancel command. `job_logs` chunks carry `next`, the byte cursor
+after the chunk, and `data_base64`, the original bytes: rendered text length is
+not a byte offset for invalid UTF-8. The console pane caps displayed text at
+1 MiB, marks the view truncated, and reconnects on a slow-reader marker without
+rendering it as output.

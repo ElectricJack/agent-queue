@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from src.commands.principal import current_principal, PrincipalKind
 from src.jobs.policy import JobError
 from src.jobs.service import JobService
-from src.jobs.artifacts import OutputStore, job_directory
+from src.jobs.output import read_output
 from src.database.tables import workspaces
 
 
@@ -242,26 +242,16 @@ class JobCommandsMixin:
         if job["output_retention"] == "expired":
             return {"success": False, "error": "logs_expired", "result": job["result"]}
 
-        def read():
-            directory = job_directory(Path(self.config.data_dir), job["id"])
-            store = OutputStore(
-                directory,
-                head_bytes=job["contract"]["head_bytes"],
-                tail_bytes=job["contract"]["tail_bytes"],
-                readonly=True,
-            )
-            try:
-                response = store.read(args.get("after", 0), args.get("limit", 65536))
-                for chunk in response["chunks"]:
-                    chunk["data"] = chunk["data"].decode("utf-8", "replace")
-                return response
-            finally:
-                store.close()
-
         try:
-            return {"success": True, **await asyncio.to_thread(read)}
+            response = await asyncio.to_thread(
+                read_output, Path(self.config.data_dir), job,
+                args.get("after", 0), args.get("limit", 65536),
+            )
+            return {"success": True, **response}
         except FileNotFoundError:
             return {"success": False, "error": "logs_not_ready"}
+        except (OSError, ValueError):
+            return {"success": False, "error": "output_unavailable"}
 
     async def _cmd_job_reconcile(self, args):
         await self._jobs().tick()

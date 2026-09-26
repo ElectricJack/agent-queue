@@ -45,6 +45,37 @@ afterEach(() => {
 });
 
 describe("useConsoleStream", () => {
+  it("shows retained-range gaps and caps output from giant lines", async () => {
+    const { result } = renderHook(() => useConsoleStream("job"));
+    const es = FakeEventSource.instances[0]!;
+    act(() => {
+      es.emit({ type: "line", seq: 9, text: "[output omitted: bytes 1..10]", ts: 1, truncated: true });
+      for (let i = 0; i < 20; i += 1) {
+        es.emit({ type: "line", seq: 10 + i, text: "x".repeat(65536), ts: 1 });
+      }
+    });
+    await waitFor(() => expect(result.current.truncated).toBe(true));
+    expect(result.current.lines.reduce((sum, line) => sum + line.text.length, 0)).toBeLessThanOrEqual(1024 * 1024);
+  });
+
+  it("reconnects a slow managed viewer from its delivered byte cursor", async () => {
+    const { result } = renderHook(() => useConsoleStream("job"));
+    const es = FakeEventSource.instances[0]!;
+    act(() => {
+      es.emit({ type: "line", seq: 123, text: "delivered", ts: 1, after: 100, next: 123 });
+      // The server's marker can name an older queued cursor; it is not output.
+      es.emit({
+        type: "gap", seq: 100, after: 100, next: 100, ts: 1,
+        text: "slow reader disconnected; reconnect to resume",
+      });
+    });
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(2), { timeout: 3000 });
+    expect(es.closed).toBe(true);
+    expect(FakeEventSource.instances[1]!.url).toContain("after_seq=123");
+    expect(result.current.lines.map((line) => line.text)).toEqual(["delivered"]);
+    expect(result.current.truncated).toBe(false);
+  });
+
   it("starts in connecting status", () => {
     const { result } = renderHook(() => useConsoleStream("abc"));
     expect(result.current.status).toBe("connecting");

@@ -590,6 +590,7 @@
     "managed-jobs": {
       "description": "Managed jobs: detached execution, crash receipts, idempotency, workspace pins, bounded output and immutable results.",
       "modules": [
+        "tests/test_jobs_attachments.py",
         "tests/test_jobs_output.py",
         "tests/test_jobs_queries.py",
         "tests/test_jobs_recovery.py",
@@ -1243,7 +1244,7 @@
       ]
     }
   },
-  "digest": "sha256:2fdd1e6a4c2622f3cade69e7dabf7a132aad61b40853bd1f0041f4dfadca9122",
+  "digest": "sha256:fb25218e6c7fca33dbc11fa63d44e2439b729b0885a873b1dd6ab8f16a1157b5",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7250,6 +7251,33 @@
       "markers": [],
       "summary": ""
     },
+    "tests/test_jobs_attachments.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api",
+        "src.api.auth",
+        "src.api.dependencies",
+        "src.api.streams",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.client",
+        "src.cli.exceptions",
+        "src.cli.jobs",
+        "src.commands",
+        "src.config",
+        "src.jobs.adapters",
+        "src.jobs.artifacts",
+        "src.jobs.output",
+        "src.jobs.policy"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Retained byte cursors, CLI follow/attach and finite command adapters."
+    },
     "tests/test_jobs_output.py": {
       "areas": [
         "managed-jobs"
@@ -11174,7 +11202,10 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.agent_waits",
         "src.commands",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.config",
         "src.database",
         "src.database.tables",

@@ -21,12 +21,13 @@ def finite_command(command: str | list[str]) -> tuple[str, list[str]]:
         (["python3", "-m", "pytest"], "test"),
         (["ruff", "check"], "lint"),
         (["python", "-m", "ruff", "check"], "lint"),
+        (["python3", "-m", "ruff", "check"], "lint"),
         (["npm", "run", "build"], "build"),
         (["scripts/e2e-smoke.sh"], "e2e"),
     ):
         if argv[:len(prefix)] == prefix:
             args = argv[len(prefix):]
-            if any(a in {";", "&&", "||", "|", "&", ">", "<"} for a in args):
+            if any(a in {";", "&&", "||", "|", "&", ">", ">>", "<"} for a in args):
                 break
             if preset in {"build", "e2e"} and args:
                 break
