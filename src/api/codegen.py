@@ -53,6 +53,15 @@ logger = logging.getLogger(__name__)
 # route is generated, and in ``/api/execute`` (``src/api/execute.py``), which
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
+    # Phase 2 execution substrate; public job/wait adapters land in phase 3.
+    "job_submit",
+    "job_get",
+    "job_list",
+    "job_cancel",
+    "job_result",
+    "job_logs",
+    "job_reconcile",
+
     "load_tools",
     "reply_to_user",
     # Runs an LLM-authored string through /bin/sh on the daemon host

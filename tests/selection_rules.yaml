@@ -67,6 +67,7 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - "scripts/setup-cgroup-delegation.sh"
 
 ownership:                      # path globs -> areas whose modules join M
+  - { paths: ["src/jobs/**", "src/commands/job_commands.py", "src/database/queries/job_queries.py"], areas: ["managed-jobs"] }
   # ---- repository files outside src/
   - { paths: ["AGENTS.md", "CLAUDE.md", "README.md"], areas: ["docs-guards"] }
   - { paths: ["AGENTS.md"], areas: ["dashboard-state"] }

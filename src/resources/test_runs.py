@@ -120,6 +120,8 @@ def holder_identity(
         "test_run_id": test_run_id,
         "cwd": cwd,
     }
+    if env.get("AQ_JOB_ID") and env.get("AQ_JOB_NONCE"):
+        identity.update(job_id=env["AQ_JOB_ID"], job_nonce=env["AQ_JOB_NONCE"])
     token = env.get(_TOKEN_KEY)
     if token:
         identity["session_token_sha"] = _token_digest(token)
@@ -152,6 +154,7 @@ class HeldSlot:
     def to_dict(self) -> dict:
         since = self.holder.get("since")
         return {
+            "job_id": self.holder.get("job_id"),
             "slot": self.slot,
             "state": self.state,
             "reason": self.reason,
@@ -197,6 +200,20 @@ def _session_top(entry: ProcEntry) -> ProcEntry | None:
 
 
 def _classify(path: Path, holder: Mapping) -> tuple[str, str]:
+    if holder.get("job_id") and holder.get("job_nonce"):
+        # The queue owns cleanup. Session orphan reaping must never cancel a
+        # task-owned job when its submitter sleeps or its supervisor dies.
+        for entry in file_holders_sync(path):
+            env = read_environ_sync(entry.pid) or {}
+            if (
+                env.get("AQ_JOB_NONCE") == holder["job_nonce"]
+                and env.get("AQ_JOB_ID") == holder["job_id"]
+            ):
+                return LIVE, f"managed job {holder['job_id']} retains execution capacity"
+        return (
+            UNATTRIBUTED,
+            f"managed job {holder['job_id']}: jobs.cleanup_blocked; queue must reconcile",
+        )
     root = _recorded_root(holder)
     session = holder.get("session_id") or "?"
     if root is not None:

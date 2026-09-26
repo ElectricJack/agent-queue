@@ -32,6 +32,9 @@ but development happens on Windows, so no separator is ever assumed.
 
 from __future__ import annotations
 
+from src.jobs.workspace import guard_workspace
+
+
 import asyncio
 import contextlib
 import json
@@ -522,6 +525,7 @@ class WorktreeSlotManager:
 
     # ─────────────────────────────── per-task ────────────────────────────
 
+    @guard_workspace("slot_ws")
     async def reset_slot_for_task(
         self,
         slot_ws: Workspace,
@@ -668,6 +672,7 @@ class WorktreeSlotManager:
         )
         return branch
 
+    @guard_workspace("slot_ws")
     async def restore_slot_after_task(
         self,
         slot_ws: Workspace,
@@ -1218,6 +1223,7 @@ class WorktreeSlotManager:
 
     # ─────────────────────────────── phase 4 ─────────────────────────────
 
+    @guard_workspace("slot_ws")
     async def reap_slot(
         self,
         slot_ws: Workspace,

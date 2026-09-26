@@ -252,9 +252,43 @@ async def _fix_resources_orphaned_test_runs(ctx: DoctorContext) -> CheckResult:
 # ---------------------------------------------------------------------------
 
 
+async def _check_jobs_cleanup(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None or not hasattr(type(ctx.db), "reconcilable_jobs"):
+        return CheckResult(
+            id="resources.jobs_cleanup",
+            severity=Severity.INFO,
+            detail="managed job persistence unavailable",
+        )
+    rows = await ctx.db.reconcilable_jobs()
+    blocked = [
+        {"job_id": r["id"], "workspace_id": r["workspace_id"], "state": r["state"]}
+        for r in rows
+        if r["cleanup_blocked"]
+    ]
+    return CheckResult(
+        id="resources.jobs_cleanup",
+        severity=Severity.WARN if blocked else Severity.OK,
+        detail=f"{len(blocked)} job(s) retain workspace pins pending verified cleanup",
+        data={"blocked": blocked},
+    )
+
+
+async def _fix_jobs_cleanup(ctx: DoctorContext) -> CheckResult:
+    if ctx.handler is not None:
+        await ctx.handler._cmd_job_reconcile({})
+    return await _check_jobs_cleanup(ctx)
+
+
 def resource_checks() -> list[DoctorCheck]:
     """Every ``resources.*`` check."""
     return [
+        DoctorCheck(
+            id="resources.jobs_cleanup",
+            run=_check_jobs_cleanup,
+            fix=_fix_jobs_cleanup,
+            owner=OWNER,
+            timeout_s=30.0,
+        ),
         DoctorCheck(id="resources.load", run=_check_resources_load, owner=OWNER, timeout_s=10.0),
         DoctorCheck(
             id="resources.test_pressure",

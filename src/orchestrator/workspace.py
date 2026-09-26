@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from src.jobs.workspace import guard_workspace
+
+
 import logging
 import os
 import time
@@ -690,6 +693,7 @@ class WorkspaceMixin:
             raise GitError("repair branch no longer descends from its frozen starting commit")
         return head
 
+    @guard_workspace("attachment")
     async def _prepare_exact_origin_workspace(
         self,
         task: Task,
@@ -2006,6 +2010,7 @@ class WorkspaceMixin:
             workspace_id=workspace_id,
         )
 
+    @guard_workspace("ws")
     async def _cleanup_worktree_workspace(self, ws: Workspace) -> None:
         """Remove a *legacy* git worktree and delete its workspace record.
 
@@ -2261,6 +2266,7 @@ class WorkspaceMixin:
                 return ws
         return None
 
+    @guard_workspace("workspace")
     async def _cleanup_workspace_for_next_task(
         self,
         workspace: str | None,

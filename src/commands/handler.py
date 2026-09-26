@@ -40,6 +40,7 @@ from src.orchestrator import Orchestrator
 from src.logging_config import CorrelationContext
 
 # Mixin imports — each provides one domain of _cmd_* methods
+from src.commands.job_commands import JobCommandsMixin
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.system_commands import SystemCommandsMixin
@@ -333,6 +334,7 @@ def _is_memory_command(name: str) -> bool:
 
 
 class CommandHandler(
+    JobCommandsMixin,
     ClaimCommandsMixin,
     QuestionCommandsMixin,
     SystemCommandsMixin,
