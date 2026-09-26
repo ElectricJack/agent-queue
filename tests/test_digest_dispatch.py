@@ -372,7 +372,7 @@ async def test_the_report_brief_carries_the_resolved_dashboard_link(db):
     brief = request["brief"]
     assert brief["dashboard_url"] == "https://queue.ts.example"
     assert [fact["source_url"] for fact in brief["facts"]] == [
-        "https://queue.ts.example/tasks/t1"
+        "https://queue.ts.example/focus/tasks/t1"
     ]
 
 
