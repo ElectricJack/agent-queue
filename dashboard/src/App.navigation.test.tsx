@@ -30,6 +30,7 @@ vi.mock("./api/hooks", () => ({
   usePauseProject: () => ({ mutate: actions.pause, isPending: false }),
   useResumeProject: () => ({ mutate: actions.resume, isPending: false }),
   useDeleteProject: () => ({ mutateAsync: actions.remove, isPending: false }),
+  useTask: (id: string) => ({ data: { id, title: `Task ${id}` }, isError: false, refetch: vi.fn() }),
 }));
 vi.mock("./api/reviews", () => ({ useWaitingReviewCount: () => 0 }));
 vi.mock("./ws/useEventStream", () => ({ useEventStream: () => {}, useRawEventSubscription: () => {} }));
@@ -78,6 +79,7 @@ vi.mock("./pages/reviews/ReviewsInbox", () => ({ default: () => <h1>Reviews inbo
 vi.mock("./pages/focus/ActiveSessions", () => ({ default: () => null }));
 vi.mock("./pages/metrics/ProviderUsage", () => ({ default: () => null }));
 vi.mock("./pages/focus/FocusTaskList", () => ({ default: () => null }));
+vi.mock("./panes/task-detail/TaskDetailBody", () => ({ default: () => <p>Task detail body</p> }));
 
 function WorkspaceProbe({ title }: { title: string }) {
   const { projectId } = useParams();
