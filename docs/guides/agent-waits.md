@@ -50,11 +50,40 @@ daemon's observation time for the lease consumers' fresh consumption baseline.
 The shared query `blocking_wait_for(session, claim_epoch, now)` verifies the live
 claim, bounded deadline and producer, without writing fabricated activity.
 
-This first implementation supplies the persistence, commands, result messages
-and shared lease decision. Wiring all inactivity/claim consumers and rendering
-the `wait_result` nudge as `aq wait show` is the second implementation task. Until
-that wiring lands, registration alone does not suspend existing stall handling.
-Do not rely on live-idle dormancy before the second task is delivered.
+An active current-claim wait suspends the stall ladder and stuck-timeout
+backstop. Preparation expiry, orphan recovery and timeout-driven pool cleanup
+consult the same fenced decision. Waiting keeps a pool worker busy, so sizing
+does not release its seat or workspace. Process death, claim turnover and
+operator stops still follow normal recovery.
+
+Completion, expiry and cancellation reset the stall counters and grant one
+normal lease interval to consume the result. The durable `wait_resumed_at`
+timestamp also advances the task-lifecycle age backstop; terminal output does
+not extend that age baseline. Result nudges and the next prime point to
+`aq wait show WAIT_ID --json`. Busy sessions queue the result; absent task
+sessions receive it on their next legitimate launch. Named supervisors use
+their existing wake path. A manual pause never automatically resumes.
+
+`agents.stuck_timeout_seconds` defaults to disabled (`0`) both with and without
+an `agents:` configuration section. Explicit configured limits still apply.
+
+## Opt-in live harness check
+
+The regular reconciler and delivery tests use a fake terminal and disposable
+PostgreSQL. To measure idle behavior with installed harness credentials, run
+the paid probe on an isolated tmux socket:
+
+```bash
+AQ_WAIT_REAL_HARNESS=codex aq test -m tmux -p no:xdist \
+  tests/test_session_reconciler.py::test_opt_in_real_harness_wait_idle
+```
+
+Use `claude` instead of `codex` to check that harness. Set `POSTGRES_TEST_DSN`
+to the disposable test service first. The probe observes actual transcripts
+over two shortened lease intervals, checks for no new turns, tools or usage,
+then confirms a result pointer reaches the harness. It cleans up its session
+and socket and never contacts the operator daemon. Without the environment
+opt-in it skips; a skip is not evidence of real-harness idle behavior.
 
 ## Installation and rollback
 

@@ -804,6 +804,8 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq memory save": "memory_save",
     "aq memory search": "memory_search",
     "aq project ready": "project_ready",
+    "aq wait register": "wait_register",
+    "aq wait show": "wait_get",
 }
 
 
@@ -970,3 +972,21 @@ class TestWakeBudget:
         assert "Stale handoff files/checkout" in sections["messages"]
         assert "Inspect current checkout" in sections["messages"]
         assert len(sections["messages"].encode("utf-8")) <= HANDOFF_BYTES + 2048 + 4
+
+
+async def test_late_wait_result_reaches_next_prime_with_granted_pointer(db, config, task, monkeypatch):
+    from src.prime.sections import build_messages_section
+
+    wait_id = "36ec6080-a9df-4a3e-b752-08930702d558"
+    monkeypatch.setattr("src.database.queries.message_queries._new_message_id",
+                        lambda: f"wait:{wait_id}:result")
+    msg = await db.create_message(
+        project_id="proj-1", from_kind="system", from_id="agent-waits",
+        to_kind="task", to_id=task.id, body_kind="wait_result",
+        body=json.dumps({"wait_id": wait_id, "state": "cancelled", "digest": {"reason": "claim_ended"}}),
+    )
+    section = await build_messages_section(db, task.id, config=config, mark_delivered=True)
+    assert f"aq wait show {wait_id} --json" in section.body
+    assert "claim_ended" in section.body
+    assert (await db.get_message(msg.id)).via == "prime"
+    assert (await build_messages_section(db, task.id, config=config)).body == ""

@@ -99,7 +99,7 @@
       "default": {
         "graceful_shutdown_timeout_seconds": 30,
         "heartbeat_interval_seconds": 30,
-        "stuck_timeout_seconds": 1800
+        "stuck_timeout_seconds": 0
       },
       "properties": {
         "graceful_shutdown_timeout_seconds": {
@@ -111,7 +111,7 @@
           "type": "integer"
         },
         "stuck_timeout_seconds": {
-          "default": 1800,
+          "default": 0,
           "type": "integer"
         }
       },
@@ -1975,6 +1975,74 @@
       "type": "object",
       "x-reload": "hot"
     },
+    "reports": {
+      "additionalProperties": false,
+      "default": {
+        "hourly": {
+          "enabled": false,
+          "full_fleet_visibility": false,
+          "grace_minutes": 5,
+          "max_requests_per_day": 12,
+          "quiet_hours": null
+        },
+        "timezone": "UTC"
+      },
+      "properties": {
+        "hourly": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false,
+            "full_fleet_visibility": false,
+            "grace_minutes": 5,
+            "max_requests_per_day": 12,
+            "quiet_hours": null
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "full_fleet_visibility": {
+              "default": false,
+              "type": "boolean"
+            },
+            "grace_minutes": {
+              "default": 5,
+              "type": "integer"
+            },
+            "max_requests_per_day": {
+              "default": 12,
+              "type": "integer"
+            },
+            "quiet_hours": {
+              "additionalProperties": false,
+              "default": null,
+              "properties": {
+                "end": {
+                  "default": "",
+                  "type": "string"
+                },
+                "start": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "timezone": {
+          "default": "UTC",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "restart"
+    },
     "resources": {
       "additionalProperties": false,
       "default": {
@@ -2560,6 +2628,7 @@
       "messaging_platform",
       "playbooks",
       "profile",
+      "reports",
       "security",
       "sessions",
       "streams",

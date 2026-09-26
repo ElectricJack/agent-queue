@@ -7093,6 +7093,6 @@ _ALL_TOOL_DEFINITIONS.extend([
 # Internal scan remains excluded from MCP/API; the daemon supplies its clock.
 _FALLBACK_INPUT_SCHEMAS["reconcile_agent_waits"] = {
     "type": "object",
-    "properties": {"now": {"type": "number"}},
+    "properties": {"now": {"type": "number"}, "wait_id": {"type": ["string", "null"]}},
     "additionalProperties": False,
 }

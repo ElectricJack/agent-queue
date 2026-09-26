@@ -195,7 +195,7 @@ class MessageDeliveryEngine:
         for msg in candidates:
             # Internal question handoffs use explicit question commands;
             # never fabricate a user reply from the supervisor's transcript.
-            if msg.body_kind in {"agent_question", "task_recovery"}:
+            if msg.body_kind in {"agent_question", "task_recovery", "wait_result"}:
                 continue
             if msg.delivered_at is None or msg.delivered_at > cutoff:
                 continue
@@ -391,4 +391,9 @@ def _render_nudge(batch: list[Message]) -> str:
         # Task comments are operational guidance, so the worker must see the
         # bounded body and metadata without issuing a second inbox command.
         return batch[0].body
+    if batch[0].body_kind == "wait_result":
+        # The durable message identity is also the wait pointer. Worker
+        # grants include wait_get; no generic message command is needed.
+        wait_id = batch[0].id.removeprefix("wait:").removesuffix(":result")
+        return f"Handle `aq wait show {shlex.quote(wait_id)} --json`."
     return f"Handle `aq message status {shlex.quote(batch[0].id)} --json`."
