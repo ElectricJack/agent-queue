@@ -1088,6 +1088,7 @@
       "description": "Smart test selection: test module discovery, the generated selection catalogue, the reviewed area, mandatory-rule and omission-policy artifacts and the selection library built on them.",
       "modules": [
         "tests/test_selection_catalogue.py",
+        "tests/test_selection_commands.py",
         "tests/test_selection_mandatory.py",
         "tests/test_selection_policy.py",
         "tests/test_selection_queries.py",
@@ -1245,7 +1246,7 @@
       ]
     }
   },
-  "digest": "sha256:ecb0d7dda2ccdd487e25aa3346d24c3b4e0219dfec90eedce494cb1fec0c68e3",
+  "digest": "sha256:8c48c719224b74ae6ba4379f177e70d0eaf5cc36131e0d7ba7a4563115a44f73",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10882,6 +10883,31 @@
         "parametrize"
       ],
       "summary": "The smart-test-selection artifacts: areas, generated catalogue, rules and policy."
+    },
+    "tests/test_selection_commands.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api",
+        "src.api.app",
+        "src.api.dependencies",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
+        "src.commands.contracts.test_selection",
+        "src.commands.principal",
+        "src.git.manager",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.test_selection.service",
+        "src.test_selection.static_impact"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Claim and operator boundaries for explicit test selection, without live Jev."
     },
     "tests/test_selection_mandatory.py": {
       "areas": [

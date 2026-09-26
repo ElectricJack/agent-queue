@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-112 commands are registered.
+120 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -165,6 +165,14 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`supervisor_inbox_status`](supervisor_inbox_status.md) | Supervisor Inbox Status | Read installation-wide conversation preconditions, limits, counts and intake health. |
 | [`task_failure_triage_notify`](task_failure_triage_notify.md) | Wake supervisor failure triage | Record or reuse the durable incident for a terminal task failure and queue its single supervisor triage notice; replayed failures reuse the same incident. |
 | [`task_handoff`](task_handoff.md) | Record a task handoff | Store bounded agent assertions with current daemon facts. Auto is note-only; non-auto records a restart request, without performing a restart. |
+| [`test_select`](test_select.md) | Test Select | Record a scoped smart test selection proposal. |
+| [`test_selection_list`](test_selection_list.md) | Test Selection List | List recorded selections in one project. |
+| [`test_selection_observe`](test_selection_observe.md) | Test Selection Observe | Append execution evidence to a visible selection. |
+| [`test_selection_policy_show`](test_selection_policy_show.md) | Test Selection Policy Show | Read selection settings, active promotion and latest digests. |
+| [`test_selection_promote`](test_selection_promote.md) | Test Selection Promote | Locally promote an evaluated omission-policy identity. |
+| [`test_selection_recheck`](test_selection_recheck.md) | Test Selection Recheck | Check whether a recorded selection snapshot is stale. |
+| [`test_selection_revoke`](test_selection_revoke.md) | Test Selection Revoke | Locally revoke an omission-policy promotion once. |
+| [`test_selection_show`](test_selection_show.md) | Test Selection Show | Read a selection and its appended observations. |
 | [`wait_cancel`](wait_cancel.md) | Wait Cancel | Cancel a current-claim wait and queue its result. |
 | [`wait_get`](wait_get.md) | Wait Get | Read a durable wait and its bounded result pointer. |
 | [`wait_list`](wait_list.md) | Wait List | List wait history for the current task or supervisor project. |

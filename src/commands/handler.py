@@ -85,6 +85,7 @@ from src.commands.worktree_commands import WorktreeCommandsMixin
 from src.commands.git_commands import GitCommandsMixin
 from src.commands.ci_commands import CiCommandsMixin
 from src.commands.provider_commands import ProviderCommandsMixin
+from src.commands.test_selection_commands import TestSelectionCommandsMixin
 from src.commands.digest_commands import DigestCommandsMixin
 from src.commands.report_commands import ReportCommandsMixin
 from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
@@ -373,6 +374,7 @@ class CommandHandler(
     ProviderCommandsMixin,
     DashboardStateCommandsMixin,
     DigestCommandsMixin,
+    TestSelectionCommandsMixin,
     ReportCommandsMixin,
     WaitCommandsMixin,
     EscalationCommandsMixin,

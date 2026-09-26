@@ -71,12 +71,14 @@ def _category_modules() -> tuple[object, ...]:
         session,
         supervisor_inbox,
         system,
+        test_selection,
         task,
         wait,
         job,
     )
 
     return (
+        test_selection,
         task,
         project,
         project_onboarding,

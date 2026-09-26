@@ -32,6 +32,10 @@ from src.tools import (
 # CommandHandler commands covered by hand-crafted CLI commands.
 # Auto-generation skips these to avoid duplicates.
 HANDCRAFTED_COVERAGE = {
+    # test_runner.py — internal commands of the claim-aware smart runner.
+    "test_select",
+    "test_selection_recheck",
+    "test_selection_observe",
     # app.py
     "get_status",
     # tasks.py — interactive commands only (wizard, search, select, confirmations)
@@ -200,6 +204,7 @@ CATEGORY_CLI_NAMES: dict[str, str] = {
     "pool": "pool",
     "provider": "provider",
     "formula": "formula",
+    "test_selection": "test-selection",
 }
 
 # Human-readable group descriptions for newly created groups.
@@ -221,6 +226,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "pool": "Worker pool sizing — status and scale.",
     "provider": "Provider availability — status, history, recheck and overrides.",
     "formula": "Reusable task-graph templates — list, resolve, and cook.",
+    "test-selection": "Smart test selection — records, policy and promotion.",
 }
 
 

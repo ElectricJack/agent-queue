@@ -78,6 +78,8 @@ class EffectSubject(StrEnum):
     DELIVERY_EVIDENCE = "delivery_evidence"
     MESSAGE = "message"
     PROVIDER_USAGE = "provider_usage"
+    TEST_SELECTION = "test_selection"
+    TEST_SELECTION_PROMOTION = "test_selection_promotion"
     ESCALATION = "escalation"
     ESCALATION_REPLY = "escalation_reply"
     ESCALATION_ACTION = "escalation_action"

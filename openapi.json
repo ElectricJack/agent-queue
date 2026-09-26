@@ -16377,6 +16377,382 @@
         }
       }
     },
+    "/api/test_selection/test-select": {
+      "post": {
+        "tags": [
+          "test_selection"
+        ],
+        "summary": "Record a scoped smart test selection proposal.",
+        "description": "Record a scoped smart test selection proposal.",
+        "operationId": "test_select",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestSelectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSelectResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test_selection/list": {
+      "post": {
+        "tags": [
+          "test_selection"
+        ],
+        "summary": "List recorded selections in one project.",
+        "description": "List recorded selections in one project.",
+        "operationId": "test_selection_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestSelectionListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSelectionListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test_selection/observe": {
+      "post": {
+        "tags": [
+          "test_selection"
+        ],
+        "summary": "Append execution evidence to a visible selection.",
+        "description": "Append execution evidence to a visible selection.",
+        "operationId": "test_selection_observe",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestSelectionObserveRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSelectionObserveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test_selection/policy-show": {
+      "post": {
+        "tags": [
+          "test_selection"
+        ],
+        "summary": "Read selection settings, active promotion and latest digests.",
+        "description": "Read selection settings, active promotion and latest digests.",
+        "operationId": "test_selection_policy_show",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestSelectionPolicyShowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSelectionPolicyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test_selection/promote": {
+      "post": {
+        "tags": [
+          "test_selection"
+        ],
+        "summary": "Locally promote an evaluated omission-policy identity.",
+        "description": "Locally promote an evaluated omission-policy identity.",
+        "operationId": "test_selection_promote",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestSelectionPromoteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSelectionPromoteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test_selection/recheck": {
+      "post": {
+        "tags": [
+          "test_selection"
+        ],
+        "summary": "Check whether a recorded selection snapshot is stale.",
+        "description": "Check whether a recorded selection snapshot is stale.",
+        "operationId": "test_selection_recheck",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestSelectionRecheckRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSelectionRecheckResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test_selection/revoke": {
+      "post": {
+        "tags": [
+          "test_selection"
+        ],
+        "summary": "Locally revoke an omission-policy promotion once.",
+        "description": "Locally revoke an omission-policy promotion once.",
+        "operationId": "test_selection_revoke",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestSelectionRevokeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSelectionRevokeResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/test_selection/show": {
+      "post": {
+        "tags": [
+          "test_selection"
+        ],
+        "summary": "Read a selection and its appended observations.",
+        "description": "Read a selection and its appended observations.",
+        "operationId": "test_selection_show",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestSelectionShowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestSelectionShowResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/wait/cancel": {
       "post": {
         "tags": [
@@ -54959,6 +55335,647 @@
           "settled"
         ],
         "title": "TaskSubtasksResponse"
+      },
+      "TestSelectRequest": {
+        "properties": {
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode",
+            "description": "",
+            "default": "shadow"
+          },
+          "base_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Ref",
+            "description": ""
+          },
+          "targets": {
+            "items": {},
+            "type": "array",
+            "title": "Targets",
+            "description": "",
+            "default": []
+          },
+          "narrowing_flags": {
+            "items": {},
+            "type": "array",
+            "title": "Narrowing Flags",
+            "description": "",
+            "default": []
+          },
+          "jev": {
+            "type": "boolean",
+            "title": "Jev",
+            "description": "",
+            "default": true
+          },
+          "marker_policy": {
+            "type": "string",
+            "title": "Marker Policy",
+            "description": "",
+            "default": "default"
+          },
+          "acceptance_commands": {
+            "items": {},
+            "type": "array",
+            "title": "Acceptance Commands",
+            "description": "",
+            "default": []
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "TestSelectRequest"
+      },
+      "TestSelectResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "selection_id": {
+            "type": "string",
+            "title": "Selection Id"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "recorded": {
+            "type": "boolean",
+            "title": "Recorded"
+          },
+          "full_required": {
+            "type": "boolean",
+            "title": "Full Required"
+          },
+          "full_suite_authorized": {
+            "type": "boolean",
+            "title": "Full Suite Authorized"
+          },
+          "final_modules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Final Modules"
+          },
+          "ordered": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Ordered"
+          },
+          "fallback_modules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Fallback Modules"
+          },
+          "mandatory_modules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Mandatory Modules"
+          },
+          "static_modules": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Static Modules"
+          },
+          "jev_modules": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Jev Modules"
+          },
+          "jev_status": {
+            "type": "string",
+            "title": "Jev Status"
+          },
+          "fallback_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Reason"
+          },
+          "jev_used_for_omission": {
+            "type": "boolean",
+            "title": "Jev Used For Omission"
+          },
+          "reasons": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Reasons"
+          },
+          "argv": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Argv"
+          },
+          "pending_obligations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Pending Obligations"
+          },
+          "record": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Record"
+          }
+        },
+        "type": "object",
+        "required": [
+          "selection_id",
+          "mode",
+          "recorded",
+          "full_required",
+          "full_suite_authorized",
+          "final_modules",
+          "ordered",
+          "fallback_modules",
+          "mandatory_modules",
+          "static_modules",
+          "jev_modules",
+          "jev_status",
+          "fallback_reason",
+          "jev_used_for_omission",
+          "reasons",
+          "argv",
+          "pending_obligations",
+          "record"
+        ],
+        "title": "TestSelectResponse"
+      },
+      "TestSelectionListRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "description": "",
+            "default": 50
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "TestSelectionListRequest"
+      },
+      "TestSelectionListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "selections": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Selections"
+          }
+        },
+        "type": "object",
+        "required": [
+          "selections"
+        ],
+        "title": "TestSelectionListResponse"
+      },
+      "TestSelectionObserveRequest": {
+        "properties": {
+          "selection_id": {
+            "type": "string",
+            "title": "Selection Id",
+            "description": ""
+          },
+          "exit_code": {
+            "type": "integer",
+            "title": "Exit Code",
+            "description": ""
+          },
+          "duration_ms": {
+            "type": "integer",
+            "title": "Duration Ms",
+            "description": ""
+          },
+          "executed_modules": {
+            "items": {},
+            "type": "array",
+            "title": "Executed Modules",
+            "description": ""
+          },
+          "failed_node_ids": {
+            "items": {},
+            "type": "array",
+            "title": "Failed Node Ids",
+            "description": "",
+            "default": []
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload",
+            "description": "",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "selection_id",
+          "exit_code",
+          "duration_ms",
+          "executed_modules"
+        ],
+        "title": "TestSelectionObserveRequest"
+      },
+      "TestSelectionObserveResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "observation_id": {
+            "type": "string",
+            "title": "Observation Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "observation_id"
+        ],
+        "title": "TestSelectionObserveResponse"
+      },
+      "TestSelectionPolicyResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config"
+          },
+          "promotion": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Promotion"
+          },
+          "latest_digests": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Digests"
+          }
+        },
+        "type": "object",
+        "required": [
+          "config",
+          "promotion",
+          "latest_digests"
+        ],
+        "title": "TestSelectionPolicyResponse"
+      },
+      "TestSelectionPolicyShowRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "TestSelectionPolicyShowRequest"
+      },
+      "TestSelectionPromoteRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "description": ""
+          },
+          "question_schema_version": {
+            "type": "integer",
+            "title": "Question Schema Version",
+            "description": ""
+          },
+          "catalogue_digest": {
+            "type": "string",
+            "title": "Catalogue Digest",
+            "description": ""
+          },
+          "rules_digest": {
+            "type": "string",
+            "title": "Rules Digest",
+            "description": ""
+          },
+          "policy_digest": {
+            "type": "string",
+            "title": "Policy Digest",
+            "description": ""
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Evidence",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "model",
+          "question_schema_version",
+          "catalogue_digest",
+          "rules_digest",
+          "policy_digest",
+          "evidence"
+        ],
+        "title": "TestSelectionPromoteRequest"
+      },
+      "TestSelectionPromoteResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "promotion": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Promotion"
+          }
+        },
+        "type": "object",
+        "required": [
+          "promotion"
+        ],
+        "title": "TestSelectionPromoteResponse"
+      },
+      "TestSelectionRecheckRequest": {
+        "properties": {
+          "selection_id": {
+            "type": "string",
+            "title": "Selection Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "selection_id"
+        ],
+        "title": "TestSelectionRecheckRequest"
+      },
+      "TestSelectionRecheckResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale"
+          },
+          "fingerprint": {
+            "type": "string",
+            "title": "Fingerprint"
+          },
+          "recorded_fingerprint": {
+            "type": "string",
+            "title": "Recorded Fingerprint"
+          }
+        },
+        "type": "object",
+        "required": [
+          "stale",
+          "fingerprint",
+          "recorded_fingerprint"
+        ],
+        "title": "TestSelectionRecheckResponse"
+      },
+      "TestSelectionRevokeRequest": {
+        "properties": {
+          "promotion_id": {
+            "type": "string",
+            "title": "Promotion Id",
+            "description": ""
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "promotion_id",
+          "reason"
+        ],
+        "title": "TestSelectionRevokeRequest"
+      },
+      "TestSelectionRevokeResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "revoked": {
+            "type": "boolean",
+            "title": "Revoked"
+          }
+        },
+        "type": "object",
+        "required": [
+          "revoked"
+        ],
+        "title": "TestSelectionRevokeResponse"
+      },
+      "TestSelectionShowRequest": {
+        "properties": {
+          "selection_id": {
+            "type": "string",
+            "title": "Selection Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "selection_id"
+        ],
+        "title": "TestSelectionShowRequest"
+      },
+      "TestSelectionShowResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "selection": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Selection"
+          },
+          "observations": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Observations"
+          }
+        },
+        "type": "object",
+        "required": [
+          "selection",
+          "observations"
+        ],
+        "title": "TestSelectionShowResponse"
       },
       "TestSlotsPerf": {
         "properties": {

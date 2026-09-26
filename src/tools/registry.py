@@ -154,6 +154,9 @@ CATEGORIES: dict[str, CategoryMeta] = {
         name="github_issue",
         description="Repository-bound GitHub issue triage and reviewed fixes",
     ),
+    "test_selection": CategoryMeta(
+        name="test_selection", description="Smart test selection — records, policy and promotion",
+    ),
     "digest": CategoryMeta(
         name="digest",
         description=(
