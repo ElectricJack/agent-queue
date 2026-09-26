@@ -1092,6 +1092,7 @@
         "tests/test_selection_policy.py",
         "tests/test_selection_queries.py",
         "tests/test_selection_questions.py",
+        "tests/test_selection_service.py",
         "tests/test_selection_snapshot.py",
         "tests/test_selection_static_impact.py",
         "tests/test_selection_testmon_experiment.py",
@@ -1244,7 +1245,7 @@
       ]
     }
   },
-  "digest": "sha256:fb25218e6c7fca33dbc11fa63d44e2439b729b0885a873b1dd6ab8f16a1157b5",
+  "digest": "sha256:ecb0d7dda2ccdd487e25aa3346d24c3b4e0219dfec90eedce494cb1fec0c68e3",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10948,6 +10949,26 @@
       ],
       "markers": [],
       "summary": "Pure evidence and request-packing checks for smart test selection."
+    },
+    "tests/test_selection_service.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database",
+        "src.git.manager",
+        "src.models",
+        "src.test_selection.catalogue",
+        "src.test_selection.service",
+        "src.test_selection.static_impact",
+        "src.test_selection.typesafe"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Selection orchestration with real git/PostgreSQL and an offline Jev transport."
     },
     "tests/test_selection_snapshot.py": {
       "areas": [

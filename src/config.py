@@ -2379,6 +2379,57 @@ class JobsConfig:
 
 
 @dataclass
+class TestSelectionConfig:
+    """Smart test selection; selection, network access and enforcement ship off."""
+
+    enabled: bool = False
+    jev_enabled: bool = False
+    enforce_enabled: bool = False
+    model: str = "jev-1.13.0"
+    api_key_env: str = "TYPESAFE_API_KEY"
+    base_url: str | None = None
+    rpc_deadline_seconds: float = 2.0
+    max_requests: int = 4
+    request_concurrency: int = 2
+    max_total_tokens: int = 64000
+    max_state_plus_question_tokens: int = 32000
+    excerpt_lines: int = 40
+    static_timeout_seconds: float = 60.0
+    default_base_ref: str | None = None
+    retention_days: int = 90
+    cache_entries: int = 256
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        for key in ("enabled", "jev_enabled", "enforce_enabled"):
+            if not isinstance(getattr(self, key), bool):
+                errors.append(ConfigError("test_selection", key, "must be a boolean"))
+        for key in ("max_requests", "request_concurrency", "max_total_tokens",
+                    "max_state_plus_question_tokens", "excerpt_lines", "retention_days",
+                    "cache_entries"):
+            value = getattr(self, key)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                errors.append(ConfigError("test_selection", key, "must be a positive integer"))
+        for key in ("rpc_deadline_seconds", "static_timeout_seconds"):
+            value = getattr(self, key)
+            if (isinstance(value, bool) or not isinstance(value, int | float)
+                    or not math.isfinite(value) or value <= 0):
+                errors.append(ConfigError("test_selection", key, "must be finite and positive"))
+        if not isinstance(self.model, str) or not self.model.strip():
+            errors.append(ConfigError("test_selection", "model", "must be non-empty"))
+        if (not isinstance(self.api_key_env, str) or len(self.api_key_env) > 64
+                or not re.fullmatch(r"[A-Z][A-Z0-9_]*", self.api_key_env)):
+            errors.append(ConfigError(
+                "test_selection", "api_key_env", "name the variable, not the key (A-Z, 0-9, _)"
+            ))
+        for key in ("base_url", "default_base_ref"):
+            value = getattr(self, key)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                errors.append(ConfigError("test_selection", key, "must be non-empty or null"))
+        return errors
+
+
+@dataclass
 class ResourcesConfig:
     """Resource gating so N concurrent agents cannot saturate one box.
 
@@ -3244,6 +3295,7 @@ class AppConfig:
     integration: IntegrationConfig = field(default_factory=IntegrationConfig)
     swarm: SwarmConfig = field(default_factory=SwarmConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
+    test_selection: TestSelectionConfig = field(default_factory=TestSelectionConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     provider_failover: ProviderFailoverConfig = field(default_factory=ProviderFailoverConfig)
@@ -3463,6 +3515,7 @@ class AppConfig:
         errors.extend(self.integration.validate())
         errors.extend(self.swarm.validate())
         errors.extend(self.resources.validate())
+        errors.extend(self.test_selection.validate())
         errors.extend(self.metrics.validate())
         errors.extend(self.providers.validate())
         errors.extend(self.provider_failover.validate())
@@ -3579,6 +3632,7 @@ class AppConfig:
         updated.work_graph = fresh.work_graph
         updated.swarm = fresh.swarm
         updated.resources = fresh.resources
+        updated.test_selection = fresh.test_selection
         updated.pricing = fresh.pricing
         updated.surface = fresh.surface
         updated.providers = fresh.providers
@@ -3621,6 +3675,7 @@ HOT_RELOADABLE_SECTIONS = {
     "work_graph",
     "swarm",
     "resources",
+    "test_selection",  # read per test_select call
     "metrics",
     # Both consumers read it per use -- the API resolves the staleness horizon
     # on each request, the probe resolves its binary on each run -- so an edit
@@ -4680,6 +4735,11 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             max_pytest_processes=int(res.get("max_pytest_processes", 24)),
             cgroups=cgroups,
             jobs=JobsConfig(**_dataclass_kwargs(JobsConfig, res.get("jobs"))),
+        )
+
+    if "test_selection" in raw:
+        config.test_selection = TestSelectionConfig(
+            **_dataclass_kwargs(TestSelectionConfig, raw["test_selection"])
         )
 
     if "metrics" in raw:
