@@ -84,6 +84,7 @@ what stops a process that ignores them.
 
 | Script | Purpose | Inputs | Side effects |
 |---|---|---|---|
+| [`merge_test_durations.py`](../../scripts/merge_test_durations.py) | Refresh the default CI shard timing map from all eight downloaded artifacts of one successful run attempt. | Artifact directory, optional `--shards` and `--output`. | Rewrites `.test_durations` after validating complete, disjoint shard data. See [CI timings](ci.md#default-shard-timings-and-refresh). |
 | [`check-outdated-deps.py`](../../scripts/check-outdated-deps.py) | `pip list --outdated` that survives system packages with non-PEP-440 versions (Ubuntu's `distro-info` and friends), which otherwise crash it. | `--json`. | None. Exits 0 even when packages are outdated; 1 only if pip itself fails. |
 | [`check-merge-conflicts.sh`](../../scripts/check-merge-conflicts.sh) | Report, as JSON, which task branches no longer merge cleanly into `origin/main`. | `<repo-path>`. | Runs `git fetch origin --prune`. Exit 0 = clean, 1 = conflicts, 2 = no `origin/main`. |
 | [`inflate_llm_logs.py`](../../scripts/inflate_llm_logs.py) | Turn JSONL LLM logs into a browsable folder of per-turn markdown. | A date, or `--all`; defaults to today. | Writes under `~/.agent-queue/logs/llm/<date>/inflated/`. |
