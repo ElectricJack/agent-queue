@@ -5,6 +5,7 @@ import { useChatTranscript } from "./useChatTranscript";
 import InlineEventCard from "./InlineEventCard";
 import ThinkingBubble from "./ThinkingBubble";
 import type { PendingMessage } from "./useChatTranscript";
+import { senderLabel } from "./senderLabel";
 
 function fmt(ts: number | null | undefined): string {
   if (!ts) return "";
@@ -12,7 +13,7 @@ function fmt(ts: number | null | undefined): string {
 }
 
 function Bubble({ msg }: { msg: PendingMessage }) {
-  const mine = msg.from_kind === "user";
+  const mine = msg.from_kind === "user" && msg.from_id === "dashboard";
   return (
     <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
       <div
@@ -25,7 +26,7 @@ function Bubble({ msg }: { msg: PendingMessage }) {
         } ${msg.pending ? "opacity-60" : ""}`}
       >
         <div className="mb-1 flex items-center gap-2 text-xs text-gray-400">
-          <span className="font-mono">{`${msg.from_kind}:${msg.from_id}`}</span>
+          <span>{senderLabel(msg)}</span>
           <span>{fmt(msg.created_at)}</span>
           {msg.pending && <span className="text-gray-500">sending…</span>}
           {msg.failed && <span className="text-red-400">failed</span>}
@@ -64,7 +65,7 @@ export default function ChatConversation(props: Props = {}) {
   };
 
   return (
-    <div className="flex h-[calc(100vh-8rem)] flex-col space-y-3 md:h-[calc(100vh-4rem)]">
+    <div className="flex min-h-0 flex-1 flex-col space-y-3">
       <header className="hidden md:block">
         <h2 className="text-lg font-semibold">
           {props.headerText ?? "Chat with supervisor"}
