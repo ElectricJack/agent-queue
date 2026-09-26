@@ -15,10 +15,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from sqlalchemy import (
-    Float,
     and_,
     case,
-    cast,
     delete,
     exists,
     false,
@@ -351,8 +349,12 @@ def _reserved_verifier_branch(repository_id: str | None = None):
 
 def integration_rework_cutoff(task_id):
     """The only task timestamp that invalidates an earlier delivery receipt."""
+    # Claim queries import the hierarchy predicates, so defer this import
+    # until the predicate is built rather than creating a module cycle.
+    from src.database.queries.claim_queries import numeric_meta_value
+
     return (
-        select(cast(task_metadata.c.value, Float))
+        select(numeric_meta_value(task_metadata.c.value))
         .where(
             task_metadata.c.task_id == task_id,
             task_metadata.c.key == INTEGRATION_REWORK_AT_KEY,

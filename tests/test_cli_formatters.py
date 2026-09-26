@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 
+import pytest
 from rich.console import Console
 
 
@@ -172,11 +173,13 @@ def test_recent_activity_renders_an_empty_window_without_a_model_table():
     assert "By model" not in out
 
 
-def test_pool_table_summarises_placement_and_keeps_the_quarantine_reason():
+@pytest.mark.parametrize("service_tier", [None, "default", "fast"])
+def test_pool_table_summarises_placement_and_keeps_the_quarantine_reason(service_tier):
     """§6.2: one line per pool, plus the reason a project stopped growing."""
     out = _render("pool_status", {"pools": [
         {
-            "profile_id": "worker-standard-medium-claude",
+            "profile_id": "worker-standard-medium-codex",
+            "service_tier": service_tier,
             "min_active": 2, "max_active": 8, "min_per_project": 1,
             "desired": 3, "running_idle": 2, "running_busy": 1,
             "starting": 0, "draining": 0, "ready": 4,
@@ -191,6 +194,9 @@ def test_pool_table_summarises_placement_and_keeps_the_quarantine_reason():
     ]})
     # The project is no longer a column, and placement is summarised inline.
     assert "web:2i/1b" in out and "api:1i" in out and "svc:0" in out
+    assert "Codex tier" in out
+    if service_tier is not None:
+        assert service_tier in out
     # A bare deadline is useless to an operator, so the reason travels with it.
     assert "quarantined until" in out
     assert "startup death: harness exited 1" in out
