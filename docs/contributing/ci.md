@@ -194,7 +194,16 @@ test time measured on hosted runners after any performance changes.
 
 ### Environment
 
-* A `postgres:18` service container, with `POSTGRES_TEST_DSN` pointed at it.
+* Each job starts a disposable `postgres:18` container with `docker run`, with
+  `POSTGRES_TEST_DSN` pointed at its localhost port. GitHub Actions service
+  containers do not accept PostgreSQL server arguments. The server runs with
+  `max_connections=300` so concurrent xdist workers can lease databases without
+  exhausting the default 100 connections. It also uses `fsync=off`,
+  `synchronous_commit=off`, and `full_page_writes=off` to reduce checkpoint and
+  database-teardown costs for this disposable data. These settings are confined
+  to CI. A bounded TCP readiness check runs before migrations or tests; failed
+  jobs print the PostgreSQL logs, and an always-run step removes the container
+  and its volumes.
   [`tests/pg_dsn.py`](../../tests/pg_dsn.py) rewrites that DSN per xdist worker
   (`…_gw0`, `…_gw1`, …) and creates each worker's database on first use —
   sharing one database across concurrent workers would let one worker's reset
@@ -298,8 +307,8 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 
 ## State ownership
 
-CI owns nothing durable. Every database it creates lives in an ephemeral
-service container, and no job writes back to the repository. The workflow holds
+CI owns nothing durable. Every database it creates lives in a disposable
+PostgreSQL container, and no job writes back to the repository. The workflow holds
 only `contents: read`; the test job's checkout uses the default token and
 pushes nothing.
 
