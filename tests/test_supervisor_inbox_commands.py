@@ -694,3 +694,180 @@ async def test_reply_transcript_tail_and_message_sent_never_enqueue_delivery(env
         for r in handler.orchestrator.conversation_outbox.rows
     )
     assert (await db.get_conversation_input(first["input_id"]))["state"] == "accepted"
+
+
+async def test_status_reports_preconditions_limits_counts_backfill_and_intake(env):
+    from src.api.models.supervisor_inbox import SupervisorInboxStatusResponse
+    from src.discord.intake_diagnostics import IgnoreCounter
+
+    handler, db = env
+    first = await post(handler)
+    await db.bind_conversation_thread(first["conversation_id"], external_thread_id=THREAD, now=NOW)
+    await db.advance_backfill_cursor(
+        transport="discord",
+        channel_id=CHANNEL,
+        last_external_message_id="900000000000000000",
+        now=NOW,
+    )
+    await db.record_intake_gap(
+        transport="discord",
+        channel_id=THREAD,
+        gap_from=NOW - 100,
+        gap_to=NOW,
+        reason="history_forbidden",
+        now=NOW,
+    )
+    counter = IgnoreCounter(clock=lambda: NOW)
+    counter.record("not_mention")
+    bot = handler.orchestrator._discord_bot
+    bot._intake_diagnostics = counter
+    bot.intents = SimpleNamespace(message_content=True)
+    bot._conversation_backfill = lambda: SimpleNamespace(
+        diagnostics=lambda bot: {
+            "message_content_intent": True,
+            "permissions": {"send_messages": True},
+        }
+    )
+    result = await handler.execute("supervisor_inbox_status", {})
+    assert SupervisorInboxStatusResponse.model_validate(result).model_dump() == result
+    assert result["enabled"] and result["preconditions"] == {"ok": True, "unmet": []}
+    assert result["diagnostics"] == {
+        "message_content_intent": True,
+        "permissions": {"send_messages": True},
+        "outbox_bound": True,
+    }
+    assert result["limits"] == {
+        "max_input_chars": 4000,
+        "author_window_limit": 10,
+        "channel_window_limit": 60,
+        "window_seconds": 600,
+        "max_reply_chars": 1900,
+    }
+    assert result["counts"] == {
+        "by_state": {"opening": 0, "open": 1, "closed": 0, "delivery_blocked": 0},
+        "inputs_pending_supervisor": 1,
+    }
+    assert result["backfill"]["cursors"][0]["channel_id"] == CHANNEL
+    assert result["backfill"]["gaps"][0]["reason"] == "history_forbidden"
+    assert result["intake"] == {
+        "available": True,
+        "window_seconds": 3600,
+        "total": 1,
+        "ignored": {"not_mention": 1},
+    }
+
+
+async def test_status_without_bot_reports_unavailable_diagnostics(env):
+    handler, _ = env
+    handler.orchestrator._discord_bot = None
+    handler.orchestrator.conversation_outbox = None
+    handler.config.discord.conversation.enabled = False
+    result = await handler.execute("supervisor_inbox_status", {})
+    assert result["enabled"] is False
+    assert result["preconditions"]["ok"] is False
+    assert "conversation_disabled" in result["preconditions"]["unmet"]
+    assert "outbox_unbound" in result["preconditions"]["unmet"]
+    assert result["diagnostics"] == {
+        "message_content_intent": None,
+        "permissions": None,
+        "outbox_bound": False,
+    }
+    assert result["intake"]["available"] is False
+
+
+async def test_history_pages_conversations_and_filters_state(env):
+    from src.api.models.supervisor_inbox import SupervisorInboxHistoryResponse
+
+    handler, db = env
+    first = await post(handler)
+    handler._clock = lambda: NOW + 10
+    second = await post(handler, args(1))
+    handler._clock = lambda: NOW + 20
+    third = await post(handler, args(2))
+    page = await handler.execute("supervisor_inbox_history", {"limit": 2})
+    assert SupervisorInboxHistoryResponse.model_validate(page).model_dump() == page
+    assert [c["id"] for c in page["conversations"]] == [
+        third["conversation_id"],
+        second["conversation_id"],
+    ]
+    assert page["next_before"] == NOW + 10
+    tail = await handler.execute(
+        "supervisor_inbox_history", {"limit": 2, "before": page["next_before"]}
+    )
+    assert [c["id"] for c in tail["conversations"]] == [first["conversation_id"]]
+    assert tail["next_before"] is None
+    await db.set_conversation_state(first["conversation_id"], state="closed", now=NOW + 30)
+    filtered = await handler.execute("supervisor_inbox_history", {"states": ["closed"]})
+    assert [c["id"] for c in filtered["conversations"]] == [first["conversation_id"]]
+
+
+async def test_history_pages_inputs_and_redacts_expired_text(env):
+    handler, db = env
+    first = await post(handler)
+    follow = await follow_up(handler, db, first)
+    follow["envelope"]["received_at"] = NOW + 10
+    handler._clock = lambda: NOW + 10
+    second = await post(handler, follow)
+    answer = await reply(handler, reply_args(second))
+    query = {"conversation_id": first["conversation_id"], "limit": 1}
+    page = await handler.execute("supervisor_inbox_history", query)
+    conversation = page["conversations"][0]
+    item = conversation["inputs"][0]
+    assert item["id"] == second["input_id"] and item["text_expired"] is False
+    assert item["reply_message_id"] == answer["reply_message_id"]
+    assert item["reply_body"] == "Answer from the supervisor"
+    assert page["next_before"] == conversation["next_before"] == NOW + 10
+    await db.expire_conversation_text(older_than=NOW + 1, now=NOW + 20)
+    tail = await handler.execute(
+        "supervisor_inbox_history", {**query, "before": page["next_before"]}
+    )
+    expired = tail["conversations"][0]["inputs"][0]
+    assert expired["id"] == first["input_id"]
+    assert expired["text"] is None and expired["text_expired"] is True
+    assert tail["next_before"] is None
+    assert (await handler.execute("supervisor_inbox_history", {"conversation_id": "missing"}))[
+        "error_code"
+    ] == "conversation_not_found"
+
+
+@pytest.mark.parametrize("command", ["supervisor_inbox_status", "supervisor_inbox_history"])
+@pytest.mark.parametrize("mode", ["project", "worker", "service", "playbook", "global"])
+async def test_status_history_scope_is_enforced_on_direct_calls(env, command, mode):
+    from src.profiles.capabilities import CapabilityPolicy
+
+    handler, _ = env
+    principal = ExecutionPrincipal(
+        kind={"service": PrincipalKind.SERVICE, "playbook": PrincipalKind.PLAYBOOK}.get(
+            mode, PrincipalKind.SESSION
+        ),
+        policy=CapabilityPolicy.from_namespaces(aq_commands=[command]),
+        elevated=mode in {"global", "project"},
+        project_id="project" if mode == "project" else None,
+    )
+    with principal_context(principal):
+        result = await handler.execute(command, {})
+    if mode == "global":
+        assert result["success"] is True
+    else:
+        assert result["error_code"] == "out_of_scope"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"limit": 0},
+        {"limit": 101},
+        {"limit": True},
+        {"states": "open"},
+        {"states": ["invalid"]},
+        {"before": float("nan")},
+        {"before": float("inf")},
+        {"conversation_id": ""},
+        {"project_id": "project"},
+    ],
+)
+async def test_history_rejects_invalid_filters(env, query):
+    handler, _ = env
+    assert (await handler.execute("supervisor_inbox_history", query))[
+        "error_code"
+    ] == "invalid_request"

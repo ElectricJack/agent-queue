@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 398,
+    "leaf_commands": 400,
     "registration": {
-      "generated": 271,
+      "generated": 273,
       "handwritten": 127
     },
     "ownership": {
-      "core": 359,
+      "core": 361,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 397
+      "supported": 399
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 271,
+      "dispatch": 273,
       "registration": 113
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 338
+      "untested": 340
     }
   },
   "commands": [
@@ -8887,7 +8887,45 @@
       }
     },
     {
-      "path": "aq supervisor_inbox post",
+      "path": "aq supervisor-inbox history",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "supervisor_inbox_history",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--conversation-id",
+          "--states",
+          "--limit",
+          "--before",
+          "--state",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--states"
+        ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq supervisor-inbox post",
       "registration": "generated",
       "owner_kind": "core",
       "owner": "agent-queue",
@@ -8925,7 +8963,7 @@
       }
     },
     {
-      "path": "aq supervisor_inbox reply",
+      "path": "aq supervisor-inbox reply",
       "registration": "generated",
       "owner_kind": "core",
       "owner": "agent-queue",
@@ -8948,9 +8986,41 @@
         "required": [
           "--conversation-id",
           "--input-id",
-          "--text",
           "--idempotency-key"
         ],
+        "optional": [
+          "--text",
+          "--file",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq supervisor-inbox status",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "supervisor_inbox_status",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
         "optional": [
           "--json",
           "--brief",

@@ -6,20 +6,20 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.supervisor_inbox_error_response import SupervisorInboxErrorResponse
-from ...models.supervisor_inbox_reply_request import SupervisorInboxReplyRequest
-from ...models.supervisor_inbox_reply_response import SupervisorInboxReplyResponse
+from ...models.supervisor_inbox_history_request import SupervisorInboxHistoryRequest
+from ...models.supervisor_inbox_history_response import SupervisorInboxHistoryResponse
 from ...types import Response
 
 
 def _get_kwargs(
     *,
-    body: SupervisorInboxReplyRequest,
+    body: SupervisorInboxHistoryRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/api/supervisor_inbox/reply",
+        "url": "/api/supervisor_inbox/history",
     }
 
     _kwargs["json"] = body.to_dict()
@@ -32,9 +32,9 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> SupervisorInboxErrorResponse | SupervisorInboxReplyResponse | None:
+) -> SupervisorInboxErrorResponse | SupervisorInboxHistoryResponse | None:
     if response.status_code == 200:
-        response_200 = SupervisorInboxReplyResponse.from_dict(response.json())
+        response_200 = SupervisorInboxHistoryResponse.from_dict(response.json())
 
         return response_200
 
@@ -51,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[SupervisorInboxErrorResponse | SupervisorInboxReplyResponse]:
+) -> Response[SupervisorInboxErrorResponse | SupervisorInboxHistoryResponse]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -63,21 +63,21 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: SupervisorInboxReplyRequest,
-) -> Response[SupervisorInboxErrorResponse | SupervisorInboxReplyResponse]:
-    """Explicit conversation reply from the live global supervisor or local operator.
+    body: SupervisorInboxHistoryRequest,
+) -> Response[SupervisorInboxErrorResponse | SupervisorInboxHistoryResponse]:
+    """Page conversations or one conversation's inputs, newest first.
 
-     Explicit conversation reply from the live global supervisor or local operator.
+     Page conversations or one conversation's inputs, newest first.
 
     Args:
-        body (SupervisorInboxReplyRequest):
+        body (SupervisorInboxHistoryRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[SupervisorInboxErrorResponse | SupervisorInboxReplyResponse]
+        Response[SupervisorInboxErrorResponse | SupervisorInboxHistoryResponse]
     """
 
     kwargs = _get_kwargs(
@@ -94,21 +94,21 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    body: SupervisorInboxReplyRequest,
-) -> SupervisorInboxErrorResponse | SupervisorInboxReplyResponse | None:
-    """Explicit conversation reply from the live global supervisor or local operator.
+    body: SupervisorInboxHistoryRequest,
+) -> SupervisorInboxErrorResponse | SupervisorInboxHistoryResponse | None:
+    """Page conversations or one conversation's inputs, newest first.
 
-     Explicit conversation reply from the live global supervisor or local operator.
+     Page conversations or one conversation's inputs, newest first.
 
     Args:
-        body (SupervisorInboxReplyRequest):
+        body (SupervisorInboxHistoryRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        SupervisorInboxErrorResponse | SupervisorInboxReplyResponse
+        SupervisorInboxErrorResponse | SupervisorInboxHistoryResponse
     """
 
     return sync_detailed(
@@ -120,21 +120,21 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: SupervisorInboxReplyRequest,
-) -> Response[SupervisorInboxErrorResponse | SupervisorInboxReplyResponse]:
-    """Explicit conversation reply from the live global supervisor or local operator.
+    body: SupervisorInboxHistoryRequest,
+) -> Response[SupervisorInboxErrorResponse | SupervisorInboxHistoryResponse]:
+    """Page conversations or one conversation's inputs, newest first.
 
-     Explicit conversation reply from the live global supervisor or local operator.
+     Page conversations or one conversation's inputs, newest first.
 
     Args:
-        body (SupervisorInboxReplyRequest):
+        body (SupervisorInboxHistoryRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[SupervisorInboxErrorResponse | SupervisorInboxReplyResponse]
+        Response[SupervisorInboxErrorResponse | SupervisorInboxHistoryResponse]
     """
 
     kwargs = _get_kwargs(
@@ -149,21 +149,21 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    body: SupervisorInboxReplyRequest,
-) -> SupervisorInboxErrorResponse | SupervisorInboxReplyResponse | None:
-    """Explicit conversation reply from the live global supervisor or local operator.
+    body: SupervisorInboxHistoryRequest,
+) -> SupervisorInboxErrorResponse | SupervisorInboxHistoryResponse | None:
+    """Page conversations or one conversation's inputs, newest first.
 
-     Explicit conversation reply from the live global supervisor or local operator.
+     Page conversations or one conversation's inputs, newest first.
 
     Args:
-        body (SupervisorInboxReplyRequest):
+        body (SupervisorInboxHistoryRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        SupervisorInboxErrorResponse | SupervisorInboxReplyResponse
+        SupervisorInboxErrorResponse | SupervisorInboxHistoryResponse
     """
 
     return (

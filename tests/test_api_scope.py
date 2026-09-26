@@ -359,3 +359,16 @@ def test_supervisor_inbox_reply_requires_local_or_global_elevated_scope():
         assert check_command_scope("supervisor_inbox_reply", {}, scope) == (
             "out of scope: conversation replies require local operator or global supervisor"
         )
+
+
+def test_supervisor_inbox_reads_require_local_or_global_elevated_scope():
+    from src.api.scope import AGENT_COMMAND_SET
+
+    for command in ("supervisor_inbox_status", "supervisor_inbox_history"):
+        assert command not in AGENT_COMMAND_SET
+        assert check_command_scope(command, {}, LOCAL_SCOPE) is None
+        assert check_command_scope(command, {}, RequestScope(
+            kind="session", session_id="sup", elevated=True
+        )) is None
+        for scope in (SESSION, RequestScope(kind="session", elevated=True, project_id="p1")):
+            assert "conversation reads" in check_command_scope(command, {}, scope)

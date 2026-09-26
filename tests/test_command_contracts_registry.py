@@ -389,3 +389,19 @@ async def test_list_tasks_models_every_key_its_own_arguments_can_produce(
         assert unmodelled == set(), f"{args} returned unmodelled keys {sorted(unmodelled)}"
         # And the model accepts the payload exactly as ``_adapter`` builds it.
         ListTasksValue(**{field: raw[field] for field in declared if field in raw})
+
+
+def test_supervisor_inbox_contracts_register_sensitive_text_and_real_subjects():
+    from src.commands.contracts import CONTRACTS
+
+    for verb in ("post", "reply", "status", "history"):
+        contract = CONTRACTS.require(f"supervisor_inbox_{verb}").contract
+        execution = contract.execution
+        assert bool(execution.sensitive_args) == (verb in {"post", "reply"})
+        if verb in {"post", "reply"}:
+            assert ("envelope" if verb == "post" else "text") in execution.sensitive_args
+        assert execution.retry_safe
+        assert set(contract.presentation.subject_labels) == {
+            clause.subject.value for clause in execution.effects
+        }
+        assert all(subject.startswith("conversation") for subject in contract.presentation.subject_labels)
