@@ -1265,7 +1265,7 @@ class SessionReconciler:
         # The global scan is bounded. Resolve this owner's overdue/completed
         # wait through the command boundary before evaluating a stale lease,
         # even when it fell outside that cycle's first 100 candidates.
-        handler = getattr(self.orchestrator, "command_handler", None)
+        handler = getattr(self.orchestrator, "_command_handler", None)
         if handler is not None and wait["state"] == "active":
             from src.agent_waits import AgentWaitReconciler
 
