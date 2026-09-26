@@ -146,6 +146,13 @@ mcp = [
     # 1.28.1 addresses PYSEC-2026-3481, 3482, 3483; <2 because FastMCP import moved in 2.x.
     "mcp>=1.28.1,<2",
 ]
+# Smart test selection's static impact engine (src/test_selection/static_impact.py
+# runs its ``impacted-tests`` command).  Pinned exactly: the fixture evaluation in
+# tests/test_selection_static_impact.py records this version's input semantics,
+# and a new version is adopted only once that evaluation passes on it.
+test-selection = [
+    "pytest-impacted==0.30.0",
+]
 cli = [
     # 8.3.3 addresses PYSEC-2026-2132.
     "click>=8.3.3",
@@ -171,6 +178,12 @@ dev = [
     "openapi-python-client==0.29.0",
     # CVE-2022-40898: wheel <0.38.1 has a ReDoS in the wheel CLI
     "wheel>=0.38.1",
+    # The test-selection extra's engine, so CI runs the fixture evaluation in
+    # tests/test_selection_static_impact.py (which checks the two pins agree).
+    # Its wheel also installs top-level ``tests`` and ``docs`` packages into
+    # site-packages: this checkout's ``tests`` wins only while the repository
+    # root precedes site-packages on sys.path, as pytest arranges.
+    "pytest-impacted==0.30.0",
 ]
 # Smart test selection's dynamic-impact experiment (spec 2026-09-24 §5.2):
 # tests/test_selection_testmon_experiment.py records what testmon would select
@@ -208,7 +221,9 @@ testpaths = ["tests"]
 # cap plus ``--dist loadfile`` and CI passes them explicitly, while
 # ``pytest -p no:xdist`` (the documented serial path) unloads those options
 # with the plugin and errors on any left in addopts.
-addopts = "--durations=10 -m \"not perf and not migration and not slow and not tmux and not integration\""
+# ``-p no:impacted``: pytest-impacted (dev extra) registers a pytest plugin that
+# would load into every pytest process; only its ``impacted-tests`` command is used.
+addopts = "-p no:impacted --durations=10 -m \"not perf and not migration and not slow and not tmux and not integration\""
 markers = [
     "functional: tests that launch real Claude CLI (require auth + API key)",
     "functional_mcp: functional tests requiring npm/npx for MCP servers",

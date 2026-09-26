@@ -1023,6 +1023,7 @@
         "tests/test_selection_catalogue.py",
         "tests/test_selection_mandatory.py",
         "tests/test_selection_snapshot.py",
+        "tests/test_selection_static_impact.py",
         "tests/test_selection_testmon_experiment.py"
       ]
     },
@@ -1172,7 +1173,7 @@
       ]
     }
   },
-  "digest": "sha256:65639a120fe11dd19acad7c661dd9e7c1f6efa2ce74cfdb93634b3b48d5ab385",
+  "digest": "sha256:21cf703a14ca77ad552f86f939ae53f7885a45481bded85eacfb8a4f3dca5054",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10084,6 +10085,25 @@
       ],
       "markers": [],
       "summary": ""
+    },
+    "tests/test_selection_static_impact.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.git.manager",
+        "src.test_selection",
+        "src.test_selection.catalogue",
+        "src.test_selection.load_closure",
+        "src.test_selection.snapshot",
+        "src.test_selection.static_impact"
+      ],
+      "markers": [
+        "parametrize",
+        "skipif"
+      ],
+      "summary": "The static impact adapter over pytest-impacted, and the fixture evaluation of its engine."
     },
     "tests/test_selection_testmon_experiment.py": {
       "areas": [
