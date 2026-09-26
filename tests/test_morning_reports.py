@@ -1171,7 +1171,7 @@ async def test_failed_morning_transport_retries_frozen_report_without_reauthorin
     original = await command.db.get_morning_report(request["owner_ref"])
     outbound = await morning_delivery(command, original["id"])
     assert outbound["state"] == "pending"
-    assert f"https://dashboard.example.test/reports/{original['id']}" in outbound["payload"]["text"]
+    assert f"https://dashboard.example.test/focus/reports/{original['id']}" in outbound["payload"]["text"]
     clock, transport = Clock(now + 900), SinkTransport()
     transport.faults.append(("post_root", TransportUnavailable("SEND_MESSAGES missing")))
     pump = morning_dispatcher(command, transport, clock)
@@ -1398,7 +1398,7 @@ async def test_scoped_fallback_delivers_without_supervisor_and_summary_budget_in
     row["report"]["coverage"]["window"]["omitted_interval"] = {"since": 0, "until": 1}
     text = render_summary(row, url="https://dashboard.example.test", notice="")
     assert "Partial coverage" in text and "Lookback capped" in text
-    assert text.endswith(f"https://dashboard.example.test/reports/{row['id']}")
+    assert text.endswith(f"https://dashboard.example.test/focus/reports/{row['id']}")
     assert "@everyone" not in text
     # Same marker size the shared primitive appends.
     assert len(text) + 1 + len("aq-out:" + "a" * 16) <= 1500
