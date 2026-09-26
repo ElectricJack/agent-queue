@@ -222,6 +222,7 @@ reports:
       end: "07:00"
   morning:
     enabled: false
+    full_fleet_visibility: false
     time: "07:00"
     late_cutoff_minutes: 120
     max_lookback_hours: 72
@@ -270,9 +271,30 @@ and their fact membership are retained for 90 days; coverage anchors survive.
 `aq report show ID` and `aq report list` read stored reports, also available at
 `/reports/:id` in the dashboard. Reads enforce the caller's project visibility;
 the page separates landed changes, pending/unknown shipment, failures and source
-gaps, and labels prior verification as agent-reported. Supervisor requests,
-the reviewed minute-tick playbook and outbound reconciliation are the next
-implementation slice; these primitives do not activate them.
+gaps, and labels prior verification as agent-reported. Project-scoped readers
+receive scoped deterministic evidence rather than global supervisor prose.
+
+The optional reviewed system playbook `morning-report` calls
+`morning_report_tick` on `timer.1m`. It is neither required for readiness nor
+activated by default; the operator imports and activates the reviewed bundle
+separately. Morning authoring requires `full_fleet_visibility: true`, an empty
+project selection and a configured Discord destination. Restricted destinations
+use the deterministic report without waking the global supervisor. The author
+reads `aq report brief ID` and submits version 1 JSON with
+`aq report submit ID --file FILE --brief-hash HASH --expected-version VERSION`.
+The server validates project/evidence references, caps manual checks at ten
+grounded landed changes with known surfaces, and owns coverage and links.
+
+Final reports reserve one immutable summary in `outbound_deliveries`; the shared
+dispatcher sends at most 1,500 characters including a stable marker and a link
+to `/reports/:id` when an external dashboard origin is configured. Escalations
+and the rate guard retain priority. Delivery failure never rebuilds evidence or
+creates another author request. Ambiguous sends reconcile their marker or remain
+unknown without blind reposting. Disable, destination edits and visibility edits
+cancel queued author messages and unsent summaries; cancellation survives
+re-enabling the schedule. Final content remains readable. An operator applies
+the outbound cancellation migration during deployment; workers do not migrate
+the operator database or activate the playbook.
 
 ### 4.3 `agents` Section
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from sqlalchemy import cast, delete, func, select, update
+from sqlalchemy import and_, cast, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 
 from src.database.tables import morning_report_coverage as coverage
@@ -13,6 +13,8 @@ from src.database.tables import morning_report_facts as facts
 from src.database.tables import morning_reports as reports
 from src.database.tables import supervisor_report_requests as requests
 from src.database.tables import messages
+from src.database.tables import outbound_deliveries as deliveries
+from src.reports.delivery import visibility_matches
 from src.reports.morning import report_window
 from src.reports.schedule import SCHEDULE_ID, ZONE_CHANGE_GUARD_SECONDS
 
@@ -25,6 +27,216 @@ def scope_key(project_ids: list[str]) -> str:
 
 
 class MorningReportQueriesMixin:
+    async def list_morning_delivery_candidates(self, *, limit: int = 100) -> list[dict]:
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(reports)
+                        .where(
+                            reports.c.state == "final",
+                            cast(reports.c.config_snapshot, JSONB)["destination"].astext != "",
+                            ~select(deliveries.c.id)
+                            .where(
+                                deliveries.c.owner_kind == "morning",
+                                deliveries.c.owner_id == reports.c.id,
+                            )
+                            .exists(),
+                        )
+                        .order_by(reports.c.planned_at)
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(row) for row in rows]
+
+    async def reserve_morning_delivery(
+        self, report_id: str, *, policy: dict, text: str, now: float
+    ) -> dict | None:
+        async with self.immediate() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        select(reports).where(reports.c.id == report_id).with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                not row
+                or row["state"] != "final"
+                or not visibility_matches(row["config_snapshot"], policy)
+            ):
+                return None
+            existing = (
+                (
+                    await conn.execute(
+                        select(deliveries).where(
+                            deliveries.c.owner_kind == "morning",
+                            deliveries.c.owner_id == report_id,
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if existing:
+                return dict(existing)
+            delivery, _ = await self.reserve_outbound_delivery_in_transaction(
+                conn,
+                owner_kind="morning",
+                owner_id=report_id,
+                dedup_key=f"morning:{report_id}",
+                destination={"transport": "discord", "channel_id": policy["destination"][8:]},
+                payload={"text": text, "report_id": report_id},
+                due_at=now,
+                now=now,
+            )
+            return delivery
+
+    async def _close_morning_request_in_transaction(
+        self, conn, report_id: str, *, state: str, reason: str, now: float
+    ) -> None:
+        closed = (
+            (
+                await conn.execute(
+                    update(requests)
+                    .where(
+                        requests.c.kind == "morning",
+                        requests.c.owner_ref == report_id,
+                        requests.c.state.in_(("reserved", "requested")),
+                    )
+                    .values(
+                        state=state,
+                        skip_reason=reason,
+                        version=requests.c.version + 1,
+                        updated_at=now,
+                    )
+                    .returning(requests.c.request_message_id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        await conn.execute(
+            update(messages)
+            .where(
+                messages.c.id.in_([message_id for message_id in closed if message_id]),
+                messages.c.delivered_at.is_(None),
+                messages.c.archived_at.is_(None),
+            )
+            .values(archived_at=now)
+        )
+
+    async def reconcile_morning_visibility(self, *, policy: dict | None, now: float) -> int:
+        """Cancel unsent work under the owner lock; retain immutable final content.
+
+        A cancelled delivery is a durable tombstone, including when disable races
+        the gap between finalization and outbox reservation.
+        """
+        count = 0
+        async with self.immediate() as conn:
+            snapshot = cast(reports.c.config_snapshot, JSONB)
+            owned_deliveries = select(deliveries.c.id).where(
+                deliveries.c.owner_kind == "morning",
+                deliveries.c.owner_id == reports.c.id,
+            )
+            needs_delivery = or_(
+                owned_deliveries.where(
+                    deliveries.c.state.in_(("pending", "retry", "sending", "unknown")),
+                ).exists(),
+                and_(~owned_deliveries.exists(), snapshot["destination"].astext != ""),
+            )
+            stmt = select(reports).where(
+                or_(
+                    reports.c.state.in_(("building", "failed", "ready", "authoring")),
+                    and_(reports.c.state == "final", needs_delivery),
+                )
+            )
+            if policy is not None and policy["enabled"]:
+                # Reject changed scope in SQL before taking any report locks.
+                # Array containment in both directions compares project sets.
+                same_visibility = and_(
+                    snapshot["destination"].astext == policy["destination"],
+                    snapshot["project_ids"].contains(policy["project_ids"]),
+                    snapshot["project_ids"].contained_by(policy["project_ids"]),
+                    func.coalesce(snapshot["full_fleet_visibility"].as_boolean(), False)
+                    == policy["full_fleet_visibility"],
+                )
+                stmt = stmt.where(~same_visibility)
+            rows = (
+                (await conn.execute(stmt.order_by(reports.c.planned_at).with_for_update()))
+                .mappings()
+                .all()
+            )
+            for row in rows:
+                if policy is not None and visibility_matches(row["config_snapshot"], policy):
+                    continue
+                reason = (
+                    "disabled" if policy is None or not policy["enabled"] else "visibility_changed"
+                )
+                await self._close_morning_request_in_transaction(
+                    conn,
+                    row["id"],
+                    state="cancelled",
+                    reason=reason,
+                    now=now,
+                )
+                if row["state"] != "final":
+                    count += 1
+                    await conn.execute(
+                        update(reports)
+                        .where(reports.c.id == row["id"])
+                        .values(
+                            state="skipped",
+                            reason=reason,
+                            finalized_at=now,
+                            lease_owner=None,
+                            lease_expires_at=None,
+                        )
+                    )
+                else:
+                    destination = row["config_snapshot"]["destination"]
+                    existing = await conn.scalar(
+                        select(deliveries.c.id).where(
+                            deliveries.c.owner_kind == "morning",
+                            deliveries.c.owner_id == row["id"],
+                        )
+                    )
+                    if destination and not existing:
+                        await self.reserve_outbound_delivery_in_transaction(
+                            conn,
+                            owner_kind="morning",
+                            owner_id=row["id"],
+                            dedup_key=f"morning:{row['id']}",
+                            destination={"transport": "discord", "channel_id": destination[8:]},
+                            payload={
+                                "text": "Morning report delivery cancelled.",
+                                "report_id": row["id"],
+                            },
+                            due_at=now,
+                            now=now,
+                        )
+                await conn.execute(
+                    update(deliveries)
+                    .where(
+                        deliveries.c.owner_kind == "morning",
+                        deliveries.c.owner_id == row["id"],
+                        deliveries.c.state.in_(("pending", "retry", "sending", "unknown")),
+                    )
+                    .values(
+                        state="cancelled",
+                        last_error=reason,
+                        lease_owner=None,
+                        lease_expires_at=None,
+                        updated_at=now,
+                    )
+                )
+        return count
+
     async def reserve_morning_author(
         self, report_id: str, *, destination: str, now: float
     ) -> dict | None:
@@ -231,6 +443,16 @@ class MorningReportQueriesMixin:
             await self._finalize_morning_in_transaction(
                 conn, dict(owner), now, "final", content=report, reason="authored"
             )
+            if row["request_message_id"]:
+                await conn.execute(
+                    update(messages)
+                    .where(
+                        messages.c.id == row["request_message_id"],
+                        messages.c.delivered_at.is_(None),
+                        messages.c.archived_at.is_(None),
+                    )
+                    .values(archived_at=now)
+                )
             return dict(changed)
 
     async def get_morning_report(self, report_id: str) -> dict | None:
@@ -569,49 +791,17 @@ class MorningReportQueriesMixin:
                 or row["author_deadline"] > now
             ):
                 return None
-            await conn.execute(
-                update(requests)
-                .where(
-                    requests.c.kind == "morning",
-                    requests.c.owner_ref == report_id,
-                    requests.c.state.in_(("reserved", "requested")),
-                )
-                .values(
-                    state="fallback",
-                    skip_reason="author_deadline",
-                    version=requests.c.version + 1,
-                    updated_at=now,
-                )
+            await self._close_morning_request_in_transaction(
+                conn,
+                report_id,
+                state="fallback",
+                reason="author_deadline",
+                now=now,
             )
             return await self._finalize_morning_in_transaction(conn, dict(row), now, "final")
 
     async def cancel_pending_morning_reports(self, *, now: float) -> int:
-        async with self.immediate() as conn:
-            result = await conn.execute(
-                update(reports)
-                .where(reports.c.state.not_in(_TERMINAL))
-                .values(
-                    state="skipped",
-                    reason="disabled",
-                    finalized_at=now,
-                    lease_owner=None,
-                    lease_expires_at=None,
-                )
-            )
-            await conn.execute(
-                update(requests)
-                .where(
-                    requests.c.kind == "morning",
-                    requests.c.state.in_(("reserved", "requested")),
-                )
-                .values(
-                    state="cancelled",
-                    skip_reason="disabled",
-                    version=requests.c.version + 1,
-                    updated_at=now,
-                )
-            )
-            return result.rowcount
+        return await self.reconcile_morning_visibility(policy=None, now=now)
 
     async def prune_morning_reports(self, *, now: float) -> int:
         async with self.immediate() as conn:

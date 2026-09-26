@@ -4846,7 +4846,7 @@ outbound_deliveries = Table(
     UniqueConstraint("dedup_key", name="uq_outbound_deliveries_dedup"),
     UniqueConstraint("marker", name="uq_outbound_deliveries_marker"),
     CheckConstraint(
-        "state IN ('pending','sending','sent','retry','unknown')",
+        "state IN ('pending','sending','sent','retry','unknown','cancelled')",
         name="ck_outbound_deliveries_state",
     ),
     CheckConstraint("attempt_count >= 0", name="ck_outbound_deliveries_attempts"),

@@ -1134,3 +1134,347 @@ def test_morning_bundle_is_optional_and_uses_only_the_tick_command():
     assert len(command_steps) == 1 and command_steps[0].command == "morning_report_tick"
     assert {step.type for step in artifact.steps.values()} == {"command", "terminal"}
     assert artifact.id not in DEFAULT_SYSTEM_PLAYBOOK_IDS + REQUIRED_SYSTEM_PLAYBOOK_IDS
+
+
+def morning_dispatcher(command, transport, clock, **kwargs):
+    from src.digest import DigestScheduleService
+
+    return DigestScheduleService(
+        command.db,
+        transport,
+        config=command.orchestrator.config,
+        lease_owner="morning-test",
+        clock=clock,
+        include_outbound=True,
+        links=getattr(command.orchestrator, "dashboard_links", None),
+        **kwargs,
+    )
+
+
+async def morning_delivery(command, report_id):
+    rows = await command.db.list_outbound_deliveries(owner_kind="morning", owner_id=report_id)
+    assert len(rows) == 1
+    return rows[0]
+
+
+async def test_failed_morning_transport_retries_frozen_report_without_reauthoring(scheduled):
+    from src.escalations.transport import SinkTransport, TransportUnavailable
+    from src.remote_links import DashboardLink
+    from tests.test_report_requests import Clock
+
+    now = utc("2026-09-25T07:00:00")
+    command, collector, request = await author_request(scheduled, now)
+    command.orchestrator.dashboard_links = SimpleNamespace(
+        resolve=AsyncMock(return_value=DashboardLink(url="https://dashboard.example.test"))
+    )
+    await tick(command, now + 900)
+    original = await command.db.get_morning_report(request["owner_ref"])
+    outbound = await morning_delivery(command, original["id"])
+    assert outbound["state"] == "pending"
+    assert f"https://dashboard.example.test/reports/{original['id']}" in outbound["payload"]["text"]
+    clock, transport = Clock(now + 900), SinkTransport()
+    transport.faults.append(("post_root", TransportUnavailable("SEND_MESSAGES missing")))
+    pump = morning_dispatcher(command, transport, clock)
+    await pump.tick()  # Morning deliveries continue while hourly digest is disabled.
+    retry = await morning_delivery(command, original["id"])
+    assert retry["state"] == "retry" and retry["attempt_count"] == 1
+    await tick(command, now + 901)
+    assert await command.db.get_morning_report(original["id"]) == original
+    clock.now = retry["due_at"]
+    # A new daemon uses the same frozen payload, marker and destination.
+    await morning_dispatcher(command, transport, clock).pump()
+    sent = await morning_delivery(command, original["id"])
+    assert sent["state"] == "sent" and sent["attempt_count"] == 2
+    assert sent["payload_hash"] == outbound["payload_hash"]
+    assert sent["marker"] == outbound["marker"]
+    assert len(transport.messages) == 1
+    message = next(iter(transport.messages.values()))
+    assert message.where == "123456789012345678"
+    assert len(message.content) <= 1500 and message.content.endswith(outbound["marker"])
+    collector.assert_awaited_once()
+    async with command.db._engine.connect() as conn:
+        assert len((await conn.execute(select(tables.supervisor_report_requests))).all()) == 1
+        coverage = (await conn.execute(select(tables.morning_report_coverage))).mappings().all()
+    assert all(cursor["covered_until"] == now for cursor in coverage)
+
+
+@pytest.mark.parametrize("landed", [True, False])
+async def test_ambiguous_morning_transport_never_resubmits_or_blind_reposts(scheduled, landed):
+    from src.escalations.transport import SinkTransport, TransportAmbiguous
+    from tests.test_report_requests import Clock
+
+    now = utc("2026-09-25T07:00:00")
+    command, collector, request = await author_request(scheduled, now)
+    await tick(command, now + 900)
+    clock, transport = Clock(now + 900), SinkTransport()
+
+    async def ambiguous(*, channel_id, content):
+        if landed:
+            transport.record(channel_id, content)
+        raise TransportAmbiguous("ack lost")
+
+    transport.post_root = ambiguous
+    await morning_dispatcher(command, transport, clock).pump()
+    outbound = await morning_delivery(command, request["owner_ref"])
+    assert outbound["state"] == ("sent" if landed else "unknown")
+    await tick(command, now + 901)
+    clock.now += 3600
+    await morning_dispatcher(command, transport, clock).pump()
+    assert (await morning_delivery(command, request["owner_ref"]))["attempt_count"] == 1
+    assert len(transport.messages) == int(landed)
+    collector.assert_awaited_once()
+
+
+async def test_finalization_crash_before_outbox_reservation_recovers_once(scheduled):
+    import asyncio
+    from src.escalations.transport import SinkTransport
+    from tests.test_report_requests import Clock
+
+    now = utc("2026-09-25T07:00:00")
+    command, collector, request = await author_request(scheduled, now)
+    finalized = await command.db.finalize_morning_fallback(request["owner_ref"], now=now + 900)
+    assert finalized["state"] == "final"
+    assert not await command.db.list_outbound_deliveries(
+        owner_kind="morning", owner_id=finalized["id"]
+    )
+    await asyncio.gather(tick(command, now + 901), tick(command, now + 901))
+    outbound = await morning_delivery(command, finalized["id"])
+    assert outbound["state"] == "pending"
+    transport = SinkTransport()
+    await morning_dispatcher(command, transport, Clock(now + 901)).pump()
+    assert len(transport.messages) == 1
+    assert await command.db.get_morning_report(finalized["id"]) == finalized
+    collector.assert_awaited_once()
+
+
+@pytest.mark.parametrize("change", ["disabled", "projects", "visibility", "destination"])
+async def test_morning_policy_change_cancels_pending_request_and_queued_wake(scheduled, change):
+    now = utc("2026-09-25T07:00:00")
+    command, _, request = await author_request(scheduled, now)
+    policy = command.orchestrator.config.reports.morning
+    if change == "disabled":
+        policy.enabled = False
+    elif change == "projects":
+        policy.project_ids = ["p"]
+    elif change == "visibility":
+        policy.full_fleet_visibility = False
+    else:
+        policy.destination = "discord:123456789012345679"
+    await tick(command, now + 60)
+    closed = await command.db.get_report_request(request["id"])
+    assert closed["state"] == "cancelled"
+    assert closed["skip_reason"] == ("disabled" if change == "disabled" else "visibility_changed")
+    assert not await command.db.request_report(request["id"], now=now + 61)
+    async with command.db._engine.connect() as conn:
+        message = (
+            (
+                await conn.execute(
+                    select(tables.messages).where(
+                        tables.messages.c.id == request["request_message_id"]
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert message["delivered_at"] is None and message["archived_at"] == now + 60
+    assert (await command.db.get_morning_report(request["owner_ref"]))["state"] == "skipped"
+
+
+@pytest.mark.parametrize("change", ["disabled", "projects", "visibility", "destination"])
+async def test_policy_change_before_delivery_cancels_authored_payload_preserves_content(
+    scheduled, change
+):
+    from src.escalations.transport import SinkTransport
+    from src.reports.fallback import build_fallback
+    from tests.test_report_requests import Clock
+
+    now = utc("2026-09-25T07:00:00")
+    command, _, request = await author_request(scheduled, now)
+    report = build_fallback(request["brief"])
+    report["summary"] = "Sensitive full-fleet author text."
+    await command.db.submit_morning_report(
+        request["id"],
+        brief_hash=request["brief_hash"],
+        expected_version=2,
+        report=report,
+        evidence_refs=[],
+        source_links=[],
+        now=now + 60,
+    )
+    await tick(command, now + 61)
+    original = await command.db.get_morning_report(request["owner_ref"])
+    outbound = await morning_delivery(command, request["owner_ref"])
+    policy = command.orchestrator.config.reports.morning
+    if change == "disabled":
+        policy.enabled = False
+    elif change == "projects":
+        policy.project_ids = ["p"]
+    elif change == "visibility":
+        policy.full_fleet_visibility = False
+    else:
+        policy.destination = "discord:123456789012345679"
+    # The shared pump enforces policy even before the next morning minute tick.
+    transport = SinkTransport()
+    await morning_dispatcher(command, transport, Clock(now + 62)).pump()
+    cancelled = await morning_delivery(command, request["owner_ref"])
+    assert cancelled["state"] == "cancelled" and cancelled["attempt_count"] == 0
+    assert cancelled["payload_hash"] == outbound["payload_hash"]
+    assert await command.db.get_morning_report(request["owner_ref"]) == original
+    assert not transport.messages
+    policy.enabled = True
+    policy.project_ids = []
+    policy.full_fleet_visibility = True
+    policy.destination = request["destination"]
+    await morning_dispatcher(command, transport, Clock(now + 63)).pump()
+    assert not transport.messages  # Cancellation survives restoring the old configuration.
+
+
+async def test_visibility_change_after_claim_is_checked_again_before_transport(
+    scheduled, monkeypatch
+):
+    from src.escalations.transport import SinkTransport
+    from tests.test_report_requests import Clock
+
+    now = utc("2026-09-25T07:00:00")
+    command, _, request = await author_request(scheduled, now)
+    await tick(command, now + 900)
+    original = command.db.claim_report_deliveries
+
+    async def narrowed_after_claim(**kwargs):
+        rows = await original(**kwargs)
+        command.orchestrator.config.reports.morning.project_ids = ["p"]
+        return rows
+
+    monkeypatch.setattr(command.db, "claim_report_deliveries", narrowed_after_claim)
+    transport = SinkTransport()
+    await morning_dispatcher(command, transport, Clock(now + 900)).pump()
+    assert not transport.messages
+    assert (await morning_delivery(command, request["owner_ref"]))["state"] == "cancelled"
+
+
+async def test_disable_in_finalization_reservation_gap_leaves_durable_cancellation(scheduled):
+    from src.escalations.transport import SinkTransport
+    from tests.test_report_requests import Clock
+
+    now = utc("2026-09-25T07:00:00")
+    command, _, request = await author_request(scheduled, now)
+    await command.db.finalize_morning_fallback(request["owner_ref"], now=now + 900)
+    command.orchestrator.config.reports.morning.enabled = False
+    await tick(command, now + 901)
+    assert (await morning_delivery(command, request["owner_ref"]))["state"] == "cancelled"
+    command.orchestrator.config.reports.morning.enabled = True
+    transport = SinkTransport()
+    await morning_dispatcher(command, transport, Clock(now + 902)).pump()
+    assert not transport.messages
+
+
+async def test_scoped_fallback_delivers_without_supervisor_and_summary_budget_includes_link(
+    scheduled,
+):
+    from src.escalations.transport import SinkTransport
+    from src.remote_links import DashboardLink
+    from src.reports.delivery import render_summary
+    from tests.test_report_requests import Clock
+
+    command, collector = scheduled
+    policy = command.orchestrator.config.reports.morning
+    policy.destination = "discord:123456789012345678"
+    command.orchestrator.dashboard_links = SimpleNamespace(
+        resolve=AsyncMock(return_value=DashboardLink(url="https://dashboard.example.test"))
+    )
+    now = utc("2026-09-25T07:00:00")
+    first = await tick(command, now)
+    await tick(command, now + 900)
+    row = await command.db.get_morning_report(first["report_id"])
+    transport = SinkTransport()
+    await morning_dispatcher(command, transport, Clock(now + 900)).pump()
+    assert (await morning_delivery(command, row["id"]))["state"] == "sent"
+    async with command.db._engine.connect() as conn:
+        assert not (await conn.execute(select(tables.supervisor_report_requests))).all()
+    # Coverage warnings and the server link cannot be truncated by a long author summary.
+    row["report"]["summary"] = "@everyone " + "x" * 3000
+    row["report"]["coverage"]["complete"] = False
+    row["report"]["coverage"]["window"]["omitted_interval"] = {"since": 0, "until": 1}
+    text = render_summary(row, url="https://dashboard.example.test", notice="")
+    assert "Partial coverage" in text and "Lookback capped" in text
+    assert text.endswith(f"https://dashboard.example.test/reports/{row['id']}")
+    assert "@everyone" not in text
+    # Same marker size the shared primitive appends.
+    assert len(text) + 1 + len("aq-out:" + "a" * 16) <= 1500
+    collector.assert_awaited_once()
+
+
+async def test_cancelled_delivery_migration_upgrades_old_constraint_idempotently(db):
+    import importlib.util
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from sqlalchemy import inspect
+
+    path = Path("migrations/versions/a00000000033_outbound_cancellation.py")
+    spec = importlib.util.spec_from_file_location("outbound_cancel_migration", path)
+    revision = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(revision)
+
+    def verify(connection):
+        with Operations.context(MigrationContext.configure(connection)):
+            from alembic import op
+
+            op.drop_constraint("ck_outbound_deliveries_state", "outbound_deliveries", type_="check")
+            op.create_check_constraint(
+                "ck_outbound_deliveries_state",
+                "outbound_deliveries",
+                "state IN ('pending','sending','sent','retry','unknown')",
+            )
+            revision.upgrade()
+            revision.upgrade()
+        check = next(
+            c
+            for c in inspect(connection).get_check_constraints("outbound_deliveries")
+            if c["name"] == "ck_outbound_deliveries_state"
+        )
+        assert "cancelled" in check["sqltext"]
+
+    async with db._engine.begin() as conn:
+        await conn.run_sync(verify)
+
+
+async def test_no_configured_channel_never_reserves_author_or_delivery(scheduled):
+    command, _ = scheduled
+    policy = command.orchestrator.config.reports.morning
+    policy.project_ids = []
+    policy.full_fleet_visibility = True
+    now = utc("2026-09-25T07:00:00")
+    first = await tick(command, now)
+    await tick(command, now + 900)
+    assert (await command.db.get_morning_report(first["report_id"]))["state"] == "final"
+    async with command.db._engine.connect() as conn:
+        assert not (await conn.execute(select(tables.supervisor_report_requests))).all()
+        assert not (await conn.execute(select(tables.outbound_deliveries))).all()
+        assert not (await conn.execute(select(tables.messages))).all()
+
+
+async def test_project_scoped_read_uses_fallback_instead_of_global_authored_prose(scheduled):
+    from src.reports.fallback import build_fallback
+
+    now = utc("2026-09-25T07:00:00")
+    command, _, request = await author_request(scheduled, now)
+    report = build_fallback(request["brief"])
+    report["summary"] = "Private project Q is launching."
+    report["projects"][0]["landed"][0]["text"] = "Private project Q launch details."
+    await command.db.submit_morning_report(
+        request["id"],
+        brief_hash=request["brief_hash"],
+        expected_version=2,
+        report=report,
+        evidence_refs=[],
+        source_links=[],
+        now=now + 60,
+    )
+    principal = ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL, project_id="p")
+    with principal_context(principal):
+        read = await command._cmd_report_get({"report_id": request["owner_ref"]})
+    assert read["success"] and read["report"]["is_fallback"]
+    assert "Private project Q" not in json.dumps(read)
+    assert read["report"]["report"]["projects"][0]["manual_checks"] == []
+    assert read["report"]["report"]["summary"] == "Morning report for p."

@@ -6,7 +6,6 @@ import math
 import re
 import time
 import uuid
-from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -36,6 +35,7 @@ class ReportCommandsMixin:
         from src.reports.fallback import build_fallback
         from src.reports.morning import collect_morning_evidence
         from src.reports.schedule import next_due, planned_at
+        from src.reports.delivery import morning_policy, reconcile_morning_deliveries
 
         principal = current_principal()
         if principal is None or principal.kind not in (
@@ -62,7 +62,8 @@ class ReportCommandsMixin:
                 "next_due_at": None,
                 "cancelled": cancelled,
             }
-        snapshot = {**asdict(config.morning), "timezone": config.timezone}
+        snapshot = {**morning_policy(self.orchestrator.config), "timezone": config.timezone}
+        await self.db.reconcile_morning_visibility(policy=snapshot, now=now)
         day = datetime.fromtimestamp(now, ZoneInfo(config.timezone)).date()
         planned = planned_at(day, config.morning.time, config.timezone)
         due = next_due(now, config.morning.time, config.timezone)
@@ -116,10 +117,7 @@ class ReportCommandsMixin:
                     except Exception:
                         await self.db.fail_morning_build(claimed["id"], owner=owner)
             await self.db.finalize_morning_fallback(candidate["id"], now=now)
-            destination = (
-                config.morning.destination
-                or schedule_for(self.orchestrator.config.discord).destination
-            )
+            destination = morning_policy(self.orchestrator.config)["destination"]
             if (
                 config.morning.full_fleet_visibility
                 and not config.morning.project_ids
@@ -131,6 +129,12 @@ class ReportCommandsMixin:
                 if request and self._morning_author_allowed(request):
                     await self.db.request_report(request["id"], now=now)
         await self.db.prune_morning_reports(now=now)
+        await reconcile_morning_deliveries(
+            self.db,
+            self.orchestrator.config,
+            now=now,
+            links=getattr(self.orchestrator, "dashboard_links", None),
+        )
         if row:
             row = await self.db.get_morning_report(row["id"])
         return {
@@ -160,8 +164,10 @@ class ReportCommandsMixin:
     def _morning_read_value(self, row: dict) -> dict:
         import copy
 
-        content = copy.deepcopy(row["report"] or row["fallback"])
         project_id = self._morning_read_project()
+        # Global authored prose cannot prove project isolation. Scoped readers
+        # receive deterministic evidence text even for an authored fleet report.
+        content = copy.deepcopy(row["fallback"] if project_id else row["report"] or row["fallback"])
         if content and project_id:
             content["projects"] = [p for p in content["projects"] if p["id"] == project_id]
             content["global_facts"] = []
@@ -186,7 +192,8 @@ class ReportCommandsMixin:
             "finalized_at": row["finalized_at"],
             "author_deadline": row["author_deadline"],
             "report": content,
-            "is_fallback": row["report"] is None
+            "is_fallback": bool(project_id)
+            or row["report"] is None
             or row["reason"] in ("author_deadline", "no_changes"),
         }
 
@@ -446,9 +453,11 @@ class ReportCommandsMixin:
         }
 
     def _morning_author_allowed(self, row: dict) -> bool:
+        from src.reports.delivery import morning_policy
+
         config = self.orchestrator.config
         policy = config.reports.morning
-        destination = policy.destination or schedule_for(config.discord).destination
+        destination = morning_policy(config)["destination"]
         return bool(
             policy.enabled
             and policy.full_fleet_visibility

@@ -35,6 +35,30 @@ class OutboundQueriesMixin:
         due_at: float,
         now: float,
     ) -> tuple[dict, bool]:
+        async with self.immediate() as conn:
+            return await self.reserve_outbound_delivery_in_transaction(
+                conn,
+                owner_kind=owner_kind,
+                owner_id=owner_id,
+                dedup_key=dedup_key,
+                destination=destination,
+                payload=payload,
+                due_at=due_at,
+                now=now,
+            )
+
+    async def reserve_outbound_delivery_in_transaction(
+        self,
+        conn,
+        *,
+        owner_kind: str,
+        owner_id: str,
+        dedup_key: str,
+        destination: dict[str, Any],
+        payload: dict[str, Any],
+        due_at: float,
+        now: float,
+    ) -> tuple[dict, bool]:
         """Freeze the route/body at reservation; a conflicting replay is refused.
 
         Called only by domain commands, never an arbitrary Discord-post surface.
@@ -66,50 +90,47 @@ class OutboundQueriesMixin:
         max_chars = 1500 if owner_kind == "morning" else 2000
         if not text.strip() or len(f"{text}\n{marker}") > max_chars:
             raise ValueError(f"outbound message must fit {max_chars} characters including marker")
-        async with self.immediate() as conn:
-            inserted = (
-                (
-                    await conn.execute(
-                        pg_insert(outbound_deliveries)
-                        .values(
-                            id=delivery_id,
-                            owner_kind=owner_kind,
-                            owner_id=owner_id,
-                            dedup_key=dedup_key,
-                            destination=destination,
-                            payload=frozen,
-                            payload_hash=digest,
-                            marker=marker,
-                            due_at=due_at,
-                            created_at=now,
-                            updated_at=now,
-                        )
-                        .on_conflict_do_nothing(index_elements=["dedup_key"])
-                        .returning(outbound_deliveries)
+        inserted = (
+            (
+                await conn.execute(
+                    pg_insert(outbound_deliveries)
+                    .values(
+                        id=delivery_id,
+                        owner_kind=owner_kind,
+                        owner_id=owner_id,
+                        dedup_key=dedup_key,
+                        destination=destination,
+                        payload=frozen,
+                        payload_hash=digest,
+                        marker=marker,
+                        due_at=due_at,
+                        created_at=now,
+                        updated_at=now,
                     )
+                    .on_conflict_do_nothing(index_elements=["dedup_key"])
+                    .returning(outbound_deliveries)
                 )
-                .mappings()
-                .one_or_none()
             )
-            row = (
-                inserted
-                or (
-                    await conn.execute(
-                        select(outbound_deliveries).where(
-                            outbound_deliveries.c.dedup_key == dedup_key
-                        )
-                    )
+            .mappings()
+            .one_or_none()
+        )
+        row = (
+            inserted
+            or (
+                await conn.execute(
+                    select(outbound_deliveries).where(outbound_deliveries.c.dedup_key == dedup_key)
                 )
-                .mappings()
-                .one()
             )
-            if (row["owner_kind"], row["owner_id"], row["payload_hash"]) != (
-                owner_kind,
-                owner_id,
-                digest,
-            ):
-                raise ValueError("delivery dedup key already owns a different frozen message")
-            return dict(row), inserted is not None
+            .mappings()
+            .one()
+        )
+        if (row["owner_kind"], row["owner_id"], row["payload_hash"]) != (
+            owner_kind,
+            owner_id,
+            digest,
+        ):
+            raise ValueError("delivery dedup key already owns a different frozen message")
+        return dict(row), inserted is not None
 
     async def get_outbound_delivery(self, delivery_id: str) -> dict | None:
         async with self._engine.connect() as conn:
@@ -280,7 +301,7 @@ class OutboundQueriesMixin:
         last_error: str | None = None,
     ) -> dict | None:
         if (
-            status not in ("sent", "retry", "unknown")
+            status not in ("sent", "retry", "unknown", "cancelled")
             or status == "sent"
             and not external_receipt_id
             or status == "retry"

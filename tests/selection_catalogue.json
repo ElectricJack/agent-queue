@@ -1242,7 +1242,7 @@
       ]
     }
   },
-  "digest": "sha256:15aa737d8809898d448b0211b5b6a68cddab73497d171b1afeab2c82d2f475e3",
+  "digest": "sha256:f6b8678558279308ece3e5b21beec40d3eeaef3d78109e747ebcc92ef3de4c10",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8325,9 +8325,16 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.digest",
+        "src.escalations.transport",
         "src.git.manager",
         "src.models",
+        "src.playbooks.definition",
+        "src.playbooks.required",
         "src.profiles.capabilities",
+        "src.remote_links",
+        "src.reports.authoring",
+        "src.reports.delivery",
         "src.reports.fallback",
         "src.reports.git",
         "src.reports.hourly",

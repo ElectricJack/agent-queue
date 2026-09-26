@@ -445,17 +445,43 @@ class DigestScheduleService:
             async def deliver(adapter, row):
                 await self._deliver_one(schedule, row, report)
 
+        outbound = OutboundAdapter(self.db, self._delivery, lease_owner=self._lease_owner)
+
+        class ScopedOutboundAdapter:
+            async def deliver(adapter, row):
+                if row["owner_kind"] == "morning" and row["payload"].get("report_id"):
+                    from src.reports.delivery import morning_policy, visibility_matches
+
+                    owner = await self.db.get_morning_report(row["owner_id"])
+                    policy = morning_policy(self._config)
+                    if owner is None or not visibility_matches(owner["config_snapshot"], policy):
+                        await self.db.finish_outbound_delivery(
+                            row["id"],
+                            lease_owner=self._lease_owner,
+                            status="cancelled",
+                            now=self._clock(),
+                            last_error="report visibility changed or disabled",
+                        )
+                        return
+                await outbound.deliver(row)
+
+        if self._include_outbound:
+            from src.reports.delivery import reconcile_morning_deliveries
+
+            await reconcile_morning_deliveries(
+                self.db,
+                self._config,
+                now=now,
+                links=self._links,
+            )
+
         report.deferred = await dispatch_batch(
             now=now,
             limit=limit,
             claim=claim,
             adapters={
                 "digest": DigestAdapter(),
-                "outbound": OutboundAdapter(
-                    self.db,
-                    self._delivery,
-                    lease_owner=self._lease_owner,
-                ),
+                "outbound": ScopedOutboundAdapter(),
             },
             escalation_priority=self._escalation_priority,
             rate_guard=self._rate_guard,
