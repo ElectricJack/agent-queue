@@ -501,6 +501,12 @@ class TestCommandVaultWrite:
                 None,
             ),
             (
+                {"harness": "codex", "codex_service_tier": "fast"},
+                {"harness": "codex", "codex_service_tier": "fast"},
+                None,
+                None,
+            ),
+            (
                 {"harness": "claude", "claude_dangerously_skip_permissions": True},
                 {"harness": "claude", "claude_dangerously_skip_permissions": True},
                 None,

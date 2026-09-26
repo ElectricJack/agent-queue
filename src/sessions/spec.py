@@ -200,6 +200,19 @@ def _is_codex_cli(harness) -> bool:
     )
 
 
+def codex_service_tier_for(profile, class_config: dict) -> str | None:
+    """Resolve a launch's explicit tier; an unset value inherits Codex config."""
+    tier = getattr(profile, "codex_service_tier", None)
+    if tier is None:
+        tier = class_config.get("service_tier")
+    if tier is None:
+        return None
+    if isinstance(tier, str) and tier in {"default", "fast"}:
+        return tier
+    logger.warning("Unsupported Codex service tier %r; not applied", tier)
+    return None
+
+
 def _is_claude_cli(harness) -> bool:
     """Keep Claude-specific settings off other Anthropic-backed harnesses."""
     return (
@@ -664,6 +677,9 @@ class SessionSpecBuilder:
                     argv.extend(["-c", f'model_reasoning_effort="{reasoning}"'])
                 else:
                     logger.warning("Unsupported Codex reasoning effort %r; not applied", reasoning)
+            tier = codex_service_tier_for(profile, class_config)
+            if tier is not None:
+                argv.extend(["-c", f'service_tier="{tier}"'])
 
         tools = self._resolve_allowed_tools(profile, harness)
         if tools:

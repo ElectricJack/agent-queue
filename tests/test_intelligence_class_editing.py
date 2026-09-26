@@ -159,6 +159,7 @@ async def test_optional_revision_remains_compatible(handler):
         {"mapping": {"anthropic": {"model": 4}}},
         {"mapping": {"anthropic": {"model": "model", "thinking": "impossible"}}},
         {"mapping": {"codex": {"model": "model", "reasoning_effort": "impossible"}}},
+        {"mapping": {"codex": {"model": "model", "service_tier": "priority"}}},
         {"mapping": {"google": {"model": "model", "thinking_budget": True}}},
         {"mapping": {"other": {"model": "model", "value": float("nan")}}},
     ],
@@ -168,6 +169,16 @@ async def test_invalid_values_leave_file_unchanged(handler, change):
     before = class_path(handler).read_bytes()
     result = await edit(handler, {**args, **change})
     assert "error" in result and class_path(handler).read_bytes() == before
+
+
+async def test_codex_fast_service_tier_round_trips(handler):
+    args = await payload(handler)
+    args["mapping"]["codex"]["service_tier"] = "fast"
+    result = await edit(handler, args)
+    assert result["success"]
+    assert load_intelligence_classes(handler.config.data_dir)["fast-low"].mapping[
+        "codex"
+    ]["service_tier"] == "fast"
 
 
 async def test_existing_unknown_values_can_be_saved_unchanged(handler):

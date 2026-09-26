@@ -359,7 +359,7 @@ class TestSyncProfileToDb:
         enabled = parse_profile(
             "---\nid: autonomous\nname: Autonomous\n---\n"
             "## Config\n```json\n"
-            '{"harness": "codex", "codex_full_auto": true, '
+            '{"harness": "codex", "codex_full_auto": true, "codex_service_tier": "fast", '
             '"claude_dangerously_skip_permissions": false}\n'
             "```\n"
         )
@@ -367,18 +367,21 @@ class TestSyncProfileToDb:
         assert result.success is True
         profile = await db.get_profile("autonomous")
         assert profile.codex_full_auto is True
+        assert profile.codex_service_tier == "fast"
         assert profile.claude_dangerously_skip_permissions is False
 
         disabled = parse_profile(
             "---\nid: autonomous\nname: Autonomous\n---\n"
             "## Config\n```json\n"
-            '{"harness": "codex", "codex_full_auto": false}\n'
+            '{"harness": "codex", "codex_full_auto": false, '
+            '"codex_service_tier": "default"}\n'
             "```\n"
         )
         result = await sync_profile_to_db(disabled, db)
         assert result.success is True
         profile = await db.get_profile("autonomous")
         assert profile.codex_full_auto is False
+        assert profile.codex_service_tier == "default"
         assert profile.claude_dangerously_skip_permissions is False
 
     @pytest.mark.asyncio

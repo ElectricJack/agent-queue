@@ -303,6 +303,7 @@ async def sync_profile_to_db(
         model=profile_dict.get("model", ""),
         permission_mode=profile_dict.get("permission_mode", ""),
         codex_full_auto=profile_dict.get("codex_full_auto", False),
+        codex_service_tier=profile_dict.get("codex_service_tier"),
         claude_dangerously_skip_permissions=profile_dict.get(
             "claude_dangerously_skip_permissions", False
         ),

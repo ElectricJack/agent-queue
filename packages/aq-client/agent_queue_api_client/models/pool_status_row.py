@@ -36,6 +36,7 @@ class PoolStatusRow:
             starting (int):
             draining (int):
             ready (int):
+            service_tier (None | str | Unset):
             enabled (bool | Unset):  Default: True.
             max_active (int | None | Unset):
             min_per_project (int | Unset):  Default: 0.
@@ -54,6 +55,7 @@ class PoolStatusRow:
     starting: int
     draining: int
     ready: int
+    service_tier: None | str | Unset = UNSET
     enabled: bool | Unset = True
     max_active: int | None | Unset = UNSET
     min_per_project: int | Unset = 0
@@ -82,6 +84,12 @@ class PoolStatusRow:
         draining = self.draining
 
         ready = self.ready
+
+        service_tier: None | str | Unset
+        if isinstance(self.service_tier, Unset):
+            service_tier = UNSET
+        else:
+            service_tier = self.service_tier
 
         enabled = self.enabled
 
@@ -138,6 +146,8 @@ class PoolStatusRow:
                 "ready": ready,
             }
         )
+        if service_tier is not UNSET:
+            field_dict["service_tier"] = service_tier
         if enabled is not UNSET:
             field_dict["enabled"] = enabled
         if max_active is not UNSET:
@@ -180,6 +190,15 @@ class PoolStatusRow:
         draining = d.pop("draining")
 
         ready = d.pop("ready")
+
+        def _parse_service_tier(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        service_tier = _parse_service_tier(d.pop("service_tier", UNSET))
 
         enabled = d.pop("enabled", UNSET)
 
@@ -249,6 +268,7 @@ class PoolStatusRow:
             starting=starting,
             draining=draining,
             ready=ready,
+            service_tier=service_tier,
             enabled=enabled,
             max_active=max_active,
             min_per_project=min_per_project,

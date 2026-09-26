@@ -935,6 +935,7 @@ def format_profile_detail(data: dict) -> Panel:
         "model",
         "permission_mode",
         "codex_full_auto",
+        "codex_service_tier",
         "claude_dangerously_skip_permissions",
     ):
         val = data.get(key)
@@ -1474,6 +1475,7 @@ def format_pool_table(pools: list[dict]):
         expand=True,
     )
     table.add_column("Profile", style="bold cyan", overflow="fold")
+    table.add_column("Codex tier")
     table.add_column("Min", justify="right")
     table.add_column("Max", justify="right")
     table.add_column("Min/pp", justify="right")
@@ -1491,6 +1493,7 @@ def format_pool_table(pools: list[dict]):
     for row in pools:
         table.add_row(
             row.get("profile_id", ""),
+            row.get("service_tier") or "—",
             str(row.get("min_active", 0)),
             "∞" if row.get("max_active") is None else str(row.get("max_active")),
             str(row.get("min_per_project", 0) or 0),

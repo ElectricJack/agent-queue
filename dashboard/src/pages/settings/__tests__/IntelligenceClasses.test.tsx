@@ -159,6 +159,7 @@ describe("Intelligence class editing", () => {
     fireEvent.change(within(dialog).getByLabelText("Description"), { target: { value: "Updated description" } });
     fireEvent.change(within(dialog).getByLabelText("Codex model"), { target: { value: "custom-codex-model" } });
     fireEvent.change(within(dialog).getByLabelText("Codex reasoning effort"), { target: { value: "medium" } });
+    fireEvent.change(within(dialog).getByLabelText("Codex service tier"), { target: { value: "fast" } });
     fireEvent.change(within(dialog).getByLabelText("Google thinking budget"), { target: { value: "0" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
@@ -168,7 +169,7 @@ describe("Intelligence class editing", () => {
         expected_revision: "original-revision",
         mapping: {
           anthropic: { model: "claude-fable-5", thinking: "future-effort", cache: { ttl: 60 } },
-          codex: { model: "custom-codex-model", reasoning_effort: "medium", service_tier: "priority" },
+          codex: { model: "custom-codex-model", reasoning_effort: "medium", service_tier: "fast" },
           openai: null, google: { thinking_budget: 0 },
           local: { model: "local-model", temperature: 0, flags: ["keep"], disabled: null },
           spare: null,

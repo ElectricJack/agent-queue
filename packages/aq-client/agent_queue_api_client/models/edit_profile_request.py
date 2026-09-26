@@ -25,6 +25,7 @@ class EditProfileRequest:
         harness (None | str | Unset): New CLI harness id (optional)
         permission_mode (None | str | Unset): New permission mode (optional)
         codex_full_auto (bool | None | Unset): Enable or disable Codex --full-auto
+        codex_service_tier (None | str | Unset): Codex service tier override; null clears it
         claude_dangerously_skip_permissions (bool | None | Unset): Enable or disable Claude permission-prompt bypass
         allowed_tools (list[Any] | None | Unset): New tool whitelist (optional)
         mcp_servers (list[Any] | None | Unset): New MCP server names from the registry (optional). A legacy name ->
@@ -40,6 +41,7 @@ class EditProfileRequest:
     harness: None | str | Unset = UNSET
     permission_mode: None | str | Unset = UNSET
     codex_full_auto: bool | None | Unset = UNSET
+    codex_service_tier: None | str | Unset = UNSET
     claude_dangerously_skip_permissions: bool | None | Unset = UNSET
     allowed_tools: list[Any] | None | Unset = UNSET
     mcp_servers: list[Any] | None | Unset = UNSET
@@ -82,6 +84,12 @@ class EditProfileRequest:
             codex_full_auto = UNSET
         else:
             codex_full_auto = self.codex_full_auto
+
+        codex_service_tier: None | str | Unset
+        if isinstance(self.codex_service_tier, Unset):
+            codex_service_tier = UNSET
+        else:
+            codex_service_tier = self.codex_service_tier
 
         claude_dangerously_skip_permissions: bool | None | Unset
         if isinstance(self.claude_dangerously_skip_permissions, Unset):
@@ -144,6 +152,8 @@ class EditProfileRequest:
             field_dict["permission_mode"] = permission_mode
         if codex_full_auto is not UNSET:
             field_dict["codex_full_auto"] = codex_full_auto
+        if codex_service_tier is not UNSET:
+            field_dict["codex_service_tier"] = codex_service_tier
         if claude_dangerously_skip_permissions is not UNSET:
             field_dict["claude_dangerously_skip_permissions"] = claude_dangerously_skip_permissions
         if allowed_tools is not UNSET:
@@ -210,6 +220,15 @@ class EditProfileRequest:
             return cast(bool | None | Unset, data)
 
         codex_full_auto = _parse_codex_full_auto(d.pop("codex_full_auto", UNSET))
+
+        def _parse_codex_service_tier(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        codex_service_tier = _parse_codex_service_tier(d.pop("codex_service_tier", UNSET))
 
         def _parse_claude_dangerously_skip_permissions(data: object) -> bool | None | Unset:
             if data is None:
@@ -298,6 +317,7 @@ class EditProfileRequest:
             harness=harness,
             permission_mode=permission_mode,
             codex_full_auto=codex_full_auto,
+            codex_service_tier=codex_service_tier,
             claude_dangerously_skip_permissions=claude_dangerously_skip_permissions,
             allowed_tools=allowed_tools,
             mcp_servers=mcp_servers,
