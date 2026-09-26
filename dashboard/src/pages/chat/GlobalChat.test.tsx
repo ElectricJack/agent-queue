@@ -2,13 +2,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { supervisorInboxHistory } from "../../api/client";
+import { supervisorInboxHistory, supervisorInboxStatus } from "../../api/client";
 import { fetchChatMessages, sendChatMessage, type ChatMessagesResponse } from "../../api/chat";
 import type { MessageModel } from "../../api/client";
 import GlobalChat from "../GlobalChat";
-import { historyConversation, historyResult } from "./historyFixtures";
+import { historyConversation, historyResult, statusResult } from "./historyFixtures";
 
-vi.mock("../../api/client", () => ({ supervisorInboxHistory: vi.fn() }));
+vi.mock("../../api/client", () => ({ supervisorInboxHistory: vi.fn(), supervisorInboxStatus: vi.fn() }));
 vi.mock("../../api/chat", () => ({ fetchChatMessages: vi.fn(), sendChatMessage: vi.fn() }));
 vi.mock("../../ws/useEventStream", () => ({ useEventStream: vi.fn() }));
 
@@ -17,6 +17,7 @@ beforeAll(() => Object.defineProperty(HTMLElement.prototype, "scrollTo", {
 }));
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(supervisorInboxStatus).mockResolvedValue(statusResult(true));
   vi.mocked(supervisorInboxHistory).mockResolvedValue(historyResult([historyConversation()]));
   vi.mocked(fetchChatMessages).mockImplementation(async (_project, opts) => ({
     success: true, session: "supervisor-global", project_id: "", count: 1,
@@ -42,6 +43,32 @@ function choose(thread: string) {
 }
 
 describe("GlobalChat conversation filtering", () => {
+  it("keeps history and the composer unavailable when the feature is off", async () => {
+    vi.mocked(supervisorInboxStatus).mockResolvedValue(statusResult(false));
+    renderChat();
+    await screen.findByText("Discord conversations are disabled.");
+    expect(supervisorInboxHistory).not.toHaveBeenCalled();
+    expect(fetchChatMessages).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("keeps the view unavailable until enablement is known", () => {
+    vi.mocked(supervisorInboxStatus).mockReturnValue(new Promise<ReturnType<typeof statusResult>>(() => {}));
+    renderChat();
+    expect(screen.getByText("Loading conversation status…")).toBeInTheDocument();
+    expect(supervisorInboxHistory).not.toHaveBeenCalled();
+    expect(fetchChatMessages).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the status request fails", async () => {
+    vi.mocked(supervisorInboxStatus).mockRejectedValue(new Error("Status unavailable"));
+    renderChat();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Status unavailable");
+    expect(supervisorInboxHistory).not.toHaveBeenCalled();
+    expect(fetchChatMessages).not.toHaveBeenCalled();
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
   it("filters history, uses dashboard identity to send, and restores All", async () => {
     renderChat();
     await screen.findByText("Dashboard history");

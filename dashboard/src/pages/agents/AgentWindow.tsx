@@ -1,11 +1,9 @@
 import { useEffect, useId, useState } from "react";
-import { XMarkIcon, CommandLineIcon, Cog6ToothIcon, ChatBubbleLeftRightIcon } from "@heroicons/react/24/outline";
-import { useSearchParams } from "react-router-dom";
+import { XMarkIcon, CommandLineIcon, Cog6ToothIcon } from "@heroicons/react/24/outline";
 import type { FlockAgent } from "../../api/agents";
 import { AgentSubagents, AgentState, AgentEligibility } from "./AgentMetadata";
 import AgentSettings from "./AgentSettings";
 import AgentTerminal from "./AgentTerminal";
-import GlobalChat from "../GlobalChat";
 
 export default function AgentWindow({ agent, onClose, resetToken, focusRequest }: {
   agent: FlockAgent;
@@ -13,33 +11,14 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
   resetToken: string | null;
   focusRequest: string | null;
 }) {
-  const [localTab, setLocalTab] = useState<"terminal" | "settings" | "conversations">("terminal");
-  const [searchParams, setSearchParams] = useSearchParams();
-  const globalSupervisor = agent.role === "supervisor" && agent.project_id == null;
-  const requestedTab = searchParams.get("supervisorView");
-  const tab = globalSupervisor
-    ? requestedTab === "conversations" || (requestedTab === null && searchParams.has("conversation"))
-      ? "conversations" : requestedTab === "settings" ? "settings" : "terminal"
-    : localTab;
-  const setTab = (next: typeof localTab) => {
-    if (!globalSupervisor) {
-      setLocalTab(next);
-      return;
-    }
-    setSearchParams((current) => {
-      const params = new URLSearchParams(current);
-      params.set("supervisorView", next);
-      return params;
-    });
-  };
+  const [tab, setTab] = useState<"terminal" | "settings">("terminal");
   const id = useId();
   useEffect(() => {
-    if (resetToken || focusRequest) setLocalTab("terminal");
+    if (resetToken || focusRequest) setTab("terminal");
   }, [resetToken, focusRequest]);
 
   const tabs = [
     { id: "terminal" as const, label: "Terminal", Icon: CommandLineIcon },
-    ...(globalSupervisor ? [{ id: "conversations" as const, label: "Conversations", Icon: ChatBubbleLeftRightIcon }] : []),
     { id: "settings" as const, label: "Settings", Icon: Cog6ToothIcon },
   ];
 
@@ -47,7 +26,7 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
     <section aria-label={agent.name + " agent window"}
       className="flex min-h-80 min-w-0 flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-900/40 lg:min-h-0">
       <header className="shrink-0 border-b border-gray-800 bg-gray-900 px-3 py-2">
-        <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h2 className="truncate text-sm font-semibold text-gray-100">{agent.name}</h2>
@@ -69,8 +48,8 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
               <p className="mt-0.5 truncate text-xs text-indigo-300">Attached project: {agent.project_id}</p>
             )}
           </div>
-          <div className="flex max-w-full shrink-0 items-center gap-3">
-            <div role="tablist" aria-label={agent.name + " view"} className="flex min-w-0 flex-wrap gap-2">
+          <div className="flex shrink-0 items-center gap-3">
+            <div role="tablist" aria-label={agent.name + " view"} className="flex gap-3">
               {tabs.map(({ id: key, label, Icon }) => (
                 <button key={key} type="button" role="tab" id={id + "-" + key}
                   aria-controls={id + "-panel"} aria-selected={tab === key}
@@ -89,9 +68,7 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
         </div>
       </header>
       <div role="tabpanel" id={id + "-panel"} aria-labelledby={id + "-" + tab} className="min-h-0 flex-1 overflow-hidden">
-        {tab === "terminal" ? <AgentTerminal agent={agent} focusRequest={focusRequest} />
-          : tab === "conversations" ? <div className="h-full p-3"><GlobalChat /></div>
-            : <AgentSettings agent={agent} onDeleted={onClose} />}
+        {tab === "terminal" ? <AgentTerminal agent={agent} focusRequest={focusRequest} /> : <AgentSettings agent={agent} onDeleted={onClose} />}
       </div>
     </section>
   );

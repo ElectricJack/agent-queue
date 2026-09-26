@@ -24,3 +24,19 @@ export function historyResult(conversations: ConversationHistoryRecord[] = [], n
     request: new Request("http://localhost/api/supervisor_inbox/history"), response: new Response(),
   };
 }
+
+export function statusResult(enabled: boolean) {
+  return {
+    data: {
+      success: true, enabled, preconditions: { ok: enabled, unmet: [] },
+      diagnostics: { message_content_intent: true, permissions: null, outbox_bound: true },
+      limits: { max_input_chars: 4000, author_window_limit: 10, channel_window_limit: 60,
+        window_seconds: 600, max_reply_chars: 1900 },
+      counts: { by_state: {}, inputs_pending_supervisor: 0 },
+      backfill: { cursors: [], gaps: [] },
+      intake: { available: true, window_seconds: 3600, total: 0, ignored: {} },
+    },
+    error: undefined,
+    request: new Request("http://localhost/api/supervisor_inbox/status"), response: new Response(),
+  };
+}
