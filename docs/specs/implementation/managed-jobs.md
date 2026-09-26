@@ -71,3 +71,19 @@ task; supervisors can subscribe within their project. Terminal digests retain
 actual failure/cancellation/lost outcomes and point to `aq job result ID`.
 Installed worker templates need the usual grants reseed; see the
 [wait guide](../../guides/agent-waits.md). No schema revision is needed in phase 3.
+
+Terminal result delivery consumes at most 100 pending `job_outbox` intents per
+service tick, including with new job admission disabled. A task's matching active
+or satisfied job wait owns its wake, even if its result message is still pending;
+the job dispatcher suppresses its separate notification. Other task completions
+enqueue `job:<id>:terminal` as a `job_result` message and acknowledge the outbox
+in the same transaction. Disabled messaging or an insertion failure retains
+pending intent and the immutable result. Integration-owned jobs have no worker
+notification. Named supervisor subscriptions do not suppress the task's wake.
+
+Result nudges use the granted `aq job result ID --json` command. Internal job/wait
+results do not synthesize transcript replies, resume paused tasks, or launch
+sleeping task sessions. Prime independently reads the ten most recent terminal
+results for the held task and renders summaries within a 6,000-byte budget.
+Prime/result reads neither acknowledge terminal intent nor create messages;
+results remain visible when the message transport is unavailable.

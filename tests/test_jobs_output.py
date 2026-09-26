@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 from src.jobs.artifacts import OutputStore, atomic_json, job_directory, read_json
-from src.jobs.result import build_result
+from src.jobs.result import build_result, result_digest
 from src.integration.development_result_parser import PytestOutputParser
 from src.jobs.result import report_json
 
@@ -118,3 +118,25 @@ def test_atomic_receipt_roundtrip(tmp_path):
     atomic_json(path, {"exit_code": 0})
     assert read_json(path) == {"exit_code": 0}
     assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_transport_digest_preserves_outcome_counts_duration_and_failure_prefix():
+    summary = {"failed": 2, "passed": 30}
+    result = build_result(
+        {"id": str(uuid.uuid4()), "preset": "test", "input_mode": "live"},
+        {
+            "exit_code": 1,
+            "queue_seconds": 10,
+            "run_seconds": 20,
+            "report": report_json(PytestOutputParser().finish()),
+        },
+    )
+    result.update(summary=summary, excerpt="\x1b[31mFAILURE🐈\n" + "noise" * 1000)
+    digest = result_digest({"id": result["job_id"], "state": "failed", "result": result})
+    assert digest["outcome"] == "failed" and digest["exit_code"] == 1
+    assert digest["summary"] == summary
+    assert (digest["queue_seconds"], digest["run_seconds"]) == (10, 20)
+    assert digest["result_hash"] == result["result_hash"]
+    assert digest["excerpt"].startswith("FAILURE🐈")
+    assert len(digest["excerpt"].encode()) <= 400
+    assert len(json.dumps(digest, ensure_ascii=False).encode()) <= 4096

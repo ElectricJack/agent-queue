@@ -240,26 +240,12 @@ class AgentWaitQueriesMixin:
             ):
                 return ProducerObservation(available=False)
             from src.jobs.policy import TERMINAL
-            from src.jobs.result import bounded
+            from src.jobs.result import result_digest
 
             ref = f"job:{job['id']}"
             if job["state"] not in TERMINAL:
                 return ProducerObservation(result_ref=ref)
-            result = job["result"] or {}
-            digest = {
-                key: result.get(key)
-                for key in (
-                    "outcome",
-                    "exit_code",
-                    "signal",
-                    "infra_reason",
-                    "summary",
-                    "result_hash",
-                )
-            }
-            # Leave room for JSON escaping while preserving the failure-first prefix.
-            digest["excerpt"] = bounded(result.get("excerpt", ""), 400)
-            digest.update(job_id=job["id"], state=job["state"])
+            digest = result_digest(dict(job))
             return ProducerObservation(completed_at=job["ended_at"], result_ref=ref, digest=digest)
         return ProducerObservation(available=False)
 

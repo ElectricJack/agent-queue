@@ -2,11 +2,23 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from src.database.tables import jobs, job_outbox, job_workspace_pins, tasks, workspaces
+from src.database.tables import (
+    agent_waits,
+    jobs,
+    job_outbox,
+    job_workspace_pins,
+    messages,
+    tasks,
+    workspaces,
+)
 from src.jobs.policy import JobError, TERMINAL, TRANSITIONS
+
+logger = logging.getLogger(__name__)
 
 
 def unpinned_workspace():
@@ -14,6 +26,131 @@ def unpinned_workspace():
 
 
 class JobQueriesMixin:
+    async def list_task_job_results(self, task_id: str, *, limit: int = 10) -> list[dict]:
+        """Recent terminal results for prime, with no delivery acknowledgement."""
+        async with self._engine.connect() as conn:
+            return [
+                dict(row)
+                for row in (
+                    await conn.execute(
+                        select(jobs)
+                        .join(tasks, tasks.c.id == jobs.c.task_id)
+                        .where(
+                            jobs.c.owner_kind == "task",
+                            jobs.c.task_id == task_id,
+                            jobs.c.project_id == tasks.c.project_id,
+                            jobs.c.state.in_(TERMINAL),
+                        )
+                        .order_by(jobs.c.ended_at.desc(), jobs.c.id)
+                        .limit(min(max(limit, 1), 10))
+                    )
+                ).mappings()
+            ]
+
+    async def reconcile_job_results(self, *, now: float, messaging_enabled: bool) -> None:
+        """Dispatch at most 100 terminal intents; a matching owner wait owns the wake.
+
+        Lock the task before the outbox, serializing with wait registration's
+        task lock. Message insertion and acknowledgement commit together. A
+        failed transaction or disabled messaging leaves intent for the next scan.
+        """
+        from src.jobs.result import result_digest
+
+        async with self._engine.connect() as conn:
+            candidates = (
+                (
+                    await conn.execute(
+                        select(job_outbox.c.key, jobs.c.task_id)
+                        .join(jobs)
+                        .where(job_outbox.c.delivered_at.is_(None))
+                        .order_by(job_outbox.c.created_at, job_outbox.c.key)
+                        .limit(100)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        for candidate in candidates:
+            try:
+                async with self._engine.begin() as conn:
+                    await conn.execute(
+                        select(tasks.c.id)
+                        .where(tasks.c.id == candidate["task_id"])
+                        .with_for_update()
+                    )
+                    intent = (
+                        (
+                            await conn.execute(
+                                select(job_outbox)
+                                .where(
+                                    job_outbox.c.key == candidate["key"],
+                                    job_outbox.c.delivered_at.is_(None),
+                                )
+                                .with_for_update(skip_locked=True)
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if not intent:
+                        continue
+                    job = (
+                        (await conn.execute(select(jobs).where(jobs.c.id == intent["job_id"])))
+                        .mappings()
+                        .one()
+                    )
+                    owner_exists = await conn.scalar(
+                        select(tasks.c.id).where(
+                            tasks.c.id == job["task_id"], tasks.c.project_id == job["project_id"]
+                        )
+                    )
+                    waiting = await conn.scalar(
+                        select(agent_waits.c.id)
+                        .where(
+                            agent_waits.c.project_id == job["project_id"],
+                            agent_waits.c.owner_kind == "task",
+                            agent_waits.c.owner_id == job["owner_id"],
+                            agent_waits.c.kind == "job",
+                            agent_waits.c.match["job_id"].as_string() == job["id"],
+                            agent_waits.c.state.in_(("active", "satisfied")),
+                        )
+                        .limit(1)
+                    )
+                    if job["owner_kind"] == "task" and owner_exists and not waiting:
+                        if not messaging_enabled:
+                            continue
+                        await conn.execute(
+                            pg_insert(messages)
+                            .values(
+                                id=intent["key"],
+                                project_id=job["project_id"],
+                                from_kind="system",
+                                from_id="jobs",
+                                to_kind="task",
+                                to_id=job["owner_id"],
+                                subject=f"Job {job['state']}",
+                                body_kind="job_result",
+                                created_at=now,
+                                body=json.dumps(
+                                    {
+                                        "terminal_key": intent["key"],
+                                        "result_ref": f"job:{job['id']}",
+                                        "digest": result_digest(dict(job)),
+                                    }
+                                ),
+                            )
+                            .on_conflict_do_nothing(index_elements=["id"])
+                        )
+                    await conn.execute(
+                        update(job_outbox)
+                        .where(job_outbox.c.key == intent["key"])
+                        .values(delivered_at=now)
+                    )
+            except Exception:
+                logger.exception(
+                    "Job result %s remains pending in the durable outbox", candidate["key"]
+                )
+
     async def submit_job(
         self,
         values: dict,

@@ -260,6 +260,9 @@ class JobService:
                 if candidate:
                     await self.launch(candidate)
             await self.sweep()
+            await self.db.reconcile_job_results(
+                now=time.time(), messaging_enabled=self.config.messages.enabled
+            )
 
     async def launch(self, job):
         changed = await self.db.transition_job(

@@ -10,13 +10,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 from click.testing import CliRunner
-from sqlalchemy import func, select, update
+from sqlalchemy import event, func, select, update
 
 from src.agent_waits import WaitError, job_wait_deadline
 from src.commands import CommandHandler
 from src.commands.contracts import CONTRACTS
 from src.config import AppConfig
-from src.database.tables import agent_waits, jobs, job_workspace_pins, workspaces
+from src.database.tables import (
+    agent_waits,
+    jobs,
+    job_outbox,
+    job_workspace_pins,
+    messages,
+    workspaces,
+)
 from src.jobs.result import build_result
 from src.models import AgentProfile, Workspace, RepoSourceType
 from tests.test_agent_wait_queries import NOW, env as _wait_env, result_count
@@ -447,3 +454,151 @@ async def test_lost_job_resolves_once_without_releasing_cleanup_pin_and_replay_a
     replay = await submit(setup)
     assert replay["wait"]["id"] == wait["id"] and replay["wait"]["state"] == "satisfied"
     assert await result_count(setup.db, wait["id"]) == 1
+
+
+@pytest.mark.parametrize("resolve_first", [False, True])
+async def test_terminal_dispatch_uses_only_the_owner_wait_wake(setup, resolve_first):
+    from src.messages.delivery import MessageDeliveryEngine
+    from tests.test_message_delivery import FakeSessionManager
+
+    job = await submit(setup)
+    await finish(setup, job)
+    if resolve_first:
+        await setup.db.reconcile_agent_waits(now=NOW + 60)
+    await asyncio.gather(
+        *[setup.db.reconcile_job_results(now=NOW + 60, messaging_enabled=True) for _ in range(2)]
+    )
+    await setup.db.reconcile_agent_waits(now=NOW + 60)
+    pending = await setup.db.get_pending_messages("task", "owner")
+    assert [msg.id for msg in pending] == [f"wait:{job['wait']['id']}:result"]
+    manager = FakeSessionManager(activity_map={("task", "owner", "p"): "idle"})
+    engine = MessageDeliveryEngine(setup.db, manager, AppConfig(), bus=None)
+    await engine.run_delivery_pass()
+    await setup.db.reconcile_job_results(now=NOW + 61, messaging_enabled=True)
+    await setup.db.reconcile_agent_waits(now=NOW + 61)
+    await engine.run_delivery_pass()
+    assert len(manager.nudges) == 1
+    assert job["wait"]["id"] in manager.nudges[0][3]
+
+
+async def test_unwaited_job_nudges_once_and_prime_reads_create_no_messages(setup, tmp_path):
+    from src.jobs.service import JobService
+    from src.messages.delivery import MessageDeliveryEngine
+    from src.prime.sections import build_messages_section
+    from tests.test_message_delivery import FakeSessionManager
+
+    job = await setup.db.submit_job(job_values())
+    await finish(setup, job)
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.messages.enabled = True
+    # The ordinary service tick dispatches existing terminal work even when
+    # new job admission is disabled.
+    assert not config.resources.jobs.enabled
+    await JobService(setup.db, config).tick()
+    pending = await setup.db.get_pending_messages("task", "owner")
+    assert [msg.id for msg in pending] == [f"job:{job['id']}:terminal"]
+    payload = json.loads(pending[0].body)
+    assert payload["result_ref"] == f"job:{job['id']}"
+    assert payload["digest"]["outcome"] == "failed"
+    manager = FakeSessionManager(activity_map={("task", "owner", "p"): "idle"})
+    engine = MessageDeliveryEngine(setup.db, manager, config, bus=None)
+    await engine.run_delivery_pass()
+    assert manager.nudges[0][3] == f"Handle `aq job result {job['id']} --json`."
+    for _ in range(2):
+        section = await build_messages_section(
+            setup.db, "owner", config=config, mark_delivered=True
+        )
+        assert f"aq job result {job['id']} --json" in section.body
+        await setup.db.reconcile_job_results(now=NOW + 61, messaging_enabled=True)
+        await engine.run_delivery_pass()
+    assert len(manager.nudges) == 1
+    async with setup.db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(messages)) == 1
+
+
+@pytest.mark.parametrize("boundary", ["message", "ack"])
+async def test_job_notification_failure_and_disabled_messaging_keep_durable_result(setup, boundary):
+    from src.prime.sections import build_messages_section
+
+    job = await setup.db.submit_job(job_values())
+    terminal = await finish(setup, job)
+    config = AppConfig()
+    config.messages.enabled = False
+    await setup.db.reconcile_job_results(now=NOW + 60, messaging_enabled=False)
+    section = await build_messages_section(setup.db, "owner", config=config)
+    assert f"aq job result {job['id']} --json" in section.body
+    assert '"outcome": "failed"' in section.body
+
+    def reject(conn, cursor, statement, parameters, context, executemany):
+        if (boundary == "message" and statement.startswith("INSERT INTO messages")) or (
+            boundary == "ack" and statement.startswith("UPDATE job_outbox")
+        ):
+            raise RuntimeError("injected job delivery failure")
+
+    event.listen(setup.db._engine.sync_engine, "before_cursor_execute", reject)
+    try:
+        await setup.db.reconcile_job_results(now=NOW + 61, messaging_enabled=True)
+    finally:
+        event.remove(setup.db._engine.sync_engine, "before_cursor_execute", reject)
+    async with setup.db._engine.connect() as conn:
+        assert await conn.scalar(select(job_outbox.c.delivered_at)) is None
+        assert await conn.scalar(select(func.count()).select_from(messages)) == 0
+    assert (await setup.db.get_job(job["id"]))["result"] == terminal["result"]
+    await setup.db.reconcile_job_results(now=NOW + 62, messaging_enabled=True)
+    await setup.db.reconcile_job_results(now=NOW + 63, messaging_enabled=True)
+    assert len(await setup.db.get_pending_messages("task", "owner")) == 1
+
+
+async def test_pending_wait_message_intent_suppresses_job_notification(setup, monkeypatch):
+    job = await submit(setup)
+    original = setup.db._enqueue_wait_result
+    monkeypatch.setattr(setup.db, "_enqueue_wait_result", AsyncMock())
+    await finish(setup, job)
+    await setup.db.reconcile_agent_waits(now=NOW + 60)
+    await setup.db.reconcile_job_results(now=NOW + 60, messaging_enabled=True)
+    assert await setup.db.get_pending_messages("task", "owner") == []
+    assert (await setup.db.get_agent_wait(job["wait"]["id"]))["digest"]["outcome"] == "failed"
+    monkeypatch.setattr(setup.db, "_enqueue_wait_result", original)
+    await setup.db.reconcile_agent_waits(now=NOW + 61)
+    assert await result_count(setup.db, job["wait"]["id"]) == 1
+
+
+@pytest.mark.parametrize("state", ["busy", "absent", "sleeping", "paused"])
+@pytest.mark.parametrize("waiting", [False, True])
+async def test_job_output_queues_without_resuming_task_sessions(setup, state, waiting):
+    from src.messages.delivery import MessageDeliveryEngine
+    from tests.test_message_delivery import FakeSessionManager
+
+    job = await submit(setup) if waiting else await setup.db.submit_job(job_values())
+    await finish(setup, job)
+    await setup.db.reconcile_agent_waits(now=NOW + 60)
+    await setup.db.reconcile_job_results(now=NOW + 60, messaging_enabled=True)
+    if state == "paused":
+        await setup.db.update_task("owner", status="PAUSED")
+    manager = FakeSessionManager(
+        activity_map={
+            ("task", "owner", "p"): "idle" if state == "paused" else state,
+        }
+    )
+    engine = MessageDeliveryEngine(setup.db, manager, AppConfig(), bus=None)
+    await engine.run_delivery_pass()
+    assert manager.nudges == [] and manager.ensure_started_calls == []
+    assert len(await setup.db.get_pending_messages("task", "owner")) == 1
+
+
+async def test_prime_job_summary_is_bounded_and_selects_recent_terminal_results(setup):
+    from src.prime.sections import build_messages_section
+
+    completed = []
+    for index in range(12):
+        job = await setup.db.submit_job(job_values(idempotency_key=f"prime-{index}"))
+        await finish(setup, job, ended_at=NOW + index)
+        completed.append(job["id"])
+    rows = await setup.db.list_task_job_results("owner", limit=100)
+    assert [row["id"] for row in rows] == list(reversed(completed[2:]))
+    config = AppConfig()
+    config.messages.enabled = False
+    section = await build_messages_section(setup.db, "owner", config=config)
+    assert completed[-1] in section.body and completed[0] not in section.body
+    assert len(section.body.encode()) <= 6000 + len("Managed job results:\n")
+    assert await setup.db.get_pending_messages("task", "owner") == []

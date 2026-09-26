@@ -1198,8 +1198,9 @@ async def test_wait_result_routes_to_granted_pointer(db, kind, target, activity,
         assert (await db.get_message(msg.id)).delivered_at is None
 
 
-async def test_wait_result_never_fabricates_transcript_reply(db):
-    msg = await _send(db, body_kind="wait_result")
+@pytest.mark.parametrize("body_kind", ["wait_result", "job_result"])
+async def test_wait_result_never_fabricates_transcript_reply(db, body_kind):
+    msg = await _send(db, body_kind=body_kind)
     await db.mark_delivered(msg.id, via="nudge")
     async with db._engine.begin() as conn:
         await conn.execute(

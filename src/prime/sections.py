@@ -507,7 +507,7 @@ async def build_messages_section(
             if getattr(msg, "subject", None):
                 header = f"{header} {msg.subject}"
             body = msg.body
-            if getattr(msg, "body_kind", None) == "wait_result":
+            if getattr(msg, "body_kind", None) in {"wait_result", "job_result"}:
                 from src.messages.delivery import _render_nudge
 
                 body = f"{_render_nudge([msg])}\n{body}"
@@ -519,6 +519,25 @@ async def build_messages_section(
                     # Best-effort: an already-claimed row (nudge race) is
                     # legal and non-fatal; we still rendered it above.
                     pass
+
+    # Results remain available even with messaging disabled or already delivered.
+    # Reading prime never consumes terminal intent or creates another message.
+    if callable(getattr(db, "list_task_job_results", None)):
+        from src.jobs.result import bounded, result_digest
+
+        try:
+            results = await db.list_task_job_results(task_id)
+            summaries = []
+            for job in results:
+                digest = result_digest(job)
+                summaries.append(
+                    f"aq job result {job['id']} --json\n"
+                    + json.dumps(digest, ensure_ascii=False)
+                )
+            if summaries:
+                parts.append("Managed job results:\n" + bounded("\n\n".join(summaries), 6000))
+        except Exception:
+            logger.debug("prime: could not read job results for %s", task_id, exc_info=True)
 
     rows = await db.get_task_contexts(task_id)
     from src.handoffs import collect_facts, latest_note, render_facts, render_note

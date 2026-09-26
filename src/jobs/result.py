@@ -23,6 +23,32 @@ def bounded(text: str, size: int) -> str:
     return data[: max(0, size - len(marker))].decode("utf-8", "ignore") + marker.decode()
 
 
+def result_digest(job: dict) -> dict:
+    """Small failure-first transport summary; the immutable result stays authoritative."""
+    result = job.get("result") or {}
+    digest = {
+        key: result.get(key)
+        for key in (
+            "outcome",
+            "exit_code",
+            "signal",
+            "infra_reason",
+            "result_hash",
+            "queue_seconds",
+            "run_seconds",
+        )
+    }
+    digest.update(
+        job_id=job["id"],
+        state=job["state"],
+        summary=result.get("summary"),
+        excerpt=bounded(result.get("excerpt") or "", 400),
+    )
+    if len(json.dumps(digest["summary"], ensure_ascii=False).encode()) > 512:
+        digest.update(summary=None, summary_truncated=True)
+    return digest
+
+
 def build_result(job: dict, completion: dict | None, tail: bytes = b"") -> dict:
     receipt = completion or {}
     report = (
