@@ -27,6 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.profiles.parser import parse_profile
+from tests.test_e2e_cli_stateful import SCENARIO_GROUPS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SMOKE = REPO_ROOT / "scripts" / "e2e" / "smoke.py"
@@ -215,6 +216,13 @@ def test_fresh_workers_quiesces_every_project_in_the_global_profile(monkeypatch)
             )
         return task_id
 
+    def fake_api(command, args):
+        if command == "session_list":
+            assert args == {"lifecycle": "pool"}
+            return {"sessions": list(live)}
+        assert command == "list_tasks"
+        return {"tasks": [{"id": task_id} for task_id in sorted(open_tasks[args["project_id"]])]}
+
     def immediate_wait(predicate, **_kwargs):
         for _ in range(10):
             value = predicate()
@@ -223,6 +231,7 @@ def test_fresh_workers_quiesces_every_project_in_the_global_profile(monkeypatch)
         raise AssertionError("predicate did not converge")
 
     monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api", fake_api)
     monkeypatch.setattr(smoke, "create_task", fake_create)
     monkeypatch.setattr(smoke, "wait_for", immediate_wait)
 
@@ -334,6 +343,18 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     assert by_key["S17"].families == ("task graph/phases/subtasks",)
     assert by_key["S18"].families == ("playbooks/failure triage",)
     assert by_key["S19"].families == ("authentication/scoped graph/quota",)
+
+
+def test_ci_scenario_groups_cover_every_scenario_once():
+    smoke = _load_smoke()
+    grouped = [key for group in SCENARIO_GROUPS.values() for key in group]
+
+    assert len(SCENARIO_GROUPS) == 4
+    assert len(grouped) == len(set(grouped))
+    assert set(grouped) == (
+        {scenario.key for scenario in smoke.SCENARIOS} - {"S16"}
+    ) | {phase.key for phase in smoke.FAILOVER_PHASES}
+    assert {phase.key for phase in smoke.FAILOVER_PHASES} == {"S16a", "S16b"}
 
 
 def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(monkeypatch):

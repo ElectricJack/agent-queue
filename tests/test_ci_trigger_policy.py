@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+from tests.test_e2e_cli_stateful import SCENARIO_GROUPS
+
 WORKFLOWS = Path('.github/workflows')
 CANDIDATE_REF = 'aq/integration/p-' + '5' * 32 + '/r-' + '6' * 32
 
@@ -145,7 +147,7 @@ def test_test_job_checks_out_the_exact_event_revision_read_only():
     assert 'ref: ${{ github.sha }}' in text
     assert 'test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"' in text
     assert workflow()['permissions'] == {'contents': 'read'}
-    assert list(workflow()['jobs']) == ['test']
+    assert list(workflow()['jobs']) == ['test', 'e2e-cli']
 
 
 def test_default_shards_cover_each_group_once_with_four_workers():
@@ -182,3 +184,23 @@ def test_committed_shard_timings_are_valid_pytest_split_data():
         assert nodeid.startswith("tests/") and "::" in nodeid
         assert isinstance(duration, (int, float)) and not isinstance(duration, bool)
         assert math.isfinite(duration) and duration >= 0
+
+
+def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
+    jobs = workflow()['jobs']
+    e2e = jobs['e2e-cli']
+    assert e2e['if'] == jobs['test']['if']
+    assert e2e['strategy']['matrix']['group'] == list(SCENARIO_GROUPS)
+    assert e2e['strategy']['fail-fast'] == 'false'
+    assert e2e['timeout-minutes'] == '5'
+    run = e2e['steps'][-1]['run']
+    assert run == (
+        "pytest 'tests/test_e2e_cli_stateful.py::"
+        "test_disposable_daemon_stateful_cli_smoke[${{ matrix.group }}]' "
+        "-m integration -s --durations=0"
+    )
+    suites = {suite['name']: suite['command'] for suite in jobs['test']['strategy']['matrix']['suite']}
+    assert '--ignore=tests/test_e2e_cli_stateful.py' in suites['postgres-integration']
+    checkout = e2e['steps'][0]
+    assert checkout['uses'] == 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
+    assert checkout['with']['ref'] == '${{ github.sha }}'

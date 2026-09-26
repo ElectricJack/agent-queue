@@ -18,6 +18,15 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# Keep S1-S3 together: the claim and filing cases use the pool S1 creates.
+# Provider outage and recovery prepare independent fixtures in separate groups.
+SCENARIO_GROUPS = {
+    "claims": ("S1", "S2", "S3", "S4", "S7", "S18"),
+    "cli": ("S5", *(f"S{number}" for number in range(8, 15))),
+    "graphs": ("S6", "S16b", "S19"),
+    "failover": ("S15", "S16a", "S17"),
+}
+
 
 def _unused_loopback_port() -> int:
     with socket.socket() as sock:
@@ -26,10 +35,9 @@ def _unused_loopback_port() -> int:
 
 
 @pytest.mark.integration
-# Bound the whole acceptance journey, including setup (180s), the smoke
-# subprocess (1500s), and cleanup (90s). CI's job deadline still takes precedence.
-@pytest.mark.timeout(1800)
-def test_disposable_daemon_stateful_cli_smoke(tmp_path):
+@pytest.mark.timeout(540)
+@pytest.mark.parametrize("scenarios", SCENARIO_GROUPS.values(), ids=list(SCENARIO_GROUPS))
+def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
     env = {
         **os.environ,
         "AQ_E2E_HOME": str(tmp_path / "aq-e2e"),
@@ -37,6 +45,7 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path):
         "E2E_DB_NAME": f"aq_e2e_cli_{os.getpid()}_{uuid.uuid4().hex[:8]}",
         "AQ_E2E_SESSION_PROVIDER": "fake",
         "AQ_E2E_CONVERGE_TIMEOUT": "90",
+        "PYTHONUNBUFFERED": "1",
     }
     postgres_test_dsn = env.get("POSTGRES_TEST_DSN")
     if postgres_test_dsn:
@@ -56,19 +65,16 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path):
     try:
         subprocess.run([str(setup), "--reset"], cwd=REPO_ROOT, env=env, check=True, timeout=180)
         result = subprocess.run(
-            [str(smoke)],
+            [str(smoke), *scenarios],
             cwd=REPO_ROOT,
             env=env,
             capture_output=True,
             check=False,
             text=True,
-            # The full kit now covers S1-S19 and takes about eight minutes on
-            # an otherwise idle box, but 15-16 minutes when CI's xdist worker
-            # runs it beside the Postgres performance fixtures. Pool waits
-            # can grant one extra convergence window when the daemon reports
-            # an active launch or quarantine, so leave room for the smoke
-            # runner to report its own detailed failure before this cap.
-            timeout=1500,
+            # CI gives each group its own runner and a five-minute job budget.
+            # Leave thirty seconds for environment setup and cleanup; daemon
+            # startup is part of this subprocess, alongside the scenarios.
+            timeout=270,
         )
         # Keep the scenario durations visible on successful CI runs too;
         # a slow tail can otherwise only be diagnosed after a failure.
@@ -77,7 +83,11 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path):
             if line.startswith(("PASS S", "FAIL S"))
         ))
         assert result.returncode == 0, f"{result.stdout}\n--- stderr ---\n{result.stderr}"
-        assert "19/19 scenarios passed" in result.stdout
+        assert f"{len(scenarios)}/{len(scenarios)} scenarios passed" in result.stdout
+        passed = {
+            line.split()[1] for line in result.stdout.splitlines() if line.startswith("PASS S")
+        }
+        assert passed == set(scenarios), result.stdout
         for status in (
             "passed",
             "unsupported",
@@ -85,6 +95,12 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path):
             "explicitly-untested",
         ):
             assert status in result.stdout
+    except subprocess.TimeoutExpired as exc:
+        # Preserve completed scenario timings when a group exceeds its budget.
+        # TimeoutExpired carries bytes even when subprocess.run uses text=True.
+        print((exc.stdout or b"").decode(errors="replace"), flush=True)
+        print((exc.stderr or b"").decode(errors="replace"), flush=True)
+        raise
     finally:
         if Path(env["AQ_E2E_HOME"]).exists():
             subprocess.run([str(cleanup)], cwd=REPO_ROOT, env=env, check=False, timeout=90)

@@ -82,7 +82,7 @@ jobs:
           - name: migration-and-slow
             command: pytest tests/ -n 4 --dist loadfile -m "migration or slow"
           - name: postgres-integration
-            command: pytest tests/ -n 4 --dist loadfile -m "integration or perf"
+            command: pytest tests/ -n 4 --dist loadfile -m "integration or perf" --ignore=tests/test_e2e_cli_stateful.py
 
     env:
       # Base DSN -- ``tests/pg_dsn.py`` rewrites this per xdist worker
@@ -219,3 +219,87 @@ jobs:
       - name: Remove PostgreSQL
         if: always()
         run: docker rm --force --volumes ci-postgres || true
+
+  e2e-cli:
+    name: E2E CLI (${{ matrix.group }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       !(github.event.pull_request.head.repo.full_name == github.repository &&
+         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        # IDs in tests/test_e2e_cli_stateful.py; together these cover S1-S19.
+        group: [claims, cli, graphs, failover]
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: agent_queue
+          POSTGRES_PASSWORD: agent_queue
+          POSTGRES_DB: agent_queue
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U agent_queue -d agent_queue"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 60
+
+    env:
+      POSTGRES_TEST_DSN: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/agent_queue
+      AQ_REQUIRE_POSTGRES_TESTS: "1"
+      GIT_AUTHOR_NAME: CI
+      GIT_AUTHOR_EMAIL: ci@example.invalid
+      GIT_COMMITTER_NAME: CI
+      GIT_COMMITTER_EMAIL: ci@example.invalid
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Share installed dependencies between suite arms and commits. Use only
+      # exact matches: a changed manifest or interpreter needs a fresh venv.
+      - name: Cache virtual environment
+        id: venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'packages/aq-client/pyproject.toml', 'uv.lock', 'poetry.lock', 'packages/aq-client/poetry.lock') }}
+
+      - name: Install dependencies on cache miss
+        if: steps.venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"
+
+      - name: Use virtual environment
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      # The cli extra installs aq-client from a local wheel. Refresh both
+      # editable packages even on a hit so generated client/source changes
+      # use this checkout, rather than the commit that populated the cache.
+      - name: Refresh local packages
+        run: python -m pip install --no-deps --no-build-isolation -e packages/aq-client -e .
+
+      # The smoke setup migrates its own unique disposable database. Run only
+      # this group's node, with no xdist workers or other suites competing.
+      - name: Run scenario group
+        run: pytest 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_stateful_cli_smoke[${{ matrix.group }}]' -m integration -s --durations=0

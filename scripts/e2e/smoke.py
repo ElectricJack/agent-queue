@@ -242,11 +242,13 @@ def aq_text(*args: str, timeout: float = 120.0) -> str:
 
 
 def api(command: str, args: dict | None = None, *, token: str | None = None) -> dict:
-    """``POST /api/execute`` — the surface for commands the CLI cannot pass args to.
+    """``POST /api/execute`` — fixture setup and background state inspection.
 
     ``gate_list``, ``explain_task`` and friends are categorized but carry
     only a codegen input schema, so the auto-generated Click command takes
-    no options.  The REST endpoint does, and it is just as public.
+    no options.  The REST endpoint does, and it is just as public. Polling
+    also uses this path so waiting for the daemon does not repeatedly launch
+    a Python CLI. Scenario mutations and explicit CLI assertions still use aq.
     """
     body = json.dumps({"command": command, "args": args or {}}).encode()
     req = urllib.request.Request(
@@ -265,6 +267,15 @@ def api(command: str, args: dict | None = None, *, token: str | None = None) -> 
     if not payload.get("ok"):
         return {"success": False, "error": payload.get("error"), **(payload.get("details") or {})}
     return payload.get("result") or {}
+
+
+def api_checked(command: str, args: dict) -> dict | list:
+    """Run a fixture command, failing promptly if it was refused."""
+    result = api(command, args)
+    if isinstance(result, dict):
+        check(result.get("success", True) is not False and "error" not in result,
+              f"{command} fixture command failed: {result}")
+    return result
 
 
 def wait_for(
@@ -310,7 +321,7 @@ def wait_for(
 
 
 def pool_row(project_id: str = PROJECT, profile_id: str = POOL_PROFILE) -> dict:
-    for row in collection_rows(aq("pool", "status", "--project-id", project_id), "pools"):
+    for row in collection_rows(api_checked("pool_status", {"project_id": project_id}), "pools"):
         if row["profile_id"] == profile_id:
             return row
     raise Failure(f"no pool row for {project_id}/{profile_id}")
@@ -319,7 +330,7 @@ def pool_row(project_id: str = PROJECT, profile_id: str = POOL_PROFILE) -> dict:
 def pool_sessions(
     project_id: str | None = PROJECT, *, include_draining: bool = False,
 ) -> list[dict]:
-    rows = collection_rows(aq("session", "list", "--lifecycle", "pool"), "sessions")
+    rows = collection_rows(api_checked("session_list", {"lifecycle": "pool"}), "sessions")
     live = ("starting", "running", "draining") if include_draining else ("starting", "running")
     return [
         s
@@ -419,7 +430,7 @@ def create_task(
 
 
 def task_show(task_id: str) -> dict:
-    return aq("task", "show", task_id)
+    return api_checked("task_show", {"task_id": task_id})
 
 
 @dataclass
@@ -549,7 +560,7 @@ def _open_pool_tasks(project_id: str = PROJECT) -> list[dict]:
     everything still open in either isolated fixture project is leftover
     scenario scaffolding, and clearing all of it is exactly the point.
     """
-    rows = aq("task", "list", "--project", project_id)
+    rows = api_checked("list_tasks", {"project_id": project_id})
     return list(rows) if isinstance(rows, list) else rows.get("tasks", [])
 
 
@@ -584,29 +595,27 @@ def idle_worker() -> Worker:
 
 
 def ensure_project(project_id: str, workspaces: list[str]) -> None:
-    existing = {p["id"] for p in collection_rows(aq("project", "list"), "projects")}
+    """Prepare scaffolding through the same public handlers as the CLI.
+
+    Registration runs both on daemon startup and before scenarios. It is
+    fixture setup; S8/S10 independently assert the real project/workspace CLI.
+    """
+    existing = {p["id"] for p in collection_rows(api_checked("list_projects", {}), "projects")}
     if project_id not in existing:
-        aq(
-            "project", "create",
-            "--name", project_id,
-            "--default-profile-id", POOL_PROFILE,
-        )
+        api_checked("create_project", {"name": project_id, "default_profile_id": POOL_PROFILE})
     have = {
         w["workspace_path"]
         for w in collection_rows(
-            aq("project", "list-workspaces", "--project-id", project_id), "workspaces"
+            api_checked("list_workspaces", {"project_id": project_id}), "workspaces"
         )
     }
     for path in workspaces:
         if path in have:
             continue
-        aq(
-            "project", "add-workspace",
-            "--project-id", project_id,
-            "--source", "link",
-            "--path", path,
-            "--name", os.path.basename(path),
-        )
+        api_checked("add_workspace", {
+            "project_id": project_id, "source": "link", "path": path,
+            "name": os.path.basename(path),
+        })
 
 
 def workspace_paths(project_id: str) -> list[str]:
@@ -629,7 +638,7 @@ def setup() -> None:
     check(
         any(
             r["profile_id"] == POOL_PROFILE
-            for r in collection_rows(aq("pool", "status"), "pools")
+            for r in collection_rows(api_checked("pool_status", {}), "pools")
         ),
         f"profile '{POOL_PROFILE}' is not a pool profile — is the vault fixture in place?",
     )
@@ -1275,7 +1284,7 @@ def s9_task_lifecycle(state: dict) -> str:
             "source=smoke",
         )
         check(changed.get("success", True) is not False, f"task set failed: {changed}")
-        after = task_show(full_id)
+        after = aq("task", "show", full_id)
         check(after["description"] == "stateful CLI updated description", f"edit lost: {after}")
         check("e2e-stateful" in after.get("labels", []), f"label did not persist: {after}")
 
@@ -1714,7 +1723,7 @@ def provider(key: str) -> dict:
     Tracked providers are re-read from the profiles once a minute, so a
     daemon started moments ago may not list one yet; callers poll.
     """
-    rows = collection_rows(aq("provider", "status", "--provider", key), "providers")
+    rows = collection_rows(api_checked("provider_status", {"provider": key}), "providers")
     return rows[0] if rows else {}
 
 
@@ -1830,6 +1839,11 @@ def _restore_providers() -> None:
 
 def s16_provider_failover(state: dict) -> str:
     """A provider runs out: detect, suppress, re-route, hold, recover, undo, all-down."""
+    return _run_failover_phase(state, _s16)
+
+
+def _run_failover_phase(state: dict, phase) -> str:
+    """Keep each independently prepared CI phase fenced and self-cleaning."""
     state["s16_started"] = True
     # S18 needs command-only playbooks enabled for this same Tier-1 run.  The
     # shipped provider-failover playbook would otherwise consume S16's state
@@ -1838,7 +1852,7 @@ def s16_provider_failover(state: dict) -> str:
     set_failover_policy_enabled(False)
     note("paused the automatic provider-failover playbook for manual sweep coverage")
     try:
-        return _s16(state)
+        return phase(state)
     finally:
         try:
             _restore_providers()
@@ -1849,6 +1863,11 @@ def s16_provider_failover(state: dict) -> str:
 
 
 def _s16(state: dict) -> str:
+    outage = _s16_outage(state)
+    return outage["detail"] + "; " + _s16_recovery(outage)
+
+
+def _failover_baseline() -> None:
     _quiesce_failover()
     fake_script()  # both fake providers healthy
     for key in ("claude", "codex", PROVB, PROVA):
@@ -1857,6 +1876,9 @@ def _s16(state: dict) -> str:
         row = wait_provider(key, ("available", "degraded"), what="S16 baseline")
         note(f"baseline: {key} {row['state']}")
 
+
+def _s16_outage(state: dict) -> dict:
+    _failover_baseline()
     # -- 1. prova logs out; queue the mix -------------------------------------
     t0 = time.time()
     fake_script(prova="login_required")
@@ -2002,7 +2024,19 @@ def _s16(state: dict) -> str:
         f"aq provider status prova: {status['state']} since {status['since']:.0f}, "
         f"held {status['held']}, rerouted {status['rerouted']} (batch {status['batch_id']})"
     )
+    return {
+        "pref": pref, "pinned": pinned, "solo": solo, "incident": incident,
+        "detail": (
+            f"prova tripped in {len(prova_launches)} launch(es); moved {pref[0]},{pref[1]} "
+            f"to provb within max_active=1 (batch {batch}); pin/solo held; notices deduplicated"
+        ),
+    }
 
+
+def _s16_recovery(outage: dict) -> str:
+    pref, pinned, solo, incident = (
+        outage[key] for key in ("pref", "pinned", "solo", "incident")
+    )
     # -- 6. recovery: log in, recheck, probation, one launch -------------------
     fake_script()  # prova's login works again
     recheck = aq("provider", "recheck", "--provider", PROVA)
@@ -2115,10 +2149,47 @@ def _s16(state: dict) -> str:
     note(f"doctor providers.availability: {check_row['severity']} — {check_row['detail'][:120]}")
     aq("task", "delete", "--task-id", filler, check_ok=False)
     return (
-        f"prova tripped in {len(prova_launches)} launch(es); moved {pref[0]},{pref[1]} to provb "
-        f"within max_active=1 (batch {batch}); pin/solo held; recheck→probation→available; "
+        "recheck→probation→available; "
         f"undo returned {pref[1]}; all-down held everything, claim={result}, critical escalation"
     )
+
+
+def s16a_provider_outage(state: dict) -> str:
+    """Detect the outage, inspect holds, reroute with capacity and deduplicate notices."""
+    return _run_failover_phase(state, lambda current: _s16_outage(current)["detail"])
+
+
+def _prepare_failover_recovery(state: dict) -> str:
+    """Prepare recovery through public commands, without replaying outage assertions.
+
+    A real login failure creates the provider incident. One preferred task is
+    rerouted and stays queued on provb; the pinned and solo tasks stay on prova.
+    This is the boundary recovery needs, independently of S16a's fixture.
+    """
+    _failover_baseline()
+    fake_script(prova="login_required")
+    moved = failover_task("S16 recovery moved", STD_A, "std-high", priority=20)
+    pinned = failover_task("S16 recovery pinned", STD_A, "std-high", priority=15, pin=True)
+    solo = failover_task("S16 recovery solo", SOLO_A, "solo-high", priority=40)
+    wait_provider(PROVA, ("unauthenticated",), what="the recovery fixture login failure")
+    sweep = reroute()
+    check([row["task_id"] for row in sweep["moved"]] == [moved], f"recovery fixture sweep: {sweep}")
+    check(task_show(moved)["profile_id"] == STD_B, "recovery fixture did not reroute to provb")
+    incident = wait_for(
+        lambda: next(
+            (row for row in provider_escalations()
+             if row.get("source_identity", "").startswith(f"{PROVA}:")
+             and row.get("terminal_at") is None),
+            None,
+        ),
+        what="the recovery fixture provider incident",
+    )
+    return _s16_recovery({"pref": [None, moved], "pinned": pinned, "solo": solo, "incident": incident})
+
+
+def s16b_provider_recovery(state: dict) -> str:
+    """Recover a provider, preserve queued reroutes, undo, then exercise all-down."""
+    return _run_failover_phase(state, _prepare_failover_recovery)
 
 
 def _ensure_phased_development_project() -> tuple[str, Path, Path]:
@@ -2729,6 +2800,13 @@ SCENARIOS: list[Scenario] = [
     Scenario("S19", "scoped planner graph", s19_scoped_planner_graph, ("authentication/scoped graph/quota",)),
 ]
 
+# Selecting these IDs replaces S16's serial transcript with independent worlds.
+# The default developer run still executes the original nineteen scenarios.
+FAILOVER_PHASES = [
+    Scenario("S16a", "provider outage and rerouting", s16a_provider_outage, ("provider availability/failover",)),
+    Scenario("S16b", "provider recovery and all-down", s16b_provider_recovery, ("provider availability/failover",)),
+]
+
 # These exclusions are intentional properties of Tier 1, not silent omissions.
 # The final report uses the same vocabulary for every family, including failures.
 EXPLICIT_CAPABILITIES: tuple[tuple[str, str, str], ...] = (
@@ -2798,6 +2876,11 @@ class Report:
 def main() -> int:
     only = set(sys.argv[1:])
     print(f"swarm e2e (Tier 1) — daemon at {API_URL}\n")
+    available = SCENARIOS + FAILOVER_PHASES
+    unknown = only - {scenario.key for scenario in available}
+    if unknown:
+        print("FAIL selection — unknown scenarios: " + ", ".join(sorted(unknown)))
+        return 1
 
     try:
         setup()
@@ -2807,7 +2890,7 @@ def main() -> int:
 
     state: dict = {}
     report = Report()
-    for scenario in SCENARIOS:
+    for scenario in available if only else SCENARIOS:
         if only and scenario.key not in only:
             continue
         report.scenarios.append(scenario)

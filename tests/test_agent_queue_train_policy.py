@@ -30,6 +30,9 @@ def test_required_checks_match_workflow_matrix() -> None:
     job = workflow["jobs"]["test"]
     assert job["name"] == "Tests (${{ matrix.suite.name }})"
     expected = tuple(f"Tests ({suite['name']})" for suite in job["strategy"]["matrix"]["suite"])
+    e2e = workflow["jobs"]["e2e-cli"]
+    assert e2e["name"] == "E2E CLI (${{ matrix.group }})"
+    expected += tuple(f"E2E CLI ({group})" for group in e2e["strategy"]["matrix"]["group"])
     assert policy.parent.required_checks.names == expected
     assert policy.root.required_checks.names == expected
     assert policy.parent.required_checks.producer_id == "github-actions"
