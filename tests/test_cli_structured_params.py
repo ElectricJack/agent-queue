@@ -303,7 +303,9 @@ def test_supervisor_history_repeatable_states_reach_the_server():
         "7",
         "--before",
         "123.5",
-    ) == {"states": ["open", "closed"], "limit": 7, "before": 123.5}
+        "--before-id",
+        "conv-x",
+    ) == {"states": ["open", "closed"], "limit": 7, "before": 123.5, "before_id": "conv-x"}
     assert _invoke_tool(_supervisor_tool("history"), "history") == {}
 
 

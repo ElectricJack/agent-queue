@@ -1224,7 +1224,7 @@
       ]
     }
   },
-  "digest": "sha256:b64a243b992f3089cb945ec8127604b67477613cef0b8ad9aa4d8db779ef7dc8",
+  "digest": "sha256:b100f78b3d9dacffa4ed01b399ab23153d8f34f0330dc484caa6aeab7f1ae06b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4287,6 +4287,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.integration.development_result_parser",
         "src.integration.development_validation"
       ],
       "markers": [
@@ -4434,6 +4435,8 @@
       "imports": [
         "src.commands.handler",
         "src.config",
+        "src.conversations.intake",
+        "src.conversations.preconditions",
         "src.discord.escalation_intake",
         "src.escalations.intake"
       ],

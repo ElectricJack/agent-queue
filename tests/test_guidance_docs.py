@@ -42,6 +42,7 @@ PRIME_TEMPLATES_DIR = _REPO_ROOT / "src" / "prime" / "templates"
 OPERATOR_DOCS = (
     _REPO_ROOT / "docs" / "guides" / "discord-migration.md",
     _REPO_ROOT / "docs" / "guides" / "discord-commands.md",
+    _REPO_ROOT / "docs" / "guides" / "discord-conversations.md",
     _REPO_ROOT / "docs" / "guides" / "discord-replacement-checklist.md",
     _REPO_ROOT / "docs" / "guides" / "escalations.md",
     _REPO_ROOT / "docs" / "guides" / "reviews.md",

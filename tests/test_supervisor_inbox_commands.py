@@ -830,6 +830,68 @@ async def test_history_pages_inputs_and_redacts_expired_text(env):
     ] == "conversation_not_found"
 
 
+async def walk_history(handler, query):
+    """Follow ``next_before``/``next_before_id`` to exhaustion; return every page."""
+    from src.api.models.supervisor_inbox import SupervisorInboxHistoryResponse
+
+    pages, cursor = [], {}
+    while True:
+        page = await handler.execute("supervisor_inbox_history", {**query, **cursor})
+        assert SupervisorInboxHistoryResponse.model_validate(page).model_dump() == page
+        pages.append(page)
+        if page["next_before"] is None:
+            assert page["next_before_id"] is None
+            return pages
+        cursor = {"before": page["next_before"], "before_id": page["next_before_id"]}
+
+
+async def test_history_pages_equal_time_conversations_exactly_once(env):
+    handler, _ = env
+    posted = [(await post(handler, args(index)))["conversation_id"] for index in range(3)]
+    pages = await walk_history(handler, {"limit": 1})
+    seen = [c["id"] for page in pages for c in page["conversations"]]
+    assert len(pages) == 3 and sorted(seen) == sorted(posted)
+    assert pages[0]["next_before"] == NOW and pages[0]["next_before_id"] == seen[0]
+    # A bare timestamp is still an exclusive time filter, not a row cursor.
+    bare = await handler.execute("supervisor_inbox_history", {"before": NOW})
+    assert bare["conversations"] == [] and bare["next_before_id"] is None
+
+
+async def test_history_pages_equal_time_inputs_exactly_once(env):
+    handler, db = env
+    first = await post(handler)
+    posted = [first["input_id"]]
+    for index in (1, 2):
+        follow = await follow_up(handler, db, first)
+        follow["envelope"]["external_message_id"] = str(900000000000000000 + index)
+        posted.append((await post(handler, follow))["input_id"])
+
+    listed = await handler.execute("supervisor_inbox_history", {"limit": 1})
+    conversation = listed["conversations"][0]
+    assert conversation["next_before"] == NOW
+    assert conversation["next_before_id"] == conversation["inputs"][0]["id"]
+    query = {"conversation_id": first["conversation_id"], "limit": 1}
+    pages = await walk_history(handler, query)
+    for page in pages:
+        (record,) = page["conversations"]
+        assert (record["next_before"], record["next_before_id"]) == (
+            page["next_before"],
+            page["next_before_id"],
+        )
+    seen = [i["id"] for page in pages for c in page["conversations"] for i in c["inputs"]]
+    assert len(pages) == 3 and sorted(seen) == sorted(posted)
+    assert seen[0] == conversation["inputs"][0]["id"]
+    resumed = await walk_history(
+        handler,
+        {
+            **query,
+            "before": conversation["next_before"],
+            "before_id": conversation["next_before_id"],
+        },
+    )
+    assert [i["id"] for p in resumed for c in p["conversations"] for i in c["inputs"]] == seen[1:]
+
+
 @pytest.mark.parametrize("command", ["supervisor_inbox_status", "supervisor_inbox_history"])
 @pytest.mark.parametrize("mode", ["project", "worker", "service", "playbook", "global"])
 async def test_status_history_scope_is_enforced_on_direct_calls(env, command, mode):
@@ -862,6 +924,10 @@ async def test_status_history_scope_is_enforced_on_direct_calls(env, command, mo
         {"states": ["invalid"]},
         {"before": float("nan")},
         {"before": float("inf")},
+        {"before_id": "conv-x"},
+        {"before": NOW, "before_id": ""},
+        {"before": NOW, "before_id": "   "},
+        {"before": NOW, "before_id": 7},
         {"conversation_id": ""},
         {"project_id": "project"},
     ],

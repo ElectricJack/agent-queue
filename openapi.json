@@ -19451,7 +19451,20 @@
                 "type": "null"
               }
             ],
-            "title": "Next Before"
+            "title": "Next Before",
+            "description": "`before` for this conversation's next input page; null when exhausted."
+          },
+          "next_before_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before Id",
+            "description": "`before_id` paired with `next_before`."
           }
         },
         "additionalProperties": true,
@@ -19471,7 +19484,8 @@
           "updated_at",
           "closed_at",
           "inputs",
-          "next_before"
+          "next_before",
+          "next_before_id"
         ],
         "title": "ConversationHistoryRecord"
       },
@@ -49341,7 +49355,21 @@
                 "type": "null"
               }
             ],
-            "title": "Before"
+            "title": "Before",
+            "description": "Exclusive epoch-second boundary; alone, a strict time filter."
+          },
+          "before_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before Id",
+            "description": "Row id breaking ties at `before`; requires `before`."
           }
         },
         "additionalProperties": false,
@@ -49371,13 +49399,27 @@
                 "type": "null"
               }
             ],
-            "title": "Next Before"
+            "title": "Next Before",
+            "description": "`before` for the next page; null when exhausted."
+          },
+          "next_before_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before Id",
+            "description": "`before_id` paired with `next_before`."
           }
         },
         "type": "object",
         "required": [
           "conversations",
-          "next_before"
+          "next_before",
+          "next_before_id"
         ],
         "title": "SupervisorInboxHistoryResponse"
       },
