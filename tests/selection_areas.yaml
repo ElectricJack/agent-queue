@@ -225,8 +225,8 @@ areas:
       - tests/test_message_send_pane_open.py
       - tests/test_cli_streams.py
   - id: prime
-    description: "aq prime and agent guidance: the prime renderer and sections, hook envelopes and overrides, session and workspace description, and the prime/handoff/inbox CLI."
-    match: [tests/test_prime_*.py, tests/test_cli_agent_surface.py]
+    description: "aq prime and agent guidance: the prime renderer and sections, hook envelopes and overrides, session and workspace description, bounded handoff projections and historical notes, and the prime/handoff/inbox CLI."
+    match: [tests/test_prime_*.py, tests/test_cli_agent_surface.py, tests/test_handoffs.py]
 
   # ------------------------------------------------------------ messages and humans
   - id: messages
@@ -253,12 +253,15 @@ areas:
       - tests/test_rate_guard.py
       - tests/test_slash_commands.py
       - tests/test_views.py
+  - id: conversations
+    description: "Supervisor conversations: fail-closed Discord mention intake, allowlists and numeric limits, durable inputs and replies, replay deduplication, backfill cursors, expiry and the conversation outbox."
+    match: [tests/test_conversation_*.py]
   - id: escalations
     description: "Human escalations: incident delivery as one post and one thread, inbound thread correlation and verified replies, escalation commands and persistence."
     match: [tests/test_escalation_*.py, tests/test_discord_escalation_transport.py]
   - id: digest
-    description: "Activity digest: fact eligibility and dedup, rendering, window scheduling and delivery, digest commands, what a window may read, and digest settings."
-    match: [tests/test_digest*.py, tests/test_discord_settings.py]
+    description: "Activity digest and hourly reports: fact eligibility and dedup, rendering, window scheduling and delivery, bounded author requests and deterministic fallback, commands, what a window may read, and settings."
+    match: [tests/test_digest*.py, tests/test_discord_settings.py, tests/test_report_requests.py]
   - id: supervisor
     description: "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config and the blocked-task escalation playbook."
     match:
@@ -350,6 +353,7 @@ areas:
     description: "Integration branch ownership: fenced repository-qualified owners, owner recovery and its sweeps, stale and finished owners, ownership transfer, workspace handoff, identity rebinding, ejection and delegate release."
     match:
       - tests/test_integration_ownership.py
+      - tests/test_canonical_reservation.py
       - tests/test_integration_owner_*.py
       - tests/test_integration_stale_owners.py
       - tests/test_integration_finished_owners.py
@@ -363,6 +367,7 @@ areas:
     description: "Integration promotion and repair: child-to-parent and root-to-main promotion, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication and legacy deliveries."
     match:
       - tests/test_integration_promotion.py
+      - tests/test_integration_child_delivery.py
       - tests/test_integration_main_promotion.py
       - tests/test_integration_parent_completion.py
       - tests/test_integration_root_pull_requests.py
@@ -506,6 +511,7 @@ areas:
       - tests/test_response_model_registry.py
       - tests/test_cli_client_generated.py
       - tests/test_regenerate_api_client_script.py
+      - tests/test_regenerate_ts_client_script.py
       - tests/test_api_dashboard_pointer.py
   - id: file-access
     description: "File access for tasks and workspaces: browse and read endpoints, task attachments, filesystem command handlers and root-relative path validation."
@@ -533,16 +539,17 @@ areas:
       - tests/test_cli_logs.py
       - tests/test_cli_client_generated.py
   - id: cli-test-runner
-    description: "The aq test wrapper: pytest argv composition, path and DSN preflight, full-suite classification, slot and full-suite lock gating, signal forwarding and the no-tests-collected exit."
-    match: [tests/test_cli_test_runner.py, tests/test_resource_semaphore.py]
+    description: "The aq test wrapper: pytest argv composition, path and DSN preflight, full-suite classification, slot and full-suite lock gating, immutable known-failure baseline comparison, signal forwarding and the no-tests-collected exit."
+    match: [tests/test_cli_test_runner.py, tests/test_resource_semaphore.py, tests/test_test_baseline.py]
   - id: test-selection
     description: "Smart test selection: test module discovery, the generated selection catalogue, the reviewed area, mandatory-rule and omission-policy artifacts and the selection library built on them."
     match: [tests/test_selection_*.py]
   - id: resource-gating
-    description: "Resource gating: per-session env caps, nice and cgroup scopes, the box-wide test-slot semaphore, orphaned test-run reaping, slot-wait reports and resources doctor checks."
+    description: "Resource gating: per-session env caps, nice and cgroup scopes, the box-wide test-slot semaphore, orphaned test-run reaping, slot-wait reports, resources doctor checks and bounded performance experiments with process attribution and isolated database seeding."
     match:
       - tests/test_resource_*.py
       - tests/test_slot_report.py
+      - tests/test_dashboard_perf_kit.py
   - id: test-substrate
     description: "The PostgreSQL test substrate: DSN leasing and run ownership, template-clone pool crash recovery, parallel-worker isolation, the reset-for-tests guard and operator test-database reaping."
     match:
@@ -622,8 +629,14 @@ areas:
       - tests/test_schedule.py
       - tests/test_timer_service*.py
   - id: metrics
-    description: "Metrics: the per-second fleet sampler with roll-ups and retention, the metrics series API and WebSocket frame, and chat-analyzer suggestion outcome metrics."
-    match: [tests/test_metrics_sampler.py, tests/test_api_metrics.py, tests/test_chat_analyzer_metrics.py]
+    description: "Metrics: fleet sampling and roll-ups, fixed-bucket histograms, host pressure and test-slot attribution, bounded route and database latency probes, relay deltas across restarts, loop-lag diagnostics, the series API and WebSocket frame, and chat-analyzer suggestion outcomes."
+    match:
+      - tests/test_metrics_*.py
+      - tests/test_api_metrics.py
+      - tests/test_chat_analyzer_metrics.py
+      - tests/test_api_perf_middleware.py
+      - tests/test_engine_perf_observer.py
+      - tests/test_doctor_perf_checks.py
   - id: logging
     description: "Logging: structlog configuration and correlation context, the log access tools, aq logs filters and context windows, and the LLM interaction logger."
     match: [tests/test_logging_config.py, tests/test_log_access.py, tests/test_cli_logs.py, tests/test_llm_logger.py]
@@ -718,6 +731,7 @@ areas:
       - tests/test_doctor.py
       - tests/test_doctor_stall_checks.py
       - tests/test_doctor_skill_checks.py
+      - tests/test_doctor_perf_checks.py
       - tests/test_health_platform.py
 
   # ------------------------------------------------------------ install and release
