@@ -294,10 +294,48 @@ async def test_doctor_reports_pending_timer_due_before_hard_deadline(
     assert found.data["waits"] == [dict(
         wait_id=wait_id, project_id="p", owner_kind="task", owner_id="owner", session_id="s",
         due_at=NOW + 5, deadline_at=NOW + 100, checked_at=0.0,
+        state="active", resolved_at=None, result_message_id=None,
     )]
     assert not found.fixable and check.fix is None
     assert (await env.db.get_agent_wait(wait_id))["state"] == "active"
     await AgentWaitReconciler(commands).tick(now=NOW + delay)
+    assert (await check.run(ctx)).severity == Severity.OK
+
+
+@pytest.mark.parametrize("interval", [5, 40])
+@pytest.mark.parametrize("consumed", ["delivered", "archived"])
+async def test_doctor_reports_satisfied_timer_with_undelivered_result(
+    commands, env, monkeypatch, interval, consumed
+):
+    from src.doctor import default_registry
+    from src.doctor.models import DoctorContext, Severity
+
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    commands.config.messages.delivery_interval = interval
+    grace = max(30, interval * 2)
+    registered = await execute(commands, "wait_register", dict(
+        kind="timer", due_at=NOW + 5, timeout=100, idempotency_key="undelivered", claim_epoch=1,
+    ))
+    assert registered["success"], registered
+    wait_id = registered["wait"]["id"]
+    await AgentWaitReconciler(commands).tick(now=NOW + 5)
+    check = default_registry().get("waits.pending_timers")
+    ctx = DoctorContext(config=commands.config, db=env.db)
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 5 + grace - 1)
+    assert (await check.run(ctx)).severity == Severity.OK
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 5 + grace)
+    found = await check.run(ctx)
+    assert found.severity == Severity.WARN
+    assert found.data["waits"][0]["state"] == "satisfied"
+    result = await env.db.get_agent_wait(wait_id)
+    assert result["state"] == "satisfied"
+    message_id = result["result_message_id"]
+    assert found.data["waits"][0]["result_message_id"] == message_id
+    assert (await env.db.get_message(message_id)).delivered_at is None
+    if consumed == "delivered":
+        await env.db.mark_delivered(message_id, via="nudge")
+    else:
+        await env.db.archive_messages([message_id])
     assert (await check.run(ctx)).severity == Severity.OK
 
 

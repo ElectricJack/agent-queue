@@ -2645,7 +2645,7 @@ async def _waiting_session(
     return row, wait
 
 
-@pytest.mark.parametrize("delivery", ["idle", "busy", "not_submitted"])
+@pytest.mark.parametrize("delivery", ["idle", "idle_redraw", "busy", "not_submitted"])
 async def test_short_timer_cascade_wakes_current_pool_holder_once(
     db, provider, installed_wait_reconciler, config, tmp_path, monkeypatch, delivery
 ):
@@ -2676,7 +2676,20 @@ async def test_short_timer_cascade_wakes_current_pool_holder_once(
         assert (await db.get_agent_wait(wait["id"]))["state"] == "active"
         assert provider.sent_nudges == []
     clock = NOW + 5
-    if delivery == "busy":
+    if delivery == "idle_redraw":
+        import json
+        from src.sessions.transcripts.codex import CodexTranscriptReader
+
+        transcript = tmp_path / "idle.jsonl"
+        transcript.write_text(json.dumps({
+            "timestamp": NOW + 1, "type": "event_msg",
+            "payload": {"type": "task_complete", "last_agent_message": "Waiting for timer."},
+        }) + "\n")
+        reader = CodexTranscriptReader(base_dir=tmp_path)
+        monkeypatch.setattr(reader, "resolve_session", lambda _: transcript)
+        monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda _: reader)
+        provider.sessions[row.name].activity = clock
+    elif delivery == "busy":
         provider.sessions[row.name].activity = clock
     elif delivery == "not_submitted":
         provider.swallow_next_nudge(row.name)
@@ -2687,7 +2700,7 @@ async def test_short_timer_cascade_wakes_current_pool_holder_once(
     assert result["wait_resumed_at"] == clock
     orch._last_delivery_pass = 0
     await orch._deliver_messages()
-    if delivery != "idle":
+    if delivery in {"busy", "not_submitted"}:
         assert provider.sent_nudges == []
         assert (await db.get_message(result["result_message_id"])).delivered_at is None
         provider.sessions[row.name].activity = NOW - 10000
@@ -2871,18 +2884,28 @@ async def test_restart_reconstructs_wait_exemption_without_heartbeat(
 @pytest.mark.tmux
 async def test_short_timer_wakes_idle_pool_through_real_tmux(db, config, tmp_path, monkeypatch):
     """A short timer reaches a real idle pool terminal without an operator nudge or LLM."""
+    import json
     import os
     import shutil
     import time
     import uuid
     from pathlib import Path
     from src.sessions.tmux import TmuxProvider
+    from src.sessions.transcripts.codex import CodexTranscriptReader
     from tests.test_tmux_integration import STUB, _spec
 
     if not shutil.which("tmux"):
         pytest.skip("tmux required")
     stub = tmp_path / "timer_stub.py"
-    stub.write_text(STUB)
+    # An idle TUI can repaint forever, keeping tmux window_activity fresh.
+    stub.write_text(STUB.replace("import os, sys, termios", "import os, sys, termios, select")
+                    .replace("    chunk = os.read(fd, 65536)", """
+    if not select.select([fd], [], [], 0.5)[0]:
+        if not buf:
+            sys.stdout.write("\\r\\x1b[2K❯ ")
+            sys.stdout.flush()
+        continue
+    chunk = os.read(fd, 65536)"""))
     config.sessions.provider = "tmux"
     config.sessions.tmux_socket = f"aq-timer-test-{uuid.uuid4().hex[:10]}"
     config.swarm.enabled = True
@@ -2898,15 +2921,26 @@ async def test_short_timer_wakes_idle_pool_through_real_tmux(db, config, tmp_pat
         await _busy_agent_and_workspace(db, tmp_path)
         task = await db.get_task("t1")
         now = time.time()
+        session_key = str(uuid.uuid4())
+        transcript_dir = tmp_path / ".codex" / "sessions" / "2026" / "09" / "26"
+        transcript_dir.mkdir(parents=True)
+        transcript = transcript_dir / f"rollout-test-{session_key}.jsonl"
+        transcript.write_text(json.dumps({
+            "timestamp": now, "type": "event_msg",
+            "payload": {"type": "task_complete", "last_agent_message": "Waiting for timer."},
+        }) + "\n")
+        reader = CodexTranscriptReader(base_dir=tmp_path)
+        monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda _: reader)
         row = SessionRecord(
             id="timer-probe", project_id="p1", profile_id="worker", harness="codex",
             provider="tmux", name=spec.session_name, lifecycle="pool", work_dir=spec.work_dir,
             epoch="probe", instance_token=spec.instance_token, started_at=now, task_id="t1",
             state="running", agent_id="a1", claim_phase="active", last_claim_epoch=task.claim_epoch,
+            session_key=session_key,
         )
         await db.create_session(row)
-        # Let startup output age beyond the lens's 30-second busy window.
-        due = now + 32
+        # Resolve well inside the busy window while the terminal keeps repainting.
+        due = now + 5
         registered = await orch._command_handler.execute("wait_register", dict(
             session_id=row.id, project_id="p1", claim_epoch=task.claim_epoch,
             kind="timer", due_at=due, timeout=120, idempotency_key="real-timer",
@@ -2914,7 +2948,7 @@ async def test_short_timer_wakes_idle_pool_through_real_tmux(db, config, tmp_pat
         assert registered["success"], registered
         wait = registered["wait"]
         received = Path(spec.work_dir) / "received.txt"
-        stop_at = time.monotonic() + 60
+        stop_at = time.monotonic() + 20
         while time.monotonic() < stop_at:
             await orch._reconcile_sessions()
             await orch._deliver_messages()
@@ -2923,7 +2957,8 @@ async def test_short_timer_wakes_idle_pool_through_real_tmux(db, config, tmp_pat
             if time.time() < due:
                 assert (await db.get_agent_wait(wait["id"]))["state"] == "active"
             await asyncio.sleep(0.5)
-        assert received.exists(), "due timer did not reach the idle terminal within 60 seconds"
+        assert received.exists(), "due timer did not reach the idle terminal within 20 seconds"
+        assert await provider.last_activity(handle) >= now
         expected = f"Handle `aq wait show {wait['id']} --json`.\n"
         assert received.read_text() == expected
         result = await db.get_agent_wait(wait["id"])

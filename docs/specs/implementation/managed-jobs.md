@@ -98,6 +98,12 @@ not silently leave a completed or overdue wait active. Task-result messages
 resolve the session currently attached to the owner task, including pool
 sessions whose names are independent of the task id. An idle current holder
 receives the result pointer once; busy or absent holders retain queued results.
+Current-instance transcripts determine idle/busy when they contain turn evidence:
+completed turns are idle even while a terminal keeps redrawing, and a subsequent
+prompt or tool/model entry invalidates that idle signal. Missing or unreadable
+transcripts fall back to provider activity. Transcript reads are incremental;
+instance changes, path changes and truncation discard cached turn state. Nudges
+still use the provider's instance fence and composer guards.
 Delivery never starts a task worker or changes the task's status.
 The bounded scan prioritizes timers at their `due_at` instant alongside waits
 past their hard deadlines, before unresolved future conditions. It continues
@@ -113,6 +119,9 @@ resolution and the result outbox.
 instant or hard deadline has passed. Timer readiness is determined by `due_at`,
 not the default two-hour timeout. The bounded read-only diagnostic includes the
 wait, owner and session ids, due instant, deadline and last reconciliation check.
+It also reports satisfied/expired timer results still undelivered after the
+larger of 30 seconds or two configured delivery intervals, with their resolution
+time and result message id. Delivered or archived result messages are excluded.
 
 ### Publisher validation and console streams
 

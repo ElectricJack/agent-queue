@@ -29,6 +29,8 @@ import logging
 import os
 import time
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
 
@@ -40,6 +42,7 @@ from src.sessions.provider import (
     SessionExecutableNotFound,
 )
 from src.sessions.spec import named_session_name
+from src.sessions.transcripts.base import TranscriptEntry
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,14 @@ __all__ = ["Activity", "SessionManagerProto", "SessionLens"]
 #: * ``absent``   — no live session and the messenger must not spawn one
 #:                  (task sessions are launched by the task lifecycle).
 Activity = Literal["idle", "busy", "sleeping", "absent"]
+
+
+@dataclass
+class _ActivityCursor:
+    path: Path
+    instance_token: str
+    offset: int = 0
+    last: TranscriptEntry | None = None
 
 
 #: Seconds since the provider last observed output within which a session
@@ -188,6 +199,7 @@ class SessionLens:
         #: omit; the harness falls back to no bearer (LOCAL_SCOPE).
         self._token_store = token_store
         self._start_locks: dict[str, asyncio.Lock] = {}
+        self._activity_cursors: dict[str, _ActivityCursor] = {}
 
     # -- SessionManagerProto ------------------------------------------------
 
@@ -205,6 +217,10 @@ class SessionLens:
         if not running:
             return self._absent_signal(kind=kind, target_id=target_id)
 
+        activity = await self._transcript_activity(row)
+        if activity is not None:
+            return activity
+
         try:
             last = await provider.last_activity(handle)
         except Exception:
@@ -213,6 +229,47 @@ class SessionLens:
         if last is not None and (time.time() - last) <= _BUSY_WINDOW_SECONDS:
             return "busy"
         return "idle"
+
+    async def _transcript_activity(self, row) -> Activity | None:
+        """Turn completion outranks cosmetic terminal output; missing data falls back.
+
+        Keep one meaningful entry per session and read only appended bytes on
+        subsequent passes. A new prompt invalidates the previous idle signal.
+        The provider still fences the instance and guards its composer on nudge.
+        """
+        from src.sessions.transcripts import resolve_reader
+
+        reader = resolve_reader(row.harness)
+        if reader is None:
+            return None
+        try:
+            path = await asyncio.to_thread(reader.resolve_session, row)
+            if path is None:
+                return None
+            size = await asyncio.to_thread(lambda: path.stat().st_size)
+            cursor = self._activity_cursors.get(row.id)
+            if (cursor is None or cursor.path != path
+                    or cursor.instance_token != row.instance_token or size < cursor.offset):
+                # Bound retained history even when a daemon sees many retired workers.
+                if len(self._activity_cursors) >= 256:
+                    self._activity_cursors.pop(next(iter(self._activity_cursors)))
+                cursor = _ActivityCursor(path, row.instance_token)
+                self._activity_cursors[row.id] = cursor
+            entries, cursor.offset = await reader.read_new(path, cursor.offset)
+            for entry in entries:
+                if entry.type not in {"user", "assistant", "tool_use", "tool_result"}:
+                    continue
+                if entry.type == "assistant" and not entry.text and not entry.turn_complete:
+                    continue
+                cursor.last = entry
+            last = cursor.last
+            # A resumed transcript can contain completion from a prior process.
+            if last is None or not last.ts or last.ts < (row.started_at or 0) - 5:
+                return None
+            return "idle" if last.turn_complete else "busy"
+        except Exception:
+            logger.debug("transcript activity unavailable for %s", row.name, exc_info=True)
+            return None
 
     async def ensure_started(
         self, *, kind: str, target_id: str, project_id: str | None,
