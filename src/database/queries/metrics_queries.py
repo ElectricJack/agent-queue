@@ -212,6 +212,23 @@ class MetricsQueryMixin:
             "tasks": {row["status"]: int(row["count"] or 0) for row in task_rows},
         }
 
+    def metrics_pool_gauges(self) -> dict:
+        """Checked-out, overflow and size of the engine's pool: local reads, no wire.
+
+        ``overflow`` is the connections open beyond ``size``.  SQLAlchemy's
+        own counter starts at ``-pool_size`` and climbs as the pool fills, so
+        it is floored at zero here rather than charted as a negative gauge.
+        """
+        pool = getattr(getattr(self, "_engine", None), "pool", None)
+        try:
+            return {
+                "checked_out": float(pool.checkedout()),
+                "overflow": float(max(0, pool.overflow())),
+                "size": float(pool.size()),
+            }
+        except Exception:  # noqa: BLE001 - no engine or a foreign pool class is an honest null
+            return {"checked_out": None, "overflow": None, "size": None}
+
     async def metrics_slow_snapshot(
         self,
         since_ts: float,

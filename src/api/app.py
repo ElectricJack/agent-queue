@@ -36,6 +36,7 @@ from src.api.task_files import router as task_files_router
 from src.api.task_sessions import router as task_sessions_router
 from src.api.workspace_files import router as workspace_files_router
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
+from src.api.perf_middleware import RouteLatencyMiddleware
 from src.api.terminal_stream import build_terminal_router
 from src.api.websocket import WebSocketManager
 
@@ -129,6 +130,10 @@ def create_app(
     # ``request.state.scope`` before request-context binds ``session_id``.
     app.add_middleware(RequestContextMiddleware)
     app.add_middleware(TokenAuthMiddleware)
+    # Registered last, so outermost: a route's latency includes token
+    # resolution and a 401 is still timed.  Pure ASGI, so it never buffers an
+    # SSE pane (spec 2026-09-24 dashboard performance §4.1).
+    app.add_middleware(RouteLatencyMiddleware)
 
     # Register routers — backward-compat and health first
     app.include_router(execute_router)

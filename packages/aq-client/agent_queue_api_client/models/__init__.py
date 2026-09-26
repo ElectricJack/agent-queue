@@ -26,6 +26,10 @@ from .ai_budget_dto import AiBudgetDTO
 from .ai_node_detail_dto import AiNodeDetailDTO
 from .ai_node_detail_dto_output_schema_type_0 import AiNodeDetailDTOOutputSchemaType0
 from .ancestor_ref import AncestorRef
+from .api_perf import ApiPerf
+from .api_perf_errors import ApiPerfErrors
+from .api_perf_routes import ApiPerfRoutes
+from .api_perf_streams import ApiPerfStreams
 from .append_note_request import AppendNoteRequest
 from .append_note_response import AppendNoteResponse
 from .append_note_response_422 import AppendNoteResponse422
@@ -135,6 +139,8 @@ from .dashboard_state_put_request_namespace import DashboardStatePutRequestNames
 from .dashboard_state_put_request_value import DashboardStatePutRequestValue
 from .dashboard_state_reset_request import DashboardStateResetRequest
 from .dashboard_state_reset_request_namespace import DashboardStateResetRequestNamespace
+from .db_perf import DbPerf
+from .db_perf_counters import DbPerfCounters
 from .db_preflight_hierarchy_request import DbPreflightHierarchyRequest
 from .db_preflight_hierarchy_response_422 import DbPreflightHierarchyResponse422
 from .delegation_policy_dto import DelegationPolicyDTO
@@ -493,6 +499,8 @@ from .grep_response import GrepResponse
 from .grep_response_422 import GrepResponse422
 from .grid_position_dto import GridPositionDTO
 from .hierarchy_refusal_response import HierarchyRefusalResponse
+from .histogram import Histogram
+from .host_perf import HostPerf
 from .http_validation_error import HTTPValidationError
 from .idempotency_dto import IdempotencyDTO
 from .import_portable_config_request import ImportPortableConfigRequest
@@ -603,6 +611,7 @@ from .log_entry import LogEntry
 from .loop_iteration_overlay_dto import LoopIterationOverlayDTO
 from .loop_node_detail_dto import LoopNodeDetailDTO
 from .loop_node_detail_dto_failure_policy import LoopNodeDetailDTOFailurePolicy
+from .loop_perf import LoopPerf
 from .machine_metrics import MachineMetrics
 from .manual_position import ManualPosition
 from .mcp_server_summary import McpServerSummary
@@ -677,6 +686,8 @@ from .pending_event_replay_dto_policy import PendingEventReplayDTOPolicy
 from .pending_pull_request import PendingPullRequest
 from .pending_pull_request_state import PendingPullRequestState
 from .pending_pull_requests_response import PendingPullRequestsResponse
+from .perf_metrics import PerfMetrics
+from .perf_sampler_cost import PerfSamplerCost
 from .phase_create_request import PhaseCreateRequest
 from .phase_create_response import PhaseCreateResponse
 from .phase_create_response_422 import PhaseCreateResponse422
@@ -812,6 +823,7 @@ from .plugin_summary import PluginSummary
 from .plugin_update_request import PluginUpdateRequest
 from .plugin_update_response import PluginUpdateResponse
 from .plugin_update_response_422 import PluginUpdateResponse422
+from .pool_gauges import PoolGauges
 from .pool_instance_status import PoolInstanceStatus
 from .pool_project_cap import PoolProjectCap
 from .pool_project_status import PoolProjectStatus
@@ -838,6 +850,8 @@ from .pr_merge_ci_verdict import PrMergeCiVerdict
 from .pr_merge_request import PrMergeRequest
 from .pr_merge_response import PrMergeResponse
 from .pr_merge_response_422 import PrMergeResponse422
+from .pressure_entry import PressureEntry
+from .pressure_perf import PressurePerf
 from .preview_portable_config_request import PreviewPortableConfigRequest
 from .preview_portable_config_response_422 import PreviewPortableConfigResponse422
 from .probe_mcp_server_request import ProbeMcpServerRequest
@@ -952,6 +966,8 @@ from .record_file_inspection_response_422 import RecordFileInspectionResponse422
 from .redaction_row_dto import RedactionRowDTO
 from .redaction_row_dto_policy import RedactionRowDTOPolicy
 from .reflow_failed_scope import ReflowFailedScope
+from .relay_perf import RelayPerf
+from .relay_perf_upstream_failures import RelayPerfUpstreamFailures
 from .release_project_constraint_request import ReleaseProjectConstraintRequest
 from .release_project_constraint_response import ReleaseProjectConstraintResponse
 from .release_project_constraint_response_422 import ReleaseProjectConstraintResponse422
@@ -1049,6 +1065,8 @@ from .right_surface_activity_tab import RightSurfaceActivityTab
 from .right_surface_kind_type_0 import RightSurfaceKindType0
 from .right_surface_pane import RightSurfacePane
 from .right_surface_pane_args import RightSurfacePaneArgs
+from .route_perf import RoutePerf
+from .route_perf_status import RoutePerfStatus
 from .rule_cluster_dto import RuleClusterDTO
 from .rule_cluster_dto_trigger_filter_type_0 import RuleClusterDTOTriggerFilterType0
 from .rule_diff_dto import RuleDiffDTO
@@ -1165,6 +1183,8 @@ from .stop_task_response import StopTaskResponse
 from .stop_task_response_422 import StopTaskResponse422
 from .stream_kill_response import StreamKillResponse
 from .stream_metadata import StreamMetadata
+from .stream_perf import StreamPerf
+from .stream_perf_outcome import StreamPerfOutcome
 from .stream_start_request import StreamStartRequest
 from .stream_start_response import StreamStartResponse
 from .stub_overflow import StubOverflow
@@ -1289,6 +1309,7 @@ from .task_subtask_with_context import TaskSubtaskWithContext
 from .task_subtasks_request import TaskSubtasksRequest
 from .task_subtasks_response import TaskSubtasksResponse
 from .task_subtasks_response_422 import TaskSubtasksResponse422
+from .test_slots_perf import TestSlotsPerf
 from .throughput_metrics import ThroughputMetrics
 from .tidy_request import TidyRequest
 from .tidy_response import TidyResponse
@@ -1305,6 +1326,7 @@ from .token_metrics_by_model import TokenMetricsByModel
 from .token_usage_dto import TokenUsageDTO
 from .transcript_entry_model import TranscriptEntryModel
 from .transcript_entry_model_usage_type_0 import TranscriptEntryModelUsageType0
+from .ungated_perf import UngatedPerf
 from .update_and_restart_request import UpdateAndRestartRequest
 from .update_and_restart_response import UpdateAndRestartResponse
 from .update_and_restart_response_422 import UpdateAndRestartResponse422
@@ -1362,6 +1384,10 @@ __all__ = (
     "AiNodeDetailDTO",
     "AiNodeDetailDTOOutputSchemaType0",
     "AncestorRef",
+    "ApiPerf",
+    "ApiPerfErrors",
+    "ApiPerfRoutes",
+    "ApiPerfStreams",
     "AppendNoteRequest",
     "AppendNoteResponse",
     "AppendNoteResponse422",
@@ -1471,6 +1497,8 @@ __all__ = (
     "DashboardStatePutRequestValue",
     "DashboardStateResetRequest",
     "DashboardStateResetRequestNamespace",
+    "DbPerf",
+    "DbPerfCounters",
     "DbPreflightHierarchyRequest",
     "DbPreflightHierarchyResponse422",
     "DelegationPolicyDTO",
@@ -1823,6 +1851,8 @@ __all__ = (
     "GrepResponse422",
     "GridPositionDTO",
     "HierarchyRefusalResponse",
+    "Histogram",
+    "HostPerf",
     "HTTPValidationError",
     "IdempotencyDTO",
     "ImportPortableConfigRequest",
@@ -1931,6 +1961,7 @@ __all__ = (
     "LoopIterationOverlayDTO",
     "LoopNodeDetailDTO",
     "LoopNodeDetailDTOFailurePolicy",
+    "LoopPerf",
     "MachineMetrics",
     "ManualPosition",
     "McpServerSummary",
@@ -2005,6 +2036,8 @@ __all__ = (
     "PendingPullRequest",
     "PendingPullRequestsResponse",
     "PendingPullRequestState",
+    "PerfMetrics",
+    "PerfSamplerCost",
     "PhaseCreateRequest",
     "PhaseCreateResponse",
     "PhaseCreateResponse422",
@@ -2140,6 +2173,7 @@ __all__ = (
     "PluginUpdateRequest",
     "PluginUpdateResponse",
     "PluginUpdateResponse422",
+    "PoolGauges",
     "PoolInstanceStatus",
     "PoolProjectCap",
     "PoolProjectStatus",
@@ -2159,6 +2193,8 @@ __all__ = (
     "PoolStatusRow",
     "PortableConfigResponse",
     "PostMessageApiMessagesSendPostResponsePostMessageApiMessagesSendPost",
+    "PressureEntry",
+    "PressurePerf",
     "PreviewPortableConfigRequest",
     "PreviewPortableConfigResponse422",
     "PrMergeBaseFreshness",
@@ -2278,6 +2314,8 @@ __all__ = (
     "RedactionRowDTO",
     "RedactionRowDTOPolicy",
     "ReflowFailedScope",
+    "RelayPerf",
+    "RelayPerfUpstreamFailures",
     "ReleaseProjectConstraintRequest",
     "ReleaseProjectConstraintResponse",
     "ReleaseProjectConstraintResponse422",
@@ -2375,6 +2413,8 @@ __all__ = (
     "RightSurfaceKindType0",
     "RightSurfacePane",
     "RightSurfacePaneArgs",
+    "RoutePerf",
+    "RoutePerfStatus",
     "RuleClusterDTO",
     "RuleClusterDTOTriggerFilterType0",
     "RuleDiffDTO",
@@ -2491,6 +2531,8 @@ __all__ = (
     "StopTaskResponse422",
     "StreamKillResponse",
     "StreamMetadata",
+    "StreamPerf",
+    "StreamPerfOutcome",
     "StreamStartRequest",
     "StreamStartResponse",
     "StubOverflow",
@@ -2613,6 +2655,7 @@ __all__ = (
     "TaskSubtaskUpdateResponse",
     "TaskSubtaskUpdateResponse422",
     "TaskSubtaskWithContext",
+    "TestSlotsPerf",
     "ThroughputMetrics",
     "TidyRequest",
     "TidyResponse",
@@ -2629,6 +2672,7 @@ __all__ = (
     "TokenUsageDTO",
     "TranscriptEntryModel",
     "TranscriptEntryModelUsageType0",
+    "UngatedPerf",
     "UpdateAndRestartRequest",
     "UpdateAndRestartResponse",
     "UpdateAndRestartResponse422",

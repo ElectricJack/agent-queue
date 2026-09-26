@@ -2467,6 +2467,21 @@ class MetricsConfig:
     retain_seconds_1s: int = 3600
     retain_seconds_1m: int = 30 * 86400
     retain_seconds_1h: int = 365 * 86400
+    #: Performance probes (spec 2026-09-24 dashboard performance §4.1): the
+    #: loop-drift probe, route latency, pool wait and query duration, the host
+    #: reader's budget and the dashboard-relay poll.  ``perf_enabled: false``
+    #: is the rollback switch: the probes stop recording and the sample's
+    #: ``perf`` block drops to ``{"enabled": false}``.
+    perf_enabled: bool = True
+    #: Period of the event-loop drift probe; each wake-up records how late it was.
+    perf_loop_probe_ms: int = 100
+    #: A query slower than this counts toward ``perf.db.counters.slow_queries``.
+    perf_slow_query_ms: float = 100.0
+    #: Wall-clock budget for one host read (PSI, test slots, ungated load);
+    #: an overrun backs the reader off and marks the host block stale.
+    perf_host_budget_ms: float = 20.0
+    #: How often the sampler polls the dashboard server's relay counters.
+    perf_relay_poll_seconds: float = 5.0
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2500,6 +2515,19 @@ class MetricsConfig:
         for key in ("retain_seconds_1s", "retain_seconds_1m", "retain_seconds_1h"):
             if getattr(self, key) < 0:
                 errors.append(ConfigError("metrics", key, "must be >= 0"))
+        if not 10 <= self.perf_loop_probe_ms <= 1000:
+            errors.append(
+                ConfigError("metrics", "perf_loop_probe_ms", "must be between 10 and 1000")
+            )
+        for key in ("perf_slow_query_ms", "perf_host_budget_ms"):
+            if getattr(self, key) <= 0:
+                errors.append(ConfigError("metrics", key, "must be > 0"))
+        # The poll runs on the sampler's tick, so it cannot be more frequent
+        # than one poll per sample.
+        if self.perf_relay_poll_seconds < self.interval_seconds:
+            errors.append(
+                ConfigError("metrics", "perf_relay_poll_seconds", "must be >= interval_seconds")
+            )
         return errors
 
 

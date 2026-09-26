@@ -16967,6 +16967,45 @@
         ],
         "title": "AncestorRef"
       },
+      "ApiPerf": {
+        "properties": {
+          "all": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "routes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/RoutePerf"
+            },
+            "type": "object",
+            "title": "Routes",
+            "default": {}
+          },
+          "streams": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/StreamPerf"
+            },
+            "type": "object",
+            "title": "Streams",
+            "default": {}
+          },
+          "errors": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Errors",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "ApiPerf",
+        "description": "Bounded route-template tables and totals from PerfRegistry.snapshot."
+      },
       "AppendNoteRequest": {
         "properties": {
           "project_id": {
@@ -20666,6 +20705,43 @@
           "namespace"
         ],
         "title": "DashboardStateResetRequest"
+      },
+      "DbPerf": {
+        "properties": {
+          "pool_wait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "query": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "counters": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Counters",
+            "default": {}
+          },
+          "pool": {
+            "$ref": "#/components/schemas/PoolGauges",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "DbPerf",
+        "description": "Pool-wait and query observations from the engine's perf observers."
       },
       "DbPreflightHierarchyRequest": {
         "properties": {},
@@ -30011,6 +30087,89 @@
         "title": "HierarchyRefusalResponse",
         "description": "The 422 body a task/project removal answers a refusal with.\n\nThese refusals are contracts, not prose: a surface branches on ``code``\nand renders the detail keys. ``branch_discard_required`` names the\n``branches`` it wants a choice about, and integration removal refusals\nname their owner, cleanup blockers, undelivered work, or retained history.\n``extra: allow`` keeps\nthe rarer keys (e.g. ``live_descendants``' ``sessions``) on the wire, and\n``src.api.codegen.DETAILED_ERROR_COMMANDS`` is what stops the generic\nenvelope from discarding all of them."
       },
+      "Histogram": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": "hist"
+          },
+          "counts": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array",
+            "title": "Counts",
+            "default": []
+          },
+          "count": {
+            "type": "number",
+            "title": "Count",
+            "default": 0
+          },
+          "sum": {
+            "type": "number",
+            "title": "Sum",
+            "default": 0
+          },
+          "max": {
+            "type": "number",
+            "title": "Max",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "Histogram",
+        "description": "Fixed millisecond buckets from src.metrics.histogram, merged by addition."
+      },
+      "HostPerf": {
+        "properties": {
+          "psi": {
+            "$ref": "#/components/schemas/PressurePerf",
+            "default": {}
+          },
+          "test_slots": {
+            "$ref": "#/components/schemas/TestSlotsPerf",
+            "default": {}
+          },
+          "ungated": {
+            "$ref": "#/components/schemas/UngatedPerf",
+            "default": {
+              "unattributed_slots": []
+            }
+          },
+          "host_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Host Ms"
+          },
+          "stale": {
+            "type": "boolean",
+            "title": "Stale",
+            "default": false
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "title": "HostPerf",
+        "description": "Slow-tier HostSampler snapshot, including its cost and staleness."
+      },
       "IdempotencyDTO": {
         "properties": {
           "supported": {
@@ -32366,6 +32525,34 @@
         "title": "LoopNodeDetailDTO",
         "description": "ForEachStep only."
       },
+      "LoopPerf": {
+        "properties": {
+          "drift": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "probe_interval_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Probe Interval Ms"
+          }
+        },
+        "type": "object",
+        "title": "LoopPerf",
+        "description": "Event-loop drift observed by the registry's LoopLagProbe."
+      },
       "MachineMetrics": {
         "properties": {
           "load1": {
@@ -33517,6 +33704,35 @@
             "$ref": "#/components/schemas/SamplerMetrics",
             "default": {
               "collect_ms": 0.0
+            }
+          },
+          "perf": {
+            "$ref": "#/components/schemas/PerfMetrics",
+            "default": {
+              "enabled": false,
+              "loop": {},
+              "api": {
+                "errors": {},
+                "routes": {},
+                "streams": {}
+              },
+              "db": {
+                "counters": {},
+                "pool": {}
+              },
+              "host": {
+                "psi": {},
+                "stale": false,
+                "test_slots": {},
+                "ungated": {
+                  "unattributed_slots": []
+                }
+              },
+              "relay": {
+                "available": false,
+                "upstream_failures": {}
+              },
+              "sampler": {}
             }
           }
         },
@@ -34839,6 +35055,77 @@
           "pull_requests"
         ],
         "title": "PendingPullRequestsResponse"
+      },
+      "PerfMetrics": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": false
+          },
+          "loop": {
+            "$ref": "#/components/schemas/LoopPerf",
+            "default": {}
+          },
+          "api": {
+            "$ref": "#/components/schemas/ApiPerf",
+            "default": {
+              "routes": {},
+              "streams": {},
+              "errors": {}
+            }
+          },
+          "db": {
+            "$ref": "#/components/schemas/DbPerf",
+            "default": {
+              "counters": {},
+              "pool": {}
+            }
+          },
+          "host": {
+            "$ref": "#/components/schemas/HostPerf",
+            "default": {
+              "psi": {},
+              "test_slots": {},
+              "ungated": {
+                "unattributed_slots": []
+              },
+              "stale": false
+            }
+          },
+          "relay": {
+            "$ref": "#/components/schemas/RelayPerf",
+            "default": {
+              "available": false,
+              "upstream_failures": {}
+            }
+          },
+          "sampler": {
+            "$ref": "#/components/schemas/PerfSamplerCost",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "PerfMetrics",
+        "description": "MetricsSampler's daemon and dashboard-server performance blocks."
+      },
+      "PerfSamplerCost": {
+        "properties": {
+          "perf_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Perf Ms"
+          }
+        },
+        "type": "object",
+        "title": "PerfSamplerCost",
+        "description": "Instrumentation-only cost measured by MetricsSampler."
       },
       "PhaseCreateRequest": {
         "properties": {
@@ -37751,6 +38038,46 @@
         ],
         "title": "PluginUpdateResponse"
       },
+      "PoolGauges": {
+        "properties": {
+          "checked_out": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked Out"
+          },
+          "overflow": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overflow"
+          },
+          "size": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size"
+          }
+        },
+        "type": "object",
+        "title": "PoolGauges",
+        "description": "Local engine pool readings from metrics_pool_gauges, without a query."
+      },
       "PoolInstanceStatus": {
         "properties": {
           "session_id": {
@@ -38710,6 +39037,83 @@
         "type": "object",
         "title": "PrMergeResponse",
         "description": "Response model for the ``pr_merge`` command."
+      },
+      "PressureEntry": {
+        "properties": {
+          "some_avg10": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Some Avg10"
+          },
+          "full_avg10": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Avg10"
+          }
+        },
+        "type": "object",
+        "title": "PressureEntry",
+        "description": "One kernel PSI resource reading from the host reader."
+      },
+      "PressurePerf": {
+        "properties": {
+          "cpu": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PressureEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "io": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PressureEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PressureEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "title": "PressurePerf",
+        "description": "HostSampler's kernel pressure readings, or null with a reason."
       },
       "PreviewPortableConfigRequest": {
         "properties": {},
@@ -42304,6 +42708,66 @@
         "title": "ReflowFailedScope",
         "description": "A single failed deferred reflow request, as reported by ``graph_reflow_status``."
       },
+      "RelayPerf": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available",
+            "default": false
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "http": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ws_handshake": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "upstream_failures": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Upstream Failures",
+            "default": {}
+          },
+          "relays_open": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Relays Open"
+          }
+        },
+        "type": "object",
+        "title": "RelayPerf",
+        "description": "Dashboard-server relay deltas; unavailable until the relay is polled."
+      },
       "ReleaseProjectConstraintRequest": {
         "properties": {
           "project_id": {
@@ -44405,6 +44869,29 @@
           "view"
         ],
         "title": "RightSurfacePane"
+      },
+      "RoutePerf": {
+        "properties": {
+          "latency": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Status",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "title": "RoutePerf",
+        "description": "Latency and status-class counters from the route middleware."
       },
       "RuleClusterDTO": {
         "properties": {
@@ -47578,6 +48065,40 @@
           "project_id"
         ],
         "title": "StreamMetadata"
+      },
+      "StreamPerf": {
+        "properties": {
+          "handshake": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Histogram"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "outcome": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Outcome",
+            "default": {}
+          },
+          "open": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Open"
+          }
+        },
+        "type": "object",
+        "title": "StreamPerf",
+        "description": "Handshake counters and open-stream gauge from the route middleware."
       },
       "StreamStartRequest": {
         "properties": {
@@ -51775,6 +52296,68 @@
         ],
         "title": "TaskSubtasksResponse"
       },
+      "TestSlotsPerf": {
+        "properties": {
+          "used": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Used"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total"
+          },
+          "waiting": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Waiting"
+          },
+          "orphaned": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orphaned"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "title": "TestSlotsPerf",
+        "description": "Test-slot occupancy from the host reader's resource semaphore snapshot."
+      },
       "ThroughputMetrics": {
         "properties": {
           "completions_per_hour": {
@@ -52211,6 +52794,43 @@
           "type"
         ],
         "title": "TranscriptEntryModel"
+      },
+      "UngatedPerf": {
+        "properties": {
+          "pytest_processes": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pytest Processes"
+          },
+          "unattributed": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unattributed"
+          },
+          "unattributed_slots": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unattributed Slots",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "UngatedPerf",
+        "description": "Host reader's process attribution counts and bounded worktree slot names."
       },
       "UpdateAndRestartRequest": {
         "properties": {

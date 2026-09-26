@@ -25,6 +25,7 @@ from src.doctor.models import (
     DoctorContext,
     Severity,
 )
+from src.doctor.perf_checks import perf_checks
 from src.doctor.playbook_v2_checks import playbook_v2_checks
 from src.doctor.pool_checks import pool_checks
 from src.doctor.profile_checks import profile_checks
@@ -57,6 +58,7 @@ __all__ = [
     "git_checks",
     "integration_checks",
     "intelligence_class_checks",
+    "perf_checks",
     "playbook_v2_checks",
     "profile_checks",
     "project_checks",
@@ -87,6 +89,8 @@ def default_registry() -> DoctorRegistry:
     for check in intelligence_class_checks():
         registry.register(check)
     for check in resource_checks():
+        registry.register(check)
+    for check in perf_checks():
         registry.register(check)
     for check in session_checks():
         registry.register(check)
