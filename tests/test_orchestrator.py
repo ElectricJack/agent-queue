@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import logging
 import os
 from unittest.mock import AsyncMock, MagicMock
 
@@ -24,6 +25,7 @@ from src.runtimes.base import Runtime
 from src.config import DatabaseConfig, AppConfig, AutoTaskConfig, GitHubAppConfig
 from src.intelligence_classes import IntelligenceClass
 from src.sessions.harness_parser import Harness
+from src.scheduler import AssignAction, SchedulerState
 from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
 from tests.assignment_routing_helpers import install_already_routed
 from tests.db_fixtures import lease_dsn
@@ -76,6 +78,146 @@ async def _drain_running_tasks(orch: Orchestrator) -> None:
     if orch._running_tasks:
         await asyncio.gather(*orch._running_tasks.values(), return_exceptions=True)
         orch._running_tasks.clear()
+
+
+class TestSchedulerBlockerLogging:
+    @staticmethod
+    def state(task_count):
+        return SchedulerState(
+            projects=[Project(id="p", name="project")],
+            tasks=[
+                Task(
+                    id=f"task-{i}", project_id="p", title="task", description="",
+                    status=TaskStatus.READY,
+                )
+                for i in range(task_count)
+            ],
+            agents=[],
+            project_token_usage={},
+            project_active_agent_counts={},
+            tasks_completed_in_window={},
+        )
+
+    async def test_scheduler_blocker_small_changes_keep_task_details(self, orch, caplog):
+        state = self.state(2)
+        state.tasks[1].status = TaskStatus.DEFINED
+        caplog.set_level(logging.INFO, logger="src.orchestrator.core")
+
+        orch._log_scheduler_blockers(state, [], {})
+        reason = "no available workspace on project 'p'"
+        assert caplog.messages == [f"scheduler blocked task=task-0 reason={reason}"]
+        caplog.clear()
+        orch._log_scheduler_blockers(state, [], {})
+        assert caplog.messages == []
+
+        orch._log_scheduler_blockers(state, [], {"p": 1})
+        reason = "no idle global worker available"
+        assert caplog.messages == [f"scheduler blocked task=task-0 reason={reason}"]
+        caplog.clear()
+        action = AssignAction(agent_id="worker", task_id="task-0", project_id="p")
+        orch._log_scheduler_blockers(state, [action], {"p": 1})
+        assert caplog.messages == [f"scheduler unblocked task=task-0 (prev={reason})"]
+        assert orch._scheduler_blocker_reasons == {}
+
+    async def test_scheduler_blocker_cache_is_local_to_each_orchestrator(self, orch, caplog):
+        state = self.state(1)
+        caplog.set_level(logging.INFO, logger="src.orchestrator.core")
+        orch._log_scheduler_blockers(state, [], {})
+        expected = list(caplog.messages)
+        caplog.clear()
+
+        other = Orchestrator(orch.config)
+        try:
+            other._log_scheduler_blockers(state, [], {})
+            assert caplog.messages == expected
+            caplog.clear()
+            other._log_scheduler_blockers(self.state(0), [], {})
+            caplog.clear()
+            orch._log_scheduler_blockers(state, [], {})
+            assert caplog.messages == []
+        finally:
+            await other.db.close()
+
+    @pytest.mark.parametrize("distinct_reasons", [False, True])
+    async def test_scheduler_blocker_bulk_changes_are_bounded(
+        self, orch, caplog, monkeypatch, distinct_reasons
+    ):
+        state = self.state(10_000)
+        phase = "startup"
+        if distinct_reasons:
+            monkeypatch.setattr(
+                orch, "_describe_task_blocker",
+                lambda task, *_: f"{phase}: capacity for {task.id}",
+            )
+        caplog.set_level(logging.INFO, logger="src.orchestrator.core")
+
+        for workspace_counts in ({}, {"p": 1}):
+            phase = "capacity changed" if workspace_counts else "startup"
+            caplog.clear()
+            orch._log_scheduler_blockers(state, [], workspace_counts)
+            assert len(caplog.records) == 21
+            assert all("scheduler blocked task=" in line for line in caplog.messages[:20])
+            assert "omitted_blocked=9980 omitted_unblocked=0" in caplog.messages[-1]
+            omitted_reason = orch._scheduler_blocker_reasons["task-20"]
+            assert caplog.records[-1].args[2] == [
+                (f"task-{i}", orch._scheduler_blocker_reasons[f"task-{i}"])
+                for i in range(20, 23)
+            ]
+            assert len(orch._scheduler_blocker_reasons) == 10_000
+
+            caplog.clear()
+            orch._log_scheduler_blockers(state, [], workspace_counts)
+            assert caplog.messages == []
+
+        # Leaving READY clears every cached task, including omitted changes.
+        for task in state.tasks:
+            task.status = TaskStatus.IN_PROGRESS
+        orch._log_scheduler_blockers(state, [], {"p": 1})
+        assert len(caplog.records) == 21
+        assert all("scheduler unblocked task=" in line for line in caplog.messages[:20])
+        assert "omitted_blocked=0 omitted_unblocked=9980" in caplog.messages[-1]
+        assert caplog.records[-1].args[3] == [
+            (f"task-{i}", f"{phase}: capacity for task-{i}" if distinct_reasons else omitted_reason)
+            for i in range(20, 23)
+        ]
+        assert orch._scheduler_blocker_reasons == {}
+        caplog.clear()
+        orch._log_scheduler_blockers(state, [], {"p": 1})
+        assert caplog.messages == []
+
+    @pytest.mark.parametrize("new_count", [10, 30])
+    async def test_scheduler_blocker_mixed_changes_share_budget(self, orch, caplog, new_count):
+        state = self.state(30 + new_count)
+        state.tasks = state.tasks[:30]
+        orch._log_scheduler_blockers(state, [], {})
+        previous_reason = orch._scheduler_blocker_reasons["task-0"]
+        state.tasks = self.state(30 + new_count).tasks[30:]
+        caplog.set_level(logging.INFO, logger="src.orchestrator.core")
+        caplog.clear()
+
+        orch._log_scheduler_blockers(state, [], {})
+        assert len(caplog.records) == 21
+        detailed_blocked = min(new_count, 20)
+        detailed_unblocked = 20 - detailed_blocked
+        assert sum("scheduler blocked task=" in line for line in caplog.messages) == detailed_blocked
+        assert sum("scheduler unblocked task=" in line for line in caplog.messages) == detailed_unblocked
+        assert (
+            f"omitted_blocked={new_count - detailed_blocked} "
+            f"omitted_unblocked={30 - detailed_unblocked}"
+        ) in caplog.messages[-1]
+        assert caplog.records[-1].args[2] == (
+            [(f"task-{i}", previous_reason) for i in range(50, 53)] if new_count > 20 else []
+        )
+        assert caplog.records[-1].args[3] == [
+            (f"task-{i}", previous_reason)
+            for i in range(detailed_unblocked, detailed_unblocked + 3)
+        ]
+        assert set(orch._scheduler_blocker_reasons) == {
+            f"task-{i}" for i in range(30, 30 + new_count)
+        }
+        caplog.clear()
+        orch._log_scheduler_blockers(state, [], {})
+        assert caplog.messages == []
 
 
 async def test_orchestrator_owns_single_integration_service_loop(orch):

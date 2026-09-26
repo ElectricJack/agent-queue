@@ -130,6 +130,11 @@ PAUSE_CHECKPOINT_RETRY_META = "manual_pause_checkpoint_retry"
 PAUSE_CHECKPOINT_MAX_ATTEMPTS = 3
 PAUSE_CHECKPOINT_MAX_BACKOFF = 30.0
 
+# File handlers run synchronously on the scheduler's event loop. Bound writes
+# even when a capacity change affects every READY task at once.
+_SCHEDULER_BLOCKER_DETAIL_LIMIT = 20
+_SCHEDULER_BLOCKER_SAMPLE_LIMIT = 3
+
 
 def _parse_reset_time(error_msg: str) -> float | None:
     """Extract a session-limit reset timestamp from an error message.
@@ -333,6 +338,8 @@ class Orchestrator(
         self._last_scheduler_state = None
         self._last_scheduler_workspace_counts: dict[str, int] = {}
         self._last_scheduler_idle_by_project: dict[str, int] = {}
+        # Last-observed reasons, including changes summarized by the log budget.
+        self._scheduler_blocker_reasons: dict[str, str] = {}
         # In-flight ``task_claim`` attempts a concurrent long-poller can wait
         # on instead of re-polling (swarm-work-model §10).  Keyed by
         # ``(session_id, claim_epoch)``; resolved by
@@ -3806,11 +3813,6 @@ class Orchestrator(
         self._log_scheduler_blockers(state, actions, workspace_counts)
         return actions
 
-    # Per-task reason cache to dedupe scheduler-blocker logs across ticks.
-    # Maps task_id → last-emitted blocker string; logs only when the reason
-    # changes (including clears via removal).
-    _scheduler_blocker_reasons: dict[str, str] = {}
-
     def _log_scheduler_blockers(
         self,
         state: "SchedulerState",
@@ -3821,8 +3823,9 @@ class Orchestrator(
 
         Called after every scheduler tick. Dedupes via
         ``_scheduler_blocker_reasons`` so an unassignable task logs once, not
-        every 5s. Logs again if the *reason* changes, and logs a "cleared"
-        line when the task finally assigns or otherwise leaves READY.
+        every 5s. Logs again if the *reason* changes or the task assigns or
+        otherwise leaves READY. Each tick shares a fixed detail budget across
+        blocked and unblocked changes, with one bounded overflow summary.
         """
         assigned_task_ids = {a.task_id for a in actions}
         ready_tasks = [t for t in state.tasks if t.status == TaskStatus.READY]
@@ -3839,21 +3842,48 @@ class Orchestrator(
             if reason:
                 current_reasons[task.id] = reason
 
-        # Emit diffs: newly blocked, reason-changed, or newly unblocked.
+        # Emit diffs with a shared write budget. Samples also stay bounded
+        # when each task has a different reason; grouping by reason alone
+        # would not bound the number of log records.
+        detail_count = 0
+        omitted_blocked = 0
+        omitted_unblocked = 0
+        blocked_samples: list[tuple[str, str]] = []
+        unblocked_samples: list[tuple[str, str]] = []
         for task_id, reason in current_reasons.items():
             if self._scheduler_blocker_reasons.get(task_id) != reason:
-                logger.info("scheduler blocked task=%s reason=%s", task_id, reason)
-                self._scheduler_blocker_reasons[task_id] = reason
+                if detail_count < _SCHEDULER_BLOCKER_DETAIL_LIMIT:
+                    logger.info("scheduler blocked task=%s reason=%s", task_id, reason)
+                    detail_count += 1
+                else:
+                    omitted_blocked += 1
+                    if len(blocked_samples) < _SCHEDULER_BLOCKER_SAMPLE_LIMIT:
+                        blocked_samples.append((task_id, reason))
 
         # Clear any tasks that used to be blocked but aren't anymore.
-        cleared = set(self._scheduler_blocker_reasons) - set(current_reasons)
-        for task_id in cleared:
+        for task_id, reason in self._scheduler_blocker_reasons.items():
+            if task_id in current_reasons:
+                continue
+            if detail_count < _SCHEDULER_BLOCKER_DETAIL_LIMIT:
+                logger.info("scheduler unblocked task=%s (prev=%s)", task_id, reason)
+                detail_count += 1
+            else:
+                omitted_unblocked += 1
+                if len(unblocked_samples) < _SCHEDULER_BLOCKER_SAMPLE_LIMIT:
+                    unblocked_samples.append((task_id, reason))
+
+        # Remember every transition, even if it did not get a detailed line,
+        # so omitted tasks do not produce another burst on the following tick.
+        self._scheduler_blocker_reasons = current_reasons
+        if omitted_blocked or omitted_unblocked:
             logger.info(
-                "scheduler unblocked task=%s (prev=%s)",
-                task_id,
-                self._scheduler_blocker_reasons[task_id],
+                "scheduler blocker changes summarized omitted_blocked=%s "
+                "omitted_unblocked=%s blocked_samples=%s unblocked_samples=%s",
+                omitted_blocked,
+                omitted_unblocked,
+                blocked_samples,
+                unblocked_samples,
             )
-            del self._scheduler_blocker_reasons[task_id]
 
     def _describe_task_blocker(
         self,

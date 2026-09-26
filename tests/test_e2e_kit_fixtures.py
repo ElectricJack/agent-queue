@@ -26,6 +26,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.config import load_config
+from src.jobs.adapters import finite_command
+from src.jobs.policy import presets, validate_args
 from src.profiles.parser import parse_profile
 from tests.test_e2e_cli_stateful import SCENARIO_GROUPS
 
@@ -49,6 +52,50 @@ def _load_smoke():
     finally:
         sys.modules.pop(spec.name, None)
     return module
+
+
+def test_development_validation_preset_checks_the_committed_readme(tmp_path):
+    smoke = _load_smoke()
+    smoke._seed_development_validation(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text("development fixture\n")
+    preset, args = finite_command(smoke.DEVELOPMENT_VALIDATION_COMMAND)
+    command = validate_args(presets(REPO_ROOT)[preset], args, tmp_path, worker_cap=1)
+
+    passed = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    assert "1 passed" in passed.stdout
+
+    readme.unlink()
+    failed = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert failed.returncode == 1, failed.stdout + failed.stderr
+    assert "test_readme_exists" in failed.stdout and "1 failed" in failed.stdout
+
+
+@pytest.mark.parametrize("test_dsn", [None, "postgresql+asyncpg://test@localhost:5534/postgres"])
+def test_e2e_config_enables_jobs_with_a_separate_test_database(tmp_path, test_dsn):
+    (tmp_path / "onboarding").mkdir()
+    text = E2E_ENV.read_text()
+    section = re.search(
+        r"^# 4\. Config\n.*?(?=^# -+\n# 5\. Database)", text, re.DOTALL | re.MULTILINE
+    )
+    assert section, "e2e-env.sh no longer has a '4. Config' section"
+    env = {**os.environ, "AQ_E2E_HOME": str(tmp_path), "REPO_ROOT": str(REPO_ROOT)}
+    env.pop("POSTGRES_TEST_DSN", None)
+    if test_dsn:
+        env["POSTGRES_TEST_DSN"] = test_dsn
+    subprocess.run(
+        ["bash", "-euo", "pipefail", "-c",
+         'source "$REPO_ROOT/scripts/e2e-common.sh"\n' + section.group(0)],
+        check=True, env=env, capture_output=True, text=True,
+    )
+    config = load_config(str(tmp_path / "config.yaml"))
+    assert config.resources.jobs.enabled
+    assert config.resources.jobs.test_database_url == (
+        test_dsn or
+        "postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres"
+    )
+    assert config.resources.jobs.test_database_url != config.database.url
 
 
 def test_s4_child_close_reports_a_no_op_work_outcome(monkeypatch):
