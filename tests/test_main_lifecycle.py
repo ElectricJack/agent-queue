@@ -20,6 +20,7 @@ import pytest
 import src.main as main_mod
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.event_bus import EventBus
+from src.remote_links import DashboardLinkResolver
 
 
 class LoginFailure(Exception):
@@ -69,6 +70,9 @@ def _postgres_config(tmp_path) -> AppConfig:
         data_dir=str(tmp_path / "data"),
     )
     config.mcp_server.enabled = False
+    # These process-lifecycle tests have no metrics database. Sampler behavior
+    # is covered by the metrics suite; keep its background loop disabled here.
+    config.metrics.enabled = False
     return config
 
 
@@ -80,8 +84,9 @@ def _install_run_env(monkeypatch, config, adapter):
     class FakeOrchestrator:
         def __init__(self, cfg, runtimes=None):
             self.config = cfg
-            self.db = SimpleNamespace()
+            self.db = SimpleNamespace(reviews_pending_notification=AsyncMock(return_value=[]))
             self.bus = EventBus()
+            self.dashboard_links = DashboardLinkResolver(lambda: self.config)
             self._restart_requested = False
             self._paused = False
             self._running_tasks: dict = {}

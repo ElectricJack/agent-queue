@@ -1473,6 +1473,9 @@ def format_pool_table(pools: list[dict]):
         title_style="bold bright_white",
         border_style="bright_black",
         expand=True,
+        # Per-cell padding makes the minimum column widths exceed 120 chars
+        # with Codex tier, clipping Projects even though it can fold.
+        padding=(0, 0),
     )
     table.add_column("Profile", style="bold cyan", overflow="fold")
     table.add_column("Codex tier")
