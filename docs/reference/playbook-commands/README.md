@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-111 commands are registered.
+112 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -156,6 +156,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`report_brief`](report_brief.md) | Report Brief | Read a bounded, paged report brief and its CAS version. |
 | [`report_get`](report_get.md) | Report Get | Read a stored morning report in project scope. |
 | [`report_list`](report_list.md) | Report List | List stored morning reports in project scope. |
+| [`report_reconcile`](report_reconcile.md) | Report Reconcile | Recover reserved hourly report requests after lost events. |
 | [`report_request`](report_request.md) | Report Request | Queue one author wake for a reserved report. |
 | [`report_submit`](report_submit.md) | Report Submit | Submit one authored report before its deadline. |
 | [`supervisor_inbox_history`](supervisor_inbox_history.md) | Supervisor Inbox History | Page conversations by update time or one conversation's inputs by receipt time. |
