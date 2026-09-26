@@ -332,8 +332,15 @@ registered with the best mechanism the host offers:
 | Host | Mechanism | Starts at |
 | --- | --- | --- |
 | macOS | launchd agent `~/Library/LaunchAgents/com.agent-queue.watchdog.plist` (`RunAtLoad`, `KeepAlive` on failure) | login |
-| Linux with a systemd user manager | user unit `~/.config/systemd/user/aq-watchdog.service` (`Restart=on-failure`) | boot, once linger is on (`aq service install` enables it when allowed; otherwise it prints `sudo loginctl enable-linger $USER`) |
-| No systemd user manager — WSL is the common case | a marked block in your crontab: `@reboot` plus a check every 2 minutes | boot |
+| Linux with a systemd user manager and linger | user unit `~/.config/systemd/user/aq-watchdog.service` (`Restart=on-failure`) | boot |
+| No systemd user manager — WSL is the common case — or no linger | a marked block in your crontab: `@reboot` plus a check every 2 minutes | boot |
+
+Linger keeps your systemd user manager running while you are logged out;
+without it, logging out would stop the watchdog *and* the daemon and agent
+sessions it started. `aq service install` enables it when `loginctl` (or
+`sudo -n`) allows, and otherwise uses cron and prints
+`sudo loginctl enable-linger $USER` — run that and `aq service install` again
+to switch to the user unit.
 
 `--mechanism systemd|launchd|cron` picks one explicitly, and `--dry-run` prints
 the exact entry without writing it. Rerunning `aq service install` rewrites the
@@ -349,7 +356,9 @@ What the watchdog does, and what it never does:
 - **A deliberate stop stays stopped.** `aq stop`, the stop half of
   `aq restart` and `aq update`, and the daemon's `shutdown` command write
   `~/.agent-queue/daemon.stopped`; only `aq start` removes it. While it exists
-  the watchdog does nothing — also after a reboot.
+  the watchdog does nothing — also after a reboot — and a stop that lands
+  while the watchdog's own start is still running wins: that start checks
+  again just before it spawns the daemon, and `aq stop` waits for it.
 - **It does not race a start or a deploy**: while `aq start` holds
   `daemon.lock` or `aq update` holds `update.lock`, it waits.
 - **Down is confirmed**: two checks in a row must find no daemon (the boot
@@ -357,8 +366,10 @@ What the watchdog does, and what it never does:
   running `aq start`, which also backs up the database first when a migration
   is pending, exactly as a manual start does.
 - **Failures back off** (1, 2, 4, 8… minutes, at most 30), at most five
-  automatic starts per hour, and after five failed starts in a row it stops
-  trying until the daemon is started by hand or you run
+  automatic starts per hour. A database outage is waited out, however long:
+  starts that fail while PostgreSQL does not answer only back off. After five
+  failed starts in a row *with* the database up, it stops trying until the
+  daemon is started by hand, the machine reboots, or you run
   `aq service check --reset`.
 
 Every decision is one line in `~/.agent-queue/logs/aq-service.log`, including
@@ -376,7 +387,8 @@ The service records the PATH of the shell you installed it from, because
 service managers start with an almost empty one and the daemon needs `tmux`,
 `git` and your harness CLIs. Rerun `aq service install` after moving your
 installation or changing where those tools live. `aq service uninstall` removes
-the watchdog and leaves the daemon as it is; `aq uninstall` removes it too.
+the watchdog and leaves the daemon as it is; `aq uninstall` removes it too,
+however it was installed.
 
 ## Unattended installation
 

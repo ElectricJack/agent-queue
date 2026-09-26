@@ -9324,6 +9324,7 @@
         "optional": [
           "--no-dashboard",
           "--no-dashboard-server",
+          "--unless-stopped",
           "--json",
           "--brief",
           "--api-url"

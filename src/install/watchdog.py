@@ -26,10 +26,14 @@ The rules, in the order :func:`decide` applies them:
    observation to confirm, skips this).
 5. **The database is waited for** -- up to :data:`DATABASE_WAIT` seconds from
    the first down observation -- before ``aq start`` is tried.
-6. **Failures back off** exponentially, a crash loop is rate limited, and after
-   :data:`MAX_START_FAILURES` consecutive failed starts the watchdog stops
-   trying until the daemon is seen running again (``aq start``) or the
-   operator runs ``aq service check --reset``.
+6. **Failures back off** exponentially and a crash loop is rate limited.  A
+   database outage is waited out however long it lasts; after
+   :data:`MAX_START_FAILURES` consecutive failed starts against a reachable
+   database the watchdog stops trying until the daemon is seen running again
+   (``aq start``), the machine boots, or ``aq service check --reset``.
+7. **A stop that arrives mid-start wins**: the watchdog starts with
+   ``aq start --unless-stopped``, which checks the marker again just before it
+   spawns the daemon and exits :data:`~src.daemon_state.STOPPED_EXIT_CODE`.
 
 Everything the watchdog decides is logged, one line per change, to
 ``<home>/logs/aq-service.log``, and its state is ``<home>/service/state.json``
@@ -53,11 +57,16 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from src.daemon_state import (
+    LOCK_ABANDONED,
+    LOCK_HELD,
     STOP_INTENT_FILENAME,
+    STOPPED_EXIT_CODE,
     StopIntent,
     database_reachable,
     find_daemon_pid,
     read_stop_intent,
+    release_start_lock,
+    start_lock_state,
 )
 
 from .command import CommandOutput, CommandRunner, run_command
@@ -90,8 +99,9 @@ CRASH_WINDOW = 3600.0
 SERIES_GAP_MIN = 600.0
 
 #: How long ``aq start`` may take: waiting for PostgreSQL, a pre-migration
-#: backup, ``/health``, ``/ready`` and the post-start pool fix.
-START_TIMEOUT = 900.0
+#: backup of a large database, ``/health``, ``/ready`` and the post-start pool
+#: fix.  Generous on purpose: a start killed mid-backup helps nobody.
+START_TIMEOUT = 3600.0
 
 
 class Verdict(str, Enum):
@@ -145,7 +155,11 @@ class WatchdogState:
     detail: str = ""
     down_since: float | None = None
     down_checks: int = 0
+    #: Consecutive failed starts with the database reachable: these give up.
     start_failures: int = 0
+    #: Consecutive failed starts while the database was not reachable: these
+    #: only back off.  An outage is waited out, however long it lasts.
+    database_failures: int = 0
     next_attempt_at: float = 0.0
     starts: list[float] = field(default_factory=list)
     last_start: dict[str, Any] | None = None
@@ -190,6 +204,14 @@ def _reset_down(state: WatchdogState) -> None:
     state.down_checks = 0
 
 
+def _reset_failures(state: WatchdogState, *, keep_starts: bool = False) -> None:
+    state.start_failures = 0
+    state.database_failures = 0
+    state.next_attempt_at = 0.0
+    if not keep_starts:
+        state.starts = []
+
+
 def decide(
     observation: Observation,
     previous: WatchdogState,
@@ -205,22 +227,23 @@ def decide(
     now = observation.now
     state = replace(previous, starts=list(previous.starts))
     gap = now - state.last_check if state.last_check else 0.0
-    if state.last_check and gap > max(3 * interval, SERIES_GAP_MIN):
+    if boot or (state.last_check and gap > max(3 * interval, SERIES_GAP_MIN)):
+        # A boot, or a long silence (the machine or the service was off), is a
+        # fresh start: nothing observed before it confirms or condemns anything.
         _reset_down(state)
+        _reset_failures(state)
     state.last_check = now
     state.starts = [at for at in state.starts if now - at < CRASH_WINDOW]
 
     if observation.daemon_pid is not None:
         _reset_down(state)
-        state.start_failures = 0
-        state.next_attempt_at = 0.0
+        _reset_failures(state, keep_starts=True)
         return Verdict.RUNNING, f"daemon running (PID {observation.daemon_pid})", state
 
     if observation.stop_intent is not None:
         # The operator has spoken; whatever failed before is theirs to judge.
         _reset_down(state)
-        state.start_failures = 0
-        state.next_attempt_at = 0.0
+        _reset_failures(state, keep_starts=True)
         intent = observation.stop_intent
         when = _iso(intent.at) if intent.at else "an unknown time"
         why = f": {intent.reason}" if intent.reason else ""
@@ -287,14 +310,28 @@ def decide(
     return Verdict.START, "daemon down; starting it", state
 
 
-def record_start(state: WatchdogState, *, now: float, ok: bool, message: str) -> WatchdogState:
-    """Fold one ``aq start`` outcome into the state."""
+def record_start(
+    state: WatchdogState,
+    *,
+    now: float,
+    ok: bool,
+    message: str,
+    database_ready: bool | None = True,
+) -> WatchdogState:
+    """Fold one ``aq start`` outcome into the state.
+
+    A start that failed while the database was not reachable backs off but
+    never counts toward giving up: the watchdog waits an outage out, and only
+    a daemon that will not start against a *working* database stops it.
+    """
     state = replace(state, starts=[*state.starts, now])
     state.last_start = {"at": now, "ok": ok, "message": message[-500:]}
     if ok:
         _reset_down(state)
-        state.start_failures = 0
-        state.next_attempt_at = 0.0
+        _reset_failures(state, keep_starts=True)
+    elif database_ready is False:
+        state.database_failures += 1
+        state.next_attempt_at = now + backoff_seconds(state.database_failures)
     else:
         state.start_failures += 1
         state.next_attempt_at = now + backoff_seconds(state.start_failures)
@@ -442,7 +479,8 @@ def tick(
             )
         previous = load_state(home)
         if reset:
-            previous = replace(previous, start_failures=0, next_attempt_at=0.0, starts=[])
+            previous = replace(previous, starts=[])
+            _reset_failures(previous)
             append_log(home, "reset: start failures and backoff cleared", now=now())
 
         observation = observe(host, now=now())
@@ -457,8 +495,25 @@ def tick(
         if verdict is Verdict.START:
             output = host.start_daemon()
             finished = now()
+            if output.returncode == STOPPED_EXIT_CODE:
+                # A stop was recorded while it was starting: left down on
+                # purpose, which is neither a start nor a failure.
+                verdict = Verdict.STOPPED
+                detail = "a stop was recorded while the daemon was starting; left down"
+                _reset_down(state)
+                append_log(home, f"{verdict.value}: {detail}", now=finished)
+                state.verdict = verdict.value
+                state.detail = detail
+                _save(home, state, now)
+                return TickResult(verdict, detail, state, output)
             ok = output.ok and host.daemon_pid() is not None
-            state = record_start(state, now=finished, ok=ok, message=output.message())
+            state = record_start(
+                state,
+                now=finished,
+                ok=ok,
+                message=output.message(),
+                database_ready=observation.database_ready,
+            )
             verdict = Verdict.STARTED if ok else Verdict.START_FAILED
             if ok:
                 detail = "daemon started"
@@ -466,6 +521,7 @@ def tick(
                 detail = (
                     f"`aq start` failed ({output.message()}); retry in "
                     f"{int(state.next_attempt_at - finished)}s"
+                    + (" (the database is not reachable)" if observation.database_ready is False else "")
                     if state.start_failures < MAX_START_FAILURES
                     else f"`aq start` failed ({output.message()}); giving up after "
                     f"{state.start_failures} attempts"
@@ -478,11 +534,15 @@ def tick(
             append_log(home, f"{verdict.value}: {detail}", now=finished)
         state.verdict = verdict.value
         state.detail = detail
-        try:
-            save_state(home, state)
-        except OSError as error:
-            append_log(home, f"could not save {state_path(home)}: {error}", now=now())
+        _save(home, state, now)
         return TickResult(verdict, detail, state, output)
+
+
+def _save(home: Path, state: WatchdogState, now: Callable[[], float]) -> None:
+    try:
+        save_state(home, state)
+    except OSError as error:
+        append_log(home, f"could not save {state_path(home)}: {error}", now=now())
 
 
 def observe(host: WatchdogHost, *, now: float) -> Observation:
@@ -547,11 +607,15 @@ def run_loop(
     append_log(
         home, f"watchdog started (PID {os.getpid()}, checking every {interval:g}s)", now=now()
     )
+    first = True
     while True:
         try:
-            tick(host, now=now, mode="loop", interval=interval)
+            # The loop's first check is a fresh start (boot, or the service
+            # manager restarting the watchdog): no stale give-up carries over.
+            tick(host, now=now, mode="loop", interval=interval, boot=first)
         except Exception as error:  # noqa: BLE001 - the loop outlives one bad check
             append_log(home, f"check failed: {error!r}", now=now())
+        first = False
         if code_changed is not None and code_changed():
             append_log(
                 home,
@@ -574,9 +638,6 @@ def run_loop(
 #: (``src.install.update.LOCK_NAME``).
 START_LOCK_NAME = "daemon.lock"
 UPDATE_LOCK_NAME = "update.lock"
-#: A start lock older than this was abandoned (a killed ``aq start``): removing
-#: it is what lets the next start run, exactly as ``aq stop`` does.
-START_LOCK_STALE_AFTER = 1800.0
 #: An update lock older than this no longer holds the watchdog back.  It is
 #: never removed here -- ``aq update`` owns it and says how to clear it.
 UPDATE_LOCK_STALE_AFTER = 7200.0
@@ -650,14 +711,13 @@ class LocalHost:
     def busy(self) -> str | None:
         home = Path(self.home)
         start_lock = home / START_LOCK_NAME
-        age = _age(start_lock, self.clock())
-        if age is not None:
-            if age < START_LOCK_STALE_AFTER:
-                return f"an `aq start` is in progress ({start_lock})"
-            try:
-                start_lock.rmdir()
-            except OSError:
-                return f"{start_lock} is left over from an interrupted `aq start`; remove it"
+        state = start_lock_state(str(start_lock), now=self.clock())
+        if state == LOCK_HELD:
+            # Held by a live `aq start`, however long its backup takes.
+            return f"an `aq start` is in progress ({start_lock})"
+        if state == LOCK_ABANDONED:
+            # Its owner died (a killed start); the next `aq start` needs it gone.
+            release_start_lock(str(start_lock))
         update_lock = home / UPDATE_LOCK_NAME
         age = _age(update_lock, self.clock())
         if age is not None and age < UPDATE_LOCK_STALE_AFTER:
@@ -674,11 +734,42 @@ class LocalHost:
         aq = self.aq or resolve_aq()
         if not aq:
             return CommandOutput(argv=("aq",), error="the `aq` command was not found")
+        # --unless-stopped: an `aq stop` that lands while this start runs wins
+        # (exit STOPPED_EXIT_CODE) instead of being withdrawn by it.
         return self.runner(
-            [aq, "start", "--no-dashboard"],
+            [aq, "start", "--no-dashboard", "--unless-stopped"],
             timeout=START_TIMEOUT,
             env=clean_environment(self.environ),
         )
+
+
+#: ``<home>/service/install.json`` -- written by ``aq service install``
+#: (:mod:`src.install.service`), read here for what the entry leaves out.
+INSTALL_RECORD_FILENAME = "install.json"
+
+
+def read_install_record(home: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads((service_dir(home) / INSTALL_RECORD_FILENAME).read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def apply_recorded_environment(record: Mapping[str, Any], environ: Any) -> None:
+    """Give this process the PATH (and LANG) ``aq service install`` recorded.
+
+    A service manager starts with an almost empty PATH (cron: ``/usr/bin:/bin``)
+    and the daemon needs ``tmux``, ``git`` and the harness CLIs.  The PATH is
+    kept in the record rather than on the cron line: a WSL PATH with the
+    Windows one appended is longer than cron accepts for a command.
+    """
+    path = record.get("path")
+    if isinstance(path, str) and path:
+        environ["PATH"] = path
+    lang = record.get("lang")
+    if isinstance(lang, str) and lang and not environ.get("LANG"):
+        environ["LANG"] = lang
 
 
 def _age(path: Path, now: float) -> float | None:
@@ -718,7 +809,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 10
 
     home = Path(args.home) if args.home else default_home()
-    host = LocalHost(home=home, aq=args.aq)
+    record = read_install_record(home)
+    apply_recorded_environment(record, os.environ)
+    host = LocalHost(home=home, aq=args.aq or record.get("aq") or None)
+    if not args.interval and record.get("interval"):
+        args.interval = float(record["interval"])
     if args.mode == "check":
         interval = args.interval if args.interval else DEFAULT_INTERVAL
         result = tick(
@@ -756,6 +851,7 @@ __all__ = [
     "DATABASE_WAIT",
     "DEFAULT_INTERVAL",
     "EXIT_RELOAD",
+    "INSTALL_RECORD_FILENAME",
     "LOG_FILENAME",
     "MAX_STARTS_PER_WINDOW",
     "MAX_START_FAILURES",
@@ -767,6 +863,7 @@ __all__ = [
     "WatchdogHost",
     "WatchdogState",
     "append_log",
+    "apply_recorded_environment",
     "backoff_seconds",
     "clean_environment",
     "decide",
@@ -778,6 +875,7 @@ __all__ = [
     "log_path",
     "main",
     "observe",
+    "read_install_record",
     "record_start",
     "resolve_aq",
     "run_loop",

@@ -37,8 +37,14 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "LOCK_ABANDONED",
+    "LOCK_ABSENT",
+    "LOCK_HELD",
+    "START_LOCK_OWNER",
+    "STOPPED_EXIT_CODE",
     "STOP_INTENT_FILENAME",
     "StopIntent",
+    "acquire_start_lock",
     "clear_stop_intent",
     "configured_database_endpoint",
     "database_reachable",
@@ -48,10 +54,77 @@ __all__ = [
     "read_daemon_pid",
     "read_stop_intent",
     "record_stop_intent",
+    "release_start_lock",
+    "start_lock_state",
 ]
 
 #: Beside ``daemon.pid`` in the AQ home (``~/.agent-queue``).
 STOP_INTENT_FILENAME = "daemon.stopped"
+
+#: ``aq start --unless-stopped`` (the watchdog's start) exits with this when a
+#: deliberate stop is recorded -- before it began, or while it was starting.
+#: It is "left down on purpose", not a failure.
+STOPPED_EXIT_CODE = 16
+
+
+# ---------------------------------------------------------------------------
+# The start lock
+# ---------------------------------------------------------------------------
+
+#: ``aq start`` holds ``daemon.lock`` (a directory) for the whole start; the
+#: PID of the process holding it is written inside, so a lock whose owner died
+#: -- a start that was killed -- is recognisably abandoned rather than merely
+#: old.  A long pre-migration backup is old but very much alive.
+START_LOCK_OWNER = "owner"
+LOCK_ABSENT = "absent"
+LOCK_HELD = "held"
+LOCK_ABANDONED = "abandoned"
+#: A lock with no owner file (written by a release that predates it) counts as
+#: abandoned only after this long.
+_OWNERLESS_LOCK_STALE_AFTER = 1800.0
+
+
+def acquire_start_lock(lock_dir: str) -> bool:
+    """Take the start lock; ``False`` when another start holds it."""
+    try:
+        os.makedirs(lock_dir)
+    except FileExistsError:
+        return False
+    try:
+        with open(os.path.join(lock_dir, START_LOCK_OWNER), "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+    except OSError:
+        pass
+    return True
+
+
+def release_start_lock(lock_dir: str) -> None:
+    """Remove the start lock and its owner note, if they are there."""
+    _remove(os.path.join(lock_dir, START_LOCK_OWNER))
+    try:
+        os.rmdir(lock_dir)
+    except OSError:
+        pass
+
+
+def start_lock_state(lock_dir: str, *, now: float | None = None) -> str:
+    """:data:`LOCK_ABSENT`, :data:`LOCK_HELD` or :data:`LOCK_ABANDONED`."""
+    try:
+        age = (time.time() if now is None else now) - os.stat(lock_dir).st_mtime
+    except OSError:
+        return LOCK_ABSENT
+    try:
+        with open(os.path.join(lock_dir, START_LOCK_OWNER), encoding="utf-8") as handle:
+            owner = int(handle.read().strip())
+    except (OSError, ValueError):
+        return LOCK_ABANDONED if age > _OWNERLESS_LOCK_STALE_AFTER else LOCK_HELD
+    try:
+        os.kill(owner, 0)
+    except ProcessLookupError:
+        return LOCK_ABANDONED
+    except OSError:
+        return LOCK_HELD  # alive, owned by someone else
+    return LOCK_HELD
 
 
 # ---------------------------------------------------------------------------

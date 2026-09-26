@@ -50,6 +50,7 @@ from .results import ResourceRecord, StepResult
 from .steps import StepContext, StepSpec
 from .watchdog import (
     DEFAULT_INTERVAL,
+    INSTALL_RECORD_FILENAME,
     WatchdogState,
     default_home,
     load_state,
@@ -71,7 +72,7 @@ CRON_BEGIN = (
     "remove with `aq service uninstall`)"
 )
 CRON_END = "# END agent-queue auto-restart"
-RECORD_FILENAME = "install.json"
+RECORD_FILENAME = INSTALL_RECORD_FILENAME
 
 #: Cron cannot run more often than once a minute, and every check is a Python
 #: start: two minutes keeps it cheap and a crash still comes back in minutes.
@@ -265,14 +266,18 @@ def render_launchd_plist(spec: ServiceSpec, paths: ServicePaths) -> bytes:
     return plistlib.dumps(payload)
 
 
+#: cron refuses a command longer than this (``man 5 crontab``: 998 bytes).
+CRON_COMMAND_MAX = 998
+
+
 def _cron_command(argv: Sequence[str], spec: ServiceSpec, log: Path) -> str:
+    # No PATH on the line: the watchdog reads it from the install record,
+    # because a WSL PATH with the Windows one appended is longer than cron
+    # accepts for a whole command.
     command = " ".join(shlex.quote(part) for part in argv)
-    env = f"PATH={shlex.quote(spec.path)}"
-    if spec.lang:
-        env += f" LANG={shlex.quote(spec.lang)}"
     # The watchdog writes its own log lines; only an unexpected traceback on
     # stderr is worth appending, never a verdict line every few minutes.
-    line = f"{env} {command} > /dev/null 2>> {shlex.quote(str(log))}"
+    line = f"{command} > /dev/null 2>> {shlex.quote(str(log))}"
     # `%` ends a cron command and starts its standard input.
     return line.replace("%", "\\%")
 
@@ -286,18 +291,46 @@ def render_cron_block(spec: ServiceSpec, paths: ServicePaths) -> str:
     return "\n".join((CRON_BEGIN, f"@reboot {boot}", f"{schedule} {every}", CRON_END)) + "\n"
 
 
+class CronBlockError(ValueError):
+    """AQ's crontab block is damaged, so it cannot be told apart from the rest."""
+
+
 def strip_cron_block(text: str) -> tuple[str, bool]:
-    """*text* without AQ's block; the operator's own entries are untouched."""
-    from .lifecycle import strip_marked_block
+    """*text* without AQ's block; the operator's own entries are untouched.
 
-    return strip_marked_block(text, CRON_BEGIN, CRON_END)
+    Raises :class:`CronBlockError` for a begin marker with no end marker: the
+    lines after it may be the operator's own, and a crontab is written back
+    whole, so guessing where the block ends could delete their jobs.
+    """
+    kept: list[str] = []
+    inside = removed = False
+    for line in text.splitlines(keepends=True):
+        stripped = line.strip()
+        if not inside and stripped == CRON_BEGIN:
+            inside = removed = True
+            continue
+        if inside:
+            if stripped == CRON_END:
+                inside = False
+            continue
+        kept.append(line)
+    if inside:
+        raise CronBlockError(
+            f"the crontab has AQ's begin marker but no `{CRON_END}` line; restore that "
+            "line (or remove AQ's lines) with `crontab -e`, then rerun"
+        )
+    return "".join(kept), removed
 
 
-def merge_cron_block(existing: str, block: str) -> str:
-    kept, _removed = strip_cron_block(existing)
+def merge_cron_block(existing: str, block: str) -> tuple[str | None, str]:
+    """``(crontab with AQ's block replaced, "")``, or ``(None, why)``."""
+    try:
+        kept, _removed = strip_cron_block(existing)
+    except CronBlockError as error:
+        return None, str(error)
     if kept and not kept.endswith("\n"):
         kept += "\n"
-    return kept + block
+    return kept + block, ""
 
 
 # ---------------------------------------------------------------------------
@@ -577,15 +610,53 @@ def install_service(
             remediation=remediation,
             detail={"host": facts.to_dict()},
         )
-    spec = build_spec(mechanism, aq=aq, environ=env, interval=interval, python=python)
     steps = _Steps(runner, dry_run=dry_run)
     notes: list[str] = [reason]
     user = user or current_user()
 
     if mechanism == MECHANISM_SYSTEMD:
+        # Without linger the user manager -- and with it every process in the
+        # watchdog's unit: the daemon it started, that daemon's tmux server and
+        # agent sessions -- is stopped at the last logout.  A daemon started
+        # from a shell survives logout, so a unit without linger is a
+        # regression; cron's processes are not the user manager's to stop.
+        lingering, linger_notes = _ensure_linger(user, steps, linger_root=linger_root)
+        notes.extend(linger_notes)
+        if not lingering and requested == AUTO:
+            if not facts.crontab:
+                return ServiceAction(
+                    ok=False,
+                    needs_user=True,
+                    mechanism=MECHANISM_SYSTEMD,
+                    summary=(
+                        f"linger could not be enabled for {user}, and without it systemd "
+                        "stops the watchdog -- and the daemon it starts -- at logout"
+                    ),
+                    remediation=(
+                        f"Run `sudo loginctl enable-linger {user}` (or install cron), then "
+                        "rerun `aq service install`."
+                    ),
+                    notes=tuple(notes),
+                    commands=tuple(steps.transcript),
+                    dry_run=dry_run,
+                    detail={"host": facts.to_dict()},
+                )
+            mechanism = MECHANISM_CRON
+            notes.append(
+                f"using cron instead of systemd: linger could not be enabled for {user}, and "
+                "without it systemd would stop the daemon and its agent sessions at logout. "
+                f"`sudo loginctl enable-linger {user}`, then `aq service install`, switches to "
+                "the user unit."
+            )
+        elif not lingering:
+            notes.append(
+                "WARNING: without linger, logging out stops this watchdog and every daemon "
+                "and agent session it started"
+            )
+    spec = build_spec(mechanism, aq=aq, environ=env, interval=interval, python=python)
+
+    if mechanism == MECHANISM_SYSTEMD:
         failure = _install_systemd(spec, paths, steps)
-        if failure is None:
-            notes.extend(_ensure_linger(user, steps, linger_root=linger_root))
     elif mechanism == MECHANISM_LAUNCHD:
         failure = _install_launchd(spec, paths, steps)
     else:
@@ -617,6 +688,7 @@ def install_service(
         "python": spec.python,
         "aq": spec.aq,
         "path": spec.path,
+        "lang": spec.lang,
         "interval": spec.interval,
         "installed_at": clock(),
         "artifact": paths.artifact_for(mechanism),
@@ -667,24 +739,23 @@ def _install_systemd(spec: ServiceSpec, paths: ServicePaths, steps: _Steps) -> s
     return None
 
 
-def _ensure_linger(user: str, steps: _Steps, *, linger_root: Path) -> list[str]:
-    """Let the unit start at boot, not at the first login, when the host allows it."""
-    if linger_enabled(user, root=linger_root) is not False:
-        return []
+def _ensure_linger(user: str, steps: _Steps, *, linger_root: Path) -> tuple[bool, list[str]]:
+    """Keep the user manager running without a login: ``(lingering, notes)``.
+
+    Linger is what starts the unit at boot and, as importantly, what keeps the
+    daemon it started alive after the user logs out.
+    """
+    if linger_enabled(user, root=linger_root):
+        return True, []
     if steps.dry_run:
-        return [f"would enable linger for {user}, so the watchdog starts at boot"]
+        return True, [f"would enable linger for {user} (loginctl, then sudo -n)"]
     for argv in (
         ["loginctl", "enable-linger", user],
         ["sudo", "-n", "loginctl", "enable-linger", user],
     ):
         if steps.run(argv).ok:
-            return [f"enabled linger for {user}, so the watchdog starts at boot"]
-    return [
-        (
-            f"linger is off for {user}: the watchdog starts at your first login, not at "
-            f"boot. `sudo loginctl enable-linger {user}` makes it start at boot."
-        )
-    ]
+            return True, [f"enabled linger for {user}: the watchdog runs from boot, logged in or not"]
+    return False, [f"linger could not be enabled for {user} (loginctl and sudo -n both refused)"]
 
 
 def _launchd_domain() -> str:
@@ -706,12 +777,23 @@ def _install_launchd(spec: ServiceSpec, paths: ServicePaths, steps: _Steps) -> s
 
 
 def _install_cron(spec: ServiceSpec, paths: ServicePaths, steps: _Steps) -> str | None:
+    block = render_cron_block(spec, paths)
+    too_long = [
+        line for line in block.splitlines() if not line.startswith("#") and len(line) > CRON_COMMAND_MAX
+    ]
+    if too_long:
+        return (
+            f"a cron entry would be {len(too_long[0])} characters, over cron's "
+            f"{CRON_COMMAND_MAX}; install AQ under a shorter path"
+        )
     existing, problem = _read_crontab(steps)
     if existing is None:
         # Never overwrite a crontab that could not be read: the operator's own
         # entries are in it.
         return f"could not read the current crontab ({problem})"
-    merged = merge_cron_block(existing, render_cron_block(spec, paths))
+    merged, problem = merge_cron_block(existing, block)
+    if merged is None:
+        return problem
     if not steps.dry_run:
         paths.log_path.parent.mkdir(parents=True, exist_ok=True)
     written = steps.run(["crontab", "-"], input_text=merged)
@@ -745,7 +827,10 @@ def _remove_mechanism(
         if only_if_present and "not installed" in problem:
             return False, None  # no cron at all: nothing of ours can be in it
         return False, f"could not read the crontab ({problem})"
-    kept, removed = strip_cron_block(existing)
+    try:
+        kept, removed = strip_cron_block(existing)
+    except CronBlockError as error:
+        return False, str(error)
     if not removed:
         return False, None
     written = steps.run(["crontab", "-"], input_text=kept)
@@ -942,8 +1027,9 @@ def interpret_status(
             )
         manager["linger"] = linger
         if linger is False:
-            notes.append(
-                "linger is off: the watchdog starts at your first login, not at boot "
+            problems.append(
+                "linger is off: logging out stops the watchdog and every daemon and agent "
+                "session it started, and nothing starts it before a login "
                 f"(`sudo loginctl enable-linger {current_user()}`)"
             )
     elif mechanism == MECHANISM_LAUNCHD:
@@ -1152,6 +1238,31 @@ def autostart_step(
     )
 
 
+def installed_service_resource(paths: ServicePaths | None = None) -> ResourceRecord | None:
+    """The service as an uninstallable resource, if one is installed.
+
+    ``aq service install`` does not write the install resume record, so
+    ``aq uninstall`` asks here too: a watchdog left behind by an uninstall would
+    keep starting a daemon that is supposed to be gone.
+    """
+    paths = paths or ServicePaths.for_host()
+    record = read_record(paths)
+    mechanism = (record or {}).get("mechanism")
+    if not mechanism:
+        if paths.unit_path.exists():
+            mechanism = MECHANISM_SYSTEMD
+        elif paths.plist_path.exists():
+            mechanism = MECHANISM_LAUNCHD
+        else:
+            return None
+    return ResourceRecord(
+        kind=RESOURCE_SERVICE,
+        id=str(mechanism),
+        owned=True,
+        detail={"note": "installed with `aq service install`"},
+    )
+
+
 def removal_handler(runner: CommandRunner | None = None) -> Callable[[Any], Any]:
     """The ``aq uninstall`` handler for :data:`RESOURCE_SERVICE` records."""
     from .lifecycle import RemovalOutcome
@@ -1178,6 +1289,7 @@ __all__ = [
     "RESOURCE_SERVICE",
     "STEP_AUTOSTART",
     "UNIT_NAME",
+    "CronBlockError",
     "HostFacts",
     "ServiceAction",
     "ServicePaths",
@@ -1187,6 +1299,7 @@ __all__ = [
     "build_spec",
     "choose_mechanism",
     "install_service",
+    "installed_service_resource",
     "interpret_status",
     "linger_enabled",
     "merge_cron_block",

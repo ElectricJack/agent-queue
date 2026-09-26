@@ -314,6 +314,17 @@ class FakeHost:
         return CommandOutput(argv=("aq", "start"), returncode=1, stderr="Error: boom")
 
 
+def _dead_pid() -> int:
+    for pid in range(4_194_000, 4_000_000, -1):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return pid
+        except OSError:
+            continue
+    raise AssertionError("no free pid")
+
+
 class Clock:
     def __init__(self, start: float = 1_000_000.0):
         self.now = start
@@ -450,16 +461,19 @@ def test_the_local_host_reads_the_stop_marker_aq_stop_writes(tmp_path, monkeypat
 
 
 def test_the_local_host_sees_a_start_or_update_in_progress(tmp_path):
+    from src.daemon_state import acquire_start_lock
+
     clock = Clock()
     host = wd.LocalHost(home=tmp_path, clock=clock)
     assert host.busy() is None
 
     lock = tmp_path / "daemon.lock"
-    lock.mkdir()
-    os.utime(lock, (clock.now, clock.now))
-    assert "aq start" in host.busy()
-    os.utime(lock, (clock.now - 2 * wd.START_LOCK_STALE_AFTER,) * 2)
-    assert host.busy() is None and not lock.exists()  # abandoned: removed
+    assert acquire_start_lock(str(lock))  # owned by this (live) process
+    os.utime(lock, (clock.now - 86400,) * 2)
+    assert "aq start" in host.busy()  # old, but its owner is alive: a long backup
+
+    (lock / "owner").write_text(str(_dead_pid()))
+    assert host.busy() is None and not lock.exists()  # owner died: abandoned, removed
 
     update = tmp_path / "update.lock"
     update.write_text("")
@@ -487,7 +501,7 @@ def test_the_local_host_starts_the_daemon_through_aq_start_with_a_clean_environm
 
     host = wd.LocalHost(home=tmp_path, aq="/venv/bin/aq", runner=run, environ=environ)
     assert host.start_daemon().ok
-    assert runner.calls[0][0] == ("/venv/bin/aq", "start", "--no-dashboard")
+    assert runner.calls[0][0] == ("/venv/bin/aq", "start", "--no-dashboard", "--unless-stopped")
     env = captured["env"]
     assert env["PATH"] == "/usr/bin" and env["HOME"] == str(tmp_path)
     assert not {"AQ_SESSION_ID", "AQ_SESSION_KIND", "AQ_DB_SCOPE", "CLAUDECODE"} & set(env)
@@ -568,12 +582,14 @@ def test_the_cron_block_checks_at_boot_and_every_few_minutes(paths, venv):
     for line in (boot, every):
         assert "-P -m src.install.watchdog check" in line
         assert f"2>> {paths.log_path}" in line and "> /dev/null" in line
-        assert f"PATH={venv}:/usr/bin:/bin" in line
+        # The PATH is read from the install record, not written on the line:
+        # a WSL PATH is longer than cron accepts for a command.
+        assert "PATH=" not in line
 
 
 def test_a_percent_sign_cannot_end_a_cron_command(paths, venv):
-    block = render_cron_block(spec(MECHANISM_CRON, venv, path="/opt/100%/bin"), paths)
-    assert "/opt/100\\%/bin" in block
+    block = render_cron_block(spec(MECHANISM_CRON, venv, aq="/opt/100%/aq"), paths)
+    assert "/opt/100\\%/aq" in block
 
 
 def test_every_minute_is_written_as_a_plain_schedule(paths, venv):
@@ -584,8 +600,10 @@ def test_every_minute_is_written_as_a_plain_schedule(paths, venv):
 def test_merging_the_cron_block_keeps_the_operators_entries_and_is_idempotent(paths, venv):
     mine = "MAILTO=me\n# quilt watchdog\n*/2 * * * * $HOME/.quilt/bin/coord-watchdog.sh"
     block = render_cron_block(spec(MECHANISM_CRON, venv), paths)
-    once = merge_cron_block(mine, block)
-    twice = merge_cron_block(once, render_cron_block(spec(MECHANISM_CRON, venv, interval=180), paths))
+    once, _ = merge_cron_block(mine, block)
+    twice, _ = merge_cron_block(
+        once, render_cron_block(spec(MECHANISM_CRON, venv, interval=180), paths)
+    )
     assert once.startswith(mine + "\n")
     assert twice.count(CRON_BEGIN) == 1 and "*/3 * * * *" in twice
     stripped, removed = strip_cron_block(twice)
@@ -812,11 +830,25 @@ def test_a_running_systemd_watchdog_is_healthy(paths):
         outputs={"systemd.enabled": ok("enabled\n"), "systemd.active": ok("active\n")},
         watchdog=WatchdogState(last_check=NOW - 20, verdict="running", interval=30.0),
         now=NOW,
-        linger=False,
+        linger=True,
     )
     assert status.healthy, status.problems
     assert "systemd user unit" in status.summary
-    assert any("linger is off" in note for note in status.notes)
+
+
+def test_a_systemd_watchdog_without_linger_needs_attention(paths):
+    """Without linger, logging out kills the daemon the watchdog started."""
+    paths.unit_path.parent.mkdir(parents=True)
+    paths.unit_path.write_text("[Unit]\n")
+    status = interpret_status(
+        paths,
+        record=_record(paths, MECHANISM_SYSTEMD),
+        outputs={"systemd.enabled": ok("enabled"), "systemd.active": ok("active")},
+        watchdog=WatchdogState(last_check=NOW - 20, verdict="running", interval=30.0),
+        now=NOW,
+        linger=False,
+    )
+    assert not status.healthy and "linger is off" in status.problems[0]
 
 
 def test_an_inactive_unit_or_a_silent_watchdog_needs_attention(paths):
@@ -1154,3 +1186,177 @@ def test_the_watchdog_brings_a_crashed_daemon_back_and_leaves_a_stopped_one(
                 os.kill(pid, signal.SIGKILL)
             except OSError:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Review findings: races, outages, long PATHs, linger, uninstall, damaged cron
+# ---------------------------------------------------------------------------
+
+
+def test_a_database_outage_is_waited_out_and_never_gives_up():
+    """Starts that fail while the database is down back off but never count."""
+    state = WatchdogState(down_checks=5, down_since=0.0, last_check=0.0)
+    now = DATABASE_WAIT + 1
+    verdicts = []
+    for _ in range(40):
+        state.last_check = now - 1
+        verdict, _, state = decide(Observation(now=now, database_ready=False), state)
+        verdicts.append(verdict)
+        if verdict is Verdict.START:
+            state = record_start(state, now=now, ok=False, message="db down", database_ready=False)
+            assert state.next_attempt_at - now <= wd.BACKOFF_MAX
+        now = max(now + 60, state.next_attempt_at + 1)
+    assert Verdict.GAVE_UP not in verdicts
+    assert verdicts.count(Verdict.START) > MAX_START_FAILURES
+    assert state.start_failures == 0
+
+
+def test_a_boot_gives_a_given_up_watchdog_a_fresh_start():
+    state = WatchdogState(
+        start_failures=MAX_START_FAILURES, next_attempt_at=10**12, last_check=1.0,
+        starts=[1.0] * MAX_STARTS_PER_WINDOW,
+    )
+    verdict, _, state = decide(Observation(now=2.0, database_ready=True), state, boot=True)
+    assert verdict is Verdict.START
+    assert state.start_failures == 0 and state.starts == []
+
+
+def test_the_loop_treats_its_first_check_as_a_boot(tmp_path):
+    host, clock = FakeHost(tmp_path), Clock()
+    wd.save_state(tmp_path, WatchdogState(start_failures=MAX_START_FAILURES, last_check=clock.now))
+    waits = iter([True])
+    assert wd.run_loop(host, now=clock, wait=lambda seconds: next(waits)) == 0
+    assert host.started == 1  # no confirmation, no stale give-up
+
+
+def test_a_stop_recorded_while_the_watchdog_starts_is_a_stop_not_a_failure(tmp_path):
+    from src.daemon_state import STOPPED_EXIT_CODE
+
+    host, clock = FakeHost(tmp_path), Clock()
+
+    def held_start():
+        host.started += 1
+        return CommandOutput(argv=("aq", "start"), returncode=STOPPED_EXIT_CODE, stdout="Not started")
+
+    host.start_daemon = held_start
+    result = wd.tick(host, now=clock, boot=True)
+    assert result.verdict is Verdict.STOPPED
+    assert result.state.start_failures == 0 and result.state.starts == []
+
+
+def test_the_watchdog_takes_path_and_lang_from_the_install_record(tmp_path):
+    record = {"path": "/opt/tools/bin:/usr/bin", "lang": "C.UTF-8", "aq": "/venv/bin/aq"}
+    (tmp_path / "service").mkdir()
+    (tmp_path / "service" / "install.json").write_text(json.dumps(record))
+    loaded = wd.read_install_record(tmp_path)
+    environ = {"PATH": "/usr/bin:/bin"}
+    wd.apply_recorded_environment(loaded, environ)
+    assert environ == {"PATH": "/opt/tools/bin:/usr/bin", "LANG": "C.UTF-8"}
+    assert wd.read_install_record(tmp_path / "nowhere") == {}
+
+
+def test_a_long_path_stays_off_the_cron_line_and_in_the_record(paths, venv, tmp_path):
+    windows = [tmp_path / f"win{index:03d}" for index in range(60)]
+    for directory in windows:
+        directory.mkdir()
+    long_path = os.pathsep.join([str(venv), *map(str, windows), "/usr/bin"])
+    assert len(long_path) > 1000
+    runner = Runner({("crontab", "-l"): ok("")})
+
+    action = install_service(
+        aq=str(venv / "aq"), python=str(venv / "python"), environ={"PATH": long_path},
+        runner=runner, paths=paths, facts=LINUX_NO_BUS, user="operator",
+    )
+
+    assert action.ok, action.summary
+    written = runner.input_for("crontab", "-")
+    assert all(len(line) <= 998 for line in written.splitlines())
+    assert json.loads(paths.record_path.read_text())["path"].startswith(long_path)
+
+
+def test_without_linger_auto_prefers_cron_over_a_unit_that_dies_at_logout(paths, venv, tmp_path):
+    linger = tmp_path / "linger"
+    linger.mkdir()
+    runner = Runner(
+        {("crontab", "-l"): ok(""), ("loginctl",): fail("denied"), ("sudo",): fail("password")}
+    )
+    action = _install(paths, venv, runner, LINUX_SYSTEMD, linger_root=linger)
+    assert action.ok and action.mechanism == MECHANISM_CRON
+    assert not paths.unit_path.exists()
+    assert any("using cron instead of systemd" in note for note in action.notes)
+
+    explicit = _install(
+        paths, venv, runner, LINUX_SYSTEMD, linger_root=linger, requested=MECHANISM_SYSTEMD
+    )
+    assert explicit.ok and explicit.mechanism == MECHANISM_SYSTEMD
+    assert any(note.startswith("WARNING: without linger") for note in explicit.notes)
+
+
+def test_without_linger_or_cron_the_user_is_asked(paths, venv, tmp_path):
+    linger = tmp_path / "linger"
+    linger.mkdir()
+    runner = Runner({("loginctl",): fail("denied"), ("sudo",): fail("password")})
+    facts = replace(LINUX_SYSTEMD, crontab=False)
+    action = _install(paths, venv, runner, facts, linger_root=linger)
+    assert not action.ok and action.needs_user and "enable-linger" in action.remediation
+    assert not paths.unit_path.exists()
+
+
+def test_a_damaged_cron_block_is_never_guessed_at(paths, venv):
+    from src.install.service import CronBlockError
+
+    damaged = f"# mine\n{CRON_BEGIN}\n@reboot old entry\n# the operator's job\n0 3 * * * backup.sh\n"
+    with pytest.raises(CronBlockError):
+        strip_cron_block(damaged)
+    runner = Runner({("crontab", "-l"): ok(damaged)})
+
+    action = _install(paths, venv, runner, LINUX_NO_BUS)
+    assert not action.ok and "end" in action.summary.lower()
+    removal = uninstall_service(runner=runner, paths=paths)
+    assert not removal.ok
+    assert runner.input_for("crontab", "-") is None  # never written back
+
+
+def test_uninstall_plans_a_service_the_record_does_not_list(tmp_path):
+    from src.install.lifecycle import plan_uninstall
+    from src.install.results import ResourceRecord
+    from src.install.state import InstallState
+
+    extra = ResourceRecord(kind=RESOURCE_SERVICE, id=MECHANISM_CRON)
+    plan = plan_uninstall(InstallState("", ""), extra=(extra,))
+    assert [item.kind for item in plan.removals] == [RESOURCE_SERVICE]
+
+    state = InstallState("", "")
+    recorded = ResourceRecord(kind=RESOURCE_SERVICE, id=MECHANISM_SYSTEMD)
+    state.resources[recorded.key] = recorded
+    plan = plan_uninstall(state, extra=(extra,))
+    assert [item.id for item in plan.removals] == [MECHANISM_SYSTEMD]  # not twice
+
+
+def test_the_installed_service_is_found_from_its_record_or_its_files(paths):
+    from src.install.service import installed_service_resource
+
+    assert installed_service_resource(paths) is None
+    paths.unit_path.parent.mkdir(parents=True)
+    paths.unit_path.write_text("[Unit]\n")
+    assert installed_service_resource(paths).id == MECHANISM_SYSTEMD
+    paths.record_path.parent.mkdir(parents=True)
+    paths.record_path.write_text(json.dumps({"mechanism": MECHANISM_CRON}))
+    assert installed_service_resource(paths).id == MECHANISM_CRON
+
+
+def test_aq_uninstall_of_another_home_leaves_this_homes_service_alone(tmp_path, monkeypatch):
+    from click.testing import CliRunner
+
+    from src.cli.app import cli
+    from src.install import service as service_mod
+
+    asked = []
+    monkeypatch.setattr(
+        service_mod, "installed_service_resource", lambda *a, **k: asked.append(1)
+    )
+    result = CliRunner().invoke(
+        cli, ["uninstall", "--json", "--state-file", str(tmp_path / "nothing.json")]
+    )
+    assert result.exit_code == 0, result.output
+    assert asked == []

@@ -24,13 +24,21 @@ from pathlib import Path
 import click
 
 from src.daemon_state import (
+    LOCK_ABANDONED,
+    LOCK_HELD,
     STOP_INTENT_FILENAME,
+    STOPPED_EXIT_CODE,
+    StopIntent,
+    acquire_start_lock,
     clear_stop_intent,
     configured_database_endpoint,
     database_reachable,
     find_daemon_pid,
     read_daemon_pid,
+    read_stop_intent,
     record_stop_intent,
+    release_start_lock,
+    start_lock_state,
 )
 from src.env_scrub import harness_session_markers, strip_harness_session_markers
 from src.sessions.env import (
@@ -67,6 +75,25 @@ DASHBOARD_SERVER_LOG_PATH = os.path.join(CONFIG_DIR, "dashboard-server.log")
 def _stop_intent_path() -> str:
     """``daemon.stopped`` beside the PID file (:mod:`src.daemon_state`)."""
     return os.path.join(CONFIG_DIR, STOP_INTENT_FILENAME)
+
+
+class StartHeld(Exception):
+    """A deliberate stop is recorded, so this start must not spawn a daemon."""
+
+    def __init__(self, intent: StopIntent, *, during: bool) -> None:
+        self.intent = intent
+        self.during = during
+        when = "while this start was running" if during else "before this start"
+        super().__init__(
+            f"the daemon was stopped on purpose by {intent.by} {when}; not starting it"
+        )
+
+
+#: How long ``aq stop`` waits for a start that is already running to either
+#: give up (it sees the stop) or finish spawning (so the stop can find it).
+#: Correctness does not hang on it: a start still short of its last check
+#: when the wait ends sees the recorded stop there and does not spawn.
+START_SETTLE_SECONDS = 45.0
 
 
 def _read_pid() -> int | None:
@@ -527,12 +554,22 @@ def _post_daemon_checks() -> None:
         console.print(line)
 
 
-def start_daemon() -> bool:
-    """Start the daemon. Returns True on success."""
-    # Asking for a daemon withdraws any earlier deliberate stop, whatever
-    # happens next: a start that fails is a daemon the operator wants running,
-    # which is what the auto-restart service may then retry (src.daemon_state).
-    clear_stop_intent(path=_stop_intent_path())
+def start_daemon(*, unless_stopped: bool = False) -> bool:
+    """Start the daemon. Returns True on success.
+
+    ``unless_stopped`` is the auto-restart watchdog's start: a recorded stop is
+    respected instead of withdrawn, and :class:`StartHeld` is raised.  An
+    ordinary start withdraws it -- asking for a daemon is the operator's "run
+    it again", and a start that then fails is one the watchdog may retry.
+    Either way a stop recorded *while* this start runs wins: it is checked
+    again just before the daemon is spawned.
+    """
+    if unless_stopped:
+        intent = read_stop_intent(path=_stop_intent_path())
+        if intent is not None:
+            raise StartHeld(intent, during=False)
+    else:
+        clear_stop_intent(path=_stop_intent_path())
 
     if not os.path.exists(CONFIG_PATH):
         console.print(f"[bold red]Error:[/] Config not found at {CONFIG_PATH}")
@@ -548,14 +585,16 @@ def start_daemon() -> bool:
     # PostgreSQL and taking a backup can take minutes, and that is exactly the
     # window in which a second `aq start` -- the auto-restart service's -- used
     # to pass the "already running" check and race this one.
-    try:
-        os.makedirs(LOCK_DIR)
-    except FileExistsError:
-        console.print(
-            "[bold red]Error:[/] Another start is in progress.\n"
-            f"[dim]If not, remove: rm -rf {LOCK_DIR}[/]"
-        )
-        return False
+    if not acquire_start_lock(LOCK_DIR):
+        if start_lock_state(LOCK_DIR) == LOCK_ABANDONED:
+            # The start that held it was killed; its lock proves nothing.
+            release_start_lock(LOCK_DIR)
+        if not acquire_start_lock(LOCK_DIR):
+            console.print(
+                "[bold red]Error:[/] Another start is in progress.\n"
+                f"[dim]If not, remove: rm -rf {LOCK_DIR}[/]"
+            )
+            return False
 
     try:
         # Whoever held the lock before us may have started it meanwhile.
@@ -577,6 +616,18 @@ def start_daemon() -> bool:
         # head.
         if _config_uses_postgres() and not _database_is_at_head():
             _backup_database()
+
+        # The last moment a stop can still win: `aq stop` records its intent
+        # first and then waits for this lock, so a stop that arrived during the
+        # database wait or the backup is seen here, and one that arrives after
+        # this check finds the PID written a moment later.
+        intent = read_stop_intent(path=_stop_intent_path())
+        if intent is not None:
+            raise StartHeld(intent, during=True)
+        existing = _find_daemon_pid()
+        if existing:
+            console.print(f"[yellow]Daemon is already running[/] (PID {existing})")
+            return True
 
         console.print("[bold]Starting agent-queue daemon...[/]")
         bin_path = _resolve_agent_queue_bin()
@@ -672,10 +723,7 @@ def start_daemon() -> bool:
         console.print(f"[dim]Logs: tail -f {LOG_PATH}[/]")
         return True
     finally:
-        try:
-            os.rmdir(LOCK_DIR)
-        except OSError:
-            pass
+        release_start_lock(LOCK_DIR)
 
 
 #: tmux session-name prefixes the daemon owns: ``s-<task_id>`` for task
@@ -760,6 +808,8 @@ def stop_daemon(quiet: bool = False) -> bool:
     """
     record_stop_intent("aq stop", path=_stop_intent_path())
     pid = _find_daemon_pid()
+    if not pid and start_lock_state(LOCK_DIR) == LOCK_HELD:
+        pid = _await_start_in_progress(quiet)
     if not pid:
         if not quiet:
             console.print("[dim]Daemon is not running.[/]")
@@ -792,11 +842,27 @@ def stop_daemon(quiet: bool = False) -> bool:
         os.remove(PID_FILE)
     except OSError:
         pass
-    try:
-        os.rmdir(LOCK_DIR)
-    except OSError:
-        pass
+    if start_lock_state(LOCK_DIR) == LOCK_ABANDONED:
+        release_start_lock(LOCK_DIR)
     return True
+
+
+def _await_start_in_progress(quiet: bool) -> int | None:
+    """Wait for a running ``aq start`` to give up or to spawn; the PID if it did.
+
+    The stop is already recorded, so a start still waiting for its database or
+    its backup sees it and gives up; one that was past that point spawns within
+    a moment and writes its PID, which is then what this stop stops.
+    """
+    if not quiet:
+        console.print("[dim]A start is in progress; waiting for it to settle...[/]")
+    deadline = time.monotonic() + START_SETTLE_SECONDS
+    while time.monotonic() < deadline:
+        pid = _find_daemon_pid()
+        if pid or start_lock_state(LOCK_DIR) != LOCK_HELD:
+            return pid or _find_daemon_pid()
+        time.sleep(0.5)
+    return _find_daemon_pid()
 
 
 def _tail_log(lines: int = 20) -> None:
@@ -970,11 +1036,25 @@ def _after_daemon_started(*, no_dashboard: bool, no_dashboard_server: bool) -> N
     _maybe_prompt_dashboard(no_dashboard)
 
 
+def _report_held(held: StartHeld) -> None:
+    console.print(f"[yellow]Not started:[/] {held}. [dim]`aq start` resumes it.[/]")
+    raise SystemExit(STOPPED_EXIT_CODE)
+
+
 @cli.command("start")
 @click.option("--no-dashboard", is_flag=True, help=_NO_DASHBOARD_HELP)
 @click.option("--no-dashboard-server", is_flag=True, help=_NO_DASHBOARD_SERVER_HELP)
+@click.option(
+    "--unless-stopped",
+    is_flag=True,
+    hidden=True,
+    help="Respect a recorded `aq stop` instead of withdrawing it (the auto-restart "
+    f"watchdog's start); exits {STOPPED_EXIT_CODE} when one is recorded.",
+)
 @click.pass_context
-def daemon_start(ctx: click.Context, no_dashboard: bool, no_dashboard_server: bool) -> None:
+def daemon_start(
+    ctx: click.Context, no_dashboard: bool, no_dashboard_server: bool, unless_stopped: bool = False
+) -> None:
     """Start the agent-queue daemon, then the dashboard server.
 
     The dashboard server starts once the daemon answers (also when the daemon
@@ -992,7 +1072,11 @@ def daemon_start(ctx: click.Context, no_dashboard: bool, no_dashboard_server: bo
         "daemon lifecycle output is subprocess progress and may prompt for the dashboard",
     )
     _warn_harness_environment("start")
-    if not start_daemon():
+    try:
+        started = start_daemon(unless_stopped=True) if unless_stopped else start_daemon()
+    except StartHeld as held:
+        _report_held(held)
+    if not started:
         raise SystemExit(1)
     _after_daemon_started(no_dashboard=no_dashboard, no_dashboard_server=no_dashboard_server)
 
@@ -1063,6 +1147,10 @@ def daemon_restart(ctx: click.Context, no_dashboard: bool, no_dashboard_server: 
         stop_dashboard_server(quiet=True)
     stop_daemon(quiet=True)
     time.sleep(1)
-    if not start_daemon():
+    try:
+        started = start_daemon()
+    except StartHeld as held:  # an `aq stop` landed while this restart was starting
+        _report_held(held)
+    if not started:
         raise SystemExit(1)
     _after_daemon_started(no_dashboard=no_dashboard, no_dashboard_server=no_dashboard_server)

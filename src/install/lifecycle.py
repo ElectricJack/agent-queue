@@ -44,7 +44,7 @@ parameters, so the whole matrix is provable without a machine to uninstall.
 from __future__ import annotations
 
 import shutil
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -449,14 +449,19 @@ def plan_uninstall(
     *,
     scopes: frozenset[RemovalScope] = DEFAULT_SCOPES,
     state_path: Path | str | None = None,
+    extra: Iterable[ResourceRecord] = (),
 ) -> UninstallPlan:
     """Classify every recorded resource against the selected *scopes*.
 
     The classification is a chain of refusals with one acceptance at the end,
     in that order on purpose: a resource has to survive every reason to keep
-    it before removal is even considered.
+    it before removal is even considered.  *extra* are resources found on the
+    host that the record does not list (a service installed with
+    ``aq service install``); one whose kind the record already has is dropped.
     """
     records: list[ResourceRecord] = list(state.resources.values())
+    recorded_kinds = {record.kind for record in records}
+    records.extend(record for record in extra if record.kind not in recorded_kinds)
     if state_path is not None:
         records.append(
             ResourceRecord(

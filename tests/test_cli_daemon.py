@@ -728,3 +728,100 @@ def test_start_withdraws_a_deliberate_stop_and_stop_records_one(tmp_path, monkey
     monkeypatch.setattr(daemon_mod, "CONFIG_PATH", str(tmp_path / "missing.yaml"))
     assert daemon_mod.start_daemon() is False  # no config -- but the stop is withdrawn
     assert read_stop_intent(path=marker) is None
+
+
+# ---------------------------------------------------------------------------
+# A deliberate stop wins over a start that is already running
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def startable(tmp_path, monkeypatch, no_popen):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("database:\n  url: postgresql://localhost/aq\n")
+    monkeypatch.setattr(daemon_mod, "CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(daemon_mod, "LOCK_DIR", str(tmp_path / "daemon.lock"))
+    monkeypatch.setattr(daemon_mod, "PID_FILE", str(tmp_path / "daemon.pid"))
+    monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: None)
+    monkeypatch.setattr(daemon_mod, "_database_is_at_head", lambda: True)
+    return tmp_path
+
+
+def test_the_watchdogs_start_respects_a_recorded_stop(startable, runner, no_popen):
+    from src.daemon_state import STOPPED_EXIT_CODE, record_stop_intent
+
+    record_stop_intent("aq stop", path=startable / "daemon.stopped")
+    result = runner.invoke(cli, ["start", "--unless-stopped", "--no-dashboard-server"])
+
+    assert result.exit_code == STOPPED_EXIT_CODE, result.output
+    assert "stopped on purpose by aq stop" in result.output
+    assert (startable / "daemon.stopped").exists()  # respected, not withdrawn
+    no_popen.assert_not_called()
+
+
+def test_a_stop_during_the_database_wait_stops_the_start_before_it_spawns(
+    startable, monkeypatch, no_popen
+):
+    from src.daemon_state import record_stop_intent
+
+    def database_comes_up_as_the_operator_stops():
+        record_stop_intent("aq stop", path=startable / "daemon.stopped")
+        return True
+
+    monkeypatch.setattr(daemon_mod, "_ensure_database", database_comes_up_as_the_operator_stops)
+
+    with pytest.raises(daemon_mod.StartHeld) as held:
+        daemon_mod.start_daemon()
+    assert held.value.during
+    no_popen.assert_not_called()
+    assert not (startable / "daemon.lock").exists()
+
+
+def test_stop_waits_for_a_start_in_progress_and_stops_what_it_spawned(tmp_path, monkeypatch):
+    from src.daemon_state import acquire_start_lock
+
+    lock = tmp_path / "daemon.lock"
+    monkeypatch.setattr(daemon_mod, "LOCK_DIR", str(lock))
+    monkeypatch.setattr(daemon_mod, "PID_FILE", str(tmp_path / "daemon.pid"))
+    assert acquire_start_lock(str(lock))
+    answers = iter([None, None, 4242])  # the start spawns while the stop waits
+    monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: next(answers, 4242))
+    monkeypatch.setattr(daemon_mod.time, "sleep", lambda _: None)
+    signals = []
+
+    def kill(pid, sig):
+        if pid != 4242:
+            return  # the lock owner (this test) is alive
+        signals.append(sig)
+        if sig == 0:
+            raise ProcessLookupError  # gone after the SIGTERM
+
+    monkeypatch.setattr(daemon_mod.os, "kill", kill)
+
+    assert daemon_mod.stop_daemon(quiet=True) is True
+    assert signals[0] == daemon_mod.signal.SIGTERM
+
+
+def _dead_pid() -> int:
+    import os
+
+    for pid in range(4_194_000, 4_000_000, -1):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return pid
+        except OSError:
+            continue
+    raise AssertionError("no free pid")
+
+
+def test_an_abandoned_start_lock_does_not_block_the_next_start(startable, monkeypatch):
+    lock = startable / "daemon.lock"
+    lock.mkdir()
+    (lock / "owner").write_text(str(_dead_pid()))
+    reached = []
+    monkeypatch.setattr(daemon_mod, "_ensure_database", lambda: reached.append(1) or False)
+
+    assert daemon_mod.start_daemon() is False  # stops at the (patched) database
+    assert reached == [1]
+    assert not lock.exists()
