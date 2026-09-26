@@ -105,7 +105,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/generate-playbook-schema.py"], areas: ["playbook-definition"] }
   - { paths: ["scripts/rebuild-reviewed-playbook-artifacts.py"], areas: ["shipped-playbooks"] }
   - { paths: ["scripts/install.sh", "scripts/install-wsl.sh", "scripts/install-windows.ps1"], areas: ["install"] }
-  - { paths: ["scripts/generate-selection-catalogue.py"], areas: ["test-selection"] }
+  - { paths: ["scripts/generate-selection-catalogue.py", "scripts/replay-test-selection.py"], areas: ["test-selection"] }
 
   # ---- test helpers, fixtures and the selection artifacts
   - { paths: ["tests/selection_*"], areas: ["test-selection"] }

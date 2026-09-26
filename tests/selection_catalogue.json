@@ -1093,6 +1093,7 @@
         "tests/test_selection_policy.py",
         "tests/test_selection_queries.py",
         "tests/test_selection_questions.py",
+        "tests/test_selection_replay.py",
         "tests/test_selection_service.py",
         "tests/test_selection_snapshot.py",
         "tests/test_selection_static_impact.py",
@@ -1246,7 +1247,7 @@
       ]
     }
   },
-  "digest": "sha256:8c48c719224b74ae6ba4379f177e70d0eaf5cc36131e0d7ba7a4563115a44f73",
+  "digest": "sha256:0286d9cb9311175aeef3da31a5b445f22413ac432cf04b7e1daa28ccb0450c72",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3340,12 +3341,15 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.claim_file",
         "src.cli.app",
+        "src.cli.exceptions",
         "src.cli.test_runner",
         "src.config",
         "src.resources.box_lock",
         "src.resources.semaphore",
-        "src.resources.slot_report"
+        "src.resources.slot_report",
+        "src.test_selection.report"
       ],
       "markers": [
         "parametrize"
@@ -10975,6 +10979,25 @@
       ],
       "markers": [],
       "summary": "Pure evidence and request-packing checks for smart test selection."
+    },
+    "tests/test_selection_replay.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.git.manager",
+        "src.test_selection.catalogue",
+        "src.test_selection.replay",
+        "src.test_selection.service",
+        "src.test_selection.static_impact",
+        "src.test_selection.typesafe"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Historical selection is blind to labels; only usable held-out reds earn recall."
     },
     "tests/test_selection_service.py": {
       "areas": [
