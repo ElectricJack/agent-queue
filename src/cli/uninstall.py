@@ -261,6 +261,22 @@ def uninstall(
         everything=everything,
     )
 
+    # `aq service install` records its watchdog in its own file, not in the
+    # resume record; an uninstall that left it would keep restarting AQ.  Only
+    # for the home the watchdog serves: `--state-file` elsewhere is another AQ.
+    from src.install.service import installed_service_resource
+    from src.install.watchdog import default_home
+
+    service = (
+        installed_service_resource()
+        if state_path.parent.resolve() == default_home().resolve()
+        else None
+    )
+    extra = (service,) if service is not None else ()
+    record_path: Path | None = state_path
+    if state is None and extra:
+        state, record_path = InstallState("", ""), None
+
     if state is None:
         # No record means nothing is known to be owned.  That is a finished
         # uninstall, not a failure: refusing here would send an operator
@@ -279,7 +295,7 @@ def uninstall(
         _emit(result, as_json=as_json)
         ctx.exit(result.exit_code)
 
-    plan = plan_uninstall(state, scopes=scopes, state_path=state_path)
+    plan = plan_uninstall(state, scopes=scopes, state_path=record_path, extra=extra)
     messages: list[str] = []
 
     # Confirmation happens against the *plan*, so a scope with nothing owned in
@@ -313,7 +329,7 @@ def uninstall(
                     for scope in sorted(declined, key=lambda scope: scope.value)
                 )
                 scopes = frozenset(scopes - declined)
-                plan = plan_uninstall(state, scopes=scopes, state_path=state_path)
+                plan = plan_uninstall(state, scopes=scopes, state_path=record_path, extra=extra)
 
     handlers = {}
     if not dry_run:

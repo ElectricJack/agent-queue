@@ -185,10 +185,11 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/cli/agent_surface.py", "src/cli/agent_messages.py"], areas: ["prime", "messages"] }
   - { paths: ["src/cli/claim_epoch.py"], areas: ["claims"] }
   - { paths: ["src/cli/daemon.py"], areas: ["daemon-cli"] }
+  - { paths: ["src/daemon_state.py"], areas: ["daemon-cli", "install"] }
   - { paths: ["src/cli/dashboard.py"], areas: ["dashboard-server"] }
   - { paths: ["src/cli/doctor.py"], areas: ["doctor"] }
   - { paths: ["src/cli/formulas.py"], areas: ["formulas"] }
-  - { paths: ["src/cli/install.py", "src/cli/uninstall.py", "src/cli/update.py"], areas: ["install"] }
+  - { paths: ["src/cli/install.py", "src/cli/uninstall.py", "src/cli/update.py", "src/cli/service.py"], areas: ["install"] }
   - { paths: ["src/cli/integration.py"], areas: ["integration-controls"] }
   - { paths: ["src/cli/logs.py"], areas: ["logging"] }
   - { paths: ["src/cli/messages.py"], areas: ["messages"] }
@@ -300,6 +301,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/doctor/perf_checks.py"], areas: ["metrics"] }
   - { paths: ["src/doctor/resource_checks.py"], areas: ["resource-gating"] }
   - { paths: ["src/doctor/review_checks.py"], areas: ["document-reviews"] }
+  - { paths: ["src/doctor/service_checks.py"], areas: ["install"] }
   - { paths: ["src/doctor/session_checks.py"], areas: ["session-runtime"] }
   - { paths: ["src/doctor/task_checks.py"], areas: ["task-lifecycle"] }
   - { paths: ["src/doctor/workspace_checks.py", "src/doctor/worktree_checks.py"], areas: ["workspaces", "worktree-slots"] }

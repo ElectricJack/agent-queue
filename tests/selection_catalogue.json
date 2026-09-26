@@ -459,6 +459,7 @@
         "tests/test_install_pools.py",
         "tests/test_install_postgres.py",
         "tests/test_install_providers.py",
+        "tests/test_install_service.py",
         "tests/test_install_wizard.py",
         "tests/test_install_wsl.py",
         "tests/test_known_tools.py",
@@ -1248,7 +1249,7 @@
       ]
     }
   },
-  "digest": "sha256:e68e6e8ab29609b64b57dc9ae15b3eff9a1914f0f6bfc0c34f6281484ab2e0a7",
+  "digest": "sha256:67dd1827752b17db972e226aad830404ca80f6cfb7c2abda8ffad985ff28495f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2978,6 +2979,7 @@
       "imports": [
         "src.cli.app",
         "src.cli.daemon",
+        "src.daemon_state",
         "src.sessions.env"
       ],
       "markers": [
@@ -4689,6 +4691,7 @@
         "src.doctor.resource_checks",
         "src.doctor.review_checks",
         "src.doctor.runner",
+        "src.doctor.service_checks",
         "src.doctor.session_checks",
         "src.doctor.skill_checks",
         "src.doctor.stall_checks",
@@ -6331,6 +6334,34 @@
       ],
       "markers": [],
       "summary": "Provider CLI adapters stay optional, idempotent, and credential-free."
+    },
+    "tests/test_install_service.py": {
+      "areas": [
+        "install"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app",
+        "src.cli.daemon",
+        "src.daemon_state",
+        "src.doctor",
+        "src.doctor.models",
+        "src.install",
+        "src.install.command",
+        "src.install.lifecycle",
+        "src.install.platform",
+        "src.install.results",
+        "src.install.service",
+        "src.install.state",
+        "src.install.steps",
+        "src.install.watchdog",
+        "src.install.wizard",
+        "src.sessions.env"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Auto-restart: the watchdog's policy, the service entries it is installed as,"
     },
     "tests/test_install_wizard.py": {
       "areas": [

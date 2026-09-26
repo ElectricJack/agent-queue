@@ -201,6 +201,7 @@ before the credential that lets it reach its database was written.
 | `config.check` | no | — | Loads the configuration exactly as the daemon does, including `${VAR}` references, and reports where AQ stores things. A configuration that does not parse stops the run here rather than at a daemon that dies with a stack trace. |
 | `config.discord` | yes | `discord` | Optional. Points the hourly digest and escalation threads at one channel. |
 | `daemon.start` | yes | `daemon` | Runs `aq start` and waits for `/health`. A daemon that already answers is reused, never restarted. `aq start` uses the PostgreSQL the configuration names; it reaches for the checkout's `docker-compose.yml` only when nothing is listening there and that file exists, so an installed native server needs no Docker. |
+| `daemon.autostart` | yes | `autostart` | Optional and off by default. Installs the auto-restart watchdog with the best mechanism the host offers — a launchd agent on macOS, a systemd user unit (`Restart=on-failure`) where a systemd user manager answers and linger is on or can be enabled, otherwise `@reboot` and every-2-minutes entries in a marked crontab block (WSL) — exactly as `aq service install` does; see [Auto-restart](#auto-restart-daemonautostart). Never halts the run. `aq uninstall` removes it. |
 | `dashboard.build` | yes | — | From a source checkout: installs the dashboard's Node.js packages and builds and stages the same verified bundle a release ships (`scripts/build_release_artifact.py`). It starts and restarts no process. Builds with a pinned Node.js LTS it downloads from nodejs.org into `~/.agent-queue/toolchain/` and checks against a SHA-256 recorded in `src/install/node_toolchain.py` — never the machine's own Node, so nvm, Homebrew or Ubuntu's older `nodejs` cannot break the build. Full output goes to `~/.agent-queue/dashboard-build.log`, and a failure quotes the compiler's own error lines. Rebuilds only when the checkout changed, so a rerun after an update rebuilds and a rerun with nothing new does nothing; a bundle built for the daemon's old `/dashboard` mount is always rebuilt. A release install has nothing to build. |
 | `dashboard.serve` | yes | `daemon` | Runs `aq dashboard start` and waits until the dashboard server answers `/__aq/health` with this install's verified bundle and `GET /` with `200`. A dashboard server already serving that bundle is left alone; one still serving an older build (after a rebuild) is restarted. With `dashboard.server.enabled: false` it starts nothing. A port held by another program, or a server that exits during startup, fails the step with the server's own last log lines and names `aq dashboard status` and `~/.agent-queue/dashboard-server.log`. |
 | `daemon.dashboard` | no | — | Reports the dashboard server's URL and whether it answers, or the one command that fixes it when it does not. Never blocks a run. |
@@ -234,6 +235,39 @@ installer. Put it in `~/.agent-queue/.env` as `DISCORD_BOT_TOKEN=…` (mode
 `0600`); `config.yaml` only ever refers to `${DISCORD_BOT_TOKEN}`. Until it is
 there, the step reports `needs_user` (exit `10`) and says exactly where to put
 it. Add Discord later at any time by rerunning with `--with discord`.
+
+### Auto-restart (`daemon.autostart`)
+
+Without it nothing brings the daemon back after a reboot or a crash. Select it
+with `--with autostart`, under `--advanced`, or later with `aq service install`
+(the same code; `aq service status`, `aq service uninstall`). Optional settings:
+
+```yaml
+version: 1
+capabilities: [autostart]
+settings:
+  autostart:
+    mechanism: auto      # or systemd, launchd, cron
+    interval: 120        # seconds between checks; cron rounds up to whole minutes
+```
+
+The service runs a watchdog (`python -m src.install.watchdog`), never the
+daemon itself. It starts the daemon through `aq start` in a clean environment
+when two checks in a row find it down, after waiting up to three minutes for
+PostgreSQL, and never while `~/.agent-queue/daemon.stopped` exists — the marker
+`aq stop`, `aq restart`, `aq update` and the daemon's `shutdown` command write
+and `aq start` removes — or while `aq start` / `aq update` hold their locks. Its
+start is `aq start --unless-stopped`, which respects that marker instead of
+removing it and exits `16` when one is recorded — also one recorded while it was
+starting — or when an `aq update` began meanwhile. Failed starts back off up to 30 minutes; five in a row against a
+reachable database stop it until a reboot, a manual start or
+`aq service check --reset`, while a database outage is waited out. At most five
+automatic starts happen per hour. It logs every decision to
+`~/.agent-queue/logs/aq-service.log`, and `aq doctor --check daemon.autostart`
+reports whether it is installed, enabled and checking in. A host with no
+mechanism at all (no systemd user manager and no `crontab`) records the step as
+`needs_user` with what to install. The full behaviour is in
+[Install AQ](../../tutorials/install.md#keep-aq-running-after-a-reboot-or-a-crash).
 
 ### Where AQ stores your data
 
