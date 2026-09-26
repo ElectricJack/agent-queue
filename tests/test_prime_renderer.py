@@ -804,6 +804,7 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq memory save": "memory_save",
     "aq memory search": "memory_search",
     "aq project ready": "project_ready",
+    "aq job submit": "job_submit",
     "aq wait register": "wait_register",
     "aq wait show": "wait_get",
 }

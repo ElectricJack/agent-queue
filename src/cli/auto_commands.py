@@ -143,6 +143,12 @@ HANDCRAFTED_COVERAGE = {
     # auto-generation (no interesting args).
     "formula_show",
     "formula_cook",
+    "job_submit",
+    "job_get",
+    "job_list",
+    "job_cancel",
+    "job_result",
+    "job_logs",
     "report_request",
     "report_brief",
     "report_submit",
@@ -150,13 +156,6 @@ HANDCRAFTED_COVERAGE = {
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
-    # Phase 2 execution substrate; public job/wait adapters land in phase 3.
-    "job_submit",
-    "job_get",
-    "job_list",
-    "job_cancel",
-    "job_result",
-    "job_logs",
     "job_reconcile",
 
     "shutdown",

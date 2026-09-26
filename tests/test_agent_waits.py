@@ -65,6 +65,7 @@ def test_predicates_are_typed(kind, ref, seq, due):
         typed_match(kind, ref, seq, due)
 
 
-def test_job_adapter_is_explicitly_unavailable():
-    with pytest.raises(WaitError, match="job queue adapter"):
-        typed_match("job", "j", None, None)
+def test_job_predicate_is_typed():
+    assert typed_match("job", "j", None, None) == {"job_id": "j"}
+    with pytest.raises(WaitError):
+        typed_match("job", "j", 1, None)
