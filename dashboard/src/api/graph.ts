@@ -15,30 +15,32 @@ import type {
 
 export const projectGraphKey = (pid: string) => ["projectGraph", pid] as const;
 
+/** Shared by the initial-route prefetch and the mounted workspace. */
+export function projectGraphQuery(pid: string) {
+  return {
+    queryKey: projectGraphKey(pid),
+    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<ProjectGraphResponse> => {
+      const r = await getProjectGraphApiProjectsProjectIdGraphGet({
+        client,
+        signal,
+        path: { project_id: pid },
+        throwOnError: true,
+      });
+      return r.data as ProjectGraphResponse;
+    },
+    // Background reconciliation — belt to the WS suspenders.
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+    // A missing project must fail fast instead of holding the canvas behind
+    // React Query's default 1s + 2s + 4s retry backoff.
+    retry: 1,
+    retryDelay: 250,
+  };
+}
+
 export function useProjectGraphs(projectIds: string[]) {
   const results = useQueries({
-    queries: projectIds.map((pid) => ({
-      queryKey: projectGraphKey(pid),
-      queryFn: async ({ signal }: { signal: AbortSignal }): Promise<ProjectGraphResponse> => {
-        const r = await getProjectGraphApiProjectsProjectIdGraphGet({
-          client,
-          signal,
-          path: { project_id: pid },
-          throwOnError: true,
-        });
-        return r.data as ProjectGraphResponse;
-      },
-      // Background reconciliation — belt to the WS suspenders.
-      refetchInterval: 60_000,
-      staleTime: 30_000,
-      // A project that cannot be fetched (deleted id left in the persisted
-      // selection, daemon briefly down) must fail fast. On React Query's
-      // default retry: 3 the backoff runs 1s + 2s + 4s, and because the
-      // canvas waits on `isLoading` below, one bad id held the whole graph
-      // at "Loading…" for ~7s on every visit.
-      retry: 1,
-      retryDelay: 250,
-    })),
+    queries: projectIds.map(projectGraphQuery),
   });
 
   // `merged` must keep its identity between renders: GraphCanvas memoises the

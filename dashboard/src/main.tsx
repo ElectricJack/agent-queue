@@ -8,6 +8,7 @@ import { EventStreamProvider } from "./ws/EventStreamProvider";
 import { BrowserHistoryContext } from "./shell/historyState";
 import { PANE_REGISTRY } from "./panes/registry";
 import { preloadWorkspaceViews } from "./routeChunks";
+import { prefetchInitialRoute } from "./routeData";
 import "./index.css";
 
 const queryClient = new QueryClient({
@@ -23,6 +24,8 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+void prefetchInitialRoute(queryClient, window.location.pathname);
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

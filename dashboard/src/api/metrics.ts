@@ -41,10 +41,11 @@ export function maxPoints(range: RangeKey): number {
   return Math.min(span, 4000) + 120;
 }
 
-export function useMetricsSeries(range: RangeKey) {
-  return useQuery({
+/** Shared by the initial-route prefetch and the live page. */
+export function metricsSeriesQuery(range: RangeKey) {
+  return {
     queryKey: metricsSeriesKey(range),
-    queryFn: async ({ signal }): Promise<MetricsSeriesResponse> => {
+    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<MetricsSeriesResponse> => {
       const now = Date.now() / 1000;
       const response = await getMetricsSeriesApiMetricsSeriesGet({
         client,
@@ -58,7 +59,11 @@ export function useMetricsSeries(range: RangeKey) {
     // not a failure worth three backoff retries.
     retry: 1,
     staleTime: 30_000,
-  });
+  };
+}
+
+export function useMetricsSeries(range: RangeKey) {
+  return useQuery(metricsSeriesQuery(range));
 }
 
 export type { MetricsSample, MetricsSeriesResponse };
