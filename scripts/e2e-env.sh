@@ -569,6 +569,13 @@ database:
   pool_min_size: 1
   pool_max_size: 8
 
+# S15 publishes only after a real managed pytest job validates its snapshot.
+# Keep its test maintenance DSN separate from this daemon's database.
+resources:
+  jobs:
+    enabled: true
+    test_database_url: ${POSTGRES_TEST_DSN:-postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres}
+
 health_check:
   enabled: true
   port: $AQ_E2E_PORT
