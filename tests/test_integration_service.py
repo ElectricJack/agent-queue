@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import func, insert, select
 
-from src.database import Database
 from src.database.tables import (
     integration_batches,
     integration_candidate_revisions,
@@ -24,15 +23,12 @@ from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.scheduler import IntegrationScheduler
 from src.integration.service import IntegrationService
 from src.integration.settling import note_approval
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("integration-service.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("integration-service.db")
     yield database
-    await database.close()
 
 
 async def test_tick_retires_terminal_delegates_without_a_new_completion_event(db):

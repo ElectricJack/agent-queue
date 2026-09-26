@@ -367,6 +367,16 @@ class OpsCommandsMixin:
             desired = max(lo, want) if hi is None else min(max(lo, want), hi)
             desired = max(desired, sup.running_busy + sup.starting)
             profile = measurement.profiles.get(key)
+            service_tier = None
+            if getattr(profile, "harness", None) == "codex":
+                from src.sessions.spec import _is_codex_cli, codex_service_tier_for
+
+                harness = self.orchestrator.harness_registry.get("codex")
+                if harness is not None and _is_codex_cli(harness):
+                    class_config = self.orchestrator.session_spec_builder._resolve_class_config(
+                        profile, harness, None
+                    )
+                    service_tier = codex_service_tier_for(profile, class_config)
 
             projects = []
             for cand in sorted(
@@ -432,6 +442,7 @@ class OpsCommandsMixin:
             pools.append(
                 {
                     "profile_id": key.profile_id,
+                    "service_tier": service_tier,
                     # An operator kill-switch on the (global) profile.  Disabled
                     # pools keep their row — that is how the dashboard offers the
                     # toggle that turns them back on — and are sized to zero.

@@ -148,6 +148,7 @@ def _installation_response(token: str, *, expires: str = "2030-01-01T00:00:00Z")
         "pull_requests": "write",
         "issues": "write",
         "actions_variables": "read",
+        "workflows": "write",
     }
     return HttpResponse(
         201,
@@ -173,6 +174,7 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
         "pull_requests": "write",
         "issues": "write",
         "actions_variables": "read",
+        "workflows": "write",
     }
     token_response = HttpResponse(
         201,
@@ -182,7 +184,7 @@ async def test_mints_narrow_installation_token_after_app_and_repository_binding(
             '"repositories":[{"id":303,"full_name":"acme/widgets"}],"permissions":'
             '{"checks":"write","actions":"read","contents":"write",'
             '"administration":"read","pull_requests":"write",'
-            '"issues":"write","actions_variables":"read","metadata":"read"}}' % expires
+            '"issues":"write","actions_variables":"read","workflows":"write","metadata":"read"}}' % expires
         ).encode(),
     )
     transport = ScriptedTransport([HttpResponse(200, {}, b'{"id":101}'), token_response])
@@ -243,7 +245,7 @@ async def test_app_provider_rejects_expired_or_widened_token_response():
             b'"repositories":[{"id":303,"full_name":"acme/widgets"}],'
             b'"permissions":{"checks":"write",'
             b'"actions":"read","contents":"write","administration":"write",'
-            b'"pull_requests":"write","issues":"write","actions_variables":"read"}}',
+            b'"pull_requests":"write","issues":"write","actions_variables":"read","workflows":"write"}}',
         ),
     ]
     provider = AppTokenProvider(
@@ -267,7 +269,7 @@ async def test_app_provider_rejects_expired_or_widened_token_response():
                 b'"repositories":[{"id":303,"full_name":"acme/widgets"}],'
                 b'"permissions":{"checks":"write",'
                 b'"actions":"read","contents":"write","administration":"read",'
-                b'"pull_requests":"write","issues":"write","actions_variables":"read"}}',
+                b'"pull_requests":"write","issues":"write","actions_variables":"read","workflows":"write"}}',
             ),
         ]
     )
@@ -326,6 +328,7 @@ async def test_binds_repository_by_name_with_one_narrow_installation_token():
         "pull_requests": "write",
         "issues": "write",
         "actions_variables": "read",
+        "workflows": "write",
     }
     transport = ScriptedTransport(
         [

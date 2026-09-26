@@ -173,6 +173,24 @@ async def ready(db, tid, *, profile_id="worker", intelligence_class="standard-me
     )
 
 
+async def test_pool_status_reports_effective_codex_service_tier(db, orch, handler):
+    await db.update_profile("worker", harness="codex", codex_service_tier="default")
+    orch.harness_registry.upsert(Harness(id="codex", command="codex"))
+    orch.session_spec_builder._intelligence_classes["standard-medium"] = IntelligenceClass(
+        "standard-medium", "Standard", "",
+        {"codex": {"model": "gpt-5", "service_tier": "fast"}},
+    )
+
+    status = await handler._cmd_pool_status({})
+    row = next(row for row in status["pools"] if row["profile_id"] == "worker")
+    assert row["service_tier"] == "default"
+
+    await db.update_profile("worker", codex_service_tier=None)
+    status = await handler._cmd_pool_status({})
+    row = next(row for row in status["pools"] if row["profile_id"] == "worker")
+    assert row["service_tier"] == "fast"
+
+
 def scoped(handler, sid):
     handler._current_scope = {
         "kind": "session",

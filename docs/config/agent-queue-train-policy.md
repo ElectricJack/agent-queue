@@ -4,8 +4,14 @@ The project-scoped bundles in `src/prompts/reviewed_playbooks/` are compiled
 against the current V2 command and event registries. The parent route handles
 the current `integration_complete_parent` outcomes, including idempotent
 `already_completed` and terminal `failed`. The policy JSON binds their exact
-artifact identities and the four `Tests (...)` matrix checks from
+artifact identities and the eleven `Tests (...)` matrix checks from
 `.github/workflows/tests.yml` to the `github-actions` producer.
+
+The `tests-yml-v2` check set requires all eight `Tests (default-N/8)` shards.
+When adopting the sharded workflow, a supervisor or operator must rebind the
+installed policy to this JSON and replace any explicit `Tests (default)` merge
+requirement or GitHub branch rule with the complete shard set. A worker's
+workflow change does not update an installed project policy.
 
 The bundles are copied to `vault/reviewed-playbooks/<id>/` when the deployed
 daemon seeds reviewed bundles. Only a project-scoped supervisor or local

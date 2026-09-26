@@ -590,6 +590,26 @@ class IntegrationCommandsMixin:
             outcome = "not_eligible"
         return {"success": True, "outcome": outcome, "outcomes": serialized}
 
+    async def _cmd_integration_reserve_owner(self, args: dict) -> dict:
+        """Restore one stopped producer's missing canonical branch reservation."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationReserveOwnerArgs
+        from src.integration.canonical_reservation import reserve_canonical_task_branch
+
+        try:
+            request = IntegrationReserveOwnerArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("not_eligible", f"invalid reservation request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        if task is None:
+            return _failure("not_found", "task does not exist")
+        _principal, refusal = await integration_operator(self.db, task.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        result = await reserve_canonical_task_branch(self.db, task.id)
+        return {"success": result["outcome"] in {"acquired", "already_reserved"}, **result}
+
     async def _cmd_integration_release_stale_owners(self, args: dict) -> dict:
         """Release a project's provably safe reserved owners; report every other."""
         from pydantic import ValidationError

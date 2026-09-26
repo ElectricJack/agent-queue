@@ -19554,6 +19554,18 @@
             "title": "Codex Full Auto",
             "description": "Enable Codex --full-auto (requires harness 'codex')"
           },
+          "codex_service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Service Tier",
+            "description": "Codex launch service tier override (optional)"
+          },
           "claude_dangerously_skip_permissions": {
             "anyOf": [
               {
@@ -22280,6 +22292,18 @@
             ],
             "title": "Codex Full Auto",
             "description": "Enable or disable Codex --full-auto"
+          },
+          "codex_service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Service Tier",
+            "description": "Codex service tier override; null clears it"
           },
           "claude_dangerously_skip_permissions": {
             "anyOf": [
@@ -26759,6 +26783,17 @@
             "type": "boolean",
             "title": "Codex Full Auto",
             "default": false
+          },
+          "codex_service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Service Tier"
           },
           "claude_dangerously_skip_permissions": {
             "type": "boolean",
@@ -38328,6 +38363,17 @@
             "type": "string",
             "title": "Profile Id"
           },
+          "service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Tier"
+          },
           "enabled": {
             "type": "boolean",
             "title": "Enabled",
@@ -38900,6 +38946,17 @@
             "title": "Codex Full Auto",
             "default": false
           },
+          "codex_service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Service Tier"
+          },
           "claude_dangerously_skip_permissions": {
             "type": "boolean",
             "title": "Claude Dangerously Skip Permissions",
@@ -39265,6 +39322,17 @@
             "type": "boolean",
             "title": "Codex Full Auto",
             "default": false
+          },
+          "codex_service_tier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Codex Service Tier"
           },
           "claude_dangerously_skip_permissions": {
             "type": "boolean",

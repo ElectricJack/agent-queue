@@ -9,7 +9,6 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
-from src.database import Database
 from src.database.tables import (
     archived_tasks,
     integration_attestation_publications,
@@ -43,7 +42,6 @@ from src.git.github_app import GitHubRepositoryBinding
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import CapabilityPolicy
 from tests.pg_dsn import create_scratch_database, ensure_worker_postgres_dsn
-from tests.db_fixtures import lease_dsn
 
 
 BASE = "a" * 40
@@ -56,9 +54,8 @@ POSTGRES_DSN = ensure_worker_postgres_dsn()
 
 
 @pytest.fixture
-async def release_db(tmp_path, request):
-    db = Database(lease_dsn("release.db"))
-    await db.initialize()
+async def release_db(tmp_path, request, reuse_database):
+    db = await reuse_database("release.db")
     await db.create_project(Project(id="p", name="project"))
     await db.create_repo(
         RepoConfig(
@@ -386,7 +383,6 @@ async def release_db(tmp_path, request):
             .values(lifecycle="promoted", final_main_sha=HEAD, updated_at=20.0)
         )
     yield db, scheduler
-    await db.close()
 
 
 async def test_release_is_atomic_replayable_and_cleanup_independent(release_db):

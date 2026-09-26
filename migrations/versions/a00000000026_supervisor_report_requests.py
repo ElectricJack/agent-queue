@@ -1,7 +1,7 @@
 """Add durable supervisor report author requests.
 
-Revision ID: a00000000025
-Revises: a00000000024
+Revision ID: a00000000026
+Revises: compact_handoff_v1
 """
 
 from __future__ import annotations
@@ -9,8 +9,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000025"
-down_revision = "a00000000024"
+revision = "a00000000026"
+down_revision = "compact_handoff_v1"
 branch_labels = None
 depends_on = None
 

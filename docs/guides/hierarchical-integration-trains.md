@@ -73,15 +73,17 @@ aq doctor --check integration.stranded_fences
 
 Such a row blocks every subsequent claim of the owning task with *"canonical
 branch is not reserved by this task"*, and because the task stays READY the
-scheduler keeps offering it, so the failure repeats silently until an operator
-intervenes. The check has no `--fix`, and that is deliberate: doctor sees only
-a database snapshot, which cannot show that the writer's provider is really
-stopped or that its checkout is clean and published, and a row can be rebound
-by a guarded recovery path without any of the fields doctor compares changing.
-Returning the row to `reserved` from here would hand the branch to the next
-claim on that snapshot alone. Recovery is the integration recovery path's job,
-which takes those proofs; use this check to find the wedged refs and to confirm
-afterwards that they are gone.
+scheduler keeps offering it. Its `--fix` runs guarded owner recovery, which
+proves the old writer stopped and its checkout is safe before releasing the row.
+
+`integration.missing_canonical_owners` reports READY/BLOCKED train producers
+whose checkpoint identifies a canonical branch but whose owner row is absent or
+released. After the old writer has stopped, a supervisor can restore one exact
+reservation with `aq integration reserve-owner --task-id <id>`. This command
+checks the task, checkpoint, materialized origin, session and workspace under
+the project lock and refuses an unresolved or competing branch owner. A stopped
+task's ordinary `aq task restart` performs the same check before moving it to
+READY. Doctor reports this condition but does not reserve branches itself.
 
 Do not import another database during this release. PostgreSQL is the only
 backend; the one-way carry-over importer
@@ -493,6 +495,12 @@ children still waiting after five minutes, and `aq integration redrive-child
 CHILD_TASK_ID` says why one waits; `--apply --head HEAD_SHA --reason REASON`
 records evidence for that head and queues the parent's collection. See [A
 completed child is never assembled](integration-troubleshooting.md#a-completed-child-is-never-assembled).
+Sibling prerequisites accept a code receipt created after the child's latest
+reopen; later task-row and close bookkeeping do not invalidate a delivered child.
+`aq doctor --check tasks.ready_frontier_exclusions` lists READY tasks withheld
+from the claim frontier and their reasons. If a child completed again at the
+same head after its receipt, `redrive-child` reports the stale receipt and
+can reissue it after proving the incorporated head remains on the parent branch.
 
 ### Stopped pool-writer handoff recovery
 

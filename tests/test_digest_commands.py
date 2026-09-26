@@ -169,7 +169,38 @@ class TestPreview:
         inputs = await db.collect_digest_activity(
             DigestWindow(since=NOW - HOUR, until=NOW), now=NOW
         )
-        assert result["text"] == build_digest(inputs).text
+        # The footer comes from the same dashboard-link resolver a delivery uses.
+        link = await handler.orchestrator.dashboard_links.resolve()
+        assert result["text"] == build_digest(
+            inputs, dashboard_url=link.url, dashboard_notice=link.unavailable_notice
+        ).text
+
+    async def test_preview_footer_is_the_dashboard_link_a_delivery_would_carry(self, env):
+        """Link spec §5: preview matches new deliveries; never the health port."""
+        from src.config import DashboardServerConfig, HealthCheckConfig
+        from src.digest import DigestScheduleService
+
+        handler, db, config = env
+        await completed_task(db, "t1", title="Ship the digest")
+        default = await handler.execute("digest_preview", {"now": NOW})
+        assert "Remote dashboard link unavailable" in default["text"]
+
+        config.health_check = HealthCheckConfig(base_url="http://100.99.1.2:8081")
+        config.dashboard_server = DashboardServerConfig(public_url="https://queue.ts.example/")
+        result = await handler.execute("digest_preview", {"now": NOW})
+        assert result["text"].rstrip().endswith("https://queue.ts.example")
+        assert "8081" not in result["text"]
+
+        service = DigestScheduleService(
+            db, None, config=config, lease_owner="t", links=handler.orchestrator.dashboard_links,
+        )
+        from src.digest.schedule import schedule_for
+
+        schedule = schedule_for(config.discord)
+        delivered = await service._evaluate_window(
+            schedule, schedule.window_for(NOW, last_window_end=None), now=NOW
+        )
+        assert delivered.text == result["text"]
 
     async def test_preview_writes_nothing(self, env):
         handler, db, _config = env

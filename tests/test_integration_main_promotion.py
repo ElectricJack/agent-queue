@@ -127,8 +127,8 @@ def _policy() -> dict:
 
 
 @pytest.fixture
-async def prepared_db(tmp_path, request):
-    backend = getattr(request, "param", "sqlite")
+async def prepared_db(tmp_path, request, reuse_database):
+    backend = getattr(request, "param", "lease")
     postgres_dsn = None
     if backend == "postgres":
         if not POSTGRES_DSN:
@@ -137,9 +137,9 @@ async def prepared_db(tmp_path, request):
 
         postgres_dsn = await create_scratch_database("root_finalizer_e9")
         database = PostgreSQLDatabaseAdapter(postgres_dsn, 0, 1)
+        await database.initialize()
     else:
-        database = Database(lease_dsn("main-promotion.db"))
-    await database.initialize()
+        database = await reuse_database("main-promotion.db")
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(
         RepoConfig(

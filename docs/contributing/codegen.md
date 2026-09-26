@@ -163,13 +163,21 @@ which drives a sandboxed copy of the script with stub tools.
 committed `openapi.json`, so only the spec has to stay current.
 
 ```bash
+npm ci
 ./scripts/regenerate-ts-client.sh --from-file
 ```
 
+The workspace pins `@hey-api/openapi-ts` to **0.61.3**, its TypeScript peer to
+**5.7.3**, and `@hey-api/client-fetch` to **0.6.0**. The script checks those
+versions in this checkout's `node_modules` and runs the installed generator
+directly. A missing or stale install fails with an `npm ci --prefix …` recovery
+command; generation does not download tools or use an ancestor checkout or the
+`npx` cache. This also keeps fresh worker slots on the tested toolchain on Node 24.
+
 `dashboard/package.json` runs the same generation as a `pre` script before
 `dev`, `build` and `typecheck`, so the usual frontend commands regenerate it
-for you. Run the script explicitly when you want the error rather than the
-surprise — for instance,
+for you through the workspace's `generate` script. Run the script explicitly
+when you want the error rather than the surprise — for instance,
 [`scripts/e2e-dashboard.sh`](../../scripts/e2e-dashboard.sh) refuses to start
 if the directory is missing and tells you exactly this command.
 

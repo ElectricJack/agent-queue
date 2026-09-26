@@ -16,6 +16,10 @@ the dashboard server is never the daemon's child to supervise.
   which needs Node.js and minutes, so it is named rather than run.
 * ``dashboard.server.port``     -- the configured port answers as something else.
 * ``dashboard.server.exposure`` -- a non-loopback bind, and what that hands out.
+* ``dashboard.remote_link``     -- the origin Discord links name (or why they
+  carry a notice), whether the edge answers for it, and that reaching it from
+  another device is unverified.  Uses :mod:`src.remote_links`, the resolver
+  every sender uses; no dashboard-server import.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ RUNNING = "dashboard.server.running"
 BUNDLE = "dashboard.server.bundle"
 PORT = "dashboard.server.port"
 EXPOSURE = "dashboard.server.exposure"
+REMOTE_LINK = "dashboard.remote_link"
 
 #: What the dashboard server's ``/__aq/health`` names itself
 #: (``src.dashboard_server.process.SERVICE_NAME``; a test keeps them equal).
@@ -394,6 +399,73 @@ async def _check_exposure(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# dashboard.remote_link
+# ---------------------------------------------------------------------------
+
+_HEALTH = {"ours": "running", "foreign": "port_held_by_another_program", "none": "not_running"}
+REMOTE_GUIDE = "docs/guides/dashboard.md#dashboard-links-in-discord-posts"
+
+
+async def _check_remote_link(ctx: DoctorContext) -> CheckResult:
+    from src.remote_links import LinkSettings, describe_link, resolve_dashboard_link
+
+    settings = LinkSettings.from_config(ctx.config)
+    link = await resolve_dashboard_link(settings)
+    health = "disabled"
+    if settings.enabled:
+        kind, _identity = await _probe_async(_url(_section(ctx)))
+        health = _HEALTH[kind]
+    discord = getattr(ctx.config, "discord", None)
+    posting = bool(getattr(discord, "channel_id", "") or "")
+    data = describe_link(
+        settings, link, server_health=health, discord_channel_configured=posting,
+    )
+    if not settings.enabled:
+        return CheckResult(
+            id=REMOTE_LINK, severity=Severity.INFO,
+            detail=(
+                "the dashboard server is disabled (dashboard.server.enabled: false); external "
+                "posts carry the unavailable notice"
+            ),
+            data=data,
+        )
+    if link.url:
+        edge = data["edge"]
+        where = f"external dashboard links name {link.url} (from {link.source})"
+        if not (edge["host_allowed"] and edge["origin_allowed"]):
+            return CheckResult(
+                id=REMOTE_LINK, severity=Severity.WARN,
+                detail=(
+                    f"{where}, but the dashboard server's edge refuses that origin: add "
+                    f"{link.url} to api_auth.trusted_dashboard_origins, restart the daemon "
+                    f"and `aq dashboard restart`; see {REMOTE_GUIDE}"
+                ),
+                data=data,
+            )
+        return CheckResult(
+            id=REMOTE_LINK, severity=Severity.OK,
+            detail=f"{where}; reaching it from another device is unverified",
+            data=data,
+        )
+    detail = f"external dashboard links are unavailable: {link.detail}"
+    if not posting:
+        return CheckResult(
+            id=REMOTE_LINK, severity=Severity.INFO,
+            detail=f"{detail} (nothing posts: discord.channel_id is not set)",
+            data=data,
+        )
+    return CheckResult(
+        id=REMOTE_LINK, severity=Severity.WARN,
+        detail=(
+            f"{detail}. Discord posts carry a notice instead of a link. Set "
+            f"dashboard.server.public_url to your authenticated tailnet proxy's origin; see "
+            f"{REMOTE_GUIDE}"
+        ),
+        data=data,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -407,6 +479,8 @@ def dashboard_server_checks() -> list[DoctorCheck]:
         DoctorCheck(id=BUNDLE, run=_check_bundle, owner=OWNER),
         DoctorCheck(id=PORT, run=_check_port, timeout_s=10.0, owner=OWNER),
         DoctorCheck(id=EXPOSURE, run=_check_exposure, owner=OWNER),
+        # The Tailscale probe's 2 s deadline plus the health probe's 3 s.
+        DoctorCheck(id=REMOTE_LINK, run=_check_remote_link, timeout_s=10.0, owner=OWNER),
     ]
 
 

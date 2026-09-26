@@ -2,10 +2,17 @@
   "version": 1,
   "parent": {
     "required_checks": {
-      "version": "tests-yml-v1",
+      "version": "tests-yml-v2",
       "names": [
         "Tests (cli-conformance)",
-        "Tests (default)",
+        "Tests (default-1/8)",
+        "Tests (default-2/8)",
+        "Tests (default-3/8)",
+        "Tests (default-4/8)",
+        "Tests (default-5/8)",
+        "Tests (default-6/8)",
+        "Tests (default-7/8)",
+        "Tests (default-8/8)",
         "Tests (migration-and-slow)",
         "Tests (postgres-integration)"
       ],
@@ -42,10 +49,17 @@
   },
   "root": {
     "required_checks": {
-      "version": "tests-yml-v1",
+      "version": "tests-yml-v2",
       "names": [
         "Tests (cli-conformance)",
-        "Tests (default)",
+        "Tests (default-1/8)",
+        "Tests (default-2/8)",
+        "Tests (default-3/8)",
+        "Tests (default-4/8)",
+        "Tests (default-5/8)",
+        "Tests (default-6/8)",
+        "Tests (default-7/8)",
+        "Tests (default-8/8)",
         "Tests (migration-and-slow)",
         "Tests (postgres-integration)"
       ],

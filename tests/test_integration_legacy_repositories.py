@@ -6,7 +6,6 @@ import time
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database import Database
 from src.database.tables import (
     development_deliveries,
     integration_legacy_deliveries,
@@ -17,20 +16,17 @@ from src.database.tables import (
 from src.integration.legacy_repositories import LegacyRepositoryBinding
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("legacy-repositories.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("legacy-repositories.db")
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(RepoConfig(
         id="repo", project_id="p", source_type=RepoSourceType.CLONE,
         url="https://github.com/acme/widgets.git",
     ))
     yield database
-    await database.close()
 
 
 async def test_dry_run_then_bind_only_proven_terminal_hierarchy(db):

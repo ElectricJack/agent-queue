@@ -391,19 +391,26 @@ class SessionReconciler:
         for row in live:
             if row.lifecycle == "pool":
                 # Pool sessions never send a provider-side drain ack -- an
-                # idle one (no held task) marked stopped or sleeping is
-                # simply done and gets torn down the pool way.  ``sleep`` is
-                # intentionally deferred while a claim is active: public
-                # session control must not interrupt a worker's task.
-                if row.desired_state in ("stopped", "sleeping") and row.task_id is None:
-                    if self.orchestrator is None:
-                        logger.warning(
-                            "Pool session %s wants draining but no orchestrator is wired "
-                            "— skipping", row.id,
-                        )
+                # idle one marked stopped or sleeping is torn down the pool
+                # way. A task pointer left from a released claim can name a
+                # task already requeued or claimed by another worker; detach
+                # it using the current assignment before deciding to wait.
+                if row.desired_state not in ("stopped", "sleeping"):
+                    continue
+                if row.task_id is not None:
+                    if not await self.db.release_displaced_pool_claim(row.id, now=now):
                         continue
-                    reason = "sleeping" if row.desired_state == "sleeping" else "drained"
-                    await self.orchestrator._terminate_pool_session(row, reason=reason)
+                    row = await self.db.get_session(row.id)
+                    if row is None:
+                        continue
+                if self.orchestrator is None:
+                    logger.warning(
+                        "Pool session %s wants draining but no orchestrator is wired "
+                        "— skipping", row.id,
+                    )
+                    continue
+                reason = "sleeping" if row.desired_state == "sleeping" else "drained"
+                await self.orchestrator._terminate_pool_session(row, reason=reason)
                 continue
             provider = self._provider_for(row)
             if provider is None:

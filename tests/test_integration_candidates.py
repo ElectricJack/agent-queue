@@ -12,7 +12,6 @@ from pathlib import Path
 import pytest
 from sqlalchemy import delete, func, insert, select, update
 
-from src.database import Database
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
@@ -41,7 +40,6 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord
-from tests.db_fixtures import lease_dsn
 
 
 BASE = "a" * 40
@@ -121,9 +119,8 @@ def _policy() -> dict:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("candidates.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("candidates.db")
     await database.create_profile(AgentProfile(id="repairer", name="Repairer"))
     await database.create_profile(AgentProfile(id="debugger", name="Debugger"))
     await database.create_project(Project(id="p", name="project"))
@@ -156,7 +153,6 @@ async def db(tmp_path):
             )
         )
     yield database
-    await database.close()
 
 
 async def _seed_batch(db, *, lifecycle="sealed", members=(), base_sha=BASE):

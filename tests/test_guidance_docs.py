@@ -44,6 +44,7 @@ OPERATOR_DOCS = (
     _REPO_ROOT / "docs" / "guides" / "discord-commands.md",
     _REPO_ROOT / "docs" / "guides" / "discord-replacement-checklist.md",
     _REPO_ROOT / "docs" / "guides" / "escalations.md",
+    _REPO_ROOT / "docs" / "guides" / "reviews.md",
 )
 #: The CLI reference itself.  Its whole job is to show the reader the current
 #: command surface, so a leaf that has been renamed or an option that has been

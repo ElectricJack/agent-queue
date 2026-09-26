@@ -904,6 +904,8 @@ class PoolStatusRow(BaseModel):
     """
 
     profile_id: str
+    #: Effective explicit Codex launch tier; None inherits the CLI setting.
+    service_tier: str | None = None
     #: Operator kill-switch on the (global) profile.  A disabled pool keeps
     #: its row -- that is what the dashboard toggles back on -- and is sized
     #: to zero, so idle workers drain and no new work is claimed.

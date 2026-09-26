@@ -112,11 +112,14 @@ One message, at most 1,200 characters, never split across posts:
 • agent-queue: completed — document the escalation guide (solid-grove.19)
 • agent-queue: progress — pull request ready — fix the claim race (solid-grove.7)
 • demo: started — add a health endpoint (demo.4)
-+2 more · 1 open escalation · http://localhost:8081
++2 more · 1 open escalation · https://aq.your-tailnet.ts.net
 ```
 
 Counts first, then at most three highlights, then the overflow count, the
-number of open escalations and the dashboard link. If the highlights would
+number of open escalations and the dashboard link. That link is
+`dashboard.server.public_url`, never the daemon's port. Without one, the footer
+says `Remote dashboard link unavailable (...)`; see
+[dashboard links in Discord posts](dashboard.md#dashboard-links-in-discord-posts). If the highlights would
 push the message over the limit, the least informative one is folded into the
 `+N more` count rather than starting a second message.
 

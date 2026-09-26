@@ -544,3 +544,69 @@ class TestSubagentEventCLI:
             results={"subagent_event": CommandError("subagent_event", "out of scope")},
         )
         assert result.exit_code == 0
+
+
+class TestStructuredHandoffCLI:
+    def test_structured_options_reach_handler(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client({"task_handoff": {"success": True, "handoff_id": "h1"}})
+        with (
+            patch("src.cli.agent_surface._get_client", return_value=mock),
+            patch("src.cli.agent_surface.resolve_claim_epoch", return_value=9),
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "handoff",
+                    "--auto",
+                    "--task-id",
+                    "task-1",
+                    "--session-id",
+                    "session-1",
+                    "--schema-version",
+                    "1",
+                    "--goal",
+                    "Resume",
+                    "--completed",
+                    "Edited",
+                    "--completed",
+                    "Linted",
+                    "--next-step",
+                    "Test",
+                    "--waiting-for",
+                    "slot",
+                    "--file",
+                    "a.py",
+                    "--decision",
+                    "Keep API",
+                    "--do-not-repeat",
+                    "Serial suite",
+                    "--uncertainty",
+                    "Timing",
+                    "--idempotency-key",
+                    "one",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert mock.calls == [
+            (
+                "task_handoff",
+                {
+                    "auto": True,
+                    "task_id": "task-1",
+                    "session_id": "session-1",
+                    "schema_version": 1,
+                    "goal": "Resume",
+                    "completed": ["Edited", "Linted"],
+                    "next_step": "Test",
+                    "waiting_for": "slot",
+                    "files": ["a.py"],
+                    "decisions": ["Keep API"],
+                    "do_not_repeat": ["Serial suite"],
+                    "uncertainties": ["Timing"],
+                    "idempotency_key": "one",
+                    "claim_epoch": 9,
+                },
+            )
+        ]

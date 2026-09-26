@@ -14,7 +14,6 @@ import time
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database import Database
 from src.database.tables import (
     events,
     integration_batch_members,
@@ -33,7 +32,6 @@ from src.git.manager import GitManager
 from src.integration.owner_recovery import RECOVERED_EVENT
 from src.integration.stale_owners import LEASE_RELEASED_EVENT, StaleOwnerRelease
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 NOW = 10_000.0
 PRINCIPAL = "human:local-operator"
@@ -46,7 +44,7 @@ def git(path, *args) -> str:
 
 
 @pytest.fixture
-async def env(tmp_path):
+async def env(tmp_path, reuse_database):
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
     base = tmp_path / "base"
@@ -57,8 +55,7 @@ async def env(tmp_path):
     git(base, "add", ".")
     git(base, "commit", "-m", "base")
     git(base, "push", "origin", "main")
-    db = Database(lease_dsn("stale-owners.db"))
-    await db.initialize()
+    db = await reuse_database("stale-owners.db")
     await db.create_project(Project(id="p", name="P"))
     await db.create_repo(
         RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE, url=str(origin))
@@ -81,7 +78,6 @@ async def env(tmp_path):
             )
         )
     yield Env(db=db, origin=origin, base=base)
-    await db.close()
 
 
 class Env:

@@ -20,7 +20,6 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database import Database
 from src.database.queries.hierarchy_queries import (
     delivered_same_parent_prerequisites_when_hierarchical,
 )
@@ -30,12 +29,14 @@ from src.database.tables import (
     integration_review_evidence,
     playbook_artifacts,
     task_branch_origins,
+    task_completion_records,
     task_delivery_receipts,
     task_dependencies,
     task_integration_checkpoints,
     tasks,
 )
 from src.doctor.integration_checks import run_check
+from src.doctor.task_checks import run_check as run_task_check
 from src.git.manager import GitManager
 from src.integration.child_delivery import (
     COMPLETION_IDENTITY_PREFIX,
@@ -56,7 +57,6 @@ from src.integration.models import (
 )
 from src.integration.promotion import PromotionService
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 _AMBIENT_IDENTITY_KEYS = (
     "GIT_AUTHOR_NAME",
@@ -102,7 +102,7 @@ def _policy_and_artifact() -> tuple[dict, ArtifactSnapshot]:
 
 
 @pytest.fixture
-async def case(tmp_path):
+async def case(tmp_path, reuse_database):
     """Train epic ``epic`` collecting its COMPLETED child ``epic.1``.
 
     The child's branch is published at ``head``, one commit past the origin
@@ -129,8 +129,7 @@ async def case(tmp_path):
     tree = _git(["rev-parse", "HEAD^{tree}"], work)
     _git(["push", "origin", "aq/epic.1"], work)
 
-    db = Database(lease_dsn("child-delivery.db"))
-    await db.initialize()
+    db = await reuse_database("child-delivery.db")
     await db.create_project(Project(id="p", name="train project"))
     await db.create_repo(
         RepoConfig(
@@ -197,7 +196,6 @@ async def case(tmp_path):
         db=db, hierarchy=hierarchy, promotion=promotion, base=base, head=head, tree=tree,
         work=work,
     )
-    await db.close()
 
 
 def _collector(case, delivery=None):
@@ -502,6 +500,54 @@ async def test_redrive_reports_a_delivered_child_and_a_no_code_child(case):
     no_code = await delivery.run("epic.1")
     assert no_code["outcome"] == "blocked"
     assert "record-noop" in no_code["reason"]
+
+
+async def test_redrive_reissues_a_receipt_for_a_newer_same_head_completion(case):
+    await _collector(case).tick(10.0)
+    [ready] = await _delivery_ready(case.db)
+    payload = ready["payload"]
+    request = PromotionInput(
+        operation_key=payload["operation_key"],
+        source_task_id=payload["source_task_id"],
+        source_head=payload["source_head"],
+        source_base=payload["source_base"],
+        expected_target=payload["expected_target"],
+        fence=Fence.model_validate(payload["fence"]),
+    )
+    prepared = await case.promotion.prepare(request)
+    await case.promotion.push(prepared.intent_id, request.fence)
+    await case.promotion.reconcile(prepared.intent_id)
+    await case.db.update_task("epic.1", status=TaskStatus.READY)
+    await case.db.update_task("epic.1", status=TaskStatus.COMPLETED)
+    async with case.db.immediate() as conn:
+        [old] = (await conn.execute(select(task_delivery_receipts))).mappings().all()
+        await conn.execute(insert(task_completion_records).values(
+            id="new-completion", task_id="epic.1", outcome="pass",
+            completed_at=old["created_at"] + 1,
+        ))
+    assert not await _sibling_admitted(case.db)
+    delivery = ChildDelivery(case.db, case.promotion)
+    diagnosis = await delivery.run("epic.1")
+    assert diagnosis["outcome"] == "would_advance"
+    assert diagnosis["redrive_kind"] == "receipt_reissue"
+    applied = await delivery.run("epic.1", dry_run=False, expected_head_sha=case.head)
+    assert applied["outcome"] == "advanced"
+    assert applied["receipt_id"] != old["id"]
+    assert await _sibling_admitted(case.db)
+    readiness = await case.hierarchy.readiness("epic")
+    assert not any(row["task_id"] == "epic.1" for row in readiness["blockers"])
+    assert (await delivery.run("epic.1"))["outcome"] == "nothing_to_redrive"
+
+
+async def test_doctor_explains_ready_sibling_excluded_from_claim_frontier(case):
+    async with case.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic.2").values(
+            status="READY", is_blocked=False,
+        ))
+    result = await run_task_check(case.db, "tasks.ready_frontier_exclusions")
+    assert result.severity.value == "warn"
+    sibling = next(row for row in result.data["tasks"] if row["task_id"] == "epic.2")
+    assert "sibling_prerequisite_not_delivered" in sibling["reasons"]
 
 
 async def test_redrive_classifies_tasks_it_cannot_advance(case):

@@ -885,3 +885,88 @@ class TestStaticGuidanceStaysOnTheAgentSurface:
         marked = "Operator surfaces (`aq doctor`) answer `out of scope: <command>`."
         assert _CLI_TO_COMMAND["aq doctor"] not in AGENT_COMMAND_SET
         assert "out of scope" in marked
+
+
+class TestWakeBudget:
+    async def test_optional_wake_budget_keeps_full_role_ownership_and_close(self, db, config, task):
+        from src.handoffs import WAKE_BYTES
+
+        rules = "Retain all authorization rules. " * 1000
+        _write(
+            os.path.join(config.vault_agent_types, "coder", "profile.md"),
+            "## Role\nCoder.\n\n## Rules\n" + rules,
+        )
+        await db.update_task(task.id, claim_epoch=4)
+        await db.add_task_context(
+            task.id,
+            type="handoff",
+            label="handoff",
+            content=json.dumps(
+                {
+                    "agent": {
+                        "next_step": "Run the selected tests",
+                        "uncertainties": ["Race unknown"],
+                        "completed": ["😀" * 10000],
+                    },
+                    "facts": {"claim_epoch": 3, "work_dir": "/old", "branch": "old"},
+                }
+            ),
+        )
+        doc = await PrimeRenderer(db, config).render_for_task(task.id)
+        sections = {s.key: s.body for s in doc.sections}
+        assert len(sections["messages"].encode("utf-8")) <= WAKE_BYTES
+        assert "Run the selected tests" in sections["messages"]
+        assert "Race unknown" in sections["messages"]
+        assert "Stale handoff files/checkout" in sections["messages"]
+        assert "claim_epoch: 4" in sections["messages"]
+        assert rules.strip() in sections["role"]
+        assert "Claim epoch: 4" in sections["task"]
+        assert "aq task close" in sections["completion_protocol"]
+        assert len(doc.to_markdown().encode("utf-8")) > WAKE_BYTES
+
+    async def test_new_session_checkout_wins_over_stale_handoff_and_task_metadata(
+        self,
+        db,
+        config,
+        task,
+        tmp_path,
+    ):
+        from src.handoffs import HANDOFF_BYTES
+
+        await db.set_task_meta(task.id, "work_dir", "/old-reused-slot")
+        current = str(tmp_path / "current-checkout")
+        await db.create_session(
+            SessionRecord(
+                id="current-session",
+                project_id=task.project_id,
+                profile_id="coder",
+                harness="codex",
+                provider="openai",
+                name="current-session",
+                lifecycle="pool",
+                work_dir=current,
+                epoch="test",
+                instance_token="test-only",
+                started_at=time.time(),
+                task_id=task.id,
+                state="running",
+            )
+        )
+        await db.add_task_context(
+            task.id,
+            type="handoff",
+            label="handoff",
+            content=json.dumps(
+                {
+                    "agent": {"files": ["old/file.py"], "next_step": "Inspect current checkout"},
+                    "facts": {"task_id": task.id, "work_dir": "/old-reused-slot", "claim_epoch": 0},
+                }
+            ),
+        )
+        doc = await PrimeRenderer(db, config).render_for_task(task.id, session_id="current-session")
+        sections = {s.key: s.body for s in doc.sections}
+        assert current in sections["workspaces"]
+        assert "current-session" in sections["messages"]
+        assert "Stale handoff files/checkout" in sections["messages"]
+        assert "Inspect current checkout" in sections["messages"]
+        assert len(sections["messages"].encode("utf-8")) <= HANDOFF_BYTES + 2048 + 4

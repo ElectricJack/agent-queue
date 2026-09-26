@@ -2892,9 +2892,15 @@ class DashboardServerConfig:
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = DEFAULT_DASHBOARD_SERVER_PORT
-    #: Public dashboard origin used in links sent outside the local machine.
-    #: Empty preserves the local host-and-port URL.
+    #: The dashboard origin that links sent off this machine name (Discord
+    #: escalations, digests, reviews) -- e.g. the operator's authenticated
+    #: tailnet reverse proxy.  An http(s) origin with no path, query or
+    #: credentials, never loopback.  Empty: links carry an "unavailable"
+    #: notice unless ``host`` is this machine's Tailscale address
+    #: (``src/remote_links.py``).  Also accepted as ``dashboard.public_url``.
     public_url: str = ""
+    #: The Tailscale CLI used to confirm a tailnet ``host``; empty means ``PATH``.
+    tailscale_path: str = ""
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2913,6 +2919,21 @@ class DashboardServerConfig:
             ))
         if not isinstance(self.public_url, str):
             errors.append(ConfigError("dashboard", "public_url", "must be a string"))
+        elif self.public_url.strip():
+            from src.remote_links import normalise_public_origin
+
+            _origin, why = normalise_public_origin(self.public_url)
+            if why:
+                # A warning, not an error: a bad link origin must not keep the
+                # daemon down.  Links carry the "unavailable" notice instead,
+                # and `aq doctor --check dashboard.remote_link` names it.
+                errors.append(ConfigError(
+                    "dashboard.server", "public_url",
+                    f"{why}; external dashboard links are disabled until it is fixed",
+                    severity="warning",
+                ))
+        if not isinstance(self.tailscale_path, str):
+            errors.append(ConfigError("dashboard.server", "tailscale_path", "must be a string"))
         return errors
 
 
@@ -2927,10 +2948,41 @@ def dashboard_server_config_from_raw(raw: Mapping[str, object]) -> DashboardServ
     nested = dashboard.get("server") if isinstance(dashboard, Mapping) else None
     section = nested if isinstance(nested, Mapping) else raw.get("dashboard_server")
     kwargs = _dataclass_kwargs(DashboardServerConfig, section)
-    if isinstance(dashboard, Mapping) and "public_url" in dashboard:
-        kwargs["public_url"] = dashboard["public_url"]
+    if isinstance(dashboard, Mapping) and dashboard.get("public_url") is not None:
+        # The alias fills in; it never silently replaces a different canonical
+        # value -- load_config refuses that (dashboard_public_url_conflict).
+        kwargs.setdefault("public_url", dashboard["public_url"])
     kwargs.setdefault("port", default_dashboard_server_port(raw))
     return DashboardServerConfig(**kwargs)
+
+
+def dashboard_public_url_conflict(raw: Mapping[str, object]) -> str | None:
+    """Why ``dashboard.public_url`` and ``dashboard.server.public_url`` disagree, else ``None``.
+
+    Both spellings stay accepted; two different values are ambiguous, so the
+    daemon's loader rejects them rather than pick one.  Values equal as
+    origins (``https://q.example/`` and ``https://q.example``) agree.
+    """
+    dashboard = raw.get("dashboard")
+    if not isinstance(dashboard, Mapping):
+        return None
+    nested = dashboard.get("server")
+    section = nested if isinstance(nested, Mapping) else raw.get("dashboard_server")
+    alias = dashboard.get("public_url")
+    canonical = section.get("public_url") if isinstance(section, Mapping) else None
+    if alias is None or canonical is None:
+        return None
+    if not isinstance(alias, str) or not isinstance(canonical, str):
+        return None if alias == canonical else "the two public_url values differ"
+    from src.remote_links import normalise_public_origin
+
+    def _key(value: str) -> str:
+        origin, _why = normalise_public_origin(value)
+        return origin or value.strip()
+
+    if _key(alias) == _key(canonical):
+        return None
+    return "dashboard.public_url and dashboard.server.public_url name different origins; keep one"
 
 
 @dataclass
@@ -4464,6 +4516,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     )
 
     config.dashboard_server = dashboard_server_config_from_raw(raw)
+    public_url_conflict = dashboard_public_url_conflict(raw)
 
     if "agent_profiles" in raw:
         profiles = []
@@ -4516,6 +4569,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
     # validate() returns ConfigError list; convert fatal errors to exception
     # for backward compatibility.
     config_errors = config.validate()
+    if public_url_conflict:
+        config_errors.append(ConfigError("dashboard", "public_url", public_url_conflict))
     fatal_errors = [str(e) for e in config_errors if e.severity == "error"]
     if fatal_errors:
         raise ConfigValidationError(fatal_errors)

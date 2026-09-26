@@ -15,18 +15,15 @@ from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.supervisor_authority import integration_operator
-from src.database import Database
 from src.database.tables import integration_branch_owners
 from src.integration.owner_recovery import RecoveryOutcome
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, SessionRecord
 from src.profiles.capabilities import DENY_ALL, CapabilityPolicy
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("integration-operator-controls"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("integration-operator-controls")
     await database.create_project(Project(id="p", name="Project"))
     await database.create_project(Project(id="other", name="Other project"))
     await database.create_profile(
@@ -79,7 +76,6 @@ async def db():
             )
         )
     yield database
-    await database.close()
 
 
 def _session(

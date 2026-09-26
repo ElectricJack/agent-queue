@@ -141,6 +141,7 @@ async def test_pool_management_routes_round_trip_on_postgres(pool_api):
         assert status.json()["pools"] == [
             {
                 "profile_id": "worker",
+                "service_tier": None,
                 # The operator kill-switch on the (global) profile; a pool that
                 # has never been disabled reports it on.
                 "enabled": True,

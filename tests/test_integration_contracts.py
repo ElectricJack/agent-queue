@@ -282,6 +282,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_retry_cleanup",
         "integration_release_delegates",
         "integration_release_owner",
+        "integration_reserve_owner",
         "integration_release_stale_owners",
         "integration_clear_stale_request",
         "integration_redrive_root",

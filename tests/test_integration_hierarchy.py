@@ -23,6 +23,7 @@ from src.database.tables import (
     playbook_artifacts,
     projects,
     task_branch_origins,
+    task_completion_records,
     task_delivery_receipts,
     task_integration_checkpoints,
     task_session_attempts,
@@ -65,9 +66,8 @@ def _git(args, cwd):
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("hierarchy.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("hierarchy.db")
     await database.create_project(Project(id="p", name="hierarchy"))
     await database.create_repo(
         RepoConfig(
@@ -123,7 +123,6 @@ async def db(tmp_path):
         ).model_dump(mode="json"),
     )
     yield database
-    await database.close()
 
 
 @pytest.fixture
@@ -1390,6 +1389,7 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
     assert await db.count_ready_by_profile("p") == {}
 
     source = await db.get_integration_checkpoint(first)
+    delivered_at = time.time()
     async with db.immediate() as conn:
         await conn.execute(insert(task_delivery_receipts).values(
             id="receipt",
@@ -1403,20 +1403,42 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
             squash_sha=NEXT,
             after_sha=NEXT,
             disposition="code",
-            created_at=time.time() + 1,
+            created_at=delivered_at,
         ))
     assert await db.is_hierarchy_task_runnable(second)
     assert await db.count_ready_by_profile("p") == {None: 1}
+    assert await db.hierarchy_prerequisite_delivery_head(second) == NEXT
+
+    # Closing and metadata bookkeeping can update the task row after its
+    # receipt; they do not represent a new completion.
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == first).values(
+            updated_at=delivered_at + 1
+        ))
+        await conn.execute(insert(task_completion_records).values(
+            id="late-close-record", task_id=first, outcome="pass",
+            completed_at=delivered_at + 2,
+        ))
+    assert await db.is_hierarchy_task_runnable(second)
+    assert await db.count_ready_by_profile("p") == {None: 1}
+    assert await db.hierarchy_prerequisite_delivery_head(second) == NEXT
 
     # A reopened prerequisite invalidates the former receipt even when its
     # task id and checkpoint happen to be unchanged.
+    await asyncio.sleep(0.01)
     await db.update_task(first, status=TaskStatus.READY)
     await db.update_task(first, status=TaskStatus.COMPLETED)
-    async with db.immediate() as conn:
-        await conn.execute(update(tasks).where(tasks.c.id == first).values(
-            updated_at=time.time() + 2
-        ))
     assert not await db.is_hierarchy_task_runnable(second)
+
+
+async def test_reopening_a_completed_task_records_only_the_rework_boundary(db):
+    await _create(db, "rework")
+    await db.update_task("rework", status=TaskStatus.COMPLETED)
+    await db.transition_task("rework", TaskStatus.READY, context="reopen_with_feedback")
+    marker = await db.get_task_meta("rework", "integration_rework_at")
+    assert isinstance(marker, float)
+    await db.update_task("rework", title="bookkeeping")
+    assert await db.get_task_meta("rework", "integration_rework_at") == marker
 
 
 @pytest.mark.parametrize("operator_hold", [False, True])

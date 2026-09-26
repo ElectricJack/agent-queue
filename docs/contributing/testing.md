@@ -85,6 +85,34 @@ past one file.
 3. **Grep the imports.** `grep -rl "from src.task_graph.formulas" tests/`
    is exact.
 
+### Reusing a database in data tests
+
+Use `reuse_database` for fixtures that exercise queries on the current schema:
+
+```python
+@pytest.fixture
+async def db(reuse_database):
+    database = await reuse_database("my-area")
+    await database.create_project(Project(id="p", name="Test project"))
+    return database
+```
+
+The factory initializes each lease database once for the pytest worker's session.
+Each test still gets clean rows and the migration seed rows,
+through the existing template-cloned lease pool. Different names within a test
+get different databases; repeating a name returns the same adapter.
+
+Each test gets a fresh adapter and engine, preserving its pool configuration
+(including `unpooled_postgres`) and isolating callbacks and asyncio locks. The
+fixture disposes connections on the test's loop before resetting the lease;
+the caller does not need to close it. Keep project, task, and repository seeding
+in the per-test fixture so their state stays isolated.
+
+Tests of schema changes, startup data migrations, database reopening, or adapter
+configuration must initialize their own adapters. Use a dedicated scratch
+database when testing migrations, and keep separate connections when testing
+locking or concurrent finalization.
+
 ## The `aq test` wrapper
 
 [`src/cli/test_runner.py`](../../src/cli/test_runner.py) does five things, in
