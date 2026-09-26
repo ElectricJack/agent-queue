@@ -21,7 +21,7 @@ Approved product behavior:
 1. One configured Discord channel per installation. Selected projects share that channel; every item identifies its project. No automatic channel-per-project creation.
 2. Routine work appears in a short hourly digest. Default interval: 60 minutes. If nothing happened and nothing is actively executing, send nothing. Unchanged queued, paused, dependency-blocked or human-waiting work alone does not produce a digest.
 3. Human intervention is immediate: one channel post and one thread per escalation. Human replies return to the owning project supervisor; the supervisor decides and performs recovery through normal commands.
-4. The dashboard owns task browsing, controls, gates, terminal/log inspection and general supervisor chat. Discord has no operational slash commands, execution streaming, arbitrary mention handling or general chatbot mode.
+4. The dashboard owns task browsing, controls, gates, terminal/log inspection and general supervisor chat. Discord has no operational slash commands, execution streaming, arbitrary mention handling or general chatbot mode. Exception (2026-09-24, mention-routing spec): with `discord.conversation.enabled: true` and a non-empty allowlist, an explicit `@Agent Q` mention at the top level of the configured channel opens a supervisor conversation thread. This is a deliberate opt-in relaxation; the allowlisted identities are trusted correspondents of the elevated global supervisor, and there is no sandboxed chatbot. See [Discord supervisor conversations](../../guides/discord-conversations.md) for prerequisites, limits and the trust decision.
 5. No mentions in routine digests. Mentions are explicit and bounded for escalation posts; follow-ups stay in their thread.
 6. Disabling Discord never prevents task scheduling, supervisor triage, reply persistence through another supported surface, or dashboard access to pending escalations.
 
@@ -47,12 +47,21 @@ The current implementation is in `src/discord/`, not an installed `packages/aq-d
 | Gate and playbook resume controls | Remove direct Discord execution | Dashboard controls; supervisor may execute an exact human-authorized action through core commands |
 | Per-execution task threads and streamed agent output | Stop producing | Dashboard live session and recorded attempts |
 | Task-thread reply → worker input, task description or reopen | Remove | Recognized escalation reply → durable message → supervisor |
-| General channel chat, arbitrary mentions and DMs as commands | Ignore for work routing | Dashboard supervisor chat |
+| General channel chat, arbitrary mentions and DMs as commands | Retire unrestricted routing; accept only the explicit opt-in route described in §1 item 4 | Dashboard supervisor chat; opt-in `@Agent Q` conversations (off by default) |
 | Per-project channel creation and task-thread cleanup | Retire from normal operation | Explicit single-channel configuration and escalation-thread lifecycle |
 | Immediate task/PR/budget/playbook informational posts | Aggregate | Hourly selected-category digest |
 | Rate guard, permission checks, retry/backoff and receipts | Preserve and adapt | Shared reliable transport delivery |
 
 Keep underlying notification/domain events where the dashboard, plugins or other consumers use them. Removing a Discord consumer does not authorize deleting shared domain capabilities. Historical channels, posts and threads are not deleted automatically.
+
+The mention-routing exception does not restore task controls, gate buttons,
+worker input, DMs or arbitrary channel chat. Escalation threads retain exclusive
+ownership even when escalation intake refuses or fails. Conversation input is
+persisted before delivery and replies require `supervisor_inbox_reply`; generic
+supervisor messages and transcript tails are never relayed. The supervisor's
+default procedure is to answer, read and prepare proposals for dashboard action.
+Prompt instructions cannot enforce read-only capabilities on the existing
+elevated session: deployments requiring that boundary keep conversations off.
 
 ## 3. Architecture and ownership
 

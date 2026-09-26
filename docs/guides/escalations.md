@@ -24,8 +24,11 @@ channel goes quiet.
 
 > **Discord cannot control AQ.** The slash commands, task controls, approval
 > buttons and per-project channels were removed in the single-channel cutover.
-> A reply inside an escalation thread is the only thing Discord can send into
-> AQ. See [what Discord no longer does](../concepts/messaging.md#what-discord-no-longer-does).
+> By default, a reply inside an escalation thread is the only inbound route.
+> An operator can explicitly opt into [supervisor conversations](discord-conversations.md)
+> with `discord.conversation.enabled`; allowlisted identities then correspond
+> with the elevated global supervisor. See
+> [what Discord no longer does](../concepts/messaging.md#what-discord-no-longer-does).
 
 ## Configure the channel
 
@@ -94,15 +97,15 @@ a restart empties them, and they hold at most 10,000 events, forgetting the
 oldest first. `available: false` means no gateway is connected to count
 anything. Each ignored message also writes one INFO line to the daemon log,
 `discord intake ignored reason=<code> guild=<id> channel=<id> message=<id> author=<id>`,
-carrying ids and the code but never the message text. The codes, in the order
-the gate checks them:
+carrying ids and the code but never the message text. Escalation codes, in the
+order its gate checks them:
 
 | Code | The message was ignored because |
 |---|---|
 | `disabled` | `discord.escalation.enabled` is false |
 | `own_message` | this bot posted it |
 | `bot_author` | another bot posted it |
-| `not_in_thread` | it was posted in the channel itself, or anywhere outside a thread. This includes an `@mention` of the bot |
+| `not_in_thread` | escalation intake saw a channel post or another message outside a thread, including a bot mention; the opt-in conversation router may still accept it |
 | `no_channel` | `discord.channel_id` is not set |
 | `foreign_channel` | the thread's parent is not the configured channel |
 | `author_not_allowlisted` | the author is not on `authorized_users` |
@@ -113,6 +116,29 @@ the gate checks them:
 | `oversize` | the reply is longer than 16,000 characters |
 | `no_message_id` | Discord supplied no message ID |
 | `classify_error` | the gateway could not read or classify the message. The daemon log has a warning with the traceback |
+
+When supervisor conversations are enabled, the router also records these
+conversation codes. Shared codes such as `own_message`, `bot_author`,
+`foreign_channel`, `author_not_allowlisted`, `empty_text` and `classify_error`
+have the same meaning in both paths.
+
+| Code | The conversation was ignored because |
+|---|---|
+| `preconditions_unmet` | one or more prerequisites are missing; `aq supervisor-inbox status` names them |
+| `webhook_author` | a webhook posted it |
+| `dm` | it is a direct message |
+| `edit` | an edit cannot rewrite previously accepted input |
+| `foreign_guild` | it is outside the configured guild |
+| `no_bot_mention` | a top-level message lacks a real bot-user mention |
+| `escalation_thread` | escalation intake exclusively owns the thread, even on refusal or failure |
+| `unknown_thread` | the thread has no matching conversation binding |
+
+An escalation ignore does not prove a mention was dropped: the conversation
+router may subsequently accept it. Conversation command refusals log
+`discord conversation refused reason=<code>` separately. `oversize` (more than
+4,000 normalized code points), `rate_limited` and `conversation_closed` receive
+bounded, deduplicated notices. See [Discord supervisor conversations](discord-conversations.md)
+for the complete prerequisites, limits, backfill gaps and trust decision.
 
 The gateway drops some messages before they reach this gate, and those are
 neither logged nor counted: its own posts, authors missing from a non-empty
@@ -337,14 +363,19 @@ is never permission to repeat an external send or a recovery.
 ## For contributors: the inbound gate
 
 [`DiscordEscalationIntake`](../../src/discord/escalation_intake.py) is the
-only path a Discord message takes into an escalation, and `on_message` does
-nothing else — there is no general channel chat, mention handling or
-task-thread routing left to fall through to. The gateway also ignores every
+only path a Discord message takes into an escalation.
+[`DiscordInboundRouter`](../../src/discord/inbound.py) runs it first: consumed
+or failed escalation intake stops routing, and a known escalation binding
+remains exclusive even when intake refuses. Only then may the deliberately
+opt-in conversation route accept an allowlisted bot mention or a bound
+conversation-thread follow-up. The retired general channel chat and task-thread
+worker routing remain removed; see [Discord supervisor conversations](discord-conversations.md).
+The gateway also ignores every
 message until the startup cutover pass reports `complete`, so a pre-cutover
 conversation can never be half-migrated and half-live (see the
 [migration runbook](discord-migration.md)).
 
-Every one of these must hold. A refusal is silent in the channel and logged
+Every one of these must hold for an escalation reply. A refusal is silent in the channel and logged
 once, with its reason code (see [Check that it is working](#check-that-it-is-working)):
 
 * the author is not this bot and not any bot — an acknowledgement must never
