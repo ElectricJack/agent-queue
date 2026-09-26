@@ -48,6 +48,7 @@ class JobService:
         input_mode="live",
         input_ref=None,
         trusted_band=2,
+        wait_identity=None,
     ):
         cfg = self.settings
         if not cfg.enabled:
@@ -96,6 +97,7 @@ class JobService:
             "args": args,
             "input_mode": input_mode,
             "input_ref": input_ref,
+            "wait": wait_identity is not None,
         }
         job_id, nonce, now = str(uuid.uuid4()), uuid.uuid4().hex, time.time()
         env = {
@@ -183,6 +185,7 @@ class JobService:
             per_task_queued=cfg.per_task_queued,
             log_budget=cfg.log_budget_bytes,
             reservation=cfg.head_bytes + cfg.tail_bytes,
+            wait_identity=wait_identity,
         )
 
     async def cancel(self, job: dict):

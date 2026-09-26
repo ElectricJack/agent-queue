@@ -108,6 +108,12 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # digest — hourly activity digest preview and schedule health
     "digest_preview": "digest",
     "digest_status": "digest",
+    "job_submit": "job",
+    "job_get": "job",
+    "job_list": "job",
+    "job_cancel": "job",
+    "job_result": "job",
+    "job_logs": "job",
     "wait_register": "wait",
     "wait_get": "wait",
     "wait_list": "wait",
@@ -374,55 +380,6 @@ _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
 # A command that needs arguments and appears in neither table is a bug, not a
 # no-argument command — ``_discover_all_commands`` logs a warning naming it.
 _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
-    # Phase 2 internal commands; transport exclusions remain until phase 3.
-    "job_submit": {
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string"},
-            "task_id": {"type": "string"},
-            "claim_epoch": {"type": "integer"},
-            "preset": {"type": "string"},
-            "argv": {"type": "array", "items": {"type": "string"}},
-            "idempotency_key": {"type": "string"},
-            "wait": {"type": "boolean"},
-        },
-        "required": ["preset", "idempotency_key"],
-    },
-    "job_list": {
-        "type": "object",
-        "properties": {
-            "project_id": {"type": "string"},
-            "task_id": {"type": "string"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-        },
-    },
-    "job_get": {
-        "type": "object",
-        "properties": {"job_id": {"type": "string", "format": "uuid"}},
-        "required": ["job_id"],
-    },
-    "job_cancel": {
-        "type": "object",
-        "properties": {"job_id": {"type": "string", "format": "uuid"}},
-        "required": ["job_id"],
-    },
-    "job_result": {
-        "type": "object",
-        "properties": {
-            "job_id": {"type": "string", "format": "uuid"},
-            "max_bytes": {"type": "integer", "minimum": 0, "maximum": 8192},
-        },
-        "required": ["job_id"],
-    },
-    "job_logs": {
-        "type": "object",
-        "properties": {
-            "job_id": {"type": "string", "format": "uuid"},
-            "after": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 1048576},
-        },
-        "required": ["job_id"],
-    },
     # -- explain + ready frontier (work-graph WG-4) ------------------------
     "explain_task": {
         "type": "object",
@@ -7145,3 +7102,71 @@ _FALLBACK_INPUT_SCHEMAS["reconcile_agent_waits"] = {
     "properties": {"now": {"type": "number"}, "wait_id": {"type": ["string", "null"]}},
     "additionalProperties": False,
 }
+
+
+_JOB_INPUT_SCHEMAS: dict[str, dict] = {
+    # Managed jobs: typed public contracts and finite preset commands.
+    "job_submit": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string"},
+            "task_id": {"type": "string"},
+            "session_id": {"type": "string"},
+            "claim_epoch": {"type": "integer"},
+            "preset": {"type": "string"},
+            "argv": {"type": "array", "items": {"type": "string"}},
+            "idempotency_key": {"type": "string"},
+            "wait": {"type": "boolean"},
+        },
+        "required": ["preset", "idempotency_key"],
+    },
+    "job_list": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string"},
+            "task_id": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+    },
+    "job_get": {
+        "type": "object",
+        "properties": {"job_id": {"type": "string", "format": "uuid"}},
+        "required": ["job_id"],
+    },
+    "job_cancel": {
+        "type": "object",
+        "properties": {"job_id": {"type": "string", "format": "uuid"}},
+        "required": ["job_id"],
+    },
+    "job_result": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "format": "uuid"},
+            "max_bytes": {"type": "integer", "minimum": 0, "maximum": 8192},
+        },
+        "required": ["job_id"],
+    },
+    "job_logs": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "format": "uuid"},
+            "after": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        },
+        "required": ["job_id"],
+    },
+}
+
+
+# Public managed job tools use the same finite schemas on every transport.
+_ALL_TOOL_DEFINITIONS.extend([
+    {"name": name, "description": description, "input_schema": _JOB_INPUT_SCHEMAS[name]}
+    for name, description in (
+        ("job_submit", "Submit a finite preset, optionally with an atomic durable wait."),
+        ("job_get", "Read a scoped managed job."),
+        ("job_list", "List this owner's managed jobs."),
+        ("job_cancel", "Cancel a job and verify cleanup before releasing its pin."),
+        ("job_result", "Read a job's immutable result and bounded excerpt."),
+        ("job_logs", "Read retained output ranges with explicit gaps."),
+    )
+])

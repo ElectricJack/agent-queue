@@ -30,6 +30,7 @@ from src.api.models.dashboard import (
     DashboardStateErrorResponse,
 )
 from src.api.models.escalation import EscalationErrorResponse
+from src.api.models.job import JobErrorResponse
 from src.api.models.supervisor_inbox import SupervisorInboxErrorResponse
 from src.api.models.system import (
     DeleteIntelligenceClassConflictResponse,
@@ -54,13 +55,6 @@ logger = logging.getLogger(__name__)
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
-    # Phase 2 execution substrate; public job/wait adapters land in phase 3.
-    "job_submit",
-    "job_get",
-    "job_list",
-    "job_cancel",
-    "job_result",
-    "job_logs",
     "job_reconcile",
 
     "load_tools",
@@ -139,6 +133,12 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "supervisor_inbox_history",
             "digest_preview",
             "digest_status",
+            "job_submit",
+            "job_get",
+            "job_list",
+            "job_cancel",
+            "job_result",
+            "job_logs",
             "report_request",
             "morning_report_preview",
             "morning_report_tick",
@@ -497,6 +497,8 @@ def build_category_routers() -> list[APIRouter]:
                             **(
                                 {"model": DashboardStateErrorResponse}
                                 if cmd_name in DASHBOARD_STATE_COMMANDS
+                                else {"model": JobErrorResponse}
+                                if cmd_name.startswith("job_")
                                 else {"model": EscalationErrorResponse}
                                 if cmd_name.startswith(("escalation_", "digest_"))
                                 else {"model": SupervisorInboxErrorResponse}

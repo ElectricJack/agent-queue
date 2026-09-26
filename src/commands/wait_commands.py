@@ -95,7 +95,9 @@ class WaitCommandsMixin:
                 identity=identity,
                 kind=values.kind,
                 match=match,
-                deadline_at=deadline_for(now, values.timeout, match),
+                deadline_at=None
+                if values.kind == "job" and values.timeout is None
+                else deadline_for(now, values.timeout, match),
                 idempotency_key=values.idempotency_key,
                 now=now,
             )

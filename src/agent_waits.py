@@ -52,6 +52,12 @@ class WaitError(ValueError):
         self.code = code
 
 
+class JobMatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    job_id: str = Field(min_length=1, max_length=256)
+    timeout: float | None = Field(default=None, gt=0, le=86400, allow_inf_nan=False)
+
+
 class TaskMatch(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     task_id: str = Field(min_length=1, max_length=256)
@@ -71,8 +77,8 @@ class TimerMatch(BaseModel):
 def typed_match(
     kind: str, ref: str | None, after_seq: int | None, due_at: float | None
 ) -> dict[str, Any]:
-    if kind == "job":
-        raise WaitError("wait.adapter_unavailable", "job waits require the job queue adapter")
+    if kind == "job" and after_seq is None and due_at is None:
+        return JobMatch(job_id=ref or "").model_dump(exclude_none=True)
     if kind == "task" and after_seq is None and due_at is None:
         return TaskMatch(task_id=ref or "").model_dump()
     if kind == "message" and due_at is None:
@@ -90,6 +96,13 @@ def deadline_for(now: float, timeout: float | None, match: dict[str, Any]) -> fl
     if match.get("due_at", now) > deadline:
         raise WaitError("wait.invalid", "timer due_at must not exceed its deadline")
     return deadline
+
+
+def job_wait_deadline(job: dict, now: float) -> float:
+    """Remaining queue/run budget plus grace, bounded by the wait's hard cap."""
+    base = job["started_at"] if job["started_at"] is not None else job["queue_deadline"]
+    end = base + job["run_timeout"] + 300
+    return min(now + MAX_TIMEOUT, max(now + 300, end))
 
 
 @dataclass(frozen=True)

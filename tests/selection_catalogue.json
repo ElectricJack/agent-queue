@@ -592,7 +592,8 @@
         "tests/test_jobs_output.py",
         "tests/test_jobs_queries.py",
         "tests/test_jobs_recovery.py",
-        "tests/test_jobs_runner.py"
+        "tests/test_jobs_runner.py",
+        "tests/test_jobs_waits.py"
       ]
     },
     "memory-facts": {
@@ -1241,7 +1242,7 @@
       ]
     }
   },
-  "digest": "sha256:f032f274b2fe6478d11ca0b7707f4fc9a624d2899ab8be4a0dcb4715932f5384",
+  "digest": "sha256:95effa87df452fdec486d6cba0be2079fcb6be44a28530c7bab335d8787b9207",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1651,13 +1652,16 @@
       "default_arm": true,
       "imports": [
         "src.database",
+        "src.database.queries.layout_queries",
         "src.database.tables",
         "src.models",
         "src.task_graph.layout.driver",
         "src.task_graph.layout.flow",
         "src.task_graph.layout.model"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": ""
     },
     "tests/task_graph/test_layout_step.py": {
@@ -2437,7 +2441,9 @@
         "src.sessions.harness_parser",
         "src.sessions.harness_registry"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Assignment routing after the playbook cutover: the task row is the route."
     },
     "tests/test_attestation_check_run_id.py": {
@@ -5850,8 +5856,7 @@
         "src.discord.adapter",
         "src.main",
         "src.messaging.base",
-        "src.messaging.null_adapter",
-        "src.models"
+        "src.messaging.null_adapter"
       ],
       "markers": [
         "asyncio",
@@ -7304,6 +7309,38 @@
       ],
       "summary": "Detached runner crash boundary tested with explicit artifact barriers."
     },
+    "tests/test_jobs_waits.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.api.codegen",
+        "src.api.models",
+        "src.api.models.job",
+        "src.api.scope",
+        "src.api.spec",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.auto_commands",
+        "src.cli.exceptions",
+        "src.cli.jobs",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.contracts.job",
+        "src.config",
+        "src.database.tables",
+        "src.jobs.result",
+        "src.mcp_registration",
+        "src.models",
+        "src.profiles.parser"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Atomic producer/pin/wait rollback, replay, resolution and public transports."
+    },
     "tests/test_known_tools.py": {
       "areas": [
         "install"
@@ -7428,7 +7465,8 @@
         "src.remote_links"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Process-lifecycle tests for the daemon entry point (platform plan 4-7, 23)."
     },

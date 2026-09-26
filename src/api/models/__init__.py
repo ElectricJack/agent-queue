@@ -73,6 +73,7 @@ def _category_modules() -> tuple[object, ...]:
         system,
         task,
         wait,
+        job,
     )
 
     return (
@@ -101,6 +102,7 @@ def _category_modules() -> tuple[object, ...]:
         graph,
         provider,
         wait,
+        job,
     )
 
 

@@ -22,112 +22,151 @@ class JobQueriesMixin:
         per_task_queued=10,
         log_budget=2 * 1024**3,
         reservation=64 * 1024**2,
+        wait_identity: dict | None = None,
     ) -> dict:
         async with self._engine.begin() as conn:
-            # Serialize host-wide quota/reservation and replay before quotas.
-            await conn.execute(select(func.pg_advisory_xact_lock(109794, 1)))
-            existing = (
+            if wait_identity:
+                # Match registration/reconciliation: session -> task -> producer/workspace.
+                owner = await self._wait_owner(conn, **wait_identity)
+                if owner["owner_kind"] != "task" or owner["owner_id"] != values["task_id"]:
+                    from src.agent_waits import WaitError
+
+                    raise WaitError("out_of_scope", "submit-with-wait requires the held task")
+            row = await self.submit_job_in_transaction(
+                conn,
+                values,
+                max_queued=max_queued,
+                per_task_queued=per_task_queued,
+                log_budget=log_budget,
+                reservation=reservation,
+            )
+            if wait_identity:
+                wait = await self.register_agent_wait_in_transaction(
+                    conn,
+                    identity=wait_identity,
+                    kind="job",
+                    match={"job_id": row["id"]},
+                    deadline_at=None,
+                    idempotency_key=f"job:{row['id']}",
+                    now=values["submitted_at"],
+                )
+                return {**row, "wait": wait}
+            return row
+
+    async def submit_job_in_transaction(
+        self,
+        conn,
+        values: dict,
+        *,
+        max_queued=100,
+        per_task_queued=10,
+        log_budget=2 * 1024**3,
+        reservation=64 * 1024**2,
+    ) -> dict:
+        if values["owner_kind"] == "task":
+            task = (
                 (
                     await conn.execute(
-                        select(jobs).where(
-                            jobs.c.project_id == values["project_id"],
-                            jobs.c.owner_kind == values["owner_kind"],
-                            jobs.c.owner_id == values["owner_id"],
-                            jobs.c.idempotency_key == values["idempotency_key"],
-                        )
+                        select(tasks).where(tasks.c.id == values["task_id"]).with_for_update()
                     )
                 )
                 .mappings()
                 .first()
             )
-            if existing:
-                if existing["request_hash"] != values["request_hash"]:
-                    raise JobError("jobs.idempotency_conflict")
-                return dict(existing)
-            queued = await conn.scalar(
-                select(func.count()).select_from(jobs).where(jobs.c.state == "queued")
-            )
-            owned = await conn.scalar(
-                select(func.count())
-                .select_from(jobs)
-                .where(
-                    jobs.c.project_id == values["project_id"],
-                    jobs.c.owner_kind == values["owner_kind"],
-                    jobs.c.owner_id == values["owner_id"],
-                    jobs.c.state == "queued",
-                )
-            )
-            if queued >= max_queued or owned >= per_task_queued:
-                raise JobError("jobs.queue_full")
-            reserved = await conn.scalar(
-                select(func.coalesce(func.sum(jobs.c.output_reservation_bytes), 0))
-                .select_from(jobs)
-                .where(jobs.c.output_retention.in_(["reserved", "retained"]))
-            )
-            if reserved + reservation > log_budget:
-                raise JobError("jobs.output_capacity")
-            if values["owner_kind"] == "task":
-                task = (
-                    (
-                        await conn.execute(
-                            select(tasks).where(tasks.c.id == values["task_id"]).with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
-                if (
-                    not task
-                    or task["project_id"] != values["project_id"]
-                    or task["claim_epoch"] != values["claim_epoch"]
-                    or task["status"] != "IN_PROGRESS"
-                ):
-                    raise JobError("jobs.stale_claim")
-            await conn.execute(
-                select(func.pg_advisory_xact_lock(109795, func.hashtext(values["workspace_id"])))
-            )
-            ws = (
-                (
-                    await conn.execute(
-                        select(workspaces)
-                        .where(workspaces.c.id == values["workspace_id"])
-                        .with_for_update()
+            if (
+                not task
+                or task["project_id"] != values["project_id"]
+                or task["claim_epoch"] != values["claim_epoch"]
+                or task["status"] != "IN_PROGRESS"
+            ):
+                raise JobError("jobs.stale_claim")
+        # Serialize host-wide quota/reservation and replay before quotas.
+        await conn.execute(select(func.pg_advisory_xact_lock(109794, 1)))
+        existing = (
+            (
+                await conn.execute(
+                    select(jobs).where(
+                        jobs.c.project_id == values["project_id"],
+                        jobs.c.owner_kind == values["owner_kind"],
+                        jobs.c.owner_id == values["owner_id"],
+                        jobs.c.idempotency_key == values["idempotency_key"],
                     )
                 )
-                .mappings()
-                .first()
             )
-            if not ws or ws["project_id"] != values["project_id"] or not ws["enabled"]:
-                raise JobError("jobs.cwd_invalid")
-            if ws["generation"] != values["workspace_generation"]:
-                raise JobError("jobs.workspace_busy")
-            if values["input_mode"] == "live" and ws["locked_by_task_id"] != values["task_id"]:
-                raise JobError("jobs.workspace_busy")
-            row = (
-                (
-                    await conn.execute(
-                        insert(jobs)
-                        .values(**{**values, "output_reservation_bytes": reservation})
-                        .returning(jobs)
-                    )
+            .mappings()
+            .first()
+        )
+        if existing:
+            if existing["request_hash"] != values["request_hash"]:
+                raise JobError("jobs.idempotency_conflict")
+            return dict(existing)
+        queued = await conn.scalar(
+            select(func.count()).select_from(jobs).where(jobs.c.state == "queued")
+        )
+        owned = await conn.scalar(
+            select(func.count())
+            .select_from(jobs)
+            .where(
+                jobs.c.project_id == values["project_id"],
+                jobs.c.owner_kind == values["owner_kind"],
+                jobs.c.owner_id == values["owner_id"],
+                jobs.c.state == "queued",
+            )
+        )
+        if queued >= max_queued or owned >= per_task_queued:
+            raise JobError("jobs.queue_full")
+        reserved = await conn.scalar(
+            select(func.coalesce(func.sum(jobs.c.output_reservation_bytes), 0))
+            .select_from(jobs)
+            .where(jobs.c.output_retention.in_(["reserved", "retained"]))
+        )
+        if reserved + reservation > log_budget:
+            raise JobError("jobs.output_capacity")
+        await conn.execute(
+            select(func.pg_advisory_xact_lock(109795, func.hashtext(values["workspace_id"])))
+        )
+        ws = (
+            (
+                await conn.execute(
+                    select(workspaces)
+                    .where(workspaces.c.id == values["workspace_id"])
+                    .with_for_update()
                 )
-                .mappings()
-                .one()
             )
-            await conn.execute(
-                insert(job_workspace_pins).values(
-                    job_id=row["id"],
-                    workspace_id=ws["id"],
-                    generation=ws["generation"],
-                    created_at=values["submitted_at"],
+            .mappings()
+            .first()
+        )
+        if not ws or ws["project_id"] != values["project_id"] or not ws["enabled"]:
+            raise JobError("jobs.cwd_invalid")
+        if ws["generation"] != values["workspace_generation"]:
+            raise JobError("jobs.workspace_busy")
+        if values["input_mode"] == "live" and ws["locked_by_task_id"] != values["task_id"]:
+            raise JobError("jobs.workspace_busy")
+        row = (
+            (
+                await conn.execute(
+                    insert(jobs)
+                    .values(**{**values, "output_reservation_bytes": reservation})
+                    .returning(jobs)
                 )
             )
-            await conn.execute(
-                update(workspaces)
-                .where(workspaces.c.id == ws["id"])
-                .values(job_pin_count=workspaces.c.job_pin_count + 1)
+            .mappings()
+            .one()
+        )
+        await conn.execute(
+            insert(job_workspace_pins).values(
+                job_id=row["id"],
+                workspace_id=ws["id"],
+                generation=ws["generation"],
+                created_at=values["submitted_at"],
             )
-            return dict(row)
+        )
+        await conn.execute(
+            update(workspaces)
+            .where(workspaces.c.id == ws["id"])
+            .values(job_pin_count=workspaces.c.job_pin_count + 1)
+        )
+        return dict(row)
 
     async def get_job(self, job_id: str) -> dict | None:
         async with self._engine.connect() as conn:
