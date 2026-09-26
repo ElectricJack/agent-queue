@@ -1,0 +1,11 @@
+[
+  {
+    "id": "repo-p",
+    "project_id": "p",
+    "url": "https://github.com/example/repo",
+    "default_branch": "main",
+    "source_type": "link",
+    "source_path": "/configured/base",
+    "checkout_base_path": ""
+  }
+]

@@ -23,6 +23,37 @@ def report() -> None:
     """Supervisor-authored reports and their bounded briefs."""
 
 
+@report.command("morning")
+@click.option(
+    "--dry-run", is_flag=True, required=True, help="Read evidence without writes or sends."
+)
+@click.option("--since", type=float, help="UTC start as epoch seconds (defaults to 24 hours).")
+@click.option(
+    "--until", type=float, help="UTC end as epoch seconds (defaults to last zoned 07:00)."
+)
+@click.option("--project-id", "project_ids", multiple=True)
+@click.option("--max-lookback-hours", type=click.IntRange(1, 72), default=72)
+@click.pass_context
+@_handle_errors
+def morning_report(
+    ctx: click.Context,
+    dry_run: bool,
+    since: float | None,
+    until: float | None,
+    project_ids: tuple[str, ...],
+    max_lookback_hours: int,
+) -> None:
+    """Preview overnight changes and source coverage; no author turn is requested."""
+    params = {"max_lookback_hours": max_lookback_hours}
+    if since is not None:
+        params["since"] = since
+    if until is not None:
+        params["until"] = until
+    if project_ids:
+        params["project_ids"] = list(project_ids)
+    emit(ctx, _execute(ctx, "morning_report_preview", params))
+
+
 @report.command("request")
 @click.argument("request_id")
 @click.pass_context

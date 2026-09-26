@@ -1,0 +1,17 @@
+[
+  {
+    "id": 1,
+    "task_id": "t3",
+    "project_id": "p",
+    "from_profile_id": "worker-codex",
+    "to_profile_id": "worker-claude",
+    "from_provider": "openai",
+    "to_provider": "anthropic",
+    "reason_code": "provider_unavailable",
+    "provider_state": "usage_limited",
+    "provider_generation": 1,
+    "batch_id": "batch-1",
+    "actor": "system",
+    "at": 90007
+  }
+]

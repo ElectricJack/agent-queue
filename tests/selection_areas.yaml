@@ -262,7 +262,7 @@ areas:
     match: [tests/test_escalation_*.py, tests/test_discord_escalation_transport.py]
   - id: digest
     description: "Activity digest: fact eligibility and dedup, rendering, window scheduling and delivery, digest commands, what a window may read, digest settings, and durable hourly report requests with CAS submission and deterministic fallback."
-    match: [tests/test_digest*.py, tests/test_discord_settings.py, tests/test_report_requests.py]
+    match: [tests/test_digest*.py, tests/test_discord_settings.py, tests/test_report_requests.py, tests/test_morning_reports.py]
   - id: supervisor
     description: "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config, durable conversations, inbound conversation gates, verified supervisor inbox intake and the blocked-task escalation playbook."
     match:

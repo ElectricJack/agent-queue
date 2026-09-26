@@ -110,6 +110,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "digest_status": "digest",
     "report_request": "report",
     "report_brief": "report",
+    "morning_report_preview": "report",
     "report_submit": "report",
     # dashboard — durable shared and roaming UI state
     "dashboard_state_list": "dashboard",
@@ -6856,6 +6857,22 @@ _ALL_TOOL_DEFINITIONS.extend(
 
 _ALL_TOOL_DEFINITIONS.extend(
     [
+        {
+            "name": "morning_report_preview",
+            "description": "Read bounded morning evidence without writes, model calls or sends.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "now": {"type": "number"},
+                    "since": {"type": "number"},
+                    "until": {"type": "number"},
+                    "project_ids": {"type": "array", "items": {"type": "string"},
+                                    "minItems": 1, "maxItems": 100},
+                    "max_lookback_hours": {"type": "integer", "minimum": 1, "maximum": 72},
+                },
+                "additionalProperties": False,
+            },
+        },
         {
             "name": "report_request",
             "description": "Queue one supervisor author turn for a reserved report request.",
