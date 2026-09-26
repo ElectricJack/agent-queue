@@ -73,6 +73,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_retry_cleanup",
         "integration_release_delegates",
         "integration_release_owner",
+        "integration_reserve_owner",
         "integration_release_stale_owners",
         "integration_clear_stale_request",
         "integration_redrive_root",
@@ -144,6 +145,10 @@ class IntegrationReleaseOwnerArgs(CommandArgs):
         if (self.task_id is None) == (self.owner_row_id is None):
             raise ValueError("exactly one of task_id or owner_row_id is required")
         return self
+
+
+class IntegrationReserveOwnerArgs(CommandArgs):
+    task_id: str = Field(min_length=1)
 
 
 class IntegrationReleaseStaleOwnersArgs(CommandArgs):
@@ -937,6 +942,14 @@ INTEGRATION_RELEASE_OWNER = _operational_contract(
     IntegrationReleaseOwnerArgs,
     ("released", "preserved_and_released", "not_eligible", "not_found"),
     successes=frozenset({"released", "preserved_and_released"}),
+    side_effect=SideEffectClass.UPDATE,
+)
+
+INTEGRATION_RESERVE_OWNER = _operational_contract(
+    "integration_reserve_owner",
+    IntegrationReserveOwnerArgs,
+    ("acquired", "already_reserved", "not_eligible", "not_found"),
+    successes=frozenset({"acquired", "already_reserved"}),
     side_effect=SideEffectClass.UPDATE,
 )
 
@@ -2421,6 +2434,16 @@ async def _release_owner_adapter(args: IntegrationReleaseOwnerArgs, ctx: Command
     )
 
 
+async def _reserve_owner_adapter(args: IntegrationReserveOwnerArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_reserve_owner",
+        args,
+        ctx,
+        IntegrationOperationalValue,
+        {"acquired", "already_reserved", "not_eligible", "not_found"},
+    )
+
+
 async def _release_stale_owners_adapter(
     args: IntegrationReleaseStaleOwnersArgs, ctx: CommandContext | None
 ):
@@ -2560,6 +2583,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RETRY_CLEANUP, _retry_cleanup_adapter),
         (INTEGRATION_RELEASE_DELEGATES, _release_delegates_adapter),
         (INTEGRATION_RELEASE_OWNER, _release_owner_adapter),
+        (INTEGRATION_RESERVE_OWNER, _reserve_owner_adapter),
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
         (INTEGRATION_CLEAR_STALE_REQUEST, _clear_stale_request_adapter),
         (INTEGRATION_REDRIVE_ROOT, _redrive_root_adapter),

@@ -110,6 +110,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_cancel_preserving",
     "integration_retry_cleanup",
     "integration_release_owner",
+    "integration_reserve_owner",
     "integration_release_stale_owners",
     "integration_clear_stale_request",
     "integration_redrive_root",

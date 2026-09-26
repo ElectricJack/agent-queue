@@ -4485,6 +4485,18 @@ class TaskCommandsMixin:
             return {"error": f"Task '{args['task_id']}' not found"}
         if task.status == TaskStatus.IN_PROGRESS:
             return {"error": "Task is currently in progress. Stop it first."}
+        project = await self.db.get_project(task.project_id)
+        if (
+            task.status == TaskStatus.BLOCKED
+            and project is not None
+            and project.hierarchical_integration_mode in {"hierarchy", "train"}
+            and await self.db.get_integration_checkpoint(task.id)
+        ):
+            from src.integration.canonical_reservation import reserve_canonical_task_branch
+
+            reservation = await reserve_canonical_task_branch(self.db, task.id)
+            if reservation["outcome"] not in {"acquired", "already_reserved"}:
+                return {"error": f"Cannot restart integration task: {reservation['reason']}"}
         old_status = task.status.value
         await self.db.transition_task(
             args["task_id"],

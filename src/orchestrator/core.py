@@ -1319,6 +1319,25 @@ class Orchestrator(
             # before we issue our own DB queries.
             await asyncio.wait({bg_task}, timeout=5.0)
 
+        project = await self.db.get_project(task.project_id)
+        if (
+            project is not None
+            and project.hierarchical_integration_mode in {"hierarchy", "train"}
+            and project.integration_repository_id == task.repo_id
+            and task.branch_name
+        ):
+            # The handoff proof needs the session/task binding and workspace
+            # lock. Do it before ordinary stop tears either one down. This is
+            # an external stop, so it must use the provider-backed proof even
+            # when the writer belongs to a pool session.
+            from src.integration.models import REQUEUE_INTEGRATION_OWNER_ROLES
+
+            released = await self.arelease_integration_writer_for_retry(
+                task, reason="stop_task", roles=REQUEUE_INTEGRATION_OWNER_ROLES
+            )
+            if released is not True:
+                return "Integration branch handoff is unproven; task resources were retained"
+
         # Clean up sentinel and release workspace lock (worktree-aware)
         ws = await self.db.get_workspace_for_task(task_id)
         if ws:

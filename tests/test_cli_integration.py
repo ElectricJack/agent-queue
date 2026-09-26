@@ -117,6 +117,11 @@ def _client(result):
             {"task_id": "task-1", "dry_run": True},
         ),
         (
+            ["reserve-owner", "--task-id", "task-1"],
+            "integration_reserve_owner",
+            {"task_id": "task-1"},
+        ),
+        (
             ["release-stale-owners", "--project-id", "p"],
             "integration_release_stale_owners",
             {"project_id": "p", "dry_run": False},

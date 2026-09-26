@@ -252,6 +252,15 @@ def integration_release_owner(
     _execute(ctx, "integration_release_owner", args)
 
 
+@integration.command("reserve-owner")
+@click.option("--task-id", required=True)
+@click.pass_context
+@_handle_errors
+def integration_reserve_owner(ctx: click.Context, task_id: str) -> None:
+    """Restore a stopped train task's missing canonical branch reservation."""
+    _execute(ctx, "integration_reserve_owner", {"task_id": task_id})
+
+
 @integration.command("release-stale-owners")
 @click.option("--project-id", required=True)
 @click.option("--dry-run", is_flag=True, help="Report what would be released; change nothing.")
