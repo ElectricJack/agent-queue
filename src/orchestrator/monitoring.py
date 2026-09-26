@@ -781,6 +781,33 @@ class MonitoringMixin:
         except Exception as e:
             logger.warning("Onboarding request retention sweep failed: %s", e)
 
+    async def _sweep_test_selection_retention(self) -> None:
+        """Delete selection records past ``test_selection.retention_days``.
+
+        Selections are immutable history: a failed sweep only leaves rows
+        that the next cycle deletes, so a warning is the whole of the error
+        handling.  Observations cascade on delete (FK ``ondelete=CASCADE``).
+        """
+        if not getattr(self.config.test_selection, "enabled", False):
+            return
+        now = time.time()
+        if now - self._last_test_selection_retention_sweep < 3600:
+            return
+        self._last_test_selection_retention_sweep = now
+        try:
+            days = int(self.config.test_selection.retention_days)
+            removed = await self.db.delete_test_selections_older_than(
+                older_than=now - days * 86_400.0
+            )
+            if removed:
+                logger.info(
+                    "Test selection retention: removed %d selection(s) older than %d day(s)",
+                    removed,
+                    days,
+                )
+        except Exception as e:
+            logger.warning("Test selection retention sweep failed: %s", e)
+
     async def _find_stuck_downstream(self, blocked_task_id: str) -> list[Task]:
         """BFS walk of the dependency graph to find orphaned DEFINED tasks.
 

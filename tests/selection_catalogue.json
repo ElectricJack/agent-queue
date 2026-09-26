@@ -1094,6 +1094,7 @@
         "tests/test_selection_queries.py",
         "tests/test_selection_questions.py",
         "tests/test_selection_replay.py",
+        "tests/test_selection_retention_sweep.py",
         "tests/test_selection_service.py",
         "tests/test_selection_snapshot.py",
         "tests/test_selection_static_impact.py",
@@ -1247,7 +1248,7 @@
       ]
     }
   },
-  "digest": "sha256:0286d9cb9311175aeef3da31a5b445f22413ac432cf04b7e1daa28ccb0450c72",
+  "digest": "sha256:e68e6e8ab29609b64b57dc9ae15b3eff9a1914f0f6bfc0c34f6281484ab2e0a7",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4888,6 +4889,9 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.config",
+        "src.jobs.adapters",
+        "src.jobs.policy",
         "src.profiles.parser"
       ],
       "markers": [
@@ -8515,6 +8519,7 @@
         "src.orchestrator",
         "src.playbooks.run_state",
         "src.runtimes.base",
+        "src.scheduler",
         "src.sessions.harness_parser",
         "src.workspace_spec_watcher"
       ],
@@ -10998,6 +11003,20 @@
         "parametrize"
       ],
       "summary": "Historical selection is blind to labels; only usable held-out reds earn recall."
+    },
+    "tests/test_selection_retention_sweep.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.orchestrator.monitoring"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Retention sweep tests for smart test selection records, plus the operator"
     },
     "tests/test_selection_service.py": {
       "areas": [

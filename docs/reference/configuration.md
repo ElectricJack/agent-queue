@@ -330,6 +330,34 @@ it, and a warning when Discord posts carry the "unavailable" notice)
 ([src/doctor/dashboard_server_checks.py](../../src/doctor/dashboard_server_checks.py)).
 `aq dashboard link` prints the same report from the YAML, without the daemon.
 
+## Smart test selection (`test_selection`)
+
+Selection, network access and enforcement all ship **off**; an absent section is
+the defaults. The operator guide is
+[smart-test-selection.md](../guides/smart-test-selection.md). The section is
+**hot-reloadable**: it is re-read on every `test_select` call, so an edit applies
+on the next run without a restart. A value a key rejects makes the file fail
+validation and the current configuration stays in use.
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `enabled` | bool | `False` | master switch; off means `--aq-smart` is a usage error |
+| `jev_enabled` | bool | `False` | permit Jev's per-area omission judgments; off means the static fallback only |
+| `enforce_enabled` | bool | `False` | permit `--aq-smart=enforce`; shadow only until on |
+| `model` | str | `jev-1.13.0` | the Jev model id to request |
+| `api_key_env` | str | `TYPESAFE_API_KEY` | the environment **variable name** holding the key (never the key itself) |
+| `base_url` | str\|null | `null` | Jev endpoint override; `null` uses the model's standard endpoint |
+| `rpc_deadline_seconds` | float | `2.0` | per-request network deadline; a miss is recorded as a fallback reason |
+| `max_requests` | int | `4` | hard cap on Jev requests per selection |
+| `request_concurrency` | int | `2` | concurrent Jev requests |
+| `max_total_tokens` | int | `64000` | total token budget across all Jev requests |
+| `max_state_plus_question_tokens` | int | `32000` | per-call budget: the area state plus its question must fit |
+| `excerpt_lines` | int | `40` | how many surrounding lines the per-area state excerpt carries |
+| `static_timeout_seconds` | float | `60.0` | deadline for the static import-closure pass; a miss is `static_unavailable` |
+| `default_base_ref` | str\|null | `null` | `null` means `origin/HEAD` via the repo; a named ref is used when the local one is absent |
+| `retention_days` | int | `90` | the orchestrator deletes `test_selections` (with their observations) older than this, at most once per hour |
+| `cache_entries` | int | `256` | entries in the per-daemon Jev-answer cache |
+
 ## Reload and restart
 
 ConfigWatcher polls the configuration file, validates a changed version, compares
