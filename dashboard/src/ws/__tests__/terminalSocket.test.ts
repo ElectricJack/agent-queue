@@ -2,11 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { connectTerminal, type TerminalConnection, type TerminalConnectionState } from "../terminalSocket";
 import { TerminalSocketMock } from "../../testUtils/terminal";
 
+const api = vi.hoisted(() => ({ terminalAccess: vi.fn() }));
+vi.mock("../../api/client", () => api);
+
 const encoder = new TextEncoder();
 let connections: TerminalConnection[] = [];
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.spyOn(Math, "random").mockReturnValue(1);
+  api.terminalAccess.mockReset().mockResolvedValue({ data: { status: "ready" } });
   TerminalSocketMock.instances = [];
   vi.stubEnv("VITE_TERMINAL_WS_URL", "");
   vi.stubGlobal("WebSocket", TerminalSocketMock);
@@ -16,6 +21,7 @@ afterEach(() => {
   connections = [];
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   vi.useRealTimers();
 });
 
@@ -26,7 +32,7 @@ function connect(sessionId = "session-b") {
     sessionId, cols: 100, rows: 30, onState: (state) => states.push(state),
     write: (bytes, processed) => writes.push({ bytes, processed }),
   });
-  vi.runOnlyPendingTimers();
+  vi.advanceTimersByTime(0);
   connections.push(connection);
   return { connection, socket: TerminalSocketMock.instances.slice(-1)[0]!, states, writes };
 }
@@ -52,7 +58,7 @@ describe("Bidirectional terminal transport", () => {
 
   it("uses secure same-origin WebSockets when the dashboard is served over HTTPS", () => {
     vi.stubEnv("VITE_WS_URL", "ws://127.0.0.1:8081");
-    vi.stubGlobal("window", { location: { origin: "https://dashboard.example", href: "https://dashboard.example/agents" } });
+    vi.stubGlobal("window", { location: { origin: "https://dashboard.example", href: "https://dashboard.example/agents" }, addEventListener: window.addEventListener.bind(window), removeEventListener: window.removeEventListener.bind(window) });
     const { socket } = connect();
     expect(socket.url).toBe("wss://dashboard.example/ws/terminal/session-b?cols=100&rows=30");
   });
@@ -103,7 +109,7 @@ describe("Bidirectional terminal transport", () => {
     connection.sendInput(encoder.encode("do not queue"));
     expect(socket.inputs()).toEqual([]);
     expect(socket.closed).toBe(true);
-    expect(states.slice(-1)[0]).toMatchObject({ status: "error", message: expect.stringMatching(/input.*backlog|keep up/i) });
+    expect(states.slice(-1)[0]).toMatchObject({ status: "reconnecting", message: expect.stringMatching(/input.*backlog|keep up/i) });
     connection.sendInput(encoder.encode("\r"));
     expect(socket.inputs()).toEqual([]);
     expect(TerminalSocketMock.instances).toHaveLength(1);
@@ -132,7 +138,7 @@ describe("Bidirectional terminal transport", () => {
     connection.sendInput(encoder.encode("never send"));
     writes[0]!.processed();
     expect(socket.send).not.toHaveBeenCalled();
-    expect(states.slice(-1)[0]?.status).toBe("disconnected");
+    expect(states.slice(-1)[0]?.status).toBe("reconnecting");
     connection.close();
     expect(socket.onmessage).toBeNull();
     expect(TerminalSocketMock.instances).toHaveLength(1);
@@ -155,11 +161,12 @@ describe("Bidirectional terminal transport", () => {
     expect(states).toEqual([{ status: "connecting" }]);
   });
 
-  it("also defers a CONNECTING close when a connection error finishes it", () => {
+  it("also defers a CONNECTING close when a connection error retries it", () => {
     const { socket, states } = connect();
     socket.onerror?.();
+    vi.advanceTimersByTime(1_000);
     expect(socket.close).not.toHaveBeenCalled();
-    expect(states.slice(-1)[0]).toMatchObject({ status: "error" });
+    expect(states.slice(-1)[0]).toMatchObject({ status: "reconnecting" });
 
     socket.open();
     expect(socket.close).toHaveBeenCalledOnce();
@@ -192,7 +199,7 @@ describe("Bidirectional terminal transport", () => {
     connection.resize(60, 15);
     socket.send.mockImplementation(() => { throw new Error("Socket closed during handshake"); });
     socket.ready();
-    expect(states.slice(-1)[0]?.status).toBe("error");
+    expect(states.slice(-1)[0]?.status).toBe("reconnecting");
     expect(socket.closed).toBe(true);
     connection.sendInput(encoder.encode("do not retry"));
     expect(socket.send).toHaveBeenCalledTimes(1);
@@ -204,7 +211,7 @@ describe("Bidirectional terminal transport", () => {
     for (let i = 0; i < 17; i++) socket.message(new Uint8Array(16 * 1024).fill(65));
     expect(writes).toHaveLength(16);
     expect(socket.closed).toBe(true);
-    expect(states.slice(-1)[0]).toMatchObject({ status: "error", message: expect.stringMatching(/render buffer/i) });
+    expect(states.slice(-1)[0]).toMatchObject({ status: "reconnecting", message: expect.stringMatching(/render buffer/i) });
     writes.forEach(({ processed }) => processed());
     expect(socket.controls()).toEqual([]);
   });
@@ -217,4 +224,188 @@ describe("Bidirectional terminal transport", () => {
     expect(socket.inputs()).toEqual([]);
     expect(states.slice(-1)[0]?.status).toBe("error");
   });
+});
+
+describe("Terminal recovery", () => {
+  it("retries indefinitely with exponential backoff, jitter and a 15s cap", () => {
+    const { socket, states } = connect();
+    socket.serverClose();
+    for (let attempt = 1; attempt <= 20; attempt++) {
+      expect(states.slice(-1)[0]).toMatchObject({ status: "reconnecting", attempt });
+      const delay = Math.min(15_000, 500 * 2 ** Math.min(attempt - 1, 5));
+      const count = TerminalSocketMock.instances.length;
+      vi.advanceTimersByTime(delay - 1);
+      expect(TerminalSocketMock.instances).toHaveLength(count);
+      vi.advanceTimersByTime(1);
+      expect(TerminalSocketMock.instances).toHaveLength(count + 1);
+      TerminalSocketMock.instances.slice(-1)[0]!.serverClose();
+    }
+    expect(vi.getTimerCount()).toBe(1);
+  });
+
+  it("jitters retry delays and only resets backoff after a stable connection", () => {
+    vi.mocked(Math.random).mockReturnValue(0);
+    const { socket, states } = connect();
+    socket.ready(); socket.serverClose();
+    vi.advanceTimersByTime(399);
+    expect(TerminalSocketMock.instances).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    let next = TerminalSocketMock.instances.slice(-1)[0]!;
+    next.ready(); next.serverClose();
+    expect(states.slice(-1)[0]?.attempt).toBe(2);
+    vi.advanceTimersByTime(800);
+    next = TerminalSocketMock.instances.slice(-1)[0]!;
+    next.ready();
+    vi.advanceTimersByTime(30_000);
+    next.message(JSON.stringify({ type: "pong" }));
+    next.serverClose();
+    expect(states.slice(-1)[0]?.attempt).toBe(1);
+  });
+
+  it("pauses retries in a hidden/offline tab and wakes on visibility, online and daemon recovery", () => {
+    const { socket } = connect();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    socket.serverClose();
+    vi.advanceTimersByTime(60_000);
+    expect(TerminalSocketMock.instances).toHaveLength(1);
+    vi.mocked(Object.getOwnPropertyDescriptor(document, "visibilityState")!.get!).mockReturnValue("visible");
+    document.dispatchEvent(new Event("visibilitychange"));
+    vi.advanceTimersByTime(0);
+    expect(TerminalSocketMock.instances).toHaveLength(2);
+    vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+    TerminalSocketMock.instances.slice(-1)[0]!.serverClose();
+    vi.advanceTimersByTime(60_000);
+    expect(TerminalSocketMock.instances).toHaveLength(2);
+    vi.mocked(Object.getOwnPropertyDescriptor(navigator, "onLine")!.get!).mockReturnValue(true);
+    window.dispatchEvent(new Event("online"));
+    vi.advanceTimersByTime(0);
+    expect(TerminalSocketMock.instances).toHaveLength(3);
+    TerminalSocketMock.instances.slice(-1)[0]!.serverClose();
+    window.dispatchEvent(new Event("aq:connection-restored"));
+    vi.advanceTimersByTime(0);
+    expect(TerminalSocketMock.instances).toHaveLength(4);
+  });
+
+  it("discards input and stale ACKs across generations, then queues a screen reset", () => {
+    const { socket, connection, writes } = connect();
+    socket.ready();
+    socket.message(encoder.encode("old pending output"));
+    socket.serverClose();
+    connection.sendInput(encoder.encode("discard"));
+    connection.resize(60, 20);
+    vi.advanceTimersByTime(500);
+    const next = TerminalSocketMock.instances.slice(-1)[0]!;
+    connection.sendInput(encoder.encode("discard until ready"));
+    expect(next.url).toContain("cols=60&rows=20");
+    next.ready();
+    writes[0]!.processed();
+    expect(next.controls()).toEqual([]);
+    expect(writes[1]!.bytes).toEqual(Uint8Array.of(27, 99));
+    next.message(encoder.encode("fresh pane"));
+    writes[2]!.processed();
+    expect(next.controls()).toEqual([{ type: "ack", bytes: 10 }]);
+    expect(next.inputs()).toEqual([]);
+  });
+
+  it.each([4401, 4403, 1008, 4409, 4400])("stops on fatal close code %s", (code) => {
+    const { socket, states, connection } = connect();
+    socket.serverClose(code);
+    connection.reconnect();
+    window.dispatchEvent(new Event("online"));
+    vi.advanceTimersByTime(60_000);
+    expect(TerminalSocketMock.instances).toHaveLength(1);
+    expect(states.slice(-1)[0]?.status).toBe(code === 4409 ? "exited" : "error");
+  });
+
+  it.each(["exit", "close"])("never retries after %s", (reason) => {
+    const { socket, connection } = connect();
+    socket.ready();
+    if (reason === "exit") socket.message(JSON.stringify({ type: "exit" }));
+    else { socket.serverClose(); connection.close(); }
+    connection.reconnect();
+    vi.advanceTimersByTime(60_000);
+    expect(TerminalSocketMock.instances).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([4401, 4403, 4409])("diagnoses opaque handshake refusal %s without retrying", async (code) => {
+    api.terminalAccess.mockResolvedValue({ data: { status: code === 4409 ? "exited" : "error", code, message: "refused", retryable: false } });
+    const { socket, states } = connect();
+    socket.onerror?.(); socket.serverClose(1006);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.terminalAccess).toHaveBeenCalledOnce();
+    expect(TerminalSocketMock.instances).toHaveLength(1);
+    expect(states.slice(-1)[0]?.status).toBe(code === 4409 ? "exited" : "error");
+  });
+
+  it("stops on HTTP auth denial and retries an unreachable daemon", async () => {
+    api.terminalAccess.mockRejectedValue(new Error("API 401: token required"));
+    let viewer = connect();
+    viewer.socket.serverClose(1006);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(viewer.states.slice(-1)[0]?.status).toBe("error");
+    expect(TerminalSocketMock.instances).toHaveLength(1);
+    api.terminalAccess.mockRejectedValue(new Error("API 503: daemon_unreachable"));
+    viewer = connect();
+    viewer.socket.serverClose(1006);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(TerminalSocketMock.instances).toHaveLength(3);
+    expect(viewer.states.slice(-1)[0]?.status).toBe("reconnecting");
+  });
+
+  it("ignores probe results after unmount or a newer connection", async () => {
+    let resolve!: (value: unknown) => void;
+    api.terminalAccess.mockImplementation(() => new Promise((done) => { resolve = done; }));
+    const { socket, connection, states } = connect();
+    socket.serverClose(1006);
+    connection.reconnect();
+    vi.advanceTimersByTime(0);
+    const next = TerminalSocketMock.instances.slice(-1)[0]!;
+    next.ready();
+    resolve({ data: { status: "error", message: "old denial", retryable: false } });
+    await Promise.resolve();
+    expect(states.slice(-1)[0]?.status).toBe("connected");
+    connection.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retries stalled handshakes and silent keepalive failures, without sending terminal input", () => {
+    const { socket, states } = connect();
+    vi.advanceTimersByTime(15_000);
+    expect(states.slice(-1)[0]).toMatchObject({ status: "reconnecting", message: expect.stringMatching(/handshake/i) });
+    socket.open(); // detached orphan is closed, not used
+    vi.advanceTimersByTime(500);
+    const next = TerminalSocketMock.instances.slice(-1)[0]!;
+    next.ready();
+    vi.advanceTimersByTime(30_000);
+    expect(next.controls()).toEqual([{ type: "ping" }, { type: "ping" }]);
+    next.message(JSON.stringify({ type: "pong" }));
+    vi.advanceTimersByTime(60_000);
+    expect(states.slice(-1)[0]).toMatchObject({ status: "reconnecting", message: expect.stringMatching(/keepalive/i) });
+    expect(next.inputs()).toEqual([]);
+  });
+
+  it("retries server backpressure/transport errors but stops on identity changes", () => {
+    const { socket, states } = connect();
+    socket.ready();
+    socket.message(JSON.stringify({ type: "error", code: 4408, retryable: true, message: "ack timeout" }));
+    expect(states.slice(-1)[0]?.status).toBe("reconnecting");
+    vi.advanceTimersByTime(500);
+    TerminalSocketMock.instances.slice(-1)[0]!.message(JSON.stringify({ type: "error", code: 4409, retryable: false, message: "instance changed" }));
+    vi.advanceTimersByTime(60_000);
+    expect(states.slice(-1)[0]?.status).toBe("exited");
+    expect(TerminalSocketMock.instances).toHaveLength(2);
+  });
+});
+
+it("does not reconnect an invisible terminal view until its layout returns", () => {
+  const { connection, socket } = connect();
+  connection.setVisible(false);
+  socket.serverClose();
+  connection.reconnect();
+  vi.advanceTimersByTime(60_000);
+  expect(TerminalSocketMock.instances).toHaveLength(1);
+  connection.setVisible(true);
+  vi.advanceTimersByTime(0);
+  expect(TerminalSocketMock.instances).toHaveLength(2);
 });

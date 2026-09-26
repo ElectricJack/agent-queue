@@ -13,6 +13,8 @@ interface LivePaneConsoleProps {
   screen: string | null;
   status: PaneStatus;
   error?: string | null;
+  attempt?: number;
+  reconnect?: () => void;
   className?: string;
 }
 
@@ -20,6 +22,8 @@ export default function LivePaneConsole({
   screen,
   status,
   error,
+  attempt,
+  reconnect,
   className,
 }: LivePaneConsoleProps) {
   return (
@@ -29,6 +33,12 @@ export default function LivePaneConsole({
         (className ?? "")
       }
     >
+      {status === "reconnecting" && (
+        <p role="status" className="mb-1 text-gray-400">
+          Reconnecting… (attempt {attempt}){" "}
+          <button type="button" onClick={reconnect} className="underline">Reconnect now</button>
+        </p>
+      )}
       {status === "stopped" && (
         <p className="mb-1 text-amber-400">Session ended — last screen below.</p>
       )}

@@ -78,7 +78,10 @@ export function useRawEventSubscription(listener: (event: NotifyEvent) => void):
 }
 
 function setStatus(s: ConnectionStatus) {
-  if (s === "connected" && currentStatus !== "connected") connectedGeneration += 1;
+  if (s === "connected" && currentStatus !== "connected") {
+    connectedGeneration += 1;
+    window.dispatchEvent(new Event("aq:connection-restored"));
+  }
   currentStatus = s;
   for (const fn of statusListeners) fn(s);
 }
