@@ -5,9 +5,11 @@ A doctor check that says "load is 61" is not actionable; one that says
 slot-7 (task noble-pinnacle)" is.  Sessions are identified two ways, in
 order of trust:
 
-1. ``AQ_TASK_ID`` / ``AQ_SESSION_NAME`` from ``/proc/<pid>/environ`` — set
-   by :func:`src.sessions.env.build_session_env` on every launch, so it is
-   present on the harness and inherited by everything it spawns.
+1. ``AQ_TASK_ID`` / ``AQ_SESSION_NAME`` / ``AQ_SESSION_ID`` from
+   ``/proc/<pid>/environ``, inherited by everything a session spawns.
+   :func:`src.sessions.env.build_session_env` sets ``AQ_SESSION_ID`` on
+   every launch but ``AQ_TASK_ID`` only when the session starts with a
+   task — a pool session starts before it holds one.
 2. The worktree slot in the process's ``cwd`` — a fallback for anything
    started outside a session (a human's shell in the same worktree).
 
@@ -36,9 +38,9 @@ from pathlib import Path
 
 __all__ = [
     "ProcInfo",
-    "scan_processes",
-    "pytest_processes",
     "load_average",
+    "pytest_processes",
+    "scan_processes",
     "summarize_by_session",
 ]
 
@@ -47,7 +49,7 @@ _SLOT_RE = re.compile(r"/\.aq/worktrees/(?P<slot>[A-Za-z0-9_-]+)")
 
 #: Env keys read for attribution.  Kept short: ``/proc/<pid>/environ`` is
 #: read only for processes that already matched, never for the whole table.
-_ATTRIBUTION_KEYS = ("AQ_TASK_ID", "AQ_SESSION_NAME")
+_ATTRIBUTION_KEYS = ("AQ_TASK_ID", "AQ_SESSION_NAME", "AQ_SESSION_ID")
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ class ProcInfo:
     cwd: str | None = None
     task_id: str | None = None
     session: str | None = None
+    session_id: str | None = None
 
     @property
     def slot(self) -> str | None:
@@ -149,6 +152,7 @@ def _enrich(pid: int, ppid: int, cmdline: str) -> ProcInfo:
         cwd=cwd,
         task_id=env.get("AQ_TASK_ID") or None,
         session=env.get("AQ_SESSION_NAME") or None,
+        session_id=env.get("AQ_SESSION_ID") or None,
     )
 
 
