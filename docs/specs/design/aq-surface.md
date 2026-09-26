@@ -387,9 +387,13 @@ their native config formats, referenced from `vault/harnesses/<name>.md`.
 
 ### 6.1 `aq handoff [--auto] [subject] [detail]`
 
-Writes a `task_context(type=handoff)` row on the current task (subject + detail + timestamp +
-session id). The next `aq prime` for that task renders it in section 6 — this is how work
-state survives compaction and session recycling while memory is paused (Workstream E).
+Writes a `task_context(type=handoff)` row on the current task. Legacy subject/detail
+remain accepted; version 1 adds goal, completed, next step, waiting-for, files,
+decisions, do-not-repeat, and uncertainties (8 KiB combined UTF-8 agent text;
+20 items per list). Server timestamp and row id define the latest meaningful
+note; optional task/claim retry keys prevent duplicate rows. Empty auto hooks
+preserve the existing note. Prime section 6 quotes a bounded projection separately
+from current daemon facts. See [handoff and wake budgets](../../guides/wake-context-compaction.md).
 
 - `--auto` (wired to `PreCompact`): **note only, never a restart** — Gas City's `gc-flp1`
   lesson: restarting on every compaction loops forever.

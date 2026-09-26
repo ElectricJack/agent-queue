@@ -5081,9 +5081,10 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_handoff",
         "description": (
-            "Record a handoff note on the current task; requests a session restart "
-            "unless `auto` is set (design §6.1). `auto` is wired to the PreCompact "
-            "hook and never requests a restart. Backs `aq handoff`."
+            "Record a structured handoff (8 KiB combined UTF-8 agent text, at most 20 "
+            "items per list), with daemon-observed ownership and checkout facts. "
+            "Legacy subject/detail remain accepted. Empty auto hooks are no-ops. "
+            "Non-auto records a restart request without performing a restart. Backs `aq handoff`."
         ),
         "input_schema": {
             "type": "object",
@@ -5098,6 +5099,16 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "subject": {"type": "string", "description": "Short handoff subject (optional)."},
                 "detail": {"type": "string", "description": "Handoff detail (optional)."},
+                "schema_version": {"type": "integer", "enum": [1]},
+                "goal": {"type": "string"},
+                "next_step": {"type": "string"},
+                "waiting_for": {"type": "string"},
+                "completed": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "files": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "decisions": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "do_not_repeat": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "uncertainties": {"type": "array", "items": {"type": "string"}, "maxItems": 20},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 128},
                 "auto": {
                     "type": "boolean",
                     "description": (

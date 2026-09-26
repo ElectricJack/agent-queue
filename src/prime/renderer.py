@@ -94,9 +94,7 @@ class PrimeRenderer:
             else None
         )
         session_work_dir = (
-            getattr(sess, "work_dir", None)
-            if getattr(sess, "state", None) in live_states
-            else None
+            getattr(sess, "work_dir", None) if getattr(sess, "state", None) in live_states else None
         )
         effective_work_dir = (
             work_dir or session_work_dir or await _sections.resolve_work_dir(self.db, task)
@@ -140,6 +138,9 @@ class PrimeRenderer:
                 mark_delivered=mark_messages_delivered,
                 profile_id=effective_profile_id,
                 session_name=session_name,
+                task=task,
+                session=sess if getattr(sess, "state", None) in live_states else None,
+                work_dir=effective_work_dir,
             ),
             _sections.build_l1_facts_section(self.config),
             _sections.build_l2_context_section(self.config),
@@ -147,7 +148,8 @@ class PrimeRenderer:
             _sections.build_completion_protocol_section(
                 task_id,
                 lifecycle=session_lifecycle,
-                development=getattr(project, "hierarchical_integration_mode", None) == "development",
+                development=getattr(project, "hierarchical_integration_mode", None)
+                == "development",
                 allow_emergent_work=allow_emergent_work,
             ),
         )

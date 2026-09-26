@@ -459,6 +459,9 @@ async def build_messages_section(
     mark_delivered: bool = False,
     profile_id: str | None = None,
     session_name: str | None = None,
+    task: Any = None,
+    session: Any = None,
+    work_dir: str | None = None,
 ) -> PrimeSection:
     """Pending messages (design §5.2 #6) + latest ``task_context(type=handoff)``.
 
@@ -478,9 +481,7 @@ async def build_messages_section(
     """
     parts: list[str] = []
 
-    messages_enabled = bool(
-        getattr(getattr(config, "messages", None), "enabled", False)
-    )
+    messages_enabled = bool(getattr(getattr(config, "messages", None), "enabled", False))
     if messages_enabled:
         inbox_queries: list[tuple[str, str]] = [("task", task_id)]
         if profile_id:
@@ -515,26 +516,22 @@ async def build_messages_section(
                     pass
 
     rows = await db.get_task_contexts(task_id)
-    handoff_rows = [r for r in rows if r.get("type") == "handoff"]
-    if handoff_rows:
-        # No timestamp column on task_context; DB read order (insertion
-        # order under SQLite/Postgres without an explicit ORDER BY) is the
-        # best available proxy for "latest" until that table gains one.
-        latest = handoff_rows[-1]
-        try:
-            payload = json.loads(latest.get("content") or "{}")
-        except (TypeError, ValueError):
-            payload = {}
-        subject = (payload.get("subject") or "").strip()
-        detail = (payload.get("detail") or "").strip()
-        block = "**handoff note:**"
-        if subject:
-            block += f"\nsubject: {subject}"
-        if detail:
-            block += f"\n{detail}"
-        parts.append(block)
+    from src.handoffs import collect_facts, latest_note, render_facts, render_note
 
-    return PrimeSection(key="messages", title=SECTION_TITLES["messages"], body="\n\n".join(parts).strip())
+    selected = latest_note(rows)
+    if selected:
+        task = task or await db.get_task(task_id)
+        current = await collect_facts(db, task, session, work_dir)
+        row, payload = selected
+        # The additional wake block has an 8 KiB assertion budget + 2 KiB
+        # current-fact/pointer budget. 6 KiB remains reserved for JOB/OUTPUT
+        # summaries; those stores are outside this independent release slice.
+        parts.append(render_note(row, payload, current))
+        parts.append(render_facts(current, saved=payload.get("facts")))
+
+    return PrimeSection(
+        key="messages", title=SECTION_TITLES["messages"], body="\n\n".join(parts).strip()
+    )
 
 
 # ---------------------------------------------------------------------------

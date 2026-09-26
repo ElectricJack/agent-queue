@@ -4902,6 +4902,29 @@ class GitManager:
         except GitError:
             return ""
 
+
+    async def aget_dirty_paths(self, checkout_path: str) -> list[str] | None:
+        """Dirty destination paths, preserving spaces/newlines; None means unknown."""
+        try:
+            result = await self._arun_subprocess(
+                ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                cwd=checkout_path,
+                timeout=self._GIT_TIMEOUT,
+            )
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        records = iter(result.stdout.split("\0"))
+        paths = []
+        for record in records:
+            if len(record) < 4:
+                continue
+            paths.append(record[3:])
+            if "R" in record[:2] or "C" in record[:2]:
+                next(records, None)  # -z puts the source after the destination.
+        return paths
+
     async def areserved_paths_in_diff(
         self,
         checkout_path: str,

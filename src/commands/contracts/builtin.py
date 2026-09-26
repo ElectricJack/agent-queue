@@ -1752,3 +1752,6 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
 
     register_integration_contracts(registry)
     register_escalation_contracts(registry)
+    from src.commands.contracts.handoff import register_handoff_contract
+
+    register_handoff_contract(registry)
