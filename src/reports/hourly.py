@@ -5,10 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, time, timedelta
-from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from src.config import ReportsConfig
+from src.dashboard_paths import dashboard_href, task_path
 from src.digest.aggregate import DigestResult
 from src.digest.facts import DigestWindow
 from src.digest.schedule import DigestSchedule
@@ -102,7 +102,7 @@ def build_hourly_brief(
                 "detail": fact.detail[:500],
                 "at": fact.at,
                 "source_url": (
-                    f"{dashboard_url.rstrip('/')}/tasks/{quote(fact.task_id, safe='')}"
+                    dashboard_href(dashboard_url, task_path(fact.task_id))
                     if dashboard_url and fact.task_id
                     else dashboard_url
                 ),

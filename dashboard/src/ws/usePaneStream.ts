@@ -10,7 +10,7 @@
  *   {source:"pane", type:"stopped", seq, ts}
  *   {source:"pane", type:"error",   message, seq, ts}
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { sessionShow } from "../api/client";
 import { reconnectLoop } from "./reconnect";
 
@@ -22,21 +22,42 @@ export interface PaneState {
   error: string | null;
   seq: number;
   attempt?: number;
-  reconnect?: () => void;
+  /** Browser time (ms) of the last screen frame; null before the first. */
+  lastFrameAt: number | null;
+  /** From a dropped stream until frames flow again: the screen on show may be stale. */
+  interrupted: boolean;
 }
 
 interface Options {
   enabled?: boolean;
 }
 
-const INITIAL: PaneState = { screen: null, status: "closed", error: null, seq: 0 };
+/** One pathological frame cannot grow memory past this (the hook holds one screen). */
+export const MAX_SCREEN_CHARS = 200_000;
+
+const INITIAL: PaneState = {
+  screen: null,
+  status: "closed",
+  error: null,
+  seq: 0,
+  lastFrameAt: null,
+  interrupted: false,
+};
+
+// Keep the tail: a terminal's newest lines are at the bottom.
+const bounded = (screen: string) =>
+  screen.length > MAX_SCREEN_CHARS ? screen.slice(-MAX_SCREEN_CHARS) : screen;
 
 export function usePaneStream(
   sessionId: string | null | undefined,
   opts: Options = {},
-): PaneState {
+): PaneState & { reconnect: () => void } {
   const { enabled = true } = opts;
   const [state, setState] = useState<PaneState>(INITIAL);
+  // Bumped by a manual reconnect that has no pending retry to hurry along.
+  const [generation, setGeneration] = useState(0);
+  const recoverRef = useRef<(() => boolean) | null>(null);
+  const lastSession = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
     if (!enabled || !sessionId) return;
@@ -46,12 +67,22 @@ export function usePaneStream(
       `${window.location.protocol}//${window.location.host}`;
     const url = `${base}/api/sessions/${encodeURIComponent(sessionId)}/pane`;
 
-    setState({ ...INITIAL, status: "connecting" });
+    // A manual reconnect (or re-enable) of the same session keeps the last
+    // screen on show, still marked interrupted until a frame arrives; a
+    // different session starts blank.
+    const sameSession = lastSession.current === sessionId;
+    lastSession.current = sessionId;
+    setState((prev) =>
+      sameSession
+        ? { ...prev, status: "connecting", error: null, interrupted: prev.screen !== null }
+        : { ...INITIAL, status: "connecting" },
+    );
     let es: EventSource | undefined;
     let probe: AbortController | undefined;
     const retry = reconnectLoop(open, (attempt) => setState((p) => ({
-      ...p, status: "reconnecting", error: null, attempt, reconnect: retry.recover,
+      ...p, status: "reconnecting", error: null, attempt, interrupted: true,
     })));
+    recoverRef.current = retry.recover;
     // Terminal frames end the stream for good. The server returns from its
     // generator on one, and per the SSE spec a browser RECONNECTS a
     // normally-closed stream after ~3s — which would re-subscribe, spawn a
@@ -132,8 +163,15 @@ export function usePaneStream(
               error: f.message ?? "pane stream error",
               seq,
             };
-          const incoming = f.screen ?? prev.screen;
-          return { screen: incoming, status: "open", error: null, seq };
+          const incoming = f.screen != null ? bounded(f.screen) : prev.screen;
+          return {
+            screen: incoming,
+            status: "open",
+            error: null,
+            seq,
+            lastFrameAt: Date.now(),
+            interrupted: false,
+          };
         });
       };
 
@@ -152,13 +190,22 @@ export function usePaneStream(
 
     return () => {
       done = true;
+      recoverRef.current = null;
       retry.stop();
       probe?.abort();
       probe = undefined;
       es?.close();
       setState((p) => ({ ...p, status: "closed" }));
     };
-  }, [sessionId, enabled]);
+  }, [sessionId, enabled, generation]);
 
-  return state;
+  /**
+   * Reconnect now: a pending retry runs at once; otherwise (an error frame, a
+   * refused stream, a connect that hangs) a fresh stream opens. Either way the
+   * last screen stays on show.
+   */
+  const reconnect = useCallback(() => {
+    if (!recoverRef.current?.()) setGeneration((n) => n + 1);
+  }, []);
+  return { ...state, reconnect };
 }

@@ -40,6 +40,19 @@ REBUILD_COMMAND = "aq install --restart-from dashboard.build"
 INDEX = "index.html"
 _HEX = frozenset("0123456789abcdef")
 
+#: Suffixes a *file* request has.  An unlisted path with one of these is a
+#: missing asset and gets ``404``; any other unlisted path is a browser route
+#: and gets ``index.html`` -- including route ids with a dot, such as child
+#: task ids (``stark-impact-60.1``, src/task_names.py).  Mirrored by
+#: ``STATIC_SUFFIXES`` in ``dashboard/layout-checks/server.mjs``.
+STATIC_SUFFIXES = frozenset(
+    {
+        ".html", ".htm", ".js", ".mjs", ".cjs", ".css", ".map", ".json", ".txt", ".xml",
+        ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".bmp",
+        ".woff", ".woff2", ".ttf", ".otf", ".eot", ".wasm", ".webmanifest", ".pdf", ".zip",
+    }
+)  # fmt: skip
+
 #: Cache policy.  ``index.html`` names the content-hashed assets of *this*
 #: build, so a browser must revalidate it; the hashed assets never change.
 CACHE_REVALIDATE = "no-cache"
@@ -293,7 +306,7 @@ class BundleStaticApp:
             return None
         if relative in self._files:
             return relative
-        if PurePosixPath(relative).suffix:
+        if PurePosixPath(relative).suffix.lower() in STATIC_SUFFIXES:
             return None
         return INDEX
 

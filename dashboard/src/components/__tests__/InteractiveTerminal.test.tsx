@@ -140,6 +140,19 @@ describe("Interactive live terminal", () => {
     });
   });
 
+  it("defers the first connection of a hidden terminal until its host is laid out", () => {
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue({ width: 0, height: 0 } as DOMRect);
+    terminal();
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(TerminalSocketMock.instances).toHaveLength(0);
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue({ width: 800, height: 400 } as DOMRect);
+    act(() => { ResizeObserverMock.instances[0]!.emit(); frames.splice(0).forEach((frame) => frame(0)); });
+    act(() => vi.advanceTimersByTime(0));
+    expect(TerminalSocketMock.instances).toHaveLength(1);
+    act(() => TerminalSocketMock.instances[0]!.ready());
+    expect(screen.getByRole("status", { name: "Builder terminal connection" })).toHaveTextContent("connected");
+  });
+
   it("ignores hidden containers and clamps the browser renderer to server size limits", () => {
     const { term, socket } = terminal();
     act(() => socket.ready());

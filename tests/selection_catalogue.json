@@ -1250,7 +1250,7 @@
       ]
     }
   },
-  "digest": "sha256:64aa8c66cc2fc66a761536f4dbd5450c616453ac81adafc309acf8567ab12ee6",
+  "digest": "sha256:adf8b01cd4debb474fa6163b50621f47a20b380882083fbe7c980ca0c635ef12",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10364,6 +10364,7 @@
         "src.cli.app",
         "src.cli.daemon",
         "src.config",
+        "src.dashboard_paths",
         "src.dashboard_server.process",
         "src.digest",
         "src.digest.facts",
@@ -12463,6 +12464,7 @@
         "src.api",
         "src.api.auth",
         "src.api.terminal_stream",
+        "src.dashboard_server.proxy",
         "src.database",
         "src.models",
         "src.sessions.terminal_pty"

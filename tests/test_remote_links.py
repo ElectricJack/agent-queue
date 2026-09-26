@@ -664,6 +664,21 @@ def test_aq_dashboard_link_refuses_unreadable_yaml(cli_config):
     assert json.loads(result.output)["error"]["code"] == "config_unreadable"
 
 
+def test_posted_task_and_report_links_name_the_focus_routes():
+    from src.dashboard_paths import report_path, task_path
+
+    assert task_path("stark-impact-60.1") == "/focus/tasks/stark-impact-60.1"
+    assert task_path("a/b c") == "/focus/tasks/a%2Fb%20c"
+    assert report_path("morning-2026-09-25") == "/focus/reports/morning-2026-09-25"
+
+
+def test_dashboard_href_joins_an_origin_and_a_path():
+    from src.dashboard_paths import dashboard_href
+
+    assert dashboard_href("https://q.example", "/focus/tasks/t") == "https://q.example/focus/tasks/t"
+    assert dashboard_href("https://q.example/", "/focus/tasks/t") == "https://q.example/focus/tasks/t"
+
+
 def test_the_module_needs_nothing_beyond_the_standard_library_at_import():
     """The daemon, doctor and CLI all import it; it must stay a leaf."""
     import subprocess
