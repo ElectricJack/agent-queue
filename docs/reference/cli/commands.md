@@ -549,6 +549,22 @@ through the escalation surface.
 | `aq question escalate` | `—` | hand | Ask a human to decide a question that the supervisor cannot answer. |
 | `aq question list` | `—` | hand | List questions waiting for a supervisor, human, or safe answer delivery. |
 
+### `aq service`
+
+Auto-restart: a watchdog, registered with systemd (user unit), launchd or cron,
+that starts the daemon at boot and after a crash and never overrides a
+deliberate `aq stop`. It needs no daemon, and workers are refused everything but
+`status` and `--dry-run`. See
+[Install AQ](../../tutorials/install.md#keep-aq-running-after-a-reboot-or-a-crash).
+
+| Command | Daemon command | Kind | What it does |
+|---|---|---|---|
+| `aq service check` | `—` | hand | Run one watchdog check now: start the daemon if it is down and may be. |
+| `aq service install` | `—` | hand | Install (or reinstall) the auto-restart watchdog. |
+| `aq service run` | `—` | hand | Run the watchdog loop in the foreground (what the service manager runs). |
+| `aq service status` | `—` | hand | Show whether auto-restart is installed and working. |
+| `aq service uninstall` | `—` | hand | Remove the auto-restart watchdog.  The daemon is left as it is. |
+
 ### `aq session`
 
 Sessions — a coding-agent CLI running inside a tmux terminal. This group

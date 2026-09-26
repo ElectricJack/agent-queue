@@ -50,6 +50,7 @@ from .postgres_steps import CAPABILITY_MANAGED, CAPABILITY_ROTATE, STEP_CONNECTI
 from .prerequisites import STEP_GIT, STEP_TMUX
 from .providers import ProviderInstaller, provider_installers
 from .results import InstallOutcome, InstallResult, StepState
+from .service import CAPABILITY_AUTOSTART
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +149,20 @@ def question_plan(
             capability=CAPABILITY_DAEMON,
             default=True,
             detail="this runs your tasks, and the dashboard server shows them",
+            advanced=True,
+        )
+    )
+    questions.append(
+        Question(
+            id="autostart",
+            prompt="Start AQ again after a reboot or a crash?",
+            capability=CAPABILITY_AUTOSTART,
+            default=False,
+            detail=(
+                "installs a small watchdog (systemd, launchd or cron) that starts the daemon "
+                "at boot and after a crash, and never overrides `aq stop`. You can add it "
+                "later with `aq service install`."
+            ),
             advanced=True,
         )
     )
@@ -346,6 +361,7 @@ class FirstTaskReadiness:
 
 
 _CAPABILITY_LABELS: dict[str, str] = {
+    CAPABILITY_AUTOSTART: "restarting the daemon after a reboot or a crash",
     CAPABILITY_DISCORD: "Discord delivery for digests and escalations",
     CAPABILITY_DAEMON: "starting the daemon",
     CAPABILITY_MANAGED: "installing a local PostgreSQL server",

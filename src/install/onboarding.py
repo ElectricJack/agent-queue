@@ -1277,6 +1277,7 @@ def onboarding_steps(
         dashboard_open_step,
         dashboard_serve_step,
     )
+    from .service import autostart_step
 
     return (
         config_step(environ=environ, home=home, which=which, depends_on=depends_on),
@@ -1286,6 +1287,9 @@ def onboarding_steps(
         check_step(environ=environ, home=home, depends_on=(STEP_PROJECT_ROOT,)),
         discord_step(environ=environ, home=home),
         daemon_step(environ=environ, home=home, runner=runner, which=which, probe=probe),
+        # Opt-in (`--with autostart`): after the daemon step, so the watchdog's
+        # first check finds the daemon already running rather than racing it.
+        autostart_step(which=which, runner=runner, depends_on=(STEP_DAEMON,)),
         dashboard_build_step(
             environ=environ,
             home=home,

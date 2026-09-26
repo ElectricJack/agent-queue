@@ -34,6 +34,7 @@ from src.doctor.provider_checks import provider_checks
 from src.doctor.resource_checks import resource_checks
 from src.doctor.review_checks import review_checks
 from src.doctor.runner import DoctorRegistry, exit_code_for, run_doctor
+from src.doctor.service_checks import service_checks
 from src.doctor.session_checks import session_checks
 from src.doctor.skill_checks import skill_checks
 from src.doctor.stall_checks import stall_checks
@@ -65,6 +66,7 @@ __all__ = [
     "provider_checks",
     "resource_checks",
     "run_doctor",
+    "service_checks",
     "session_checks",
     "skill_checks",
     "stall_checks",
@@ -121,5 +123,7 @@ def default_registry() -> DoctorRegistry:
     for check in provider_checks():
         registry.register(check)
     for check in review_checks():
+        registry.register(check)
+    for check in service_checks():
         registry.register(check)
     return registry

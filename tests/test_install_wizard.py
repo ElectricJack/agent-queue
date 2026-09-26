@@ -74,6 +74,7 @@ def test_an_ordinary_run_asks_only_which_coding_agents_to_use():
         "provider.gemini",
         "postgres-managed",
         "daemon",
+        "autostart",
         "discord",
     ]
 
@@ -86,6 +87,8 @@ def test_an_unasked_choice_still_selects_its_default():
 
     assert {CAPABILITY_MANAGED, CAPABILITY_DAEMON} <= selected
     assert CAPABILITY_DISCORD not in selected
+    # Auto-restart changes the host's service manager: opt-in only.
+    assert "autostart" not in selected
 
 
 # ---------------------------------------------------------------------------

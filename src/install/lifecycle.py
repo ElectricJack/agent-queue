@@ -44,7 +44,7 @@ parameters, so the whole matrix is provable without a machine to uninstall.
 from __future__ import annotations
 
 import shutil
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -306,6 +306,9 @@ KIND_INSTALL_RECORD = "install-record"
 #: table is never removed: an adapter that starts recording something new gets
 #: "left in place, unknown kind" rather than deletion by default.
 SCOPE_BY_KIND: Mapping[str, RemovalScope] = {
+    # The auto-restart watchdog (src/install/service.py).  Runtime, and removed
+    # first: a watchdog left behind would start the daemon uninstall stopped.
+    "service": RemovalScope.RUNTIME,
     "daemon": RemovalScope.RUNTIME,
     "shell-profile": RemovalScope.RUNTIME,
     KIND_INSTALL_RECORD: RemovalScope.RUNTIME,
@@ -357,6 +360,7 @@ class RemovalAction(str, Enum):
 #: reads its settings, and the resume record — the only durable evidence of
 #: what is being removed — is deleted last.
 _REMOVAL_ORDER: tuple[str, ...] = (
+    "service",
     "daemon",
     RESOURCE_DATABASE,
     RESOURCE_ROLE,
@@ -445,14 +449,19 @@ def plan_uninstall(
     *,
     scopes: frozenset[RemovalScope] = DEFAULT_SCOPES,
     state_path: Path | str | None = None,
+    extra: Iterable[ResourceRecord] = (),
 ) -> UninstallPlan:
     """Classify every recorded resource against the selected *scopes*.
 
     The classification is a chain of refusals with one acceptance at the end,
     in that order on purpose: a resource has to survive every reason to keep
-    it before removal is even considered.
+    it before removal is even considered.  *extra* are resources found on the
+    host that the record does not list (a service installed with
+    ``aq service install``); one whose kind the record already has is dropped.
     """
     records: list[ResourceRecord] = list(state.resources.values())
+    recorded_kinds = {record.kind for record in records}
+    records.extend(record for record in extra if record.kind not in recorded_kinds)
     if state_path is not None:
         records.append(
             ResourceRecord(
@@ -836,7 +845,10 @@ def default_handlers(
         "database and role yourself, or rerun `aq uninstall --remove-database` where an "
         "administrator connection is configured."
     )
+    from .service import removal_handler as _service_handler
+
     return {
+        "service": _service_handler(runner),
         "daemon": _daemon_handler(runner or run_command, which or _shutil.which),
         "shell-profile": _shell_profile_handler(),
         RESOURCE_CONFIG: _config_handler(),

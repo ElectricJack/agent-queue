@@ -112,6 +112,8 @@ Use `aq pool status` for fleet-wide profile bounds and its project placements, t
 
 Use `/health` for all registered health-provider checks and `/ready` for the database, messaging, and required-playbook readiness subset. `/health` returns HTTP 200 only when all checks report okay; `/ready` returns HTTP 200 only when its required dependencies are ready. `503` is evidence to investigate the named check, not a diagnosis by itself.
 
+Whether anything brings the daemon back after a reboot or a crash is `aq service status` (no daemon needed) or `aq doctor --check daemon.autostart`; the watchdog's decisions, including the output of every `aq start` it ran, are in `~/.agent-queue/logs/aq-service.log`.
+
 ## Daemon updates
 
 `aq start` and `aq restart` do more than replace a process, and each step is a postcondition — a failure is reported, not a reason to claim a clean start and lose it:
@@ -120,6 +122,7 @@ Use `/health` for all registered health-provider checks and `/ready` for the dat
 - **Database backup when not at head.** If the database is Postgres and its stamped schema does not match the checkout's Alembic head, `aq start` dumps it to `~/.agent-queue/backups/pre-deploy-<UTC>.sql` before proceeding and then exits (code 12–15) if the dump or its integrity marker is missing. When the database is already at head, no backup is taken.
 - **`/ready` wait.** After the daemon is up, `aq start` polls `{api_base}/ready` for up to 60 seconds and reports whether the daemon is fully ready, rather than assuming a daemon that answers `/health` is also reconciling pools.
 - **Stale-worktree fix.** The daemon then runs `aq doctor --check pools.stale_worktree_checkouts --fix` to release any worktrees it now owns. A failure here is downgraded to a warning and never undoes a successful start.
+- **Start lock and stop marker.** `aq start` holds `~/.agent-queue/daemon.lock` (with its PID inside) from before the database wait to the end of these checks, and removes `~/.agent-queue/daemon.stopped`; every `aq stop` (also the stop inside `aq restart` and `aq update`) and the daemon's `shutdown` command write that marker. A stop recorded while a start is running wins: the start checks the marker again just before it spawns the daemon, and `aq stop` waits briefly for a start in progress to settle. A lock whose owner process is gone is abandoned and cleared by the next start. The auto-restart watchdog (`aq service`) reads both: it never races a start in progress and never starts a daemon that was stopped on purpose. A `daemon.pid` whose process is gone, or whose PID now belongs to another program (after a reboot), is treated as stale.
 
 All of the above is built into `aq start` and `aq restart`, so an operator update no longer needs a separate wrapper to scrub the environment, dump the database, and run the doctor step. To update, run `aq restart --no-dashboard`; do not run a plain `aq stop` then `aq start` — `aq stop` also tears down the agent tmux sessions, including the one performing the update. Verify daemon health and the supervisor's live terminal after the restart; a stored session status alone can be stale.
 
