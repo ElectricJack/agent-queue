@@ -1103,6 +1103,34 @@ _CANONICAL_PAYLOADS.update(
     }
 )
 
+# -- test-selection lifecycle events ---------------------------------------
+# Payloads mirror the literal dicts passed to ``bus.emit`` in
+# ``test_selection_commands._cmd_test_select``, ``_cmd_test_selection_promote``
+# and ``_cmd_test_selection_revoke``.
+_CANONICAL_PAYLOADS.update(
+    {
+        "test_selection.recorded.v1": {
+            "project_id": "my-app",
+            "selection_id": "sel-1",
+            "mode": "shadow",
+            "task_id": "t-1",
+            "full_required": False,
+            "jev_status": "ok",
+            "final_count": 3,
+            "fallback_count": 0,
+        },
+        "test_selection.promoted.v1": {
+            "project_id": "my-app",
+            "promotion_id": "promo-1",
+            "model": "jev-1.13.0",
+        },
+        "test_selection.revoked.v1": {
+            "promotion_id": "promo-1",
+            "reason": "evaluation regressed",
+        },
+    }
+)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # (a) Valid payloads pass validation silently
