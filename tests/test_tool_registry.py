@@ -134,6 +134,7 @@ def test_registry_has_categories(registry):
         "formula",
         "graph",
         "github_issue",
+        "report",
     }
 
     for cat in categories:
