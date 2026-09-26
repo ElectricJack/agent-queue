@@ -40,6 +40,64 @@ _REPORT_REQUEST_ROW = {
     "updated_at": 120.0,
 }
 
+# Durable state must travel together: results keep their receipts and pins,
+# reports keep their evidence and coverage, and waits keep their result pointers.
+_DURABLE_ROWS = {
+    "jobs": {
+        "id": "job", "project_id": "x", "task_id": "p",
+        "owner_kind": "task", "owner_id": "p", "claim_epoch": 1,
+        "idempotency_key": "validation", "request_hash": "request",
+        "preset": "test", "preset_version": 1, "argv": ["pytest", "tests/test_x.py"],
+        "contract": {"timeout": 60}, "workspace_id": "workspace",
+        "workspace_generation": 2, "input_mode": "live", "job_class": "shared",
+        "weight": 1, "priority_band": 1, "state": "lost", "submitted_at": 0.0,
+        "queue_deadline": 60.0, "run_timeout": 60.0, "runner_nonce": "nonce",
+        "cleanup_blocked": True, "result_version": 1, "result_ref": "job:job:result",
+        "result": {"outcome": "lost", "reason": "missing receipt"},
+    },
+    "job_outbox": {
+        "key": "job:job:terminal", "job_id": "job", "created_at": 30.0,
+        "payload": {"result_ref": "job:job:result"}, "delivered_at": None,
+    },
+    "job_workspace_pins": {
+        "job_id": "job", "workspace_id": "workspace", "generation": 2,
+        "created_at": 0.0,
+    },
+    "agent_waits": {
+        "id": "wait", "project_id": "x", "owner_kind": "task", "owner_id": "p",
+        "session_id": "session", "session_instance_token": "instance", "claim_epoch": 1,
+        "kind": "job", "match": {"job_id": "job"}, "state": "satisfied",
+        "created_at": 0.0, "deadline_at": 60.0, "resolved_at": 30.0,
+        "result_ref": "job:job:result", "digest": {"outcome": "lost"},
+        "idempotency_key": "wait-validation", "result_message_id": "wait-result",
+    },
+    "morning_reports": {
+        "id": "morning", "schedule_id": "daily", "local_date": "2026-09-26",
+        "config_snapshot": {"project_ids": ["x"]}, "scope_key": "scope",
+        "timezone": "UTC", "planned_at": 120.0, "window_start": 0.0,
+        "window_end": 120.0, "build_context": {"source_heads": {"x": "sha"}},
+        "state": "final", "report": {"summary": "Verified work"},
+        "coverage": {"complete": True}, "author_deadline": 180.0,
+        "created_at": 120.0, "finalized_at": 150.0,
+    },
+    "morning_report_coverage": {
+        "schedule_id": "daily", "scope_key": "scope", "source": "git",
+        "covered_until": 120.0, "head_sha": "sha", "report_id": "morning",
+    },
+    "morning_report_facts": {
+        "report_id": "morning", "fact_key": "git:sha", "source": "git",
+        "record_id": "sha", "project_id": "x", "at": 100.0,
+    },
+    "outbound_deliveries": {
+        "id": "delivery", "owner_kind": "morning", "owner_id": "morning",
+        "dedup_key": "morning:morning", "destination": {"channel_id": "channel"},
+        "payload": {"text": "Verified work"}, "payload_hash": "hash", "marker": "marker",
+        "state": "sent", "due_at": 150.0, "attempt_count": 1,
+        "external_receipt_id": "receipt", "receipt_confirmed_at": 151.0,
+        "created_at": 150.0, "updated_at": 151.0,
+    },
+}
+
 
 def test_ordered_tables_covers_every_table() -> None:
     """Every schema table is imported or has a documented exclusion."""
@@ -165,6 +223,13 @@ async def _seeded_source(tmp_path) -> str:
             )
         )
         await conn.execute(insert(supervisor_report_requests), _REPORT_REQUEST_ROW)
+        await conn.execute(
+            insert(source_metadata.tables["workspaces"]),
+            {"id": "workspace", "project_id": "x", "workspace_path": "/workspace",
+             "generation": 2, "job_pin_count": 1, "created_at": 0.0},
+        )
+        for table_name, row in _DURABLE_ROWS.items():
+            await conn.execute(insert(source_metadata.tables[table_name]), row)
         # playbook_activations -> playbook_artifacts is a plain (non-deferred)
         # FK, so the copy only works if both tables are in _ORDERED_TABLES and
         # the artifact is inserted first.
@@ -216,6 +281,15 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
         assert counts["epic_dependencies"] == 1
         assert counts["supervisor_report_requests"] == 1
         async with target._engine.connect() as conn:
+            for table_name, expected in _DURABLE_ROWS.items():
+                assert counts[table_name] == 1
+                actual = (
+                    await conn.execute(select(metadata.tables[table_name]))
+                ).mappings().one()
+                assert {key: actual[key] for key in expected} == expected, table_name
+            assert (
+                await conn.execute(text("SELECT job_pin_count FROM workspaces"))
+            ).scalar() == 1
             report = (
                 await conn.execute(select(supervisor_report_requests))
             ).mappings().one()
