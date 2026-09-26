@@ -2,7 +2,7 @@ import asyncio
 import time
 
 import pytest
-from sqlalchemy import inspect
+from sqlalchemy import event, insert, inspect
 
 from src.database import Database
 from src.models import Project, Task, TaskStatus
@@ -161,6 +161,100 @@ async def test_publish_is_atomic_and_bumps_version(db):
     assert rows["b"].abs_x == 9
     cells = await db.load_cells("p1", "all", ["b"])
     assert cells == {("b"): [(1, 0)]}
+
+
+async def seed_publish_rows(db):
+    from src.database.queries.layout_queries import LAYOUT_WRITE_BATCH_SIZE
+    from src.database.tables import tasks
+
+    ids = [f"bulk-{i}" for i in range(LAYOUT_WRITE_BATCH_SIZE + 1)]
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            insert(tasks),
+            [
+                {
+                    "id": tid, "project_id": "p1", "title": tid, "description": "",
+                    "created_at": time.time(), "updated_at": time.time(),
+                }
+                for tid in ids
+            ],
+        )
+    return [row(tid, i * 9, 0, f"/{tid}/") for i, tid in enumerate(ids)]
+
+
+async def test_large_publish_bounds_batches_and_yields_without_exposing_partial_rows(db):
+    from src.database.queries.layout_queries import LAYOUT_WRITE_BATCH_SIZE
+
+    rows = await seed_publish_rows(db)
+    # A second connection must still see the old publication while any
+    # layout or cell batch is in flight.
+    await db.publish_layout("p1", "all", WriteSet(), consumed_seq=None, extent=(0, 0))
+    observations = []
+    checks = []
+
+    async def observe():
+        meta = await db.get_layout_meta("p1", "all")
+        stored = await db.load_subtree_rows("p1", "all")
+        observations.append((meta["layout_version"], len(stored)))
+
+    def inspect_batch(conn, clause, multiparams, params, execution_options):
+        if getattr(clause, "is_insert", False) and clause.table.name in (
+            "task_layouts", "task_layout_cells",
+        ):
+            assert len(multiparams) <= LAYOUT_WRITE_BATCH_SIZE
+            checks.append(asyncio.create_task(observe()))
+
+    event.listen(db._engine.sync_engine, "before_execute", inspect_batch)
+    try:
+        version = await db.publish_layout(
+            "p1", "all", WriteSet(upserts=rows), consumed_seq=None, extent=(len(rows) * 9, 1)
+        )
+        await asyncio.gather(*checks)
+    finally:
+        event.remove(db._engine.sync_engine, "before_execute", inspect_batch)
+    assert version == 2
+    assert len(checks) >= 4  # both geometry and cells span multiple batches
+    assert (1, 0) in observations
+    assert all(count in (0, len(rows)) for _, count in observations)
+    meta = await db.get_layout_meta("p1", "all")
+    assert meta["node_count"] == len(rows)
+    assert len(await db.load_subtree_rows("p1", "all")) == len(rows)
+    assert len(await db.load_cells("p1", "all", [r.task_id for r in rows])) == len(rows)
+
+
+@pytest.mark.parametrize("fail_table", ["task_layouts", "task_layout_cells"])
+async def test_late_publish_batch_failure_rolls_back_rows_cells_meta_and_dirty(db, fail_table):
+    rows = await seed_publish_rows(db)
+    await db.publish_layout(
+        "p1", "all", WriteSet(upserts=rows[:1]), consumed_seq=None, extent=(1, 1)
+    )
+    before_meta = await db.get_layout_meta("p1", "all")
+    before_cells = await db.load_cells("p1", "all", [r.task_id for r in rows])
+    async with db._engine.begin() as conn:
+        await db.mark_layout_dirty("p1", [rows[0].task_id], "test", conn=conn)
+    seq, marks = await db.pop_layout_dirty("p1", min_age_seconds=0)
+    calls = 0
+
+    def fail_late(conn, clause, multiparams, params, execution_options):
+        nonlocal calls
+        if getattr(clause, "is_insert", False) and clause.table.name == fail_table:
+            calls += 1
+            if calls == 2:
+                raise RuntimeError("later batch failed")
+
+    event.listen(db._engine.sync_engine, "before_execute", fail_late)
+    try:
+        with pytest.raises(RuntimeError, match="later batch failed"):
+            await db.publish_layout(
+                "p1", "all", WriteSet(upserts=rows), consumed_seq=seq, extent=(len(rows) * 9, 1)
+            )
+    finally:
+        event.remove(db._engine.sync_engine, "before_execute", fail_late)
+    assert await db.get_layout_meta("p1", "all") == before_meta
+    stored = await db.load_subtree_rows("p1", "all")
+    assert set(stored) == {rows[0].task_id}
+    assert await db.load_cells("p1", "all", [r.task_id for r in rows]) == before_cells
+    assert await db.pop_layout_dirty("p1", min_age_seconds=0) == (seq, marks)
 
 
 async def test_translation_moves_subtree_and_rewrites_cells(db):

@@ -481,14 +481,13 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
     except Exception as e:
         checks["agents"] = {"ok": False, "error": str(e)}
 
-    # Task counts
+    # Aggregate counts avoid materializing the entire ready backlog on every probe.
     try:
-        in_progress = await orch.db.list_tasks(status=TaskStatus.IN_PROGRESS)
-        ready = await orch.db.list_tasks(status=TaskStatus.READY)
+        task_counts = await orch.db.count_tasks_by_status()
         checks["tasks"] = {
             "ok": True,
-            "in_progress": len(in_progress),
-            "ready": len(ready),
+            "in_progress": task_counts.get(TaskStatus.IN_PROGRESS.value, 0),
+            "ready": task_counts.get(TaskStatus.READY.value, 0),
         }
     except Exception as e:
         checks["tasks"] = {"ok": False, "error": str(e)}

@@ -324,6 +324,10 @@ projection** of task state:
   `asyncio.to_thread` so pure-Python CPU work never blocks the event loop, then applies
   the write set. Per-project batches are debounced by requiring the newest dirty row to be
   at least 500 ms old, so bursts coalesce.
+- Layout aggregate reads select only blocked task IDs within the project, rather than
+  materializing full task rows. Publication prepares and executes layout and cell inserts
+  in bounded batches, yielding between them so large projects do not starve health probes.
+  Every batch remains inside the same publication transaction and meta-row lock.
 - **Publishing is atomic.** Layout row upserts, deletes, path-prefix translations, the
   `project_layout_meta.layout_version` increment, and deletion of the consumed
   `layout_dirty` rows (by `seq <= max consumed`) happen in one transaction. Readers see
