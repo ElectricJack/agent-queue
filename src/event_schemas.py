@@ -1414,6 +1414,7 @@ _METRICS_SCHEMAS: dict[str, EventSchema] = {
             "throughput",
             "merges_per_hour",
             "sampler",
+            "perf",
         ],
     },
 }

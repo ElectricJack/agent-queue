@@ -13,8 +13,11 @@ from pydantic import BaseModel
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.metrics import MAX_POINTS, build_metrics_router, choose_step
+from src.api.models.metrics import MetricsSample, PerfMetrics
 from src.api.websocket import _FORWARDED_PREFIXES, _metrics_event_allowed
 from src.database import Database
+from src.metrics.histogram import new_hist, observe
+from src.metrics.perf import PerfRegistry
 from src.metrics.sampler import METRIC_TICK_EVENT, aggregate_samples
 from tests.db_fixtures import lease_dsn
 
@@ -263,3 +266,44 @@ def test_a_tick_is_a_registered_event_so_validation_does_not_warn():
 
     assert validate_event(METRIC_TICK_EVENT, {"ts": BASE, "agents": {"total": 1}}) == []
     assert validate_event(METRIC_TICK_EVENT, {"agents": {}}) != []
+
+
+def test_a_sample_with_a_perf_block_validates_and_a_bare_one_defaults():
+    registry = PerfRegistry()
+    registry.observe_route("GET /api/x", 12, 200)
+    registry.observe_stream_handshake("WS /ws/events", 4, accepted=True)
+    perf = {
+        "enabled": True,
+        **registry.snapshot(),
+        "host": {
+            "psi": {"cpu": None, "reason": "psi_unavailable"},
+            "test_slots": {"used": None, "reason": "resources_disabled"},
+            "stale": False,
+        },
+        "relay": {"available": False, "reason": "not_polled"},
+        "sampler": {"perf_ms": 0.4},
+    }
+    sample = MetricsSample.model_validate({"ts": 1.0, "perf": perf})
+    assert sample.perf.api.routes["GET /api/x"].latency.count == 1
+    assert sample.perf.api.streams["WS /ws/events"].handshake.count == 1
+    assert sample.perf.host.psi.reason == "psi_unavailable"
+    assert sample.perf.host.test_slots.used is None
+    assert MetricsSample.model_validate({"ts": 1.0}).perf == PerfMetrics()
+    assert MetricsSample.model_validate({"ts": 1.0, "perf": {"enabled": False}}).perf.enabled is False
+
+
+async def test_series_returns_the_stored_perf_block(db, client_factory):
+    hist = new_hist()
+    observe(hist, 30)
+    await db.write_metrics_sample("1s", BASE, {"perf": {"enabled": True, "loop": {"drift": hist}}})
+    async with client_factory() as client:
+        response = await client.get("/api/metrics/series", params={"from": BASE, "to": BASE})
+    assert response.status_code == 200
+    assert response.json()["samples"][0]["perf"]["loop"]["drift"]["count"] == 1
+
+
+def test_metrics_tick_schema_accepts_the_perf_block():
+    from src.event_schemas import EVENT_SCHEMAS, validate_event
+
+    assert "perf" in EVENT_SCHEMAS[METRIC_TICK_EVENT]["optional"]
+    assert validate_event(METRIC_TICK_EVENT, {"ts": BASE, "perf": {"enabled": False}}) == []
