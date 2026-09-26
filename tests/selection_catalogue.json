@@ -1215,7 +1215,7 @@
       ]
     }
   },
-  "digest": "sha256:46ed9c102e1fec6b14abc8d9812c7566d65e8038800ec3299e9c4d88ada85985",
+  "digest": "sha256:dbd2825982785b649128ba2d2cb65dbd8c434c945f6f579eee561c0cb7327ded",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4277,6 +4277,7 @@
         "src.escalations.transport",
         "src.models",
         "src.orchestrator",
+        "src.remote_links",
         "src.runtimes"
       ],
       "markers": [],
@@ -4703,6 +4704,7 @@
       "imports": [],
       "markers": [
         "integration",
+        "parametrize",
         "timeout"
       ],
       "summary": "Opt-in real-daemon acceptance test for the disposable CLI smoke kit."
