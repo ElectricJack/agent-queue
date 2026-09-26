@@ -1378,6 +1378,7 @@ from .task_subtask_with_context import TaskSubtaskWithContext
 from .task_subtasks_request import TaskSubtasksRequest
 from .task_subtasks_response import TaskSubtasksResponse
 from .task_subtasks_response_422 import TaskSubtasksResponse422
+from .terminal_access_response import TerminalAccessResponse
 from .test_select_request import TestSelectRequest
 from .test_select_response import TestSelectResponse
 from .test_select_response_422 import TestSelectResponse422
@@ -2839,6 +2840,7 @@ __all__ = (
     "TaskSubtaskUpdateResponse",
     "TaskSubtaskUpdateResponse422",
     "TaskSubtaskWithContext",
+    "TerminalAccessResponse",
     "TestSelectionListRequest",
     "TestSelectionListResponse",
     "TestSelectionListResponse422",
