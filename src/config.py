@@ -265,11 +265,16 @@ class MorningReportsConfig:
     author_deadline_minutes: int = 15
     project_ids: list[str] = field(default_factory=list)
     destination: str = ""
+    full_fleet_visibility: bool = False
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
         if not isinstance(self.enabled, bool):
             errors.append(ConfigError("reports.morning", "enabled", "must be a boolean"))
+        if not isinstance(self.full_fleet_visibility, bool):
+            errors.append(
+                ConfigError("reports.morning", "full_fleet_visibility", "must be a boolean")
+            )
         if not isinstance(self.time, str) or not _REPORT_CLOCK.fullmatch(self.time):
             errors.append(ConfigError("reports.morning", "time", "use HH:MM (24-hour)"))
         for name, upper in (

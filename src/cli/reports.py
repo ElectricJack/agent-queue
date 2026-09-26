@@ -93,12 +93,12 @@ def report_submit(
     expected_version: int,
     evidence_refs: tuple[str, ...],
 ) -> None:
-    """Submit UTF-8 prose from FILE for the exact brief/version shown."""
+    """Submit UTF-8 prose (hourly) or version 1 JSON (morning) for the brief/version."""
     try:
         with file_path.open("rb") as stream:
-            content = stream.read(8193)
-        if len(content) > 8192:
-            raise click.UsageError("report file exceeds 8 KiB")
+            content = stream.read(32769)
+        if len(content) > 32768:
+            raise click.UsageError("report file exceeds 32 KiB")
         text = content.decode("utf-8")
     except UnicodeDecodeError:
         raise click.UsageError(f"not_utf8: {file_path} is not valid UTF-8") from None

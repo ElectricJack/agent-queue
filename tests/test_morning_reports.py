@@ -630,6 +630,7 @@ async def test_zone_change_guard_shows_next_due_and_does_not_reserve_twice(sched
 
 async def test_quiet_day_advances_coverage_without_author_or_delivery(scheduled):
     command, collector = scheduled
+
     async def collect(*a, **kw):
         return await durable_result(window=kw["window"], quiet=True)
 
@@ -647,6 +648,7 @@ async def test_quiet_day_advances_coverage_without_author_or_delivery(scheduled)
 async def test_partial_source_recovery_uses_older_cursor_and_replay_membership(scheduled):
     command, collector = scheduled
     now = utc("2026-09-25T07:00:00")
+
     async def partial_collect(*a, **kw):
         return await durable_result(window=kw["window"], healthy=False)
 
@@ -658,6 +660,7 @@ async def test_partial_source_recovery_uses_older_cursor_and_replay_membership(s
     by_source = {r["source"]: r["covered_until"] for r in rows}
     assert by_source["completions"] == now - 86400
     assert by_source["deliveries"] == now
+
     async def healthy_collect(*a, **kw):
         return await durable_result(window=kw["window"])
 
@@ -687,6 +690,7 @@ async def test_failed_build_and_expired_lease_recover_original_context(scheduled
     await command.db.claim_morning_build(row["id"], owner="crashed", now=now)
     await tick(command, now + 100)
     assert collector.await_count == 1
+
     async def healthy_collect(*a, **kw):
         return await durable_result(window=kw["window"])
 
@@ -782,3 +786,351 @@ def test_cli_stored_report_reads_use_registered_commands(monkeypatch):
     listed = runner.invoke(cli, ["--json", "report", "list", "--limit", "3"])
     assert listed.exit_code == 0
     assert json.loads(listed.output)["data"]["limit"] == 3
+
+
+async def author_request(scheduled, now):
+    command, collector = scheduled
+    policy = command.orchestrator.config.reports.morning
+    policy.project_ids = []
+    policy.full_fleet_visibility = True
+    policy.destination = "discord:123456789012345678"
+    first = await tick(command, now)
+    request = await command.db.get_report_request(f"report-morning-{first['report_id']}")
+    return command, collector, request
+
+
+async def test_author_request_reconciles_once_with_original_snapshot(scheduled):
+    now = utc("2026-09-25T07:00:00")
+    command, collector, request = await author_request(scheduled, now)
+    assert request["state"] == "requested" and request["version"] == 2
+    assert request["kind"] == "morning" and request["deadline"] == now + 900
+    assert (
+        request["brief_hash"]
+        == (await command.db.get_morning_report(request["owner_ref"]))["brief_hash"]
+    )
+    # A fresh command object after a lost tick/event still uses the durable reservation.
+    restarted = Commands(command.db)
+    restarted.orchestrator = command.orchestrator
+    for offset in (1, 30, 60):
+        assert (await tick(restarted, now + offset))["state"] == "authoring"
+    collector.assert_awaited_once()
+    repeated = await command.db.get_report_request(request["id"])
+    assert repeated == request
+    async with command.db._engine.connect() as conn:
+        messages = (
+            (
+                await conn.execute(
+                    select(tables.messages).where(tables.messages.c.body_kind == "report_request")
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert len(messages) == 1
+    assert messages[0]["id"] == f"msg-{request['id']}"
+    assert "version 1 JSON" in messages[0]["body"]
+    assert messages[0]["to_id"] == "supervisor-global"
+
+
+async def test_request_recovered_after_reservation_before_message(scheduled, monkeypatch):
+    command, _ = scheduled
+    policy = command.orchestrator.config.reports.morning
+    policy.project_ids = []
+    policy.full_fleet_visibility = True
+    policy.destination = "discord:123456789012345678"
+    now = utc("2026-09-25T07:00:00")
+    original = command.db.request_report
+    failed = AsyncMock(side_effect=RuntimeError("lost request step"))
+    monkeypatch.setattr(command.db, "request_report", failed)
+    with pytest.raises(RuntimeError, match="lost request step"):
+        await tick(command, now)
+    request_id = "report-morning-morning-2026-09-25"
+    assert (await command.db.get_report_request(request_id))["state"] == "reserved"
+    monkeypatch.setattr(command.db, "request_report", original)
+    assert (await tick(command, now + 60))["state"] == "authoring"
+    assert (await command.db.get_report_request(request_id))["state"] == "requested"
+
+
+async def test_structured_author_submit_finalizes_coverage_and_immutable_content(
+    scheduled, monkeypatch
+):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.reports.fallback import build_fallback
+
+    now = utc("2026-09-25T07:00:00")
+    command, collector, request = await author_request(scheduled, now)
+    monkeypatch.setattr("src.commands.report_commands.time.time", lambda: now + 60)
+    report = build_fallback(request["brief"])
+    report["summary"] = "@everyone CLI changes are on main; the second PR is pending."
+    # The author cannot upgrade agent-reported checks to manual verification.
+    report["projects"][0]["landed"][0]["verification_label"] = "manually verified"
+    args = dict(
+        request_id=request["id"],
+        brief_hash=request["brief_hash"],
+        expected_version=2,
+        text=json.dumps(report),
+    )
+    with principal_context(TRUSTED_LOCAL):
+        result = await command._cmd_report_submit(args)
+    assert result["success"] and result["state"] == "submitted"
+    row = await command.db.get_morning_report(request["owner_ref"])
+    assert row["state"] == "final" and row["reason"] == "authored"
+    assert "@everyone" not in row["report"]["summary"]
+    assert row["report"]["projects"][0]["landed"][0]["verification_label"] == "agent-reported"
+    assert row["report"]["coverage"] == report["coverage"]
+    final = row["report"]
+    await tick(command, now + 900)
+    with principal_context(TRUSTED_LOCAL):
+        assert (await command._cmd_report_submit(args))["error_code"] == "report.closed"
+    assert (await command.db.get_morning_report(request["owner_ref"]))["report"] == final
+    async with command.db._engine.connect() as conn:
+        covered = (await conn.execute(select(tables.morning_report_coverage))).mappings().all()
+    assert all(row["covered_until"] == now for row in covered)
+    collector.assert_awaited_once()
+
+
+async def test_submit_deadline_race_has_one_immutable_winner(scheduled):
+    import asyncio
+    from src.reports.fallback import build_fallback
+
+    now = utc("2026-09-25T07:00:00")
+    command, _, request = await author_request(scheduled, now)
+    report = build_fallback(request["brief"])
+    report["summary"] = "Author winner"
+    submitted, fallback = await asyncio.gather(
+        command.db.submit_morning_report(
+            request["id"],
+            brief_hash=request["brief_hash"],
+            expected_version=2,
+            report=report,
+            evidence_refs=[],
+            source_links=[],
+            now=now + 899,
+        ),
+        command.db.finalize_morning_fallback(request["owner_ref"], now=now + 900),
+    )
+    assert (submitted is None) != (fallback is None)
+    row = await command.db.get_morning_report(request["owner_ref"])
+    assert row["reason"] == ("authored" if submitted else "author_deadline")
+    assert row["report"] == (report if submitted else row["fallback"])
+    frozen_report = row["report"]
+    assert await command.db.finalize_morning_fallback(row["id"], now=now + 901) is None
+    assert (await command.db.get_morning_report(row["id"]))["report"] == frozen_report
+
+
+async def test_deadline_fallback_closes_request_and_rejects_late_author(scheduled, monkeypatch):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.reports.fallback import build_fallback
+
+    now = utc("2026-09-25T07:00:00")
+    command, _, request = await author_request(scheduled, now)
+    monkeypatch.setattr("src.commands.report_commands.time.time", lambda: now + 900)
+    with principal_context(TRUSTED_LOCAL):
+        late = await command._cmd_report_submit(
+            dict(
+                request_id=request["id"],
+                brief_hash=request["brief_hash"],
+                expected_version=2,
+                text=json.dumps(build_fallback(request["brief"])),
+            )
+        )
+    assert late["error_code"] == "report.closed"
+    assert (await tick(command, now + 900))["state"] == "final"
+    assert (await command.db.get_report_request(request["id"]))["state"] == "fallback"
+    assert await command.db.request_report(request["id"], now=now + 901) is None
+
+
+@pytest.mark.parametrize("scoped,declared", [(False, False), (True, True)])
+async def test_restricted_or_undeclared_destination_never_wakes_global_author(
+    scheduled, scoped, declared
+):
+    command, _ = scheduled
+    policy = command.orchestrator.config.reports.morning
+    policy.project_ids = ["p"] if scoped else []
+    policy.full_fleet_visibility = declared
+    policy.destination = "discord:123456789012345678"
+    first = await tick(command, utc("2026-09-25T07:00:00"))
+    assert first["state"] == "ready"
+    async with command.db._engine.connect() as conn:
+        assert not (await conn.execute(select(tables.supervisor_report_requests))).all()
+        assert not (await conn.execute(select(tables.messages))).all()
+
+
+async def test_disable_cancels_author_request_but_retains_readable_brief(scheduled):
+    now = utc("2026-09-25T07:00:00")
+    command, _, request = await author_request(scheduled, now)
+    command.orchestrator.config.reports.morning.enabled = False
+    disabled = await tick(command, now + 30)
+    assert disabled["cancelled"] == 1
+    row = await command.db.get_report_request(request["id"])
+    assert row["state"] == "cancelled" and row["brief_hash"] == request["brief_hash"]
+    assert await command.db.request_report(request["id"], now=now + 60) is None
+
+
+async def test_morning_report_validation_requires_scoped_grounded_manual_checks():
+    import copy
+    from src.reports.authoring import validate_morning_report
+    from src.reports.fallback import build_fallback
+
+    brief = frozen("golden-brief")
+    # Use a frozen known surface for the fixture, unknown projects normally have none.
+    brief["surface_map"]["projects"]["p"] = ["CLI"]
+    report = build_fallback(brief)
+    report["summary"] = "CLI preview is available; another PR remains pending."
+    check = dict(
+        action="Open the report preview",
+        surface="CLI",
+        expected_result="Evidence is shown",
+        reason="The morning preview changed",
+        refs=["completion:c1"],
+        prior_verification="Manually verified",
+        confidence="medium",
+    )
+    report["projects"][0]["manual_checks"] = [check]
+    validated, refs = validate_morning_report(json.dumps(report), brief)
+    assert (
+        validated["projects"][0]["manual_checks"][0]["prior_verification"] == "focused tests passed"
+    )
+    assert "completion:c1" in refs
+    for field, value in [
+        ("refs", ["completion:c2"]),
+        ("refs", ["private:secret"]),
+        ("surface", "Unknown app"),
+        ("action", "https://attacker.invalid/test"),
+    ]:
+        broken = copy.deepcopy(report)
+        broken["projects"][0]["manual_checks"][0][field] = value
+        with pytest.raises(ValueError):
+            validate_morning_report(json.dumps(broken), brief)
+    broken = copy.deepcopy(report)
+    broken["projects"][0]["manual_checks"] = [check] * 11
+    with pytest.raises(ValueError, match="at most 10"):
+        validate_morning_report(json.dumps(broken), brief)
+    for field, value in [("path", "/tmp/report"), ("coverage", {"complete": True})]:
+        broken = copy.deepcopy(report)
+        broken[field] = value
+        with pytest.raises(ValueError):
+            validate_morning_report(json.dumps(broken), brief)
+    broken = copy.deepcopy(report)
+    broken["projects"][0]["id"] = "private-project"
+    with pytest.raises(ValueError, match="project"):
+        validate_morning_report(json.dumps(broken), brief)
+    broken = copy.deepcopy(report)
+    broken["summary"] = "x" * 32768
+    with pytest.raises(ValueError, match="32 KiB"):
+        validate_morning_report(json.dumps(broken), brief)
+
+
+def test_known_surface_map_is_versioned_and_does_not_guess_for_unknown_repos():
+    from src.reports.authoring import surface_map
+
+    mapped = surface_map(
+        {
+            "agent-queue": {
+                "diffstat": " src/cli/reports.py | 5 +++++\n dashboard/src/pages/reports/Page.tsx | 1 +"
+            },
+            "unknown": {"diffstat": " src/cli/reports.py | 5 +++++"},
+        }
+    )
+    assert mapped == {
+        "version": 1,
+        "projects": {"agent-queue": ["CLI", "dashboard"], "unknown": []},
+    }
+
+
+@pytest.mark.parametrize("change", ["hash", "version", "disabled", "restricted", "destination"])
+async def test_morning_submit_rejects_stale_or_changed_visibility(scheduled, monkeypatch, change):
+    from src.commands.principal import TRUSTED_LOCAL
+    from src.reports.fallback import build_fallback
+
+    now = utc("2026-09-25T07:00:00")
+    command, _, request = await author_request(scheduled, now)
+    monkeypatch.setattr("src.commands.report_commands.time.time", lambda: now + 60)
+    args = dict(
+        request_id=request["id"],
+        brief_hash=request["brief_hash"],
+        expected_version=2,
+        text=json.dumps(build_fallback(request["brief"])),
+    )
+    policy = command.orchestrator.config.reports.morning
+    if change == "hash":
+        args["brief_hash"] = "wrong-brief"
+    elif change == "version":
+        args["expected_version"] = 1
+    elif change == "disabled":
+        policy.enabled = False
+    elif change == "restricted":
+        policy.project_ids = ["p"]
+    else:
+        policy.destination = "discord:123456789012345679"
+    with principal_context(TRUSTED_LOCAL):
+        assert (await command._cmd_report_submit(args))["error_code"] == "report.closed"
+    assert (await command.db.get_morning_report(request["owner_ref"]))["report"] is None
+
+
+async def test_only_current_global_supervisor_launch_can_read_and_submit_morning(
+    scheduled, monkeypatch
+):
+    from src.reports.fallback import build_fallback
+
+    now = utc("2026-09-25T07:00:00")
+    command, _, request = await author_request(scheduled, now)
+    monkeypatch.setattr("src.commands.report_commands.time.time", lambda: now + 60)
+    monkeypatch.setattr(
+        command.db,
+        "get_session",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id="supervisor-global", lifecycle="named", instance_token="current-launch"
+            )
+        ),
+    )
+    for session_id, instance_token in [
+        ("supervisor-global", "replaced-launch"),
+        ("other-supervisor", "current-launch"),
+    ]:
+        principal = ExecutionPrincipal(
+            kind=PrincipalKind.SESSION,
+            policy=DENY_ALL,
+            session_id=session_id,
+            session_instance_token=instance_token,
+        )
+        with principal_context(principal):
+            assert (await command._cmd_report_brief({"request_id": request["id"]}))[
+                "error_code"
+            ] == "out_of_scope"
+            assert (await command._cmd_report_submit({"request_id": request["id"]}))[
+                "error_code"
+            ] == "out_of_scope"
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=DENY_ALL,
+        session_id="supervisor-global",
+        session_instance_token="current-launch",
+    )
+    with principal_context(principal):
+        brief = await command._cmd_report_brief({"request_id": request["id"], "limit": 1})
+        assert brief["success"] and brief["brief"]["kind"] == "morning"
+        assert len(brief["facts"]) == 1 and brief["total_facts"] > 1
+        result = await command._cmd_report_submit(
+            dict(
+                request_id=request["id"],
+                brief_hash=brief["brief_hash"],
+                expected_version=brief["version"],
+                text=json.dumps(build_fallback(request["brief"])),
+            )
+        )
+    assert result["success"]
+
+
+def test_morning_bundle_is_optional_and_uses_only_the_tick_command():
+    from src.playbooks.definition import load_definition_json
+    from src.playbooks.required import DEFAULT_SYSTEM_PLAYBOOK_IDS, REQUIRED_SYSTEM_PLAYBOOK_IDS
+
+    bundle = Path("src/prompts/reviewed_playbooks/morning-report")
+    artifact = load_definition_json((bundle / "artifact.json").read_text())
+    assert artifact.rules[0].trigger.event_type == "timer.1m"
+    command_steps = [step for step in artifact.steps.values() if step.type == "command"]
+    assert len(command_steps) == 1 and command_steps[0].command == "morning_report_tick"
+    assert {step.type for step in artifact.steps.values()} == {"command", "terminal"}
+    assert artifact.id not in DEFAULT_SYSTEM_PLAYBOOK_IDS + REQUIRED_SYSTEM_PLAYBOOK_IDS

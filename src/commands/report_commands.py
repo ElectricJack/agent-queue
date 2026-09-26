@@ -116,6 +116,20 @@ class ReportCommandsMixin:
                     except Exception:
                         await self.db.fail_morning_build(claimed["id"], owner=owner)
             await self.db.finalize_morning_fallback(candidate["id"], now=now)
+            destination = (
+                config.morning.destination
+                or schedule_for(self.orchestrator.config.discord).destination
+            )
+            if (
+                config.morning.full_fleet_visibility
+                and not config.morning.project_ids
+                and destination
+            ):
+                request = await self.db.reserve_morning_author(
+                    candidate["id"], destination=destination, now=now
+                )
+                if request and self._morning_author_allowed(request):
+                    await self.db.request_report(request["id"], now=now)
         await self.db.prune_morning_reports(now=now)
         if row:
             row = await self.db.get_morning_report(row["id"])
@@ -269,9 +283,20 @@ class ReportCommandsMixin:
     async def _cmd_report_request(self, args: dict[str, Any]) -> dict[str, Any]:
         """Queue a single durable supervisor wake for a reserved request."""
         principal = current_principal()
-        if principal is None or principal.kind != PrincipalKind.SERVICE:
+        if (
+            principal is None
+            or principal.kind not in (PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK)
+            or principal.project_id is not None
+        ):
             return _error("out_of_scope", "only the report service may request an author turn")
         request_id = str(args.get("request_id") or "")
+        existing = await self.db.get_report_request(request_id)
+        if (
+            existing
+            and existing["kind"] == "morning"
+            and not self._morning_author_allowed(existing)
+        ):
+            return _error("report.closed", "report visibility changed or authoring disabled")
         row = await self.db.request_report(request_id, now=time.time())
         if row is None:
             return _error("report.closed", "report request is missing or closed")
@@ -318,6 +343,8 @@ class ReportCommandsMixin:
             return _error("report.closed", "report request not found")
         if not await self._report_reader_allowed(row):
             return _error("out_of_scope", "this report belongs to another supervisor launch")
+        if row["kind"] == "morning":
+            return await self._submit_morning_report(row, args)
         orchestrator = getattr(self, "orchestrator", None)
         if orchestrator is not None and row["kind"] == "hourly":
             current = schedule_for(orchestrator.config.discord)
@@ -374,6 +401,61 @@ class ReportCommandsMixin:
         return {
             "success": True,
             "request_id": request_id,
+            "window_id": row["owner_ref"],
+            "state": changed["state"],
+            "version": changed["version"],
+        }
+
+    def _morning_author_allowed(self, row: dict) -> bool:
+        config = self.orchestrator.config
+        policy = config.reports.morning
+        destination = policy.destination or schedule_for(config.discord).destination
+        return bool(
+            policy.enabled
+            and policy.full_fleet_visibility
+            and not policy.project_ids
+            and row["visibility"].get("full_fleet")
+            and not row["visibility"].get("project_ids")
+            and destination == row["destination"]
+        )
+
+    async def _submit_morning_report(self, row: dict, args: dict) -> dict:
+        from urllib.parse import quote
+        from src.reports.authoring import validate_morning_report
+
+        if not self._morning_author_allowed(row):
+            return _error("report.closed", "report visibility changed or authoring disabled")
+        try:
+            expected_version = int(args["expected_version"])
+            report, refs = validate_morning_report(str(args.get("text") or ""), row["brief"])
+            provided = args.get("evidence_refs") or []
+            if not isinstance(provided, list) or any(ref not in refs for ref in provided):
+                raise ValueError("unknown or unused submission evidence reference")
+        except (KeyError, TypeError, ValueError) as exc:
+            return _error("report.invalid", str(exc))
+        facts = {fact["key"]: fact for fact in row["brief"]["facts"]}
+        source_links = list(
+            dict.fromkeys(
+                f"/tasks/{quote(facts[ref]['task_id'], safe='')}"
+                if facts[ref].get("task_id")
+                else f"/reports/{quote(row['owner_ref'], safe='')}"
+                for ref in refs
+            )
+        )
+        changed = await self.db.submit_morning_report(
+            row["id"],
+            brief_hash=str(args.get("brief_hash") or ""),
+            expected_version=expected_version,
+            report=report,
+            evidence_refs=refs,
+            source_links=source_links,
+            now=time.time(),
+        )
+        if changed is None:
+            return _error("report.closed", "report request closed, stale or already finalized")
+        return {
+            "success": True,
+            "request_id": row["id"],
             "window_id": row["owner_ref"],
             "state": changed["state"],
             "version": changed["version"],

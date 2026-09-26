@@ -11,6 +11,8 @@ from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from src.database.tables import morning_report_coverage as coverage
 from src.database.tables import morning_report_facts as facts
 from src.database.tables import morning_reports as reports
+from src.database.tables import supervisor_report_requests as requests
+from src.database.tables import messages
 from src.reports.morning import report_window
 from src.reports.schedule import SCHEDULE_ID, ZONE_CHANGE_GUARD_SECONDS
 
@@ -23,6 +25,214 @@ def scope_key(project_ids: list[str]) -> str:
 
 
 class MorningReportQueriesMixin:
+    async def reserve_morning_author(
+        self, report_id: str, *, destination: str, now: float
+    ) -> dict | None:
+        """One request per frozen report, never per transport attempt."""
+        async with self.immediate() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        select(reports).where(reports.c.id == report_id).with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                not row
+                or row["state"] not in ("ready", "authoring")
+                or row["author_deadline"] <= now
+            ):
+                return None
+            snapshot = row["config_snapshot"]
+            if not snapshot.get("full_fleet_visibility") or snapshot["project_ids"]:
+                return None
+            request_id = f"report-morning-{report_id}"
+            await conn.execute(
+                pg_insert(requests)
+                .values(
+                    id=request_id,
+                    kind="morning",
+                    owner_ref=report_id,
+                    destination=destination,
+                    visibility={"full_fleet": True, "project_ids": []},
+                    brief=row["brief"],
+                    brief_hash=row["brief_hash"],
+                    fallback_text=json.dumps(row["fallback"], ensure_ascii=False),
+                    author_session_id="supervisor-global",
+                    state="reserved",
+                    deadline=row["author_deadline"],
+                    version=1,
+                    created_at=now,
+                    updated_at=now,
+                )
+                .on_conflict_do_nothing(index_elements=["kind", "owner_ref"])
+            )
+            await conn.execute(
+                update(reports).where(reports.c.id == report_id).values(state="authoring")
+            )
+            request = (
+                (await conn.execute(select(requests).where(requests.c.id == request_id)))
+                .mappings()
+                .one()
+            )
+            return dict(request)
+
+    async def request_morning_report(
+        self, request_id: str, report_id: str, *, now: float
+    ) -> dict | None:
+        """Lock owner before request, matching submit, deadline and disable."""
+        async with self.immediate() as conn:
+            owner = (
+                (
+                    await conn.execute(
+                        select(reports).where(reports.c.id == report_id).with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            row = (
+                (
+                    await conn.execute(
+                        select(requests).where(requests.c.id == request_id).with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                not owner
+                or owner["state"] != "authoring"
+                or not row
+                or row["kind"] != "morning"
+                or row["owner_ref"] != report_id
+                or row["state"] not in ("reserved", "requested")
+                or row["deadline"] <= now
+            ):
+                return None
+            if row["state"] == "reserved":
+                message_id = f"msg-{request_id}"
+                await conn.execute(
+                    pg_insert(messages)
+                    .values(
+                        id=message_id,
+                        project_id=None,
+                        from_kind="system",
+                        from_id="reports",
+                        to_kind="session",
+                        to_id=row["author_session_id"],
+                        subject="Morning report request",
+                        body=(
+                            f"Morning report {request_id} is ready. Read `aq report brief {request_id}` "
+                            f"(all fact pages), then submit a version 1 JSON report with "
+                            f"`aq report submit {request_id} --file FILE --brief-hash HASH --expected-version VERSION`. "
+                            "Write summary and projects with landed, pending, failures and manual_checks. "
+                            "Use only brief project ids and refs; at most 10 manual checks, each tied to landed "
+                            "evidence and a known surface in surface_map. Keep unknown shipment pending; "
+                            "label inferences and agent-reported verification. Do not run code work, git, "
+                            "tests, select a destination/path/URL, or post to Discord. Coverage and delivery "
+                            f"are daemon-owned. Deadline (UTC epoch): {row['deadline']}."
+                        ),
+                        priority=100,
+                        created_at=now,
+                        archive_after_inject=1,
+                        body_kind="report_request",
+                    )
+                    .on_conflict_do_nothing(index_elements=["id"])
+                )
+                row = (
+                    (
+                        await conn.execute(
+                            update(requests)
+                            .where(requests.c.id == request_id)
+                            .values(
+                                state="requested",
+                                request_message_id=message_id,
+                                version=requests.c.version + 1,
+                                updated_at=now,
+                            )
+                            .returning(requests)
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+            return dict(row)
+
+    async def submit_morning_report(
+        self,
+        request_id: str,
+        *,
+        brief_hash: str,
+        expected_version: int,
+        report: dict,
+        evidence_refs: list[str],
+        source_links: list[str],
+        now: float,
+    ) -> dict | None:
+        lookup = await self.get_report_request(request_id)
+        if not lookup or lookup["kind"] != "morning":
+            return None
+        async with self.immediate() as conn:
+            owner = (
+                (
+                    await conn.execute(
+                        select(reports).where(reports.c.id == lookup["owner_ref"]).with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            row = (
+                (
+                    await conn.execute(
+                        select(requests).where(requests.c.id == request_id).with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                not owner
+                or owner["state"] != "authoring"
+                or not row
+                or row["state"] != "requested"
+                or row["brief_hash"] != brief_hash
+                or row["version"] != expected_version
+                or row["deadline"] <= now
+                or owner["author_deadline"] <= now
+                or owner["brief_hash"] != brief_hash
+            ):
+                return None
+            text = json.dumps(report, ensure_ascii=False, sort_keys=True)
+            changed = (
+                (
+                    await conn.execute(
+                        update(requests)
+                        .where(requests.c.id == request_id)
+                        .values(
+                            state="submitted",
+                            version=expected_version + 1,
+                            submitted_text=text,
+                            submitted_hash=hashlib.sha256(text.encode()).hexdigest(),
+                            evidence_refs=evidence_refs,
+                            source_links=source_links,
+                            submitted_at=now,
+                            updated_at=now,
+                        )
+                        .returning(requests)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            await self._finalize_morning_in_transaction(
+                conn, dict(owner), now, "final", content=report, reason="authored"
+            )
+            return dict(changed)
+
     async def get_morning_report(self, report_id: str) -> dict | None:
         async with self._engine.connect() as conn:
             row = (await conn.execute(select(reports).where(reports.c.id == report_id))).mappings()
@@ -269,7 +479,14 @@ class MorningReportQueriesMixin:
             )
 
     async def _finalize_morning_in_transaction(
-        self, conn, row: dict, now: float, state: str
+        self,
+        conn,
+        row: dict,
+        now: float,
+        state: str,
+        *,
+        content: dict | None = None,
+        reason: str | None = None,
     ) -> dict:
         report_id = row["id"]
         # Only successful sources advance. Seed failed sources at the original
@@ -321,9 +538,10 @@ class MorningReportQueriesMixin:
                     .where(reports.c.id == report_id)
                     .values(
                         state=state,
-                        report=row["fallback"],
+                        report=content if content is not None else row["fallback"],
                         finalized_at=now,
-                        reason="no_changes" if state == "suppressed" else "author_deadline",
+                        reason=reason
+                        or ("no_changes" if state == "suppressed" else "author_deadline"),
                     )
                     .returning(reports)
                 )
@@ -351,6 +569,20 @@ class MorningReportQueriesMixin:
                 or row["author_deadline"] > now
             ):
                 return None
+            await conn.execute(
+                update(requests)
+                .where(
+                    requests.c.kind == "morning",
+                    requests.c.owner_ref == report_id,
+                    requests.c.state.in_(("reserved", "requested")),
+                )
+                .values(
+                    state="fallback",
+                    skip_reason="author_deadline",
+                    version=requests.c.version + 1,
+                    updated_at=now,
+                )
+            )
             return await self._finalize_morning_in_transaction(conn, dict(row), now, "final")
 
     async def cancel_pending_morning_reports(self, *, now: float) -> int:
@@ -364,6 +596,19 @@ class MorningReportQueriesMixin:
                     finalized_at=now,
                     lease_owner=None,
                     lease_expires_at=None,
+                )
+            )
+            await conn.execute(
+                update(requests)
+                .where(
+                    requests.c.kind == "morning",
+                    requests.c.state.in_(("reserved", "requested")),
+                )
+                .values(
+                    state="cancelled",
+                    skip_reason="disabled",
+                    version=requests.c.version + 1,
+                    updated_at=now,
                 )
             )
             return result.rowcount

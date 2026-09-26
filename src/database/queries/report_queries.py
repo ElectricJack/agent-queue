@@ -100,6 +100,9 @@ class ReportQueriesMixin(MorningReportQueriesMixin):
 
     async def request_report(self, request_id: str, *, now: float) -> dict[str, Any] | None:
         """Queue the same wake message on retries, in the request transaction."""
+        lookup = await self.get_report_request(request_id)
+        if lookup and lookup["kind"] == "morning":
+            return await self.request_morning_report(request_id, lookup["owner_ref"], now=now)
         async with self.immediate() as conn:
             row = (
                 (

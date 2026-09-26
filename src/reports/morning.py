@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from src.reports.git import read_git_evidence
 from src.reports.hourly import MAX_BRIEF_BYTES, hash_brief
+from src.reports.authoring import surface_map
 
 REPLAY_SECONDS = 72 * 3600
 
@@ -352,6 +353,7 @@ async def collect_morning_evidence(
         "facts": facts,
         "projects": project_briefs,
         "git": git_reads,
+        "surface_map": surface_map(git_reads),
         "digest_context": [
             {"id": row["id"], "send_status": row["send_status"], "window_end": row["window_end"]}
             for row in sources.get("digests", [])

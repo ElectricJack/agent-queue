@@ -70,6 +70,7 @@ SHIPPED = {
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
+    "morning-report": "src/prompts/default_playbooks/morning-report.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
 }
@@ -282,6 +283,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _provider_failover_body(source)
     if playbook_id == "provider-usage-probe":
         return _provider_usage_probe_body(source)
+    if playbook_id == "morning-report":
+        return _morning_report_body(source)
     if playbook_id == "github-issue-triage":
         return _github_issue_triage_body(source)
     return {}
@@ -977,6 +980,29 @@ def _supervisor_failure_triage_body(source: PlaybookSource) -> dict[str, Any]:
                     "rejected": failed,
                     "runtime_error": failed,
                 },
+            },
+            done: _terminal(rule, "completed", index.step_ref(rule, None)),
+            failed: _terminal(rule, "failed", index.step_ref(rule, None)),
+        },
+    }
+
+
+def _morning_report_body(source: PlaybookSource) -> dict[str, Any]:
+    """One optional minute reconciliation command, with no model or worker step."""
+    index = ProseIndex(source, source.vault_path)
+    rule = "reconcile-morning"
+    tick, done, failed = (f"{rule}--{suffix}" for suffix in ("tick", "done", "failed"))
+    return {
+        "rules": [{
+            "id": rule, "name": rule, "trigger": {"event_type": "timer.1m"},
+            "entry_step": tick, "source": index.rule_ref(rule),
+        }],
+        "steps": {
+            tick: {
+                "type": "command", "rule": rule, "title": "tick",
+                "source": index.step_ref(rule, 1), "command": "morning_report_tick",
+                "inputs": {}, "save_result_as": "report",
+                "transitions": {"completed": done, "rejected": failed, "runtime_error": failed},
             },
             done: _terminal(rule, "completed", index.step_ref(rule, None)),
             failed: _terminal(rule, "failed", index.step_ref(rule, None)),

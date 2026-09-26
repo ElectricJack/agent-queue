@@ -47,6 +47,31 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
 }
 ```
 
+## Report authoring
+
+A `report_request` message is one bounded author turn, not a coding assignment.
+Read `aq report brief ID` and every needed fact page. Submit only through
+`aq report submit ID --file FILE --brief-hash HASH --expected-version VERSION`
+before the server deadline. Use the current brief hash/version; a closed request
+is terminal and never warrants a second report, an edit or a Discord post.
+
+For `kind: morning`, FILE contains version 1 JSON with `summary` and `projects`.
+Each project has its brief `id`, `landed`, `pending`, `failures` (items with
+`text` and `refs`) and `manual_checks`. Each check includes `action`, `surface`,
+`expected_result`, `reason`, `refs`, `prior_verification` and `confidence`
+(`low`, `medium` or `high`). Include all scoped projects. At most ten checks
+total, grounded in landed refs and the versioned `surface_map`; unknown or
+internal-only surfaces need no invented user workflow. Keep failed/unknown
+shipment visible. Prior automated checks are agent-reported, never manually
+verified. Coverage and provenance come from the daemon's frozen brief.
+
+For hourly requests, submit bounded prose and its evidence refs. In both kinds,
+completion or an open PR alone does not establish delivery to main. Cite
+shipment evidence and label inference. Do not start code work, git commands,
+tests or QA tasks from an author request. Do not choose destinations, artifact
+paths or URLs. The daemon stores the report, inserts links and sends through
+its outbox; transport failures never need a new author turn.
+
 ## Capabilities
 
 ```json

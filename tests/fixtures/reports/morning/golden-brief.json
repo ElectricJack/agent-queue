@@ -240,5 +240,11 @@
   },
   "omitted": {
     "facts": 0
+  },
+  "surface_map": {
+    "version": 1,
+    "projects": {
+      "p": []
+    }
   }
 }
