@@ -51,7 +51,7 @@ jobs:
       matrix:
         suite:
           - name: cli-conformance
-            command: aq test tests/test_cli_inventory.py tests/test_cli_conformance.py
+            command: aq test tests/test_cli_inventory.py tests/test_cli_conformance.py -n 2 --dist loadfile
           # Each shard selects a disjoint, timing-balanced subset before xdist
           # distributes its files across four workers. Refresh .test_durations
           # with the command documented in docs/contributing/ci.md.
@@ -80,9 +80,9 @@ jobs:
             group: 8
             command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 8 --splitting-algorithm least_duration --store-durations --clean-durations
           - name: migration-and-slow
-            command: pytest tests/ -n auto --dist loadfile -m "migration or slow"
+            command: pytest tests/ -n 4 --dist loadfile -m "migration or slow"
           - name: postgres-integration
-            command: pytest tests/ -n auto --dist loadfile -m "integration or perf"
+            command: pytest tests/ -n 4 --dist loadfile -m "integration or perf"
 
     # Postgres backend for the perf/claim-query suite's Postgres parametrisation
     # (tests/perf/conftest.py's ``any_db``, tests/test_claim_queries.py's ``db``) —
@@ -109,7 +109,7 @@ jobs:
       # Base DSN -- ``tests/pg_dsn.py`` rewrites this per xdist worker
       # process (``postgresql+asyncpg://.../agent_queue_gw0``, ``..._gw1``,
       # ...), creating each worker's database on first use. With
-      # ``-n auto`` and three suites (tests/perf, tests/test_claim_queries.py,
+      # multiple workers and three suites (tests/perf, tests/test_claim_queries.py,
       # tests/test_database_postgresql.py) each truncating/reseting a
       # Postgres database against this DSN, sharing one database across
       # concurrent workers would let one worker's reset_for_tests() truncate
@@ -138,14 +138,34 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - name: Set up Python
+        id: python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: pyproject.toml
 
-      - name: Install project
-        run: pip install -e ".[dev,cli]"
+      # Share installed dependencies between suite arms and commits. Use only
+      # exact matches: a changed manifest or interpreter needs a fresh venv.
+      - name: Cache virtual environment
+        id: venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'packages/aq-client/pyproject.toml', 'uv.lock', 'poetry.lock', 'packages/aq-client/poetry.lock') }}
+
+      - name: Install dependencies on cache miss
+        if: steps.venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"
+
+      - name: Use virtual environment
+        run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+
+      # The cli extra installs aq-client from a local wheel. Refresh both
+      # editable packages even on a hit so generated client/source changes
+      # use this checkout, rather than the commit that populated the cache.
+      - name: Refresh local packages
+        run: python -m pip install --no-deps --no-build-isolation -e packages/aq-client -e .
 
       # The SQLite half of this check is gone with the backend.  It was never
       # a proxy for production anyway: it stored booleans as integers and
@@ -153,6 +173,7 @@ jobs:
       # ``BOOLEAN DEFAULT 0``, which upgraded cleanly on SQLite and failed
       # every Postgres run with DatatypeMismatchError).
       - name: Apply migrations to a scratch PostgreSQL database
+        if: matrix.suite.name == 'migration-and-slow'
         env:
           PGPASSWORD: agent_queue
           AGENT_QUEUE_DB_URL: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/ci_migration_check
