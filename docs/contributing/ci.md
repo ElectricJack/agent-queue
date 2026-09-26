@@ -77,13 +77,34 @@ The job checks out the exact event SHA (the PR's merge with its base, for a
 
 | Arm | Command |
 |---|---|
-| `cli-conformance` | `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py` |
+| `cli-conformance` | `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py -n 2 --dist loadfile` |
 | `default-1/8` … `default-8/8` | `pytest tests/ -n 4 --dist loadfile --splits 8 --group N --splitting-algorithm least_duration` |
-| `migration-and-slow` | `pytest tests/ -n auto --dist loadfile -m "migration or slow"` |
-| `postgres-integration` | `pytest tests/ -n auto --dist loadfile -m "integration or perf"` |
+| `migration-and-slow` | `pytest tests/ -n 4 --dist loadfile -m "migration or slow"` |
+| `postgres-integration` | `pytest tests/ -n 4 --dist loadfile -m "integration or perf"` |
 
-`fail-fast: false`, so one red arm does not hide the others; the job times out
-at 30 minutes.
+Every arm appends `--timeout=120 --durations=50 -rfE` to its command.
+`pytest-timeout` (installed by the `dev` extra) limits each test to 120 seconds,
+including fixture setup and teardown. A timeout names the failed test and dumps
+thread stacks; `-rfE` keeps failed/error node IDs in the final summary, and
+`--durations=50` reports the 50 slowest setup, call and teardown phases.
+
+Known slow tests may use a bounded `@pytest.mark.timeout(seconds)` override.
+The stateful CLI smoke has a 1,800-second limit covering its existing setup,
+smoke subprocess and cleanup deadlines. This does not extend the job deadline.
+See [pytest-timeout's documentation](https://github.com/pytest-dev/pytest-timeout)
+for marker precedence and timeout behavior.
+
+`fail-fast: false`, so one red arm does not hide the others; each job times out
+at 10 minutes, including installation and migrations. These limits bound
+failures and improve diagnostics. Profiling on 2026-09-26 measured the
+unsharded default suite at about 21 minutes; it now runs in eight shards as
+described below. The stateful CLI smoke measured 11–16 minutes and still needs
+runtime work to finish within the job cap and reach the goal of less than five
+minutes per job. A longer test marker does not make that job fit within its cap.
+
+Worker counts are explicit: four for the broad suite arms, matching the
+profiled hosted runner, and two for the two CLI test files. Local `aq test`
+runs still use the box's resource caps; these counts apply to CI.
 
 The default shards inherit the marker deselects from `pyproject.toml`'s
 `addopts`, which is why the other two arms exist: they select exactly what the
@@ -152,6 +173,25 @@ eight. Existing installations using the former `Tests (default)` name need the
 operator to rebind that policy and update any explicit merge-required checks
 or GitHub branch rules when adopting this workflow.
 
+### Dependency cache
+
+The suite arms share an `actions/cache` entry for `.venv`, keyed by runner
+OS, architecture, the resolved Python patch version, and both Python package
+manifests (plus Python lockfiles when present). There are no fallback restore
+keys: a dependency or interpreter change creates a fresh environment. On a
+miss, CI creates the venv and installs `.[dev,cli]` and the generated client's
+build backend, `poetry-core`.
+
+Every run adds `.venv/bin` to `PATH` and reinstalls both local packages as
+editable with `--no-deps --no-build-isolation`. This keeps the current source,
+entry points and generated client in use even when their code changed without
+a dependency change. Cached dependencies need no download or resolution on a
+hit. Bump the `venv-v1` key prefix to rebuild unchanged dependency manifests.
+
+This removes repeated setup work; it does not establish a five-minute job
+budget. The default shards and the integration smoke tests still need their
+test time measured on hosted runners after any performance changes.
+
 ### Environment
 
 * A `postgres:18` service container, with `POSTGRES_TEST_DSN` pointed at it.
@@ -163,11 +203,13 @@ or GitHub branch rules when adopting this workflow.
   outside normal pytest startup.
 * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` identities, because the Git-integration
   tests create real commits and hosted runners ship with none.
-* A separate step applies the whole Alembic chain to a scratch database
-  (`ci_migration_check`) before the tests run, so a migration that only works
-  against an already-populated database fails loudly. The SQLite half of this
-  check went away with the backend — it was never a proxy for production, since
-  SQLite accepted DDL PostgreSQL rejects outright.
+* The `migration-and-slow` arm applies the whole Alembic chain to a scratch
+  database (`ci_migration_check`) before the tests run, so a migration that
+  only works against an already-populated database fails loudly. Other arms
+  skip this standalone check; their test fixtures still provision PostgreSQL
+  normally. The SQLite half of this check went away with the backend — it was
+  never a proxy for production, since SQLite accepted DDL PostgreSQL rejects
+  outright.
 
 ### Concurrency
 
