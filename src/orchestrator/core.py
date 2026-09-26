@@ -317,6 +317,7 @@ class Orchestrator(
         # Terminal onboarding records share the hourly operational retention
         # cadence, but remain independent of Playbook V2 being enabled.
         self._last_operational_event_retention_sweep: float = 0.0
+        self._last_conversation_maintenance: float = 0.0
         # Playbook V2 retention sweep, interval-limited by configuration.
         self._last_playbook_retention_sweep: float = 0.0
         self._last_worktree_reaper: float = 0.0
@@ -2972,6 +2973,10 @@ class Orchestrator(
             # failed cleanup must not interrupt scheduling.
             await self._sweep_operational_event_retention()
 
+            # Conversation retention runs even with intake disabled when old
+            # rows remain. Delay notices go through the currently bound outbox.
+            await self._maintain_conversations(now=now)
+
             # 10. Auto-archive stale terminal tasks (~once per hour).
             await self._auto_archive_tasks()
 
@@ -3015,6 +3020,23 @@ class Orchestrator(
             await self._revoke_expired_tokens()
         except Exception:
             logger.error("Scheduler cycle error", exc_info=True)
+
+    async def _maintain_conversations(self, *, now: float) -> None:
+        """Hourly maintenance; an outbox or database outage cannot stop scheduling."""
+        if now - self._last_conversation_maintenance < 3600:
+            return
+        self._last_conversation_maintenance = now
+        try:
+            outbox = self.conversation_outbox
+            if not outbox.bound and not await self.db.list_conversations(limit=1):
+                return
+            from src.conversations.maintenance import ConversationMaintenance
+
+            result = await ConversationMaintenance(db=self.db, outbox=outbox).tick(now=now)
+            if any(result.values()):
+                logger.info("Conversation maintenance: %s", result)
+        except Exception:
+            logger.warning("Conversation maintenance failed", exc_info=True)
 
     # -----------------------------------------------------------------------
     # Framework-overhaul cascade stubs (Wave 0 substrate).

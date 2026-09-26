@@ -237,6 +237,7 @@
         "tests/test_conversation_backfill.py",
         "tests/test_conversation_intake.py",
         "tests/test_conversation_limits.py",
+        "tests/test_conversation_maintenance.py",
         "tests/test_conversation_outbox.py",
         "tests/test_conversation_preconditions.py",
         "tests/test_conversation_queries.py",
@@ -946,6 +947,7 @@
         "tests/test_conversation_backfill.py",
         "tests/test_conversation_intake.py",
         "tests/test_conversation_limits.py",
+        "tests/test_conversation_maintenance.py",
         "tests/test_conversation_outbox.py",
         "tests/test_conversation_preconditions.py",
         "tests/test_conversation_queries.py",
@@ -1221,7 +1223,7 @@
       ]
     }
   },
-  "digest": "sha256:aa4065aad132d0d2574b8c8757bfd58c52514e69d7d389e201890e5b18e80833",
+  "digest": "sha256:36c18b76d0bee99c52b25f0256a72e7d2b7ca15003a379fe0e699830a04f54a2",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3724,6 +3726,27 @@
       ],
       "markers": [],
       "summary": "The mention-routing spec's numeric bounds, pinned in one place (plan Task 3)."
+    },
+    "tests/test_conversation_maintenance.py": {
+      "areas": [
+        "discord-conversations",
+        "supervisor"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.conversations.maintenance",
+        "src.conversations.outbox",
+        "src.database",
+        "src.database.tables",
+        "src.orchestrator"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Delay notices, retained dedup provenance and idle conversation closing."
     },
     "tests/test_conversation_outbox.py": {
       "areas": [
