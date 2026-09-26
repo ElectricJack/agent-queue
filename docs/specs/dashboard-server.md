@@ -34,8 +34,8 @@ same-origin, nothing gains CORS, and the daemon stops serving browser content.
 WebSockets — including the binary terminal with its subprotocol and credit-based
 flow control — all relay cleanly, on one condition: the WebSocket handshake is
 opened upstream *first* (§2.4). Two findings changed the brief: a proxy hides the
-browser's address from the daemon, so two loopback-only rules are re-applied at
-the dashboard server (§3.3); and a pre-change `aq update` validates new code with
+browser's address from the daemon, so terminal origin and bearer peer rules are
+enforced at the dashboard server (§3.3); and a pre-change `aq update` validates new code with
 its old in-memory logic, which decides what the daemon may answer on
 `/dashboard` (§5, §6.2).
 
@@ -257,17 +257,22 @@ the daemon's parser.
 
 ### 3.3 The address a proxy hides
 
-Behind any proxy the daemon sees every connection arrive from `127.0.0.1`. Two
-daemon rules key on the peer address and would silently stop meaning anything:
-terminals are loopback-only
-([`src/api/terminal_stream.py`](../../src/api/terminal_stream.py)), and
-global-admin bearer tokens are loopback-only
-([`src/api/middleware.py`](../../src/api/middleware.py)). The same hole exists
-today behind `vite --host`. The dashboard server sees the real peer, so it
-re-applies both: from a **non-loopback peer**, `/ws/terminal/*` is denied and any
-request carrying `Authorization` or an `aq-bearer.*` subprotocol is denied, both
-`403` `loopback_only`. The daemon is not changed and no forwarding header is
-invented.
+Behind a local proxy the daemon sees connections arrive from `127.0.0.1`.
+The dashboard server therefore checks the browser's peer and origin before
+relaying a terminal connection. Local connections keep their existing behavior.
+A **non-loopback terminal WebSocket** is allowed only when its single valid
+`Origin` is explicitly listed in `api_auth.trusted_dashboard_origins`, after
+the Host and Origin gates pass. A concrete LAN bind or a same-origin request
+alone is insufficient; missing origins and unlisted origins retain `403
+loopback_only`. This preserves the trusted-origin LAN workflow that worked
+through `vite --host`, which the initial serve-mode implementation rejected
+unconditionally. The upstream daemon still checks terminal authorization,
+trusted origins and session availability.
+
+Requests carrying `Authorization` or an `aq-bearer.*` subprotocol remain
+loopback-only, including terminal requests from trusted origins. Origin trust
+does not grant remote bearer use. The daemon is not changed and no forwarding
+header is invented.
 
 ### 3.4 Exposure statement
 
@@ -285,7 +290,11 @@ login. The Host and Origin gates stop other websites' scripts; they do not stop
 a person on that network with `curl`. **A LAN bind hands the operator console to
 that network.**
 
-**Not reachable:** interactive terminals and bearer-token requests (§3.3);
+**Interactive terminals:** reachable from browser origins explicitly listed in
+`api_auth.trusted_dashboard_origins` (§3.3). As with the API, this is an operator
+console on a trusted network, not network-client authentication.
+
+**Not reachable:** terminals from unlisted or missing origins and bearer-token requests (§3.3);
 `/mcp`, `/docs`, `/redoc`, `/openapi.json`, `/plans/*`; port 8081 itself, which
 stays on `mcp_server.host`; PostgreSQL; any file not listed in the bundle
 manifest. With `require_session_token: true` a LAN peer gets `401` on everything
@@ -436,7 +445,7 @@ starts both, and validates `/health` on the daemon plus `/__aq/health` and
 | Bundle | `tests/test_dashboard_server_bundle.py`; the verifier and mount cases leave [`tests/test_release_artifact.py`](../../tests/test_release_artifact.py), whose staging and metadata cases stay | digest mismatch, unsafe path, missing `index.html` and missing `base` fail closed; a file outside the manifest is not served; SPA fallback and the reserved prefixes; cache and security headers |
 | HTTP proxy | `tests/test_dashboard_server_proxy.py`, against a fake upstream ASGI app on an ephemeral port | the path table (`/apix`, `/mcp`, dot segments); headers passed and dropped; an SSE chunk delivered before upstream finishes, asserted with events, not wall-clock; disconnect cancels upstream; streamed upload; `503` and `504` bodies |
 | WebSocket proxy | same file | the subprotocol selected upstream is the one accepted; an upstream refusal denies the handshake; text/binary and frame boundaries; close code and reason both ways; a stalled consumer blocks the upstream sender with bounded proxy memory; upstream down denies `503` |
-| Edge gates | `tests/test_dashboard_server_edge.py` | Host `421`; Origin `403`; trusted origin admitted; a non-loopback peer is refused terminals, `Authorization` and `aq-bearer.*` |
+| Edge gates | `tests/test_dashboard_server_edge.py` | Host `421`; Origin `403`; trusted-origin LAN terminal admitted; missing/unlisted terminal origins, `Authorization` and `aq-bearer.*` refused for non-loopback peers |
 | Daemon | `tests/test_api_dashboard_pointer.py` and the existing [`tests/test_api_client_contract.py`](../../tests/test_api_client_contract.py) | `307` with `Location` and body; `404` when disabled; precedence over the MCP mount; unchanged `openapi.json`; **the import boundary in both directions**, from a subprocess inspecting `sys.modules`; the real `TerminalStreamService` accepts an `Origin`/`Host` pair relayed unchanged and refuses an untrusted LAN host `4403` |
 | CLI / process | `tests/test_cli_dashboard_server.py` | idempotent start, stale PID, `port_conflict`, `SIGTERM` then `SIGKILL`, `aq start` / `stop` / `restart` ordering, both flags, `aq status --json` with the daemon down |
 | Doctor | `tests/test_doctor_dashboard_server.py` | each check's pass, warn and fix text; no import of `src.dashboard_server` |

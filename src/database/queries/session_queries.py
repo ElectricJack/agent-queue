@@ -41,9 +41,12 @@ import time
 
 from sqlalchemy import and_, delete, func, insert, or_, select, update
 
-from src.database.tables import agent_profiles, agents, sessions, task_session_attempts
+from src.database.tables import (
+    agent_profiles, agents, gates, integration_batches, playbook_v2_runs,
+    projects, sessions, task_session_attempts, tasks,
+)
 from src.database.queries.task_session_queries import TERMINAL_SESSION_STATES, open_attempts
-from src.models import AgentState, SessionRecord
+from src.models import AgentState, ProjectStatus, SessionRecord, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +478,48 @@ class SessionQueryMixin:
             )
             row = result.fetchone()
             return int(row[0]) if row else 0
+
+    async def has_supervision_work(self, project_id: str | None = None) -> bool:
+        """Outstanding responsibilities that prevent supervisor idle sleep.
+
+        None means every project. Use EXISTS rather than hydrating the fleet's
+        task/session history on each reconciliation tick. Failed tasks remain
+        actionable until completed or archived, as in list_active_tasks.
+        """
+        project_scope = select(projects.c.id).where(
+            projects.c.status != ProjectStatus.ARCHIVED.value
+        )
+        if project_id is not None:
+            project_scope = project_scope.where(projects.c.id == project_id)
+        checks = [
+            select(tasks.c.id).where(
+                tasks.c.project_id.in_(project_scope),
+                tasks.c.status != TaskStatus.COMPLETED.value,
+            ).exists(),
+            select(gates.c.id).where(
+                gates.c.project_id.in_(project_scope), gates.c.status == "open",
+            ).exists(),
+            select(integration_batches.c.id).where(
+                integration_batches.c.project_id.in_(project_scope),
+                integration_batches.c.lifecycle.in_((
+                    "sealing", "sealed", "building", "testing", "repairing",
+                    "human_blocked", "promoting", "cleanup_pending",
+                )),
+            ).exists(),
+        ]
+        live_work = select(sessions.c.id).where(
+            sessions.c.state.in_(_LIVE_STATES), sessions.c.task_id.is_not(None),
+        )
+        if project_id is not None:
+            live_work = live_work.where(sessions.c.project_id == project_id)
+        checks.append(live_work.exists())
+        if project_id is None:
+            checks.append(select(playbook_v2_runs.c.run_id).where(
+                playbook_v2_runs.c.mode == "live",
+                playbook_v2_runs.c.lifecycle.in_(("running", "paused", "cancelling")),
+            ).exists())
+        async with self._engine.connect() as conn:
+            return bool(await conn.scalar(select(or_(*checks))))
 
     async def touch_session_activity(self, session_id: str, ts: float, *, conn=None) -> None:
         """Advance activity without allowing a delayed observer to rewind it."""

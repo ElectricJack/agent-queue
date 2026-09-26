@@ -469,6 +469,34 @@ async def test_supervisor_button_and_message_wake_share_one_start_and_resume(han
     assert await handler.db.list_messages() == []
 
 
+@pytest.mark.parametrize("project_id", [None, "active", "paused", "missing"])
+async def test_supervisor_terminal_always_starts_and_reuses_global_scope(handler, project_id):
+    await handler.db.create_agent(
+        Agent(
+            id="supervisor-global", name="Oracle Owl", profile_id="supervisor", role="supervisor"
+        )
+    )
+    await handler.db.create_project(Project(id="active", name="Active"))
+    await handler.db.create_project(
+        Project(id="paused", name="Paused", status=ProjectStatus.PAUSED)
+    )
+
+    result = await start(handler, "supervisor-global", project_id=project_id)
+    assert "error" not in result, result
+    row = await handler.db.get_session(result["session_id"])
+    assert row.name == "n-supervisor--global" and row.project_id is None
+    spec = provider(handler).starts[0]
+    scope = await handler.orchestrator.token_store.validate(spec.env["AQ_API_TOKEN"])
+    assert scope.elevated and scope.project_id is None
+    for target in ("active", "paused"):
+        assert check_command_scope("create_task", {"project_id": target}, scope) is None
+
+    repeated = await start(handler, "supervisor-global", project_id=project_id)
+    assert "error" not in repeated, repeated
+    assert repeated["session_id"] == row.id
+    assert len(provider(handler).starts) == 1
+
+
 async def test_active_assignment_without_current_pointer_cannot_start(handler):
     await handler.db.create_project(Project(id="p", name="P"))
     await handler.db.create_task(

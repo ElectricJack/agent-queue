@@ -129,6 +129,7 @@ def skip_permissions_allowed(profile, workspace_source_type) -> bool:
 #: session exists to process.
 NAMED_BOOTSTRAP_PROMPT = (
     "You are the {profile} session in {work_dir}.\n"
+    "{supervisor_scope}"
     "{supervisor_patrol}"
     "Run `aq message inbox --inject --json` once to retrieve pending messages, "
     "then handle anything waiting.\n"
@@ -370,6 +371,15 @@ class SessionSpecBuilder:
         bootstrap = prompt if prompt is not None else NAMED_BOOTSTRAP_PROMPT.format(
             profile=profile_id or "agent",
             work_dir=work_dir,
+            supervisor_scope=(
+                "You are the global supervisor for ALL projects in AQ. Your elevated "
+                "AQ access is global; an unset project is intentional. Do not ask the "
+                "user to select a project to connect or resume this terminal. Select "
+                "a project only when a specific operation needs a target.\n"
+                if is_supervisor and project_id is None else
+                f"You supervise project {project_id}; stay within that project's scope.\n"
+                if is_supervisor else ""
+            ),
             supervisor_patrol=SUPERVISOR_PATROL_PROMPT if is_supervisor else "",
         )
         return self._build(

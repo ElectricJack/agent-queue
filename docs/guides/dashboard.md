@@ -49,6 +49,28 @@ ssh -L 8082:127.0.0.1:8082 <aq-host>
 
 Then open `http://localhost:8082/` on your own machine. The browser's origin is then a loopback one, so everything — interactive terminals included — works with no configuration.
 
+For direct access on a trusted LAN, bind the serve-mode dashboard to `0.0.0.0`
+and list the exact browser origin in `api_auth.trusted_dashboard_origins`:
+
+```yaml
+dashboard:
+  server:
+    host: 0.0.0.0
+    port: 5173
+api_auth:
+  trusted_dashboard_origins:
+    - http://192.168.1.69:5173
+```
+
+Use your AQ host's LAN address in place of the example and keep any existing
+trusted origins. Run `aq restart --no-dashboard` when changing origins, because
+both the daemon and dashboard read them at startup. If only the dashboard bind
+or port changes, `aq dashboard restart` is enough. Open the listed origin from
+the other laptop; interactive terminals work through the same serve-mode proxy.
+Behind WSL NAT, Windows must also forward that port to WSL and permit it through
+the firewall. A trusted origin is required for remote terminal WebSockets even
+when it matches the dashboard's bind address.
+
 > **Warning.** Setting `dashboard.server.host` to a LAN address or `0.0.0.0` hands the operator console to that network. There is no login: a request without a bearer token runs with local-operator scope unless `api_auth.require_session_token` is on, so anyone who can connect to the port can create and delete tasks, type into agent sessions, read transcripts, panes and workspace files, and read (redacted) and write configuration. The Host and Origin checks stop *other websites' scripts*; they do not stop a person on that network with `curl`.
 
 When the server is bound to a non-loopback address:
@@ -56,7 +78,8 @@ When the server is bound to a non-loopback address:
 | | From another machine |
 |---|---|
 | **Reachable** | The static dashboard, `/health`, `/ready`, `/ws/events` and every `/api/**` route with local-operator scope. From a browser, only under an allowed `Host` and `Origin`: the address itself, the configured `dashboard.server.host`, or a name listed in `api_auth.trusted_dashboard_origins`. Any other `Host` gets `421 misdirected_host`; any other `Origin` gets `403 origin_not_allowed`. |
-| **Not reachable** | Interactive terminals and any request carrying a bearer token (`403 loopback_only` — the daemon cannot see the real peer behind the proxy, so the dashboard server enforces its loopback-only rules for it); `/mcp`, the retired `/docs` and `/redoc` paths, `/openapi.json` and `/plans/*`; port 8081 itself, which stays on `mcp_server.host`; PostgreSQL; any file not listed in the bundle manifest. |
+| **Interactive terminals** | Available when the browser's exact origin is listed in `api_auth.trusted_dashboard_origins`. Missing or unlisted origins are refused. |
+| **Not reachable** | Any request carrying a bearer token (`403 loopback_only`); `/mcp`, the retired `/docs` and `/redoc` paths, `/openapi.json` and `/plans/*`; port 8081 itself, which stays on `mcp_server.host`; PostgreSQL; any file not listed in the bundle manifest. |
 
 With `api_auth.require_session_token: true`, a LAN browser gets `401` on everything except the health paths, since it holds no token and the dashboard server refuses remote bearer tokens. `aq doctor --check dashboard.server.exposure` warns while a non-loopback bind is configured. The gates are in [src/dashboard_server/edge.py](../../src/dashboard_server/edge.py); the reasoning is in the [design record](../specs/dashboard-server.md) §3.
 
@@ -175,7 +198,7 @@ Classify a field before writing code. If it must roam, add it to the dashboard-s
 | `localhost:5173` refuses connections in a source checkout | The Vite dev server is not running, dependencies are absent, or its port is occupied. | From the repository root run `npm install`, then `npm -w dashboard run dev`; inspect `~/.agent-queue/dashboard.log` when `aq start` launched it. [src/cli/daemon.py](../../src/cli/daemon.py) records the launcher behavior. |
 | A newly changed screen looks stale | Browser cache, a dashboard server still serving the previous build, or a stale development server. | Reload first. `aq dashboard status` says `serving an older build` after a rebuild the server has not picked up; run `aq dashboard restart` (`aq update` does this for you). In a source checkout, restart `npm -w dashboard run dev`. |
 | Activity stops updating | The `/ws/events` connection is disconnected, often because the daemon was restarted or a proxy does not forward WebSockets. | Check browser network errors and daemon health; refresh after restoring the endpoint. The client reconnects with backoff and discards a stale replay cursor after an epoch change. |
-| Terminal does not accept input or shows an error | The session is gone, the current actor lacks permission, the terminal WebSocket cannot reach the daemon, or the browser is on another machine (terminals are loopback-only, `403 loopback_only`). | Re-open the agent/task session, confirm the daemon is reachable, and inspect the task/session state in AQ. From another machine, use `ssh -L`. Do not treat terminal output as a successful task close; the daemon's task record is authoritative. |
+| Terminal does not accept input or shows an error | The session is gone, the current actor lacks permission, the terminal WebSocket cannot reach the daemon, or a remote browser's origin is not trusted. | Re-open the agent/task session, confirm the daemon is reachable, and inspect the task/session state in AQ. For direct LAN access, list the exact browser origin in `api_auth.trusted_dashboard_origins` and restart AQ; an SSH tunnel also works. Do not treat terminal output as a successful task close; the daemon's task record is authoritative. |
 | A banner says a provider is unavailable, or a task shows *Held by provider* | AQ stopped launching against that provider. Queued work on it is being moved to the same class elsewhere, or held (a pin, a single-provider class such as `astra-*`, or no capacity yet). A task's detail shows its provider intent and any "re-routed from … · undo". The Tasks tab's *Held by provider* filter lists what is waiting. | Follow [a provider ran out of usage](provider-outage.md). Every state shown is the daemon's own; refreshing will not change it, but `aq provider recheck --provider <p>` or the card's *Recheck* will. |
 | A form save fails | Server validation or an optimistic assumption was rejected. | Read the displayed API error, correct the input, and retry. Refresh the route if another user changed the same record. Do not edit browser storage to repair server state. |
 

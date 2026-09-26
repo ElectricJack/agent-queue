@@ -188,6 +188,57 @@ def test_a_lan_peer_is_refused_terminals(kind):
         assert _error(_lan_gate(), _lan_scope(path, kind=kind)) == "403 loopback_only"
 
 
+@pytest.mark.parametrize("origin", ["http://192.168.1.5:8082", "https://aq.example.com:443"])
+def test_a_trusted_origin_restores_lan_terminal_websockets(origin):
+    gate = _gate(
+        host="0.0.0.0",
+        trusted_origins=("http://192.168.1.5:8082", "https://aq.example.com"),
+    )
+    scope = _lan_scope(
+        "/ws/terminal/sess-1", kind="websocket", origin=origin,
+        subprotocols=["aq-terminal-v1"],
+    )
+    assert _error(gate, scope) is None
+
+
+def test_a_same_origin_lan_terminal_still_requires_explicit_trust():
+    scope = _lan_scope(
+        "/ws/terminal/sess-1", kind="websocket", origin="http://192.168.1.5:8082",
+    )
+    assert _error(_lan_gate(), scope) == "403 loopback_only"
+
+
+@pytest.mark.parametrize(
+    ("origin", "expected"),
+    [(None, "loopback_only"), ("http://evil.example", "origin_not_allowed"),
+     ("http://192.168.1.5:8083", "origin_not_allowed"), ("null", "origin_not_allowed")],
+)
+def test_trusted_lan_host_does_not_admit_missing_or_untrusted_terminal_origins(origin, expected):
+    gate = _gate(host="0.0.0.0", trusted_origins=("http://192.168.1.5:8082",))
+    scope = _lan_scope("/ws/terminal/sess-1", kind="websocket", origin=origin)
+    assert _error(gate, scope) == f"403 {expected}"
+
+
+def test_trusted_lan_terminal_still_checks_host_duplicate_origins_and_bearers():
+    origin = "http://192.168.1.5:8082"
+    gate = _gate(host="0.0.0.0", trusted_origins=(origin,))
+    scope = _lan_scope("/ws/terminal/sess-1", kind="websocket", origin=origin)
+    headers = scope["headers"]
+    bad_host = [(key, b"evil.example" if key == b"host" else value) for key, value in headers]
+    assert _error(gate, {**scope, "headers": bad_host}) == "421 misdirected_host"
+    duplicate = [*headers, (b"origin", origin.encode())]
+    assert _error(gate, {**scope, "headers": duplicate}) == "403 origin_not_allowed"
+    for added in (
+        [(b"authorization", b"Bearer aqs_x")],
+        [(b"sec-websocket-protocol", b"aq-terminal-v1, aq-bearer.x")],
+    ):
+        assert _error(gate, {**scope, "headers": [*headers, *added]}) == "403 loopback_only"
+    assert _error(gate, {**scope, "subprotocols": ["aq-terminal-v1", "aq-bearer.x"]}) == (
+        "403 loopback_only"
+    )
+    assert _error(gate, {**scope, "type": "http"}) == "403 loopback_only"
+
+
 def test_a_lan_peer_is_refused_bearer_tokens():
     authorized = _lan_scope(headers=[(b"authorization", b"Bearer aqs_x")])
     assert _error(_lan_gate(), authorized) == "403 loopback_only"

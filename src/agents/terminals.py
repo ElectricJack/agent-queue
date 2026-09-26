@@ -118,6 +118,10 @@ async def _start_locked(orchestrator, agent_id, config, project_id: str | None):
         raise TerminalStartError("Agent not found")
     if not agent.enabled:
         raise TerminalStartError("Agent is disabled; enable it before starting a terminal")
+    if agent.id == SUPERVISOR_AGENT_ID and agent.role == "supervisor":
+        # A project selection from an older client must not narrow global scope
+        # or make an existing global terminal look like a conflicting session.
+        project_id = None
     if project_id is not None:
         project = await db.get_project(project_id)
         if project is None:
