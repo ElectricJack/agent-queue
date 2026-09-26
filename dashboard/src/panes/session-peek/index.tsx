@@ -34,7 +34,7 @@ export default function SessionPeekPane({
 
   const { data: session } = useSession(sessionId);
   const kill = useSessionKill();
-  const { screen, status, error } = usePaneStream(sessionId, { enabled: true });
+  const { screen, status, error, attempt, reconnect } = usePaneStream(sessionId, { enabled: true });
 
   const exited = session?.lifecycle === "exited" || session?.lifecycle === "terminated";
 
@@ -98,7 +98,7 @@ export default function SessionPeekPane({
           Session exited — showing last scrollback.
         </div>
       )}
-      <LivePaneConsole screen={screen} status={status} error={error} className="flex-1" />
+      <LivePaneConsole screen={screen} status={status} error={error} attempt={attempt} reconnect={reconnect} className="flex-1" />
     </div>
   );
 }

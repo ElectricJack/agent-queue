@@ -1,6 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { act, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook } from "@testing-library/react";
 import { MAX_SCREEN_CHARS, usePaneStream } from "../usePaneStream";
+
+const api = vi.hoisted(() => ({ sessionShow: vi.fn() }));
+vi.mock("../../api/client", () => api);
 
 class MockEventSource {
   static last: MockEventSource | null = null;
@@ -19,12 +22,22 @@ class MockEventSource {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
+  api.sessionShow.mockReset().mockResolvedValue({ data: { session: { state: "running" } } });
   MockEventSource.last = null;
   vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
 });
 afterEach(() => {
+  cleanup();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
+
+function pane(hook: () => ReturnType<typeof usePaneStream>) {
+  const result = renderHook(hook);
+  act(() => vi.advanceTimersByTime(0));
+  return result;
+}
 
 function send(frame: Record<string, unknown>) {
   act(() => {
@@ -34,7 +47,7 @@ function send(frame: Record<string, unknown>) {
 
 describe("usePaneStream", () => {
   it("replaces the screen rather than appending", () => {
-    const { result } = renderHook(() => usePaneStream("s1"));
+    const { result } = pane(() => usePaneStream("s1"));
     send({ source: "pane", type: "screen", screen: "first", seq: 1, ts: 1 });
     expect(result.current.screen).toBe("first");
     send({ source: "pane", type: "screen", screen: "second", seq: 2, ts: 2 });
@@ -42,7 +55,7 @@ describe("usePaneStream", () => {
   });
 
   it("surfaces a stopped frame as status", () => {
-    const { result } = renderHook(() => usePaneStream("s1"));
+    const { result } = pane(() => usePaneStream("s1"));
     send({ source: "pane", type: "screen", screen: "last", seq: 1, ts: 1 });
     send({ source: "pane", type: "stopped", seq: 2, ts: 2 });
     expect(result.current.status).toBe("stopped");
@@ -50,7 +63,7 @@ describe("usePaneStream", () => {
   });
 
   it("surfaces an error frame with its message", () => {
-    const { result } = renderHook(() => usePaneStream("s1"));
+    const { result } = pane(() => usePaneStream("s1"));
     send({ source: "pane", type: "error", message: "tmux is gone", seq: 1, ts: 1 });
     expect(result.current.status).toBe("error");
     expect(result.current.error).toBe("tmux is gone");
@@ -60,7 +73,7 @@ describe("usePaneStream", () => {
     // The server returns from its generator on a terminal frame, and per the
     // SSE spec a normally-closed stream is retried after ~3s. Left open, that
     // re-subscribes forever.
-    const { result } = renderHook(() => usePaneStream("s1"));
+    const { result } = pane(() => usePaneStream("s1"));
     send({ source: "pane", type: "screen", screen: "last", seq: 1, ts: 1 });
     send({ source: "pane", type: "stopped", seq: 2, ts: 2 });
     expect(MockEventSource.last?.closed).toBe(true);
@@ -69,7 +82,7 @@ describe("usePaneStream", () => {
   });
 
   it("closes the stream on an error frame", () => {
-    renderHook(() => usePaneStream("s1"));
+    pane(() => usePaneStream("s1"));
     send({ source: "pane", type: "error", message: "cap reached", seq: 1, ts: 1 });
     expect(MockEventSource.last?.closed).toBe(true);
   });
@@ -77,7 +90,7 @@ describe("usePaneStream", () => {
   it("keeps the last good screen when an empty one arrives after a terminal frame", () => {
     // A re-subscribe peeks a reaped tmux session and gets "", which is not
     // nullish — `f.screen ?? prev.screen` would happily blank the banner.
-    const { result } = renderHook(() => usePaneStream("s1"));
+    const { result } = pane(() => usePaneStream("s1"));
     send({ source: "pane", type: "screen", screen: "last words", seq: 1, ts: 1 });
     send({ source: "pane", type: "stopped", seq: 2, ts: 2 });
     send({ source: "pane", type: "screen", screen: "", seq: 3, ts: 3 });
@@ -86,7 +99,7 @@ describe("usePaneStream", () => {
   });
 
   it("ignores onerror after we closed the stream ourselves", () => {
-    const { result } = renderHook(() => usePaneStream("s1"));
+    const { result } = pane(() => usePaneStream("s1"));
     send({ source: "pane", type: "stopped", seq: 1, ts: 1 });
     act(() => {
       MockEventSource.last?.onerror?.();
@@ -94,70 +107,134 @@ describe("usePaneStream", () => {
     expect(result.current.status).toBe("stopped");
   });
 
-  it("says a closed EventSource will not retry", () => {
-    const { result } = renderHook(() => usePaneStream("s1"));
+  it("retries even a CLOSED EventSource and restores its screen", async () => {
+    const { result } = pane(() => usePaneStream("s1"));
     act(() => {
       MockEventSource.last!.readyState = 2;
       MockEventSource.last?.onerror?.();
     });
-    expect(result.current.status).toBe("error");
-    expect(result.current.error).toMatch(/no reconnect/);
+    expect(result.current.status).toBe("reconnecting");
+    expect(result.current.attempt).toBe(1);
+    const old = MockEventSource.last;
+    await act(() => vi.advanceTimersByTimeAsync(500));
+    expect(MockEventSource.last).not.toBe(old);
+    send({ type: "screen", screen: "restored", seq: 1 });
+    expect(result.current.status).toBe("open");
+    expect(result.current.screen).toBe("restored");
   });
 
   it("opens no connection when disabled", () => {
-    renderHook(() => usePaneStream("s1", { enabled: false }));
+    pane(() => usePaneStream("s1", { enabled: false }));
     expect(MockEventSource.last).toBeNull();
   });
 
   it("closes the connection on unmount", () => {
-    const { unmount } = renderHook(() => usePaneStream("s1"));
+    const { unmount } = pane(() => usePaneStream("s1"));
     const es = MockEventSource.last;
     unmount();
     expect(es?.closed).toBe(true);
   });
 });
 
-describe("usePaneStream — stale state and retry", () => {
-  it("marks the screen interrupted on a connection error and clears it on the next frame", () => {
-    const { result } = renderHook(() => usePaneStream("s1"));
-    send({ source: "pane", type: "screen", screen: "kept", seq: 1, ts: 1 });
+it.each(["API 401: token required", "API 403: denied"])("does not reconnect on %s", async (message) => {
+  api.sessionShow.mockRejectedValue(new Error(message));
+  const { result } = pane(() => usePaneStream("s1"));
+  const old = MockEventSource.last!;
+  act(() => { old.readyState = 2; old.onerror?.(); });
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(result.current.status).toBe("error");
+  expect(result.current.error).toBe(message);
+  expect(MockEventSource.last).toBe(old);
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("stops when a CLOSED stream's session has ended", async () => {
+  api.sessionShow.mockResolvedValue({ data: { session: { state: "stopped" } } });
+  const { result } = pane(() => usePaneStream("s1"));
+  send({ type: "screen", screen: "last words" });
+  const old = MockEventSource.last!;
+  act(() => { old.readyState = 2; old.onerror?.(); });
+  await act(() => vi.advanceTimersByTimeAsync(60_000));
+  expect(result.current.status).toBe("stopped");
+  expect(result.current.screen).toBe("last words");
+  expect(MockEventSource.last).toBe(old);
+});
+
+it("pauses while hidden and resumes immediately without replacing the last screen", () => {
+  const { result } = pane(() => usePaneStream("s1"));
+  send({ type: "screen", screen: "last" });
+  const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+  const old = MockEventSource.last!;
+  act(() => old.onerror?.());
+  act(() => vi.advanceTimersByTime(60_000));
+  expect(MockEventSource.last).toBe(old);
+  expect(result.current.screen).toBe("last");
+  visible.mockReturnValue("visible");
+  act(() => { document.dispatchEvent(new Event("visibilitychange")); vi.advanceTimersByTime(0); });
+  expect(MockEventSource.last).not.toBe(old);
+  visible.mockRestore();
+});
+
+it("manual pane recovery opens one subscription and ignores old callbacks", () => {
+  const { result } = pane(() => usePaneStream("s1"));
+  const old = MockEventSource.last!;
+  act(() => old.onerror?.());
+  act(() => { result.current.reconnect?.(); vi.advanceTimersByTime(0); });
+  send({ type: "screen", screen: "new" });
+  act(() => old.onmessage?.({ data: JSON.stringify({ type: "screen", screen: "stale" }) }));
+  expect(result.current.screen).toBe("new");
+  expect(old.closed).toBe(true);
+});
+
+describe("usePaneStream — stale screen and manual reconnect", () => {
+  it("marks the screen interrupted from a drop until the next frame, keeping it on show", async () => {
+    const { result } = pane(() => usePaneStream("s1"));
+    send({ type: "screen", screen: "kept", seq: 1 });
     expect(result.current.lastFrameAt).not.toBeNull();
+    expect(result.current.interrupted).toBe(false);
     act(() => MockEventSource.last?.onerror?.());
+    expect(result.current.status).toBe("reconnecting");
     expect(result.current.interrupted).toBe(true);
     expect(result.current.screen).toBe("kept");
-    send({ source: "pane", type: "screen", screen: "fresh", seq: 2, ts: 2 });
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    act(() => MockEventSource.last?.onopen?.());
+    expect(result.current.interrupted).toBe(true); // connected, but nothing new on screen yet
+    send({ type: "screen", screen: "fresh", seq: 2 });
     expect(result.current.interrupted).toBe(false);
-    expect(result.current.status).toBe("open");
     expect(result.current.screen).toBe("fresh");
   });
 
-  it("retry opens a new stream for the same session and keeps the last screen", () => {
-    const { result } = renderHook(() => usePaneStream("s1"));
-    send({ source: "pane", type: "screen", screen: "kept", seq: 1, ts: 1 });
-    const first = MockEventSource.last;
-    act(() => { first!.readyState = 2; first!.onerror?.(); });
-    act(() => result.current.retry());
-    expect(first!.closed).toBe(true);
+  it("reconnect after an error frame opens a fresh stream and keeps the last screen", () => {
+    const { result } = pane(() => usePaneStream("s1"));
+    send({ type: "screen", screen: "kept", seq: 1 });
+    send({ type: "error", message: "tmux is gone", seq: 2 });
+    const first = MockEventSource.last!;
+    expect(first.closed).toBe(true);
+    act(() => result.current.reconnect());
+    act(() => vi.advanceTimersByTime(0));
     expect(MockEventSource.last).not.toBe(first);
     expect(result.current.screen).toBe("kept");
     expect(result.current.status).toBe("connecting");
     expect(result.current.interrupted).toBe(true);
-    send({ source: "pane", type: "screen", screen: "after retry", seq: 1, ts: 3 });
-    expect(result.current.screen).toBe("after retry");
-    expect(result.current.interrupted).toBe(false);
+    send({ type: "screen", screen: "after reconnect", seq: 1 });
+    expect(result.current.status).toBe("open");
+    expect(result.current.screen).toBe("after reconnect");
   });
 
   it("a different session starts blank", () => {
     const { result, rerender } = renderHook(({ id }) => usePaneStream(id), { initialProps: { id: "s1" } });
-    send({ source: "pane", type: "screen", screen: "s1 screen", seq: 1, ts: 1 });
+    act(() => vi.advanceTimersByTime(0));
+    send({ type: "screen", screen: "s1 screen", seq: 1 });
     rerender({ id: "s2" });
     expect(result.current.screen).toBeNull();
     expect(result.current.lastFrameAt).toBeNull();
+    expect(result.current.interrupted).toBe(false);
   });
 
-  it("bounds a runaway screen", () => {
-    const { result } = renderHook(() => usePaneStream("s1"));
-    send({ source: "pane", type: "screen", screen: "x".repeat(MAX_SCREEN_CHARS + 10), seq: 1, ts: 1 });
-    expect(result.current.screen!.length).toBe(MAX_SCREEN_CHARS);
+  it("bounds a runaway screen to its newest characters", () => {
+    const { result } = pane(() => usePaneStream("s1"));
+    send({ type: "screen", screen: "old" + "x".repeat(MAX_SCREEN_CHARS), seq: 1 });
+    expect(result.current.screen).toHaveLength(MAX_SCREEN_CHARS);
+    expect(result.current.screen!.startsWith("old")).toBe(false);
   });
 });

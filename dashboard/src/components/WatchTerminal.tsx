@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowsPointingInIcon, ArrowsPointingOutIcon } from "@heroicons/react/24/outline";
 import LivePaneConsole from "./LivePaneConsole";
-import { STREAM_CLOSED, usePaneStream, type PaneState } from "../ws/usePaneStream";
+import { usePaneStream, type PaneState } from "../ws/usePaneStream";
 import { useHistoryOverlay } from "../hooks/useHistoryOverlay";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 
@@ -15,17 +15,18 @@ const TOOL =
 
 /**
  * One line for the stream's state. It is a live region, so it changes on a
- * transition only — never per frame — and a stale state says how old the
- * screen on show is.
+ * transition only — never per frame or per retry — and a stale state says how
+ * old the screen on show is. The stream retries a drop on its own, with
+ * backoff, until the session ends or the daemon refuses it.
  */
 function statusText(stream: PaneState): string {
   const at = stream.lastFrameAt ? new Date(stream.lastFrameAt).toLocaleTimeString() : null;
   const since = at ? ` · screen from ${at}` : "";
   if (stream.status === "stopped") return "Session ended — last screen";
-  if (stream.status === "error" && stream.error === STREAM_CLOSED) return `Disconnected${since}`;
-  if (stream.status === "error" && !stream.interrupted) return `Stream error${since}`;
+  if (stream.status === "error") return `Stream error${since}`;
   if (stream.interrupted) return at ? `Reconnecting${since}` : "Reconnecting…";
   if (stream.status === "connecting") return "Connecting…";
+  if (stream.status === "closed") return "Not connected";
   return "Live";
 }
 
@@ -119,7 +120,7 @@ export default function WatchTerminal({
           A+
         </button>
         {stale && (
-          <button type="button" data-primary-control className={TOOL} onClick={stream.retry}>
+          <button type="button" data-primary-control className={TOOL} onClick={stream.reconnect}>
             Retry
           </button>
         )}

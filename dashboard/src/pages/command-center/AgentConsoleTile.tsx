@@ -25,7 +25,7 @@ export default function AgentConsoleTile({
   subtitle,
   onOpen,
 }: AgentConsoleTileProps) {
-  const { screen, status, error } = usePaneStream(sessionId, { enabled: true });
+  const { screen, status, error, attempt, reconnect } = usePaneStream(sessionId, { enabled: true });
 
   return (
     <div className="flex flex-col overflow-hidden rounded border border-gray-800 focus-within:border-gray-600 hover:border-gray-600">
@@ -44,6 +44,8 @@ export default function AgentConsoleTile({
         screen={screen}
         status={status}
         error={error}
+        attempt={attempt}
+        reconnect={reconnect}
         className="h-48 w-full"
       />
     </div>

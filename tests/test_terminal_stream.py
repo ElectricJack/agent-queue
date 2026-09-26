@@ -493,3 +493,133 @@ async def test_older_tmux_observation_cannot_overwrite_silent_input_activity(set
         assert (await db.get_session("s")).last_activity == 250.0
     finally:
         await db.close()
+
+
+async def test_ping_pong_is_not_input_or_activity(setup):
+    ws = Socket()
+    running = asyncio.create_task(service(setup).handle(ws, "s"))
+    assert (await ws.next())["type"] == "ready"
+    await ws.control({"type": "ping"})
+    assert await ws.next() == {"type": "pong"}
+    assert setup.client.inputs == []
+    assert setup.db.touches == []
+    await ws.disconnect()
+    await asyncio.wait_for(running, 2)
+
+
+@pytest.mark.parametrize("case,code", [
+    ("live", 0), ("auth", 4401), ("origin", 4403),
+    ("peer", 4403), ("ended", 4409), ("capacity", 4429),
+])
+async def test_http_terminal_probe_checks_access_without_attaching(setup, case, code):
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    headers = [(b"host", b"localhost:5173")]
+    if case == "auth":
+        setup.config.api_auth.require_session_token = True
+    elif case == "origin":
+        # Same-origin browser GETs omit Origin; an untrusted Host still fails.
+        headers = [(b"host", b"attacker.example")]
+    elif case == "ended":
+        setup.db.row = replace(setup.db.row, state="stopped")
+    router = module().build_terminal_router(
+        setup.orch, setup.config, token_store=setup.store, attach=setup.attach,
+        connection_limit=0 if case == "capacity" else 16,
+    )
+    endpoint = next(r.endpoint for r in router.routes if getattr(r, "methods", None) == {"GET"})
+    request = Request({
+        "type": "http", "method": "GET", "scheme": "http", "path": "/ws/terminal/s",
+        "query_string": b"", "headers": headers,
+        "server": ("localhost", 5173), "client": ("remote" if case == "peer" else "127.0.0.1", 1),
+    })
+    response = Response()
+    result = await endpoint(request=request, session_id="s", response=response)
+    assert response.headers["Cache-Control"] == "no-store"
+    assert result.code == code
+    assert result.status == ("ready" if code == 0 else "exited" if code == 4409 else "error")
+    assert result.retryable == (code == 4429)
+    assert setup.client.sizes == []  # attach() was never called
+    assert setup.client.inputs == []
+    assert not setup.client.closed
+
+
+async def test_terminal_probe_trusted_tls_origin_and_expired_credentials(setup):
+    from starlette.requests import Request
+    from starlette.responses import Response
+
+    setup.config.api_auth.trusted_dashboard_origins = ["https://dashboard.example"]
+    setup.config.api_auth.require_session_token = True
+    router = module().build_terminal_router(
+        setup.orch, setup.config, token_store=setup.store, attach=setup.attach,
+    )
+    endpoint = next(r.endpoint for r in router.routes if getattr(r, "methods", None) == {"GET"})
+    request = Request({
+        "type": "http", "method": "GET", "scheme": "http", "path": "/ws/terminal/s",
+        "query_string": b"", "headers": [
+            (b"host", b"dashboard.example"), (b"authorization", b"Bearer aqs_valid"),
+        ], "server": ("localhost", 8081), "client": ("127.0.0.1", 1),
+    })
+    result = await endpoint(
+        request=request, session_id="s", response=Response(),
+        browser_origin="https://dashboard.example",
+    )
+    assert result.status == "ready"
+    setup.store.value = None
+    result = await endpoint(
+        request=request, session_id="s", response=Response(),
+        browser_origin="https://dashboard.example",
+    )
+    assert result.code == 4401 and not result.retryable
+    assert setup.client.sizes == []
+
+
+async def test_terminal_probe_and_keepalive_through_real_proxy(setup):
+    import aiohttp
+    from fastapi import FastAPI
+    from websockets.asyncio.client import connect
+
+    from src.dashboard_server.proxy import DaemonProxy
+    from tests.dashboard_server_helpers import serve_asgi
+
+    app = FastAPI()
+    app.include_router(module().build_terminal_router(
+        setup.orch, setup.config, token_store=setup.store, attach=setup.attach,
+    ))
+    async with serve_asgi(app) as daemon_url:
+        proxy = DaemonProxy(daemon_url, version="test")
+        await proxy.start()
+
+        async def relay(scope, receive, send):
+            if scope["type"] == "lifespan":
+                while True:
+                    frame = await receive()
+                    if frame["type"] == "lifespan.startup":
+                        await send({"type": "lifespan.startup.complete"})
+                    elif frame["type"] == "lifespan.shutdown":
+                        await proxy.close()
+                        await send({"type": "lifespan.shutdown.complete"})
+                        return
+            elif scope["type"] == "http":
+                await proxy.http(scope, receive, send)
+            else:
+                await proxy.websocket(scope, receive, send)
+
+        try:
+            async with serve_asgi(relay) as url, aiohttp.ClientSession() as http:
+                async with http.get(f"{url}/ws/terminal/s") as response:
+                    assert response.status == 200
+                    assert (await response.json())["status"] == "ready"
+                    assert response.headers["Cache-Control"] == "no-store"
+                assert setup.client.sizes == []
+                async with connect(
+                    url.replace("http://", "ws://") + "/ws/terminal/s?cols=80&rows=24",
+                    origin=url, subprotocols=["aq-terminal-v1"], proxy=None,
+                ) as ws:
+                    assert json.loads(await asyncio.wait_for(ws.recv(), 2))["type"] == "ready"
+                    await ws.send(json.dumps({"type": "ping"}))
+                    assert json.loads(await asyncio.wait_for(ws.recv(), 2)) == {"type": "pong"}
+                    assert setup.client.inputs == []
+                    assert setup.db.touches == []
+        finally:
+            await proxy.close()

@@ -13,7 +13,7 @@ export class TerminalSocketMock {
   closed = false;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string | ArrayBuffer }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event: { code: number }) => void) | null = null;
   onerror: (() => void) | null = null;
   send = vi.fn<(data: string | Uint8Array) => void>();
   constructor(public url: string, public protocols?: string[]) { TerminalSocketMock.instances.push(this); }
@@ -28,7 +28,7 @@ export class TerminalSocketMock {
   message(data: string | Uint8Array) {
     this.onmessage?.({ data: typeof data === "string" ? data : Uint8Array.from(data).buffer });
   }
-  serverClose() { this.readyState = 3; this.closed = true; this.onclose?.(); }
+  serverClose(code = 1001) { this.readyState = 3; this.closed = true; this.onclose?.({ code }); }
   close = vi.fn(() => this.serverClose());
   inputs() { return this.send.mock.calls.map(([data]) => data).filter((data): data is Uint8Array => typeof data !== "string"); }
   controls() { return this.send.mock.calls.flatMap(([data]) => typeof data === "string" ? [JSON.parse(data)] : []); }

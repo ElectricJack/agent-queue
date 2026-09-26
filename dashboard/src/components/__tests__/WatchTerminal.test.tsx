@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import WatchTerminal, { FONT_MAX, FONT_MIN } from "../WatchTerminal";
 
 const terminal = vi.hoisted(() => ({ connect: vi.fn() }));
+const api = vi.hoisted(() => ({ sessionShow: vi.fn() }));
 vi.mock("../../ws/terminalSocket", () => ({ connectTerminal: terminal.connect, terminalDimensions: vi.fn() }));
+vi.mock("../../api/client", () => api);
 vi.mock("../InteractiveTerminal", () => ({ default: () => { throw new Error("InteractiveTerminal must never mount in watch mode"); } }));
 
 class MockEventSource {
@@ -20,15 +22,27 @@ class MockEventSource {
 const latest = () => MockEventSource.all[MockEventSource.all.length - 1]!;
 const frame = (screenText: string) => act(() => latest().onmessage?.({ data: JSON.stringify({ type: "screen", screen: screenText, seq: 1 }) }));
 
+const tick = (ms = 0) => act(() => vi.advanceTimersByTime(ms));
+const status = () => screen.getByRole("status", { name: "worker-a terminal status" });
+
 beforeEach(() => {
+  vi.useFakeTimers();
   MockEventSource.all = [];
   terminal.connect.mockClear();
+  api.sessionShow.mockReset().mockResolvedValue({ data: { session: { state: "running" } } });
   vi.stubGlobal("EventSource", MockEventSource as unknown as typeof EventSource);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
 
-const renderWatch = (focusHref?: string) =>
-  render(<MemoryRouter><WatchTerminal sessionId="s1" name="worker-a" focusHref={focusHref} /></MemoryRouter>);
+function renderWatch(focusHref?: string) {
+  const view = render(<MemoryRouter><WatchTerminal sessionId="s1" name="worker-a" focusHref={focusHref} /></MemoryRouter>);
+  tick(); // the stream opens on the next tick
+  return view;
+}
 
 describe("WatchTerminal", () => {
   it("font size changes rendering only: 12–20 px, no new stream, no terminal socket", () => {
@@ -49,26 +63,47 @@ describe("WatchTerminal", () => {
     expect(terminal.connect).not.toHaveBeenCalled();
   });
 
-  it("keeps the last screen visibly stale and offers Retry after a drop", () => {
+  it("keeps the last screen visibly stale after a drop, and Retry reconnects at once", () => {
     renderWatch();
     frame("last good screen");
+    expect(status()).toHaveTextContent(/^Live$/);
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-    act(() => { latest().readyState = 2; latest().onerror?.(); });
+    act(() => latest().onerror?.());
     expect(screen.getByText("last good screen")).toBeInTheDocument();
-    expect(screen.getByRole("status", { name: "worker-a terminal status" })).toHaveTextContent(/^Disconnected/);
+    expect(screen.getByText("last good screen").closest("[data-allow-overflow-x]")).toHaveClass("opacity-60");
+    expect(status()).toHaveTextContent(/^Reconnecting · screen from /);
+    // The console's own "Reconnect now" line would duplicate the toolbar.
+    expect(screen.queryByRole("button", { name: "Reconnect now" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    tick();
     expect(MockEventSource.all).toHaveLength(2);
     expect(screen.getByText("last good screen")).toBeInTheDocument();
     frame("fresh screen");
-    expect(screen.getByRole("status", { name: "worker-a terminal status" })).toHaveTextContent(/^Live/);
+    expect(status()).toHaveTextContent(/^Live$/);
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
   });
 
-  it("says it is reconnecting while the browser retries on its own", () => {
+  it("retries a drop on its own, keeping the screen until frames flow again", () => {
     renderWatch();
     frame("kept");
-    act(() => { latest().readyState = 0; latest().onerror?.(); });
-    expect(screen.getByRole("status", { name: "worker-a terminal status" })).toHaveTextContent(/^Reconnecting/);
+    act(() => latest().onerror?.());
+    tick(1_000);
+    expect(MockEventSource.all).toHaveLength(2);
+    act(() => latest().onopen?.());
+    expect(status()).toHaveTextContent(/^Reconnecting/); // connected, nothing new on screen yet
+    frame("new");
+    expect(status()).toHaveTextContent(/^Live$/);
+  });
+
+  it("an error frame keeps the screen and offers Retry, which opens a fresh stream", () => {
+    renderWatch();
+    frame("kept");
+    act(() => latest().onmessage?.({ data: JSON.stringify({ type: "error", message: "tmux is gone", seq: 2 }) }));
+    expect(status()).toHaveTextContent(/^Stream error/);
+    expect(screen.getByText("tmux is gone")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    tick();
+    expect(MockEventSource.all).toHaveLength(2);
     expect(screen.getByText("kept")).toBeInTheDocument();
   });
 

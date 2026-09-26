@@ -14,10 +14,17 @@ const TOOLS = ['[aria-label="Smaller text"]', '[aria-label="Larger text"]', '[ar
 const RETRY = "xpath/.//button[normalize-space()='Retry']";
 const SCREEN_TEXT = "claimed: fixture-task-1";
 const terminalFrames = (t) => t.sockets.sent.filter((s) => s.url?.includes("/ws/terminal"));
-const statusMatches = (t, pattern) => t.page.waitForFunction(
+const statusMatches = (t, pattern, timeout = 15_000) => t.page.waitForFunction(
   (source) => new RegExp(source).test(document.querySelector('[aria-label$="terminal status"]')?.textContent ?? ""),
-  { timeout: 15_000 }, pattern.source);
+  { timeout }, pattern.source);
 const paneRequests = (t) => t.stub.requests.filter((r) => r.path === `/api/sessions/${SESSION}/pane`).length;
+
+async function until(predicate, timeout, message) {
+  for (const end = Date.now() + timeout; !predicate();) {
+    if (Date.now() > end) throw new Error(message);
+    await new Promise((done) => setTimeout(done, 25));
+  }
+}
 
 export async function run(t) {
   await t.page.goto(t.url(`/focus/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
@@ -69,23 +76,27 @@ export async function run(t) {
   assert.ok(t.page.url().endsWith(`/focus/sessions/${SESSION}`), "Escape left the session");
   assert.equal(paneRequests(t), 1, "full screen opened another pane stream");
 
-  // Network loss: the browser reconnects on its own; the screen stays, marked stale.
+  // Network loss: the stream reconnects on its own; the screen stays, marked stale.
   t.stub.dropPane(SESSION);
   await statusMatches(t, /^Reconnecting/);
   await waitForText(t.page, SCREEN_TEXT);
-  await statusMatches(t, /^Live/);
-  // The browser gives up (a refused reconnect): Retry is the way back.
+  await statusMatches(t, /^Live$/);
+  // Refused reconnects back off, the last screen still on show; Retry
+  // reconnects at once instead of waiting out the backoff.
   t.stub.failPane(SESSION, 503);
+  const refusedFrom = paneRequests(t);
   t.stub.dropPane(SESSION);
-  await statusMatches(t, /^Disconnected/);
+  await statusMatches(t, /^Reconnecting · screen from /);
   await waitForText(t.page, SCREEN_TEXT);
   await expectLayout(t, { primary: [RETRY] });
   const status = await rect(t.page, '[aria-label$="terminal status"]');
   assert.ok(status.width >= 120, `the controls squeeze the stream status to ${status.width}px`);
-  await t.shot("disconnected");
+  await t.shot("reconnecting");
+  // After three refusals the next automatic attempt is seconds away (≥3.2 s).
+  await until(() => paneRequests(t) >= refusedFrom + 3, 20_000, "the stream stopped retrying a refused reconnect");
   t.stub.failPane(SESSION, null);
   await t.page.click(RETRY);
-  await statusMatches(t, /^Live/);
+  await statusMatches(t, /^Live$/, 1_500);
   assert.equal(await t.page.$(RETRY), null, "Retry stayed after the stream came back");
 
   // A restart is never followed silently.
