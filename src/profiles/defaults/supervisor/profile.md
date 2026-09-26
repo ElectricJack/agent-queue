@@ -140,6 +140,8 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "question_escalate",
     "question_list",
     "render_prompt",
+    "report_brief",
+    "report_submit",
     "review_comment",
     "review_dispatch",
     "review_decide",

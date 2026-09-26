@@ -138,6 +138,9 @@ HANDCRAFTED_COVERAGE = {
     # auto-generation (no interesting args).
     "formula_show",
     "formula_cook",
+    "report_request",
+    "report_brief",
+    "report_submit",
 }
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).

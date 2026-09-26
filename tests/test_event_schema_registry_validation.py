@@ -72,6 +72,10 @@ def _register_typed_schemas(monkeypatch):
 
 # Maps event_type -> minimal valid payload (all required fields present)
 _CANONICAL_PAYLOADS: dict[str, dict] = {
+    "digest.window_ready": {
+        "window_id": "digest-window-1",
+        "request_id": "report-hourly-digest-window-1",
+    },
     "assignment.route.requested": {
         "project_id": "proj-1",
         "tasks": [],

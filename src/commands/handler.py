@@ -84,6 +84,7 @@ from src.commands.git_commands import GitCommandsMixin
 from src.commands.ci_commands import CiCommandsMixin
 from src.commands.provider_commands import ProviderCommandsMixin
 from src.commands.digest_commands import DigestCommandsMixin
+from src.commands.report_commands import ReportCommandsMixin
 from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
 from src.commands.review_commands import ReviewCommandsMixin
@@ -368,6 +369,7 @@ class CommandHandler(
     ProviderCommandsMixin,
     DashboardStateCommandsMixin,
     DigestCommandsMixin,
+    ReportCommandsMixin,
     EscalationCommandsMixin,
     ReviewCommandsMixin,
     GitHubIssueCommandsMixin,

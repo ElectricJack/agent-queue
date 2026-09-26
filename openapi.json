@@ -10451,6 +10451,147 @@
         }
       }
     },
+    "/api/report/brief": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Read a paged, bounded report brief and its CAS version.",
+        "description": "Read a paged, bounded report brief and its CAS version.",
+        "operationId": "report_brief",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportBriefRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportBriefResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/request": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Queue one supervisor author turn for a reserved report request.",
+        "description": "Queue one supervisor author turn for a reserved report request.",
+        "operationId": "report_request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportRequestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportRequestResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/submit": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Submit one supervisor-authored hourly report before its deadline.",
+        "description": "Submit one supervisor-authored hourly report before its deadline.",
+        "operationId": "report_submit",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportSubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportSubmitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/comment": {
       "post": {
         "tags": [
@@ -42674,6 +42815,241 @@
           "task_id"
         ],
         "title": "ReparentTaskResponse"
+      },
+      "ReportBriefRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "description": ""
+          },
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offset",
+            "description": ""
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "title": "ReportBriefRequest"
+      },
+      "ReportBriefResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "deadline": {
+            "type": "number",
+            "title": "Deadline"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "brief_hash": {
+            "type": "string",
+            "title": "Brief Hash"
+          },
+          "brief": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Brief"
+          },
+          "facts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Facts"
+          },
+          "active": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Active"
+          },
+          "total_facts": {
+            "type": "integer",
+            "title": "Total Facts"
+          },
+          "total_active": {
+            "type": "integer",
+            "title": "Total Active"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "state",
+          "deadline",
+          "version",
+          "brief_hash",
+          "brief",
+          "facts",
+          "active",
+          "total_facts",
+          "total_active"
+        ],
+        "title": "ReportBriefResponse"
+      },
+      "ReportRequestRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id"
+        ],
+        "title": "ReportRequestRequest"
+      },
+      "ReportRequestResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "message_id": {
+            "type": "string",
+            "title": "Message Id"
+          },
+          "deadline": {
+            "type": "number",
+            "title": "Deadline"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "state",
+          "message_id",
+          "deadline"
+        ],
+        "title": "ReportRequestResponse"
+      },
+      "ReportSubmitRequest": {
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "title": "Request Id",
+            "description": ""
+          },
+          "brief_hash": {
+            "type": "string",
+            "title": "Brief Hash",
+            "description": ""
+          },
+          "expected_version": {
+            "type": "integer",
+            "title": "Expected Version",
+            "description": ""
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": ""
+          },
+          "evidence_refs": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Refs",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "brief_hash",
+          "expected_version",
+          "text"
+        ],
+        "title": "ReportSubmitRequest"
+      },
+      "ReportSubmitResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "request_id": {
+            "type": "string",
+            "title": "Request Id"
+          },
+          "window_id": {
+            "type": "string",
+            "title": "Window Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "request_id",
+          "window_id",
+          "state",
+          "version"
+        ],
+        "title": "ReportSubmitResponse"
       },
       "RerouteDecision": {
         "properties": {

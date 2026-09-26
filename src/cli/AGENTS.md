@@ -46,6 +46,7 @@ playbook.py        `aq playbook` — compile, run, HITL, health
 plugins.py         `aq plugin {list,info,install,remove,enable,disable,update,config,logs,...}`
 projects.py        Hand-crafted `aq project` commands needing composite logic or UX sugar
 questions.py       `aq question {list,answer,escalate}` — identity-based worker questions
+reports.py         `aq report {request,brief,submit}` — durable report reads and file submission
 reviews.py         `aq review` — document-review queue, decisions, revisions, and comments
 sessions.py        `aq session` — the session-runtime CLI group
 streams.py         `aq stream start|tail|kill`

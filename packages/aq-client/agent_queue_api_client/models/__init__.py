@@ -978,6 +978,18 @@ from .reopen_with_feedback_response_422 import ReopenWithFeedbackResponse422
 from .reparent_task_request import ReparentTaskRequest
 from .reparent_task_response import ReparentTaskResponse
 from .reparent_task_response_422 import ReparentTaskResponse422
+from .report_brief_request import ReportBriefRequest
+from .report_brief_response import ReportBriefResponse
+from .report_brief_response_422 import ReportBriefResponse422
+from .report_brief_response_active_item import ReportBriefResponseActiveItem
+from .report_brief_response_brief import ReportBriefResponseBrief
+from .report_brief_response_facts_item import ReportBriefResponseFactsItem
+from .report_request_request import ReportRequestRequest
+from .report_request_response import ReportRequestResponse
+from .report_request_response_422 import ReportRequestResponse422
+from .report_submit_request import ReportSubmitRequest
+from .report_submit_response import ReportSubmitResponse
+from .report_submit_response_422 import ReportSubmitResponse422
 from .reroute_decision import RerouteDecision
 from .reroute_undo_refusal import RerouteUndoRefusal
 from .reroute_undone import RerouteUndone
@@ -2292,6 +2304,18 @@ __all__ = (
     "ReparentTaskRequest",
     "ReparentTaskResponse",
     "ReparentTaskResponse422",
+    "ReportBriefRequest",
+    "ReportBriefResponse",
+    "ReportBriefResponse422",
+    "ReportBriefResponseActiveItem",
+    "ReportBriefResponseBrief",
+    "ReportBriefResponseFactsItem",
+    "ReportRequestRequest",
+    "ReportRequestResponse",
+    "ReportRequestResponse422",
+    "ReportSubmitRequest",
+    "ReportSubmitResponse",
+    "ReportSubmitResponse422",
     "RerouteDecision",
     "RerouteUndone",
     "RerouteUndoRefusal",

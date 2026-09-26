@@ -349,6 +349,7 @@ async def run(config_path: str, profile: str | None = None) -> bool:
                 links=orch.dashboard_links,
                 rate_guard=_bot_rate_guard(bot),
                 escalation_priority=orch.db.count_due_escalation_deliveries,
+                event_bus=orch.bus,
             )
             logger.info("Digest scheduler wired to the Discord transport")
         elif bot is not None:

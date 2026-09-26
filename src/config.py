@@ -26,6 +26,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 
@@ -206,6 +207,66 @@ class DiscordDigestConfig:
                     )
                 )
                 break
+        return errors
+
+
+_REPORT_CLOCK = re.compile(r"^(?:[01][0-9]|2[0-3]):[0-5][0-9]$")
+
+
+@dataclass
+class ReportQuietHoursConfig:
+    """Local wall-clock interval during which hourly author wakes are skipped."""
+
+    start: str = ""
+    end: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        if (
+            not isinstance(self.start, str)
+            or not isinstance(self.end, str)
+            or not _REPORT_CLOCK.fullmatch(self.start)
+            or not _REPORT_CLOCK.fullmatch(self.end)
+        ):
+            return [ConfigError("reports.hourly.quiet_hours", "start/end", "use HH:MM (24-hour)")]
+        if self.start == self.end:
+            return [ConfigError("reports.hourly.quiet_hours", "start/end", "must differ")]
+        return []
+
+
+@dataclass
+class HourlyReportsConfig:
+    """Opt-in supervisor authoring policy for the existing digest window."""
+
+    enabled: bool = False
+    full_fleet_visibility: bool = False
+    grace_minutes: int = 5
+    max_requests_per_day: int = 12
+    quiet_hours: ReportQuietHoursConfig | None = None
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not 1 <= self.grace_minutes <= 60:
+            errors.append(ConfigError("reports.hourly", "grace_minutes", "must be 1–60"))
+        if not 1 <= self.max_requests_per_day <= 24:
+            errors.append(ConfigError("reports.hourly", "max_requests_per_day", "must be 1–24"))
+        if self.quiet_hours is not None:
+            errors.extend(self.quiet_hours.validate())
+        return errors
+
+
+@dataclass
+class ReportsConfig:
+    """Shared report zone and hourly authoring settings."""
+
+    timezone: str = "UTC"
+    hourly: HourlyReportsConfig = field(default_factory=HourlyReportsConfig)
+
+    def validate(self) -> list[ConfigError]:
+        errors = self.hourly.validate()
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, TypeError, ValueError):
+            errors.append(ConfigError("reports", "timezone", "must be an IANA time zone"))
         return errors
 
 
@@ -2969,6 +3030,7 @@ class AppConfig:
     validate_events: bool = True
     messaging_platform: str = "discord"  # "discord" or "none"
     discord: DiscordConfig = field(default_factory=DiscordConfig)
+    reports: ReportsConfig = field(default_factory=ReportsConfig)
     agents_config: AgentsDefaultConfig = field(default_factory=AgentsDefaultConfig)
     scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
@@ -3190,6 +3252,7 @@ class AppConfig:
         # Only validate the active messaging platform's config
         if self.messaging_platform == "discord":
             errors.extend(self.discord.validate())
+        errors.extend(self.reports.validate())
 
         errors.extend(self.agents_config.validate())
         errors.extend(self.scheduling.validate())
@@ -3391,6 +3454,7 @@ HOT_RELOADABLE_SECTIONS = {
 
 RESTART_REQUIRED_SECTIONS = {
     "discord",
+    "reports",
     "messaging_platform",
     "data_dir",
     "workspace_dir",
@@ -4046,6 +4110,32 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.discord._legacy_destination_names = destination_names
         config.discord._legacy_inventory_names = inventory_names
         config.discord._legacy_per_project_channels = bool(d.get("per_project_channels"))
+
+    if "reports" in raw:
+        report_raw = raw["reports"] or {}
+        if not isinstance(report_raw, Mapping):
+            raise ConfigValidationError(["[reports] must be a mapping"])
+        hourly_raw = report_raw.get("hourly") or {}
+        if not isinstance(hourly_raw, Mapping):
+            raise ConfigValidationError(["[reports.hourly] must be a mapping"])
+        quiet_raw = hourly_raw.get("quiet_hours")
+        quiet = None
+        if quiet_raw is not None:
+            if not isinstance(quiet_raw, Mapping):
+                raise ConfigValidationError(["[reports.hourly.quiet_hours] must be a mapping"])
+            quiet = ReportQuietHoursConfig(
+                start=quiet_raw.get("start", ""), end=quiet_raw.get("end", "")
+            )
+        config.reports = ReportsConfig(
+            timezone=report_raw.get("timezone", "UTC"),
+            hourly=HourlyReportsConfig(
+                enabled=bool(hourly_raw.get("enabled", False)),
+                full_fleet_visibility=bool(hourly_raw.get("full_fleet_visibility", False)),
+                grace_minutes=int(hourly_raw.get("grace_minutes", 5)),
+                max_requests_per_day=int(hourly_raw.get("max_requests_per_day", 12)),
+                quiet_hours=quiet,
+            ),
+        )
 
     if "agents" in raw:
         a = raw["agents"]

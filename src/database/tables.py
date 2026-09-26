@@ -1624,6 +1624,46 @@ digest_windows = Table(
     Index("idx_digest_windows_due", "send_status", "due_at"),
 )
 
+
+# One durable author turn per report owner.  Hourly reports keep their
+# delivery identity in digest_windows; morning reports can share this request
+# contract without changing that established outbox.
+supervisor_report_requests = Table(
+    "supervisor_report_requests",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("kind", Text, nullable=False),
+    Column("owner_ref", Text, nullable=False),
+    Column("destination", Text, nullable=False),
+    Column("visibility", JSON, nullable=False),
+    Column("brief", JSON, nullable=False),
+    Column("brief_hash", Text, nullable=False),
+    Column("fallback_text", Text, nullable=False),
+    Column("author_session_id", Text, nullable=False),
+    Column("state", Text, nullable=False, server_default="reserved"),
+    Column("deadline", Float, nullable=False),
+    Column("version", Integer, nullable=False, server_default="1"),
+    Column("request_message_id", Text, nullable=True),
+    Column("submitted_text", Text, nullable=True),
+    Column("submitted_hash", Text, nullable=True),
+    Column("evidence_refs", JSON, nullable=True),
+    Column("source_links", JSON, nullable=True),
+    Column("submitted_at", Float, nullable=True),
+    Column("skip_reason", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    UniqueConstraint("kind", "owner_ref", name="uq_supervisor_report_requests_owner"),
+    CheckConstraint(
+        "kind IN ('hourly','morning')", name="ck_supervisor_report_requests_kind"
+    ),
+    CheckConstraint(
+        "state IN ('reserved','requested','submitted','fallback','cancelled')",
+        name="ck_supervisor_report_requests_state",
+    ),
+    CheckConstraint("version >= 1", name="ck_supervisor_report_requests_version"),
+    Index("idx_supervisor_report_requests_state_deadline", "state", "deadline"),
+)
+
 api_session_tokens = Table(
     "api_session_tokens",
     metadata,
