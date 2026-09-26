@@ -9,6 +9,7 @@ sweep that quietly keeps everything.
 from __future__ import annotations
 
 import json
+import asyncio
 import time
 
 import pytest
@@ -823,5 +824,89 @@ async def test_perf_disabled_does_not_replay_counters_on_reenable(db):
         registry.observe_route("GET /api/x", 5, 200)
         config.metrics.perf_enabled = True
         assert (await sampler.collect())["perf"]["api"]["all"]["count"] == 0
+    finally:
+        await sampler.stop()
+
+
+async def test_a_relay_delta_is_recorded_exactly_once(db):
+    class FakeRelay:
+        polls = 0
+
+        async def poll(self):
+            self.polls += 1
+            hist = new_hist()
+            observe(hist, 7)
+            return {"available": True, "reason": None, "relays_open": 1, "http": hist}
+
+    relay = FakeRelay()
+    clock = Clock()
+    config = AppConfig()
+    config.metrics.perf_relay_poll_seconds = 5
+    sampler = MetricsSampler(db, config, clock=clock, relay=relay)
+    try:
+        first = await sampler.collect()
+        assert first["perf"]["relay"] == {"available": False, "reason": "not_polled"}
+        await asyncio.sleep(0)
+        second = await sampler.collect()
+        third = await sampler.collect()
+        assert second["perf"]["relay"]["http"]["count"] == 1
+        assert third["perf"]["relay"] == {"available": True, "reason": "between_polls"}
+        assert aggregate_samples([first, second, third])["perf"]["relay"]["http"]["count"] == 1
+        clock.advance(6)
+        await sampler.collect()
+        await asyncio.sleep(0)
+        assert relay.polls == 2
+    finally:
+        await sampler.stop()
+
+
+@pytest.mark.parametrize("disable", [False, True])
+async def test_relay_poll_is_background_single_flight_and_cancelled(db, disable):
+    from unittest.mock import AsyncMock
+
+    started, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def poll():
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    relay = AsyncMock()
+    relay.poll.side_effect = poll
+    clock = Clock(0)
+    sampler = MetricsSampler(db, AppConfig(), clock=clock, relay=relay)
+    try:
+        await sampler.collect()
+        await asyncio.wait_for(started.wait(), 5)
+        clock.advance(6)
+        await sampler.collect()
+        assert relay.poll.await_count == 1
+        if disable:
+            sampler.config.metrics.perf_enabled = False
+            assert (await sampler.collect())["perf"] == {"enabled": False}
+        else:
+            await sampler.stop()
+        assert cancelled.is_set()
+    finally:
+        await sampler.stop()
+
+
+async def test_relay_pending_delta_is_discarded_on_perf_rollback(db):
+    from unittest.mock import AsyncMock
+
+    relay = AsyncMock()
+    relay.poll.return_value = {"available": True, "reason": None, "relays_open": 1}
+    sampler = MetricsSampler(db, AppConfig(), clock=Clock(), relay=relay)
+    try:
+        await sampler.collect()
+        await asyncio.sleep(0)
+        sampler.config.metrics.perf_enabled = False
+        await sampler.collect()
+        sampler.config.metrics.perf_enabled = True
+        assert (await sampler.collect())["perf"]["relay"] == {
+            "available": False, "reason": "not_polled",
+        }
     finally:
         await sampler.stop()

@@ -2,7 +2,8 @@
 
 One dispatcher decides where a request goes, in this order:
 
-1. ``/__aq/health`` -- the process's identity; the rest of ``/__aq/`` is
+1. ``/__aq/health`` and ``/__aq/metrics`` -- identity and cumulative relay counters;
+   the rest of ``/__aq/`` is
    reserved and answers ``404``.
 2. ``/api``, ``/health``, ``/ready``, ``/ws`` (on a segment boundary) -- a path
    with a ``.`` or ``..`` segment is ``400``, then the edge gates
@@ -37,6 +38,7 @@ from src.dashboard_server.settings import DashboardServerSettings
 
 SERVICE_NAME = "aq-dashboard-server"
 HEALTH_PATH = "/__aq/health"
+METRICS_PATH = "/__aq/metrics"
 RESERVED_PREFIX = "/__aq"
 #: Forwarded to the daemon (spec §2.1).  ``/ws`` carries the WebSockets.
 PROXIED_PREFIXES = ("/api", "/health", "/ready", "/ws")
@@ -50,9 +52,11 @@ def has_prefix(path: str, prefix: str) -> bool:
 
 
 def classify(path: str) -> str:
-    """``identity``, ``reserved``, ``proxy``, ``not_served`` or ``static``."""
+    """``identity``, ``metrics``, ``reserved``, ``proxy``, ``not_served`` or ``static``."""
     if path == HEALTH_PATH:
         return "identity"
+    if path == METRICS_PATH:
+        return "metrics"
     if has_prefix(path, RESERVED_PREFIX):
         return "reserved"
     if any(has_prefix(path, prefix) for prefix in PROXIED_PREFIXES):
@@ -134,12 +138,13 @@ class DashboardServerApp:
                 await self._json(send, denial.status, denial.body())
                 return
             await self.proxy.http(scope, receive, send)
-        elif route == "identity":
+        elif route in {"identity", "metrics"}:
             if scope["method"] not in {"GET", "HEAD"}:
                 await self._json(send, 405, {"ok": False, "error": "method_not_allowed"},
                                  extra=[(b"allow", b"GET, HEAD")])
                 return
-            await self._json(send, 200, await self.identity(), head=scope["method"] == "HEAD")
+            body = await self.identity() if route == "identity" else self.metrics()
+            await self._json(send, 200, body, head=scope["method"] == "HEAD")
         elif route in {"reserved", "not_served"}:
             await self._json(send, 404, {
                 "ok": False, "error": "not_found",
@@ -166,6 +171,10 @@ class DashboardServerApp:
             "api_url": self.settings.api_url,
             "upstream_ok": await self.proxy.upstream_ok(),
         }
+
+    def metrics(self) -> dict[str, Any]:
+        """Cumulative counters since the edge process started, without probing upstream."""
+        return {"service": SERVICE_NAME, "pid": os.getpid(), **self.proxy.stats.snapshot()}
 
     def _stamped(self, send: Any) -> Any:
         header = self._own_header
