@@ -18,7 +18,7 @@ POSTGRES_DSN = ensure_worker_postgres_dsn()
 # The revision that creates the conversation tables, and whatever it currently
 # chains onto -- deriving the predecessor keeps the pair correct when a later
 # revision is inserted ahead of it.
-CONVERSATIONS_REVISION = "a00000000024"
+CONVERSATIONS_REVISION = "a00000000027"
 PRECEDING_REVISION = previous_revision(CONVERSATIONS_REVISION)
 TABLES = (
     "supervisor_conversations",

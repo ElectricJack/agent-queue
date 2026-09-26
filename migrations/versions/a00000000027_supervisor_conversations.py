@@ -1,7 +1,7 @@
 """Add operator conversations with the global supervisor (Discord mention routing §4.1).
 
-Revision ID: a00000000024
-Revises: a00000000023
+Revision ID: a00000000027
+Revises: a00000000026
 
 Four tables: ``supervisor_conversations`` (one per operator @mention),
 ``conversation_inputs`` (one per accepted message; its unique external id is
@@ -21,8 +21,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000024"
-down_revision = "a00000000023"
+revision = "a00000000027"
+down_revision = "a00000000026"
 branch_labels = None
 depends_on = None
 
