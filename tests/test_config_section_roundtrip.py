@@ -38,6 +38,7 @@ NON_DEFAULT_VALUES = {
     ("provider_failover", "default_policy"): "hold",
     # An IP literal or ``localhost`` only; a name DNS could re-point is refused.
     ("dashboard_server", "host"): "0.0.0.0",
+    ("test_selection", "api_key_env"): "CUSTOM_TYPESAFE_KEY",
 }
 
 # Sections that do not read every field they declare.
@@ -128,6 +129,12 @@ def test_playbooks_section_reads_every_field_it_declares(tmp_path):
     ``load_config`` fails here rather than shipping as a dead config key.
     """
     dropped, unchecked = _round_trip(tmp_path, "playbooks", AppConfig().playbooks)
+    assert dropped == []
+    assert unchecked == []
+
+
+def test_test_selection_section_reads_every_field_it_declares(tmp_path):
+    dropped, unchecked = _round_trip(tmp_path, "test_selection", AppConfig().test_selection)
     assert dropped == []
     assert unchecked == []
 

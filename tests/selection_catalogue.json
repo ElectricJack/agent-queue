@@ -1071,6 +1071,7 @@
         "tests/test_selection_policy.py",
         "tests/test_selection_queries.py",
         "tests/test_selection_questions.py",
+        "tests/test_selection_service.py",
         "tests/test_selection_snapshot.py",
         "tests/test_selection_static_impact.py",
         "tests/test_selection_testmon_experiment.py",
@@ -1223,7 +1224,7 @@
       ]
     }
   },
-  "digest": "sha256:36c18b76d0bee99c52b25f0256a72e7d2b7ca15003a379fe0e699830a04f54a2",
+  "digest": "sha256:790d0b641b7012e814824b43cfafea81fe18ffee9a0f814108e8c5f4aa4b9533",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3163,9 +3164,12 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.cli.auto_commands"
+        "src.cli.auto_commands",
+        "src.tools.definitions"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Auto-generated CLI options carry structured values, not their text."
     },
     "tests/test_cli_system_config.py": {
@@ -10653,6 +10657,26 @@
       "markers": [],
       "summary": "Pure evidence and request-packing checks for smart test selection."
     },
+    "tests/test_selection_service.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database",
+        "src.git.manager",
+        "src.models",
+        "src.test_selection.catalogue",
+        "src.test_selection.service",
+        "src.test_selection.static_impact",
+        "src.test_selection.typesafe"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Selection orchestration with real git/PostgreSQL and an offline Jev transport."
+    },
     "tests/test_selection_snapshot.py": {
       "areas": [
         "test-selection"
@@ -11319,12 +11343,14 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.models.supervisor_inbox",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
         "src.conversations.outbox",
         "src.database",
         "src.database.tables",
+        "src.discord.intake_diagnostics",
         "src.messages.delivery",
         "src.models",
         "src.profiles.capabilities"
