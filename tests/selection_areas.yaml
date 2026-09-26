@@ -112,6 +112,9 @@ areas:
       - tests/test_stranded_feature_branches.py
 
   # ------------------------------------------------------------ agents
+  - id: agent-waits
+    description: "Durable typed agent waits: ownership and claim fencing, producer snapshots, deadlines, CAS results, outbox retries and wait commands."
+    match: [tests/test_agent_waits.py, tests/test_agent_wait_queries.py, tests/test_agent_wait_commands.py]
   - id: agent-roster
     description: "The global worker roster: durable agent identity, liveness from session activity, soft deletion and fresh supply, sub-agent counts, the busy-agent reconciler, names and explicit terminal starts."
     match:

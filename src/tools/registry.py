@@ -161,6 +161,7 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "configured schedule's destination, generation and delivery health"
         ),
     ),
+    "wait": CategoryMeta(name="wait", description="Durable typed agent waits and result history"),
     "report": CategoryMeta(
         name="report",
         description="Durable supervisor report requests, paged briefs and submissions",

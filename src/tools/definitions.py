@@ -106,6 +106,10 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # digest — hourly activity digest preview and schedule health
     "digest_preview": "digest",
     "digest_status": "digest",
+    "wait_register": "wait",
+    "wait_get": "wait",
+    "wait_list": "wait",
+    "wait_cancel": "wait",
     "report_request": "report",
     "report_brief": "report",
     "report_submit": "report",
@@ -6945,3 +6949,64 @@ _ALL_TOOL_DEFINITIONS.append({
         "additionalProperties": False,
     },
 })
+
+
+_ALL_TOOL_DEFINITIONS.extend([
+    {
+        "name": "wait_register",
+        "description": "Register a bounded typed wait and end the turn until its result pointer arrives.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["kind", "idempotency_key"],
+            "properties": {
+                "kind": {"type": "string", "enum": ["job", "task", "message", "timer"]},
+                "ref": {"type": "string", "maxLength": 256},
+                "after_seq": {"type": "integer", "minimum": 0},
+                "due_at": {"type": "number"},
+                "timeout": {"type": "number", "exclusiveMinimum": 0, "maximum": 86400},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+                "claim_epoch": {"type": "integer", "minimum": 0},
+                "project_id": {"type": "string"},
+                "task_id": {"type": "string"},
+                "session_id": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "wait_get", "description": "Read a durable wait and its bounded result pointer.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False, "required": ["wait_id"],
+            "properties": {"wait_id": {"type": "string", "minLength": 1},
+                           "project_id": {"type": "string"}, "task_id": {"type": "string"},
+                           "session_id": {"type": "string"}},
+        },
+    },
+    {
+        "name": "wait_list", "description": "List the owner's durable wait history.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                           "offset": {"type": "integer", "minimum": 0},
+                           "project_id": {"type": "string"}, "task_id": {"type": "string"},
+                           "session_id": {"type": "string"}},
+        },
+    },
+    {
+        "name": "wait_cancel", "description": "Cancel a current-claim wait and queue its result.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False, "required": ["wait_id"],
+            "properties": {"wait_id": {"type": "string", "minLength": 1},
+                           "claim_epoch": {"type": "integer", "minimum": 0},
+                           "project_id": {"type": "string"}, "task_id": {"type": "string"},
+                           "session_id": {"type": "string"}},
+        },
+    },
+])
+
+
+# Internal scan remains excluded from MCP/API; the daemon supplies its clock.
+_FALLBACK_INPUT_SCHEMAS["reconcile_agent_waits"] = {
+    "type": "object",
+    "properties": {"now": {"type": "number"}},
+    "additionalProperties": False,
+}

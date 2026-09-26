@@ -21,6 +21,7 @@ from sqlalchemy import (
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Identity,
     Integer,
     MetaData,
     PrimaryKeyConstraint,
@@ -1304,6 +1305,7 @@ messages = Table(
     "messages",
     metadata,
     Column("id", Text, primary_key=True),  # "msg-<uuid7>"
+    Column("created_seq", BigInteger, Identity(), nullable=False),
     Column("project_id", Text, ForeignKey("projects.id"), nullable=True),
     Column("from_kind", Text, nullable=False),  # session|user|system
     Column("from_id", Text, nullable=False),
@@ -1333,6 +1335,7 @@ messages = Table(
     Index("idx_messages_pending", "to_kind", "to_id", "delivered_at"),
     Index("idx_messages_project_created", "project_id", "created_at"),
     Index("idx_messages_thread", "thread_id"),
+    Index("idx_messages_thread_sequence", "project_id", "thread_id", "created_seq"),
 )
 
 # Transport-neutral human escalation state.  ``task_id`` and the source
@@ -4615,4 +4618,53 @@ test_selection_promotions = Table(
         unique=True,
         postgresql_where=text("revoked_at IS NULL"),
     ),
+)
+
+
+# Durable agent-owned waits. Soft owner/source references survive archival and
+# claim turnover; delivery receipts live exclusively on the result message.
+agent_waits = Table(
+    "agent_waits",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("owner_kind", Text, nullable=False),
+    Column("owner_id", Text, nullable=False),
+    Column("session_id", Text, nullable=False),
+    Column("session_instance_token", Text, nullable=False),
+    Column("claim_epoch", Integer, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("match", JSON, nullable=False),
+    Column("state", Text, nullable=False, server_default="active"),
+    Column("version", Integer, nullable=False, server_default="1"),
+    Column("created_at", Float, nullable=False),
+    Column("deadline_at", Float, nullable=False),
+    Column("resolved_at", Float, nullable=True),
+    Column("wait_resumed_at", Float, nullable=True),
+    Column("checked_at", Float, nullable=False, server_default="0"),
+    Column("result_ref", Text, nullable=True),
+    Column("digest", JSON, nullable=True),
+    Column("idempotency_key", Text, nullable=False),
+    Column("result_message_id", Text, nullable=True),
+    CheckConstraint("owner_kind IN ('task','supervisor')", name="ck_agent_waits_owner_kind"),
+    CheckConstraint("kind IN ('job','task','message','timer')", name="ck_agent_waits_kind"),
+    CheckConstraint(
+        "state IN ('active','satisfied','expired','cancelled')", name="ck_agent_waits_state"
+    ),
+    CheckConstraint("version >= 1 AND claim_epoch >= 0", name="ck_agent_waits_version_epoch"),
+    CheckConstraint(
+        "deadline_at > created_at AND deadline_at <= created_at + 86400",
+        name="ck_agent_waits_deadline",
+    ),
+    UniqueConstraint(
+        "project_id", "owner_kind", "owner_id", "claim_epoch", "idempotency_key",
+        name="uq_agent_waits_idempotency",
+    ),
+    Index(
+        "uq_agent_waits_active_claim", "owner_id", "claim_epoch", unique=True,
+        postgresql_where=text("state = 'active' AND owner_kind = 'task'"),
+    ),
+    Index("idx_agent_waits_scan", "state", "checked_at", "deadline_at"),
+    Index("idx_agent_waits_owner", "project_id", "owner_kind", "owner_id", "created_at"),
+    Index("idx_agent_waits_session", "session_id", "claim_epoch", "state"),
 )

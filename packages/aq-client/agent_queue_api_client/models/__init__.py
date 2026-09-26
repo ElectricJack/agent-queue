@@ -21,6 +21,12 @@ from .agent_metrics_by_state import AgentMetricsByState
 from .agent_question_detail import AgentQuestionDetail
 from .agent_settings import AgentSettings
 from .agent_summary import AgentSummary
+from .agent_wait_record import AgentWaitRecord
+from .agent_wait_record_digest_type_0 import AgentWaitRecordDigestType0
+from .agent_wait_record_kind import AgentWaitRecordKind
+from .agent_wait_record_match import AgentWaitRecordMatch
+from .agent_wait_record_owner_kind import AgentWaitRecordOwnerKind
+from .agent_wait_record_state import AgentWaitRecordState
 from .agent_waiting_question import AgentWaitingQuestion
 from .ai_budget_dto import AiBudgetDTO
 from .ai_node_detail_dto import AiNodeDetailDTO
@@ -1344,11 +1350,21 @@ from .update_playbook_source_response import UpdatePlaybookSourceResponse
 from .update_playbook_source_response_422 import UpdatePlaybookSourceResponse422
 from .validation_error import ValidationError
 from .validation_error_context import ValidationErrorContext
+from .wait_cancel_request import WaitCancelRequest
+from .wait_cancel_response_422 import WaitCancelResponse422
 from .wait_facts_dto import WaitFactsDTO
 from .wait_facts_dto_deadline_source_type_0 import WaitFactsDTODeadlineSourceType0
 from .wait_facts_dto_wait_kind import WaitFactsDTOWaitKind
+from .wait_get_request import WaitGetRequest
+from .wait_get_response_422 import WaitGetResponse422
+from .wait_list_request import WaitListRequest
+from .wait_list_response import WaitListResponse
+from .wait_list_response_422 import WaitListResponse422
 from .wait_node_detail_dto import WaitNodeDetailDTO
 from .wait_node_detail_dto_wait_kind import WaitNodeDetailDTOWaitKind
+from .wait_register_request import WaitRegisterRequest
+from .wait_register_response_422 import WaitRegisterResponse422
+from .wait_response import WaitResponse
 from .withheld_task import WithheldTask
 from .workspace_doctor_request import WorkspaceDoctorRequest
 from .workspace_doctor_response_422 import WorkspaceDoctorResponse422
@@ -1385,6 +1401,12 @@ __all__ = (
     "AgentSettings",
     "AgentSummary",
     "AgentWaitingQuestion",
+    "AgentWaitRecord",
+    "AgentWaitRecordDigestType0",
+    "AgentWaitRecordKind",
+    "AgentWaitRecordMatch",
+    "AgentWaitRecordOwnerKind",
+    "AgentWaitRecordState",
     "AiBudgetDTO",
     "AiNodeDetailDTO",
     "AiNodeDetailDTOOutputSchemaType0",
@@ -2695,11 +2717,21 @@ __all__ = (
     "UpdatePlaybookSourceResponse422",
     "ValidationError",
     "ValidationErrorContext",
+    "WaitCancelRequest",
+    "WaitCancelResponse422",
     "WaitFactsDTO",
     "WaitFactsDTODeadlineSourceType0",
     "WaitFactsDTOWaitKind",
+    "WaitGetRequest",
+    "WaitGetResponse422",
+    "WaitListRequest",
+    "WaitListResponse",
+    "WaitListResponse422",
     "WaitNodeDetailDTO",
     "WaitNodeDetailDTOWaitKind",
+    "WaitRegisterRequest",
+    "WaitRegisterResponse422",
+    "WaitResponse",
     "WithheldTask",
     "WorkspaceDoctorRequest",
     "WorkspaceDoctorResponse422",

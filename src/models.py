@@ -1013,6 +1013,7 @@ class Message:
     via: str | None = None
     body_kind: str | None = None
     pane_open: str | None = None  # JSON-encoded {view, args}
+    created_seq: int | None = None  # server sequence for typed message waits
 
 
 #: Legal ``messages.from_kind`` values (mirrors ``ck_messages_from_kind``).
