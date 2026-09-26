@@ -841,6 +841,13 @@ class SystemCommandsMixin:
         # Note: bot status is set to offline by the slash command caller
         # before invoking this handler.
 
+        # A shutdown is a deliberate stop: the auto-restart service must leave
+        # the daemon down until the operator's next `aq start`
+        # (src/daemon_state.py).  Written before the exit is scheduled.
+        from src.daemon_state import record_stop_intent
+
+        await asyncio.to_thread(record_stop_intent, "aq system shutdown", reason=str(reason))
+
         # Exit without restart — use os._exit(0) after a brief delay
         # to allow the Discord response to be sent
         async def _delayed_exit():

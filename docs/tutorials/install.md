@@ -314,6 +314,70 @@ work. The machine-readable equivalent is `onboarding.readiness` in
 `aq status` reports what the daemon thinks of itself, and `aq stop` /
 `aq restart` control it.
 
+## Keep AQ running after a reboot or a crash
+
+`aq install` starts the daemon once. Nothing brings it back after the machine
+restarts or the process dies unless you add the auto-restart service. It is
+opt-in:
+
+```bash
+aq service install            # from your own terminal, not from an agent session
+aq service status             # installed? working? when did it last check?
+```
+
+`aq install --with autostart` (or answering yes under `aq install --advanced`)
+does the same thing as part of an install. The service is a small **watchdog**
+registered with the best mechanism the host offers:
+
+| Host | Mechanism | Starts at |
+| --- | --- | --- |
+| macOS | launchd agent `~/Library/LaunchAgents/com.agent-queue.watchdog.plist` (`RunAtLoad`, `KeepAlive` on failure) | login |
+| Linux with a systemd user manager | user unit `~/.config/systemd/user/aq-watchdog.service` (`Restart=on-failure`) | boot, once linger is on (`aq service install` enables it when allowed; otherwise it prints `sudo loginctl enable-linger $USER`) |
+| No systemd user manager — WSL is the common case | a marked block in your crontab: `@reboot` plus a check every 2 minutes | boot |
+
+`--mechanism systemd|launchd|cron` picks one explicitly, and `--dry-run` prints
+the exact entry without writing it. Rerunning `aq service install` rewrites the
+entry in place, and switching mechanism removes the old one.
+
+What the watchdog does, and what it never does:
+
+- **It only ever starts a daemon that is not running**, through `aq start` with
+  a clean environment (no `CLAUDE_*` or `AQ_*` session variables). It never
+  stops, restarts or signals a running daemon, and stopping or removing the
+  service never touches the daemon or its agent sessions (`KillMode=process`,
+  `AbandonProcessGroup`).
+- **A deliberate stop stays stopped.** `aq stop`, the stop half of
+  `aq restart` and `aq update`, and the daemon's `shutdown` command write
+  `~/.agent-queue/daemon.stopped`; only `aq start` removes it. While it exists
+  the watchdog does nothing — also after a reboot.
+- **It does not race a start or a deploy**: while `aq start` holds
+  `daemon.lock` or `aq update` holds `update.lock`, it waits.
+- **Down is confirmed**: two checks in a row must find no daemon (the boot
+  check skips this). It then waits up to three minutes for PostgreSQL before
+  running `aq start`, which also backs up the database first when a migration
+  is pending, exactly as a manual start does.
+- **Failures back off** (1, 2, 4, 8… minutes, at most 30), at most five
+  automatic starts per hour, and after five failed starts in a row it stops
+  trying until the daemon is started by hand or you run
+  `aq service check --reset`.
+
+Every decision is one line in `~/.agent-queue/logs/aq-service.log`, including
+the output of any `aq start` it ran. `aq service status` and
+`aq doctor --check daemon.autostart` report whether the service is installed,
+whether the service manager has it enabled and running (or, for cron, whether
+cron itself is running), and when the watchdog last checked in.
+
+On WSL, cron only runs if something starts it: with `[boot] systemd=true` in
+`/etc/wsl.conf` it starts with the distribution; without systemd, add
+`[boot] command = service cron start`. `aq service status` says so when cron is
+not running.
+
+The service records the PATH of the shell you installed it from, because
+service managers start with an almost empty one and the daemon needs `tmux`,
+`git` and your harness CLIs. Rerun `aq service install` after moving your
+installation or changing where those tools live. `aq service uninstall` removes
+the watchdog and leaves the daemon as it is; `aq uninstall` removes it too.
+
 ## Unattended installation
 
 The same engine runs without a terminal, for a script or a new machine image:

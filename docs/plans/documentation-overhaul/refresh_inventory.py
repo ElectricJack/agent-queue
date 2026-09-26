@@ -498,6 +498,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "`aq` command-line surface."),
     ("src/install/**", "cli", "docs/reference/cli/install.md", PRODUCTION,
      "Installer engine module behind `aq install`."),
+    ("src/daemon_state.py", "cli", "docs/reference/cli/install.md", PRODUCTION,
+     "Daemon PID identity and the stop marker `aq stop` and the auto-restart watchdog share."),
     ("src/tools/**", "cli", "docs/reference/cli/agent-tools.md", PRODUCTION,
      "Agent-facing tool definitions and registry."),
     ("src/prime/**", "cli", "docs/reference/cli/prime.md", PRODUCTION,

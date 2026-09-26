@@ -49,6 +49,9 @@ projects.py        Hand-crafted `aq project` commands needing composite logic or
 questions.py       `aq question {list,answer,escalate}` — identity-based worker questions
 reports.py         `aq report {morning,request,brief,submit}` — evidence preview, durable reads and file submission
 reviews.py         `aq review` — document-review queue, decisions, revisions, and comments
+service.py         `aq service {install,uninstall,status,check,run}` — the auto-restart
+                   watchdog (systemd user unit, launchd agent or cron); policy in
+                   src/install/watchdog.py, mechanisms in src/install/service.py
 sessions.py        `aq session` — the session-runtime CLI group
 streams.py         `aq stream start|tail|kill`
 styles.py          Theme, status icons, color maps

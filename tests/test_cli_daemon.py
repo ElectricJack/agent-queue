@@ -33,6 +33,13 @@ def _no_dashboard_server(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _private_daemon_home(tmp_path, monkeypatch):
+    """`aq stop` records, and `aq start` clears, ``daemon.stopped`` in CONFIG_DIR;
+    never let a test touch the operator's (their auto-restart service reads it)."""
+    monkeypatch.setattr(daemon_mod, "CONFIG_DIR", str(tmp_path))
+
+
+@pytest.fixture(autouse=True)
 def _operator_environment(monkeypatch):
     """Lifecycle tests model an operator shell, never this worker's parent env."""
     for key in DAEMON_ENV_STRIP_KEYS:
@@ -673,3 +680,51 @@ def test_backup_database_raises_on_docker_failure(tmp_path, monkeypatch):
 
     with pytest.raises(SystemExit, match="13"):
         daemon_mod._backup_database()
+
+
+def test_start_holds_its_lock_while_it_waits_for_the_database(tmp_path, monkeypatch, no_popen):
+    """The auto-restart watchdog reads daemon.lock as "a start is in progress";
+    the database wait and the pre-migration backup are part of that start."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("database:\n  url: postgresql://localhost/aq\n")
+    monkeypatch.setattr(daemon_mod, "CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(daemon_mod, "LOCK_DIR", str(tmp_path / "daemon.lock"))
+    monkeypatch.setattr(daemon_mod, "PID_FILE", str(tmp_path / "daemon.pid"))
+    monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: None)
+    held = []
+
+    def ensure_database():
+        held.append((tmp_path / "daemon.lock").is_dir())
+        return False
+
+    monkeypatch.setattr(daemon_mod, "_ensure_database", ensure_database)
+
+    assert daemon_mod.start_daemon() is False
+    assert held == [True]
+    assert not (tmp_path / "daemon.lock").exists()
+
+
+def test_start_rechecks_for_a_daemon_once_it_holds_the_lock(tmp_path, monkeypatch, no_popen):
+    """A start that waited behind another one must not launch a second daemon."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("{}")
+    monkeypatch.setattr(daemon_mod, "CONFIG_PATH", str(config_path))
+    monkeypatch.setattr(daemon_mod, "LOCK_DIR", str(tmp_path / "daemon.lock"))
+    answers = iter([None, 4242])
+    monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: next(answers))
+
+    assert daemon_mod.start_daemon() is True
+    no_popen.assert_not_called()
+
+
+def test_start_withdraws_a_deliberate_stop_and_stop_records_one(tmp_path, monkeypatch):
+    from src.daemon_state import read_stop_intent
+
+    marker = tmp_path / "daemon.stopped"
+    monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: None)
+    daemon_mod.stop_daemon(quiet=True)
+    assert read_stop_intent(path=marker).by == "aq stop"
+
+    monkeypatch.setattr(daemon_mod, "CONFIG_PATH", str(tmp_path / "missing.yaml"))
+    assert daemon_mod.start_daemon() is False  # no config -- but the stop is withdrawn
+    assert read_stop_intent(path=marker) is None

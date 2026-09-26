@@ -306,6 +306,9 @@ KIND_INSTALL_RECORD = "install-record"
 #: table is never removed: an adapter that starts recording something new gets
 #: "left in place, unknown kind" rather than deletion by default.
 SCOPE_BY_KIND: Mapping[str, RemovalScope] = {
+    # The auto-restart watchdog (src/install/service.py).  Runtime, and removed
+    # first: a watchdog left behind would start the daemon uninstall stopped.
+    "service": RemovalScope.RUNTIME,
     "daemon": RemovalScope.RUNTIME,
     "shell-profile": RemovalScope.RUNTIME,
     KIND_INSTALL_RECORD: RemovalScope.RUNTIME,
@@ -357,6 +360,7 @@ class RemovalAction(str, Enum):
 #: reads its settings, and the resume record — the only durable evidence of
 #: what is being removed — is deleted last.
 _REMOVAL_ORDER: tuple[str, ...] = (
+    "service",
     "daemon",
     RESOURCE_DATABASE,
     RESOURCE_ROLE,
@@ -836,7 +840,10 @@ def default_handlers(
         "database and role yourself, or rerun `aq uninstall --remove-database` where an "
         "administrator connection is configured."
     )
+    from .service import removal_handler as _service_handler
+
     return {
+        "service": _service_handler(runner),
         "daemon": _daemon_handler(runner or run_command, which or _shutil.which),
         "shell-profile": _shell_profile_handler(),
         RESOURCE_CONFIG: _config_handler(),

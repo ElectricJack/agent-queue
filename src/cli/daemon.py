@@ -15,7 +15,6 @@ interactive offer to launch the Vite dev server instead.
 from __future__ import annotations
 
 import os
-import re
 import signal
 import subprocess
 import sys
@@ -24,6 +23,15 @@ from pathlib import Path
 
 import click
 
+from src.daemon_state import (
+    STOP_INTENT_FILENAME,
+    clear_stop_intent,
+    configured_database_endpoint,
+    database_reachable,
+    find_daemon_pid,
+    read_daemon_pid,
+    record_stop_intent,
+)
 from src.env_scrub import harness_session_markers, strip_harness_session_markers
 from src.sessions.env import (
     AQ_MARKER_KEYS,
@@ -56,44 +64,23 @@ DASHBOARD_SERVER_LOG_PATH = os.path.join(CONFIG_DIR, "dashboard-server.log")
 # ---------------------------------------------------------------------------
 
 
+def _stop_intent_path() -> str:
+    """``daemon.stopped`` beside the PID file (:mod:`src.daemon_state`)."""
+    return os.path.join(CONFIG_DIR, STOP_INTENT_FILENAME)
+
+
 def _read_pid() -> int | None:
-    """Read and validate the PID from the PID file."""
-    if not os.path.exists(PID_FILE):
-        return None
-    try:
-        pid = int(open(PID_FILE).read().strip())
-    except (ValueError, OSError):
-        return None
-    # Check if process is actually running
-    try:
-        os.kill(pid, 0)
-        return pid
-    except OSError:
-        # Stale PID file
-        os.remove(PID_FILE)
-        return None
+    """Read and validate the PID from the PID file.
+
+    A PID file naming a dead process -- or, after a reboot, a live process that
+    is not the daemon -- is stale and removed (:func:`src.daemon_state.read_daemon_pid`).
+    """
+    return read_daemon_pid(PID_FILE, CONFIG_PATH)
 
 
 def _find_daemon_pid() -> int | None:
     """Find a running daemon PID via PID file or pgrep fallback."""
-    pid = _read_pid()
-    if pid:
-        return pid
-    # A dashboard server receives the same config path, so matching only the
-    # checkout name and config can mistake it for the daemon. The daemon is
-    # always launched as ``agent-queue <config>`` in ``start_daemon``; require
-    # that exact argv suffix when recovering without a PID file.
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", rf"(^|/)agent-queue {re.escape(CONFIG_PATH)}$"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return int(result.stdout.strip().split()[0])
-    except (FileNotFoundError, ValueError):
-        pass
-    return None
+    return find_daemon_pid(PID_FILE, CONFIG_PATH)
 
 
 def _resolve_agent_queue_bin() -> str:
@@ -304,24 +291,7 @@ def _configured_database_endpoint() -> tuple[str, int] | None:
     before the daemon and must not depend on the whole configuration being
     valid, and it deliberately never looks at the password.
     """
-    import yaml
-
-    try:
-        with open(CONFIG_PATH, encoding="utf-8") as handle:
-            raw = yaml.safe_load(handle) or {}
-    except (OSError, yaml.YAMLError):
-        return None
-    section = raw.get("database")
-    url = section.get("url") if isinstance(section, dict) else None
-    if not isinstance(url, str) or not url:
-        return None
-    from urllib.parse import urlsplit
-
-    try:
-        parts = urlsplit(url)
-        return (parts.hostname or "localhost", int(parts.port or 5432))
-    except ValueError:
-        return None
+    return configured_database_endpoint(CONFIG_PATH)
 
 
 def _database_reachable() -> bool:
@@ -332,17 +302,7 @@ def _database_reachable() -> bool:
     Probing first is what keeps `aq start` from demanding a compose file on a
     machine that has a perfectly good database.
     """
-    endpoint = _configured_database_endpoint()
-    if endpoint is None:
-        return False
-    import socket
-
-    host, port = endpoint
-    try:
-        with socket.create_connection((host, port), timeout=2):
-            return True
-    except OSError:
-        return False
+    return database_reachable(CONFIG_PATH)
 
 
 def _ensure_database() -> bool:
@@ -569,6 +529,11 @@ def _post_daemon_checks() -> None:
 
 def start_daemon() -> bool:
     """Start the daemon. Returns True on success."""
+    # Asking for a daemon withdraws any earlier deliberate stop, whatever
+    # happens next: a start that fails is a daemon the operator wants running,
+    # which is what the auto-restart service may then retry (src.daemon_state).
+    clear_stop_intent(path=_stop_intent_path())
+
     if not os.path.exists(CONFIG_PATH):
         console.print(f"[bold red]Error:[/] Config not found at {CONFIG_PATH}")
         console.print("[dim]Run setup first.[/]")
@@ -579,19 +544,10 @@ def start_daemon() -> bool:
         console.print(f"[yellow]Daemon is already running[/] (PID {existing})")
         return True
 
-    # The daemon cannot start without its database. Reach for Docker only when
-    # nothing is listening *and* this is a checkout that ships a compose file.
-    if _config_uses_postgres() and not _ensure_database():
-        return False
-
-    # The operator wrapper backed this up before the restart whenever the
-    # schema was not confirmed at this checkout's head — because a daemon that
-    # then runs its migration is exactly when a bad schema revision can burn
-    # the live database.  Mirror that: back up first when not at head.
-    if _config_uses_postgres() and not _database_is_at_head():
-        _backup_database()
-
-    # Acquire lock
+    # Acquire the lock before the database work, not after it: waiting for
+    # PostgreSQL and taking a backup can take minutes, and that is exactly the
+    # window in which a second `aq start` -- the auto-restart service's -- used
+    # to pass the "already running" check and race this one.
     try:
         os.makedirs(LOCK_DIR)
     except FileExistsError:
@@ -602,6 +558,26 @@ def start_daemon() -> bool:
         return False
 
     try:
+        # Whoever held the lock before us may have started it meanwhile.
+        existing = _find_daemon_pid()
+        if existing:
+            console.print(f"[yellow]Daemon is already running[/] (PID {existing})")
+            return True
+
+        # The daemon cannot start without its database. Reach for Docker only
+        # when nothing is listening *and* this is a checkout that ships a
+        # compose file.
+        if _config_uses_postgres() and not _ensure_database():
+            return False
+
+        # The operator wrapper backed this up before the restart whenever the
+        # schema was not confirmed at this checkout's head — because a daemon
+        # that then runs its migration is exactly when a bad schema revision
+        # can burn the live database.  Mirror that: back up first when not at
+        # head.
+        if _config_uses_postgres() and not _database_is_at_head():
+            _backup_database()
+
         console.print("[bold]Starting agent-queue daemon...[/]")
         bin_path = _resolve_agent_queue_bin()
 
@@ -776,7 +752,13 @@ def stop_agent_sessions(quiet: bool = False) -> int:
 
 
 def stop_daemon(quiet: bool = False) -> bool:
-    """Stop the daemon. Returns True if it was stopped."""
+    """Stop the daemon. Returns True if it was stopped.
+
+    The stop is recorded first (:mod:`src.daemon_state`), also when no daemon
+    is running: "stop" means "and keep it stopped", so the auto-restart
+    service must not start one until the next ``aq start``.
+    """
+    record_stop_intent("aq stop", path=_stop_intent_path())
     pid = _find_daemon_pid()
     if not pid:
         if not quiet:
