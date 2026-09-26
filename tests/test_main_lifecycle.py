@@ -23,6 +23,32 @@ from src.event_bus import EventBus
 from src.remote_links import DashboardLinkResolver
 
 
+@pytest.fixture
+async def lifecycle_clock(monkeypatch):
+    """Advance asyncio timers with loop turns instead of waiting 30 real seconds."""
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    monkeypatch.setattr(loop, "time", lambda: now)
+
+    async def run(awaitable):
+        nonlocal now
+        task = asyncio.create_task(awaitable)
+        try:
+            # A bounded number of turns also catches a dead scheduler without
+            # making the timeout depend on how busy the test machine is.
+            for _ in range(300):
+                await asyncio.sleep(0)
+                if task.done():
+                    return task.result()
+                now += 0.1
+            pytest.fail("daemon lifecycle did not finish within 30 simulated seconds")
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    return run
+
+
 class LoginFailure(Exception):
     """Type name is what src.main.run_bot matches for degraded messaging."""
 
@@ -126,7 +152,7 @@ def _install_run_env(monkeypatch, config, adapter):
 
 
 async def test_run_initializes_before_adapter_and_runs_degraded_after_login_failure(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, lifecycle_clock
 ):
     """Orchestrator initialization precedes adapter startup; a login failure
     degrades messaging instead of tearing the daemon down; shutdown closes
@@ -138,8 +164,7 @@ async def test_run_initializes_before_adapter_and_runs_degraded_after_login_fail
     adapter.events = events_ref  # share the recorder installed by the env
     state["on_first_cycle"] = lambda: os.kill(os.getpid(), signal.SIGTERM)
 
-    async with asyncio.timeout(30):
-        restart = await main_mod.run(str(tmp_path / "config.yaml"))
+    restart = await lifecycle_clock(main_mod.run(str(tmp_path / "config.yaml")))
 
     assert restart is False
     assert "orch.initialize" in events_ref and "adapter.start" in events_ref
@@ -235,7 +260,9 @@ async def test_health_checks_reports_each_failed_dependency_independently(tmp_pa
     assert checks["messaging"]["connected"] is False
 
 
-async def test_readiness_race_tasks_are_awaited_after_cancellation(monkeypatch, tmp_path):
+async def test_readiness_race_tasks_are_awaited_after_cancellation(
+    monkeypatch, tmp_path, lifecycle_clock
+):
     """PLA-2: when the readiness race resolves, the losing task must be
     awaited — its cancellation cleanup observed — before the scheduler
     proceeds, so no pending readiness coroutine survives into shutdown."""
@@ -252,8 +279,7 @@ async def test_readiness_race_tasks_are_awaited_after_cancellation(monkeypatch, 
 
     state["on_first_cycle"] = on_first_cycle
 
-    async with asyncio.timeout(30):
-        await main_mod.run(str(tmp_path / "config.yaml"))
+    await lifecycle_clock(main_mod.run(str(tmp_path / "config.yaml")))
 
     # The losing wait_until_ready task was cancelled…
     assert adapter.ready_cancel_delivered is True

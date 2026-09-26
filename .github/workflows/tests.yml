@@ -56,25 +56,25 @@ jobs:
           # distributes its files across four workers. Refresh .test_durations
           # with the command documented in docs/contributing/ci.md.
           - name: default-1/8
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 1 --splitting-algorithm least_duration
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 1 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py
           - name: default-2/8
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 2 --splitting-algorithm least_duration
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 2 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py
           - name: default-3/8
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 3 --splitting-algorithm least_duration
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 3 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py
           - name: default-4/8
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 4 --splitting-algorithm least_duration
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 4 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py
           - name: default-5/8
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 5 --splitting-algorithm least_duration
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 5 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py
           - name: default-6/8
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 6 --splitting-algorithm least_duration
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 6 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py
           - name: default-7/8
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 7 --splitting-algorithm least_duration
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 7 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py
           - name: default-8/8
-            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 8 --splitting-algorithm least_duration
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 8 --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py
           - name: migration-and-slow
             command: pytest tests/ -n auto --dist loadfile -m "migration or slow"
           - name: postgres-integration
-            command: pytest tests/ -n auto --dist loadfile -m "integration or perf"
+            command: pytest tests/ -n auto --dist loadfile -m "(integration or perf) and not migration and not slow"
 
     # Postgres backend for the perf/claim-query suite's Postgres parametrisation
     # (tests/perf/conftest.py's ``any_db``, tests/test_claim_queries.py's ``db``) —
@@ -145,6 +145,7 @@ jobs:
       # ``BOOLEAN DEFAULT 0``, which upgraded cleanly on SQLite and failed
       # every Postgres run with DatatypeMismatchError).
       - name: Apply migrations to a scratch PostgreSQL database
+        if: matrix.suite.name == 'migration-and-slow'
         env:
           PGPASSWORD: agent_queue
           AGENT_QUEUE_DB_URL: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/ci_migration_check

@@ -78,18 +78,23 @@ The job checks out the exact event SHA (the PR's merge with its base, for a
 | Arm | Command |
 |---|---|
 | `cli-conformance` | `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py` |
-| `default-1/8` … `default-8/8` | `pytest tests/ -n 4 --dist loadfile --splits 8 --group N --splitting-algorithm least_duration` |
+| `default-1/8` … `default-8/8` | `pytest tests/ -n 4 --dist loadfile --splits 8 --group N --splitting-algorithm least_duration --ignore=tests/test_cli_inventory.py --ignore=tests/test_cli_conformance.py` |
 | `migration-and-slow` | `pytest tests/ -n auto --dist loadfile -m "migration or slow"` |
-| `postgres-integration` | `pytest tests/ -n auto --dist loadfile -m "integration or perf"` |
+| `postgres-integration` | `pytest tests/ -n auto --dist loadfile -m "(integration or perf) and not migration and not slow"` |
 
 `fail-fast: false`, so one red arm does not hide the others; the job times out
 at 30 minutes.
 
 The default shards inherit the marker deselects from `pyproject.toml`'s
 `addopts`, which is why the other two arms exist: they select exactly what the
-default one drops. The `cli-conformance` arm is separated so a CLI-surface
+default one drops. Tests with a `migration` or `slow` marker belong to
+`migration-and-slow`, including those also marked `integration` or `perf`.
+The legacy SQLite import and PostgreSQL substrate suites run there too,
+including the real template-creation coordination check.
+The `cli-conformance` arm is separated so a CLI-surface
 change fails visibly instead of inside fourteen thousand other results, and it
-is the one arm that goes through the `aq test` wrapper.
+is the one arm that goes through the `aq test` wrapper. Its two files are
+ignored by every default shard, so they execute once.
 
 Wall-clock budgets still skip in the `postgres-integration` arm: they need
 `AQ_PERF_STRICT=1`, which CI does not set, because a hosted runner's load makes
@@ -149,7 +154,8 @@ or GitHub branch rules when adopting this workflow.
   outside normal pytest startup.
 * `GIT_AUTHOR_*` / `GIT_COMMITTER_*` identities, because the Git-integration
   tests create real commits and hosted runners ship with none.
-* A separate step applies the whole Alembic chain to a scratch database
+* A separate step in `migration-and-slow` applies the whole Alembic chain to a
+  scratch database
   (`ci_migration_check`) before the tests run, so a migration that only works
   against an already-populated database fails loudly. The SQLite half of this
   check went away with the backend — it was never a proxy for production, since

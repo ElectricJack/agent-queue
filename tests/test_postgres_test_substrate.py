@@ -8,6 +8,10 @@ import pytest
 from tests import db_fixtures, pg_dsn
 from tests.db_fixtures import LeasePool, lease_dsn
 
+# Substrate regressions create real database clones and templates. Keep the
+# whole suite in migration-and-slow so default shards do not pay for that setup.
+pytestmark = pytest.mark.slow
+
 
 def test_initialized_database_survives_row_reset_and_new_event_loop(monkeypatch, request):
     """Reuse initialization, preserve seeds, and isolate adapters and pool options."""

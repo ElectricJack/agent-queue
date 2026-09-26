@@ -3,12 +3,15 @@ import json
 import math
 import re
 import shlex
+import tomllib
 from fnmatch import fnmatchcase
+from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import yaml
+from _pytest.mark.expression import Expression
 
 WORKFLOWS = Path('.github/workflows')
 CANDIDATE_REF = 'aq/integration/p-' + '5' * 32 + '/r-' + '6' * 32
@@ -180,3 +183,50 @@ def test_committed_shard_timings_are_valid_pytest_split_data():
         assert nodeid.startswith("tests/") and "::" in nodeid
         assert isinstance(duration, (int, float)) and not isinstance(duration, bool)
         assert math.isfinite(duration) and duration >= 0
+
+
+def _selecting_arms(path, markers):
+    """Apply paths and markers, treating the disjoint default shards as one arm."""
+    addopts = shlex.split(
+        tomllib.loads(Path('pyproject.toml').read_text())['tool']['pytest']['ini_options']['addopts']
+    )
+    default_expression = addopts[addopts.index('-m') + 1]
+    selected = set()
+    for suite in workflow()['jobs']['test']['strategy']['matrix']['suite']:
+        args = shlex.split(suite['command'])
+        files = [arg for arg in args if arg.startswith('tests/') and arg.endswith('.py')]
+        if files and path not in files:
+            continue
+        if f'--ignore={path}' in args:
+            continue
+        expression = args[args.index('-m') + 1] if '-m' in args else default_expression
+        if Expression.compile(expression).evaluate(lambda marker: marker in markers):
+            name = suite['name']
+            selected.add('default' if name.startswith('default-') else name)
+    return sorted(selected)
+
+
+@pytest.mark.parametrize('flags', product([False, True], repeat=5))
+def test_ci_marker_partition_runs_every_selected_test_once(flags):
+    names = ('migration', 'slow', 'integration', 'perf', 'tmux')
+    markers = {name for name, enabled in zip(names, flags) if enabled}
+    selected = _selecting_arms('tests/test_example.py', markers)
+    # tmux-only tests are intentionally opt-in; all other combinations were
+    # covered by the old union of default, migration/slow and integration/perf.
+    should_run = markers != {'tmux'}
+    assert len(selected) == int(should_run), (markers, selected)
+
+
+@pytest.mark.parametrize('path', ['tests/test_cli_inventory.py', 'tests/test_cli_conformance.py'])
+def test_cli_conformance_files_run_only_in_their_dedicated_arm(path):
+    assert _selecting_arms(path, set()) == ['cli-conformance']
+
+
+def test_scratch_migration_check_runs_once():
+    steps = workflow()['jobs']['test']['steps']
+    checks = [
+        step for step in steps
+        if step.get('name') == 'Apply migrations to a scratch PostgreSQL database'
+    ]
+    assert len(checks) == 1
+    assert checks[0]['if'] == "matrix.suite.name == 'migration-and-slow'"
