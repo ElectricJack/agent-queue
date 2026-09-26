@@ -251,6 +251,34 @@ One installation-wide durable evaluation per destination/configuration generatio
 
 Unique: (`destination`, `config_generation`, `window_start`, `window_end`). Index: `idx_digest_windows_due`.
 
+### Table: `supervisor_report_requests`
+
+Durable author requests for supervisor-written digest reports: one row per reserved report window, `reserved` when the scheduler claims an author slot, `requested` once the wake message is queued, and — on submit — the report text lands on the owning `digest_windows` row while this row records the submission.  Each state move bumps `version` for the caller's CAS (`brief_hash` and `expected_version` guard submit against a changed brief); `deadline` bounds the live window (`idx_supervisor_report_requests_state_deadline` walks open work).  `uq_supervisor_report_requests_owner` keeps one request per (`kind`, `owner_ref`) — the digest `window_id` for hourly requests.  Revision `a00000000026` creates the table; its downgrade refuses to drop stored submissions.
+
+| Column | Type | Constraints |
+|---|---|---|
+| `id` | TEXT | PRIMARY KEY, `report-hourly-<window_id>` |
+| `kind` | TEXT | NOT NULL, one of `hourly`, `morning` (`ck_supervisor_report_requests_kind`) |
+| `owner_ref` | TEXT | NOT NULL, the `digest_windows.id` the request authors; unique with `kind` (`uq_supervisor_report_requests_owner`) |
+| `destination` | TEXT | NOT NULL, copied from the owned window |
+| `visibility` | JSON | NOT NULL, the delivery visibility generation at reservation (`invalidate_hourly_visibility` retires stale rows) |
+| `brief` | JSON | NOT NULL, the bounded, paged brief an author reads |
+| `brief_hash` | TEXT | NOT NULL, digest of `brief`; submit must match it, so an edited brief invalidates a stale author |
+| `fallback_text` | TEXT | NOT NULL, what is delivered if no submission lands before the deadline |
+| `author_session_id` | TEXT | NOT NULL, the supervisor session that may read the brief and submit |
+| `state` | TEXT | NOT NULL, `reserved` (server default), then `requested` when the wake message exists, then `submitted` / `fallback` or `cancelled` (`ck_supervisor_report_requests_state`) |
+| `deadline` | FLOAT | NOT NULL, wall time after which the request is closed and the fallback stands; indexed with `state` |
+| `version` | INTEGER | NOT NULL, server default 1 (`ck_supervisor_report_requests_version`); bumped on every state move, submitted via `expected_version` |
+| `request_message_id` | TEXT | nullable, the queued wake message while `requested` |
+| `submitted_text` | TEXT | nullable, the submitted report, mirrored onto the owned window's `payload.text` |
+| `submitted_hash` | TEXT | nullable, its digest, recorded as the window's `output_hash` |
+| `evidence_refs` | JSON | nullable, evidence cited by the submission; every ref must resolve against the request's `brief` facts at submit |
+| `source_links` | JSON | nullable, the `source_url` of each cited evidence ref, resolved server-side at submit |
+| `submitted_at` | FLOAT | nullable, set with the submission |
+| `skip_reason` | TEXT | nullable, why an open request was retired without a submission (`authoring_disabled`, `visibility_changed`) |
+| `created_at` | FLOAT | NOT NULL |
+| `updated_at` | FLOAT | NOT NULL |
+
 ### Table: `supervisor_conversations`
 
 One operator conversation with the global supervisor, opened by an allowlisted @mention of the bot in the configured channel (Discord mention-routing spec §4.1, opt-in via `discord.conversation.enabled`). The row, its first input and the supervisor notice are written in one transaction before any transport side effect. `thread_id` is the internal `messages.thread_id` both directions share; `external_thread_id` is set, and the state moves `opening` → `open`, only when the thread-open delivery confirms.
