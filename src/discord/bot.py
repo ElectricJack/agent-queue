@@ -1,10 +1,9 @@
-"""Simplified Discord gateway: escalation replies only.
+"""Simplified Discord gateway with opt-in supervisor conversations.
 
 Discord no longer owns task controls, worker input, project chat, execution
 threads, lifecycle notifications, or slash commands. Outbound escalation and
-digest delivery live in their dedicated durable transports. The gateway's one
-inbound responsibility is to authenticate a reply in a known escalation
-thread and pass it to ``escalation_reply`` for the owning supervisor.
+digest delivery live in their dedicated durable transports. Escalation replies
+route first; enabled conversations pass verified input through the command boundary.
 """
 
 from __future__ import annotations
@@ -43,6 +42,7 @@ class AgentQueueBot(commands.Bot):
         )
         self._guild: discord.Guild | None = None
         self._escalation_intake_impl: tuple[Any, Any] | None = None
+        self._inbound_router_impl: tuple[Any, Any, Any] | None = None
         # Outlives any one intake adapter: a handler swap rebuilds the adapter,
         # not the counts ``digest_status`` reports as its ``intake`` block.
         self._intake_diagnostics = IgnoreCounter()
@@ -79,6 +79,34 @@ class AgentQueueBot(commands.Bot):
         service = getattr(self.orchestrator, "escalation_delivery", None)
         if service is not None:
             await service.reconcile(escalation_id)
+
+    def _inbound_router(self):
+        """Build lazily; rebuilding the handler also rebuilds both inbound adapters."""
+        from src.discord.inbound import DiscordInboundRouter
+
+        handler = self.handler
+        intake = self._escalation_intake()
+        cached = getattr(self, "_inbound_router_impl", None)
+        if cached is None or cached[0] is not handler or cached[1] is not intake:
+            diagnostics = getattr(self, "_intake_diagnostics", None)
+            if diagnostics is None:
+                diagnostics = self._intake_diagnostics = IgnoreCounter()
+            router = DiscordInboundRouter(
+                bot=self,
+                handler=handler,
+                config=self.config,
+                escalation_intake=intake,
+                diagnostics=diagnostics,
+                cutover_status=lambda: getattr(
+                    getattr(self, "_cutover_report", None), "status", None
+                ),
+                outbox_bound=lambda: bool(
+                    getattr(getattr(self.orchestrator, "conversation_outbox", None), "bound", False)
+                ),
+            )
+            self._inbound_router_impl = (handler, intake, router)
+            return router
+        return cached[2]
 
     async def setup_hook(self) -> None:
         """Keep plugin commands, retire only the six former AQ commands, sync."""
@@ -158,7 +186,7 @@ class AgentQueueBot(commands.Bot):
         await self._cutover_complete.wait()
 
     async def on_message(self, message: discord.Message) -> None:
-        """Accept only known escalation-thread replies; ignore all chatter."""
+        """Route authenticated messages only after the Discord cutover completes."""
         if message.author == self.user or not self._is_authorized(message.author.id):
             return
         ready = getattr(self, "_cutover_complete", None)
@@ -168,7 +196,7 @@ class AgentQueueBot(commands.Bot):
         if report is None or report.status != "complete":
             return
         bot_user_id = getattr(self.user, "id", None)
-        await self._escalation_intake().handle(message, bot_user_id=bot_user_id)
+        await self._inbound_router().route(message, bot_user_id=bot_user_id)
 
 
 __all__ = ["AgentQueueBot"]
