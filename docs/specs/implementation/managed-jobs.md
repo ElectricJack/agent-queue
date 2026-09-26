@@ -87,3 +87,20 @@ sleeping task sessions. Prime independently reads the ten most recent terminal
 results for the held task and renders summaries within a 6,000-byte budget.
 Prime/result reads neither acknowledge terminal intent nor create messages;
 results remain visible when the message transport is unavailable.
+
+### Wait reconciliation and pool delivery
+
+The session cascade and targeted lease reconciliation use the orchestrator's
+installed command handler (`_command_handler`). Both paths resolve durable
+conditions through `reconcile_agent_waits`; a missing or rejected handler must
+not silently leave a completed or overdue wait active. Task-result messages
+resolve the session currently attached to the owner task, including pool
+sessions whose names are independent of the task id. An idle current holder
+receives the result pointer once; busy or absent holders retain queued results.
+Delivery never starts a task worker or changes the task's status.
+
+`aq doctor --check waits.pending_terminal_tasks` reports active task-kind waits
+whose same-project producer is COMPLETED, FAILED or BLOCKED, including archived
+producers. It reports wait, owner and session ids and the target status in a
+bounded diagnostic. This is read-only: the normal command reconciler owns
+resolution and the result outbox.

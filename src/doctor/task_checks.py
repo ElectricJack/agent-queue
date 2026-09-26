@@ -2,15 +2,54 @@
 
 from __future__ import annotations
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, union_all
 
+from src.agent_waits import TERMINAL_TASK_STATUSES
 from src.database.queries.claim_queries import claim_frontier_predicates
-from src.database.tables import tasks
+from src.database.tables import agent_waits, archived_tasks, tasks
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.models import TaskStatus
 
 OWNER = "task-lifecycle"
 _STALE_STATUSES = frozenset({TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED})
+
+
+async def _check_pending_terminal_waits(ctx: DoctorContext) -> CheckResult:
+    """Expose missed producer resolution without mutating waits or their owners."""
+    check_id = "waits.pending_terminal_tasks"
+    if ctx.db is None:
+        return CheckResult(id=check_id, severity=Severity.INFO, detail="database unavailable")
+    targets = union_all(
+        select(tasks.c.id, tasks.c.project_id, tasks.c.status),
+        select(archived_tasks.c.id, archived_tasks.c.project_id, archived_tasks.c.status),
+    ).subquery()
+    stmt = (
+        select(
+            agent_waits.c.id.label("wait_id"), agent_waits.c.project_id,
+            agent_waits.c.owner_id, agent_waits.c.session_id,
+            agent_waits.c.deadline_at, agent_waits.c.checked_at,
+            targets.c.id.label("target_task_id"), targets.c.status.label("target_status"),
+        )
+        .select_from(agent_waits.join(targets, (
+            targets.c.id == agent_waits.c.match["task_id"].as_string()
+        ) & (targets.c.project_id == agent_waits.c.project_id)))
+        .where(
+            agent_waits.c.state == "active", agent_waits.c.kind == "task",
+            targets.c.status.in_(TERMINAL_TASK_STATUSES),
+        )
+        .order_by(agent_waits.c.deadline_at, agent_waits.c.id)
+        .limit(51)
+    )
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(stmt)).mappings().all()
+    if not rows:
+        return CheckResult(id=check_id, severity=Severity.OK,
+                           detail="no active task wait has a terminal target")
+    return CheckResult(
+        id=check_id, severity=Severity.WARN,
+        detail=f"{len(rows[:50])} active task wait(s) have terminal targets; check wait reconciliation",
+        data={"waits": [dict(row) for row in rows[:50]], "truncated": len(rows) > 50},
+    )
 
 
 async def _check_ready_frontier_exclusions(ctx: DoctorContext) -> CheckResult:
@@ -123,6 +162,11 @@ async def _fix_stale_attention(ctx: DoctorContext) -> CheckResult:
 
 def task_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(
+            id="waits.pending_terminal_tasks",
+            run=_check_pending_terminal_waits,
+            owner="agent-waits",
+        ),
         DoctorCheck(
             id="tasks.ready_frontier_exclusions",
             run=_check_ready_frontier_exclusions,

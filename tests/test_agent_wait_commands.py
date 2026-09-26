@@ -156,6 +156,122 @@ async def test_reconciler_is_service_only_and_calls_command_boundary(commands):
     assert result["success"] and result["scanned"] == 0
 
 
+@pytest.mark.parametrize("terminal", ["COMPLETED", "FAILED", "BLOCKED", "expired"])
+@pytest.mark.parametrize("busy", [False, True])
+async def test_task_wait_cascade_resolves_and_wakes_idle_pool_holder(
+    commands, env, monkeypatch, terminal, busy
+):
+    """Real wait cascade, durable outbox and lens against a fake terminal."""
+    from src.messages.delivery import MessageDeliveryEngine
+    from src.messages.session_lens import SessionLens
+    from src.orchestrator.core import Orchestrator
+    from src.sessions import SessionProviderRegistry
+    from src.sessions.fake import FakeProvider
+    from src.sessions.provider import SessionSpec
+    from tests.test_agent_wait_queries import complete
+
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    config = commands.config
+    config.sessions.enabled = True
+    config.messages.enabled = True
+    orch = commands.orchestrator
+    orch.config = config
+    Orchestrator.set_command_handler(orch, commands)
+    orch.transcript_watcher = SimpleNamespace(tick=AsyncMock())
+    orch.agent_questions = SimpleNamespace(tick=AsyncMock())
+    orch.session_reconciler = SimpleNamespace(tick=AsyncMock())
+    # Recovery is unrelated to waits and must not leave background work behind.
+    monkeypatch.setattr("src.integration.completion_recovery.schedule_ready_owner_recovery", lambda _: None)
+    providers = SessionProviderRegistry({"fake": FakeProvider}, config=config)
+    fake = providers.create("fake")
+    await fake.start(SessionSpec(
+        session_name=env.session.name, work_dir=env.session.work_dir,
+        command=("codex",), instance_token=env.session.instance_token,
+    ))
+    fake.sessions[env.session.name].activity = NOW - 100
+    lens = SessionLens(
+        db=env.db, providers=providers, spec_builder=None, harness_registry=None,
+        config=config, profiles_loader=AsyncMock(),
+    )
+    orch.message_delivery = MessageDeliveryEngine(env.db, lens, config)
+    orch.supervisor_delivery_watchdog = SimpleNamespace(tick=AsyncMock())
+    monkeypatch.setattr(env.db, "queue_task_recovery_notifications", AsyncMock())
+    orch._last_delivery_pass = 0
+    registered = await execute(commands, "wait_register", dict(
+        kind="task", ref="source", timeout=100, idempotency_key="cascade", claim_epoch=1,
+    ))
+    assert registered["success"], registered
+    wait_id = registered["wait"]["id"]
+    assert registered["wait"]["state"] == "active"
+    if terminal != "expired":
+        await complete(env.db, at=NOW + 50, status=terminal,
+                       outcome="pass" if terminal == "COMPLETED" else "fail")
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 200)
+
+    await Orchestrator._reconcile_sessions(orch)
+    resolved = await env.db.get_agent_wait(wait_id)
+    assert resolved["state"] == ("expired" if terminal == "expired" else "satisfied")
+    assert resolved["wait_resumed_at"] == NOW + 200
+    if terminal != "expired":
+        assert resolved["digest"]["status"] == terminal
+        assert resolved["digest"]["outcome"] == ("pass" if terminal == "COMPLETED" else "fail")
+    if busy:
+        fake.sessions[env.session.name].activity = NOW + 200
+        await Orchestrator._deliver_messages(orch)
+        assert fake.sent_nudges == []
+        message = await env.db.get_message(resolved["result_message_id"])
+        assert message.delivered_at is None
+        fake.sessions[env.session.name].activity = NOW - 100
+        orch._last_delivery_pass = 0
+    await Orchestrator._deliver_messages(orch)
+    assert fake.sent_nudges == [
+        (env.session.name, f"Handle `aq wait show {wait_id} --json`."),
+    ]
+    message = await env.db.get_message(resolved["result_message_id"])
+    assert message.delivered_at == NOW + 200
+    # Repeated reconciliation/delivery must not submit the result twice.
+    await Orchestrator._reconcile_sessions(orch)
+    orch._last_delivery_pass = 0
+    await Orchestrator._deliver_messages(orch)
+    assert len(fake.sent_nudges) == 1
+    assert (await env.db.get_session("s")).task_id == "owner"
+    assert (await env.db.get_task("owner")).status.value == "IN_PROGRESS"
+
+
+@pytest.mark.parametrize("terminal", ["COMPLETED", "FAILED", "BLOCKED"])
+@pytest.mark.parametrize("archived", [False, True])
+async def test_doctor_reports_active_wait_with_terminal_target(commands, env, terminal, archived):
+    from sqlalchemy import delete, insert, select
+    from src.database.tables import archived_tasks
+    from src.doctor import default_registry
+    from src.doctor.models import DoctorContext, Severity
+    from tests.test_agent_wait_queries import complete
+
+    registered = await execute(commands, "wait_register", dict(
+        kind="task", ref="source", idempotency_key="doctor", claim_epoch=1,
+    ))
+    assert registered["success"], registered
+    wait_id = registered["wait"]["id"]
+    await complete(env.db, at=NOW, status=terminal)
+    if archived:
+        async with env.db._engine.begin() as conn:
+            source = (await conn.execute(select(tasks).where(tasks.c.id == "source"))).mappings().one()
+            fields = {key: value for key, value in source.items() if key in archived_tasks.c}
+            await conn.execute(insert(archived_tasks).values(**fields, archived_at=NOW + 1))
+            await conn.execute(delete(tasks).where(tasks.c.id == "source"))
+    check = default_registry().get("waits.pending_terminal_tasks")
+    ctx = DoctorContext(config=commands.config, db=env.db)
+    found = await check.run(ctx)
+    assert found.severity == Severity.WARN
+    assert not found.fixable and check.fix is None
+    assert found.data["waits"][0]["wait_id"] == wait_id
+    assert found.data["waits"][0]["target_task_id"] == "source"
+    assert found.data["waits"][0]["target_status"] == terminal
+    assert (await env.db.get_agent_wait(wait_id))["state"] == "active"
+    await AgentWaitReconciler(commands).tick(now=NOW + 1)
+    assert (await check.run(ctx)).severity == Severity.OK
+
+
 async def test_supplied_principal_cannot_replace_owner_instance(commands):
     principal = ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
