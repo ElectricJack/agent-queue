@@ -17,6 +17,11 @@ refused by ``_reject_authority_args``; this path never sends them.
 Correlation is durable: the thread ID is matched against the confirmed receipt
 on the incident's root delivery, never against a task/thread naming heuristic,
 so it survives a restart and a reconnect (§7).
+
+Every message this adapter does not consume is ignored silently in the channel
+and loudly in the log: exactly one INFO line carrying the stable reason code
+and the gateway ids, never the text, so "my message vanished" is answerable by
+grepping for ``discord intake ignored``.
 """
 
 from __future__ import annotations
@@ -28,12 +33,22 @@ from src.commands.principal import ExecutionPrincipal, principal_context
 from src.escalations.intake import (
     ACTION_ACCEPT,
     ACTION_CLOSED,
+    IGNORE_LOG_FORMAT,
     InboundMessage,
     IntakeDecision,
     classify_inbound,
 )
 
 logger = logging.getLogger(__name__)
+
+#: The ignore code for a message the adapter could not observe or classify.
+#: Not in ``REASON_CODES``: the pure classifier never returns it.
+CLASSIFY_ERROR_CODE = "classify_error"
+
+
+def _raw_id(obj: Any) -> str | None:
+    value = getattr(obj, "id", None)
+    return str(value) if value not in (None, "") else None
 
 
 class DiscordEscalationIntake:
@@ -65,6 +80,7 @@ class DiscordEscalationIntake:
             is_own_message=bool(
                 bot_user_id is not None and getattr(author, "id", None) == bot_user_id
             ),
+            guild_id=_raw_id(getattr(message, "guild", None)),
         )
 
     async def classify(self, observed: InboundMessage) -> IntakeDecision:
@@ -82,7 +98,7 @@ class DiscordEscalationIntake:
             binding=None,
             enabled=bool(self._settings.enabled),
         )
-        if first.reason != "thread is not bound to an escalation":
+        if first.code != "thread_unbound":
             return first
         binding = await self._handler.db.find_escalation_by_thread(
             channel_id=observed.channel_id or "",
@@ -104,13 +120,16 @@ class DiscordEscalationIntake:
         not also be forwarded as general supervisor chat — that would deliver
         the same words twice and is what "no general chatbot" rules out.
         """
+        observed: InboundMessage | None = None
         try:
             observed = self.observe(message, bot_user_id=bot_user_id)
             decision = await self.classify(observed)
         except Exception:
             logger.warning("escalation intake failed to classify a message", exc_info=True)
+            self._log_ignore(observed, CLASSIFY_ERROR_CODE, message)
             return False
         if decision.action not in (ACTION_ACCEPT, ACTION_CLOSED):
+            self._log_ignore(observed, decision.code, message)
             return False
 
         principal = ExecutionPrincipal.service(f"discord:{observed.author_id}")
@@ -150,5 +169,25 @@ class DiscordEscalationIntake:
                 logger.debug("post-reply reconcile failed; the cycle will retry", exc_info=True)
         return True
 
+    def _log_ignore(self, observed: InboundMessage | None, code: str, message: Any) -> None:
+        """The one INFO line for an ignored message: code and ids, never content."""
+        if observed is not None:
+            ids = (
+                observed.guild_id,
+                observed.channel_id,
+                observed.external_message_id,
+                observed.author_id,
+            )
+        else:
+            # observe() itself failed: report whatever ids the raw message has.
+            channel = getattr(message, "channel", None)
+            ids = (
+                _raw_id(getattr(message, "guild", None)),
+                getattr(channel, "parent_id", None) or _raw_id(channel),
+                _raw_id(message),
+                _raw_id(getattr(message, "author", None)),
+            )
+        logger.info(IGNORE_LOG_FORMAT, code, *(value or None for value in ids))
 
-__all__ = ["DiscordEscalationIntake"]
+
+__all__ = ["CLASSIFY_ERROR_CODE", "DiscordEscalationIntake"]
