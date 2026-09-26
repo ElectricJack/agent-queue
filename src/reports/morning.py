@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -14,18 +14,15 @@ from src.reports.hourly import MAX_BRIEF_BYTES, hash_brief
 REPLAY_SECONDS = 72 * 3600
 
 
-def preview_until(now: float, timezone: str) -> float:
-    """The most recent default 07:00 boundary in the shared report zone.
+def preview_until(now: float, timezone: str, clock: str = "07:00") -> float:
+    """The latest configured daily boundary, using the same DST rules as ticks."""
+    from src.reports.schedule import planned_at
 
-    Schedule config/reservations arrive in plan 2. An explicit UTC ``until``
-    overrides this convenience boundary for forensic previews.
-    """
-    zone = ZoneInfo(timezone)
-    local = datetime.fromtimestamp(now, zone)
-    planned = datetime.combine(local.date(), time(7), zone)
-    if planned.timestamp() > now:
-        planned = datetime.combine(local.date() - timedelta(days=1), time(7), zone)
-    return planned.timestamp()
+    local = datetime.fromtimestamp(now, ZoneInfo(timezone))
+    planned = planned_at(local.date(), clock, timezone)
+    if planned > now:
+        planned = planned_at(local.date() - timedelta(days=1), clock, timezone)
+    return planned
 
 
 def report_window(since: float | None, until: float, max_lookback_hours: int = 72) -> dict:

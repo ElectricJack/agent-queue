@@ -10498,6 +10498,53 @@
         }
       }
     },
+    "/api/report/morning-tick": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Reserve/recover a daily morning report (service/system playbook only).",
+        "description": "Reserve/recover a daily morning report (service/system playbook only).",
+        "operationId": "morning_report_tick",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MorningReportTickRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MorningReportTickResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/report/brief": {
       "post": {
         "tags": [
@@ -10523,6 +10570,100 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReportBriefResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/get": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Read an immutable stored morning report in project scope.",
+        "description": "Read an immutable stored morning report in project scope.",
+        "operationId": "report_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportGetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/report/list": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "List stored morning reports in project scope.",
+        "description": "List stored morning reports in project scope.",
+        "operationId": "report_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportListResponse"
                 }
               }
             }
@@ -33585,6 +33726,52 @@
         "title": "MachineMetrics",
         "description": "Nulls mean the platform does not expose the value, not zero."
       },
+      "ManualCheck": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "surface": {
+            "type": "string",
+            "title": "Surface"
+          },
+          "expected_result": {
+            "type": "string",
+            "title": "Expected Result"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Refs"
+          },
+          "prior_verification": {
+            "type": "string",
+            "title": "Prior Verification"
+          },
+          "confidence": {
+            "type": "string",
+            "title": "Confidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action",
+          "surface",
+          "expected_result",
+          "reason",
+          "refs",
+          "prior_verification",
+          "confidence"
+        ],
+        "title": "ManualCheck"
+      },
       "ManualPosition": {
         "properties": {
           "x": {
@@ -34871,6 +35058,188 @@
           "reason"
         ],
         "title": "MorningReportPreviewResponse"
+      },
+      "MorningReportRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "local_date": {
+            "type": "string",
+            "title": "Local Date"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone"
+          },
+          "planned_at": {
+            "type": "number",
+            "title": "Planned At"
+          },
+          "window_start": {
+            "type": "number",
+            "title": "Window Start"
+          },
+          "window_end": {
+            "type": "number",
+            "title": "Window End"
+          },
+          "brief_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brief Hash"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "finalized_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized At"
+          },
+          "author_deadline": {
+            "type": "number",
+            "title": "Author Deadline"
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReportContent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "is_fallback": {
+            "type": "boolean",
+            "title": "Is Fallback"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "state",
+          "reason",
+          "local_date",
+          "timezone",
+          "planned_at",
+          "window_start",
+          "window_end",
+          "brief_hash",
+          "created_at",
+          "finalized_at",
+          "author_deadline",
+          "report",
+          "is_fallback"
+        ],
+        "title": "MorningReportRecord"
+      },
+      "MorningReportTickRequest": {
+        "properties": {
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Now",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "MorningReportTickRequest"
+      },
+      "MorningReportTickResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "report_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Report Id"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "next_due_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Due At"
+          },
+          "cancelled": {
+            "type": "integer",
+            "title": "Cancelled"
+          }
+        },
+        "type": "object",
+        "required": [
+          "report_id",
+          "state",
+          "reason",
+          "next_due_at",
+          "cancelled"
+        ],
+        "title": "MorningReportTickResponse"
       },
       "NavFolder": {
         "properties": {
@@ -44449,6 +44818,244 @@
           "total_active"
         ],
         "title": "ReportBriefResponse"
+      },
+      "ReportContent": {
+        "properties": {
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/ReportProject"
+            },
+            "type": "array",
+            "title": "Projects"
+          },
+          "coverage": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Coverage"
+          },
+          "global_facts": {
+            "items": {
+              "$ref": "#/components/schemas/ReportItem"
+            },
+            "type": "array",
+            "title": "Global Facts",
+            "default": []
+          },
+          "omitted": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Omitted",
+            "default": {}
+          }
+        },
+        "type": "object",
+        "required": [
+          "version",
+          "summary",
+          "projects",
+          "coverage"
+        ],
+        "title": "ReportContent"
+      },
+      "ReportGetRequest": {
+        "properties": {
+          "report_id": {
+            "type": "string",
+            "title": "Report Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "report_id"
+        ],
+        "title": "ReportGetRequest"
+      },
+      "ReportGetResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "report": {
+            "$ref": "#/components/schemas/MorningReportRecord"
+          }
+        },
+        "type": "object",
+        "required": [
+          "report"
+        ],
+        "title": "ReportGetResponse"
+      },
+      "ReportItem": {
+        "properties": {
+          "refs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Refs"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "late": {
+            "type": "boolean",
+            "title": "Late",
+            "default": false
+          },
+          "shipment": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shipment"
+          },
+          "prior_verification": {
+            "type": "string",
+            "title": "Prior Verification",
+            "default": ""
+          },
+          "verification_label": {
+            "type": "string",
+            "title": "Verification Label",
+            "default": "agent-reported"
+          }
+        },
+        "type": "object",
+        "required": [
+          "refs",
+          "text"
+        ],
+        "title": "ReportItem"
+      },
+      "ReportListRequest": {
+        "properties": {
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offset",
+            "description": ""
+          },
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "ReportListRequest"
+      },
+      "ReportListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "reports": {
+            "items": {
+              "$ref": "#/components/schemas/MorningReportRecord"
+            },
+            "type": "array",
+            "title": "Reports"
+          }
+        },
+        "type": "object",
+        "required": [
+          "reports"
+        ],
+        "title": "ReportListResponse"
+      },
+      "ReportProject": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "landed": {
+            "items": {
+              "$ref": "#/components/schemas/ReportItem"
+            },
+            "type": "array",
+            "title": "Landed"
+          },
+          "pending": {
+            "items": {
+              "$ref": "#/components/schemas/ReportItem"
+            },
+            "type": "array",
+            "title": "Pending"
+          },
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/ReportItem"
+            },
+            "type": "array",
+            "title": "Failures"
+          },
+          "manual_checks": {
+            "items": {
+              "$ref": "#/components/schemas/ManualCheck"
+            },
+            "type": "array",
+            "title": "Manual Checks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "landed",
+          "pending",
+          "failures",
+          "manual_checks"
+        ],
+        "title": "ReportProject"
       },
       "ReportRequestRequest": {
         "properties": {

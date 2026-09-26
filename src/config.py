@@ -255,14 +255,56 @@ class HourlyReportsConfig:
 
 
 @dataclass
+class MorningReportsConfig:
+    """Opt-in zoned daily schedule; identity survives config edits."""
+
+    enabled: bool = False
+    time: str = "07:00"
+    late_cutoff_minutes: int = 120
+    max_lookback_hours: int = 72
+    author_deadline_minutes: int = 15
+    project_ids: list[str] = field(default_factory=list)
+    destination: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        errors: list[ConfigError] = []
+        if not isinstance(self.enabled, bool):
+            errors.append(ConfigError("reports.morning", "enabled", "must be a boolean"))
+        if not isinstance(self.time, str) or not _REPORT_CLOCK.fullmatch(self.time):
+            errors.append(ConfigError("reports.morning", "time", "use HH:MM (24-hour)"))
+        for name, upper in (
+            ("late_cutoff_minutes", 1440),
+            ("max_lookback_hours", 72),
+            ("author_deadline_minutes", 60),
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= upper:
+                errors.append(ConfigError("reports.morning", name, f"must be 1–{upper}"))
+        if (
+            not isinstance(self.project_ids, list)
+            or len(self.project_ids) > 100
+            or any(not isinstance(value, str) or not value.strip() for value in self.project_ids)
+        ):
+            errors.append(
+                ConfigError("reports.morning", "project_ids", "use up to 100 project ids")
+            )
+        if not isinstance(self.destination, str) or (
+            self.destination and not re.fullmatch(r"discord:[0-9]{17,20}", self.destination)
+        ):
+            errors.append(ConfigError("reports.morning", "destination", "use discord:<channel id>"))
+        return errors
+
+
+@dataclass
 class ReportsConfig:
-    """Shared report zone and hourly authoring settings."""
+    """Shared report zone and hourly/daily report settings."""
 
     timezone: str = "UTC"
     hourly: HourlyReportsConfig = field(default_factory=HourlyReportsConfig)
+    morning: MorningReportsConfig = field(default_factory=MorningReportsConfig)
 
     def validate(self) -> list[ConfigError]:
-        errors = self.hourly.validate()
+        errors = self.hourly.validate() + self.morning.validate()
         try:
             ZoneInfo(self.timezone)
         except (ZoneInfoNotFoundError, TypeError, ValueError):
@@ -4200,6 +4242,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         hourly_raw = report_raw.get("hourly") or {}
         if not isinstance(hourly_raw, Mapping):
             raise ConfigValidationError(["[reports.hourly] must be a mapping"])
+        morning_raw = report_raw.get("morning") or {}
+        if not isinstance(morning_raw, Mapping):
+            raise ConfigValidationError(["[reports.morning] must be a mapping"])
         quiet_raw = hourly_raw.get("quiet_hours")
         quiet = None
         if quiet_raw is not None:
@@ -4210,6 +4255,13 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             )
         config.reports = ReportsConfig(
             timezone=report_raw.get("timezone", "UTC"),
+            morning=MorningReportsConfig(
+                **{
+                    name: morning_raw[name]
+                    for name in MorningReportsConfig.__dataclass_fields__
+                    if name in morning_raw
+                }
+            ),
             hourly=HourlyReportsConfig(
                 enabled=bool(hourly_raw.get("enabled", False)),
                 full_fleet_visibility=bool(hourly_raw.get("full_fleet_visibility", False)),

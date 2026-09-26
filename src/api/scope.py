@@ -96,6 +96,9 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "review_list",
         "review_withdraw",
         "review_comment",
+        "report_get",
+        "report_list",
+        "morning_report_preview",
         "report_brief",
         "report_submit",
         # The command checks the held revision task and Jack's explicit

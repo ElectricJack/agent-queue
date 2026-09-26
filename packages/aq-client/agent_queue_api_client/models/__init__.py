@@ -635,6 +635,7 @@ from .loop_node_detail_dto import LoopNodeDetailDTO
 from .loop_node_detail_dto_failure_policy import LoopNodeDetailDTOFailurePolicy
 from .loop_perf import LoopPerf
 from .machine_metrics import MachineMetrics
+from .manual_check import ManualCheck
 from .manual_position import ManualPosition
 from .mcp_server_summary import McpServerSummary
 from .memory_save_request import MemorySaveRequest
@@ -669,6 +670,10 @@ from .morning_report_preview_request import MorningReportPreviewRequest
 from .morning_report_preview_response import MorningReportPreviewResponse
 from .morning_report_preview_response_422 import MorningReportPreviewResponse422
 from .morning_report_preview_response_brief import MorningReportPreviewResponseBrief
+from .morning_report_record import MorningReportRecord
+from .morning_report_tick_request import MorningReportTickRequest
+from .morning_report_tick_response import MorningReportTickResponse
+from .morning_report_tick_response_422 import MorningReportTickResponse422
 from .nav_folder import NavFolder
 from .nav_organization import NavOrganization
 from .nav_organization_assignments import NavOrganizationAssignments
@@ -1026,6 +1031,17 @@ from .report_brief_response_422 import ReportBriefResponse422
 from .report_brief_response_active_item import ReportBriefResponseActiveItem
 from .report_brief_response_brief import ReportBriefResponseBrief
 from .report_brief_response_facts_item import ReportBriefResponseFactsItem
+from .report_content import ReportContent
+from .report_content_coverage import ReportContentCoverage
+from .report_content_omitted import ReportContentOmitted
+from .report_get_request import ReportGetRequest
+from .report_get_response import ReportGetResponse
+from .report_get_response_422 import ReportGetResponse422
+from .report_item import ReportItem
+from .report_list_request import ReportListRequest
+from .report_list_response import ReportListResponse
+from .report_list_response_422 import ReportListResponse422
+from .report_project import ReportProject
 from .report_request_request import ReportRequestRequest
 from .report_request_response import ReportRequestResponse
 from .report_request_response_422 import ReportRequestResponse422
@@ -2029,6 +2045,7 @@ __all__ = (
     "LoopNodeDetailDTOFailurePolicy",
     "LoopPerf",
     "MachineMetrics",
+    "ManualCheck",
     "ManualPosition",
     "McpServerSummary",
     "MemorySaveRequest",
@@ -2063,6 +2080,10 @@ __all__ = (
     "MorningReportPreviewResponse",
     "MorningReportPreviewResponse422",
     "MorningReportPreviewResponseBrief",
+    "MorningReportRecord",
+    "MorningReportTickRequest",
+    "MorningReportTickResponse",
+    "MorningReportTickResponse422",
     "NavFolder",
     "NavOrganization",
     "NavOrganizationAssignments",
@@ -2418,6 +2439,17 @@ __all__ = (
     "ReportBriefResponseActiveItem",
     "ReportBriefResponseBrief",
     "ReportBriefResponseFactsItem",
+    "ReportContent",
+    "ReportContentCoverage",
+    "ReportContentOmitted",
+    "ReportGetRequest",
+    "ReportGetResponse",
+    "ReportGetResponse422",
+    "ReportItem",
+    "ReportListRequest",
+    "ReportListResponse",
+    "ReportListResponse422",
+    "ReportProject",
     "ReportRequestRequest",
     "ReportRequestResponse",
     "ReportRequestResponse422",

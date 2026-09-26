@@ -205,7 +205,7 @@ escalation inbox, supervisor routing, scheduler, or dashboard.
 ### 4.2.1 `reports` Section
 
 `reports.timezone` is the one installation-wide IANA time zone used for report
-daily limits and quiet hours (and later for morning reports). It defaults to
+daily limits, quiet hours and morning report boundaries. It defaults to
 `UTC`. An invalid zone fails configuration loading. The section requires a
 daemon restart when edited.
 
@@ -220,6 +220,14 @@ reports:
     quiet_hours:
       start: "22:00"
       end: "07:00"
+  morning:
+    enabled: false
+    time: "07:00"
+    late_cutoff_minutes: 120
+    max_lookback_hours: 72
+    author_deadline_minutes: 15
+    project_ids: []
+    destination: "" # empty inherits the shared destination in the delivery layer
 ```
 
 Hourly supervisor authoring is opt-in and defaults off. `full_fleet_visibility`
@@ -231,6 +239,40 @@ disables that suppression. `grace_minutes` is 1–60; `max_requests_per_day` is
 1–24, with reservations counted even when a report falls back. An inactive
 authoring playbook keeps delivery deterministic. The request/CAS slice does
 not activate an authoring playbook by itself.
+
+Morning scheduling is opt-in. `time` must be a zero-padded local `HH:MM`;
+`late_cutoff_minutes` is 1–1440, `max_lookback_hours` is 1–72 and
+`author_deadline_minutes` is 1–60. `project_ids` selects up to 100 projects
+(empty means the fleet). A nonempty destination is `discord:<channel id>`.
+The report tick runs only from a daemon service or system playbook, uses the
+report zone instead of host-local cron, moves a nonexistent DST time to the
+first valid minute, and chooses the first occurrence of a repeated time.
+
+The durable `morning-daily` schedule reserves one row per local date even if
+the time is edited. A zone edit cannot reserve a report whose planned instant
+is within 20 hours of the last daily reservation. A restart after the late
+cutoff records `skipped:late_start` without advancing coverage. Within cutoff,
+the window still ends at the planned instant, while the full author deadline
+starts at reservation. Interrupted builds recover their stored window and
+source context; ready briefs and their hashes are never rebuilt.
+
+Per-source coverage and default-branch heads advance on finalization, separately
+from transport receipts. Failed sources retain their cursor for recovery;
+lookback caps disclose the omitted interval. Morning fact membership deduplicates
+the 72-hour replay independently of hourly digests. Changed project selections
+have separate source cursors so they do not consume unseen project evidence.
+Healthy quiet days finalize as suppressed immediately, without an author turn.
+Expired ready reports finalize their deterministic fallback; disabling the
+schedule cancels pending rows and leaves stored reports readable. Report rows
+and their fact membership are retained for 90 days; coverage anchors survive.
+
+`aq report morning --dry-run` reads the latest configured boundary without writes.
+`aq report show ID` and `aq report list` read stored reports, also available at
+`/reports/:id` in the dashboard. Reads enforce the caller's project visibility;
+the page separates landed changes, pending/unknown shipment, failures and source
+gaps, and labels prior verification as agent-reported. Supervisor requests,
+the reviewed minute-tick playbook and outbound reconciliation are the next
+implementation slice; these primitives do not activate them.
 
 ### 4.3 `agents` Section
 

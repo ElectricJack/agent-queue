@@ -65,6 +65,7 @@ vi.mock("./pages/system/Profiles", () => ({ default: () => <h1>Settings profiles
 vi.mock("./pages/system/Config", () => ({ default: () => <h1>Settings config</h1> }));
 vi.mock("./pages/settings/IntelligenceClassesStub", () => ({ default: () => <h1>Settings intelligence classes</h1> }));
 vi.mock("./pages/PlaybookDetail", () => ({ default: () => <h1>Playbook detail</h1> }));
+vi.mock("./pages/reports/MorningReportPage", () => ({ default: () => <h1>Morning report read page</h1> }));
 vi.mock("./pages/reviews/ReviewsInbox", () => ({ default: () => <h1>Reviews inbox</h1> }));
 
 function WorkspaceProbe({ title }: { title: string }) {
@@ -122,6 +123,12 @@ describe("Dashboard navigation", () => {
     renderApp("/conversations?conversation=conv-one");
     await screen.findByRole("heading", { name: "Former Home chat" });
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/conversations?conversation=conv-one");
+  });
+
+  it("keeps the morning report deep link on its read page", async () => {
+    renderApp("/reports/morning-2026-09-25");
+    expect(await screen.findByRole("heading", { name: "Morning report read page" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/reports/morning-2026-09-25");
   });
 
   it("routes the Reviews nav destination", async () => {
