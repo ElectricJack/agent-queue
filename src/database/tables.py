@@ -1112,6 +1112,7 @@ agent_profiles = Table(
     Column("model", Text, nullable=False, server_default=""),
     Column("permission_mode", Text, nullable=False, server_default=""),
     Column("codex_full_auto", Boolean, nullable=False, server_default=false()),
+    Column("codex_service_tier", Text, nullable=True),
     Column(
         "claude_dangerously_skip_permissions",
         Boolean,

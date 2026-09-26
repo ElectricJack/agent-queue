@@ -107,6 +107,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "integration_redrive_root",
     "integration_release_delegates",
     "integration_release_owner",
+    "integration_reserve_owner",
     "integration_release_stale_owners",
     "integration_resume",
     "integration_retry_cleanup",

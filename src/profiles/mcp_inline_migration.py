@@ -385,6 +385,7 @@ def _rewrite_profile_md(parsed, mcp_server_names: list[str]) -> str:
         permission_mode=str(parsed.config.get("permission_mode") or ""),
         harness=parsed.config.get("harness"),
         codex_full_auto=parsed.config.get("codex_full_auto", False),
+        codex_service_tier=parsed.config.get("codex_service_tier"),
         claude_dangerously_skip_permissions=parsed.config.get(
             "claude_dangerously_skip_permissions", False
         ),

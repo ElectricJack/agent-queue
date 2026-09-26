@@ -31,6 +31,22 @@ Nothing else changes and there is no migration.
 
 **Undo.** Remove `public_url`, and posts go back to the notice. Posts already
 sent are never edited.
+## 2026-09-25 — App-mode Git no longer fails anonymous reads
+
+With `integration.github_app` configured, fetches, clones and remote-head reads
+of a **public** repository failed with `credential broker did not serve
+token`, even though Git had fetched successfully. GitHub answers those reads
+anonymously, so Git never asked for the App token. That also broke child
+assembly, `aq integration redrive-child` and the remote-head check before an
+App push. A successful read that never requested the token now succeeds. A
+refused credential request is still a failure, and a push must still be
+authenticated by the App. The broker remains Git's only credential source:
+inherited credential helpers, the operator's `gh` login and `.netrc` are never
+consulted.
+
+**Upgrade:** none; restart the daemon to pick up the change. An operator who
+switched back to the existing login to work around the failure can re-enable
+the App.
 
 ## 2026-09-22 — GitHub credentials share AQ's `gh` path (staged)
 

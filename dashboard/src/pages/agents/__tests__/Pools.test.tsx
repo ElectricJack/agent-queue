@@ -7,6 +7,7 @@ import AgentWorkspace from "../AgentWorkspace";
 import type { FlockAgent } from "../../../api/agents";
 import type { PoolProjectStatus, PoolStatusRow, SessionSummary } from "../../../api/hooks";
 import { boundsOf, scaleRequest, validateBounds } from "../PoolScaleFields";
+import { PoolSupplyRow } from "../PoolMetadata";
 import { poolEntries, poolPlacement, poolProfileIds, isPoolAgent, formatIdle, outsideSessionAgent, splitBusyPoolEntries, useDebouncedBusyPoolEntries, type OutsidePoolSession } from "../pools";
 import { parseAgentSelection, poolSelectionKey, selectionAddress } from "../useAgentSelection";
 import { TerminalMock, FitAddonMock, TerminalSocketMock } from "../../../testUtils/terminal";
@@ -46,6 +47,11 @@ function pool(over: Partial<PoolStatusRow> = {}): PoolStatusRow {
     projects: [project()], ...over,
   };
 }
+
+it("shows a pool's effective Codex service tier", () => {
+  render(<PoolSupplyRow pool={pool({ service_tier: "fast" })} />);
+  expect(screen.getByText("Codex fast")).toBeInTheDocument();
+});
 
 /** Mirrors one `aq session list` row with lifecycle "pool". */
 function instance(suffix: string, over: Partial<SessionSummary> = {}): SessionSummary {

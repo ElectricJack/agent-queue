@@ -58,6 +58,10 @@ export function validateMappingChanges(mapping: Record<string, unknown>, origina
     if (effort && changed(effort.key) && (typeof slice[effort.key] !== "string" || !effort.values.includes(slice[effort.key] as string))) {
       return label + " " + effort.label + " must be one of: " + effort.values.join(", ") + ".";
     }
+    if (provider === "codex" && changed("service_tier")
+      && (typeof slice.service_tier !== "string" || !["default", "fast"].includes(slice.service_tier))) {
+      return "Codex service tier must be default or fast.";
+    }
     if (provider === "google" && changed("thinking_budget")
       && (typeof slice.thinking_budget !== "number" || !Number.isSafeInteger(slice.thinking_budget) || slice.thinking_budget < 0)) {
       return "Google thinking budget must be a whole number of zero or more.";

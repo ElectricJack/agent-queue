@@ -36,6 +36,17 @@ def _autonomous_permission_error(values: dict) -> str | None:
     return None
 
 
+def _codex_service_tier_error(values: dict) -> str | None:
+    tier = values.get("codex_service_tier")
+    if tier in (None, ""):
+        return None
+    if not isinstance(tier, str) or tier not in {"default", "fast"}:
+        return "codex_service_tier must be 'default' or 'fast'"
+    if values.get("harness") != "codex":
+        return "codex_service_tier requires harness 'codex'"
+    return None
+
+
 def _canonical_permission_values(values: dict, explicitly_set: dict) -> dict:
     """Return profile values with the legacy Claude alias normalized.
 
@@ -231,6 +242,7 @@ def _patch_modern_profile(
             "harness",
             "permission_mode",
             "codex_full_auto",
+            "codex_service_tier",
             "claude_dangerously_skip_permissions",
             "default_class",
         )
@@ -271,6 +283,7 @@ def _patch_profile_config(markdown: str, config: dict, updates: dict) -> str:
         "harness",
         "permission_mode",
         "codex_full_auto",
+        "codex_service_tier",
         "claude_dangerously_skip_permissions",
         "default_class",
     )
@@ -318,6 +331,7 @@ class ProfileCommandsMixin:
                     "description": p.description,
                     "harness": p.harness,
                     "codex_full_auto": p.codex_full_auto,
+                    "codex_service_tier": p.codex_service_tier,
                     "claude_dangerously_skip_permissions": (
                         p.claude_dangerously_skip_permissions
                     ),
@@ -364,6 +378,7 @@ class ProfileCommandsMixin:
             return {"error": f"Profile '{profile_id}' already exists"}
 
         validation_error = _autonomous_permission_error(args)
+        validation_error = validation_error or _codex_service_tier_error(args)
         if validation_error:
             return {"error": validation_error}
         profile_values = _canonical_permission_values(args, args)
@@ -383,6 +398,7 @@ class ProfileCommandsMixin:
             permission_mode=profile_values.get("permission_mode", ""),
             harness=profile_values.get("harness"),
             codex_full_auto=profile_values.get("codex_full_auto", False),
+            codex_service_tier=profile_values.get("codex_service_tier") or None,
             claude_dangerously_skip_permissions=profile_values.get(
                 "claude_dangerously_skip_permissions", False
             ),
@@ -438,6 +454,7 @@ class ProfileCommandsMixin:
             "harness": profile.harness,
             "permission_mode": profile.permission_mode or "(default)",
             "codex_full_auto": profile.codex_full_auto,
+            "codex_service_tier": profile.codex_service_tier,
             "claude_dangerously_skip_permissions": (
                 profile.claude_dangerously_skip_permissions
             ),
@@ -470,6 +487,7 @@ class ProfileCommandsMixin:
             "harness",
             "permission_mode",
             "codex_full_auto",
+            "codex_service_tier",
             "claude_dangerously_skip_permissions",
             "allowed_tools",
             "mcp_servers",
@@ -483,7 +501,7 @@ class ProfileCommandsMixin:
             return {
                 "error": (
                     "No fields to update. Provide name, description, "
-                    "harness, permission_mode, codex_full_auto, "
+                    "harness, permission_mode, codex_full_auto, codex_service_tier, "
                     "claude_dangerously_skip_permissions, allowed_tools, mcp_servers, "
                     "system_prompt_suffix, default_class, or install."
                 )
@@ -515,6 +533,7 @@ class ProfileCommandsMixin:
                 "permission_mode": profile.permission_mode,
                 "harness": profile.harness,
                 "codex_full_auto": profile.codex_full_auto,
+                "codex_service_tier": profile.codex_service_tier,
                 "claude_dangerously_skip_permissions": (
                     profile.claude_dangerously_skip_permissions
                 ),
@@ -529,6 +548,7 @@ class ProfileCommandsMixin:
         merged = {**current, **updates}
 
         validation_error = _autonomous_permission_error(merged)
+        validation_error = validation_error or _codex_service_tier_error(merged)
         if validation_error:
             return {"error": validation_error}
         merged = _canonical_permission_values(merged, updates)
@@ -565,6 +585,7 @@ class ProfileCommandsMixin:
                 permission_mode=merged.get("permission_mode", ""),
                 harness=merged.get("harness"),
                 codex_full_auto=merged.get("codex_full_auto", False),
+                codex_service_tier=merged.get("codex_service_tier") or None,
                 claude_dangerously_skip_permissions=merged.get(
                     "claude_dangerously_skip_permissions", False
                 ),
@@ -933,6 +954,8 @@ class ProfileCommandsMixin:
             data["permission_mode"] = profile.permission_mode
         if profile.codex_full_auto:
             data["codex_full_auto"] = True
+        if profile.codex_service_tier is not None:
+            data["codex_service_tier"] = profile.codex_service_tier
         if profile.claude_dangerously_skip_permissions or legacy_claude_skip:
             data["claude_dangerously_skip_permissions"] = True
         if profile.allowed_tools:
@@ -1018,6 +1041,7 @@ class ProfileCommandsMixin:
         profile_name = args.get("name") or pdata.get("name", profile_id)
 
         validation_error = _autonomous_permission_error(pdata)
+        validation_error = validation_error or _codex_service_tier_error(pdata)
         if validation_error:
             return {"error": validation_error}
         pdata = _canonical_permission_values(pdata, pdata)
@@ -1033,6 +1057,7 @@ class ProfileCommandsMixin:
             permission_mode=pdata.get("permission_mode", ""),
             harness=pdata.get("harness"),
             codex_full_auto=pdata.get("codex_full_auto", False),
+            codex_service_tier=pdata.get("codex_service_tier") or None,
             claude_dangerously_skip_permissions=pdata.get(
                 "claude_dangerously_skip_permissions", False
             ),

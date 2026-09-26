@@ -91,6 +91,13 @@ checkpoint's branch. This permits restoring a task row that drifted from its
 canonical branch while refusing a rename that would make the task unclaimable.
 The branch check happens before any other `task set` field is written.
 
+For READY/BLOCKED hierarchy or train producers missing a canonical branch owner,
+`aq integration reserve-owner --task-id <id>` is a supervisor control. It
+rechecks the task's branch against its checkpoint and materialized origin,
+requires no live session or held workspace, and acquires only an unowned or
+released branch. `aq task restart` applies this reservation check before moving
+a BLOCKED checkpointed producer to READY.
+
 > **Retired (2026-09-08):** the never-implemented `ask_human` / `aq task
 > ask-human` surface was removed. Live worker questions are recorded by the
 > claim-fenced `AgentQuestionService` from completed native transcript turns
