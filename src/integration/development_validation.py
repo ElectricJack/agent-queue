@@ -26,17 +26,20 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import signal
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
+from src.integration.development_result_parser import (
+    FAILED,
+    INFRASTRUCTURE,
+    MAX_FAILING_TESTS,
+    PASSED,
+    PytestOutputParser,
+    classify_report,
+    parse_pytest_output,
+)
 from src.resources.slot_report import REPORT_ENV, WAIT_TIMEOUT_ENV, read_slot_wait
-
-PASSED = "passed"
-FAILED = "failed"
-INFRASTRUCTURE = "infrastructure"
 
 #: ``evidence.kind`` of the journal row recording a streak of deferrals.
 DEFERRAL_KIND = "validation_deferred"
@@ -46,133 +49,13 @@ INFRA_ALERT_AFTER = 3
 
 #: Characters of combined output kept on each check (the tail).
 OUTPUT_TAIL_CHARS = 8000
-#: Bytes of output kept in memory while running, for finding failing tests.
+#: Bytes of output kept in memory while running, for the display tail only.
 _PARSE_TAIL_BYTES = 256 * 1024
-#: Failing test ids kept per check.
-MAX_FAILING_TESTS = 100
-
-#: Exit codes that say nothing was verified.  ``3``/``4``/``5`` are pytest's
-#: internal error, usage error and "no tests collected" (``aq test`` also
-#: uses ``4`` for a missing path or test DSN); ``75`` is ``aq test``'s
-#: EX_TEMPFAIL when no slot came free; ``124`` is ``timeout(1)``'s and the
-#: publisher's own timeout code; ``126``/``127`` mean the command could not
-#: be executed at all.
-_EXIT_REASONS = {
-    3: "test_runner_error",
-    4: "test_runner_error",
-    5: "no_tests_collected",
-    75: "slot_unavailable",
-    124: "timeout",
-    126: "command_unavailable",
-    127: "command_unavailable",
-}
-#: Signals that mean something outside the run stopped it.
-_KILL_SIGNALS = {signal.SIGHUP, signal.SIGINT, signal.SIGKILL, signal.SIGTERM}
-
-#: Failure text that names the validation environment rather than the code
-#: under test: the test database, the box, the wrapper's container.
-_INFRASTRUCTURE_PATTERNS = (
-    r"connection refused",
-    r"connect call failed",
-    r"could not connect to server",
-    r"too many (?:clients|connections)",
-    r"remaining connection slots are reserved",
-    r"the database system is (?:starting up|shutting down|in recovery mode)",
-    r"server closed the connection unexpectedly",
-    r"terminating connection due to administrator command",
-    r"CannotConnectNowError",
-    r"TooManyConnectionsError",
-    r"ConnectionDoesNotExistError",
-    r"connection was closed in the middle of operation",
-    r"no space left on device",
-    r"too many open files",
-    r"POSTGRES_TEST_DSN is not set",
-    r"no test slot free",
-    r"could not clean owned PostgreSQL test databases",
-    r"could not drop leased PostgreSQL test databases",
-    r"PostgreSQL test database cleanup deadline exceeded",
-    r"Cannot connect to the Docker daemon",
-    r"Error response from daemon",
-)
-INFRASTRUCTURE_SIGNATURES = re.compile("|".join(_INFRASTRUCTURE_PATTERNS), re.IGNORECASE)
-
-#: pytest's short test summary: ``FAILED <node id> - <reason>``.  The node id
-#: must be a ``.py`` path, so captured output and log lines that merely start
-#: with FAILED/ERROR are never taken for tests.
-_FAILURE_LINE = re.compile(
-    r"^(?:FAILED|ERROR) (?P<id>[^\s:]+\.py(?:::.*?)?)(?: - (?P<reason>.*))?$"
-)
-_SUMMARY_LINE = re.compile(
-    r"^=*\s*(?P<counts>\d+ [a-z]+(?:, \d+ [a-z]+)*) in [\d.]+s\b.*$", re.MULTILINE
-)
-_SUMMARY_COUNT = re.compile(r"(\d+) ([a-z]+)")
-_NO_TESTS_RAN = re.compile(r"^=*\s*no tests ran\b", re.MULTILINE)
-_COUNT_KEYS = {"error": "errors", "warning": "warnings"}
-
-
-@dataclass(frozen=True)
-class PytestReport:
-    #: ``[{"id": ..., "reason": ...}]`` from pytest's short test summary.
-    failing: list[dict]
-    #: The final ``N failed, M passed`` counts, or ``None`` when absent.
-    summary: dict | None
-    no_tests_ran: bool
-
-
-def parse_pytest_output(text: str) -> PytestReport:
-    """Failing test ids and the final counts from pytest output, if any."""
-    failing, seen = [], set()
-    for line in text.splitlines():
-        match = _FAILURE_LINE.match(line.strip())
-        if match is None:
-            continue
-        test_id = match.group("id").strip()
-        if test_id in seen:
-            continue
-        seen.add(test_id)
-        failing.append({"id": test_id, "reason": (match.group("reason") or "").strip()})
-    summary = None
-    lines = _SUMMARY_LINE.findall(text)
-    if lines:
-        summary = {
-            _COUNT_KEYS.get(word, word): int(count)
-            for count, word in _SUMMARY_COUNT.findall(lines[-1])
-        }
-    return PytestReport(failing, summary, bool(_NO_TESTS_RAN.search(text)))
-
-
-def _killed_by(code: int) -> bool:
-    if code < 0:
-        return -code in _KILL_SIGNALS
-    return code > 128 and code - 128 in _KILL_SIGNALS
 
 
 def classify(exit_code: int, output: str) -> tuple[str, str | None, list[dict]]:
-    """``(outcome, infra_reason, failing_tests)`` for one finished command.
-
-    Only evidence that tests ran and failed makes a ``failed``: a failing
-    test whose reason is not an environment outage, or — for a command that
-    prints nothing pytest-shaped — a nonzero exit that no infrastructure
-    signature explains.  Everything that verified nothing is
-    ``infrastructure``.
-    """
-    report = parse_pytest_output(output)
-    failing = report.failing[:MAX_FAILING_TESTS]
-    if exit_code in _EXIT_REASONS:
-        return INFRASTRUCTURE, _EXIT_REASONS[exit_code], failing
-    if _killed_by(exit_code):
-        return INFRASTRUCTURE, "killed", failing
-    if report.no_tests_ran:
-        return INFRASTRUCTURE, "no_tests_collected", failing
-    if exit_code == 0:
-        return PASSED, None, []
-    if failing:
-        if all(INFRASTRUCTURE_SIGNATURES.search(test["reason"]) for test in failing):
-            return INFRASTRUCTURE, "infrastructure_error", failing
-        return FAILED, None, failing
-    if INFRASTRUCTURE_SIGNATURES.search(output):
-        return INFRASTRUCTURE, "infrastructure_error", []
-    return FAILED, None, []
+    """Compatibility classifier for development validation's exit-5 deferrals."""
+    return classify_report(exit_code, parse_pytest_output(output), legacy_no_tests=True)
 
 
 def _detail(outcome, reason, exit_code, check) -> str:
@@ -243,9 +126,11 @@ async def run_check(
         stderr=asyncio.subprocess.STDOUT,
     )
     buffer = bytearray()
+    parser = PytestOutputParser()
 
     async def pump():
         while chunk := await process.stdout.read(65536):
+            parser.feed(chunk)
             buffer.extend(chunk)
             if len(buffer) > _PARSE_TAIL_BYTES:
                 del buffer[: len(buffer) - _PARSE_TAIL_BYTES]
@@ -276,22 +161,27 @@ async def run_check(
         raise
     # Killing the group closes every writer; a grandchild that escaped the
     # group must not hold the evidence hostage.
+    output_integrity = True
     try:
         await asyncio.wait_for(reader, 5)
     except TimeoutError:
         reader.cancel()
+        output_integrity = False
     finished = time.time()
     wait = read_slot_wait(report_path, now=finished)
     report_path.unlink(missing_ok=True)
     output = buffer.decode(errors="replace")
     exit_code = {"timeout": 124, "slot_unavailable": 75}.get(stopped, process.returncode)
-    outcome, reason, failing = classify(exit_code, output)
+    report = parser.finish()
+    outcome, reason, failing = classify_report(
+        exit_code, report, output_integrity=output_integrity, legacy_no_tests=True
+    )
     if stopped:
         outcome, reason = INFRASTRUCTURE, stopped
     if wait.timed_out and outcome == INFRASTRUCTURE:
         reason = "slot_unavailable"
     duration = finished - started
-    summary = parse_pytest_output(output).summary
+    summary = report.summary
     check = {
         "command": command,
         "exit_code": exit_code,
@@ -304,6 +194,8 @@ async def run_check(
         "slot_wait_bound_seconds": slot_wait_seconds,
         "failing_tests": failing,
         "summary": summary,
+        "omitted_failure_count": report.omitted_failure_count,
+        "parser_error": report.parser_error,
         "output": output[-OUTPUT_TAIL_CHARS:],
     }
     check["detail"] = _detail(outcome, check["infra_reason"], exit_code, check)
