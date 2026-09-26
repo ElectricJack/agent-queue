@@ -237,6 +237,7 @@
         "tests/test_conversation_backfill.py",
         "tests/test_conversation_intake.py",
         "tests/test_conversation_limits.py",
+        "tests/test_conversation_maintenance.py",
         "tests/test_conversation_outbox.py",
         "tests/test_conversation_preconditions.py",
         "tests/test_conversation_queries.py",
@@ -946,6 +947,7 @@
         "tests/test_conversation_backfill.py",
         "tests/test_conversation_intake.py",
         "tests/test_conversation_limits.py",
+        "tests/test_conversation_maintenance.py",
         "tests/test_conversation_outbox.py",
         "tests/test_conversation_preconditions.py",
         "tests/test_conversation_queries.py",
@@ -1221,7 +1223,7 @@
       ]
     }
   },
-  "digest": "sha256:5a348e3ed9abdc03a511c300fbd4fdf6f71d2fe6411d603f87a42ee5114b6c0f",
+  "digest": "sha256:9ccb93ae2d6dfea9c32ae3d79817eedb271edd2d280b4575088734979580dd51",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3251,6 +3253,7 @@
         "src.cli.app",
         "src.cli.test_runner",
         "src.config",
+        "src.resources.box_lock",
         "src.resources.semaphore",
         "src.resources.slot_report"
       ],
@@ -3727,6 +3730,27 @@
       ],
       "markers": [],
       "summary": "The mention-routing spec's numeric bounds, pinned in one place (plan Task 3)."
+    },
+    "tests/test_conversation_maintenance.py": {
+      "areas": [
+        "discord-conversations",
+        "supervisor"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.conversations.maintenance",
+        "src.conversations.outbox",
+        "src.database",
+        "src.database.tables",
+        "src.orchestrator"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Delay notices, retained dedup provenance and idle conversation closing."
     },
     "tests/test_conversation_outbox.py": {
       "areas": [
@@ -10165,9 +10189,12 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.resources.box_lock",
         "src.resources.semaphore"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Resource gating layer 2 — the box-wide ``aq test`` slot semaphore."
     },
     "tests/test_resource_test_runs.py": {
@@ -12008,6 +12035,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.resources.box_lock",
         "src.resources.semaphore",
         "src.resources.test_db_reaper"
       ],

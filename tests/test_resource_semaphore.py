@@ -22,6 +22,7 @@ from src.resources.semaphore import (
     default_lock_dir,
     full_suite_lock_dir,
 )
+from src.resources.box_lock import BoxLock, IncompatibleLockClient, PROTOCOL_RECORD
 
 
 @pytest.fixture
@@ -204,3 +205,204 @@ class TestFullSuiteLock:
             # The slot directory's own waiters are not the full lock's.
             assert sem.snapshot()["waiting"] == []
         assert full.snapshot()["free"] == 1
+
+
+class TestBoxLock:
+    def test_shared_capacity_and_exclusion(self, tmp_path):
+        box = BoxLock(tmp_path, 3)
+        with box.acquire(weight=2, timeout=0) as slots:
+            assert slots == (0, 1)
+            with box.acquire(timeout=0) as other:
+                assert other == (2,)
+                with pytest.raises(SlotTimeout):
+                    with box.acquire(timeout=0):
+                        pytest.fail("capacity exceeded")
+            with pytest.raises(SlotTimeout):
+                with box.acquire(exclusive=True, timeout=0):
+                    pytest.fail("exclusive overlaps shared")
+        with box.acquire(exclusive=True, timeout=0):
+            assert box.snapshot()["box"]["mode"] == "exclusive"
+            assert box.snapshot()["incompatible_slots"] == []
+            with pytest.raises(SlotTimeout):
+                with box.acquire(timeout=0):
+                    pytest.fail("shared overlaps exclusive")
+            with pytest.raises(SlotTimeout):
+                with box.acquire(exclusive=True, timeout=0):
+                    pytest.fail("exclusive overlaps exclusive")
+            assert box.semaphore.try_acquire() is None  # Fence racing old clients too.
+        assert box.semaphore.snapshot()["free"] == 3
+
+    def test_partial_weighted_claims_are_released_before_retry(self, tmp_path):
+        box = BoxLock(tmp_path, 3)
+        with box.acquire(weight=2, timeout=0):
+            seen = []
+
+            def waiting(_waited, snapshot):
+                seen.append(snapshot)
+                assert snapshot["free"] == 1  # The partial third slot was rolled back.
+                assert box.snapshot()["box"]["mode"] == "shared"
+                raise RuntimeError("cancel waiter")
+
+            with pytest.raises(RuntimeError, match="cancel waiter"):
+                with box.acquire(weight=2, on_wait=waiting):
+                    pytest.fail("weight exceeds remaining capacity")
+            assert seen
+            with box.acquire(timeout=0) as slots:
+                assert slots == (2,)
+        assert not list(box.semaphore.waiters_dir.glob("*.json"))
+
+    @pytest.mark.parametrize("capacity,weight", [(0, 1), (2, 0), (2, 3), (2, True), (2, 1.5)])
+    def test_invalid_capacity_or_weight_is_refused(self, tmp_path, capacity, weight):
+        with pytest.raises(ValueError):
+            with BoxLock(tmp_path, capacity).acquire(weight=weight, timeout=0):
+                pytest.fail("invalid weight admitted")
+        assert not tmp_path.joinpath("box.lock").exists()
+
+    def test_old_clients_are_detected_including_slots_above_capacity(self, tmp_path):
+        box = BoxLock(tmp_path, 1)
+        old = SlotSemaphore(tmp_path, 3)
+        old._ensure_dirs()
+        fd = old._try_slot(2, {"task_id": "old-client"})
+        try:
+            rows = box.snapshot()["incompatible_slots"]
+            assert [row["slot"] for row in rows] == [2]
+            with pytest.raises(IncompatibleLockClient, match="slot 2 is occupied"):
+                with box.acquire(exclusive=True, timeout=0):
+                    pytest.fail("legacy holder cannot provide box exclusion")
+            with box.acquire(timeout=0):  # Today's shared aq test behavior remains usable.
+                pass
+        finally:
+            os.close(fd)
+        assert box.snapshot()["incompatible_slots"] == []  # Stale JSON is not a holder.
+        with box.acquire(exclusive=True, timeout=0) as slots:
+            assert slots == (0, 1, 2)
+        assert not box.snapshot()["turnstile"]["held"]
+
+    def test_unknown_or_corrupt_protocol_fails_closed_and_releases_turnstile(self, tmp_path):
+        box = BoxLock(tmp_path, 2)
+        for contents in ['{"protocol":"aq-box-lock","version":999}', "bad JSON"]:
+            (tmp_path / "protocol.json").write_text(contents)
+            with pytest.raises(IncompatibleLockClient, match="incompatible box-lock protocol"):
+                with box.acquire(timeout=0):
+                    pytest.fail("unknown protocol admitted")
+            assert not box.snapshot()["turnstile"]["held"]
+        (tmp_path / "protocol.json").write_text(json.dumps(PROTOCOL_RECORD))
+        with box.acquire(timeout=0, meta={"box_protocol": {"version": 999}}):
+            assert box.snapshot()["incompatible_slots"] == []
+
+    def test_snapshot_does_not_create_lock_directory(self, tmp_path):
+        path = tmp_path / "absent"
+        state = BoxLock(path, 2).snapshot()
+        assert not path.exists()
+        assert not state["box"]["held"]
+        assert not state["turnstile"]["held"]
+
+    def test_exclusive_waiter_blocks_later_shared_and_kill_releases_turnstile(self, tmp_path):
+        box = BoxLock(tmp_path, 2)
+        script = textwrap.dedent(f"""
+            from src.resources.box_lock import BoxLock
+            box = BoxLock({str(tmp_path)!r}, 2)
+            def waiting(*args):
+                print('waiting', flush=True)
+                input()
+            with box.acquire(exclusive=True, poll=0.05, on_wait=waiting):
+                print('exclusive', flush=True)
+                input()
+        """)
+        with box.acquire(timeout=0):
+            proc = subprocess.Popen(
+                [sys.executable, "-c", script],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            try:
+                assert proc.stdout.readline().strip() == "waiting"  # Admission barrier.
+                assert box.snapshot()["turnstile"]["held"]
+                with pytest.raises(SlotTimeout):
+                    with box.acquire(timeout=0):
+                        pytest.fail("new reader passed exclusive waiter")
+                proc.kill()
+                proc.wait(timeout=10)
+                with box.acquire(timeout=0):
+                    pass
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=10)
+
+    def test_exclusive_waiter_admits_after_shared_drains(self, tmp_path):
+        box = BoxLock(tmp_path, 2)
+        script = textwrap.dedent(f"""
+            from src.resources.box_lock import BoxLock
+            announced = False
+            def waiting(*args):
+                global announced
+                if not announced:
+                    print('waiting', flush=True)
+                    input()
+                    announced = True
+            with BoxLock({str(tmp_path)!r}, 2).acquire(
+                exclusive=True, poll=0.05, on_wait=waiting
+            ):
+                print('exclusive', flush=True)
+                input()
+        """)
+        proc = None
+        try:
+            with box.acquire(timeout=0):
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", script],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    text=True,
+                )
+                assert proc.stdout.readline().strip() == "waiting"
+            proc.stdin.write("drained\n")
+            proc.stdin.flush()
+            assert proc.stdout.readline().strip() == "exclusive"
+            with pytest.raises(SlotTimeout):
+                with box.acquire(timeout=0):
+                    pytest.fail("new reader passed exclusive holder")
+            proc.stdin.write("release\n")
+            proc.stdin.flush()
+            assert proc.wait(timeout=10) == 0
+            with box.acquire(timeout=0):
+                pass
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+
+    def test_executed_child_keeps_box_and_slots_after_wrapper_exits(self, tmp_path):
+        box = BoxLock(tmp_path, 2)
+        child = "print('child', flush=True); input()"
+        script = textwrap.dedent(f"""
+            import subprocess, sys
+            from src.resources.box_lock import BoxLock
+            with BoxLock({str(tmp_path)!r}, 2).acquire(exclusive=True, timeout=0):
+                subprocess.Popen([sys.executable, '-c', {child!r}], close_fds=False)
+        """)
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert proc.stdout.readline().strip() == "child"
+            assert proc.wait(timeout=10) == 0  # Wrapper has closed its descriptors normally.
+            assert box.snapshot()["box"]["mode"] == "exclusive"
+            assert box.semaphore.snapshot()["free"] == 0
+            with pytest.raises(SlotTimeout):
+                with box.acquire(timeout=0):
+                    pytest.fail("wrapper exit released child's execution capacity")
+        finally:
+            proc.stdin.write("done\n")
+            proc.stdin.flush()
+            proc.stdout.read()  # EOF is a process-exit barrier, not a timing guess.
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+        with box.acquire(exclusive=True, timeout=0):
+            pass

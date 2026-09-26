@@ -2737,8 +2737,93 @@ values.
 | `proof` | TEXT | NOT NULL | One of: development_delivery, branch_tip, content_equivalent, superseded, operator_accepted, abandoned (`ck_integration_legacy_deliveries_proof`) |
 | `development_delivery_id` | TEXT | nullable | The `development_deliveries` row a `development_delivery` (or `content_equivalent`) proof used |
 | `operator_id` | TEXT | NOT NULL | Audit label of the local operator or supervisor session that ran the command |
-| `reason` | TEXT | NOT NULL | The supplied reason, or `legacy delivery proven by <proof>` |
+ | `reason` | TEXT | NOT NULL | The supplied reason, or `legacy delivery proven by <proof>` |
+ | `created_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `test_selections`
+
+Immutable smart-test-selection record: one row per selection request, capturing the exact change snapshot, the provenance digests (catalogue, rules, policy), the module decision with its stage breakdown, and the execution/usage metadata.  Result evidence (local runs, CI, replays) is never amended into it — it is appended to `test_selection_observations` instead.  `task_id` is a soft reference (no foreign key): archive removes the live task row, so the selection history is preserved until retention expires, as escalation audit rows are.  `src/database/queries/test_selection_queries.py` is the sole reader/writer.  Revision `a00000000028` creates the table.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Selection id |
+| `project_id` | TEXT | NOT NULL, FK `projects.id` | Project; indexed with `created_at` (`idx_test_selections_project_created`) |
+| `task_id` | TEXT | nullable | Soft ref so archive keeps the row; indexed with `created_at` (`idx_test_selections_task_created`) |
+| `session_id` | TEXT | nullable | Session that produced the selection |
+| `claim_epoch` | INTEGER | nullable | Claim epoch for the session |
+| `mode` | TEXT | NOT NULL | One of: plan_only, shadow, enforce (`ck_test_selections_mode`) |
+| `workspace` | TEXT | NOT NULL | Workspace root the selection ran against |
+| `base_ref` | TEXT | NOT NULL | Base ref (e.g. `refs/heads/main`) |
+| `base_sha` | TEXT | NOT NULL | Base commit |
+| `head_sha` | TEXT | NOT NULL | Head commit |
+| `dirty_fingerprint` | TEXT | NOT NULL | Fingerprint of dirty/untracked files |
+| `snapshot_fingerprint` | TEXT | NOT NULL | Fingerprint of the change snapshot |
+| `snapshot_complete` | BOOLEAN | NOT NULL DEFAULT true | FALSE only when `incomplete_reason` explains the gap |
+| `incomplete_reason` | TEXT | nullable | Why the snapshot was incomplete |
+| `catalogue_digest` | TEXT | NOT NULL | Selection catalogue digest in force |
+| `rules_digest` | TEXT | NOT NULL | Selection rules digest |
+| `policy_digest` | TEXT | NOT NULL | Omission policy digest |
+| `question_schema_version` | INTEGER | NOT NULL | Question-schema generation the model answered |
+| `static_engine` | TEXT | NOT NULL | Static-engine identifier |
+| `marker_policy` | TEXT | NOT NULL DEFAULT 'default' | One of: default, all (`ck_test_selections_marker_policy`) |
+| `cache_key` | TEXT | NOT NULL | Cache key over the selection inputs |
+| `jev_requested_model` | TEXT | nullable | Model name requested from the provider |
+| `jev_returned_model` | TEXT | nullable | Model name the provider actually returned |
+| `jev_status` | TEXT | NOT NULL | One of: ok, partial, disabled, unconfigured, unavailable, invalid, over_budget, timeout, model_drift (`ck_test_selections_jev_status`) |
+| `fallback_reason` | TEXT | nullable | Why the static fallback engaged, if it did |
+| `full_required` | BOOLEAN | NOT NULL DEFAULT false | The change mandates the full suite regardless of selection |
+| `jev_used_for_omission` | BOOLEAN | NOT NULL DEFAULT false | The model's answer shaped module omission |
+| `promotion_id` | TEXT | nullable | Soft ref to the `test_selection_promotions` row whose policy shaped the run |
+| `area_decisions` | JSON | NOT NULL | Per-area decision trace |
+| `mandatory_modules` | JSON | NOT NULL | Modules required by hard rules |
+| `static_modules` | JSON | NOT NULL | Modules added by the static engine |
+| `jev_modules` | JSON | nullable | Modules the model answered for |
+| `fallback_modules` | JSON | NOT NULL | Modules added on fallback, if any |
+| `final_modules` | JSON | NOT NULL | The complete final selection |
+| `reasons` | JSON | NOT NULL | Per-module reasons (`mandatory_rule`, `jev_unknown`, `fallback_timeout`, …) |
+| `pending_obligations` | JSON | NOT NULL | Obligations the selection deferred |
+| `argv` | JSON | NOT NULL | The resolved pytest argv |
+| `elapsed_ms` | JSON | NOT NULL | Per-stage elapsed time |
+| `usage` | JSON | NOT NULL | Provider usage metadata |
 | `created_at` | REAL | NOT NULL | Unix timestamp |
+
+Indexes: `idx_test_selections_project_created` (`project_id`, `created_at`); `idx_test_selections_task_created` (`task_id`, `created_at`).
+
+### Table: `test_selection_observations`
+
+Evidence rows appended to a selection after the run: the local execution, the CI result, and any replay.  Appends only, never edits, so an observation always records what happened, not what the selection claimed.  `selection_id` is a real foreign key with `ON DELETE CASCADE`, and reads are ordered by (`selection_id`, `observed_at`).
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Observation id |
+| `selection_id` | TEXT | NOT NULL, FK `test_selections.id` (`ON DELETE CASCADE`) | The selection this is evidence for; indexed with `observed_at` (`idx_test_selection_observations_selection`) |
+| `kind` | TEXT | NOT NULL | One of: execution, ci, replay (`ck_test_selection_observations_kind`) |
+| `source` | TEXT | NOT NULL | Provenance label (runner, CI provider, replay origin) |
+| `exit_code` | INTEGER | nullable | Exit code the run produced |
+| `duration_ms` | INTEGER | nullable | Wall-clock duration |
+| `executed_modules` | JSON | NOT NULL | Modules that actually ran |
+| `failed_node_ids` | JSON | NOT NULL | Failed node ids, if any |
+| `payload` | JSON | NOT NULL | Runner-specific detail |
+| `observed_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `test_selection_promotions`
+
+Append-only (except revocation) record of an omission policy a project earned: the model, question-schema version and the catalogue/rules/policy digests the policy was computed under, plus the evidence that justified promoting it.  A project has at most one active promotion — the partial unique index `uq_test_selection_promotions_active` on `project_id` WHERE `revoked_at IS NULL` enforces it, and `insert_test_selection_promotion` lands with `ON CONFLICT DO NOTHING` on that index, so re-promoting the same policy is idempotent while revoking it is not.  `test_selections.promotion_id` references these rows by id (soft, no foreign key) when the selection ran under a promoted policy.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Promotion id |
+| `project_id` | TEXT | NOT NULL, FK `projects.id` | Project; active-promotion uniqueness (`uq_test_selection_promotions_active`, `revoked_at IS NULL`) |
+| `model` | TEXT | NOT NULL | Model the policy was earned under |
+| `question_schema_version` | INTEGER | NOT NULL | Question-schema generation — a version change invalidates the policy |
+| `catalogue_digest` | TEXT | NOT NULL | Catalogue digest the policy was computed under |
+| `rules_digest` | TEXT | NOT NULL | Rules digest the policy was computed under |
+| `policy_digest` | TEXT | NOT NULL | The policy itself, digested |
+| `evidence` | JSON | NOT NULL | The held-out evidence that justified the promotion |
+| `promoted_by` | TEXT | NOT NULL | Operator/supervisor session id that promoted it |
+| `promoted_at` | REAL | NOT NULL | Unix timestamp |
+| `revoked_at` | REAL | nullable | NULL while active |
+| `revoke_reason` | TEXT | nullable | Why it was revoked |
 
 ---
 
