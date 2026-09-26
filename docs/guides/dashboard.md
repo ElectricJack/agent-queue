@@ -129,6 +129,28 @@ Keep the dashboard server on `127.0.0.1` and put an HTTPS reverse proxy that you
 
 AQ never runs `tailscale serve`, never widens a bind and never changes network policy. Do not use Funnel or a LAN bind for this.
 
+### From a phone
+
+Open `/focus`, or **Focus view** in the rail. It is the same app laid out for a small screen, at every width ([FocusHome.tsx](../../dashboard/src/pages/focus/FocusHome.tsx)):
+
+- **Live sessions**: each card opens that agent's terminal, **watch-only**. The focus view never attaches and never sends input or a resize, because an attach resizes the agent's real tmux window for everyone. `A−`/`A+` change the text size (12–20 px) on your screen only; **Full screen** fills the phone (rotate for more columns; Back leaves it). If the connection drops, the last screen stays, dimmed, with **Retry** ([WatchTerminal.tsx](../../dashboard/src/components/WatchTerminal.tsx)).
+- **Providers**: the quota cards with their age; a stale reading says so ([ProviderUsage.tsx](../../dashboard/src/pages/metrics/ProviderUsage.tsx)).
+- **Tasks**: the Tasks tab's list and filters as cards, 50 per page. A task opens as a full page; Back returns to the same page and scroll ([FocusTaskList.tsx](../../dashboard/src/pages/focus/FocusTaskList.tsx)).
+
+Posted task and morning-report links open these pages ([src/dashboard_paths.py](../../src/dashboard_paths.py)); **Full** at the top opens the full dashboard page ([FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx)). Below 768 px the rest of the dashboard is one column: the menu opens the rail as a drawer ([TopBar.tsx](../../dashboard/src/shell/TopBar.tsx)), panes and the activity list fill the screen, and the agents and session pages *watch* their terminals ([AgentTerminal.tsx](../../dashboard/src/pages/agents/AgentTerminal.tsx), [SessionDetail.tsx](../../dashboard/src/pages/SessionDetail.tsx)). A phone in landscape 768 px or wider gets the desktop pages; use the focus view to watch. Reaching the dashboard from a phone is the same question as from any other machine ([above](#reaching-it-from-another-machine)). Nothing the phone opens is saved to your roaming preferences.
+
+#### Checking a release on a real phone
+
+On iPhone Safari and Android Chrome, after an update that touched the dashboard. First note an agent's window size on the AQ host: `tmux display -p -t <session> '#{window_width}x#{window_height}'`.
+
+1. `/focus` loads with no sideways scroll; sessions, providers and tasks show.
+2. Open a live session, `A+` twice, Full screen, rotate and rotate back, press Back: full screen closes, the page stays.
+3. The tmux window size is unchanged.
+4. Airplane mode for ten seconds: the screen stays, marked stale; back online, **Retry** returns to *Live*.
+5. Tasks page 2, scroll, open a task, Back: same page, same scroll; a long title wraps and nothing runs off the screen.
+6. From the menu in portrait open **Agents** and an agent: watch-only, and the tmux window size is still unchanged.
+7. If posts carry links (`aq dashboard link`), a task link opens the focus task page.
+
 ## A realistic tour
 
 Assume the daemon and dashboard server are running (`aq start`), the dashboard is open at `http://127.0.0.1:8082/`, a project named `demo` exists, and a task has been created for it.
@@ -160,6 +182,7 @@ flowchart LR
 | **Command Center** — `/projects/:projectId/graph`, `/tasks` | Visual task relationships or a filtered work list. Graph layout is server-produced; task selection opens detail. | [Graph.tsx](../../dashboard/src/pages/command-center/Graph.tsx), [Tasks.tsx](../../dashboard/src/pages/command-center/Tasks.tsx) |
 | **Projects** in the left rail | Choose, organize, or add a project. Project-specific deep links retain their project scope. | [LeftRail.tsx](../../dashboard/src/shell/LeftRail.tsx), [ProjectTree.tsx](../../dashboard/src/shell/ProjectTree.tsx) |
 | **Agent flock** — `/agents` | Inspect worker terminals, global agents, and worker pools; tile selected views. | [AgentWorkspace.tsx](../../dashboard/src/pages/agents/AgentWorkspace.tsx) |
+| **Focus view** — `/focus` | A phone-first page: live sessions (watch-only), provider quota and the task list; task, session and report pages under `/focus/`. See [from a phone](#from-a-phone). | [FocusShell.tsx](../../dashboard/src/pages/focus/FocusShell.tsx), [FocusHome.tsx](../../dashboard/src/pages/focus/FocusHome.tsx) |
 | **Task files** — `/tasks/:taskId/files` | Preview a task's worktree files and changes. | [TaskFiles.tsx](../../dashboard/src/pages/TaskFiles.tsx), [TaskFilesPanel.tsx](../../dashboard/src/components/TaskFilesPanel.tsx) |
 | **Playbooks** — `/settings/playbooks` | Inspect and curate the active V2 playbook definitions; open a playbook detail or graph view when linked from the list. | [Playbooks.tsx](../../dashboard/src/pages/system/Playbooks.tsx), [PlaybookDetail.tsx](../../dashboard/src/pages/PlaybookDetail.tsx) |
 | **Metrics** — `/metrics` | Read fleet rate, capacity, and provider-usage charts. Each provider's card starts with its availability: a state pill, the reason, since when, the expected recovery, any operator override, the held and re-routed counts, and *Disable for…* / *Recheck* / *Clear override*. | [Metrics.tsx](../../dashboard/src/pages/metrics/Metrics.tsx), [ProviderAvailabilityHeader.tsx](../../dashboard/src/pages/metrics/ProviderAvailabilityHeader.tsx) |
@@ -228,6 +251,7 @@ The dashboard package's `predev`, `prebuild`, and `pretypecheck` hooks regenerat
 * `pages/command-center/` renders project graph/list workspaces, including the server-backed layout-v2 canvas and live graph refresh.
 * `pages/agents/` renders the global flock, workers, terminals, and pool configuration. `components/InteractiveTerminal.tsx` and `api/useTerminalInput.ts` are its input boundary.
 * `pages/project/` provides project overview/configuration/workspace/onboarding surfaces; `pages/settings/` and `pages/system/` are settings curation routes and legacy-compatible page implementations.
+* `pages/focus/` is the phone-first focus view (`/focus`): its own shell, the home page, and the task, session and report pages. It reuses the Tasks tab's rows and the watch-only terminal (`components/WatchTerminal.tsx`), which sends nothing to the session.
 * `pages/metrics/` turns durable metric queries plus a raw event feed into chart data; `pages/playbook-graph-v2/` renders the semantic playbook graph and run overlays.
 * `components/` contains shared task, modal, markdown, terminal, profile, navigation, and workspace controls. `shell/` is global navigation, keyboard shortcuts, palette, activity drawer, and right surface.
 * `panes/` registers contextual, lazy-compatible views; every pane has a manifest and arguments/state owned by the pane store. `ws/` owns the shared event and terminal sockets, not individual pages.
@@ -243,9 +267,10 @@ The following commands are the dashboard's local checks; run them from the repos
 npm -w dashboard run lint
 npm -w dashboard run typecheck
 npm -w dashboard run test
+npm -w dashboard run build && npm -w dashboard run check:layout
 ```
 
-Use a focused Vitest file while iterating, for example `npm -w dashboard run test -- src/pages/metrics/__tests__/Metrics.test.tsx`, then run the relevant family suite once before delivery. The catalog names co-located tests for each family. See [Local checks](../contributing/checks.md) for the maintained check matrix and [dashboard/AGENTS.md](../../dashboard/AGENTS.md) for the React/Vitest isolation and worker-cap conventions.
+The last line checks the layout at phone and desktop sizes in headless Chrome against a built bundle ([dashboard/layout-checks/README.md](../../dashboard/layout-checks/README.md)). Use a focused Vitest file while iterating, for example `npm -w dashboard run test -- src/pages/metrics/__tests__/Metrics.test.tsx`, then run the relevant family suite once before delivery. The catalog names co-located tests for each family. See [Local checks](../contributing/checks.md) for the maintained check matrix and [dashboard/AGENTS.md](../../dashboard/AGENTS.md) for the React/Vitest isolation and worker-cap conventions.
 
 ## Related pages
 
@@ -257,7 +282,7 @@ Use a focused Vitest file while iterating, for example `npm -w dashboard run tes
 
 ## Source and tests
 
-Primary sources: [dashboard/src/App.tsx](../../dashboard/src/App.tsx), [dashboard/src/api/client.ts](../../dashboard/src/api/client.ts), [dashboard/src/ws/useEventStream.ts](../../dashboard/src/ws/useEventStream.ts), [dashboard/vite.config.ts](../../dashboard/vite.config.ts), [dashboard/package.json](../../dashboard/package.json), [src/dashboard_server/](../../src/dashboard_server/), [src/cli/dashboard.py](../../src/cli/dashboard.py), and [src/cli/daemon.py](../../src/cli/daemon.py).
+Primary sources: [dashboard/src/App.tsx](../../dashboard/src/App.tsx), [dashboard/src/api/client.ts](../../dashboard/src/api/client.ts), [dashboard/src/ws/useEventStream.ts](../../dashboard/src/ws/useEventStream.ts), [dashboard/vite.config.ts](../../dashboard/vite.config.ts), [dashboard/package.json](../../dashboard/package.json), [src/dashboard_server/](../../src/dashboard_server/), [src/cli/dashboard.py](../../src/cli/dashboard.py), [src/cli/daemon.py](../../src/cli/daemon.py), the focus view in [dashboard/src/pages/focus/](../../dashboard/src/pages/focus/), and the browser layout checks in [dashboard/layout-checks/](../../dashboard/layout-checks/).
 
 The dashboard server and the daemon's pointer are covered by:
 
