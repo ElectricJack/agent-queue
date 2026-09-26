@@ -5340,6 +5340,10 @@ class TaskCommandsMixin:
             if lbl.startswith("hold:"):
                 reasons.append(Reason(code="held", detail=f"label '{lbl}' withholds task", ref=lbl))
 
+        # Evaluate the claim query itself: graph blockedness and capacity
+        # snapshots do not include hierarchy receipt/origin fences.
+        reasons.extend(await self.db.claim_frontier_exclusions(str(task_id)))
+
         # A phase is deliberately stricter than a normal container: a failed
         # direct child never settles it, and every later phase stays closed.
         # Keep this computed from the same child/status data settlement reads;

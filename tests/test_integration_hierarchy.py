@@ -1370,7 +1370,10 @@ def test_hoisted_frontier_never_names_the_projects_table(mode_value):
     assert "projects" in str(select(tasks.c.id).where(_frontier_where("p")))
 
 
-async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(db, hierarchy):
+@pytest.mark.parametrize("unrelated_reworks", [0, 1, 2])
+async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
+    db, hierarchy, unrelated_reworks
+):
     await _create(db, "parent")
     filed = await hierarchy.file_children("parent", [{"title": "first"}, {"title": "second"}], 0)
     first, second = [row["task_id"] for row in filed["children"]]
@@ -1387,9 +1390,22 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
         ))
     assert not await db.is_hierarchy_task_runnable(second)
     assert await db.count_ready_by_profile("p") == {}
+    [exclusion] = await db.claim_frontier_exclusions(second)
+    assert exclusion["code"] == "frontier_sibling_prerequisite_not_delivered"
+    assert "delivered_same_parent_prerequisites_when_hierarchical()" in exclusion["detail"]
 
     source = await db.get_integration_checkpoint(first)
     delivered_at = time.time()
+    # Train parents wait for children while unrelated tasks may be reopened
+    # after this sibling's receipt. Their rework boundaries must not leak
+    # into the sibling prerequisite's nested freshness subquery.
+    await db.update_project("p", hierarchical_integration_mode="train")
+    await db.update_task("parent", status=TaskStatus.PAUSED)
+    await db.set_task_meta("parent", "needs_attention", "awaiting_children")
+    for index in range(unrelated_reworks):
+        task_id = f"unrelated-{index}"
+        await _create(db, task_id)
+        await db.set_task_meta(task_id, "integration_rework_at", delivered_at + 100 + index)
     async with db.immediate() as conn:
         await conn.execute(insert(task_delivery_receipts).values(
             id="receipt",
@@ -1407,7 +1423,18 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
         ))
     assert await db.is_hierarchy_task_runnable(second)
     assert await db.count_ready_by_profile("p") == {None: 1}
+    assert second in await _frontier_ids(db)
+    assert second in await _hoisted_ids(db)
+    from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+    async with db.immediate() as conn:
+        assert await db.select_ready_for_profile(
+            conn, project_id="p", profile_id="worker", default_profile_id="worker",
+            agent_id="worker", task_id=second,
+            hierarchy_mode=ProjectIntegrationMode.of(await db.get_project("p")),
+        ) == second
     assert await db.hierarchy_prerequisite_delivery_head(second) == NEXT
+    assert await db.claim_frontier_exclusions(second) == []
 
     # Closing and metadata bookkeeping can update the task row after its
     # receipt; they do not represent a new completion.
@@ -1429,6 +1456,9 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
     await db.update_task(first, status=TaskStatus.READY)
     await db.update_task(first, status=TaskStatus.COMPLETED)
     assert not await db.is_hierarchy_task_runnable(second)
+    assert [reason["code"] for reason in await db.claim_frontier_exclusions(second)] == [
+        "frontier_sibling_prerequisite_not_delivered"
+    ]
 
 
 async def test_reopening_a_completed_task_records_only_the_rework_boundary(db):

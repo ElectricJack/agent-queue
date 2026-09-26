@@ -249,6 +249,16 @@ Each reason is `{code, detail, ref}` — `code` from a closed enum, `detail` hum
 
 Graph reasons come straight from the projection queries; scheduler reasons come from the same reason builder that replaces the string heuristics in `_describe_task_blocker`, so the log line, the CLI, and the dashboard can never disagree.
 
+For READY tasks, explain also evaluates the profile-independent pool claim predicates
+directly. Failed predicates appear as `frontier_<predicate>` reasons, naming the
+origin/reservation fence, preserved parent and sibling delivery receipt fence,
+container flag, assignment, graph blockedness, plan-subtask flag, retired repair
+stage, hold label, workspace requirement, or preparation backoff that excludes the
+row. These predicates are shared with claiming and `tasks.ready_frontier_exclusions`;
+they do not infer eligibility from a cached scheduler snapshot. Receipt freshness
+is scoped to the prerequisite's own `integration_rework_at`, never another task's
+marker or ordinary `updated_at` bookkeeping.
+
 ### 9.2 Ready frontier
 
 `aq project ready` returns the frontier — tasks that would be picked next: `status = READY ∧ is_blocked = 0 ∧ no hold label`, plus a `withheld` section (DEFINED ∧ unblocked, promoted next tick) so operators see the whole runnable edge. `--json` everywhere per the CLI workstream.

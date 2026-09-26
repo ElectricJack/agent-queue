@@ -524,7 +524,11 @@ completed child is never assembled](integration-troubleshooting.md#a-completed-c
 Sibling prerequisites accept a code receipt created after the child's latest
 reopen; later task-row and close bookkeeping do not invalidate a delivered child.
 `aq doctor --check tasks.ready_frontier_exclusions` lists READY tasks withheld
-from the claim frontier and their reasons. If a child completed again at the
+from the claim frontier and their reasons. `aq task explain --task-id TASK_ID`
+evaluates the same claim filters for one READY task and names each failed
+predicate with a `frontier_*` reason, including the hierarchy origin and
+sibling-receipt checks, hold labels, and preparation backoff. Rework timestamps
+on unrelated tasks do not affect a sibling's receipt. If a child completed again at the
 same head after its receipt, `redrive-child` reports the stale receipt and
 can reissue it after proving the incorporated head remains on the parent branch.
 
