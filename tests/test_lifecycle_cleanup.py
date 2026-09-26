@@ -728,3 +728,75 @@ class TestObsoleteCloseCommand:
             {"task_id": "t", "obsolete": True, "reason": "x", "outcome": "pass"}
         )
         assert result["code"] == "obsolete.outcome_conflict"
+
+
+# ---------------------------------------------------------------------------
+# 4. Doctor: finished work still holding lifecycle state
+# ---------------------------------------------------------------------------
+
+
+class TestDanglingLifecycleDoctor:
+    async def check(self, db):
+        from src.doctor.task_checks import run_check
+
+        return await run_check(db, "tasks.dangling_lifecycle")
+
+    async def test_clean_install_is_ok(self, db):
+        from src.doctor.models import Severity
+
+        await mktask(db, "done", status=TaskStatus.COMPLETED)
+        result = await self.check(db)
+        assert result.severity == Severity.OK
+
+    async def test_lists_owners_batches_and_finished_open_containers(self, db):
+        from src.doctor.models import Severity
+
+        await superseded(db, status_=TaskStatus.COMPLETED)
+        kids = await epic(db, status=TaskStatus.BLOCKED)
+        await db.transition_task(kids[0], TaskStatus.COMPLETED)
+        await db.transition_task(kids[1], TaskStatus.FAILED)
+
+        result = await self.check(db)
+
+        assert result.severity == Severity.WARN
+        assert result.data["owners"] == [
+            {"task_id": "dup", "owner_row_id": "own-1", "ref": "refs/heads/aq/dup",
+             "handoff_state": "attached"}
+        ]
+        assert {(b["task_id"], b["state"]) for b in result.data["batches"]} == {
+            ("dup", "parked"), ("other", "parked"),
+        }
+        assert result.data["containers"] == [
+            {"task_id": "e", "status": "BLOCKED", "failed_children": 1}
+        ]
+        assert "--obsolete" in result.detail
+
+    async def test_obsolete_close_clears_what_it_reported(self, db):
+        from src.doctor.models import Severity
+
+        await superseded(db, status_=TaskStatus.COMPLETED)
+        await service(db, fake_release(db)).close(
+            "dup", reason="duplicate", principal="human:local-operator"
+        )
+        result = await self.check(db)
+        # The parked batch is cancelled and the owner released; "other" went
+        # back to the publisher, so nothing is left to report.
+        assert result.severity == Severity.OK, result.data
+
+    async def test_publishing_membership_alone_is_informational(self, db):
+        from src.doctor.models import Severity
+
+        await dev_project(db)
+        await mktask(db, "t", status=TaskStatus.COMPLETED, project_id=DEV_PROJECT)
+        await delivery(db, "b-pub", state="publishing", members=[("t", SHA)])
+        result = await self.check(db)
+        assert result.severity == Severity.INFO
+        assert result.data["counts"]["publishing_batches"] == 1
+
+    async def test_pending_obsolete_cleanup_is_reported(self, db):
+        await superseded(db, batch_state="publishing", status_=TaskStatus.COMPLETED)
+        await service(db, fake_release(db)).close(
+            "dup", reason="duplicate", principal="human:local-operator"
+        )
+        result = await self.check(db)
+        assert result.data["obsolete_pending"] == [{"task_id": "dup", "pending": ["publishing"]}]

@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
-from sqlalchemy import or_, select, union_all
+import json
+
+from sqlalchemy import exists, func, literal, or_, select, union_all
 
 from src.agent_waits import TERMINAL_TASK_STATUSES
+from src.database.queries.archive_queries import SETTLED_DEVELOPMENT_DELIVERY_STATES
+from src.database.queries.blocked_state import OBSOLETE_META_KEY
 from src.database.queries.claim_queries import claim_frontier_predicates
-from src.database.tables import agent_waits, archived_tasks, tasks
+from src.database.queries.hierarchy_queries import container_flag_exists
+from src.database.tables import (
+    agent_waits,
+    archived_tasks,
+    development_deliveries,
+    integration_batch_members,
+    integration_batches,
+    integration_branch_owners,
+    task_metadata,
+    tasks,
+)
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.models import TaskStatus
 
@@ -160,6 +174,203 @@ async def _fix_stale_attention(ctx: DoctorContext) -> CheckResult:
     return await _check_stale_attention(ctx)
 
 
+_LIFECYCLE_CHECK = "tasks.dangling_lifecycle"
+_FINISHED = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
+_ACTIVE_TRAIN_LIFECYCLES = (
+    "sealing", "sealed", "building", "testing", "repairing", "human_blocked", "promoting",
+    "cleanup_pending",
+)
+#: How many rows of each finding the check reports.
+_LIFECYCLE_LIMIT = 50
+
+
+async def _find_dangling_lifecycle(ctx: DoctorContext) -> dict[str, list[dict]]:
+    """COMPLETED tasks still holding state, and finished containers left open.
+
+    Read-only.  ``owners``: unreleased branch-owner rows a COMPLETED task
+    owns.  ``batches``: unsettled development batches (and active train
+    batches) that list a COMPLETED task.  ``obsolete_pending``: obsolete
+    closes whose cleanup is still pending.  ``containers``: open containers
+    with children, all of them COMPLETED or FAILED.
+    """
+    found: dict[str, list[dict]] = {
+        "owners": [], "batches": [], "obsolete_pending": [], "containers": [],
+    }
+    async with ctx.db._engine.connect() as conn:
+        owners = integration_branch_owners
+        for row in (
+            await conn.execute(
+                select(tasks.c.id, owners.c.id, owners.c.ref, owners.c.handoff_state)
+                .join(owners, owners.c.owner_id == tasks.c.id)
+                .where(
+                    tasks.c.status == TaskStatus.COMPLETED.value,
+                    owners.c.handoff_state != "released",
+                    owners.c.owner_role != "collector",
+                )
+                .order_by(tasks.c.id, owners.c.ref)
+            )
+        ).all():
+            found["owners"].append(
+                {"task_id": row[0], "owner_row_id": row[1], "ref": row[2], "handoff_state": row[3]}
+            )
+        unsettled = (
+            await conn.execute(
+                select(
+                    development_deliveries.c.id,
+                    development_deliveries.c.state,
+                    development_deliveries.c.manifest,
+                )
+                .where(development_deliveries.c.state.notin_(SETTLED_DEVELOPMENT_DELIVERY_STATES))
+                .order_by(development_deliveries.c.created_at, development_deliveries.c.id)
+            )
+        ).all()
+        listed: dict[str, list[tuple[str, str]]] = {}
+        for batch_id, state, manifest in unsettled:
+            for member in manifest if isinstance(manifest, list) else []:
+                if isinstance(member, dict) and member.get("task_id"):
+                    listed.setdefault(str(member["task_id"]), []).append((batch_id, state))
+        if listed:
+            completed = set(
+                (
+                    await conn.execute(
+                        select(tasks.c.id).where(
+                            tasks.c.id.in_(sorted(listed)),
+                            tasks.c.status == TaskStatus.COMPLETED.value,
+                        )
+                    )
+                ).scalars()
+            )
+            for task_id in sorted(completed):
+                for batch_id, state in listed[task_id]:
+                    found["batches"].append(
+                        {"task_id": task_id, "batch_id": batch_id, "state": state,
+                         "kind": "development"}
+                    )
+        for row in (
+            await conn.execute(
+                select(tasks.c.id, integration_batches.c.id, integration_batches.c.lifecycle)
+                .join(integration_batch_members, integration_batch_members.c.task_id == tasks.c.id)
+                .join(
+                    integration_batches,
+                    integration_batches.c.id == integration_batch_members.c.batch_id,
+                )
+                .where(
+                    tasks.c.status == TaskStatus.COMPLETED.value,
+                    integration_batches.c.lifecycle.in_(_ACTIVE_TRAIN_LIFECYCLES),
+                )
+                .order_by(tasks.c.id)
+            )
+        ).all():
+            found["batches"].append(
+                {"task_id": row[0], "batch_id": row[1], "state": row[2], "kind": "train"}
+            )
+        for task_id, raw in (
+            await conn.execute(
+                select(task_metadata.c.task_id, task_metadata.c.value)
+                .where(task_metadata.c.key == OBSOLETE_META_KEY)
+                .order_by(task_metadata.c.task_id)
+            )
+        ).all():
+            try:
+                cleanup = (json.loads(raw) or {}).get("cleanup") or {}
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if cleanup.get("state") != "done":
+                found["obsolete_pending"].append(
+                    {
+                        "task_id": task_id,
+                        "pending": [p.get("reason") for p in cleanup.get("pending") or []],
+                    }
+                )
+        child = tasks.alias("lifecycle_child")
+        open_child = tasks.alias("lifecycle_open_child")
+        failed = (
+            select(func.count(child.c.id))
+            .where(child.c.parent_task_id == tasks.c.id, child.c.status == TaskStatus.FAILED.value)
+            .scalar_subquery()
+        )
+        for row in (
+            await conn.execute(
+                select(tasks.c.id, tasks.c.status, failed.label("failed"))
+                .where(
+                    tasks.c.status.notin_(_FINISHED),
+                    container_flag_exists(),
+                    exists(select(literal(1)).where(child.c.parent_task_id == tasks.c.id)),
+                    ~exists(
+                        select(literal(1)).where(
+                            open_child.c.parent_task_id == tasks.c.id,
+                            open_child.c.status.notin_(_FINISHED),
+                        )
+                    ),
+                )
+                .order_by(tasks.c.id)
+            )
+        ).all():
+            found["containers"].append(
+                {"task_id": row[0], "status": row[1], "failed_children": int(row[2] or 0)}
+            )
+    return found
+
+
+async def _check_dangling_lifecycle(ctx: DoctorContext) -> CheckResult:
+    """Report finished work that still holds lifecycle state (report-only).
+
+    Each finding is resolved by the subsystem that owns it, not by doctor:
+    stale containers settle on the next sweep once every child is delivered;
+    an owner row is released by `aq integration release-owner` or the
+    `integration.finished_branch_owners` fix; superseded work is retired with
+    `aq task close <id> --obsolete --reason`, which also drops it from parked
+    batches.  Membership of a batch still publishing is only informational.
+    """
+    if ctx.db is None or getattr(ctx.db, "_engine", None) is None:
+        return CheckResult(id=_LIFECYCLE_CHECK, severity=Severity.INFO, detail="database unavailable")
+    found = await _find_dangling_lifecycle(ctx)
+    in_flight = [b for b in found["batches"] if b["state"] in ("prepared", "publishing")]
+    stuck_batches = [b for b in found["batches"] if b not in in_flight]
+    counts = {
+        "owners": len(found["owners"]),
+        "stuck_batches": len(stuck_batches),
+        "publishing_batches": len(in_flight),
+        "obsolete_pending": len(found["obsolete_pending"]),
+        "containers": len(found["containers"]),
+    }
+    data = {
+        "counts": counts,
+        **{key: rows[:_LIFECYCLE_LIMIT] for key, rows in found.items()},
+    }
+    if not any(counts.values()):
+        return CheckResult(
+            id=_LIFECYCLE_CHECK,
+            severity=Severity.OK,
+            detail="no finished task holds lifecycle state and no finished container is open",
+        )
+    parts = []
+    if counts["containers"]:
+        parts.append(f"{counts['containers']} open container(s) whose children are all done")
+    if counts["owners"]:
+        parts.append(f"{counts['owners']} branch-owner row(s) held by COMPLETED tasks")
+    if counts["stuck_batches"]:
+        parts.append(f"{counts['stuck_batches']} parked/active batch membership(s) of COMPLETED tasks")
+    if counts["obsolete_pending"]:
+        parts.append(f"{counts['obsolete_pending']} obsolete close(s) with cleanup pending")
+    if counts["publishing_batches"]:
+        parts.append(f"{counts['publishing_batches']} COMPLETED task(s) in a batch still publishing")
+    stuck = counts["containers"] or counts["owners"] or counts["stuck_batches"] or counts[
+        "obsolete_pending"
+    ]
+    return CheckResult(
+        id=_LIFECYCLE_CHECK,
+        severity=Severity.WARN if stuck else Severity.INFO,
+        detail=(
+            "; ".join(parts)
+            + ". Superseded work: `aq task close <id> --obsolete --reason \"...\"`; owner rows: "
+            "`aq integration release-owner --task-id <id>`; a container settles once every "
+            "child is COMPLETED and delivered."
+        ),
+        data=data,
+    )
+
+
 def task_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -183,6 +394,12 @@ def task_checks() -> list[DoctorCheck]:
             id="tasks.archive_blocked",
             run=_check_archive_blocked,
             owner=OWNER,
+        ),
+        DoctorCheck(
+            id=_LIFECYCLE_CHECK,
+            run=_check_dangling_lifecycle,
+            owner=OWNER,
+            timeout_s=10.0,
         ),
     ]
 
