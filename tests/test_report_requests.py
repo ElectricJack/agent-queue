@@ -29,7 +29,7 @@ from src.config import (
     load_config,
 )
 from src.database import Database
-from src.database.tables import digest_windows, tasks
+from src.database.tables import digest_windows, supervisor_report_requests, tasks
 from src.digest import DigestScheduleService, schedule_for
 from src.digest.aggregate import DigestResult
 from src.digest.eligibility import Eligibility
@@ -153,6 +153,42 @@ async def test_author_submission_wins_one_window_and_preserves_one_marker(db, mo
     assert (await db.get_report_request(request["id"]))["source_links"] == [
         "https://queue.example.test/tasks/t1"
     ]
+
+
+async def test_a_missing_link_posts_the_unavailable_notice_not_a_blank_line(db, monkeypatch):
+    """With no usable dashboard link the report keeps its footer: the notice."""
+    await completed_task(db, "t1", BASE + 600)
+    clock = Clock(BASE + HOUR + 30)
+    monkeypatch.setattr("src.commands.report_commands.time.time", clock)
+    digest, _transport, _ = service(db, clock)
+    await digest.tick()
+    _window, request = await request_for(db, digest)
+
+    brief = dict(request["brief"])
+    brief["dashboard_url"] = ""
+    brief["dashboard_notice"] = "Remote dashboard link unavailable (tailscale is not running; open it on the daemon host)."
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(supervisor_report_requests)
+            .where(supervisor_report_requests.c.id == request["id"])
+            .values(brief=brief)
+        )
+    queued = await db.request_report(request["id"], now=clock.now)
+
+    command = Commands(db)
+    with principal_context(TRUSTED_LOCAL):
+        result = await command._cmd_report_submit(
+            {
+                "request_id": request["id"],
+                "brief_hash": request["brief_hash"],
+                "expected_version": queued["version"],
+                "text": "Completed t1.",
+            }
+        )
+    assert result["success"] is True
+    posted = (await db.get_report_request(request["id"]))["submitted_text"]
+    assert "Remote dashboard link unavailable (tailscale is not running" in posted
+    assert "queue.example.test" not in posted
 
 
 async def test_deadline_falls_back_and_late_submission_cannot_edit(db, monkeypatch):

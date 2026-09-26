@@ -45,11 +45,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from src.config import ReportsConfig
 from src.digest.aggregate import build_digest
 from src.digest.facts import CATEGORIES, DigestWindow
 from src.digest.render import MAX_CHARS
 from src.digest.schedule import DigestSchedule, provider_facts_enabled, schedule_for
-from src.config import ReportsConfig
 from src.escalations.plan import MAX_ATTEMPTS, backoff_for
 from src.escalations.transport import (
     EscalationTransport,
@@ -60,8 +60,8 @@ from src.escalations.transport import (
     TransportRetryable,
     TransportUnavailable,
 )
-from src.reports.hourly import author_skip_reason, build_hourly_brief, local_day_bounds
 from src.remote_links import DashboardLinkSource
+from src.reports.hourly import author_skip_reason, build_hourly_brief, local_day_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -312,8 +312,16 @@ class DigestScheduleService:
                 if skip_reason != "feature_off":
                     payload["author_skip_reason"] = skip_reason
             else:
+                dashboard_url, dashboard_notice = self._base_url, self._dashboard_notice
+                if self._links is not None:
+                    link = await self._links.resolve()
+                    dashboard_url, dashboard_notice = link.url, link.unavailable_notice
                 brief, brief_hash = build_hourly_brief(
-                    result, window, destination=schedule.destination, dashboard_url=self._base_url
+                    result,
+                    window,
+                    destination=schedule.destination,
+                    dashboard_url=dashboard_url,
+                    dashboard_notice=dashboard_notice,
                 )
                 day_start, day_end = local_day_bounds(now, self._reports.timezone)
                 report_candidate = {
