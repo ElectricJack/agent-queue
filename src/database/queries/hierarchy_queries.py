@@ -15,7 +15,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from sqlalchemy import (
+    Text,
     and_,
+    any_,
+    bindparam,
     case,
     delete,
     exists,
@@ -28,6 +31,7 @@ from sqlalchemy import (
     true,
     update,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY, TransitionResult
@@ -544,7 +548,10 @@ class HierarchyQueryMixin:
                 (
                     await conn.execute(
                         select(tasks.c.id).where(
-                            tasks.c.id.in_(task_ids), materialized_origin_when_hierarchical(),
+                            # One array bind avoids expanding the whole READY frontier
+                            # into thousands of parameters on each scheduler tick.
+                            tasks.c.id == any_(bindparam("task_ids", task_ids, type_=ARRAY(Text))),
+                            materialized_origin_when_hierarchical(),
                             delivered_same_parent_prerequisites_when_hierarchical(),
                         )
                     )

@@ -9,7 +9,8 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from sqlalchemy import and_, delete, func, insert, literal, null, select, update
+from sqlalchemy import Text, and_, any_, bindparam, delete, func, insert, literal, null, select, update
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
@@ -2106,7 +2107,10 @@ class TaskQueryMixin:
                 await conn.execute(
                     select(task_metadata.c.task_id).where(
                         and_(
-                            task_metadata.c.task_id.in_(sorted(set(task_ids))),
+                            # Keep the candidate set in one bind even for a large frontier.
+                            task_metadata.c.task_id == any_(
+                                bindparam("task_ids", sorted(set(task_ids)), type_=ARRAY(Text))
+                            ),
                             task_metadata.c.key == key,
                         )
                     )
