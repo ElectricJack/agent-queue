@@ -1244,7 +1244,7 @@
       ]
     }
   },
-  "digest": "sha256:f7d695f9c9e880bfc6dd5d68bbfcd80ccf7d5f43d5daf3984db813932238dc57",
+  "digest": "sha256:2671ddf7c0dff623fa5954cad798fa91472c87e2621c90bb09fc1c7babb5f83f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2066,9 +2066,17 @@
         "src.commands.principal",
         "src.config",
         "src.database.tables",
+        "src.doctor",
+        "src.doctor.models",
+        "src.messages.delivery",
+        "src.messages.session_lens",
         "src.models",
+        "src.orchestrator.core",
         "src.profiles.capabilities",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.provider"
       ],
       "markers": [
         "parametrize"
@@ -8497,6 +8505,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.playbooks.run_state",
         "src.runtimes.base",
         "src.sessions.harness_parser",
         "src.workspace_spec_watcher"
@@ -11140,6 +11149,7 @@
       "imports": [
         "src.agents.configuration",
         "src.database",
+        "src.database.tables",
         "src.messages",
         "src.models",
         "src.sessions",
@@ -11150,7 +11160,9 @@
         "src.sessions.spec",
         "src.sessions.transcripts.claude"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "SessionLens — adapter over the session runtime for the messaging engine."
     },
     "tests/test_session_provider_conformance.py": {
@@ -11188,7 +11200,10 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.agent_waits",
         "src.commands",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.config",
         "src.database",
         "src.database.tables",
