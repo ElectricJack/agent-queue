@@ -153,9 +153,20 @@ logger = logging.getLogger(__name__)
 #
 # Circular and self-referential FKs are handled by inserting the offending
 # columns as NULL (see ``_DEFERRED_COLS``) and restoring them afterwards.
-# No tables are excluded today. If a future table should not be copied, name it
-# here with a reason so its omission is explicit and reviewable.
-_EXCLUDED_TABLES: frozenset[str] = frozenset()
+# If a future table should not be copied, name it here with a reason so its
+# omission is explicit and reviewable.
+_EXCLUDED_TABLES: frozenset[str] = frozenset(
+    {
+        # PostgreSQL-era tables added after legacy SQLite databases stopped
+        # existing (SQLite removal 1cae290cb, 2026-09-07 predates commit
+        # fca6f0eb7, 2026-09-25): a legacy SQLite file can never contain
+        # them, so there is nothing to import and copying them would only
+        # fail on columns SQLite never had (JSON, partial unique indexes).
+        "test_selections",
+        "test_selection_observations",
+        "test_selection_promotions",
+    }
+)
 
 _ORDERED_TABLES = [
     # No FK dependencies
