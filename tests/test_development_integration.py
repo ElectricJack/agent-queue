@@ -1743,6 +1743,87 @@ async def test_single_source_repair_is_a_child_without_a_reverse_cycle(setup):
     assert (identity, "blocks") not in await db.get_typed_dependencies("source")
 
 
+@pytest.mark.parametrize("source_depth,target_branch", [(2, "main"), (3, "main"), (3, "release")])
+async def test_completed_child_conflict_repair_delivery_releases_dependents(
+    setup, source_depth, target_branch,
+):
+    """A completed child's conflict must dispatch once and release on delivery."""
+    db, service, source, remote, _repo = setup
+    parents = ["epic", "epic.1"][:source_depth - 1]
+    for parent_id in parents:
+        await db.create_task(Task(
+            id=parent_id, project_id="p", title=parent_id, description="",
+            status=TaskStatus.IN_PROGRESS,
+        ))
+    original = await feature(setup, "conflicted-child", filename="base.txt", content="child\n")
+    async with db.immediate() as conn:
+        if len(parents) > 1:
+            await db.set_parent(parents[1], parents[0], conn=conn)
+        await db.set_parent("conflicted-child", parents[-1], conn=conn)
+    await db.save_task_completion(TaskCompletion(
+        id="child-close", task_id="conflicted-child", outcome="pass",
+        commits=[original], completed_at=time.time(),
+    ))
+    await db.create_task(Task(id="next", project_id="p", title="next", description=""))
+    await db.add_dependency("next", "conflicted-child")
+    await db.update_repo("r", default_branch=target_branch)
+    git(source, "checkout", "main")
+    (source / "base.txt").write_text("main\n")
+    git(source, "commit", "-am", "advance target with conflicting change")
+    git(source, "push", "origin", f"main:{target_branch}")
+
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    parked = next(row for row in await service.rows("p") if row["state"] == "parked")
+    identity = service._repair_identity(parked["manifest"])
+    repair = await db.get_task(identity)
+    assert repair is not None, parked["evidence"]
+    assert repair.status == TaskStatus.READY
+    assert repair.parent_task_id == ("conflicted-child" if source_depth == 2 else None)
+    assert ("conflicted-child", "discovered-from") in await db.get_typed_dependencies(identity)
+    if source_depth == 3:
+        assert (identity, "blocks") in await db.get_typed_dependencies("conflicted-child")
+    assert "base.txt" in repair.description
+    assert "conflicted-child: conflicted-child" in repair.description
+    assert f"rebase the listed source changes onto origin/{target_branch}" in repair.description
+    assert f"Publication target: refs/heads/{target_branch}" in repair.description
+    assert parked["evidence"]["conflicting_files"] == ["base.txt"]
+    dossier = await db.get_task_meta(identity, "development_repair_evidence")
+    assert dossier["conflicting_files"] == ["base.txt"]
+    assert "publisher_diagnostic" not in parked["evidence"]
+    assert (await db.get_task("next")).is_blocked
+    await service.sweep("p")
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(tasks.c.id).where(
+            tasks.c.id.like("development-repair-%")
+        ))).scalars().all() == [identity]
+
+    # Rebase the child's changes on the target in the repair's own branch.
+    # A new source SHA is expected; the journal must prove the replacement.
+    git(source, "fetch", "origin")
+    git(source, "checkout", "-b", repair.branch_name, "conflicted-child")
+    with pytest.raises(subprocess.CalledProcessError):
+        git(source, "rebase", f"origin/{target_branch}")
+    (source / "base.txt").write_text("main and child resolved\n")
+    git(source, "add", "base.txt")
+    git(source, "-c", "core.editor=true", "rebase", "--continue")
+    head = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", repair.branch_name)
+    await db.transition_task(identity, TaskStatus.COMPLETED, context="test", force=True)
+    await db.save_task_completion(TaskCompletion(
+        id="repair-close", task_id=identity, outcome="pass",
+        commits=[head], completed_at=time.time(),
+    ))
+    assert (await db.get_task("next")).is_blocked, "a repair close is not publication"
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert not (await db.get_task("next")).is_blocked
+    adopted = next(row for row in await service.rows("p") if row["id"] == parked["id"])
+    assert adopted["state"] == "adopted"
+    assert adopted["evidence"]["resolved_by_delivered_repair"]["task_id"] == identity
+    assert git(remote, "show", f"{target_branch}:base.txt") == "main and child resolved"
+    with pytest.raises(subprocess.CalledProcessError):
+        git(remote, "merge-base", "--is-ancestor", original, target_branch)
+
+
 def test_development_prime_omits_strict_review_protocol():
     from src.prime.sections import build_completion_protocol_section
 

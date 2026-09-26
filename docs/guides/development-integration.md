@@ -213,10 +213,17 @@ After the batch is assembled AQ looks at each parked row again:
 * if a later member already brought the same content to `main`, the row is
   marked `adopted` and nothing else happens;
 * otherwise AQ files one ordinary repair task, `development-repair-<digest>`,
-  on its own branch, describing the parked sources and the base to resolve
-  against. It is a normal queue task with three retries; waiting for a worker
-  does not expire it. At most three generations of repair are chained before
-  the content is left parked for you.
+  on its own branch, naming the source branches, conflicting files and target.
+  The worker rebases the source changes onto that target in the repair branch.
+  A single-source repair is placed under its completed source when depth
+  permits; at the hierarchy depth cap it is rooted with provenance and a
+  delivery hold on the source. It is a normal queue task with three retries;
+  waiting for a worker does not expire it. At most three generations of repair
+  are chained before the content is left parked for you.
+
+Closing the repair does not release the source's dependents. Publication of
+the passing repair to the configured default branch adopts the parked source
+receipt, which releases them even when rebase changed the source commit SHA.
 
 Parked content is not re-tried while its sources are unchanged — a worker
 pushing new commits makes it eligible again by itself. To retry unchanged
