@@ -45,7 +45,7 @@ jobs:
        !(github.event.pull_request.head.repo.full_name == github.repository &&
          startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -164,7 +164,9 @@ jobs:
 
       - name: Run tests
         id: tests
-        run: ${{ matrix.suite.command }}
+        # Include fixture setup/teardown in the per-test deadline. Keep the
+        # failed/error node IDs and the slowest phases visible in every arm.
+        run: ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE
 
       # Each default shard records only its selected tests. Keep the committed
       # map as the selection input; merge all eight outputs to refresh it.

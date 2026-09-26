@@ -26,6 +26,9 @@ def _unused_loopback_port() -> int:
 
 
 @pytest.mark.integration
+# Bound the whole acceptance journey, including setup (180s), the smoke
+# subprocess (1500s), and cleanup (90s). CI's job deadline still takes precedence.
+@pytest.mark.timeout(1800)
 def test_disposable_daemon_stateful_cli_smoke(tmp_path):
     env = {
         **os.environ,
