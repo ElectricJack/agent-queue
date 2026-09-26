@@ -10,7 +10,7 @@
  *   {source:"pane", type:"stopped", seq, ts}
  *   {source:"pane", type:"error",   message, seq, ts}
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export type PaneStatus = "connecting" | "open" | "stopped" | "error" | "closed";
 
@@ -19,23 +19,44 @@ export interface PaneState {
   status: PaneStatus;
   error: string | null;
   seq: number;
+  /** Browser time (ms) of the last screen frame; null before the first. */
+  lastFrameAt: number | null;
+  /** From a connection error until frames flow again: the screen may be stale. */
+  interrupted: boolean;
 }
 
 interface Options {
   enabled?: boolean;
 }
 
-const INITIAL: PaneState = { screen: null, status: "closed", error: null, seq: 0 };
+/** `error` once EventSource has given up for good; only `retry()` reconnects. */
+export const STREAM_CLOSED = "stream closed (no reconnect)";
 
-const isTerminal = (s: PaneStatus) => s === "stopped" || s === "error";
+/** One pathological frame cannot grow memory past this (the hook holds one screen). */
+export const MAX_SCREEN_CHARS = 200_000;
+
+const INITIAL: PaneState = {
+  screen: null,
+  status: "closed",
+  error: null,
+  seq: 0,
+  lastFrameAt: null,
+  interrupted: false,
+};
+
+// Keep the tail: a terminal's newest lines are at the bottom.
+const bounded = (screen: string) =>
+  screen.length > MAX_SCREEN_CHARS ? screen.slice(-MAX_SCREEN_CHARS) : screen;
 
 export function usePaneStream(
   sessionId: string | null | undefined,
   opts: Options = {},
-): PaneState {
+): PaneState & { retry: () => void } {
   const { enabled = true } = opts;
   const [state, setState] = useState<PaneState>(INITIAL);
+  const [attempt, setAttempt] = useState(0);
   const esRef = useRef<EventSource | null>(null);
+  const lastSession = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
     if (!enabled || !sessionId) return;
@@ -45,7 +66,16 @@ export function usePaneStream(
       `${window.location.protocol}//${window.location.host}`;
     const url = `${base}/api/sessions/${encodeURIComponent(sessionId)}/pane`;
 
-    setState({ ...INITIAL, status: "connecting" });
+    // A retry (or re-enable) of the same session keeps the last screen on
+    // show, still marked interrupted until a frame arrives; a different
+    // session starts blank.
+    const sameSession = lastSession.current === sessionId;
+    lastSession.current = sessionId;
+    setState((prev) =>
+      sameSession
+        ? { ...prev, status: "connecting", error: null }
+        : { ...INITIAL, status: "connecting" },
+    );
     const es = new EventSource(url);
     esRef.current = es;
     // Terminal frames end the stream for good. The server returns from its
@@ -69,6 +99,10 @@ export function usePaneStream(
       } catch {
         return; // Malformed frame; heartbeats are comments and never land here.
       }
+      // Frames after this stream's own terminal frame never reopen it. A
+      // connection error is not terminal: the browser (or a retry) brings
+      // frames back, and the first one clears the interruption.
+      const ended = done;
       if (f.type === "stopped" || f.type === "error") {
         done = true;
         es.close();
@@ -86,10 +120,16 @@ export function usePaneStream(
         // A screen frame arriving after a terminal state must never wipe the
         // last good screen with an empty one ("" is not nullish, so `??`
         // would let it through); the banner has nothing to sit above then.
-        const incoming = f.screen ?? prev.screen;
-        if (isTerminal(prev.status))
-          return { ...prev, screen: incoming || prev.screen, seq };
-        return { screen: incoming, status: "open", error: null, seq };
+        const incoming = f.screen != null ? bounded(f.screen) : prev.screen;
+        if (ended) return { ...prev, screen: incoming || prev.screen, seq };
+        return {
+          screen: incoming,
+          status: "open",
+          error: null,
+          seq,
+          lastFrameAt: Date.now(),
+          interrupted: false,
+        };
       });
     };
 
@@ -98,9 +138,10 @@ export function usePaneStream(
       setState((p) => ({
         ...p,
         status: "error",
+        interrupted: true,
         error:
           es.readyState === 2 // CLOSED — EventSource gave up for good
-            ? "stream closed (no reconnect)"
+            ? STREAM_CLOSED
             : "stream interrupted — reconnecting…",
       }));
     };
@@ -111,7 +152,9 @@ export function usePaneStream(
       esRef.current = null;
       setState((p) => ({ ...p, status: "closed" }));
     };
-  }, [sessionId, enabled]);
+  }, [sessionId, enabled, attempt]);
 
-  return state;
+  /** Open a fresh stream after the browser gave up; the last screen stays on show. */
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  return { ...state, retry };
 }

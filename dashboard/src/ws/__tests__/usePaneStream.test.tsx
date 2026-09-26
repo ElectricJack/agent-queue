@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import { usePaneStream } from "../usePaneStream";
+import { MAX_SCREEN_CHARS, usePaneStream } from "../usePaneStream";
 
 class MockEventSource {
   static last: MockEventSource | null = null;
@@ -114,5 +114,50 @@ describe("usePaneStream", () => {
     const es = MockEventSource.last;
     unmount();
     expect(es?.closed).toBe(true);
+  });
+});
+
+describe("usePaneStream — stale state and retry", () => {
+  it("marks the screen interrupted on a connection error and clears it on the next frame", () => {
+    const { result } = renderHook(() => usePaneStream("s1"));
+    send({ source: "pane", type: "screen", screen: "kept", seq: 1, ts: 1 });
+    expect(result.current.lastFrameAt).not.toBeNull();
+    act(() => MockEventSource.last?.onerror?.());
+    expect(result.current.interrupted).toBe(true);
+    expect(result.current.screen).toBe("kept");
+    send({ source: "pane", type: "screen", screen: "fresh", seq: 2, ts: 2 });
+    expect(result.current.interrupted).toBe(false);
+    expect(result.current.status).toBe("open");
+    expect(result.current.screen).toBe("fresh");
+  });
+
+  it("retry opens a new stream for the same session and keeps the last screen", () => {
+    const { result } = renderHook(() => usePaneStream("s1"));
+    send({ source: "pane", type: "screen", screen: "kept", seq: 1, ts: 1 });
+    const first = MockEventSource.last;
+    act(() => { first!.readyState = 2; first!.onerror?.(); });
+    act(() => result.current.retry());
+    expect(first!.closed).toBe(true);
+    expect(MockEventSource.last).not.toBe(first);
+    expect(result.current.screen).toBe("kept");
+    expect(result.current.status).toBe("connecting");
+    expect(result.current.interrupted).toBe(true);
+    send({ source: "pane", type: "screen", screen: "after retry", seq: 1, ts: 3 });
+    expect(result.current.screen).toBe("after retry");
+    expect(result.current.interrupted).toBe(false);
+  });
+
+  it("a different session starts blank", () => {
+    const { result, rerender } = renderHook(({ id }) => usePaneStream(id), { initialProps: { id: "s1" } });
+    send({ source: "pane", type: "screen", screen: "s1 screen", seq: 1, ts: 1 });
+    rerender({ id: "s2" });
+    expect(result.current.screen).toBeNull();
+    expect(result.current.lastFrameAt).toBeNull();
+  });
+
+  it("bounds a runaway screen", () => {
+    const { result } = renderHook(() => usePaneStream("s1"));
+    send({ source: "pane", type: "screen", screen: "x".repeat(MAX_SCREEN_CHARS + 10), seq: 1, ts: 1 });
+    expect(result.current.screen!.length).toBe(MAX_SCREEN_CHARS);
   });
 });

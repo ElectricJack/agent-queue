@@ -14,6 +14,10 @@ interface LivePaneConsoleProps {
   status: PaneStatus;
   error?: string | null;
   className?: string;
+  /** CSS px (12–20 in watch mode). Rendering only: never the tmux window's size. */
+  fontSize?: number;
+  /** Dim the screen while it may be out of date (a dropped stream). */
+  stale?: boolean;
 }
 
 export default function LivePaneConsole({
@@ -21,11 +25,19 @@ export default function LivePaneConsole({
   status,
   error,
   className,
+  fontSize,
+  stale = false,
 }: LivePaneConsoleProps) {
+  // The agent's columns are preserved: a wide screen scrolls sideways inside
+  // the console, never the page (data-allow-overflow-x for the layout checks).
   return (
     <div
+      data-allow-overflow-x
+      style={fontSize ? { fontSize } : undefined}
       className={
-        "overflow-auto bg-black p-3 font-mono text-xs leading-tight text-green-200 " +
+        "overflow-auto bg-black p-3 font-mono leading-tight text-green-200 " +
+        (fontSize ? "" : "text-xs ") +
+        (stale ? "opacity-60 " : "") +
         (className ?? "")
       }
     >
