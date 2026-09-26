@@ -479,6 +479,8 @@ something else.
 - [The `aq-reviews` skill](../../src/skills/aq-reviews/SKILL.md) — the
   agent-facing version of this page: the author, the dispatched reviewer and
   the operator's side of the cross-family recipe.
+- [Quick mini-project ideation](mini-projects.md) — an explicitly requested
+  facilitator session that produces one plan for this review surface.
 - [Provider failover](../specs/provider-failover.md) — why a `preferred`
   task can change provider, and where attempt attribution is recorded.
 - [Escalations and the hourly digest](escalations.md) — the other "human
