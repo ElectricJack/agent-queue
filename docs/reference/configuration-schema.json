@@ -1989,6 +1989,7 @@
           "author_deadline_minutes": 15,
           "destination": "",
           "enabled": false,
+          "full_fleet_visibility": false,
           "late_cutoff_minutes": 120,
           "max_lookback_hours": 72,
           "project_ids": [],
@@ -2050,6 +2051,7 @@
             "author_deadline_minutes": 15,
             "destination": "",
             "enabled": false,
+            "full_fleet_visibility": false,
             "late_cutoff_minutes": 120,
             "max_lookback_hours": 72,
             "project_ids": [],
@@ -2065,6 +2067,10 @@
               "type": "string"
             },
             "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "full_fleet_visibility": {
               "default": false,
               "type": "boolean"
             },
