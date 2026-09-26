@@ -71,6 +71,12 @@ Behind WSL NAT, Windows must also forward that port to WSL and permit it through
 the firewall. A trusted origin is required for remote terminal WebSockets even
 when it matches the dashboard's bind address.
 
+Windows `localhost` may also arrive through WSL's port forward as a non-loopback
+peer. To use both Windows-local and LAN terminals, also list the exact local
+origins you open, such as `http://localhost:5173` and `http://127.0.0.1:5173`.
+This trust covers both the terminal WebSocket and its read-only reconnect access
+check. A direct loopback connection within WSL needs no additional trust entry.
+
 > **Warning.** Setting `dashboard.server.host` to a LAN address or `0.0.0.0` hands the operator console to that network. There is no login: a request without a bearer token runs with local-operator scope unless `api_auth.require_session_token` is on, so anyone who can connect to the port can create and delete tasks, type into agent sessions, read transcripts, panes and workspace files, and read (redacted) and write configuration. The Host and Origin checks stop *other websites' scripts*; they do not stop a person on that network with `curl`.
 
 When the server is bound to a non-loopback address:

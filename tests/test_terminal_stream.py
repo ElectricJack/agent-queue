@@ -574,47 +574,50 @@ async def test_terminal_probe_trusted_tls_origin_and_expired_credentials(setup):
     assert setup.client.sizes == []
 
 
-async def test_terminal_probe_and_keepalive_through_real_proxy(setup):
+@pytest.mark.parametrize("lan", [False, True])
+async def test_terminal_probe_and_keepalive_through_real_proxy(setup, tmp_path, lan):
     import aiohttp
     from fastapi import FastAPI
     from websockets.asyncio.client import connect
 
-    from src.dashboard_server.proxy import DaemonProxy
+    from src.dashboard_server.app import create_app
+    from src.dashboard_server.settings import DashboardServerSettings
     from tests.dashboard_server_helpers import serve_asgi
+    from tests.test_dashboard_server_app import stage_bundle
 
+    origin = "http://192.168.1.69:5173"
+    if lan:
+        setup.config.api_auth.trusted_dashboard_origins = [origin]
     app = FastAPI()
     app.include_router(module().build_terminal_router(
         setup.orch, setup.config, token_store=setup.store, attach=setup.attach,
     ))
     async with serve_asgi(app) as daemon_url:
-        proxy = DaemonProxy(daemon_url, version="test")
-        await proxy.start()
+        dashboard = create_app(DashboardServerSettings(
+            host="0.0.0.0", api_url=daemon_url, bundle_directory=stage_bundle(tmp_path),
+            trusted_origins=(origin,) if lan else (),
+        ))
 
         async def relay(scope, receive, send):
-            if scope["type"] == "lifespan":
-                while True:
-                    frame = await receive()
-                    if frame["type"] == "lifespan.startup":
-                        await send({"type": "lifespan.startup.complete"})
-                    elif frame["type"] == "lifespan.shutdown":
-                        await proxy.close()
-                        await send({"type": "lifespan.shutdown.complete"})
-                        return
-            elif scope["type"] == "http":
-                await proxy.http(scope, receive, send)
-            else:
-                await proxy.websocket(scope, receive, send)
+            if lan and scope["type"] in {"http", "websocket"}:
+                scope = {**scope, "client": ("172.29.48.1", 50000)}
+                scope["headers"] = [
+                    (key, b"192.168.1.69:5173" if key == b"host" else value)
+                    for key, value in scope["headers"]
+                ]
+            await dashboard(scope, receive, send)
 
         try:
             async with serve_asgi(relay) as url, aiohttp.ClientSession() as http:
-                async with http.get(f"{url}/ws/terminal/s") as response:
+                params = {"browser_origin": origin} if lan else {}
+                async with http.get(f"{url}/ws/terminal/s", params=params) as response:
                     assert response.status == 200
                     assert (await response.json())["status"] == "ready"
                     assert response.headers["Cache-Control"] == "no-store"
                 assert setup.client.sizes == []
                 async with connect(
                     url.replace("http://", "ws://") + "/ws/terminal/s?cols=80&rows=24",
-                    origin=url, subprotocols=["aq-terminal-v1"], proxy=None,
+                    origin=origin if lan else url, subprotocols=["aq-terminal-v1"], proxy=None,
                 ) as ws:
                     assert json.loads(await asyncio.wait_for(ws.recv(), 2))["type"] == "ready"
                     await ws.send(json.dumps({"type": "ping"}))
@@ -622,4 +625,4 @@ async def test_terminal_probe_and_keepalive_through_real_proxy(setup):
                     assert setup.client.inputs == []
                     assert setup.db.touches == []
         finally:
-            await proxy.close()
+            await dashboard.proxy.close()

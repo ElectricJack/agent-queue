@@ -283,6 +283,15 @@ loopback-only, including terminal requests from trusted origins. Origin trust
 does not grant remote bearer use. The daemon is not changed and no forwarding
 header is invented.
 
+The read-only `GET /ws/terminal/{session_id}` reconnect diagnostic follows the
+same trusted-origin policy. For a GET without an Origin header, resolve the
+origin from the single `browser_origin` query parameter, falling back to the
+request scheme and Host only when that parameter is absent. This matches the
+daemon's probe behavior and supports same-origin browser GETs and TLS proxies.
+Other HTTP methods and terminal paths retain the loopback-only gate. A temporary
+WebSocket failure must not become a permanent access denial merely because the
+diagnostic uses HTTP instead of a WebSocket.
+
 ### 3.4 Exposure statement
 
 With the default bind, nothing is reachable from another machine. If an operator

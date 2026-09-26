@@ -239,6 +239,62 @@ def test_trusted_lan_terminal_still_checks_host_duplicate_origins_and_bearers():
     assert _error(gate, {**scope, "type": "http"}) == "403 loopback_only"
 
 
+@pytest.mark.parametrize("origin", [None, "http://192.168.1.5:8082"])
+@pytest.mark.parametrize("query", [b"", b"browser_origin=http%3A%2F%2F192.168.1.5%3A8082"])
+def test_trusted_lan_reconnect_probe_works_with_or_without_origin_header(origin, query):
+    gate = _gate(host="0.0.0.0", trusted_origins=("http://192.168.1.5:8082",))
+    scope = _lan_scope("/ws/terminal/s", origin=origin)
+    scope.update(method="GET", query_string=query)
+    assert _error(gate, scope) is None
+    # Binding a concrete LAN address alone does not opt into terminal access.
+    assert _error(_lan_gate(), scope) == "403 loopback_only"
+
+
+def test_lan_probe_can_name_a_trusted_tls_origin_behind_a_proxy():
+    gate = _gate(host="0.0.0.0", trusted_origins=("https://aq.example.com",))
+    scope = _scope("/ws/terminal/s", host="aq.example.com", client=LAN_PEER)
+    scope.update(method="GET", query_string=b"browser_origin=https%3A%2F%2Faq.example.com")
+    assert _error(gate, scope) is None
+    scope["headers"].append((b"origin", b"http://evil.example"))
+    assert _error(gate, scope) == "403 origin_not_allowed"
+
+
+@pytest.mark.parametrize("host", ["localhost:5173", "127.0.0.1:5173", "[::1]:5173"])
+def test_windows_localhost_through_wsl_forwarding_uses_explicit_origin_trust(host):
+    origin = f"http://{host}"
+    gate = _gate(host="0.0.0.0", trusted_origins=(origin,))
+    ws = _scope("/ws/terminal/s", host=host, origin=origin, client=LAN_PEER, kind="websocket")
+    probe = {**_scope("/ws/terminal/s", host=host, client=LAN_PEER), "method": "GET"}
+    for scope in (ws, probe):
+        assert _error(gate, scope) is None
+        assert _error(_gate(host="0.0.0.0"), scope) == "403 loopback_only"
+
+
+@pytest.mark.parametrize("query", [
+    b"browser_origin=", b"browser_origin=null", b"browser_origin=http://evil.example",
+    b"browser_origin=http://192.168.1.5:8083", b"browser_origin=http://192.168.1.5:8082/path",
+    b"browser_origin=http://192.168.1.5:8082&browser_origin=http://192.168.1.5:8082",
+])
+def test_lan_probe_cannot_replace_a_bad_query_origin_with_its_trusted_host(query):
+    gate = _gate(host="0.0.0.0", trusted_origins=("http://192.168.1.5:8082",))
+    scope = _lan_scope("/ws/terminal/s")
+    scope.update(method="GET", query_string=query)
+    assert _error(gate, scope) == "403 loopback_only"
+
+
+def test_lan_probe_does_not_open_other_methods_paths_or_bearer_requests():
+    gate = _gate(host="0.0.0.0", trusted_origins=("http://192.168.1.5:8082",))
+    scope = {**_lan_scope("/ws/terminal/s"), "method": "GET"}
+    for method in ("POST", "PUT", "DELETE", "HEAD"):
+        assert _error(gate, {**scope, "method": method}) == "403 loopback_only"
+    for path in ("/ws/terminal", "/ws/terminal/", "/ws/terminal/s/input"):
+        assert _error(gate, {**scope, "path": path}) == "403 loopback_only"
+    for header in ((b"authorization", b"Bearer aqs_x"),
+                   (b"sec-websocket-protocol", b"aq-bearer.x")):
+        assert _error(gate, {**scope, "headers": [*scope["headers"], header]}) == "403 loopback_only"
+    assert _error(gate, {**scope, "headers": [(b"host", b"evil.example")]}) == "421 misdirected_host"
+
+
 def test_a_lan_peer_is_refused_bearer_tokens():
     authorized = _lan_scope(headers=[(b"authorization", b"Bearer aqs_x")])
     assert _error(_lan_gate(), authorized) == "403 loopback_only"
