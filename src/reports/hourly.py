@@ -74,6 +74,7 @@ def build_hourly_brief(
     *,
     destination: str,
     dashboard_url: str = "",
+    dashboard_notice: str = "",
     previous_narrative: str = "",
 ) -> tuple[dict, str]:
     """Keep structural evidence and omission counts inside a 24 KiB JSON cap."""
@@ -84,6 +85,7 @@ def build_hourly_brief(
         "window": {"since": window.since, "until": window.until},
         "destination": destination,
         "dashboard_url": dashboard_url,
+        "dashboard_notice": dashboard_notice,
         "facts": [
             {
                 "key": fact.key,

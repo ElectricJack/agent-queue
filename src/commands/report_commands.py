@@ -124,9 +124,11 @@ class ReportCommandsMixin:
         ):
             return _error("report.invalid", "shipment claims require delivery evidence")
         text = _clean_prose(raw)
-        dashboard_url = str(row["brief"].get("dashboard_url") or "").strip()
-        if dashboard_url:
-            text = f"{text}\n{sanitise(dashboard_url)}"
+        dashboard_footer = str(row["brief"].get("dashboard_url") or "").strip() or str(
+            row["brief"].get("dashboard_notice") or ""
+        ).strip()
+        if dashboard_footer:
+            text = f"{text}\n{sanitise(dashboard_footer)}"
         total = f"{text}\n{marker_for(row['owner_ref'])}"
         if not text.strip() or len(total) > MAX_CHARS:
             return _error("report.invalid", "report exceeds 1,200 characters after rendering")
