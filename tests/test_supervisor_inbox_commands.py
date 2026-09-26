@@ -11,9 +11,9 @@ from sqlalchemy import func, select
 
 from src.commands.handler import CommandHandler
 from src.commands.principal import (
+    TRUSTED_LOCAL,
     ExecutionPrincipal,
     PrincipalKind,
-    TRUSTED_LOCAL,
     principal_context,
 )
 from src.config import AppConfig

@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
+from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.conversations.envelope import ConversationEnvelope
 from src.conversations.intake import normalise_text
 from src.conversations.limits import MAX_INPUT_CHARS, WINDOW_SECONDS
