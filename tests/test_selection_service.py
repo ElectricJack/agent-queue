@@ -1,6 +1,7 @@
 """Selection orchestration with real git/PostgreSQL and an offline Jev transport."""
 
 import asyncio
+import json
 from dataclasses import asdict, replace
 
 import pytest
@@ -10,7 +11,13 @@ from src.config import AppConfig, TestSelectionConfig as SelectionConfig, load_c
 from src.database import Database
 from src.git.manager import GitManager
 from src.models import Project
-from src.test_selection.catalogue import build_catalogue, load_areas, render_catalogue
+from src.test_selection.catalogue import (
+    build_catalogue,
+    load_areas,
+    load_catalogue,
+    render_catalogue,
+    validate_catalogue,
+)
 from src.test_selection.service import SelectionRequest, SelectionService, select_offline
 from src.test_selection.static_impact import FixedStaticImpact, UnavailableStaticImpact
 from src.test_selection.typesafe import FakeTransport, TransportError, TransportResponse
@@ -21,6 +28,31 @@ from tests.selection_fixture_repo import build_fixture_repo, git
 @pytest.fixture
 def repo(tmp_path):
     return build_fixture_repo(tmp_path / "repo")
+
+
+def regenerate_catalogue(repo):
+    catalogue = build_catalogue(repo, load_areas(repo / "tests/selection_areas.yaml"))
+    (repo / "tests/selection_catalogue.json").write_text(render_catalogue(catalogue))
+
+
+@pytest.fixture
+def two_module_repo(repo):
+    modify(repo, "tests/test_c2.py", "def test_second_gamma():\n    assert True\n")
+    areas = repo / "tests/selection_areas.yaml"
+    areas.write_text(
+        areas.read_text().replace('match: ["tests/test_c.py"]', 'match: ["tests/test_c*.py"]')
+    )
+    rules = repo / "tests/selection_rules.yaml"
+    rules.write_text(
+        rules.read_text()
+        .replace('  - "*.md"', '  - "*.md"\n  - "tests/selection_*"')
+        .replace('triggers: ["docs/**"]', 'triggers: ["docs/**", "tests/**/test_*.py"]')
+    )
+    regenerate_catalogue(repo)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "two-module area with mapped catalogue changes")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    return repo
 
 
 @pytest.fixture
@@ -167,6 +199,92 @@ async def test_area_change_invalidates_cache_and_promotion(db, repo):
     assert len(transport.calls) == 2
     assert second["fallback_reason"] == "not_promoted"
     assert second["jev_used_for_omission"] is False
+
+
+@pytest.mark.parametrize("change", ["deleted", "renamed"])
+async def test_removed_test_preserves_base_area_after_catalogue_regeneration(two_module_repo, change):
+    repo = two_module_repo
+    base_sha = git(repo, "rev-parse", "HEAD").strip()
+    old_path = "tests/test_c2.py"
+    # The requested ref is ahead of HEAD and no longer lists the removed test.
+    # Ownership must come from the snapshot's merge-base, not the ref's tip.
+    (repo / old_path).unlink()
+    regenerate_catalogue(repo)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "upstream removal")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(repo, "reset", "--hard", base_sha)
+    if change == "deleted":
+        (repo / old_path).unlink()
+    else:
+        git(repo, "mv", old_path, "tests/test_c3.py")
+    regenerate_catalogue(repo)
+    catalogue = load_catalogue(repo / "tests/selection_catalogue.json")
+    assert validate_catalogue(repo, catalogue) == []
+    assert old_path not in catalogue.modules
+    transport = FakeTransport(response(all_unaffected=True))
+
+    record = await service(None, transport=transport, static=FixedStaticImpact(())).select(
+        request(repo), persist=False
+    )
+
+    assert record["base_sha"] == base_sha
+    assert record["full_required"] is False
+    assert "tests/test_c.py" in record["mandatory_modules"]
+    assert f"mandatory_changed_test:{old_path}" in record["reasons"]["tests/test_c.py"]
+    assert old_path not in record["mandatory_modules"]
+    assert old_path not in record["argv"][0]
+    assert transport.calls[0]["state"]["facts"]["mandatory_areas"] == ["gamma"]
+    if change == "renamed":
+        assert "tests/test_c3.py" in record["mandatory_modules"]
+
+
+@pytest.mark.parametrize("broken", ["missing", "digest_mismatch"])
+async def test_unusable_base_catalogue_for_removed_test_requires_full_fallback(two_module_repo, broken):
+    repo = two_module_repo
+    path = repo / "tests/selection_catalogue.json"
+    if broken == "missing":
+        path.unlink()
+    else:
+        data = json.loads(path.read_text())
+        data["modules"]["tests/test_c2.py"]["summary"] = "changed without regenerating"
+        path.write_text(json.dumps(data))
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "unusable historical catalogue")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (repo / "tests/test_c2.py").unlink()
+    regenerate_catalogue(repo)
+    catalogue = load_catalogue(path)
+    assert validate_catalogue(repo, catalogue) == []
+    transport = FakeTransport()
+
+    record = await service(None, transport=transport).select(request(repo), persist=False)
+
+    assert record["snapshot_complete"] is True
+    assert record["full_required"] is True
+    assert record["fallback_reason"] == "catalogue_unusable"
+    assert record["mandatory_modules"] == record["final_modules"] == sorted(catalogue.universe)
+    assert record["catalogue_digest"] == catalogue.digest
+    assert transport.calls == []
+
+
+async def test_missing_base_catalogue_without_removed_paths_keeps_normal_selection(repo):
+    rules = repo / "tests/selection_rules.yaml"
+    rules.write_text(rules.read_text().replace('  - "*.md"', '  - "*.md"\n  - "tests/selection_*"'))
+    path = repo / "tests/selection_catalogue.json"
+    path.unlink()
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "base predates catalogue")
+    git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    regenerate_catalogue(repo)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "install catalogue")
+    modify(repo)
+
+    record = await service(None).select(request(repo, jev=False), persist=False)
+
+    assert record["full_required"] is False
+    assert record["mandatory_modules"] == ["tests/test_a.py"]
 
 
 async def test_http_failure_is_never_cached_or_used_for_omission(db, repo):

@@ -19,7 +19,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from src.config import TestSelectionConfig
-from src.git.manager import GitManager
+from src.git.manager import GitError, GitManager
 from src.test_selection import reasons as r
 from src.test_selection.catalogue import (
     CATALOGUE_PATH,
@@ -28,6 +28,7 @@ from src.test_selection.catalogue import (
     Catalogue,
     CatalogueError,
     load_catalogue,
+    load_catalogue_text,
     load_policy,
     load_rules,
     validate_catalogue,
@@ -222,7 +223,40 @@ class SelectionService:
                 excerpt_lines=config.excerpt_lines + 1,
             )
         with stage("mandatory"):
-            mandatory = mandatory_set(snapshot, catalogue, rules) if catalogue is not None else None
+            base_catalogue = None
+            base_unusable = False
+            if catalogue is not None and snapshot.complete and any(
+                c.status in ("deleted", "renamed") for c in snapshot.changes
+            ):
+                # The workspace catalogue cannot list removed paths. Use the
+                # merge-base blob for their ownership, without validating it
+                # against the current tree or resolving the moving base ref.
+                source = f"{snapshot.base_sha}:{CATALOGUE_PATH}"
+                try:
+                    blob = await self.git.arun_git_result(["show", source], cwd=snapshot.workspace)
+                    if blob.returncode != 0:
+                        raise CatalogueError([f"{source}: unreadable base catalogue"])
+                    base_catalogue = load_catalogue_text(blob.stdout, source=source)
+                except (GitError, CatalogueError):
+                    base_unusable = True
+            mandatory = (
+                mandatory_set(snapshot, catalogue, rules, base_catalogue=base_catalogue)
+                if catalogue is not None
+                else None
+            )
+            if base_unusable:
+                # Missing old ownership cannot justify narrowing. The current
+                # catalogue still provides a trustworthy runnable universe.
+                mandatory = replace(
+                    mandatory,
+                    modules=catalogue.universe,
+                    full_required=True,
+                    reasons={
+                        m: (*mandatory.reasons.get(m, ()), r.CATALOGUE_UNUSABLE)
+                        for m in sorted(catalogue.universe)
+                    },
+                    global_reasons=(r.CATALOGUE_UNUSABLE, *mandatory.global_reasons),
+                )
         with stage("static"):
             if mandatory is None or mandatory.full_required:
                 static = StaticResult(frozenset(), True, "skipped", None, 0, 0)
