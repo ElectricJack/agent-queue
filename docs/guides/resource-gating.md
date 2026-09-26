@@ -165,6 +165,14 @@ descriptor.
 
 ### Test scope and the recorded baseline
 
+The fleet series' `perf.host` block reports PSI, test-slot occupancy and
+ungated pytest processes. For controlled dashboard measurements,
+`scripts/dashboard-perf/load.py` is the sanctioned synthetic CPU and temporary
+file load: it applies session niceness and caps, holds at most 256 MiB of
+temporary files, and enforces a hard deadline with cleanup. See the
+[experiment protocol](../../scripts/dashboard-perf/README.md); database load
+belongs only on isolated test PostgreSQL, never the operator's database.
+
 Run focused tests for changed behavior and then the related area suite. Record
 the exact `aq test` commands. The full suite runs in CI or in a task whose
 subject is the suite; it is not a routine worker close check. Task authors
