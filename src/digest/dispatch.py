@@ -49,6 +49,7 @@ from src.digest.aggregate import build_digest
 from src.digest.facts import CATEGORIES, DigestWindow
 from src.digest.render import MAX_CHARS
 from src.digest.schedule import DigestSchedule, provider_facts_enabled, schedule_for
+from src.config import ReportsConfig
 from src.escalations.plan import MAX_ATTEMPTS, backoff_for
 from src.escalations.transport import (
     EscalationTransport,
@@ -59,6 +60,7 @@ from src.escalations.transport import (
     TransportRetryable,
     TransportUnavailable,
 )
+from src.reports.hourly import author_skip_reason, build_hourly_brief, local_day_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +152,8 @@ class DigestScheduleService:
         rate_guard: Callable[[], bool] | None = None,
         escalation_priority: Callable[[float], Awaitable[int]] | None = None,
         max_attempts: int = MAX_ATTEMPTS,
+        authoring_ready: Callable[[], bool] | None = None,
+        event_bus: Any | None = None,
     ) -> None:
         self.db = db
         self.transport = transport
@@ -161,6 +165,8 @@ class DigestScheduleService:
         self._rate_guard = rate_guard
         self._escalation_priority = escalation_priority
         self._max_attempts = max_attempts
+        self._authoring_ready = authoring_ready
+        self._event_bus = event_bus
         # Anchor for a generation nothing has been persisted for yet, keyed by
         # ``(destination, generation)``.  A configuration change lands here as
         # a new key, which is how §9's "starts a new schedule generation at the
@@ -180,6 +186,10 @@ class DigestScheduleService:
     def _channel_id(self) -> str:
         return str(getattr(self._discord, "channel_id", "") or "")
 
+    @property
+    def _reports(self) -> ReportsConfig:
+        return getattr(self._config, "reports", ReportsConfig())
+
     def schedule(self) -> DigestSchedule:
         return schedule_for(self._discord)
 
@@ -188,6 +198,23 @@ class DigestScheduleService:
         """Evaluate whatever is due and push whatever is ready.  Never raises."""
         report = DigestTickReport()
         schedule = self.schedule()
+        if not self._reports.hourly.enabled:
+            try:
+                await self.db.cancel_hourly_reports(now=self._clock())
+            except Exception:
+                logger.warning("hourly report cancellation failed", exc_info=True)
+        else:
+            try:
+                await self.db.invalidate_hourly_visibility(
+                    destination=schedule.destination,
+                    full_fleet=(
+                        self._reports.hourly.full_fleet_visibility
+                        and not schedule.project_ids
+                    ),
+                    now=self._clock(),
+                )
+            except Exception:
+                logger.warning("hourly report visibility check failed", exc_info=True)
         if not schedule.enabled:
             report.skipped = "discord.digest.enabled is false"
             return report
@@ -263,6 +290,41 @@ class DigestScheduleService:
             if result.send
             else None
         )
+        report_candidate = None
+        if payload is not None:
+            skip_reason = author_skip_reason(
+                self._reports,
+                schedule,
+                window,
+                result,
+                now=now,
+                playbook_active=bool(self._authoring_ready and self._authoring_ready()),
+            )
+            deadline = window.until + self._reports.hourly.grace_minutes * 60
+            if skip_reason is None and now >= deadline:
+                skip_reason = "deadline_elapsed"
+            if skip_reason is not None:
+                if skip_reason != "feature_off":
+                    payload["author_skip_reason"] = skip_reason
+            else:
+                brief, brief_hash = build_hourly_brief(
+                    result, window, destination=schedule.destination, dashboard_url=self._base_url
+                )
+                day_start, day_end = local_day_bounds(now, self._reports.timezone)
+                report_candidate = {
+                    "window_id": window_id,
+                    "destination": schedule.destination,
+                    "visibility": {"full_fleet": True, "project_ids": []},
+                    "brief": brief,
+                    "brief_hash": brief_hash,
+                    "fallback_text": result.text,
+                    "author_session_id": "supervisor-global",
+                    "deadline": deadline,
+                    "daily_cap": self._reports.hourly.max_requests_per_day,
+                    "day_start": day_start,
+                    "day_end": day_end,
+                    "now": now,
+                }
         completed = await self.db.complete_digest_evaluation(
             window_id,
             activity_cursor={
@@ -273,11 +335,24 @@ class DigestScheduleService:
             output_hash=result.output_hash if result.send else None,
             payload=payload,
             suppression_reason=None if result.send else (result.reason or "no_activity"),
+            report_candidate=report_candidate,
         )
         if completed is None:
             # Lost the race between reserve and complete; the winner's
             # decision stands.
             return report
+        if (
+            report_candidate is not None
+            and float(completed["due_at"]) == report_candidate["deadline"]
+            and self._event_bus is not None
+        ):
+            try:
+                await self._event_bus.emit(
+                    "digest.window_ready",
+                    {"window_id": window_id, "request_id": f"report-hourly-{window_id}"},
+                )
+            except Exception:
+                logger.warning("digest.window_ready emit failed; request remains durable", exc_info=True)
         report.evaluated += 1
         if window.catchup:
             report.catchup += 1
@@ -431,6 +506,15 @@ class DigestScheduleService:
             return
 
         payload = row.get("payload") or {}
+        if payload.get("author_request_id") and (
+            schedule.destination != row["destination"]
+            or schedule.project_ids
+            or not self._reports.hourly.full_fleet_visibility
+        ):
+            await self._finish(
+                row, report, status="unknown", last_error="authored report visibility changed"
+            )
+            return
         text = str(payload.get("text") or "")
         if not text:
             await self._finish(

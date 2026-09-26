@@ -104,6 +104,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     # digest — hourly activity digest preview and schedule health
     "digest_preview": "digest",
     "digest_status": "digest",
+    "report_request": "report",
+    "report_brief": "report",
+    "report_submit": "report",
     # dashboard — durable shared and roaming UI state
     "dashboard_state_list": "dashboard",
     "dashboard_state_get": "dashboard",
@@ -6820,6 +6823,51 @@ _ALL_TOOL_DEFINITIONS.extend(
             "input_schema": {
                 "type": "object",
                 "properties": {"now": {"type": "number"}},
+                "additionalProperties": False,
+            },
+        },
+    ]
+)
+
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "report_request",
+            "description": "Queue one supervisor author turn for a reserved report request.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"request_id": {"type": "string"}},
+                "required": ["request_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "report_brief",
+            "description": "Read a paged, bounded report brief and its CAS version.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "request_id": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "required": ["request_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "report_submit",
+            "description": "Submit one supervisor-authored hourly report before its deadline.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "request_id": {"type": "string"},
+                    "brief_hash": {"type": "string"},
+                    "expected_version": {"type": "integer", "minimum": 1},
+                    "text": {"type": "string"},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["request_id", "brief_hash", "expected_version", "text"],
                 "additionalProperties": False,
             },
         },

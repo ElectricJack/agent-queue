@@ -191,6 +191,36 @@ creation.
 Disabling external escalation or digest delivery never disables the core
 escalation inbox, supervisor routing, scheduler, or dashboard.
 
+### 4.2.1 `reports` Section
+
+`reports.timezone` is the one installation-wide IANA time zone used for report
+daily limits and quiet hours (and later for morning reports). It defaults to
+`UTC`. An invalid zone fails configuration loading. The section requires a
+daemon restart when edited.
+
+```yaml
+reports:
+  timezone: America/Los_Angeles
+  hourly:
+    enabled: false
+    full_fleet_visibility: false
+    grace_minutes: 5
+    max_requests_per_day: 12
+    quiet_hours:
+      start: "22:00"
+      end: "07:00"
+```
+
+Hourly supervisor authoring is opt-in and defaults off. `full_fleet_visibility`
+must be explicitly true, and `discord.digest.project_ids` must be empty, before
+the global supervisor can author text for the shared destination. Quiet hours
+use local `HH:MM` times, may cross midnight, and suppress author wakes while
+the deterministic digest remains eligible to send. Omitting `quiet_hours`
+disables that suppression. `grace_minutes` is 1–60; `max_requests_per_day` is
+1–24, with reservations counted even when a report falls back. An inactive
+authoring playbook keeps delivery deterministic. The request/CAS slice does
+not activate an authoring playbook by itself.
+
 ### 4.3 `agents` Section
 
 Maps to `AgentsDefaultConfig`. The YAML key is `agents`.

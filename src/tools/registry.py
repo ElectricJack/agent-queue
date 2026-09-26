@@ -157,6 +157,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
             "configured schedule's destination, generation and delivery health"
         ),
     ),
+    "report": CategoryMeta(
+        name="report",
+        description="Durable supervisor report requests, paged briefs and submissions",
+    ),
     "dashboard": CategoryMeta(
         name="dashboard",
         description="Durable shared workspace state and per-user roaming preferences",

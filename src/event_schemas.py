@@ -276,8 +276,20 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
 _ASSIGNMENT_SCHEMAS: dict[str, EventSchema] = {}
 
 CONTRACTED_EVENT_TYPES: frozenset[str] = frozenset(
-    {"task.completed", "spec.approved", "proposal.ready", "gate.resolved"}
+    {"task.completed", "spec.approved", "proposal.ready", "gate.resolved", "digest.window_ready"}
 )
+
+_REPORT_SCHEMAS: dict[str, EventSchema] = {
+    "digest.window_ready": {
+        "required": ["window_id", "request_id"],
+        "optional": [],
+        "types": {"window_id": str, "request_id": str},
+        "fields": {
+            "window_id": {"type": "string", "description": "reserved digest window"},
+            "request_id": {"type": "string", "description": "durable report request"},
+        },
+    }
+}
 
 # ---------------------------------------------------------------------------
 # Work-graph events  (docs/specs/design/work-graph.md §10.2)
@@ -1741,6 +1753,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     "agent.updated": {"required": ["agent_id"], "optional": ["event_type"]},
     "agent.deleted": {"required": ["agent_id"], "optional": ["event_type"]},
     **_TASK_SCHEMAS,
+    **_REPORT_SCHEMAS,
     **_ASSIGNMENT_SCHEMAS,
     **_WORK_GRAPH_SCHEMAS,
     **_NOTE_SCHEMAS,

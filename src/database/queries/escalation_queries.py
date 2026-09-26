@@ -23,6 +23,7 @@ from src.database.tables import (
     escalation_messages,
     escalations,
     messages,
+    supervisor_report_requests,
 )
 
 OPEN_ESCALATION_STATES = frozenset({"needs_human", "reply_received", "resolving"})
@@ -1416,7 +1417,9 @@ class EscalationQueriesMixin:
                 .mappings()
                 .one()
             )
-            _assert_identity(existing, values, (*key, "is_catchup", "due_at"))
+            # due_at is a mutable author hold; the schedule identity is the
+            # configured window, not its current delivery deadline.
+            _assert_identity(existing, values, (*key, "is_catchup"))
             if existing["activity_cursor"] != values["activity_cursor"]:
                 raise EscalationConflict("digest window identity reused with different cursor")
             return dict(existing), False
@@ -1429,6 +1432,7 @@ class EscalationQueriesMixin:
         output_hash: str | None,
         payload: Mapping[str, Any] | None,
         suppression_reason: str | None,
+        report_candidate: Mapping[str, Any] | None = None,
         now: float | None = None,
     ) -> dict[str, Any] | None:
         """Persist either sendable output or a durable silent-window result."""
@@ -1463,7 +1467,36 @@ class EscalationQueriesMixin:
                 .mappings()
                 .one_or_none()
             )
-        return _row_dict(row)
+            if row is not None and report_candidate is not None:
+                request_id, skip_reason = await self.reserve_hourly_report_in_transaction(
+                    conn, candidate=report_candidate
+                )
+                if request_id is not None:
+                    authored_payload = dict(payload or {})
+                    authored_payload["author_request_id"] = request_id
+                    row = (
+                        await conn.execute(
+                            update(digest_windows)
+                            .where(digest_windows.c.id == window_id)
+                            .values(
+                                due_at=report_candidate["deadline"],
+                                payload=authored_payload,
+                            )
+                            .returning(digest_windows)
+                        )
+                    ).mappings().one()
+                elif skip_reason is not None:
+                    output = dict(payload or {})
+                    output["author_skip_reason"] = skip_reason
+                    row = (
+                        await conn.execute(
+                            update(digest_windows)
+                            .where(digest_windows.c.id == window_id)
+                            .values(payload=output)
+                            .returning(digest_windows)
+                        )
+                    ).mappings().one()
+            return _row_dict(row)
 
     async def claim_digest_windows(
         self,
@@ -1520,6 +1553,20 @@ class EscalationQueriesMixin:
                 )
                 .mappings()
                 .all()
+            )
+            await conn.execute(
+                update(supervisor_report_requests)
+                .where(
+                    supervisor_report_requests.c.kind == "hourly",
+                    supervisor_report_requests.c.owner_ref.in_(ids),
+                    supervisor_report_requests.c.state.in_(("reserved", "requested")),
+                )
+                .values(
+                    state="fallback",
+                    skip_reason="deadline_or_pump_claim",
+                    version=supervisor_report_requests.c.version + 1,
+                    updated_at=now,
+                )
             )
         by_id = {row["id"]: dict(row) for row in rows}
         return [by_id[item_id] for item_id in ids]
