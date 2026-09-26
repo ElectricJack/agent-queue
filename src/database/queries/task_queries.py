@@ -69,6 +69,10 @@ _UNSET = object()
 #: Project integration modes whose tasks need the designated repository, including
 #: observe tasks that may later enter the train.
 REPOSITORY_BOUND_MODES = frozenset({"observe", "hierarchy", "train", "development"})
+# A delivered receipt is invalidated only when a completed task enters a new
+# work incarnation.  Task-row updated_at and close-record time can both move
+# after delivery, so neither is a safe freshness boundary.
+INTEGRATION_REWORK_AT_KEY = "integration_rework_at"
 
 
 def task_repository_id(mode: str | None, integration_repository_id: str | None) -> str | None:
@@ -537,7 +541,6 @@ class TaskQueryMixin:
         layout stale until the next full pass.
         """
         values = self._coerce_task_values(kwargs)
-        values["updated_at"] = time.time()
         async with self._engine.begin() as conn:
             comment_source_project = None
             if "project_id" in kwargs:
@@ -581,6 +584,13 @@ class TaskQueryMixin:
                         values["repo_id"] = await self._moved_task_repo_id(
                             conn, task_id, values["project_id"]
                         )
+            previous_status = None
+            if "status" in values:
+                previous_status = (
+                    await conn.execute(
+                        select(tasks.c.status).where(tasks.c.id == task_id).with_for_update()
+                    )
+                ).scalar_one_or_none()
             if "branch_name" in values:
                 # Lock the task before reading the checkpoint. Origin
                 # establishment writes this row too, so the two updates
@@ -597,11 +607,20 @@ class TaskQueryMixin:
                         f"Task '{task_id}' has canonical integration branch '{canonical_branch}'; "
                         "branch_name cannot rename it"
                     )
+            values["updated_at"] = time.time()
             stmt = update(tasks).where(tasks.c.id == task_id)
             lifecycle = {"status", "resume_after", "assigned_agent_id", "retry_count", "claim_epoch"}
             if lifecycle & kwargs.keys():
                 stmt = stmt.where(_not_manually_paused())
             result = await conn.execute(stmt.values(**values))
+            if (
+                result.rowcount == 1
+                and previous_status == TaskStatus.COMPLETED.value
+                and values.get("status") != TaskStatus.COMPLETED.value
+            ):
+                await self._upsert_meta(
+                    task_id, INTEGRATION_REWORK_AT_KEY, values["updated_at"], conn=conn
+                )
             if result.rowcount == 0 and lifecycle & kwargs.keys():
                 paused = (await conn.execute(select(tasks.c.id).where(
                     tasks.c.id == task_id, ~_not_manually_paused()
@@ -1341,6 +1360,11 @@ class TaskQueryMixin:
                 # claim fence).  Nothing was written, so there is nothing to
                 # project or announce.
                 return result
+
+            if current_status == TaskStatus.COMPLETED and new_status != TaskStatus.COMPLETED:
+                await self._upsert_meta(
+                    task_id, INTEGRATION_REWORK_AT_KEY, values["updated_at"], conn=conn
+                )
 
             # Layout only cares about crossing the finished boundary (a
             # finished task leaves the ``active`` variant and restyles in

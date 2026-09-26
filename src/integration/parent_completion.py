@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy import insert, select, update
 
 from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY
 from src.database.tables import (
     archived_tasks,
     integration_operation_artifact_pins,
@@ -32,6 +33,7 @@ from src.database.tables import (
     task_completion_records,
     task_delivery_receipts,
     task_integration_checkpoints,
+    task_metadata,
     task_session_attempts,
     tasks,
 )
@@ -435,6 +437,17 @@ class ParentCompletion:
                 )
             ).mappings().all()
         ]
+        rework_cutoffs = {}
+        if child_rows:
+            markers = (
+                await conn.execute(
+                    select(task_metadata.c.task_id, task_metadata.c.value).where(
+                        task_metadata.c.task_id.in_([row["id"] for row in child_rows]),
+                        task_metadata.c.key == INTEGRATION_REWORK_AT_KEY,
+                    )
+                )
+            ).all()
+            rework_cutoffs = {task_id: float(value) for task_id, value in markers}
         dispositions = {
             row["child_task_id"]: dict(row)
             for row in (
@@ -523,6 +536,7 @@ class ParentCompletion:
                 for row in candidates
                 if row["disposition"] == "code"
                 and row["reviewed_head_sha"] == child["source_head"]
+                and row["created_at"] >= rework_cutoffs.get(child_id, 0)
             ]
             if len(code) == 1 and child["status"] == "COMPLETED":
                 selected.append(code[0])

@@ -15,8 +15,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from sqlalchemy import (
+    Float,
     and_,
     case,
+    cast,
     delete,
     exists,
     false,
@@ -30,7 +32,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.queries.task_queries import TransitionResult
+from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY, TransitionResult
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -347,6 +349,18 @@ def _reserved_verifier_branch(repository_id: str | None = None):
     )
 
 
+def integration_rework_cutoff(task_id):
+    """The only task timestamp that invalidates an earlier delivery receipt."""
+    return (
+        select(cast(task_metadata.c.value, Float))
+        .where(
+            task_metadata.c.task_id == task_id,
+            task_metadata.c.key == INTEGRATION_REWORK_AT_KEY,
+        )
+        .scalar_subquery()
+    )
+
+
 def delivered_same_parent_prerequisites_when_hierarchical(
     mode: ProjectIntegrationMode | None = None,
 ):
@@ -381,9 +395,12 @@ def delivered_same_parent_prerequisites_when_hierarchical(
             receipt.c.target_branch == parent.c.branch_name,
             receipt.c.disposition == "code",
             receipt.c.reviewed_head_sha == checkpoint.c.checkpoint_sha,
-            # A receipt from before a reopen must never authorize its new
-            # incarnation, even if it happens to name the same old SHA.
-            receipt.c.created_at >= prerequisite.c.updated_at,
+            # Ordinary task bookkeeping and the close record may be written
+            # after delivery.  Only entry into a new work incarnation makes
+            # an old receipt stale.
+            receipt.c.created_at >= func.coalesce(
+                integration_rework_cutoff(prerequisite.c.id), prerequisite.c.created_at
+            ),
         )
     )
     prerequisite_is_undelivered = exists(
@@ -580,7 +597,10 @@ class HierarchyQueryMixin:
                                 receipt.c.target_branch == parent_branch,
                                 receipt.c.disposition == "code",
                                 receipt.c.reviewed_head_sha == checkpoint.c.checkpoint_sha,
-                                receipt.c.created_at >= prerequisite.c.updated_at,
+                                receipt.c.created_at >= func.coalesce(
+                                    integration_rework_cutoff(prerequisite.c.id),
+                                    prerequisite.c.created_at,
+                                ),
                             ),
                         )
                     )

@@ -40,15 +40,18 @@ from typing import Any
 from sqlalchemy import and_, exists, insert, select
 
 from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY
 from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
     integration_review_evidence,
     projects,
     task_branch_origins,
+    task_completion_records,
     task_delivery_receipts,
     task_dependencies,
     task_integration_checkpoints,
+    task_metadata,
     tasks,
 )
 from src.git.manager import RemoteRefState
@@ -90,7 +93,7 @@ def _snapshot_identity(snapshot: dict[str, Any]) -> tuple:
         for key in (
             "status", "parent_task_id", "repository_id", "branch", "base_sha", "head_sha",
             "generation", "episode_id", "has_children", "origin_parent_task_id",
-            "origin_materialized", "origin_reserved",
+            "origin_materialized", "origin_reserved", "completion_id", "rework_at",
         )
     )
 
@@ -129,6 +132,25 @@ async def _snapshot_on(conn, task_id: str) -> dict[str, Any] | None:
     has_children = (
         await conn.execute(select(exists().where(tasks.c.parent_task_id == task_id)))
     ).scalar_one()
+    completion = (
+        await conn.execute(
+            select(task_completion_records.c.id, task_completion_records.c.completed_at)
+            .where(task_completion_records.c.task_id == task_id)
+            .order_by(
+                task_completion_records.c.completed_at.desc(),
+                task_completion_records.c.id.desc(),
+            )
+            .limit(1)
+        )
+    ).mappings().one_or_none()
+    rework_value = (
+        await conn.execute(
+            select(task_metadata.c.value).where(
+                task_metadata.c.task_id == task_id,
+                task_metadata.c.key == INTEGRATION_REWORK_AT_KEY,
+            )
+        )
+    ).scalar_one_or_none()
     parent = parent_checkpoint = operation = None
     if task["parent_task_id"] is not None:
         parent = (
@@ -178,6 +200,9 @@ async def _snapshot_on(conn, task_id: str) -> dict[str, Any] | None:
         "origin_parent_task_id": origin["parent_task_id"] if origin is not None else None,
         "origin_materialized": bool(origin["materialized"]) if origin is not None else None,
         "origin_reserved": bool(origin["reserved"]) if origin is not None else None,
+        "completion_id": completion["id"] if completion is not None else None,
+        "completed_at": completion["completed_at"] if completion is not None else None,
+        "rework_at": float(json.loads(rework_value)) if rework_value is not None else None,
         "parent": dict(parent) if parent is not None else None,
         "parent_checkpoint": dict(parent_checkpoint) if parent_checkpoint is not None else None,
         "operation": dict(operation) if operation is not None else None,
@@ -420,7 +445,11 @@ class ChildDelivery:
         if deferred is not None and deferred[1] > now:
             return None
         diagnosis, snapshot, tree = await self._diagnose(task_id)
-        if diagnosis["outcome"] != "would_advance" or diagnosis.get("evidence_id") is not None:
+        if (
+            diagnosis["outcome"] != "would_advance"
+            or diagnosis.get("evidence_id") is not None
+            or diagnosis.get("redrive_kind") == "receipt_reissue"
+        ):
             if diagnosis["outcome"] == "blocked":
                 logger.info(
                     "Child %s cannot be assembled yet: %s", task_id, diagnosis["reason"]
@@ -477,13 +506,20 @@ class ChildDelivery:
                 "run the dry run again",
             }
         try:
-            evidence, created = await self._record(
-                snapshot,
-                tree,
-                reviewer_identity=operator_id or "human:local-operator",
-                decision_path="operator_redrive",
-                reason=reason,
-            )
+            if diagnosis.get("redrive_kind") == "receipt_reissue":
+                receipt, created = await self._reissue_receipt(
+                    snapshot, diagnosis["stale_receipt_id"],
+                )
+                evidence = None
+            else:
+                evidence, created = await self._record(
+                    snapshot,
+                    tree,
+                    reviewer_identity=operator_id or "human:local-operator",
+                    decision_path="operator_redrive",
+                    reason=reason,
+                )
+                receipt = None
         except HierarchyError as exc:
             return {
                 **diagnosis,
@@ -504,10 +540,15 @@ class ChildDelivery:
         result = {
             **diagnosis,
             "outcome": "advanced",
-            "evidence_id": evidence["id"],
+            "evidence_id": evidence["id"] if evidence is not None else None,
+            "receipt_id": receipt["id"] if receipt is not None else None,
             "collection": collection,
             "reason": (
-                "recorded approved completion evidence for the head"
+                "reissued a receipt for the current completion"
+                if receipt is not None and created
+                else "current completion already has a receipt"
+                if receipt is not None
+                else "recorded approved completion evidence for the head"
                 if created
                 else "approved evidence already pinned the head"
             ),
@@ -523,8 +564,10 @@ class ChildDelivery:
                     "parent_task_id": snapshot["parent_task_id"],
                     "head_sha": snapshot["head_sha"],
                     "tree_sha": tree,
-                    "evidence_id": evidence["id"],
-                    "evidence_created": created,
+                    "evidence_id": evidence["id"] if evidence is not None else None,
+                    "receipt_id": receipt["id"] if receipt is not None else None,
+                    "evidence_created": created if evidence is not None else False,
+                    "receipt_created": created if receipt is not None else False,
                     "collection": collection,
                     "at": self.clock(),
                 }
@@ -575,41 +618,61 @@ class ChildDelivery:
             head = snapshot["head_sha"]
             receipt = (
                 await conn.execute(
-                    select(task_delivery_receipts.c.id).where(
+                    select(task_delivery_receipts).where(
                         task_delivery_receipts.c.source_task_id == task_id,
+                        task_delivery_receipts.c.target_task_id == snapshot["parent_task_id"],
                         task_delivery_receipts.c.repository_id == snapshot["repository_id"],
                         task_delivery_receipts.c.target_branch == base["parent_branch"],
                         task_delivery_receipts.c.reviewed_head_sha == head,
-                    ).limit(1)
-                )
-            ).scalar_one_or_none()
-            if receipt is not None:
-                return {
-                    **base,
-                    "outcome": "nothing_to_redrive",
-                    "reason": f"already delivered into the parent (receipt {receipt})",
-                }, snapshot, None
-            intent = (
-                await conn.execute(
-                    select(
-                        integration_promotion_intents.c.id,
-                        integration_promotion_intents.c.state,
-                    ).where(
-                        integration_promotion_intents.c.source_task_id == task_id,
-                        integration_promotion_intents.c.source_head == head,
-                        integration_promotion_intents.c.state.not_in(_SETTLED_INTENT_STATES),
-                    ).limit(1)
+                        task_delivery_receipts.c.disposition == "code",
+                    ).order_by(task_delivery_receipts.c.created_at.desc()).limit(1)
                 )
             ).mappings().one_or_none()
-            if intent is not None:
+            if receipt is not None:
+                if (
+                    snapshot["rework_at"] is None
+                    or receipt["created_at"] >= snapshot["rework_at"]
+                ):
+                    return {
+                        **base,
+                        "outcome": "nothing_to_redrive",
+                        "reason": f"already delivered into the parent (receipt {receipt['id']})",
+                    }, snapshot, None
+                stale_receipt = dict(receipt)
+            else:
+                stale_receipt = None
+            if stale_receipt is not None and (
+                stale_receipt["parent_operation_id"] != snapshot["operation"]["id"]
+                or stale_receipt["parent_episode_id"]
+                != snapshot["parent_checkpoint"]["episode_id"]
+            ):
                 return {
                     **base,
-                    "outcome": "nothing_to_redrive",
-                    "reason": (
-                        f"promotion {intent['id']} of this head is already {intent['state']}; "
-                        "the collection operation owns it"
-                    ),
+                    "outcome": "blocked",
+                    "reason": "the old receipt belongs to a previous parent collection episode",
                 }, snapshot, None
+            if stale_receipt is None:
+                intent = (
+                    await conn.execute(
+                        select(
+                            integration_promotion_intents.c.id,
+                            integration_promotion_intents.c.state,
+                        ).where(
+                            integration_promotion_intents.c.source_task_id == task_id,
+                            integration_promotion_intents.c.source_head == head,
+                            integration_promotion_intents.c.state.not_in(_SETTLED_INTENT_STATES),
+                        ).limit(1)
+                    )
+                ).mappings().one_or_none()
+                if intent is not None:
+                    return {
+                        **base,
+                        "outcome": "nothing_to_redrive",
+                        "reason": (
+                            f"promotion {intent['id']} of this head is already {intent['state']}; "
+                            "the collection operation owns it"
+                        ),
+                    }, snapshot, None
             latest = await latest_evidence_on(
                 conn,
                 task_id=task_id,
@@ -634,6 +697,8 @@ class ChildDelivery:
                 }, snapshot, None
         try:
             remote_head, tree = await self._prove(snapshot)
+            if stale_receipt is not None:
+                await self._prove_receipt_ancestry(snapshot, stale_receipt)
         except _ProofFailed as exc:
             return {
                 **base,
@@ -647,6 +712,13 @@ class ChildDelivery:
             "remote_head_sha": remote_head,
             "tree_sha": tree,
         }
+        if stale_receipt is not None:
+            diagnosis.update(
+                redrive_kind="receipt_reissue",
+                stale_receipt_id=stale_receipt["id"],
+                reason="the matching receipt predates the child's current completion",
+            )
+            return diagnosis, snapshot, tree
         if latest is not None:
             diagnosis.update(
                 evidence_id=latest["id"],
@@ -692,6 +764,80 @@ class ChildDelivery:
         except PromotionError as exc:
             raise _ProofFailed(f"could not prove the head from the repository: {exc}") from exc
         return remote.oid, tree
+
+    async def _prove_receipt_ancestry(
+        self, snapshot: dict[str, Any], receipt: dict[str, Any]
+    ) -> None:
+        """A reissued receipt must still name code on the live parent branch."""
+        after_sha = receipt["after_sha"]
+        if not after_sha:
+            raise _ProofFailed("the old receipt has no incorporated parent head to prove")
+        try:
+            resolved = await self.promotion._resolve_repository(snapshot["repository_id"])
+            await self.promotion._ensure_retained_repository(resolved)
+            store = resolved.retained_git_dir
+            async with self.promotion.git.arepository_transaction(str(store)):
+                await self.promotion._fetch_all_heads(store, resolved.origin_url)
+                remote = await self.promotion.git.als_remote_ref(
+                    str(store), snapshot["parent"]["branch_name"]
+                )
+                if remote.state is not RemoteRefState.PRESENT:
+                    raise _ProofFailed("the parent's published branch cannot be proven")
+                if not await self.promotion._is_ancestor(store, after_sha, remote.oid):
+                    raise _ProofFailed(
+                        "the old receipt's incorporated head is no longer on the parent branch"
+                    )
+        except PromotionError as exc:
+            raise _ProofFailed(f"could not prove the parent branch: {exc}") from exc
+
+    async def _reissue_receipt(
+        self,
+        snapshot: dict[str, Any],
+        stale_receipt_id: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Acknowledge the same incorporated head for a newer task completion."""
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, snapshot["project_id"])
+            current = await _snapshot_on(conn, snapshot["task_id"])
+            if (
+                current is None
+                or _snapshot_identity(current) != _snapshot_identity(snapshot)
+                or _child_refusal(current) is not None
+                or _parent_refusal(current) is not None
+            ):
+                raise HierarchyError("stale_head", "the child or parent changed before redrive")
+            matching = (
+                await conn.execute(
+                    select(task_delivery_receipts).where(
+                        task_delivery_receipts.c.source_task_id == snapshot["task_id"],
+                        task_delivery_receipts.c.target_task_id == snapshot["parent_task_id"],
+                        task_delivery_receipts.c.repository_id == snapshot["repository_id"],
+                        task_delivery_receipts.c.target_branch == current["parent"]["branch_name"],
+                        task_delivery_receipts.c.reviewed_head_sha == snapshot["head_sha"],
+                        task_delivery_receipts.c.disposition == "code",
+                    ).order_by(task_delivery_receipts.c.created_at.desc()).limit(1)
+                )
+            ).mappings().one_or_none()
+            if matching is None or current["rework_at"] is None:
+                raise HierarchyError("stale_head", "the receipt or rework marker changed before redrive")
+            if matching["created_at"] >= current["rework_at"]:
+                return dict(matching), False
+            if matching["id"] != stale_receipt_id:
+                raise HierarchyError("stale_head", "the receipt changed before redrive")
+            if (
+                matching["parent_operation_id"] != current["operation"]["id"]
+                or matching["parent_episode_id"] != current["parent_checkpoint"]["episode_id"]
+            ):
+                raise HierarchyError("stale_head", "the parent collection episode changed")
+            domain_key = f"redrive:{current['completion_id']}:{matching['id']}"
+            receipt = dict(matching)
+            receipt.update(
+                id=f"receipt-{uuid.uuid5(_EVIDENCE_NAMESPACE, domain_key)}",
+                domain_key=domain_key,
+                created_at=max(self.clock(), current["rework_at"]),
+            )
+            await conn.execute(insert(task_delivery_receipts).values(**receipt))
+        return receipt, True
 
     async def _record(
         self,

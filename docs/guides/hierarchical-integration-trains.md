@@ -495,6 +495,12 @@ children still waiting after five minutes, and `aq integration redrive-child
 CHILD_TASK_ID` says why one waits; `--apply --head HEAD_SHA --reason REASON`
 records evidence for that head and queues the parent's collection. See [A
 completed child is never assembled](integration-troubleshooting.md#a-completed-child-is-never-assembled).
+Sibling prerequisites accept a code receipt created after the child's latest
+reopen; later task-row and close bookkeeping do not invalidate a delivered child.
+`aq doctor --check tasks.ready_frontier_exclusions` lists READY tasks withheld
+from the claim frontier and their reasons. If a child completed again at the
+same head after its receipt, `redrive-child` reports the stale receipt and
+can reissue it after proving the incorporated head remains on the parent branch.
 
 ### Stopped pool-writer handoff recovery
 
