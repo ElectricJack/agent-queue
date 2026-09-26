@@ -1339,7 +1339,7 @@ class TestFence:
         assert (await h._cmd_task_set({"task_id": "t1", "note": "x", "claim_epoch": 7}))[
             "result"
         ] == "stale_claim"
-        assert (await h._cmd_task_handoff({"task_id": "t1", "reason": "x", "claim_epoch": 7}))[
+        assert (await h._cmd_task_handoff(            {"task_id": "t1", "subject": "x", "claim_epoch": 7}))[
             "result"
         ] == "stale_claim"
 
