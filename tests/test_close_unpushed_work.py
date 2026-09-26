@@ -88,7 +88,7 @@ async def handler(request, tmp_path, repo):
     orch.git = GitManager()
     orch.bus = MagicMock()
     orch.bus.emit = AsyncMock()
-    orch.command_handler = CommandHandler(orch, cfg)
+    orch.set_command_handler(CommandHandler(orch, cfg))
 
     async def _noop_release(
         task_id, *, agent_id=None, workspace_path=None, expect_claim_epoch=None
@@ -99,7 +99,7 @@ async def handler(request, tmp_path, repo):
 
     await db.create_project(Project(id="p", name="P"))
     await db.upsert_profile(AgentProfile(id="worker", name="Worker"))
-    yield orch.command_handler
+    yield orch._command_handler
     await db.close()
 
 
