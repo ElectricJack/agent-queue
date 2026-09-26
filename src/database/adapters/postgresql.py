@@ -31,20 +31,20 @@ from src.database.queries.blocked_state import BlockedStateMixin
 from src.database.queries.chat_queries import ChatQueryMixin
 from src.database.queries.claim_queries import ClaimQueryMixin
 from src.database.queries.conversation_queries import ConversationQueriesMixin
+from src.database.queries.dashboard_state_queries import DashboardStateQueriesMixin
 from src.database.queries.dependency_queries import DependencyQueryMixin
 from src.database.queries.digest_queries import DigestQueryMixin
-from src.database.queries.dashboard_state_queries import DashboardStateQueriesMixin
-from src.database.queries.event_queries import EventQueryMixin
 from src.database.queries.escalation_queries import EscalationQueriesMixin
+from src.database.queries.event_queries import EventQueryMixin
 from src.database.queries.gate_queries import GateQueriesMixin
 from src.database.queries.hierarchy_queries import HierarchyQueryMixin
-from src.database.queries.integration_state_queries import IntegrationStateQueriesMixin
 from src.database.queries.integration_control_queries import IntegrationControlQueriesMixin
-from src.database.queries.integration_schedule_queries import IntegrationScheduleQueriesMixin
+from src.database.queries.integration_delivery_queries import IntegrationDeliveryQueriesMixin
 from src.database.queries.integration_reconciliation_queries import (
     IntegrationReconciliationQueriesMixin,
 )
-from src.database.queries.integration_delivery_queries import IntegrationDeliveryQueriesMixin
+from src.database.queries.integration_schedule_queries import IntegrationScheduleQueriesMixin
+from src.database.queries.integration_state_queries import IntegrationStateQueriesMixin
 from src.database.queries.integration_train_queries import IntegrationTrainQueriesMixin
 from src.database.queries.layout_queries import LayoutQueryMixin
 from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
@@ -57,7 +57,6 @@ from src.database.queries.plugin_queries import PluginQueryMixin
 from src.database.queries.profile_queries import ProfileQueryMixin
 from src.database.queries.project_queries import ProjectQueryMixin
 from src.database.queries.provider_availability_queries import ProviderAvailabilityQueryMixin
-from src.database.queries.task_reroute_queries import TaskRerouteQueryMixin
 from src.database.queries.provider_usage_queries import ProviderUsageQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.report_queries import ReportQueriesMixin
@@ -69,8 +68,10 @@ from src.database.queries.task_comment_queries import TaskCommentQueriesMixin
 from src.database.queries.task_queries import TaskQueryMixin
 from src.database.queries.task_recovery_queries import TaskRecoveryQueryMixin
 from src.database.queries.task_requirements_queries import TaskRequirementsQueryMixin
+from src.database.queries.task_reroute_queries import TaskRerouteQueryMixin
 from src.database.queries.task_session_queries import TaskSessionQueryMixin
 from src.database.queries.task_subtask_queries import TaskSubtaskQueriesMixin
+from src.database.queries.test_selection_queries import TestSelectionQueriesMixin
 from src.database.queries.token_queries import TokenQueryMixin
 from src.database.queries.transaction_queries import TransactionQueryMixin
 from src.database.queries.transcript_queries import TranscriptQueryMixin
@@ -135,6 +136,7 @@ class PostgreSQLDatabaseAdapter(
     PlaybookRunQueryMixin,
     WorkflowQueryMixin,
     ApiSessionTokenQueriesMixin,
+    TestSelectionQueriesMixin,
     TransactionQueryMixin,
 ):
     """Async PostgreSQL persistence layer using SQLAlchemy Core.
