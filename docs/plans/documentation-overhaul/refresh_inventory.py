@@ -592,6 +592,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
 
     ("src/messages/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
      "Message delivery to sessions, users and tasks."),
+    ("src/conversations/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
+     "Supervisor conversation intake, preconditions, bounds and outbound delivery port."),
     ("src/messaging/**", "communications", "docs/concepts/messaging.md",
      PRODUCTION, "Transport-neutral messaging port."),
     ("src/notifications/**", "communications", "docs/concepts/messaging.md",

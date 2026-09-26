@@ -46,6 +46,23 @@ terms this page leans on.
 | **Delivery** | A row in an outbox recording one intended external send, and what happened to it. |
 | **Transport** | The narrow port that actually talks to a chat platform. Today there is one: Discord. |
 
+## Optional supervisor conversations
+
+The `src/conversations/` package supports an opt-in Discord mention route to
+the global supervisor, controlled by `discord.conversation.enabled` (false by
+default). Intake classifies gateway-observed provenance and normalized text;
+the envelope validates Discord identifiers and the root mention. Replies in
+escalation threads stay with escalation intake.
+
+The route requires an explicit author allowlist, configured guild and channel,
+enabled messages and sessions, completed Discord cutover, and a bound outbound
+queue. Both the gateway and intake command check these prerequisites. The
+package supplies a refusing `UnboundOutbox` until a delivery implementation is
+bound, plus `RecordingOutbox` for tests. Shared constants define message sizes,
+rate windows and retention; pure renderers produce supervisor briefs, fixed
+notices and dashboard pointers. Conversation text does not resolve gates or
+approve work.
+
 ## The three lanes
 
 ```mermaid
