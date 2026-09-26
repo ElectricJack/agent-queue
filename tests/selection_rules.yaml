@@ -86,6 +86,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: [".test_durations", "scripts/merge_test_durations.py"], areas: ["ci-sentinel"] }
   - { paths: ["setup.sh"], areas: ["install"] }
   - { paths: ["scripts/e2e*", "scripts/e2e/**"], areas: ["e2e-kit"] }
+  - { paths: ["package-lock.json"], areas: ["api-contract"] }
   - { paths: ["scripts/regenerate-api-client.sh", "scripts/regenerate-ts-client.sh", "scripts/openapi-python-client.yaml", "scripts/aq-client-boilerplate.sha256"], areas: ["api-contract"] }
   - { paths: ["scripts/gen-command-docs.py", "scripts/check-docs.py"], areas: ["docs-guards"] }
   - { paths: ["scripts/generate-config-schema-inventory.py"], areas: ["config"] }
@@ -156,6 +157,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/api/graph_layout.py", "src/api/models/graph_layout.py"], areas: ["graph-layout"] }
   - { paths: ["src/api/graph.py", "src/api/models/graph.py", "src/api/models/dashboard.py"], areas: ["dashboard-state"] }
   - { paths: ["src/api/metrics.py", "src/api/models/metrics.py"], areas: ["metrics"] }
+  - { paths: ["src/api/perf_middleware.py"], areas: ["metrics"] }
   - { paths: ["src/api/providers.py", "src/api/models/provider.py"], areas: ["provider-failover", "provider-usage"] }
   - { paths: ["src/api/pull_requests.py", "src/api/models/git.py"], areas: ["github"] }
   - { paths: ["src/api/task_files.py", "src/api/workspace_files.py", "src/api/file_serving.py", "src/api/task_attachments.py", "src/api/models/files.py"], areas: ["file-access"] }
@@ -283,6 +285,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/doctor/hierarchy_checks.py"], areas: ["task-hierarchy"] }
   - { paths: ["src/doctor/intelligence_class_checks.py"], areas: ["intelligence-classes"] }
   - { paths: ["src/doctor/playbook_v2_checks.py"], areas: ["playbook-authoring"] }
+  - { paths: ["src/doctor/perf_checks.py"], areas: ["metrics"] }
   - { paths: ["src/doctor/pool_checks.py"], areas: ["worker-pools", "agent-roster"] }
   - { paths: ["src/doctor/profile_checks.py"], areas: ["profiles"] }
   - { paths: ["src/doctor/project_checks.py"], areas: ["projects"] }
@@ -295,6 +298,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/editor/**"], areas: ["level-editor"] }
   - { paths: ["src/escalations/**"], areas: ["escalations"] }
   - { paths: ["src/git/**"], areas: ["git-manager", "github"] }
+  - { paths: ["src/handoffs.py"], areas: ["prime"] }
   - { paths: ["src/install/**"], areas: ["install"] }
   - { paths: ["src/install/pools.py"], areas: ["worker-pools"] }
 
@@ -302,6 +306,8 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/integration/ownership.py", "src/integration/owner_recovery.py", "src/integration/stale_owners.py", "src/integration/finished_owners.py", "src/integration/identity_rebind.py", "src/integration/delegate_release.py", "src/integration/live_operations.py", "src/integration/release.py", "src/integration/removal_guard.py", "src/integration/recovery_controls.py"], areas: ["integration-ownership"] }
   - { paths: ["src/integration/promotion.py", "src/integration/main_promotion.py", "src/integration/parent_completion.py", "src/integration/parent_ci.py", "src/integration/root_pull_requests.py", "src/integration/repair.py", "src/integration/review_evidence.py", "src/integration/legacy_*.py", "src/integration/collection.py", "src/integration/github_review_poll.py"], areas: ["integration-promotion"] }
   - { paths: ["src/integration/controls.py", "src/integration/status.py"], areas: ["integration-controls"] }
+  - { paths: ["src/integration/canonical_reservation.py"], areas: ["integration-ownership"] }
+  - { paths: ["src/integration/child_delivery.py"], areas: ["integration-promotion"] }
   - { paths: ["src/integration/epic_*.py", "src/integration/candidate_ci.py", "src/integration/candidates.py"], areas: ["epic-trains"] }
   - { paths: ["src/integration/development*.py", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
 
@@ -351,6 +357,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/prompts/memory_*.py"], areas: ["memory-facts"] }
   - { paths: ["src/providers/**"], areas: ["provider-failover", "provider-usage"] }
   - { paths: ["src/resources/**"], areas: ["resource-gating", "cli-test-runner"] }
+  - { paths: ["src/reports/**"], areas: ["digest"] }
   - { paths: ["src/resources/test_db_reaper.py"], areas: ["test-substrate"] }
   - { paths: ["src/resources/slot_report.py"], areas: ["development-delivery"] }
   - { paths: ["src/reviews/**"], areas: ["document-reviews"] }
