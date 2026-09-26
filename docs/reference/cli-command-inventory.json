@@ -14182,6 +14182,11 @@
           "--aq-timeout",
           "--aq-all-markers",
           "--aq-dry-run",
+          "--aq-smart",
+          "--aq-base",
+          "--aq-plan-only",
+          "--aq-no-jev",
+          "--aq-project",
           "--aq-reap-orphans",
           "--aq-apply",
           "pytest_args"

@@ -414,6 +414,367 @@ class TestCommand:
         assert "no test slot free" in result.output
 
 
+class TestSmartSelection:
+    @pytest.fixture
+    def smart(self, monkeypatch, tmp_path, isolated_test_slots):
+        from types import SimpleNamespace
+
+        from src.claim_file import write_claim_file
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tests").mkdir()
+        for name in ("a", "b", "z"):
+            (tmp_path / "tests" / f"test_{name}.py").write_text("")
+        write_claim_file(str(tmp_path), {"task_id": "held-task", "claim_epoch": 17})
+        monkeypatch.setattr("src.cli.test_runner.CONFIG_PATH", str(tmp_path / "missing.yaml"))
+        monkeypatch.setenv("AQ_TEST_WORKERS", "2")
+        monkeypatch.setenv("AQ_TEST_SLOTS", "1")
+        state = SimpleNamespace(
+            calls=[],
+            argv=[],
+            stale=[False, False],
+            error=None,
+            observe_error=False,
+            selection={
+                "success": True,
+                "selection_id": "selection-1",
+                "recorded": True,
+                "full_required": False,
+                "full_suite_authorized": False,
+                "ordered": ["tests/test_b.py", "tests/test_a.py"],
+                "mandatory_modules": ["tests/test_a.py"],
+                "static_modules": [],
+                "jev_modules": ["tests/test_b.py"],
+                "fallback_modules": ["tests/test_a.py"],
+                "final_modules": ["tests/test_a.py", "tests/test_b.py"],
+                "jev_status": "ok",
+                "fallback_reason": None,
+                "reasons": {"tests/test_a.py": ["mandatory_rule"]},
+                "argv": [["tests/test_b.py", "tests/test_a.py"]],
+                "pending_obligations": [{"kind": "acceptance", "command": "aq test tests/ -k x"}],
+                "record": {"base_sha": "base-1", "head_sha": "head-1"},
+            },
+        )
+
+        class Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                pass
+
+            async def execute(self, command, args):
+                state.calls.append((command, args))
+                if command == "test_select":
+                    if state.error:
+                        raise state.error
+                    return state.selection
+                if command == "test_selection_recheck":
+                    return {"success": True, "stale": state.stale.pop(0)}
+                if state.observe_error:
+                    raise RuntimeError("observation unavailable")
+                return {"success": True}
+
+        def run(argv, **_kwargs):
+            state.argv.append(argv)
+            return 0
+
+        monkeypatch.setattr(
+            "src.cli.test_runner._get_client", lambda *_args: Client(), raising=False
+        )
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", run)
+        return state
+
+    def test_plan_only_starts_nothing(self, runner, smart, monkeypatch):
+        monkeypatch.delenv("POSTGRES_TEST_DSN")
+        result = runner.invoke(cli, ["test", "--aq-plan-only"])
+        assert result.exit_code == 0, result.output
+        assert "Nothing was verified by this report." in result.output
+        assert "selection-1" in result.output
+        assert "mandatory_rule" in result.output
+        assert "base-1" in result.output and "head-1" in result.output
+        assert "aq test tests/test_b.py tests/test_a.py" in result.output
+        assert "Pending obligations" in result.output
+        assert not smart.argv
+        assert [c for c, _ in smart.calls] == ["test_select"]
+        assert smart.calls[0][1]["mode"] == "plan_only"
+
+    def test_shadow_without_targets_refuses_after_report(self, runner, smart):
+        result = runner.invoke(cli, ["test", "--aq-smart"])
+        assert result.exit_code == 2, result.output
+        assert "Nothing was verified" in result.output
+        assert "name the targets" in result.output
+        assert not smart.argv
+
+    def test_shadow_preserves_argv_and_records_identity_and_execution(self, runner, smart):
+        args = ["tests/test_z.py", "-k", "some_test", "-x", "-n", "0"]
+        ordinary = runner.invoke(cli, ["test", *args])
+        result = runner.invoke(cli, ["test", "--aq-smart", *args])
+        assert ordinary.exit_code == result.exit_code == 0, result.output
+        assert smart.argv[0] == smart.argv[1]
+        assert [c for c, _ in smart.calls] == [
+            "test_select",
+            "test_selection_recheck",
+            "test_selection_recheck",
+            "test_selection_observe",
+        ]
+        request = smart.calls[0][1]
+        assert request["mode"] == "shadow" and request["jev"] is True
+        assert request["targets"] == ["tests/test_z.py"]
+        assert request["task_id"] == "held-task" and request["claim_epoch"] == 17
+        assert "workspace" not in request
+        observation = smart.calls[-1][1]
+        assert observation["exit_code"] == 0
+        assert observation["duration_ms"] >= 0
+        assert observation["executed_modules"] == ["tests/test_z.py"]
+
+    def test_selection_options_and_marker_policy(self, runner, smart):
+        result = runner.invoke(
+            cli,
+            [
+                "test",
+                "--aq-smart",
+                "--aq-no-jev",
+                "--aq-base",
+                "origin/dev",
+                "--aq-project",
+                "example",
+                "--aq-all-markers",
+                "tests/test_z.py",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        request = smart.calls[0][1]
+        assert request["jev"] is False and request["base_ref"] == "origin/dev"
+        assert request["marker_policy"] == "all" and request["project_id"] == "example"
+        args = _args(smart.argv[0])
+        assert args[args.index("-m") + 1] == ""
+
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["-k", "foo"],
+            ["-kfoo"],
+            ["-k=foo"],
+            ["--keyword=foo"],
+            ["-m", "slow"],
+            ["-mslow"],
+            ["--markexpr", "slow"],
+            ["--lf"],
+            ["--last-failed"],
+            ["--deselect=tests/test_a.py::test_x"],
+            ["tests/test_a.py::test_x"],
+        ],
+    )
+    def test_enforce_refuses_narrowing_before_daemon(self, runner, smart, args):
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce", *args])
+        assert result.exit_code == 2, result.output
+        assert args[0] in result.output
+        assert "refuses" in result.output
+        assert not smart.calls and not smart.argv
+
+    def test_enforce_union_preserves_order_and_runner_caps(self, runner, smart):
+        result = runner.invoke(
+            cli,
+            [
+                "test",
+                "--aq-smart=enforce",
+                "tests/test_a.py",
+                "tests/test_z.py",
+                "-x",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        args = _args(smart.argv[0])
+        assert args[-4:] == ["tests/test_b.py", "tests/test_a.py", "tests/test_z.py", "-x"]
+        assert args[args.index("-n") + 1] == "2"
+        assert args[args.index("--dist") + 1] == "loadfile"
+        assert not any("--testmon" in a for a in args)
+
+    @pytest.mark.parametrize("authorized", [False, True])
+    def test_full_fallback_authorization_and_selected_list_lock(
+        self, runner, smart, monkeypatch, isolated_test_slots, authorized
+    ):
+        from src.resources.semaphore import SlotSemaphore, full_suite_lock_dir
+
+        smart.selection.update(full_required=True, full_suite_authorized=authorized)
+        classified = []
+
+        def classify(args):
+            classified.append(args)
+            return True
+
+        def run(argv, **_kwargs):
+            lock = SlotSemaphore(full_suite_lock_dir(isolated_test_slots), 1)
+            assert lock.snapshot()["free"] == 0
+            smart.argv.append(argv)
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._is_full_suite", classify)
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", run)
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        if authorized:
+            assert result.exit_code == 0, result.output
+            assert classified == [("tests/test_b.py", "tests/test_a.py")]
+            assert smart.argv
+        else:
+            assert result.exit_code == 4, result.output
+            assert "full_suite_required" in result.output
+            assert not smart.argv and not classified
+
+    def test_enforce_empty_selection_is_not_bare_pytest(self, runner, smart):
+        smart.selection["ordered"] = []
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        assert result.exit_code == 4, result.output
+        assert "empty_selection" in result.output and not smart.argv
+
+    @pytest.mark.parametrize("stale", [[True], [False, True]])
+    def test_stale_selection_refuses_and_releases_slot(
+        self, runner, smart, stale, isolated_test_slots
+    ):
+        from src.resources.semaphore import SlotSemaphore
+
+        smart.stale = stale.copy()
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        assert result.exit_code == 4, result.output
+        assert "selection_stale" in result.output
+        assert not smart.argv
+        assert SlotSemaphore(isolated_test_slots, 1).snapshot()["free"] == 1
+        assert len(smart.calls) == 1 + len(stale)
+
+    @pytest.mark.parametrize("mode", ["plan", "shadow", "enforce"])
+    def test_daemon_unreachable_modes(self, runner, smart, monkeypatch, mode):
+        from src.cli.exceptions import DaemonNotRunningError
+
+        smart.error = DaemonNotRunningError("http://unreachable")
+        offline_calls = []
+
+        def offline(workspace, **kwargs):
+            offline_calls.append((workspace, kwargs))
+            return {**smart.selection, "selection_id": None, "recorded": False}
+
+        monkeypatch.setattr("src.test_selection.service.select_offline", offline)
+        args = {
+            "plan": ["--aq-plan-only", "--aq-base", "origin/dev"],
+            "shadow": ["--aq-smart", "tests/test_z.py"],
+            "enforce": ["--aq-smart=enforce"],
+        }[mode]
+        result = runner.invoke(cli, ["test", *args])
+        if mode == "plan":
+            assert result.exit_code == 0, result.output
+            assert "recorded: no" in result.output and "Nothing was verified" in result.output
+            assert offline_calls[0][1]["base_ref"] == "origin/dev"
+            assert not smart.argv
+        elif mode == "shadow":
+            assert result.exit_code == 0, result.output
+            assert "selection not recorded" in result.output
+            assert _args(smart.argv[0])[-1] == "tests/test_z.py"
+            assert len(smart.calls) == 1
+        else:
+            assert result.exit_code == 3, result.output
+            assert not smart.argv
+
+    def test_scope_denial_is_usage_refusal(self, runner, smart):
+        from src.cli.exceptions import ScopeDeniedError
+
+        smart.error = ScopeDeniedError("test_select", "outside held task")
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        assert result.exit_code == 2, result.output
+        assert "outside held task" in result.output and not smart.argv
+
+    def test_plan_only_really_works_offline_without_dsn(self, runner, smart, monkeypatch):
+        from src.cli.exceptions import DaemonNotRunningError
+
+        smart.error = DaemonNotRunningError("http://unreachable")
+        monkeypatch.delenv("POSTGRES_TEST_DSN")
+        result = runner.invoke(cli, ["test", "--aq-plan-only", "--aq-base", "missing-base"])
+        assert result.exit_code == 0, result.output
+        assert "recorded: no" in result.output
+        assert "Nothing was verified by this report." in result.output
+        assert "full_required: yes" in result.output
+        assert not smart.argv and len(smart.calls) == 1
+
+    def test_operator_sends_workspace_and_project(self, runner, smart, monkeypatch, tmp_path):
+        (tmp_path / ".aq" / "claim.json").unlink()
+        monkeypatch.delenv("AQ_SESSION_ID", raising=False)
+        monkeypatch.delenv("AQ_PROJECT_ID", raising=False)
+        result = runner.invoke(cli, ["test", "--aq-plan-only", "--aq-project", "operator-project"])
+        assert result.exit_code == 0, result.output
+        request = smart.calls[0][1]
+        assert request["workspace"] == str(tmp_path)
+        assert request["project_id"] == "operator-project"
+        assert "claim_epoch" not in request and "task_id" not in request
+
+    @pytest.mark.parametrize("mode", ["--aq-smart=shadow", "--aq-smart=enforce"])
+    def test_explicit_worker_count_is_unchanged(self, runner, smart, mode):
+        result = runner.invoke(cli, ["test", mode, "tests/test_z.py", "-n", "0"])
+        assert result.exit_code == 0, result.output
+        args = _args(smart.argv[0])
+        assert args.count("-n") == 1 and args[args.index("-n") + 1] == "0"
+
+    def test_rechecks_straddle_actual_slot_acquisition(
+        self, runner, smart, monkeypatch, isolated_test_slots
+    ):
+        from src.cli.test_runner import _smart_recheck
+        from src.resources.semaphore import SlotSemaphore
+
+        free = []
+
+        def recheck(ctx, plan):
+            free.append(SlotSemaphore(isolated_test_slots, 1).snapshot()["free"])
+            _smart_recheck(ctx, plan)
+
+        monkeypatch.setattr("src.cli.test_runner._smart_recheck", recheck)
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        assert result.exit_code == 0, result.output
+        assert free == [1, 0]
+
+    def test_report_is_deterministic_and_never_clears_obligations(self, smart):
+        from src.test_selection.report import render_report
+
+        result = {**smart.selection, "reasons": {"b": ["jev_unknown"], "a": ["mandatory_rule"]}}
+        reordered = {**result, "reasons": dict(reversed(list(result["reasons"].items())))}
+        report = render_report(result, mode="shadow", plan_only=True)
+        assert report == render_report(reordered, mode="shadow", plan_only=True)
+        assert "M=1, S=0, J=1, F=1, final=2" in report
+        assert "acceptance: aq test tests/ -k x" in report
+        assert smart.selection["pending_obligations"]
+
+    def test_enforce_disabled_is_not_a_fallback_run(self, runner, smart):
+        smart.selection = {
+            "success": False,
+            "error_code": "enforce_not_enabled",
+            "error": "disabled",
+        }
+        result = runner.invoke(cli, ["test", "--aq-smart=enforce"])
+        assert result.exit_code == 2, result.output
+        assert "enforce_not_enabled" in result.output and not smart.argv
+
+    def test_observation_failure_preserves_pytest_result(self, runner, smart, monkeypatch):
+        smart.observe_error = True
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", lambda *a, **kw: 1)
+        result = runner.invoke(cli, ["test", "--aq-smart", "tests/test_z.py"])
+        assert result.exit_code == 1, result.output
+        assert smart.calls[-1][1]["exit_code"] == 1
+
+    def test_smart_cannot_bypass_fences_using_detach(self, runner, smart):
+        result = runner.invoke(
+            cli, ["test", "--aq-detach", "--aq-smart=enforce", "tests/test_z.py"]
+        )
+        assert result.exit_code == 2, result.output
+        assert not smart.calls and not smart.argv
+
+    def test_narrowing_flags(self):
+        from src.cli.test_runner import _narrowing_flags
+
+        assert _narrowing_flags(("tests/", "-kfoo", "--lf", "tests/x.py::y")) == [
+            "-kfoo",
+            "--lf",
+            "tests/x.py::y",
+        ]
+        assert _narrowing_flags(("tests/", "-x", "-o", "value=-kfoo")) == []
+
+
 class TestSlotReport:
     """``$AQ_TEST_SLOT_REPORT`` tells a supervising caller how long it queued.
 

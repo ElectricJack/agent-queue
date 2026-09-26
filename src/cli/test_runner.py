@@ -46,6 +46,7 @@ import sys
 import time
 from collections.abc import Mapping
 from contextlib import ExitStack
+from dataclasses import dataclass
 from pathlib import Path
 
 import click
@@ -54,7 +55,8 @@ from src.test_selection.discovery import SKIP_DIRS
 from src.test_selection.discovery import pytest_rootdir as _pytest_rootdir
 from src.test_selection.discovery import test_modules as _test_modules
 
-from .app import cli, console
+from .app import _get_client, _run, cli, console
+from .exceptions import CommandError, DaemonNotRunningError
 
 CONFIG_PATH = os.path.expanduser("~/.agent-queue/config.yaml")
 
@@ -210,9 +212,11 @@ _VALUE_OPTIONS = frozenset(
         "--import-mode",
         "--junit-xml",
         "--junitxml",
+        "--keyword",
         "--log-file",
         "--max-worker-restart",
         "--maxfail",
+        "--markexpr",
         "--numprocesses",
         "--override-ini",
         "--rootdir",
@@ -633,8 +637,197 @@ def _reap_orphans(lock_dir, *, apply: bool) -> int:
     return 1 if failed else 0
 
 
+NARROWING_VALUE_FLAGS = ("-k", "-m", "--keyword", "--markexpr")
+NARROWING_FLAGS = frozenset({"--lf", "--last-failed", "--deselect"})
+
+
+def _narrowing_flags(args: tuple[str, ...]) -> list[str]:
+    positionals = set(_positional_args(args))
+    narrowing = []
+    skip_next = False
+    after_separator = False
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--":
+            after_separator = True
+            continue
+        if not after_separator and arg.startswith("-"):
+            if any(
+                arg == flag
+                or arg.startswith(f"{flag}=")
+                or (len(flag) == 2 and arg.startswith(flag))
+                for flag in (*NARROWING_VALUE_FLAGS, *NARROWING_FLAGS)
+            ):
+                narrowing.append(arg)
+            skip_next = arg in _VALUE_OPTIONS
+        elif arg in positionals and "::" in arg:
+            narrowing.append(arg)
+    return narrowing
+
+
+@dataclass(frozen=True)
+class SmartPlan:
+    selection_id: str | None
+    mode: str
+    recorded: bool
+    result: dict
+
+    @property
+    def full_required(self) -> bool:
+        return bool(self.result.get("full_required"))
+
+    @property
+    def full_suite_authorized(self) -> bool:
+        return self.result.get("full_suite_authorized") is True
+
+    @property
+    def ordered(self) -> list[str]:
+        return list(self.result.get("ordered", []))
+
+
+def _smart_identity(cwd: str) -> dict:
+    from src.claim_file import read_claim_file
+
+    claim = read_claim_file(cwd) or {}
+    return {key: claim[key] for key in ("task_id", "claim_epoch") if key in claim}
+
+
+def _selection_execute(command: str, args: dict) -> dict:
+    ctx = click.get_current_context(silent=True)
+    api_url = (ctx.obj or {}).get("api_url") if ctx else None
+
+    async def execute():
+        async with _get_client(api_url) as client:
+            result = await client.execute(command, args)
+        if not result.get("success", False):
+            raise CommandError(command, result.get("error", "selection request failed"), result)
+        return result
+
+    return _run(execute())
+
+
+def _offline_base(cwd: str) -> str:
+    from src.git.manager import GitError, GitManager
+
+    try:
+        result = _run(
+            GitManager().arun_git_result(
+                ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], cwd=cwd
+            )
+        )
+        if result.returncode == 0:
+            return result.stdout.removeprefix("refs/remotes/").strip()
+    except GitError:
+        pass
+    # No fetch: an absent local base becomes incomplete snapshot evidence.
+    return "origin/main"
+
+
+def _smart_error(ctx: click.Context, exc: CommandError) -> None:
+    code = exc.details.get("error_code") or exc.details.get("result")
+    click.echo(f"aq test: {code + ' — ' if code else ''}{exc.detail_message}", err=True)
+    ctx.exit(4 if code in {"selection_stale", "full_suite_required", "empty_selection"} else 2)
+
+
+def _smart_plan(
+    ctx, *, mode, base, plan_only, jev, project, pytest_args, marker_policy
+) -> SmartPlan:
+    cwd = os.getcwd()
+    identity = _smart_identity(cwd)
+    args = {
+        **identity,
+        "mode": "plan_only" if plan_only else mode,
+        "targets": _positional_args(pytest_args),
+        "jev": jev,
+        "marker_policy": marker_policy,
+        "narrowing_flags": _narrowing_flags(pytest_args),
+    }
+    if base is not None:
+        args["base_ref"] = base
+    project_id = project or os.environ.get("AQ_PROJECT_ID")
+    if project_id:
+        args["project_id"] = project_id
+    if not identity and not os.environ.get("AQ_SESSION_ID"):
+        args["workspace"] = cwd
+    try:
+        result = _selection_execute("test_select", args)
+    except DaemonNotRunningError as exc:
+        if plan_only:
+            from src.test_selection.service import select_offline
+
+            result = select_offline(
+                cwd,
+                base_ref=base or _offline_base(cwd),
+                targets=args["targets"],
+                marker_policy=marker_policy,
+            )
+            return SmartPlan(None, mode, False, {**result, "recorded": False})
+        if mode == "shadow":
+            click.echo(
+                "aq test: selection not recorded (daemon unreachable); "
+                "running the explicit targets unchanged"
+            )
+            return SmartPlan(None, mode, False, {"recorded": False})
+        click.echo(f"aq test: daemon_unreachable — {exc}", err=True)
+        ctx.exit(3)
+    except CommandError as exc:
+        _smart_error(ctx, exc)
+    return SmartPlan(result.get("selection_id"), mode, bool(result.get("recorded")), result)
+
+
+def _smart_recheck(ctx: click.Context, plan: SmartPlan) -> None:
+    if not plan.recorded or not plan.selection_id:
+        return
+    try:
+        result = _selection_execute("test_selection_recheck", {"selection_id": plan.selection_id})
+    except DaemonNotRunningError as exc:
+        click.echo(f"aq test: daemon_unreachable — {exc}", err=True)
+        ctx.exit(3)
+    except CommandError as exc:
+        _smart_error(ctx, exc)
+    if result.get("stale") is not False:
+        click.echo("aq test: selection_stale — the tree changed; select again", err=True)
+        ctx.exit(4)
+
+
+def _smart_observe(plan: SmartPlan, *, exit_code, duration_ms, executed) -> None:
+    if not plan.recorded or not plan.selection_id:
+        return
+    try:
+        _selection_execute(
+            "test_selection_observe",
+            {
+                "selection_id": plan.selection_id,
+                "exit_code": exit_code,
+                "duration_ms": duration_ms,
+                "executed_modules": executed,
+            },
+        )
+    except Exception:
+        # Reporting must not turn a real pytest failure into a different result.
+        click.echo("aq test: execution observation not recorded", err=True)
+
+
+class _TestCommand(click.Command):
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        # Click's optional value consumes a following path. A bare --aq-smart
+        # is shadow unless the caller supplies one of the two explicit modes.
+        normalized = list(args)
+        for index, arg in enumerate(args):
+            if arg == "--":
+                break
+            if arg == "--aq-smart" and (
+                index + 1 == len(args) or args[index + 1] not in {"shadow", "enforce"}
+            ):
+                normalized[index] = "--aq-smart=shadow"
+        return super().parse_args(ctx, normalized)
+
+
 @cli.command(
     "test",
+    cls=_TestCommand,
     context_settings={
         "ignore_unknown_options": True,
         "allow_extra_args": True,
@@ -664,6 +857,29 @@ def _reap_orphans(lock_dir, *, apply: bool) -> int:
 )
 @click.option("--aq-dry-run", is_flag=True, help="Print the pytest command and exit.")
 @click.option(
+    "--aq-smart",
+    "aq_smart",
+    is_flag=False,
+    flag_value="shadow",
+    default=None,
+    type=click.Choice(["shadow", "enforce"]),
+    help="Record a smart selection (shadow: run exactly what you named; enforce: run the selected union).",
+)
+@click.option(
+    "--aq-base",
+    default=None,
+    help="Comparison base ref for --aq-smart (default: origin/<default branch>).",
+)
+@click.option(
+    "--aq-plan-only", is_flag=True, help="Print the selection and its reasons; start nothing."
+)
+@click.option(
+    "--aq-no-jev", is_flag=True, help="Use the static fallback only; record Jev as disabled."
+)
+@click.option(
+    "--aq-project", default=None, help="Project id for an operator run outside a worker session."
+)
+@click.option(
     "--aq-reap-orphans",
     is_flag=True,
     help="List test runs whose session is gone (dry run); add --aq-apply to terminate them.",
@@ -682,6 +898,11 @@ def test_command(
     aq_timeout: int | None,
     aq_all_markers: bool,
     aq_dry_run: bool,
+    aq_smart: str | None,
+    aq_base: str | None,
+    aq_plan_only: bool,
+    aq_no_jev: bool,
+    aq_project: str | None,
     aq_reap_orphans: bool,
     aq_apply: bool,
     pytest_args: tuple[str, ...],
@@ -714,6 +935,8 @@ def test_command(
     if aq_idempotency_key and not aq_detach:
         raise click.UsageError("--aq-idempotency-key requires --aq-detach")
     if aq_detach:
+        if aq_smart or aq_plan_only or aq_base or aq_no_jev or aq_project:
+            raise click.UsageError("Smart selection requires a local run; cannot use --aq-detach")
         if (
             aq_status
             or aq_no_wait
@@ -779,6 +1002,54 @@ def test_command(
         ctx.exit(2)
     if aq_reap_orphans:
         ctx.exit(_reap_orphans(lock_dir, apply=aq_apply))
+
+    plan = None
+    if aq_plan_only and aq_smart is None:
+        aq_smart = "shadow"
+    if aq_smart is not None:
+        from src.test_selection.report import render_report
+
+        narrowing = _narrowing_flags(pytest_args)
+        if aq_smart == "enforce" and narrowing:
+            click.echo(
+                "aq test: --aq-smart=enforce refuses -k/-m/--lf/--deselect/node ids "
+                f"({', '.join(narrowing)}); use --aq-smart (shadow) or a normal run",
+                err=True,
+            )
+            ctx.exit(2)
+        targets = _positional_args(pytest_args)
+        plan = _smart_plan(
+            ctx,
+            mode=aq_smart,
+            base=aq_base,
+            plan_only=aq_plan_only,
+            jev=not aq_no_jev,
+            project=aq_project,
+            pytest_args=pytest_args,
+            marker_policy="all" if aq_all_markers else "default",
+        )
+        if aq_plan_only or (aq_smart == "shadow" and not targets):
+            click.echo(render_report(plan.result, mode=aq_smart, plan_only=True))
+        if aq_plan_only:
+            ctx.exit(0)
+        if aq_smart == "shadow" and not targets:
+            click.echo("aq test: nothing was verified — name the targets to run", err=True)
+            ctx.exit(2)
+        if aq_smart == "enforce":
+            if plan.full_required and not plan.full_suite_authorized:
+                reason = plan.result.get("fallback_reason") or "global or incomplete inputs"
+                click.echo(
+                    "aq test: full_suite_required — the selection fell back to the whole suite "
+                    f"({reason}); run your task's focused and area checks and report the requirement",
+                    err=True,
+                )
+                ctx.exit(4)
+            if not plan.ordered and not targets:
+                click.echo("aq test: empty_selection — nothing was verified", err=True)
+                ctx.exit(4)
+            pytest_args = tuple(plan.ordered) + tuple(
+                a for a in pytest_args if a not in plan.ordered
+            )
 
     if not pytest_args:
         console.print("[yellow]No pytest arguments given.[/] Try: aq test tests/test_config.py")
@@ -864,6 +1135,8 @@ def test_command(
         )
 
     budget = 0 if aq_no_wait else timeout
+    if plan is not None:
+        _smart_recheck(ctx, plan)
     try:
         with ExitStack() as held:
             if full_suite:
@@ -898,6 +1171,8 @@ def test_command(
                 )
             )
             slot = admitted_slots[0]
+            if plan is not None:
+                _smart_recheck(ctx, plan)
             if report:
                 append_event(
                     report, "acquired", waited=round(time.monotonic() - queued_at, 3), slot=slot
@@ -911,11 +1186,19 @@ def test_command(
             # PostgreSQL database names. The slot record names it too, so a
             # reaper can find pytest processes that outlive this wrapper.
             child_env["AQ_TEST_RUN_ID"] = test_run_id
+            started_at = time.monotonic()
             try:
                 returncode = _run_forwarding_signals(argv, env=child_env)
             finally:
                 if report:
                     append_event(report, "released")
+        if plan is not None:
+            _smart_observe(
+                plan,
+                exit_code=returncode,
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+                executed=_positional_args(pytest_args),
+            )
         if returncode == 5:
             # pytest's EXIT_NOTESTSCOLLECTED.  Nonzero already, but silent
             # about *why*: say plainly that nothing was verified.
