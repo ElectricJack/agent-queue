@@ -15,6 +15,9 @@ vi.mock("../../ws/useTranscriptStream", () => ({ useTranscriptStream: () => ({
   entries: [{ _idx: 0, type: "assistant", text: "Saved transcript" }], status: "open", clear: vi.fn(),
 }) }));
 vi.mock("../../ws/usePaneStream", () => ({ usePaneStream: () => ({ screen: null, status: "connecting" }) }));
+vi.mock("../../components/WatchTerminal", () => ({
+  default: ({ sessionId, focusHref }: { sessionId: string; focusHref?: string }) => <p>Watching {sessionId} → {focusHref}</p>,
+}));
 vi.mock("@xterm/xterm", async () => ({ Terminal: (await import("../../testUtils/terminal")).TerminalMock }));
 vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../testUtils/terminal")).FitAddonMock }));
 
@@ -100,5 +103,23 @@ describe("Session terminal", () => {
     expect(screen.queryByText("Pane")).not.toBeInTheDocument();
     expect(socket.closed).toBe(true);
     expect(screen.getByText("Saved transcript")).toBeInTheDocument();
+  });
+});
+
+describe("Session terminal below 768 px", () => {
+  const original = window.matchMedia;
+  beforeEach(() => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true, writable: true,
+      value: (query: string) => ({ matches: query === "(max-width: 767.98px)", media: query,
+        addEventListener: () => {}, removeEventListener: () => {} }),
+    });
+  });
+  afterEach(() => Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original }));
+
+  it("the pane view watches and opens no terminal socket", async () => {
+    render(page({ pathname: "/sessions/session-a", state: { terminalFocus: true } }));
+    expect(await screen.findByText("Watching session-a → /focus/sessions/session-a")).toBeInTheDocument();
+    expect(TerminalSocketMock.instances).toHaveLength(0);
   });
 });
