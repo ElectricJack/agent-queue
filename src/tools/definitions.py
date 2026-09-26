@@ -87,6 +87,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_reply": "escalation",
     "escalation_update": "escalation",
     "escalation_apply_reply": "escalation",
+    "supervisor_inbox_post": "supervisor_inbox",
     # document reviews
     "review_submit": "review",
     "github_issue_triage": "github_issue",
@@ -6894,3 +6895,36 @@ _ALL_TOOL_DEFINITIONS.extend(
         },
     ]
 )
+
+# Intake is daemon-internal. Identity comes from the execution principal,
+# never from these fields, and both API dispatch paths exclude this command.
+_ALL_TOOL_DEFINITIONS.append({
+    "name": "supervisor_inbox_post",
+    "description": "Internal gateway intake of a verified Discord supervisor conversation.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "envelope": {
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "transport": {"type": "string", "enum": ["discord"]},
+                    "guild_id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+                    "channel_id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+                    "external_message_id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+                    "external_root_message_id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+                    "external_thread_id": {"type": ["string", "null"]},
+                    "author_id": {"type": "string", "pattern": "^[0-9]{17,20}$"},
+                    "text": {"type": "string"}, "received_at": {"type": "number"},
+                    "mentions_bot": {"type": "boolean"},
+                },
+                "required": ["transport", "guild_id", "channel_id", "external_message_id",
+                             "external_root_message_id", "author_id", "text", "received_at",
+                             "mentions_bot"],
+            },
+            "conversation_id": {"type": "string"},
+            "source": {"type": "string", "enum": ["gateway", "backfill"]},
+            "provenance": {"type": "string", "enum": ["replay", "test"]},
+        },
+        "required": ["envelope"], "additionalProperties": False,
+    },
+})
