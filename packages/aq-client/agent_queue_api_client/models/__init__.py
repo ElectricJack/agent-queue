@@ -169,6 +169,8 @@ from .digest_status_response_delivery_health import DigestStatusResponseDelivery
 from .digest_window_bounds import DigestWindowBounds
 from .digest_window_record import DigestWindowRecord
 from .discord_cutover_status import DiscordCutoverStatus
+from .discord_intake_diagnostics import DiscordIntakeDiagnostics
+from .discord_intake_diagnostics_ignored import DiscordIntakeDiagnosticsIgnored
 from .discord_purge_channel_request import DiscordPurgeChannelRequest
 from .discord_purge_channel_response import DiscordPurgeChannelResponse
 from .discord_purge_channel_response_422 import DiscordPurgeChannelResponse422
@@ -1505,6 +1507,8 @@ __all__ = (
     "DigestWindowBounds",
     "DigestWindowRecord",
     "DiscordCutoverStatus",
+    "DiscordIntakeDiagnostics",
+    "DiscordIntakeDiagnosticsIgnored",
     "DiscordPurgeChannelRequest",
     "DiscordPurgeChannelResponse",
     "DiscordPurgeChannelResponse422",

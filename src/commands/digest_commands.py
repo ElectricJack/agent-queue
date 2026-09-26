@@ -13,7 +13,9 @@ Two named commands, no dashboard-only business logic:
 ``digest_status``
     The configured schedule and its health: destination, configuration
     generation, next evaluation, recent windows, and how many digest
-    deliveries or escalation deliveries are pending, unknown or failed.
+    deliveries or escalation deliveries are pending, unknown or failed.  Its
+    ``intake`` block counts the inbound Discord messages the gateway ignored
+    in the last hour, by reason code.
 
 Both are installation-wide reads of one shared destination, so a
 project-scoped session principal only ever sees its own project's activity;
@@ -31,6 +33,7 @@ from src.digest.aggregate import build_digest
 from src.digest.dispatch import reported_so_far
 from src.digest.facts import CATEGORIES
 from src.digest.schedule import provider_facts_enabled, schedule_for, validate_settings
+from src.discord.intake_diagnostics import empty_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +220,9 @@ class DigestCommandsMixin:
         warnings = list(config.warnings())
         if cutover is not None and cutover.status != "complete":
             warnings.append(cutover.summary())
+        # In-memory and installation-wide: codes and counts only, no project data.
+        diagnostics = getattr(bot, "_intake_diagnostics", None)
+        intake = diagnostics.snapshot() if diagnostics is not None else empty_snapshot()
 
         return {
             "success": True,
@@ -258,6 +264,7 @@ class DigestCommandsMixin:
             "open_escalations": len(escalations),
             "pending_escalation_deliveries": pending_escalation_deliveries,
             "cutover": cutover_status,
+            "intake": intake,
             "settings_errors": validate_settings(config, known),
             "warnings": warnings,
         }
