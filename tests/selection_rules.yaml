@@ -67,6 +67,7 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - "scripts/setup-cgroup-delegation.sh"
 
 ownership:                      # path globs -> areas whose modules join M
+  - { paths: ["src/agent_waits.py", "src/database/queries/agent_wait_queries.py", "src/commands/wait_commands.py", "src/commands/contracts/wait.py", "src/cli/waits.py"], areas: ["agent-waits"] }
   # ---- repository files outside src/
   - { paths: ["AGENTS.md", "CLAUDE.md", "README.md"], areas: ["docs-guards"] }
   - { paths: ["AGENTS.md"], areas: ["dashboard-state"] }

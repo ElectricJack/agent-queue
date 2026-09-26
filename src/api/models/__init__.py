@@ -72,6 +72,7 @@ def _category_modules() -> tuple[object, ...]:
         supervisor_inbox,
         system,
         task,
+        wait,
     )
 
     return (
@@ -99,6 +100,7 @@ def _category_modules() -> tuple[object, ...]:
         escalation,
         graph,
         provider,
+        wait,
     )
 
 

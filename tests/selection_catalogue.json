@@ -27,6 +27,14 @@
         "tests/test_task_session_queries.py"
       ]
     },
+    "agent-waits": {
+      "description": "Durable typed agent waits: ownership and claim fencing, producer snapshots, deadlines, CAS results, outbox retries and wait commands.",
+      "modules": [
+        "tests/test_agent_wait_commands.py",
+        "tests/test_agent_wait_queries.py",
+        "tests/test_agent_waits.py"
+      ]
+    },
     "api-contract": {
       "description": "The generated API contract: the committed OpenAPI spec matching the live app, the generated Python and TypeScript clients and their pinned generators, typed request models, the response-model registry and execute/typed error parity.",
       "modules": [
@@ -1223,7 +1231,7 @@
       ]
     }
   },
-  "digest": "sha256:4a29b0ea7bab80b7d31483a415fba194e40172a1f1662885e7990d8e912da000",
+  "digest": "sha256:7b5560197e107bf8e6b1a2536a4975010e9299bfb806362ce6788b97c0ab56eb",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2025,6 +2033,60 @@
         "parametrize"
       ],
       "summary": "Explicit terminal starts use fake providers and a disposable database only."
+    },
+    "tests/test_agent_wait_commands.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.api.scope",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.waits",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.profiles.parser"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Scoped wait command, contract, grant and CLI behavior."
+    },
+    "tests/test_agent_wait_queries.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.database",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Durable wait and result-message boundaries on disposable PostgreSQL."
+    },
+    "tests/test_agent_waits.py": {
+      "areas": [
+        "agent-waits"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Pure typed predicates and completion/deadline arbitration."
     },
     "tests/test_api_auth.py": {
       "areas": [
@@ -4434,6 +4496,8 @@
       "imports": [
         "src.commands.handler",
         "src.config",
+        "src.conversations.intake",
+        "src.conversations.preconditions",
         "src.discord.escalation_intake",
         "src.escalations.intake"
       ],

@@ -60,6 +60,7 @@ uninstall.py       `aq uninstall` — plans and removes installer-owned resource
 update.py          `aq update` — stop the daemon, fast-forward the source checkout, then hand
                    reinstall / rebuild / restart to a fresh process on the new code
                    (src/install/update_finish.py); rolls back on any failure (src/install/update.py)
+waits.py           `aq wait {register,show,list,cancel}` — typed, claim-fenced durable waits
 vault.py           `aq vault {migrate,reset-harness}`
 ```
 

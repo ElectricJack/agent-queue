@@ -15842,6 +15842,194 @@
           }
         }
       }
+    },
+    "/api/wait/cancel": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Cancel a current-claim wait and queue its result.",
+        "description": "Cancel a current-claim wait and queue its result.",
+        "operationId": "wait_cancel",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitCancelRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/get": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Read a durable wait and its bounded result pointer.",
+        "description": "Read a durable wait and its bounded result pointer.",
+        "operationId": "wait_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitGetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/list": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "List the owner's durable wait history.",
+        "description": "List the owner's durable wait history.",
+        "operationId": "wait_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wait/register": {
+      "post": {
+        "tags": [
+          "wait"
+        ],
+        "summary": "Register a bounded typed wait and end the turn until its result pointer arrives.",
+        "description": "Register a bounded typed wait and end the turn until its result pointer arrives.",
+        "operationId": "wait_register",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitRegisterRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -16882,6 +17070,164 @@
           "settings"
         ],
         "title": "AgentSummary"
+      },
+      "AgentWaitRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "task",
+              "supervisor"
+            ],
+            "title": "Owner Kind"
+          },
+          "owner_id": {
+            "type": "string",
+            "title": "Owner Id"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "session_instance_token": {
+            "type": "string",
+            "title": "Session Instance Token"
+          },
+          "claim_epoch": {
+            "type": "integer",
+            "title": "Claim Epoch"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "job",
+              "task",
+              "message",
+              "timer"
+            ],
+            "title": "Kind"
+          },
+          "match": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Match"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "satisfied",
+              "expired",
+              "cancelled"
+            ],
+            "title": "State"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "deadline_at": {
+            "type": "number",
+            "title": "Deadline At"
+          },
+          "resolved_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved At"
+          },
+          "wait_resumed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wait Resumed At"
+          },
+          "checked_at": {
+            "type": "number",
+            "title": "Checked At",
+            "default": 0
+          },
+          "result_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Ref"
+          },
+          "digest": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "result_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Message Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "owner_kind",
+          "owner_id",
+          "session_id",
+          "session_instance_token",
+          "claim_epoch",
+          "kind",
+          "match",
+          "state",
+          "version",
+          "created_at",
+          "deadline_at",
+          "idempotency_key"
+        ],
+        "title": "AgentWaitRecord",
+        "description": "Persisted wait/result shape shared by contracts and generated clients."
       },
       "AgentWaitingQuestion": {
         "properties": {
@@ -33792,6 +34138,17 @@
               }
             ],
             "title": "Created At"
+          },
+          "created_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created Seq"
           },
           "delivered_at": {
             "anyOf": [
@@ -54030,6 +54387,68 @@
         ],
         "title": "ValidationError"
       },
+      "WaitCancelRequest": {
+        "properties": {
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "wait_id"
+        ],
+        "title": "WaitCancelRequest"
+      },
       "WaitFactsDTO": {
         "properties": {
           "wait_kind": {
@@ -54108,6 +54527,149 @@
         ],
         "title": "WaitFactsDTO"
       },
+      "WaitGetRequest": {
+        "properties": {
+          "wait_id": {
+            "type": "string",
+            "title": "Wait Id",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "wait_id"
+        ],
+        "title": "WaitGetRequest"
+      },
+      "WaitListRequest": {
+        "properties": {
+          "limit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit",
+            "description": ""
+          },
+          "offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offset",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "title": "WaitListRequest"
+      },
+      "WaitListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "waits": {
+            "items": {
+              "$ref": "#/components/schemas/AgentWaitRecord"
+            },
+            "type": "array",
+            "title": "Waits"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "waits",
+          "count"
+        ],
+        "title": "WaitListResponse"
+      },
       "WaitNodeDetailDTO": {
         "properties": {
           "wait_kind": {
@@ -54159,6 +54721,151 @@
         ],
         "title": "WaitNodeDetailDTO",
         "description": "WaitStep only."
+      },
+      "WaitRegisterRequest": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "description": ""
+          },
+          "ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ref",
+            "description": ""
+          },
+          "after_seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Seq",
+            "description": ""
+          },
+          "due_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due At",
+            "description": ""
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout",
+            "description": ""
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id",
+            "description": ""
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "idempotency_key"
+        ],
+        "title": "WaitRegisterRequest"
+      },
+      "WaitResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "wait": {
+            "$ref": "#/components/schemas/AgentWaitRecord"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "wait"
+        ],
+        "title": "WaitResponse"
       },
       "WithheldTask": {
         "properties": {

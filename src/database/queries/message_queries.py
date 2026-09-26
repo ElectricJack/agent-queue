@@ -54,6 +54,7 @@ def _row_to_message(row) -> Message:
         via=row["via"],
         body_kind=row["body_kind"],
         pane_open=row["pane_open"],
+        created_seq=row["created_seq"],
     )
 
 
@@ -96,7 +97,7 @@ class MessageQueriesMixin:
             pane_open=pane_open,
         )
         async with self._engine.begin() as conn:
-            await conn.execute(
+            result = await conn.execute(
                 insert(messages).values(
                     id=msg.id,
                     project_id=msg.project_id,
@@ -117,8 +118,9 @@ class MessageQueriesMixin:
                     via=None,
                     body_kind=msg.body_kind,
                     pane_open=msg.pane_open,
-                )
+                ).returning(messages.c.created_seq)
             )
+            msg.created_seq = result.scalar_one()
         return msg
 
     async def get_message(self, message_id: str) -> Message | None:

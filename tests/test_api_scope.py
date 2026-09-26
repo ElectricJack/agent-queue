@@ -29,6 +29,11 @@ EXPECTED_AGENT_COMMANDS = {
     "task_progress",
     "task_heartbeat",
     "task_handoff",
+    # Typed waits derive their owner and fence mutations against the live claim.
+    "wait_register",
+    "wait_get",
+    "wait_list",
+    "wait_cancel",
     "message_send",
     "message_inbox",
     "message_reply",

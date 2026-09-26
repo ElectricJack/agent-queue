@@ -23,6 +23,7 @@ from src.database.engine import (
 )
 from src.database.queries.activity_queries import ActivityQueryMixin
 from src.database.queries.agent_queries import AgentQueryMixin
+from src.database.queries.agent_wait_queries import AgentWaitQueriesMixin
 from src.database.queries.agent_question_queries import AgentQuestionQueriesMixin
 from src.database.queries.api_session_token_queries import ApiSessionTokenQueriesMixin
 from src.database.queries.archive_queries import ArchiveQueryMixin
@@ -106,6 +107,7 @@ class PostgreSQLDatabaseAdapter(
     ReviewQueriesMixin,
     AgentQueryMixin,
     AgentQuestionQueriesMixin,
+    AgentWaitQueriesMixin,
     WorkspaceQueryMixin,
     WorkspaceKindQueryMixin,
     TaskRequirementsQueryMixin,

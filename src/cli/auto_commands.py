@@ -86,6 +86,10 @@ HANDCRAFTED_COVERAGE = {
     # envelope, which the generated `aq system prime` cannot do.
     "prime",
     # questions.py — exact question identity and the authenticated daemon scope.
+    "wait_register",
+    "wait_get",
+    "wait_list",
+    "wait_cancel",
     "question_list",
     "question_answer",
     "question_escalate",
