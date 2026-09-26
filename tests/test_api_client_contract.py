@@ -36,8 +36,9 @@ from unittest.mock import MagicMock
 
 import httpx
 import pytest
-from tests.db_fixtures import lease_dsn
+
 from src.config import DatabaseConfig
+from tests.db_fixtures import lease_dsn
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLIENT_DIR = REPO_ROOT / "packages" / "aq-client"
@@ -727,7 +728,13 @@ async def test_generated_supervisor_inbox_reads_and_refusals_round_trip(live_app
         assert isinstance(history, SupervisorInboxHistoryResponse), history
         item = history.conversations[0].inputs[0]
         assert item.text is None and item.text_expired is True
-        assert history.next_before is None
+        assert history.next_before is None and history.next_before_id is None
+        assert history.conversations[0].next_before_id is None
+        assert SupervisorInboxHistoryRequest(before=1.0, before_id="conv-x").to_dict() == {
+            "limit": 50,
+            "before": 1.0,
+            "before_id": "conv-x",
+        }
         refusal = await supervisor_inbox_history.asyncio(
             client=client,
             body=SupervisorInboxHistoryRequest(conversation_id="missing"),

@@ -479,6 +479,46 @@ async def test_history_is_newest_first_with_reply_pointer_and_pages_by_received_
     assert [row["id"] for row in await db.list_conversations(before=1400.0)] == [conversation_id]
 
 
+async def _walk(list_page, time_field: str) -> list[str]:
+    """Follow the ``(before, before_id)`` cursor one row at a time to exhaustion."""
+    seen, cursor = [], {}
+    while page := await list_page(limit=1, **cursor):
+        seen += [row["id"] for row in page]
+        cursor = {"before": page[-1][time_field], "before_id": page[-1]["id"]}
+    return seen
+
+
+async def test_history_id_tie_break_pages_equal_time_conversations_exactly_once(db):
+    for message_id in ("900", "901", "902"):
+        await db.accept_conversation_input(
+            **accept_args(external_message_id=message_id, external_root_message_id=message_id)
+        )
+    newest_first = [row["id"] for row in await db.list_conversations()]
+    assert len(newest_first) == 3
+
+    assert await _walk(db.list_conversations, "updated_at") == newest_first
+    # A bare timestamp keeps its meaning: strictly older than that time.
+    assert await db.list_conversations(before=1000.0) == []
+    assert await db.list_conversations(before=1000.0, before_id=newest_first[0]) != []
+
+
+async def test_history_id_tie_break_pages_equal_time_inputs_exactly_once(db):
+    first = await open_conversation(db)
+    conversation_id = first["conversation"]["id"]
+    for message_id in ("901", "902"):
+        await db.accept_conversation_input(
+            **accept_args(external_message_id=message_id, conversation_id=conversation_id)
+        )
+    newest_first = [row["id"] for row in await db.list_conversation_inputs(conversation_id)]
+    assert len(newest_first) == 3
+
+    def list_page(**kwargs):
+        return db.list_conversation_inputs(conversation_id, **kwargs)
+
+    assert await _walk(list_page, "received_at") == newest_first
+    assert await db.list_conversation_inputs(conversation_id, before=1000.0) == []
+
+
 async def test_awaiting_supervisor_lists_undelivered_unnotified_accepted_inputs(db):
     first = await open_conversation(db)
     conversation_id = first["conversation"]["id"]

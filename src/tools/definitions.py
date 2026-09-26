@@ -6967,7 +6967,15 @@ _ALL_TOOL_DEFINITIONS.extend([
                     ]},
                 },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
-                "before": {"type": "number", "description": "Exclusive epoch-second cursor."},
+                "before": {
+                    "type": "number",
+                    "description": "Exclusive epoch-second boundary; alone, a strict time filter.",
+                },
+                "before_id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Row id breaking ties at --before (pass next_before_id).",
+                },
             },
             "additionalProperties": False,
         },

@@ -1101,10 +1101,20 @@ class DatabaseBackend(Protocol):
     ) -> bool: ...
     async def record_conversation_reply(self, **values) -> dict: ...
     async def list_conversations(
-        self, *, states: list[str] | None = None, limit: int = 50, before: float | None = None
+        self,
+        *,
+        states: list[str] | None = None,
+        limit: int = 50,
+        before: float | None = None,
+        before_id: str | None = None,
     ) -> list[dict]: ...
     async def list_conversation_inputs(
-        self, conversation_id: str, *, limit: int = 100, before: float | None = None
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 100,
+        before: float | None = None,
+        before_id: str | None = None,
     ) -> list[dict]: ...
     async def list_inputs_awaiting_supervisor(
         self, *, older_than: float, limit: int = 100

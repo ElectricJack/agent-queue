@@ -20,12 +20,14 @@ class SupervisorInboxHistoryResponse:
     """
     Attributes:
         conversations (list[ConversationHistoryRecord]):
-        next_before (float | None):
+        next_before (float | None): `before` for the next page; null when exhausted.
+        next_before_id (None | str): `before_id` paired with `next_before`.
         success (bool | Unset):  Default: True.
     """
 
     conversations: list[ConversationHistoryRecord]
     next_before: float | None
+    next_before_id: None | str
     success: bool | Unset = True
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -38,6 +40,9 @@ class SupervisorInboxHistoryResponse:
         next_before: float | None
         next_before = self.next_before
 
+        next_before_id: None | str
+        next_before_id = self.next_before_id
+
         success = self.success
 
         field_dict: dict[str, Any] = {}
@@ -46,6 +51,7 @@ class SupervisorInboxHistoryResponse:
             {
                 "conversations": conversations,
                 "next_before": next_before,
+                "next_before_id": next_before_id,
             }
         )
         if success is not UNSET:
@@ -72,11 +78,19 @@ class SupervisorInboxHistoryResponse:
 
         next_before = _parse_next_before(d.pop("next_before"))
 
+        def _parse_next_before_id(data: object) -> None | str:
+            if data is None:
+                return data
+            return cast(None | str, data)
+
+        next_before_id = _parse_next_before_id(d.pop("next_before_id"))
+
         success = d.pop("success", UNSET)
 
         supervisor_inbox_history_response = cls(
             conversations=conversations,
             next_before=next_before,
+            next_before_id=next_before_id,
             success=success,
         )
 

@@ -1221,7 +1221,7 @@
       ]
     }
   },
-  "digest": "sha256:aa4065aad132d0d2574b8c8757bfd58c52514e69d7d389e201890e5b18e80833",
+  "digest": "sha256:5a348e3ed9abdc03a511c300fbd4fdf6f71d2fe6411d603f87a42ee5114b6c0f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3161,9 +3161,12 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.cli.auto_commands"
+        "src.cli.auto_commands",
+        "src.tools.definitions"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Auto-generated CLI options carry structured values, not their text."
     },
     "tests/test_cli_system_config.py": {
@@ -11296,12 +11299,14 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.models.supervisor_inbox",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
         "src.conversations.outbox",
         "src.database",
         "src.database.tables",
+        "src.discord.intake_diagnostics",
         "src.messages.delivery",
         "src.models",
         "src.profiles.capabilities"

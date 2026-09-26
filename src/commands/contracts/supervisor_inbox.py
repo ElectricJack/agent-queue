@@ -49,7 +49,16 @@ class SupervisorInboxHistoryArgs(CommandArgs):
     conversation_id: str | None = Field(default=None, min_length=1)
     states: list[Literal["opening", "open", "closed", "delivery_blocked"]] | None = None
     limit: int = Field(default=50, ge=1, le=100)
-    before: float | None = Field(default=None, allow_inf_nan=False)
+    before: float | None = Field(
+        default=None,
+        allow_inf_nan=False,
+        description="Exclusive epoch-second boundary; alone, a strict time filter.",
+    )
+    before_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Row id breaking ties at `before`; requires `before`.",
+    )
 
 
 class SupervisorInboxPostValue(CommandValue):
@@ -80,7 +89,8 @@ class SupervisorInboxStatusValue(CommandValue):
 
 class SupervisorInboxHistoryValue(CommandValue):
     conversations: list[dict[str, Any]]
-    next_before: float | None
+    next_before: float | None = Field(description="Next page's `before`; null when exhausted.")
+    next_before_id: str | None = Field(description="Next page's `before_id`, with `next_before`.")
 
 
 def _register(registry, name, args_model, value_model, summary, effects, side_effect, idem):

@@ -18,13 +18,15 @@ class SupervisorInboxHistoryRequest:
         conversation_id (None | str | Unset):
         states (list[SupervisorInboxHistoryRequestStatesType0Item] | None | Unset):
         limit (int | Unset):  Default: 50.
-        before (float | None | Unset):
+        before (float | None | Unset): Exclusive epoch-second boundary; alone, a strict time filter.
+        before_id (None | str | Unset): Row id breaking ties at `before`; requires `before`.
     """
 
     conversation_id: None | str | Unset = UNSET
     states: list[SupervisorInboxHistoryRequestStatesType0Item] | None | Unset = UNSET
     limit: int | Unset = 50
     before: float | None | Unset = UNSET
+    before_id: None | str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         conversation_id: None | str | Unset
@@ -53,6 +55,12 @@ class SupervisorInboxHistoryRequest:
         else:
             before = self.before
 
+        before_id: None | str | Unset
+        if isinstance(self.before_id, Unset):
+            before_id = UNSET
+        else:
+            before_id = self.before_id
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update({})
@@ -64,6 +72,8 @@ class SupervisorInboxHistoryRequest:
             field_dict["limit"] = limit
         if before is not UNSET:
             field_dict["before"] = before
+        if before_id is not UNSET:
+            field_dict["before_id"] = before_id
 
         return field_dict
 
@@ -113,11 +123,21 @@ class SupervisorInboxHistoryRequest:
 
         before = _parse_before(d.pop("before", UNSET))
 
+        def _parse_before_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        before_id = _parse_before_id(d.pop("before_id", UNSET))
+
         supervisor_inbox_history_request = cls(
             conversation_id=conversation_id,
             states=states,
             limit=limit,
             before=before,
+            before_id=before_id,
         )
 
         return supervisor_inbox_history_request
