@@ -78,6 +78,14 @@ class DiscordInboundRouter:
         self._diagnostics.record(code)
         return f"ignored:{code}"
 
+    def preconditions(self):
+        """Share the current gateway admission state with reconnect recovery."""
+        return conversation_preconditions(
+            self._config,
+            cutover_status=self._cutover_status(),
+            outbox_bound=self._outbox_bound(),
+        )
+
     async def route(self, message: Any, *, bot_user_id: int | None, source: str = "gateway") -> str:
         """Escalations stop routing even on failure; conversations fail closed."""
         try:
@@ -102,11 +110,7 @@ class DiscordInboundRouter:
         try:
             observed = self.observe(message, bot_user_id=bot_user_id)
             discord = self._config.discord
-            preconditions = conversation_preconditions(
-                self._config,
-                cutover_status=self._cutover_status(),
-                outbox_bound=self._outbox_bound(),
-            )
+            preconditions = self.preconditions()
             classification_args = {
                 "preconditions": preconditions,
                 "configured_guild_id": discord.guild_id,
