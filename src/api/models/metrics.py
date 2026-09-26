@@ -12,6 +12,8 @@ honest gap into a 500.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel
 
 
@@ -174,6 +176,138 @@ class SamplerMetrics(BaseModel):
     collect_ms: float = 0
 
 
+class Histogram(BaseModel):
+    """Fixed millisecond buckets from src.metrics.histogram, merged by addition."""
+
+    kind: str = "hist"
+    counts: list[float] = []
+    count: float = 0
+    sum: float = 0
+    max: float = 0
+
+
+class LoopPerf(BaseModel):
+    """Event-loop drift observed by the registry's LoopLagProbe."""
+
+    drift: Histogram | None = None
+    probe_interval_ms: float | None = None
+
+
+class RoutePerf(BaseModel):
+    """Latency and status-class counters from the route middleware."""
+
+    latency: Histogram | None = None
+    status: dict[str, Any] = {}
+
+
+class StreamPerf(BaseModel):
+    """Handshake counters and open-stream gauge from the route middleware."""
+
+    handshake: Histogram | None = None
+    outcome: dict[str, Any] = {}
+    open: float | None = None
+
+
+class ApiPerf(BaseModel):
+    """Bounded route-template tables and totals from PerfRegistry.snapshot."""
+
+    all: Histogram | None = None
+    routes: dict[str, RoutePerf] = {}
+    streams: dict[str, StreamPerf] = {}
+    errors: dict[str, Any] = {}
+
+
+class PoolGauges(BaseModel):
+    """Local engine pool readings from metrics_pool_gauges, without a query."""
+
+    checked_out: float | None = None
+    overflow: float | None = None
+    size: float | None = None
+
+
+class DbPerf(BaseModel):
+    """Pool-wait and query observations from the engine's perf observers."""
+
+    pool_wait: Histogram | None = None
+    query: Histogram | None = None
+    counters: dict[str, Any] = {}
+    pool: PoolGauges = PoolGauges()
+
+
+class PressureEntry(BaseModel):
+    """One kernel PSI resource reading from the host reader."""
+
+    some_avg10: float | None = None
+    full_avg10: float | None = None
+
+
+class PressurePerf(BaseModel):
+    """HostSampler's kernel pressure readings, or null with a reason."""
+
+    cpu: PressureEntry | None = None
+    io: PressureEntry | None = None
+    memory: PressureEntry | None = None
+    reason: str | None = None
+
+
+class TestSlotsPerf(BaseModel):
+    """Test-slot occupancy from the host reader's resource semaphore snapshot."""
+
+    used: float | None = None
+    total: float | None = None
+    waiting: float | None = None
+    orphaned: float | None = None
+    reason: str | None = None
+
+
+class UngatedPerf(BaseModel):
+    """Host reader's process attribution counts and bounded worktree slot names."""
+
+    pytest_processes: float | None = None
+    unattributed: float | None = None
+    unattributed_slots: list[str] = []
+
+
+class HostPerf(BaseModel):
+    """Slow-tier HostSampler snapshot, including its cost and staleness."""
+
+    psi: PressurePerf = PressurePerf()
+    test_slots: TestSlotsPerf = TestSlotsPerf()
+    ungated: UngatedPerf = UngatedPerf()
+    host_ms: float | None = None
+    stale: bool = False
+    reason: str | None = None
+
+
+class RelayPerf(BaseModel):
+    """Dashboard-server relay deltas; unavailable until the relay is polled."""
+
+    available: bool = False
+    reason: str | None = None
+    http: Histogram | None = None
+    ws_handshake: Histogram | None = None
+    upstream_failures: dict[str, Any] = {}
+    relays_open: float | None = None
+
+
+class PerfSamplerCost(BaseModel):
+    """Instrumentation-only cost measured by MetricsSampler."""
+
+    perf_ms: float | None = None
+
+
+class PerfMetrics(BaseModel):
+    """MetricsSampler's daemon and dashboard-server performance blocks."""
+
+    enabled: bool = False
+    loop: LoopPerf = LoopPerf()
+    api: ApiPerf = ApiPerf()
+    db: DbPerf = DbPerf()
+    host: HostPerf = HostPerf()
+    relay: RelayPerf = RelayPerf()
+    sampler: PerfSamplerCost = PerfSamplerCost()
+
+
 class MetricsSample(BaseModel):
     """One point on every series.
 
@@ -193,6 +327,7 @@ class MetricsSample(BaseModel):
     throughput: ThroughputMetrics = ThroughputMetrics()
     merges_per_hour: float = 0
     sampler: SamplerMetrics = SamplerMetrics()
+    perf: PerfMetrics = PerfMetrics()
 
 
 class MetricsSeriesResponse(BaseModel):
