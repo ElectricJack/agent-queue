@@ -938,6 +938,90 @@ class ClaimQueryMixin:
         await self._after_release(out)
         return out
 
+    async def release_displaced_pool_claim(self, session_id: str, *, now: float) -> bool:
+        """Detach a draining pool session from a task it no longer owns.
+
+        A closed task may be requeued and claimed elsewhere before an old
+        session is drained.  In that case the old task pointer is history,
+        not authority to transition the new holder's task.  Lock in the same
+        session-then-task order as claim release so a concurrent claim cannot
+        change the ownership proof underneath this cleanup.
+        """
+        async with self.immediate() as conn:
+            row = (
+                await conn.execute(
+                    select(sessions)
+                    .where(sessions.c.id == session_id)
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            if (
+                row is None
+                or row["lifecycle"] != "pool"
+                or row["desired_state"] != "stopped"
+                or row["task_id"] is None
+            ):
+                return False
+            task_id, agent_id = row["task_id"], row["agent_id"]
+            task = (
+                await conn.execute(
+                    select(tasks.c.assigned_agent_id, tasks.c.claim_epoch)
+                    .where(tasks.c.id == task_id)
+                    .with_for_update()
+                )
+            ).mappings().one_or_none()
+            if task is not None and (
+                task["assigned_agent_id"] == agent_id
+                and (row["last_claim_epoch"] is None
+                     or task["claim_epoch"] == row["last_claim_epoch"])
+            ):
+                return False
+            # An attached integration writer keeps the old session and slot
+            # as its recovery evidence even after the task status changes.
+            if agent_id and (
+                await conn.execute(
+                    select(integration_branch_owners.c.id)
+                    .join(workspaces, integration_branch_owners.c.workspace_id == workspaces.c.id)
+                    .where(
+                        integration_branch_owners.c.session_id == session_id,
+                        integration_branch_owners.c.handoff_state.in_(
+                            ("attached", "handoff_pending")
+                        ),
+                        workspaces.c.locked_by_agent_id == agent_id,
+                    )
+                    .with_for_update()
+                )
+            ).first():
+                return False
+            await conn.execute(
+                update(sessions)
+                .where(sessions.c.id == session_id)
+                .values(task_id=None, claim_phase=None, claim_phase_at=None,
+                        last_claim_result="displaced")
+            )
+            await self.finish_task_session_attempt(
+                session_id, task_id=task_id, ended_at=now,
+                end_reason="displaced", conn=conn,
+            )
+            # Only remove stale references on the old worker.  A successor
+            # may already be running the same task on another worker.
+            if agent_id and (
+                task is None
+                or task["assigned_agent_id"] != agent_id
+            ):
+                await conn.execute(
+                    update(agents)
+                    .where(agents.c.id == agent_id, agents.c.current_task_id == task_id)
+                    .values(state=AgentState.IDLE.value, current_task_id=None)
+                )
+                await conn.execute(
+                    update(workspaces)
+                    .where(workspaces.c.locked_by_agent_id == agent_id,
+                           workspaces.c.locked_by_task_id == task_id)
+                    .values(locked_by_task_id=None)
+                )
+            return True
+
     async def release_historical_pool_claim(
         self,
         conn,
