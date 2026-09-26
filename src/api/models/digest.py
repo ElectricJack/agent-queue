@@ -71,6 +71,19 @@ class DiscordCutoverStatus(BaseModel):
     conflicts: list[str] = []
 
 
+class DiscordIntakeDiagnostics(BaseModel):
+    """Inbound Discord messages the gateway ignored, counted by reason code.
+
+    In-memory and sliding: it covers the last ``window_seconds`` and is empty
+    after a restart.  ``available`` is false when no gateway is connected.
+    """
+
+    available: bool = False
+    window_seconds: int = 3600
+    total: int = 0
+    ignored: dict[str, int] = {}
+
+
 class DigestStatusResponse(BaseModel):
     success: bool = True
     destination: str
@@ -86,6 +99,7 @@ class DigestStatusResponse(BaseModel):
     open_escalations: int = 0
     pending_escalation_deliveries: int = 0
     cutover: DiscordCutoverStatus | None = None
+    intake: DiscordIntakeDiagnostics = DiscordIntakeDiagnostics()
     settings_errors: list[str] = []
     warnings: list[str] = []
 

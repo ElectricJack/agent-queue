@@ -503,6 +503,58 @@ class TestStatus:
         assert after["delivery_health"]["retry"] == 0
         assert after["recent_windows"] == []
 
+    async def test_status_reports_the_intake_ignore_counts(self, env):
+        from types import SimpleNamespace
+
+        from src.discord.intake_diagnostics import IgnoreCounter
+
+        handler, _db, _config = env
+        counter = IgnoreCounter(clock=lambda: 5.0)
+        counter.record("not_in_thread")
+        counter.record("not_in_thread")
+        counter.record("author_not_allowlisted")
+        handler.orchestrator._discord_bot = SimpleNamespace(
+            _cutover_report=None, _intake_diagnostics=counter
+        )
+        result = await handler.execute("digest_status", {"now": NOW})
+        assert result["intake"] == {
+            "available": True,
+            "window_seconds": 3600,
+            "total": 3,
+            "ignored": {"author_not_allowlisted": 1, "not_in_thread": 2},
+        }
+
+    async def test_status_without_a_bot_reports_an_unavailable_intake_block(self, env):
+        handler, _db, _config = env
+        handler.orchestrator._discord_bot = None
+        result = await handler.execute("digest_status", {"now": NOW})
+        assert result["intake"] == {
+            "available": False,
+            "window_seconds": 3600,
+            "total": 0,
+            "ignored": {},
+        }
+        # The fallback is a copy: a caller mutating one result cannot corrupt the next.
+        result["intake"]["ignored"]["x"] = 1
+        again = await handler.execute("digest_status", {"now": NOW})
+        assert again["intake"]["ignored"] == {}
+
+    async def test_the_intake_block_validates_against_the_response_model(self, env):
+        from types import SimpleNamespace
+
+        from src.api.models.digest import DigestStatusResponse
+        from src.discord.intake_diagnostics import IgnoreCounter
+
+        handler, _db, _config = env
+        counter = IgnoreCounter(clock=lambda: 5.0)
+        counter.record("bot_author")
+        handler.orchestrator._discord_bot = SimpleNamespace(
+            _cutover_report=None, _intake_diagnostics=counter
+        )
+        result = await handler.execute("digest_status", {"now": NOW})
+        model = DigestStatusResponse.model_validate(result)
+        assert model.model_dump()["intake"] == result["intake"]
+
 
 class TestSurface:
     def test_both_commands_are_registered_with_schemas_and_a_category(self):
