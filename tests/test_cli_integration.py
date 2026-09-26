@@ -190,6 +190,16 @@ def _client(result):
             {"task_id": "t", "dry_run": True},
         ),
         (
+            ["rebind-repair", "--task-id", "repair-t", "--dry-run"],
+            "integration_rebind_repair",
+            {"task_id": "repair-t", "dry_run": True},
+        ),
+        (
+            ["rebind-repair", "--task-id", "repair-t", "--apply", "--head", "a" * 40],
+            "integration_rebind_repair",
+            {"task_id": "repair-t", "dry_run": False, "expected_head_sha": "a" * 40},
+        ),
+        (
             [
                 "rebind-reused-identity", "--task-id", "t", "--apply",
                 "--origin-id", "o1", "--origin-id", "o2",
