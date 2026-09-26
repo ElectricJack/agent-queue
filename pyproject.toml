@@ -153,6 +153,12 @@ mcp = [
 test-selection = [
     "pytest-impacted==0.30.0",
 ]
+test-selection-fast = [
+    # Opt in with --only-binary=:all: on platforms with a compatible Rust wheel.
+    # The upstream fast extra leaves the extension version unconstrained.
+    "pytest-impacted[fast]==0.30.0",
+    "pytest-impacted-rs==0.30.0",
+]
 cli = [
     # 8.3.3 addresses PYSEC-2026-2132.
     "click>=8.3.3",
@@ -182,6 +188,7 @@ dev = [
     "wheel>=0.38.1",
     # The test-selection extra's engine, so CI runs the fixture evaluation in
     # tests/test_selection_static_impact.py (which checks the two pins agree).
+    # Keep the Python fallback here: CI must not require a Rust source build.
     # Its wheel also installs top-level ``tests`` and ``docs`` packages into
     # site-packages: this checkout's ``tests`` wins only while the repository
     # root precedes site-packages on sys.path, as pytest arranges.
