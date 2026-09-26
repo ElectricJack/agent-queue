@@ -22,12 +22,14 @@ from src.agent_waits import (
     WaitError,
     WaitResolution,
     resolve_wait,
+    job_wait_deadline,
 )
 from src.database.tables import (
     agent_waits as waits,
     agents,
     archived_tasks,
     messages,
+    jobs,
     projects,
     sessions,
     task_completion_records,
@@ -221,10 +223,62 @@ class AgentWaitQueriesMixin:
                 .limit(1)
             )
             return ProducerObservation(available=exists is not None)
-        # Job implementation plugs into this same transaction boundary later.
+        if row["kind"] == "job":
+            job = (
+                (await conn.execute(select(jobs).where(jobs.c.id == match["job_id"])))
+                .mappings()
+                .first()
+            )
+            if not job or job["project_id"] != row["project_id"]:
+                return ProducerObservation(available=False)
+            if job["owner_kind"] == "task" and not await conn.scalar(
+                select(tasks.c.id).where(tasks.c.id == job["task_id"])
+            ):
+                return ProducerObservation(available=False)
+            if row["owner_kind"] == "task" and (
+                job["owner_kind"] != "task" or job["owner_id"] != row["owner_id"]
+            ):
+                return ProducerObservation(available=False)
+            from src.jobs.policy import TERMINAL
+            from src.jobs.result import bounded
+
+            ref = f"job:{job['id']}"
+            if job["state"] not in TERMINAL:
+                return ProducerObservation(result_ref=ref)
+            result = job["result"] or {}
+            digest = {
+                key: result.get(key)
+                for key in (
+                    "outcome",
+                    "exit_code",
+                    "signal",
+                    "infra_reason",
+                    "summary",
+                    "result_hash",
+                )
+            }
+            # Leave room for JSON escaping while preserving the failure-first prefix.
+            digest["excerpt"] = bounded(result.get("excerpt", ""), 400)
+            digest.update(job_id=job["id"], state=job["state"])
+            return ProducerObservation(completed_at=job["ended_at"], result_ref=ref, digest=digest)
         return ProducerObservation(available=False)
 
     async def _validate_wait_source(self, conn, row: dict) -> None:
+        if row["kind"] == "job":
+            job = (
+                (await conn.execute(select(jobs).where(jobs.c.id == row["match"]["job_id"])))
+                .mappings()
+                .first()
+            )
+            if job and (
+                job["project_id"] != row["project_id"]
+                or (
+                    row["owner_kind"] == "task"
+                    and (job["owner_kind"] != "task" or job["owner_id"] != row["owner_id"])
+                )
+            ):
+                raise WaitError("out_of_scope", "job is not authorized for this owner")
+            return
         if row["kind"] == "task":
             for table in (tasks, archived_tasks):
                 project = await conn.scalar(
@@ -265,11 +319,18 @@ class AgentWaitQueriesMixin:
         identity: dict,
         kind: str,
         match: dict,
-        deadline_at: float,
+        deadline_at: float | None,
         idempotency_key: str,
         now: float,
     ) -> dict:
-        """Also usable by future job submission inside its producer transaction."""
+        """Register and snapshot the producer in the caller's transaction."""
+        if kind == "job":
+            # Preserve requested timeout policy so default-budget replays stay stable
+            # as queue time elapses, and cannot alias a differently bounded request.
+            match = {
+                **match,
+                "timeout": None if deadline_at is None else round(deadline_at - now, 5),
+            }
         owner = await self._wait_owner(conn, **identity)
         old = (
             (
@@ -290,12 +351,25 @@ class AgentWaitQueriesMixin:
             if (
                 old["kind"] != kind
                 or old["match"] != match
-                or abs((old["deadline_at"] - old["created_at"]) - (deadline_at - now)) > 0.00001
+                or (
+                    deadline_at is not None
+                    and abs((old["deadline_at"] - old["created_at"]) - (deadline_at - now))
+                    > 0.00001
+                )
             ):
                 raise WaitError(
                     "wait.idempotency_conflict", "key already names a different condition"
                 )
             return dict(old)
+        if deadline_at is None:
+            if kind != "job":
+                raise WaitError("wait.invalid", "deadline required")
+            job = (
+                (await conn.execute(select(jobs).where(jobs.c.id == match["job_id"])))
+                .mappings()
+                .first()
+            )
+            deadline_at = job_wait_deadline(dict(job), now) if job else now + 300
         if owner["owner_kind"] == "task":
             active = await conn.scalar(
                 select(waits.c.id)
@@ -548,20 +622,25 @@ class AgentWaitQueriesMixin:
             row = (
                 (
                     await conn.execute(
-                        select(waits).where(
+                        select(waits)
+                        .where(
                             waits.c.session_id == session.id,
                             waits.c.session_instance_token == session.instance_token,
                             waits.c.owner_kind == "task",
                             waits.c.owner_id == session.task_id,
                             waits.c.claim_epoch == claim_epoch,
-                        ).order_by(
+                        )
+                        .order_by(
                             case((waits.c.state == "active", 0), else_=1),
                             waits.c.wait_resumed_at.desc().nulls_last(),
                             waits.c.created_at.desc(),
                             waits.c.id,
-                        ).limit(1)
+                        )
+                        .limit(1)
                     )
-                ).mappings().first()
+                )
+                .mappings()
+                .first()
             )
             if row and await self._blocking_wait_current(conn, dict(row)):
                 return dict(row)

@@ -100,17 +100,20 @@ async def test_register_rejects_forged_owner_stale_epoch_and_unbounded_wait(comm
     assert result.get("error"), result
 
 
-async def test_foreign_target_and_missing_job_adapter(commands):
-    for kind, ref, code in (
-        ("task", "foreign", "out_of_scope"),
-        ("job", "job-id", "wait.adapter_unavailable"),
-    ):
+async def test_foreign_target_and_missing_job_source(commands):
+    for kind, ref, code in (("task", "foreign", "out_of_scope"),):
         result = await execute(
             commands,
             "wait_register",
             dict(kind=kind, ref=ref, idempotency_key="key", claim_epoch=1),
         )
         assert result["error_code"] == code
+    missing = await execute(
+        commands,
+        "wait_register",
+        dict(kind="job", ref="missing", idempotency_key="job", claim_epoch=1),
+    )
+    assert missing["success"] and missing["wait"]["digest"]["reason"] == "source_unavailable"
 
 
 async def test_history_across_epochs_remains_readable_but_not_cancellable(commands, env):

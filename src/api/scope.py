@@ -35,6 +35,12 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # the row to ``scope.session_id`` and ignores any session named in
         # the payload.
         "subagent_event",
+        "job_submit",
+        "job_get",
+        "job_list",
+        "job_cancel",
+        "job_result",
+        "job_logs",
         "wait_register",
         "wait_get",
         "wait_list",

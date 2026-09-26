@@ -19,12 +19,12 @@ def _execute(ctx, command, params):
 
 @cli.group("wait")
 def wait():
-    """Durable task, message and timer waits with bounded deadlines."""
+    """Durable job, task, message and timer waits with bounded deadlines."""
 
 
 @wait.command("register")
 @click.option("--kind", type=click.Choice(["job", "task", "message", "timer"]), required=True)
-@click.option("--ref", default=None, help="Task ID or authorized message thread ID.")
+@click.option("--ref", default=None, help="Job ID, task ID or authorized message thread ID.")
 @click.option("--after-seq", type=click.IntRange(min=0), default=None)
 @click.option("--due-at", type=float, default=None, help="Timer due instant in UTC epoch seconds.")
 @click.option("--timeout", type=click.FloatRange(min=0, min_open=True, max=86400), default=None)

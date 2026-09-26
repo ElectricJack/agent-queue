@@ -593,7 +593,8 @@
         "tests/test_jobs_output.py",
         "tests/test_jobs_queries.py",
         "tests/test_jobs_recovery.py",
-        "tests/test_jobs_runner.py"
+        "tests/test_jobs_runner.py",
+        "tests/test_jobs_waits.py"
       ]
     },
     "memory-facts": {
@@ -1242,7 +1243,7 @@
       ]
     }
   },
-  "digest": "sha256:15aa737d8809898d448b0211b5b6a68cddab73497d171b1afeab2c82d2f475e3",
+  "digest": "sha256:b88fa5b408009fdc621212c11fc19cc48bbcf874352d48c15915904eebb0c70e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7308,6 +7309,38 @@
         "parametrize"
       ],
       "summary": "Detached runner crash boundary tested with explicit artifact barriers."
+    },
+    "tests/test_jobs_waits.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.api.codegen",
+        "src.api.models",
+        "src.api.models.job",
+        "src.api.scope",
+        "src.api.spec",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.auto_commands",
+        "src.cli.exceptions",
+        "src.cli.jobs",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.contracts.job",
+        "src.config",
+        "src.database.tables",
+        "src.jobs.result",
+        "src.mcp_registration",
+        "src.models",
+        "src.profiles.parser"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Atomic producer/pin/wait rollback, replay, resolution and public transports."
     },
     "tests/test_known_tools.py": {
       "areas": [

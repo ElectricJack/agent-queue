@@ -1,11 +1,10 @@
 # Managed jobs: phase 2 execution substrate
 
 Implements plan (2) of the approved 2026-09-24 exclusive job queue and managed
-long-running command specs in the agent-queue project vault. This phase leaves
-`resources.jobs.enabled: false`. Public CLI/MCP/typed API registration, atomic
-job waits and completion delivery belong to phase 3; publisher and finite stream
-adapters belong to phase 4. The phase 2 `CommandHandler` mixin is internal and
-is intentionally excluded from those surfaces. There is one executor and one
+long-running command specs in the agent-queue project vault. Phases 2 and 3 leave
+`resources.jobs.enabled: false`. Phase 3 exposes scoped CLI/MCP/typed API
+commands, atomic job waits and existing wait-result delivery; publisher and finite
+stream adapters belong to phase 4. The internal reconciler remains excluded from public transports. There is one executor and one
 identity: `jobs.id`, `AQ_JOB_ID`, and `<data_dir>/runs/<uuid>/`.
 
 `src/jobs/service.py` orders accepted jobs by aged band, timestamp and id. An
@@ -22,7 +21,8 @@ Reusing the same owner/idempotency key and request returns the original row;
 changing the request is refused. Quotas and output reservations serialize in
 PostgreSQL. Terminal transitions use state-version CAS, persist immutable result
 v1 and append `job:<id>:terminal` to `job_outbox` in the same transaction. The
-outbox is available to the later wait/delivery adapter; phase 2 sends no nudges.
+job adapter scans durable terminal state, and the existing wait outbox sends
+one result pointer through the message engine.
 
 Workspace pins have no expiry. Their workspace-row count fences acquisitions,
 releases and deletion; a transaction advisory lock serializes pin creation with
@@ -52,3 +52,22 @@ Bounded reconciliation sweeps retain terminal logs for 14 days and results for
 90 days. Output reservations use a 2 GiB default host budget and evict terminal
 logs before refusing admission. Active output is never evicted. Task deletion
 revokes result/log access; owner termination cancels execution before cleanup.
+
+
+Phase 3 registers `job_submit|get|list|cancel|result|logs` contracts and grants in
+worker templates. `aq job submit --wait` and `aq test --aq-detach --aq-wait`
+commit the job, pin, output reservation and wait together. Replays retain one
+job/pin/wait, including after terminal completion. Job waits snapshot already
+terminal producers and arbitrate using `ended_at`, so a late scan preserves
+completion at or before the deadline. Default deadlines follow the remaining
+queue/run budgets plus 300 seconds, capped at 24 hours. Explicit timeout policy
+is retained in the typed match for stable replay checks. Expiry and wait
+cancellation never implicitly cancel execution or release pins.
+
+Submission locks session/task before the global quota and workspace locks;
+ordinary submissions use the same task-before-quota order. A refused wait rolls
+back all new producer state. A worker can observe only jobs belonging to its
+task; supervisors can subscribe within their project. Terminal digests retain
+actual failure/cancellation/lost outcomes and point to `aq job result ID`.
+Installed worker templates need the usual grants reseed; see the
+[wait guide](../../guides/agent-waits.md). No schema revision is needed in phase 3.

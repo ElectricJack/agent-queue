@@ -544,6 +544,22 @@ from .intelligence_class_model import IntelligenceClassModel
 from .intelligence_class_model_mapping import IntelligenceClassModelMapping
 from .intelligence_class_reference import IntelligenceClassReference
 from .intelligence_class_reference_kind import IntelligenceClassReferenceKind
+from .job_error_response import JobErrorResponse
+from .job_error_response_result_type_0 import JobErrorResponseResultType0
+from .job_get_args import JobGetArgs
+from .job_list_args import JobListArgs
+from .job_list_response import JobListResponse
+from .job_list_response_jobs_item import JobListResponseJobsItem
+from .job_logs_args import JobLogsArgs
+from .job_logs_response import JobLogsResponse
+from .job_logs_response_chunks_item import JobLogsResponseChunksItem
+from .job_logs_response_gaps_item import JobLogsResponseGapsItem
+from .job_response import JobResponse
+from .job_response_job import JobResponseJob
+from .job_result_args import JobResultArgs
+from .job_result_response import JobResultResponse
+from .job_result_response_result_type_0 import JobResultResponseResultType0
+from .job_submit_args import JobSubmitArgs
 from .layout_edge import LayoutEdge
 from .layout_job import LayoutJob
 from .layout_node import LayoutNode
@@ -1959,6 +1975,22 @@ __all__ = (
     "IntelligenceClassModelMapping",
     "IntelligenceClassReference",
     "IntelligenceClassReferenceKind",
+    "JobErrorResponse",
+    "JobErrorResponseResultType0",
+    "JobGetArgs",
+    "JobListArgs",
+    "JobListResponse",
+    "JobListResponseJobsItem",
+    "JobLogsArgs",
+    "JobLogsResponse",
+    "JobLogsResponseChunksItem",
+    "JobLogsResponseGapsItem",
+    "JobResponse",
+    "JobResponseJob",
+    "JobResultArgs",
+    "JobResultResponse",
+    "JobResultResponseResultType0",
+    "JobSubmitArgs",
     "LayoutEdge",
     "LayoutJob",
     "LayoutNode",

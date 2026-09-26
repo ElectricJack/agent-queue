@@ -6,10 +6,13 @@ tags: [guide, agents, waits]
 
 A wait records one bounded condition for a task or a named supervisor. It
 keeps the task `IN_PROGRESS` and retains its claim, workspace and pool seat.
-Registration returns immediately. Task, message and timer adapters are available;
-job registration returns `wait.adapter_unavailable` until the job adapter lands.
+Registration returns immediately. Job, task, message and timer adapters are available.
+Managed job admission remains opt-in with `resources.jobs.enabled: true`.
 
 ```bash
+aq job submit --preset test --wait --idempotency-key validation -- tests/test_agent_waits.py
+aq test --aq-detach --aq-wait --aq-idempotency-key validation-tests tests/test_agent_waits.py
+aq wait register --kind job --ref JOB_ID --idempotency-key existing-job
 aq wait register --kind task --ref other-task --timeout 7200 --idempotency-key review-result
 aq wait register --kind message --ref thread-id --after-seq 42 --idempotency-key reply
 aq wait register --kind timer --due-at 1800000060 --timeout 120 --idempotency-key reminder
@@ -18,8 +21,19 @@ aq wait list --json
 aq wait cancel WAIT_ID
 ```
 
+Job submission with `--wait` commits the job, workspace pin and blocking wait
+in one transaction. An existing active wait rejects the submission without
+leaving a job or reservation behind. Repeating the same submission key returns
+the same job and wait; changing arguments or the wait option is refused. The CLI
+prints its key before contacting the daemon, so an ambiguous response can be
+retried with that key. It never starts a local fallback. `aq run --preset ...`
+is an alias for the same submit command. Synchronous `aq test` keeps its existing
+exit-code behavior; only `--aq-detach` submits to the queue.
+
 `--due-at` is UTC epoch seconds. A deadline is mandatory internally: omitted
-`--timeout` defaults to two hours; the maximum is 24 hours. Timer due times
+`--timeout` defaults to two hours for task/message/timer waits. A job wait defaults
+to its remaining queue budget plus run budget plus 300 seconds, or the remaining
+run budget plus grace after it starts. All deadlines are capped at 24 hours. Timer due times
 must fall at or before the deadline. A message wait requires an existing thread
 the owner participates in, and matches only incoming messages addressed to that
 owner with a server `created_seq` greater than `--after-seq`. Reading, delivering
@@ -37,7 +51,12 @@ lease exemptions never follow an old epoch into a new claim.
 The daemon scans at most 100 rows per cycle, rotates past unresolved conditions,
 and reads durable producer state, including archived tasks. It preserves actual
 task status and close outcome. Completion at or before the deadline wins even if
-observed later. Missing sources yield `source_unavailable`; deadlines yield an
+observed later. Job waits return the actual terminal state, outcome, exit code, infrastructure
+reason and a bounded failure-first excerpt with a `job:ID` result reference.
+Read the full immutable result with `aq job result ID`; read retained output with
+`aq job logs ID`. Workers may wait only on their own task's jobs, while named
+supervisors may subscribe to jobs within their project. An unrelated job grants
+no inactivity exemption. Missing sources yield `source_unavailable`; deadlines yield an
 explicit `expired` result. Neither expiry nor cancellation changes the task or
 cancels its producer. Claim turnover or manual pause cancels the old exemption,
 retains its result, and never unpauses the task.
@@ -95,7 +114,8 @@ active waits through the command boundary, and restore ordinary lease baselines.
 Never discard active exemptions without handling their results.
 
 Worker template grants include `wait_register`, `wait_get`, `wait_list`, and
-`wait_cancel`. Installed templates are write-if-absent; operators check drift with
+`wait_cancel`, plus `job_submit`, `job_get`, `job_list`, `job_cancel`,
+`job_result`, and `job_logs`. Installed templates are write-if-absent; operators check drift with
 `aq doctor --check profiles.system_drift` and merge grants without replacing their
 edits:
 
