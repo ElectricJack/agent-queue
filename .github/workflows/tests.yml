@@ -52,8 +52,25 @@ jobs:
         suite:
           - name: cli-conformance
             command: aq test tests/test_cli_inventory.py tests/test_cli_conformance.py
-          - name: default
-            command: pytest tests/ -n auto --dist loadfile
+          # Each shard selects a disjoint, timing-balanced subset before xdist
+          # distributes its files across four workers. Refresh .test_durations
+          # with the command documented in docs/contributing/ci.md.
+          - name: default-1/8
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 1 --splitting-algorithm least_duration
+          - name: default-2/8
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 2 --splitting-algorithm least_duration
+          - name: default-3/8
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 3 --splitting-algorithm least_duration
+          - name: default-4/8
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 4 --splitting-algorithm least_duration
+          - name: default-5/8
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 5 --splitting-algorithm least_duration
+          - name: default-6/8
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 6 --splitting-algorithm least_duration
+          - name: default-7/8
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 7 --splitting-algorithm least_duration
+          - name: default-8/8
+            command: pytest tests/ -n 4 --dist loadfile --splits 8 --group 8 --splitting-algorithm least_duration
           - name: migration-and-slow
             command: pytest tests/ -n auto --dist loadfile -m "migration or slow"
           - name: postgres-integration

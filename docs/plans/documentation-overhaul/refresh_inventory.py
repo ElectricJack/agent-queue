@@ -657,6 +657,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "End-to-end smoke driver."),
     ("scripts/**", "contributing", "docs/contributing/scripts.md", SUPPORTING,
      "Repository script."),
+    (".test_durations", "contributing", "docs/contributing/ci.md", SUPPORTING,
+     "Pytest duration data used to balance the default CI shards."),
     (".github/workflows/**", "contributing", "docs/contributing/ci.md", SUPPORTING,
      "GitHub Actions workflow."),
     (".github/**", "contributing", "docs/contributing/ci.md", SUPPORTING,

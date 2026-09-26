@@ -1,5 +1,8 @@
 """Full CI runs on pull requests and integration boundaries, never on a push to main."""
+import json
+import math
 import re
+import shlex
 from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
@@ -143,3 +146,37 @@ def test_test_job_checks_out_the_exact_event_revision_read_only():
     assert 'test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"' in text
     assert workflow()['permissions'] == {'contents': 'read'}
     assert list(workflow()['jobs']) == ['test']
+
+
+def test_default_shards_cover_each_group_once_with_four_workers():
+    suites = workflow()["jobs"]["test"]["strategy"]["matrix"]["suite"]
+    shards = [suite for suite in suites if suite["name"].startswith("default")]
+    assert len(shards) == 8
+    groups = []
+    for shard in shards:
+        args = shlex.split(shard["command"])
+        assert args[:2] == ["pytest", "tests/"]
+        assert args[args.index("-n") + 1] == "4"
+        assert args[args.index("--dist") + 1] == "loadfile"
+        assert args[args.index("--splits") + 1] == "8"
+        assert args[args.index("--splitting-algorithm") + 1] == "least_duration"
+        assert "-m" not in args  # Inherit the same default marker selection on every shard.
+        group = int(args[args.index("--group") + 1])
+        assert shard["name"] == f"default-{group}/8"
+        groups.append(group)
+    assert sorted(groups) == list(range(1, 9))
+    assert len({suite["name"] for suite in suites}) == len(suites)
+    assert {suite["name"] for suite in suites} - {shard["name"] for shard in shards} == {
+        "cli-conformance",
+        "migration-and-slow",
+        "postgres-integration",
+    }
+
+
+def test_committed_shard_timings_are_valid_pytest_split_data():
+    durations = json.loads(Path(".test_durations").read_text())
+    assert durations
+    for nodeid, duration in durations.items():
+        assert nodeid.startswith("tests/") and "::" in nodeid
+        assert isinstance(duration, (int, float)) and not isinstance(duration, bool)
+        assert math.isfinite(duration) and duration >= 0
