@@ -321,7 +321,7 @@ async def test_the_orchestrator_cycle_step_delivers_a_real_completion(db):
 
     class Cycle(MonitoringMixin):
         config = _Config
-        command_handler = Handler()
+        _command_handler = Handler()
 
     await db.transition_task(CHILD, TaskStatus.COMPLETED, context="test", force=True)
     await Cycle()._reconcile_playbook_child_tasks()

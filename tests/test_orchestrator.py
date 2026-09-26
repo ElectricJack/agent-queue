@@ -387,6 +387,80 @@ async def _run_cycle_and_wait(orch):
     await orch.wait_for_running_tasks()
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+@pytest.mark.parametrize("child_completed", [True, False])
+async def test_session_cycle_playbook_sweeps_use_the_installed_handler(
+    orch, monkeypatch, enabled, child_completed
+):
+    """Real waits settle through the cycle's child and deadline sweeps."""
+    import time
+
+    from src.playbooks.run_state import RunLifecycle
+    from tests.test_child_task_reconciler import (
+        CHILD,
+        delegate_transitions,
+        suspended_on_child,
+    )
+
+    await orch.db.create_project(Project(id="p", name="Project"))
+    reconciler, run_id, adapter = await suspended_on_child(orch.db, timeout_seconds=60)
+    handler = CommandHandler(orch, orch.config)
+    monkeypatch.setattr(handler, "_v2_engine", lambda: reconciler._engine)
+    orch.set_command_handler(handler)
+    assert not hasattr(orch, "command_handler")
+    orch.config.playbooks.enabled = enabled
+    # This helper's clock is in 1970. Defer unrelated retention so it does
+    # not collect the resumed run before we inspect its durable outcome.
+    orch._last_playbook_retention_sweep = time.time()
+    # The durable wait is overdue in both cases. A settled child must take
+    # precedence over the deadline when both sweeps run in the same tick.
+    if child_completed:
+        await orch.db.transition_task(CHILD, TaskStatus.COMPLETED, context="test", force=True)
+
+    await orch.run_one_cycle()
+
+    stored = await orch.db.load_run(run_id)
+    if not enabled:
+        assert stored.lifecycle is RunLifecycle.PAUSED
+        assert stored.wait is not None
+        assert len(await orch.db.list_active(run_id)) == 1
+        assert delegate_transitions(await orch.db.list_receipts(run_id)) == []
+    else:
+        expected = RunLifecycle.COMPLETED if child_completed else RunLifecycle.FAILED
+        assert stored.lifecycle is expected
+        assert stored.wait is None
+        assert await orch.db.list_active(run_id) == []
+        edge = "completed" if child_completed else "timed_out"
+        assert delegate_transitions(await orch.db.list_receipts(run_id)) == [f"r::delegate::{edge}"]
+        receipt_count = len(await orch.db.list_receipts(run_id))
+        await orch.run_one_cycle()
+        assert len(await orch.db.list_receipts(run_id)) == receipt_count
+    assert adapter.names.count("create_task") == 1
+
+
+async def test_session_cycle_playbook_sweep_failures_do_not_stop_housekeeping(
+    orch, monkeypatch, caplog
+):
+    handler = CommandHandler(orch, orch.config)
+    child_sweep = AsyncMock(side_effect=RuntimeError("child scan unavailable"))
+    timeout_sweep = AsyncMock(side_effect=RuntimeError("deadline scan unavailable"))
+    monkeypatch.setattr(handler, "reconcile_playbook_child_tasks", child_sweep)
+    monkeypatch.setattr(handler, "check_paused_playbook_timeouts", timeout_sweep)
+    retention = AsyncMock()
+    monkeypatch.setattr(orch, "_sweep_playbook_v2_retention", retention)
+    orch.set_command_handler(handler)
+    orch.config.playbooks.enabled = True
+
+    await orch.run_one_cycle()
+
+    child_sweep.assert_awaited_once_with()
+    timeout_sweep.assert_awaited_once_with()
+    retention.assert_awaited_once_with()
+    assert "Playbook child-task reconciliation failed: child scan unavailable" in caplog.text
+    assert "Paused playbook timeout sweep failed: deadline scan unavailable" in caplog.text
+    assert "Scheduler cycle error" not in caplog.text
+
+
 async def test_scheduler_cycles_continue_while_workspace_scan_is_pending(orch, tmp_path):
     from src.workspace_spec_watcher import WorkspaceSpecWatcher
 

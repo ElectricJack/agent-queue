@@ -472,7 +472,7 @@ async def test_released_handoff_recovers_after_crash_without_touching_a_new_hold
             description="",
         )
     )
-    result = await orchestrator.command_handler.execute(
+    result = await orchestrator._command_handler.execute(
         "integration_transfer_owner",
         {
             "target": {"repository_id": "repo", "branch": "aq/parent"},
@@ -1144,7 +1144,7 @@ async def test_public_transfer_recovers_a_stopped_stale_pool_writer(
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
 
-    result = await orchestrator.command_handler.execute(
+    result = await orchestrator._command_handler.execute(
         "integration_transfer_owner",
         {
             "target": {"repository_id": "repo", "branch": "aq/parent"},
@@ -1944,7 +1944,7 @@ async def test_stopped_verifier_recovery_preserves_detached_published_baseline(
     orchestrator.git.aget_current_branch = AsyncMock(side_effect=current_branch)
     orchestrator.git._arun_unlocked = AsyncMock(side_effect=run)
     if published:
-        result = await orchestrator.command_handler.execute("integration_transfer_owner", {
+        result = await orchestrator._command_handler.execute("integration_transfer_owner", {
             "target": {"repository_id": "repo", "branch": "aq/parent"},
             "expected_token": 4, "next_owner_id": "task", "next_role": "worker",
         })

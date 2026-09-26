@@ -81,7 +81,7 @@ async def orch(request, tmp_path):
     o.git.acheck_pr_merged = AsyncMock(return_value=False)
     o.bus = MagicMock()
     o.bus.emit = AsyncMock()
-    o.command_handler = CommandHandler(o, cfg)
+    o.set_command_handler(CommandHandler(o, cfg))
     await db.create_project(Project(
         id="p1", name="P1", repo_default_branch="main",
         repo_url="https://github.com/o/r.git",
@@ -123,7 +123,7 @@ async def test_merge_to_a_feature_branch_is_labelled_and_recorded(orch):
     orch.git.amerge_pr = AsyncMock(return_value={"success": True, "sha": "abc", "error": None})
     orch.git.apr_base_ref = AsyncMock(return_value="feature/pkg4-core")
 
-    result = await orch.command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
+    result = await orch._command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
 
     assert result["success"] is True
     assert result["base"] == "feature/pkg4-core"
@@ -138,7 +138,7 @@ async def test_merge_to_the_default_branch_carries_no_warning(orch):
     orch.git.amerge_pr = AsyncMock(return_value={"success": True, "sha": "abc", "error": None})
     orch.git.apr_base_ref = AsyncMock(return_value="main")
 
-    result = await orch.command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
+    result = await orch._command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
 
     assert result["merged_to_default"] is True
     assert "note" not in result
@@ -151,7 +151,7 @@ async def test_unknown_base_does_not_fail_the_merge(orch):
     orch.git.amerge_pr = AsyncMock(return_value={"success": True, "sha": "abc", "error": None})
     orch.git.apr_base_ref = AsyncMock(return_value=None)
 
-    result = await orch.command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
+    result = await orch._command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
 
     assert result["success"] is True
     assert "base" not in result
@@ -165,7 +165,7 @@ async def test_a_failed_merge_records_nothing(orch):
     )
     orch.git.apr_base_ref = AsyncMock(return_value="feature/pkg4-core")
 
-    result = await orch.command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
+    result = await orch._command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
 
     assert result["success"] is False
     assert await orch.db.get_task_meta("t1", "pr_base") is None
@@ -178,7 +178,7 @@ async def test_identity_validation_failure_fails_closed_before_merging(orch):
     orch.git.amerge_pr = AsyncMock()
     orch.git.apr_base_ref = AsyncMock(return_value="main")
 
-    result = await orch.command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
+    result = await orch._command_handler.execute("pr_merge", {"project_id": "p1", "pr_url": PR})
 
     assert result["success"] is False
     assert result["error"] == "Could not validate immutable PR delivery: head moved"

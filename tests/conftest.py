@@ -553,7 +553,7 @@ def orchestrator_factory(tmp_path: Path):
         o.git = MagicMock()
         o.bus = MagicMock()
         o.bus.emit = AsyncMock()
-        o.command_handler = CommandHandler(o, cfg)
+        o.set_command_handler(CommandHandler(o, cfg))
         return o
 
     return _make

@@ -48,7 +48,7 @@ async def orch(orchestrator_factory):
 
 @pytest.fixture
 def handler(orch):
-    return orch.command_handler
+    return orch._command_handler
 
 
 async def phase(handler, title, *, label=None, parent_id=None):
