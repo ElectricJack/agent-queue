@@ -2601,7 +2601,7 @@ async def _waiting_session(db, provider, rec, config, tmp_path, lifecycle="task"
         rec.orchestrator = orch
     if not hasattr(orch, "bus"):
         orch.bus = SimpleNamespace(emit=AsyncMock())
-    orch.command_handler = CommandHandler(orch, config)
+    orch._command_handler = CommandHandler(orch, config)
     await db.create_task(Task(id="producer", project_id="p1", title="Producer", description=""))
     wait = await db.register_agent_wait(
         identity=dict(session_id=row.id, instance_token=row.instance_token, project_id="p1",
@@ -2821,7 +2821,7 @@ async def test_opt_in_real_harness_wait_idle(db, config, tmp_path):
         )
         await db.create_session(row)
         orch = SimpleNamespace(db=db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
-        orch.command_handler = CommandHandler(orch, config)
+        orch._command_handler = CommandHandler(orch, config)
         registry = SimpleNamespace(create=lambda *_: provider)
         rec = SessionReconciler(db, config, registry, orchestrator=orch)
         now = time.time()

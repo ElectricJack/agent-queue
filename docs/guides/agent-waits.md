@@ -83,6 +83,14 @@ not extend that age baseline. Result nudges and the next prime point to
 sessions receive it on their next legitimate launch. Named supervisors use
 their existing wake path. A manual pause never automatically resumes.
 
+Task-addressed results route to the session currently holding the task,
+including pool workers whose session names do not contain the task id.
+For unresolved task waits whose targets have already settled, operators can run
+`aq doctor --check waits.pending_terminal_tasks`. The read-only check includes
+live and archived COMPLETED, FAILED and BLOCKED targets and reports the wait,
+owner and session ids. The daemon's normal reconciliation resolves these waits
+and queues their result pointers; doctor does not change claims or task state.
+
 `agents.stuck_timeout_seconds` defaults to disabled (`0`) both with and without
 an `agents:` configuration section. Explicit configured limits still apply.
 

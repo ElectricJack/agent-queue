@@ -3406,7 +3406,9 @@ class Orchestrator(
         try:
             from src.agent_waits import AgentWaitReconciler
 
-            await AgentWaitReconciler(self.command_handler).tick()
+            result = await AgentWaitReconciler(self._command_handler).tick()
+            if not result.get("success"):
+                raise RuntimeError(f"wait reconciliation failed: {result}")
         except Exception:
             logger.error("AgentWaitReconciler tick failed", exc_info=True)
         await self.session_reconciler.tick()

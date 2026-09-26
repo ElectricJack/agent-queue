@@ -32,14 +32,14 @@ import uuid
 from typing import Literal, Protocol, runtime_checkable
 
 
-from src.models import SessionRecord
+from src.models import SessionRecord, TaskStatus
 from src.sessions.provider import (
     CapabilityUnsupported,
     NotSubmitted,
     SessionHandle,
     SessionExecutableNotFound,
 )
-from src.sessions.spec import named_session_name, task_session_name
+from src.sessions.spec import named_session_name
 
 logger = logging.getLogger(__name__)
 
@@ -551,7 +551,26 @@ class SessionLens:
         """
         row = None
         if kind == "task":
-            row = await self._db.get_session_by_name(task_session_name(target_id))
+            # Pool names belong to a worker, not to the task it currently
+            # holds. Resolve the durable attachment for either lifecycle.
+            row = await self._db.get_session_for_task(target_id)
+            if row is not None and (
+                row.state not in {"starting", "running"}
+                or row.desired_state != "running"
+                or (project_id is not None and row.project_id != project_id)
+            ):
+                return None, None
+            if row is not None and row.lifecycle == "pool":
+                task = await self._db.get_task(target_id)
+                if (
+                    task is None
+                    or task.project_id != row.project_id
+                    or task.status not in {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS}
+                    or row.claim_phase != "active"
+                    or row.last_claim_epoch != task.claim_epoch
+                    or row.agent_id != task.assigned_agent_id
+                ):
+                    return None, None
         elif kind == "session":
             # ``target_id`` is a bare session address — resolve via the
             # by-name index directly. Callers (delivery engine) never
