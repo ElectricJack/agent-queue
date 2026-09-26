@@ -17,14 +17,10 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, insert, select, text, update
+from sqlalchemy import delete, func, insert, select, text, update
 
-from src.database.queries.blocked_state import (
-    _development_delivery_pending,
-    blocked_predicate,
-    obsolete_marker,
-)
-from src.database.tables import archived_tasks, projects, sessions, tasks
+from src.database.queries.blocked_state import _development_delivery_pending, blocked_predicate
+from src.database.tables import archived_tasks, projects, sessions, task_metadata, tasks
 from src.database.tables import development_deliveries as deliveries
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration import development_validation as validation_outcomes
@@ -866,6 +862,8 @@ class DevelopmentIntegration:
             if not (retry or recover_child_id) and not await self._has_pending_work(
                 project_id, repo, now=time.time()
             ):
+                # Nothing is left to evaluate, so no skip record is current.
+                await self._clear_stale_skips(project_id, keep=set())
                 return {"outcome": "idle", "parked": []}
             store = await self.store(repo)
             await self.reconcile(repo, store)
@@ -910,8 +908,12 @@ class DevelopmentIntegration:
                                 tasks.c.status == "COMPLETED",
                                 (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
                                 has_publishable_artifact(tasks.c.branch_name),
-                                # Superseded work is never published.
-                                ~obsolete_marker(tasks),
+                                # Readiness's own delivery predicate: a delivered or
+                                # adopted completion, and superseded (obsolete) work,
+                                # drop out of candidate evaluation, cycle detection
+                                # included, exactly as ``_has_pending_work`` ignores
+                                # them.
+                                _development_delivery_pending(tasks),
                                 *([tasks.c.id == isolated_child] if isolated_child else []),
                                 # Completion chains can be assembled in this
                                 # batch. Keep gates and unfinished dependencies,
@@ -1371,6 +1373,8 @@ class DevelopmentIntegration:
                     processed.add(old_id)
                 if len(manifest) >= policy.max_batch_size:
                     break
+            if not recover_child_id:
+                await self._clear_stale_skips(project_id, keep=candidate_ids)
             await self._record_candidate_skips(processed, skipped)
             await self.run_git(store, "checkout", "--detach", "--force", head)
             if not manifest:
@@ -1448,6 +1452,37 @@ class DevelopmentIntegration:
                 repo, store, head if result["outcome"] == "delivered" else base
             )
             return result
+
+    async def _clear_stale_skips(self, project_id, *, keep):
+        """Drop skip records of tasks the publisher no longer evaluates.
+
+        A record describes the task's last evaluation.  Once the task is
+        delivered, adopted, obsolete, reopened or archived it is not a
+        candidate, so ``_record_candidate_skips`` never sees it again and the
+        record would otherwise claim a skip that no longer happens.
+        """
+        async with self.db._engine.begin() as conn:
+            stale = [
+                task_id
+                for task_id in (
+                    await conn.execute(
+                        select(task_metadata.c.task_id)
+                        .join(tasks, tasks.c.id == task_metadata.c.task_id)
+                        .where(
+                            tasks.c.project_id == project_id,
+                            task_metadata.c.key == PUBLISHER_SKIP_KEY,
+                        )
+                    )
+                ).scalars()
+                if task_id not in keep
+            ]
+            if stale:
+                await conn.execute(
+                    delete(task_metadata).where(
+                        task_metadata.c.task_id.in_(stale),
+                        task_metadata.c.key == PUBLISHER_SKIP_KEY,
+                    )
+                )
 
     async def _record_candidate_skips(self, processed, skipped):
         """Keep consecutive skip evidence across ticks and daemon restarts."""

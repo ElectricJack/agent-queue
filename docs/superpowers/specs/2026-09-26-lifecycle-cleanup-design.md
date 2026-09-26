@@ -138,6 +138,27 @@ The lifecycle sweep's `retry_obsolete_cleanup` re-runs the cleanup until
 `state=done` (event `task.obsolete_cleanup_done`). A cleaned-up task holds
 nothing the removal guard refuses on, so `aq task delete` works.
 
+### 3b. Delivered and adopted work leaves candidate evaluation
+
+This was added at the supervisor's request after `aq integration adopt
+--accept-equivalent` recorded development-repair-528d… and -7c535… as
+delivered. Every later tick still logged "skipping … dependency cycle with …"
+for them. The development sweep selected every COMPLETED task with a branch,
+ran cycle detection over that whole set, and only dropped a delivered task
+later, in its per-task `done` check.
+
+Candidates now also require `_development_delivery_pending(tasks)`, the same
+receipt readiness and `_has_pending_work` use. So a delivered, adopted or
+obsolete completion never reaches cycle detection. On the live install, 30 of
+the 34 skip records on COMPLETED tasks belonged to work readiness already
+counted as delivered.
+
+A skip record describes a task's last evaluation, so the sweep also clears the
+records of tasks it no longer evaluates (`_clear_stale_skips`). That happens on
+a full sweep (every task that is not a candidate) and on an idle one (every
+task in the project). A `recover-child` sweep, which selects a single child,
+clears none.
+
 ### 4. Doctor: `tasks.dangling_lifecycle`
 
 Report-only. It lists:
