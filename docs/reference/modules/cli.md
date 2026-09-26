@@ -184,6 +184,7 @@ context. They are covered where their behaviour is explained.
 | [src/skills/aq-comms/SKILL.md](../../../src/skills/aq-comms/SKILL.md) | Explains messages, the inbox and reporting a blocker. | [cli/agent-tools.md](../cli/agent-tools.md) |
 | [src/skills/aq-workspaces-and-git/SKILL.md](../../../src/skills/aq-workspaces-and-git/SKILL.md) | Explains the assigned worktree, its branch, and committing, pushing and opening a PR. | [cli/agent-tools.md](../cli/agent-tools.md) |
 | [src/skills/aq-playbooks-and-gates/SKILL.md](../../../src/skills/aq-playbooks-and-gates/SKILL.md) | Explains inspecting a paused run, resolving a human gate, and what the shipped default pipeline does. | [cli/agent-tools.md](../cli/agent-tools.md) |
+| [src/skills/aq-reviews/SKILL.md](../../../src/skills/aq-reviews/SKILL.md) | Explains document reviews by seat and the opt-in adversarial review recipe across model families. | [cli/agent-tools.md](../cli/agent-tools.md) |
 
 ## Code-adjacent notes
 
