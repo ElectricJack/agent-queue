@@ -21,10 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Keep S1-S3 together: the claim and filing cases use the pool S1 creates.
 # Provider outage and recovery prepare independent fixtures in separate groups.
 SCENARIO_GROUPS = {
-    "claims": ("S1", "S2", "S3", "S4", "S7", "S18"),
-    "cli": ("S5", *(f"S{number}" for number in range(8, 15))),
-    "graphs": ("S6", "S16b", "S19"),
-    "failover": ("S15", "S16a", "S17"),
+    "claims": ("S1", "S2", "S3", "S6", "S7", "S19"),
+    "cli": ("S5", "S8", "S9", "S12", "S17"),
+    "graphs": ("S10", "S16b", "S18"),
+    "failover": ("S4", "S11", "S13", "S14", "S15", "S16a"),
 }
 
 

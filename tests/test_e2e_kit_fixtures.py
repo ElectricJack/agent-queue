@@ -217,6 +217,11 @@ def test_fresh_workers_quiesces_every_project_in_the_global_profile(monkeypatch)
         return task_id
 
     def fake_api(command, args):
+        if command == "session_kill":
+            return fake_aq("session", "kill", args["session_id"])
+        if command == "delete_task":
+            assert args["cascade"] is True
+            return fake_aq("task", "delete", "--task-id", args["task_id"])
         if command == "session_list":
             assert args == {"lifecycle": "pool"}
             return {"sessions": list(live)}

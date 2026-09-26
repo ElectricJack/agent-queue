@@ -525,7 +525,7 @@ def fresh_workers(
         # marks them stopped.  Leaving them behind can starve the next case.
         live = pool_sessions(None, include_draining=True)
         for s in live:
-            aq("session", "kill", s["id"], check_ok=False)
+            api("session_kill", {"session_id": s["id"]})
         return not live and not any(
             _open_pool_tasks(cleanup_project_id) for cleanup_project_id in cleanup_projects
         )
@@ -567,13 +567,12 @@ def _open_pool_tasks(project_id: str = PROJECT) -> list[dict]:
 def _delete_open_pool_tasks(project_id: str = PROJECT) -> None:
     """Clear the frontier so a scenario starts from zero.
 
-    ``--cascade`` because a worker-filed task from S3 may still hang off
-    one of these; ``check_ok=False`` because a task a session is still
-    holding refuses deletion, and the caller's loop retries after the kill
-    has released it.
+    Cascade because a worker-filed task from S3 may still hang off one of
+    these. A refusal is retried by the caller after killing its session.
+    This is fixture cleanup; S9 asserts task deletion through the real CLI.
     """
     for task in _open_pool_tasks(project_id):
-        aq("task", "delete", "--task-id", task["id"], "--cascade", check_ok=False)
+        api("delete_task", {"task_id": task["id"], "cascade": True})
 
 
 def idle_worker() -> Worker:
@@ -719,7 +718,7 @@ def s2_claim_loop(state: dict) -> str:
     # held comes back, and `pools.orphan_agents` (which *does* read agent
     # rows) stays clean, which it would not if the agent were left behind.
     def _retired():
-        shown = aq("session", "show", worker.session_id)
+        shown = api_checked("session_show", {"session_id": worker.session_id})
         row = shown.get("session") or shown
         return row if row.get("state") == "stopped" else None
 
@@ -1817,7 +1816,7 @@ def _quiesce_failover() -> None:
         _delete_open_pool_tasks(PROJECT)
         live = pool_sessions(None, include_draining=True)
         for s in live:
-            aq("session", "kill", s["id"], check_ok=False)
+            api("session_kill", {"session_id": s["id"]})
         return not live and not _open_pool_tasks(PROJECT)
 
     wait_for(_quiet, what="the fleet to quiesce before S16")
@@ -1834,7 +1833,7 @@ def _restore_providers() -> None:
     _quiesce_failover()
     fake_script()
     for key in ("claude", "codex", PROVB, PROVA):
-        set_provider_state(key, "auto")
+        api_checked("provider_set_state", {"provider": key, "state": "auto"})
 
 
 def s16_provider_failover(state: dict) -> str:
@@ -1871,7 +1870,7 @@ def _failover_baseline() -> None:
     _quiesce_failover()
     fake_script()  # both fake providers healthy
     for key in ("claude", "codex", PROVB, PROVA):
-        set_provider_state(key, "auto")
+        api_checked("provider_set_state", {"provider": key, "state": "auto"})
     for key in (PROVA, PROVB):
         row = wait_provider(key, ("available", "degraded"), what="S16 baseline")
         note(f"baseline: {key} {row['state']}")
@@ -2474,7 +2473,7 @@ def s17_phased_graph(state: dict) -> str:
     )
 
     def released_phase() -> list[dict] | None:
-        rows = phase_rows()
+        rows = api_checked("phase_list", {"project_id": project_id, "parent_id": epic})["phases"]
         by_order = {row["order"]: row for row in rows}
         if by_order[1]["status"] in ("COMPLETED", "DONE") and not by_order[2]["is_blocked"]:
             return rows
@@ -2544,18 +2543,13 @@ def s18_supervisor_failure_triage(state: dict) -> str:
 
     def triage_run() -> dict | None:
         rows = collection_rows(
-            aq(
-                "playbook",
-                "list-runs",
-                "--playbook-id",
-                "supervisor-failure-triage",
-                "--limit",
-                "10",
-            ),
+            api_checked("list_playbook_runs", {
+                "playbook_id": "supervisor-failure-triage", "limit": 10,
+            }),
             "runs",
         )
         for row in rows:
-            detail = aq("playbook", "inspect-run", "--run-id", row["run_id"])["run"]
+            detail = api_checked("inspect_playbook_run", {"run_id": row["run_id"]})["run"]
             if detail.get("event", {}).get("task_id") == task_id:
                 return detail
         return None
@@ -2565,16 +2559,9 @@ def s18_supervisor_failure_triage(state: dict) -> str:
 
     def supervisor_notice() -> dict | None:
         rows = collection_rows(
-            aq(
-                "message",
-                "list",
-                "--to-kind",
-                "session",
-                "--to-id",
-                f"supervisor-{PROJECT}",
-                "--since",
-                str(started_at),
-            ),
+            api_checked("message_list", {
+                "to_kind": "session", "to_id": f"supervisor-{PROJECT}", "since": started_at,
+            }),
             "messages",
         )
         return next((row for row in rows if task_id in (row.get("body") or "")), None)
@@ -2748,8 +2735,8 @@ def s19_scoped_planner_graph(state: dict) -> str:
     )
 
     for node in successful[0]["nodes"]:
-        aq("task", "delete", "--task-id", node["task_id"])
-    aq("task", "delete", "--task-id", foreign_parent)
+        api_checked("delete_task", {"task_id": node["task_id"]})
+    api_checked("delete_task", {"task_id": foreign_parent})
     closed_planner = planner.close(summary="S19 scoped planner graph acceptance")
     check(closed_planner.get("success") is not False, f"S19 planner close: {closed_planner}")
     planner.drain_ack()

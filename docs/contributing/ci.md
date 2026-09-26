@@ -201,10 +201,10 @@ parallel, with a five-minute budget per job and `fail-fast: false`:
 
 | Group | Scenarios |
 |---|---|
-| `claims` | S1–S4, S7, S18 |
-| `cli` | S5, S8–S14 |
-| `graphs` | S6, S16b, S19 |
-| `failover` | S15, S16a, S17 |
+| `claims` | S1–S3, S6–S7, S19 |
+| `cli` | S5, S8–S9, S12, S17 |
+| `graphs` | S10, S16b, S18 |
+| `failover` | S4, S11, S13–S15, S16a |
 
 Each runner selects one parametrized node from `tests/test_e2e_cli_stateful.py`
 with `-m integration -s`. It creates and cleans up its own database, daemon,
@@ -214,8 +214,8 @@ Together they retain the original S16 assertions. No xdist workers or other test
 these runners, and successful runs print every scenario's duration.
 `--durations=0` also reports the complete group call, including environment
 setup and cleanup, alongside pytest fixture setup and teardown.
-Fixture registration and background pool, task, session and provider inspection
-use the public command API to avoid repeated Python CLI startup. Scenario mutations, scope
+Fixture registration/cleanup and background state inspection use the public
+command API to avoid repeated Python CLI startup. Scenario mutations, scope
 refusals and explicit CLI output assertions still run through the CLI.
 
 Both boundaries in [the train policy](../config/agent-queue-train-policy.json)
