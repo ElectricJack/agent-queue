@@ -87,6 +87,7 @@ from src.commands.digest_commands import DigestCommandsMixin
 from src.commands.report_commands import ReportCommandsMixin
 from src.commands.dashboard_state_commands import DashboardStateCommandsMixin
 from src.commands.escalation_commands import EscalationCommandsMixin
+from src.commands.conversation_commands import ConversationCommandsMixin
 from src.commands.review_commands import ReviewCommandsMixin
 from src.commands.github_issue_commands import GitHubIssueCommandsMixin
 
@@ -371,6 +372,7 @@ class CommandHandler(
     DigestCommandsMixin,
     ReportCommandsMixin,
     EscalationCommandsMixin,
+    ConversationCommandsMixin,
     ReviewCommandsMixin,
     GitHubIssueCommandsMixin,
     # -- dv2 phase 6 mixins -----------------------------------------------
@@ -433,6 +435,7 @@ class CommandHandler(
     ):
         self.orchestrator = orchestrator
         self.config = config
+        self._clock = time.time
         # Optional DoctorRegistry override.  Normally None: the daemon-wide
         # registry is built in ``src/main.py`` and attached to the
         # orchestrator, which ``OpsCommandsMixin.doctor_registry`` falls back
@@ -930,6 +933,8 @@ class CommandHandler(
                     "data": "<redacted-config-data>",
                 }
                 if name == "update_config"
+                else {"envelope": "<redacted-conversation-envelope>", "source": args.get("source")}
+                if name == "supervisor_inbox_post"
                 else args
             )
             if mutating:

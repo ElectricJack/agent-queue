@@ -335,3 +335,15 @@ class TestScopeAndCapabilityCompose:
             "task_claim", principal, resolver=_Resolver(), mode="enforce"
         )
         assert decision.allowed is False
+
+
+def test_supervisor_inbox_post_is_internal_for_every_nonlocal_scope():
+    for scope in (
+        SESSION,
+        RequestScope(kind="session", session_id="global", elevated=True),
+        RequestScope(kind="session", session_id="super", project_id="p1", elevated=True),
+    ):
+        assert check_command_scope("supervisor_inbox_post", {}, scope) == (
+            "out of scope: conversation intake is daemon-internal"
+        )
+    assert check_command_scope("supervisor_inbox_post", {}, LOCAL_SCOPE) is None

@@ -189,6 +189,8 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
     """
     if scope.kind == "local":
         return None
+    if command == "supervisor_inbox_post":
+        return "out of scope: conversation intake is daemon-internal"
     if command in OPERATOR_INTEGRATION_CONTROLS and not scope.elevated:
         return "out of scope: integration control requires local operator or supervisor"
     if command in LOCAL_REVIEW_CONTROLS:

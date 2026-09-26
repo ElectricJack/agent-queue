@@ -184,6 +184,7 @@ areas:
   - id: session-runtime
     description: "Agent sessions: spec building (names, argv, env, prompt delivery), executable checks, the session provider contract, the session reconciler and exit classifier, session queries and commands, and the completion protocol."
     match:
+      - tests/test_handoffs.py
       - tests/test_session_spec.py
       - tests/test_session_executable.py
       - tests/test_session_provider_conformance.py
@@ -258,11 +259,12 @@ areas:
     match: [tests/test_escalation_*.py, tests/test_discord_escalation_transport.py]
   - id: digest
     description: "Activity digest: fact eligibility and dedup, rendering, window scheduling and delivery, digest commands, what a window may read, and digest settings."
-    match: [tests/test_digest*.py, tests/test_discord_settings.py]
+    match: [tests/test_digest*.py, tests/test_discord_settings.py, tests/test_report_requests.py]
   - id: supervisor
-    description: "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config and the blocked-task escalation playbook."
+    description: "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config, verified Discord conversations and the blocked-task escalation playbook."
     match:
       - tests/test_supervisor_*.py
+      - tests/test_conversation_*.py
       - tests/test_config_supervisor.py
       - tests/test_blocked_task_escalation.py
 
@@ -359,9 +361,11 @@ areas:
       - tests/test_integration_delegate_release.py
       - tests/test_integration_eject.py
       - tests/test_doctor_stranded_fences_fix.py
+      - tests/test_canonical_reservation.py
   - id: integration-promotion
     description: "Integration promotion and repair: child-to-parent and root-to-main promotion, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication and legacy deliveries."
     match:
+      - tests/test_integration_child_delivery.py
       - tests/test_integration_promotion.py
       - tests/test_integration_main_promotion.py
       - tests/test_integration_parent_completion.py
@@ -506,6 +510,7 @@ areas:
       - tests/test_response_model_registry.py
       - tests/test_cli_client_generated.py
       - tests/test_regenerate_api_client_script.py
+      - tests/test_regenerate_ts_client_script.py
       - tests/test_api_dashboard_pointer.py
   - id: file-access
     description: "File access for tasks and workspaces: browse and read endpoints, task attachments, filesystem command handlers and root-relative path validation."
@@ -542,6 +547,7 @@ areas:
     description: "Resource gating: per-session env caps, nice and cgroup scopes, the box-wide test-slot semaphore, orphaned test-run reaping, slot-wait reports and resources doctor checks."
     match:
       - tests/test_resource_*.py
+      - tests/test_test_baseline.py
       - tests/test_slot_report.py
   - id: test-substrate
     description: "The PostgreSQL test substrate: DSN leasing and run ownership, template-clone pool crash recovery, parallel-worker isolation, the reset-for-tests guard and operator test-database reaping."
@@ -622,8 +628,15 @@ areas:
       - tests/test_schedule.py
       - tests/test_timer_service*.py
   - id: metrics
-    description: "Metrics: the per-second fleet sampler with roll-ups and retention, the metrics series API and WebSocket frame, and chat-analyzer suggestion outcome metrics."
-    match: [tests/test_metrics_sampler.py, tests/test_api_metrics.py, tests/test_chat_analyzer_metrics.py]
+    description: "Metrics: the per-second fleet sampler with roll-ups and retention, the metrics series API and WebSocket frame, chat-analyzer suggestion outcomes, performance histograms and host/API/database telemetry."
+    match:
+      - tests/test_metrics_*.py
+      - tests/test_api_metrics.py
+      - tests/test_chat_analyzer_metrics.py
+      - tests/test_api_perf_middleware.py
+      - tests/test_dashboard_perf_kit.py
+      - tests/test_doctor_perf_checks.py
+      - tests/test_engine_perf_observer.py
   - id: logging
     description: "Logging: structlog configuration and correlation context, the log access tools, aq logs filters and context windows, and the LLM interaction logger."
     match: [tests/test_logging_config.py, tests/test_log_access.py, tests/test_cli_logs.py, tests/test_llm_logger.py]

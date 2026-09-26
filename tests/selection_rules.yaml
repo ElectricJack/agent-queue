@@ -64,6 +64,7 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - "scripts/setup-cgroup-delegation.sh"
 
 ownership:                      # path globs -> areas whose modules join M
+  - { paths: ["src/conversations/**", "src/commands/conversation_commands.py", "src/database/queries/conversation_queries.py"], areas: ["supervisor"] }
   # ---- repository files outside src/
   - { paths: ["AGENTS.md", "CLAUDE.md", "README.md"], areas: ["docs-guards"] }
   - { paths: ["AGENTS.md"], areas: ["dashboard-state"] }
@@ -82,6 +83,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["dashboard/src/pages/playbook-graph-v2/__tests__/graph.fixture.json"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
   - { paths: ["packages/**", "openapi.json"], areas: ["api-contract", "file-access"] }
   - { paths: [".github/workflows/**"], areas: ["ci-sentinel", "epic-trains"] }
+  - { paths: [".test_durations", "scripts/merge_test_durations.py"], areas: ["ci-sentinel"] }
   - { paths: ["setup.sh"], areas: ["install"] }
   - { paths: ["scripts/e2e*", "scripts/e2e/**"], areas: ["e2e-kit"] }
   - { paths: ["scripts/regenerate-api-client.sh", "scripts/regenerate-ts-client.sh", "scripts/openapi-python-client.yaml", "scripts/aq-client-boilerplate.sha256"], areas: ["api-contract"] }
