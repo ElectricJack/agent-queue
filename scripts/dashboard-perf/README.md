@@ -22,9 +22,10 @@ database on the same PostgreSQL instance isolates data but shares buffers, IO
 and connections; a separate instance on the same disk still shares disk IO.
 `pg_identity.py` records endpoint identity without printing credentials.
 
-Node needs `puppeteer-core@24` and Chrome (`CHROME`, default
-`/usr/bin/google-chrome`). Install Puppeteer in a temporary tools directory,
-then expose its `node_modules` to these scripts with a local, untracked symlink:
+Node needs `puppeteer-core@24` (24.33 or later, for window pages and
+`page.windowId()`) and Chrome (`CHROME`, default `/usr/bin/google-chrome`).
+Install Puppeteer in a temporary tools directory, then expose its
+`node_modules` to these scripts with a local, untracked symlink:
 
 ```bash
 perf_tools=$(mktemp -d)
@@ -69,7 +70,8 @@ observation. Each repetition inventories the host, starts the workload for a
 loaded run, warms up, runs the harness for each client count, waits for the
 workload, then captures the host inventory and the repetition's 1 s fleet
 series. Client counts remain separate in `summary.by_clients`. Each concurrent client
-uses its own Chrome window so background tabs cannot suspend animation frames.
+uses its own Chrome window so background tabs cannot suspend animation frames; the
+harness records each client's `window_id` and refuses a surface whose clients share one.
 
 ```bash
 python scripts/dashboard-perf/experiment.py --mode idle \
@@ -125,8 +127,8 @@ to run the real suite outside its separately scheduled task.
   parent niceness, PostgreSQL identity. `nice -n` increments inherited nice;
   `load-*.json` records actual helper niceness.
 - `harness-<n>-clients-<N>.json` and `.log`: raw cold/warm timing samples,
-  per-client idle counters, task-detail visible/loaded timings, direct API
-  samples, p95 and errors, browser manifest and window timestamps.
+  per-client idle counters and window ids, task-detail visible/loaded timings,
+  direct API samples, p95 and errors, browser manifest and window timestamps.
 - `inventory-before-<n>.json`, `inventory-after-<n>.json`: process parents,
   session/job/test markers and class totals; instance tokens are redacted.
 - `workload-<n>.stdout.log` and `.stdout.stderr.log`, `load-<n>.json`: raw
@@ -169,9 +171,10 @@ readiness, series, tasks, agents, pools, gates and one discovered task detail,
 including full response delivery and bounded request timeouts. A missing task
 id is reported explicitly rather than silently dropped.
 
-`node scripts/dashboard-perf/smoke.mjs` checks three concurrent clients,
-duration-alias precedence, manifests and raw browser/API samples against an
-ephemeral local HTTP fixture with real Chrome. It touches no daemon or database
+`node scripts/dashboard-perf/smoke.mjs` checks three concurrent clients in
+separate windows on two consecutive surfaces, duration-alias precedence,
+manifests and raw browser/API samples against an ephemeral local HTTP fixture
+with real Chrome. It touches no daemon or database
 and bounds/cleans its browser process group. This is a harness regression check,
 not a latency benchmark.
 
