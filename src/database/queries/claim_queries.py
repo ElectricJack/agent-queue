@@ -42,6 +42,34 @@ from src.database.tables import (
 from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
 
 
+def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
+    """Named acceptance predicates shared by claiming and diagnostics."""
+    return {
+        # Legacy control-plane profiles stay visible for rerouting but never
+        # win a pool worker's claim.
+        "supervisor_profile": tasks.c.profile_id.is_(None) | (tasks.c.profile_id != "supervisor"),
+        "dependency_blocked": tasks.c.is_blocked == 0,
+        "already_assigned": tasks.c.assigned_agent_id.is_(None),
+        "plan_subtask": tasks.c.is_plan_subtask == 0,
+        "origin_not_materialized": materialized_origin_when_hierarchical(hierarchy_mode),
+        "sibling_prerequisite_not_delivered": (
+            delivered_same_parent_prerequisites_when_hierarchical(hierarchy_mode)
+        ),
+        # Containers settle when their children finish. A worker holding one
+        # could never close it and would block the settlement it waits for.
+        "container_settles_without_worker": ~container_flag_exists(),
+        # Stale READY delegates must not be claimed while cleanup catches up
+        # with their expired stage.
+        "retired_repair_delegate": ~exists(
+            select(literal(1)).where(
+                integration_repair_stages.c.repair_task_id == tasks.c.id,
+                integration_repair_stages.c.writer_kind == "repair_delegate",
+                integration_repair_stages.c.state.notin_(("active", "awaiting_completion")),
+            )
+        ),
+    }
+
+
 def _frontier_where(project_id: str, hierarchy_mode: ProjectIntegrationMode | None = None):
     """The frontier predicate, for one project.
 
@@ -54,31 +82,7 @@ def _frontier_where(project_id: str, hierarchy_mode: ProjectIntegrationMode | No
     return and_(
         tasks.c.project_id == project_id,
         tasks.c.status == TaskStatus.READY.value,
-        # Legacy rows can carry the named control-plane supervisor profile.
-        # They remain visible for diagnosis and rerouting, but must never win
-        # a pool worker's index-ordered claim frontier.
-        (tasks.c.profile_id.is_(None) | (tasks.c.profile_id != "supervisor")),
-        tasks.c.is_blocked == 0,
-        tasks.c.assigned_agent_id.is_(None),
-        tasks.c.is_plan_subtask == 0,
-        materialized_origin_when_hierarchical(hierarchy_mode),
-        delivered_same_parent_prerequisites_when_hierarchical(hierarchy_mode),
-        # A flagged container (spec §7) has no deliverable of its own: it is
-        # released to IN_PROGRESS by the orchestrator and settles when its
-        # children finish.  A worker holding it could never close it
-        # (Invariant 6) and its live session would block the settlement it
-        # waits for (calm-ember-48).
-        ~container_flag_exists(),
-        # A repair delegate belongs to one exact active stage.  When that
-        # stage expires, the task row can still be READY until cleanup runs;
-        # it must not be offered to a pool worker in that gap.
-        ~exists(
-            select(literal(1)).where(
-                integration_repair_stages.c.repair_task_id == tasks.c.id,
-                integration_repair_stages.c.writer_kind == "repair_delegate",
-                integration_repair_stages.c.state.notin_(("active", "awaiting_completion")),
-            )
-        ),
+        *_frontier_predicates(hierarchy_mode).values(),
     )
 
 
@@ -131,6 +135,51 @@ def numeric_meta_value(column, *, default: str = "0"):
     )
 
 
+def _claim_preparation_predicates():
+    return {
+        "workspace_requirement": ~exists(select(literal(1)).where(
+            task_workspace_requirements.c.task_id == tasks.c.id,
+            task_workspace_requirements.c.kind_id.notin_(("project-repo", "vault")),
+        )),
+        "claim_prepare_backoff": ~exists(select(literal(1)).where(
+            task_metadata.c.task_id == tasks.c.id,
+            task_metadata.c.key == PREPARE_BACKOFF_UNTIL_KEY,
+            numeric_meta_value(task_metadata.c.value) > time.time(),
+        )),
+    }
+
+
+def claim_frontier_predicates():
+    """All profile-independent acceptance filters, including candidate preparation."""
+    return {
+        **_frontier_predicates(),
+        **_claim_preparation_predicates(),
+        "hold_label": apply_label_filters(select(tasks.c.id), exclude_hold=True).whereclause,
+    }
+
+
+FRONTIER_PREDICATE_DETAILS = {
+    "supervisor_profile": "profile_id must not be supervisor",
+    "dependency_blocked": "is_blocked must be false",
+    "already_assigned": "assigned_agent_id must be empty",
+    "plan_subtask": "is_plan_subtask must be false",
+    "origin_not_materialized": (
+        "materialized_origin_when_hierarchical(): requires a materialized origin in the "
+        "designated repository or an exact active delegate reservation"
+    ),
+    "sibling_prerequisite_not_delivered": (
+        "delivered_same_parent_prerequisites_when_hierarchical(): requires the preserved "
+        "parent origin and a code receipt for each completed blocks sibling matching the "
+        "parent, repository, branch and checkpoint head, created after that sibling's rework cutoff"
+    ),
+    "container_settles_without_worker": "container_flag_exists() must be false",
+    "retired_repair_delegate": "repair delegate stage must be active or awaiting_completion",
+    "workspace_requirement": "workspace requirements must be project-repo or vault",
+    "claim_prepare_backoff": "claim_prepare_backoff_until must not be in the future",
+    "hold_label": "no hold:* label may be present",
+}
+
+
 class ClaimQueryMixin:
     """Expects ``self._engine`` plus Task/Session/Workspace/Hierarchy mixins.
 
@@ -138,6 +187,28 @@ class ClaimQueryMixin:
     ``_row_to_task`` (TaskQueryMixin) and ``_upsert_meta[_many]``
     (HierarchyQueryMixin) all come from the composed adapter.
     """
+
+    async def claim_frontier_exclusions(self, task_id: str) -> list[dict]:
+        """Evaluate the real claim filters for one READY task, without scheduler guesses."""
+        predicates = claim_frontier_predicates()
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(
+                select(*(predicate.label(name) for name, predicate in predicates.items()))
+                .where(tasks.c.id == task_id, tasks.c.status == TaskStatus.READY.value)
+            )).mappings().one_or_none()
+        if row is None:
+            return []
+        return [
+            {
+                "code": f"frontier_{name}",
+                "detail": (
+                    "Pool claim frontier excludes this READY task: "
+                    + FRONTIER_PREDICATE_DETAILS[name]
+                ),
+                "ref": task_id,
+            }
+            for name in predicates if not row[name]
+        ]
 
     async def take_claim_slot(self, conn, session_id: str, *, now: float, cap: int | None):
         """CAS the session into ``claiming``; ``(kind, session_or_None)``.
@@ -289,14 +360,7 @@ class ClaimQueryMixin:
         profile_ok = tasks.c.profile_id == profile_id
         if default_profile_id == profile_id and not enforce_routing:
             profile_ok = (tasks.c.profile_id == profile_id) | tasks.c.profile_id.is_(None)
-        req = task_workspace_requirements.alias("req")
-        prepare_backoff_active = exists(
-            select(literal(1)).where(
-                task_metadata.c.task_id == tasks.c.id,
-                task_metadata.c.key == PREPARE_BACKOFF_UNTIL_KEY,
-                numeric_meta_value(task_metadata.c.value) > time.time(),
-            )
-        )
+        preparation_predicates = _claim_preparation_predicates()
 
         def candidate(*, pinned: bool):
             stmt = (
@@ -304,15 +368,7 @@ class ClaimQueryMixin:
                 .where(
                     _frontier_where(project_id, hierarchy_mode),
                     profile_ok,
-                    ~exists(
-                        select(literal(1)).where(
-                            and_(
-                                req.c.task_id == tasks.c.id,
-                                req.c.kind_id.notin_(("project-repo", "vault")),
-                            )
-                        )
-                    ),
-                    ~prepare_backoff_active,
+                    *preparation_predicates.values(),
                 )
                 .order_by(
                     tasks.c.priority.asc(),

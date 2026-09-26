@@ -355,6 +355,10 @@ def integration_rework_cutoff(task_id):
 
     return (
         select(numeric_meta_value(task_metadata.c.value))
+        # The prerequisite can live several SELECT levels above this scalar
+        # subquery. Auto-correlation only checks the immediate parent and
+        # otherwise adds a new prerequisite FROM, reading every task's marker.
+        .correlate_except(task_metadata)
         .where(
             task_metadata.c.task_id == task_id,
             task_metadata.c.key == INTEGRATION_REWORK_AT_KEY,
