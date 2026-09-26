@@ -1025,7 +1025,8 @@
         "tests/test_selection_questions.py",
         "tests/test_selection_snapshot.py",
         "tests/test_selection_static_impact.py",
-        "tests/test_selection_testmon_experiment.py"
+        "tests/test_selection_testmon_experiment.py",
+        "tests/test_selection_typesafe.py"
       ]
     },
     "test-substrate": {
@@ -1174,7 +1175,7 @@
       ]
     }
   },
-  "digest": "sha256:0039be81d5e82789734e0eb5082a1f4561871725d5abcd65cadeaaaa0d9b3aa6",
+  "digest": "sha256:d3fd81f598031814502a8800c5896b6bb7f2510089a64cbeafbad8cea46d82ab",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10132,6 +10133,20 @@
         "slow"
       ],
       "summary": "pytest-testmon fixture experiment: recorded evidence for spec §5.2, never a selector."
+    },
+    "tests/test_selection_typesafe.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.test_selection.questions",
+        "src.test_selection.typesafe"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Offline contract checks for the TypeSafe selection boundary."
     },
     "tests/test_session_class_effort.py": {
       "areas": [
