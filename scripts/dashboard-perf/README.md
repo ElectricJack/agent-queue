@@ -69,9 +69,11 @@ per idle surface, 1600×1000 viewport, 30 s warm-up after readiness and 120 s
 observation. Each repetition inventories the host, starts the workload for a
 loaded run, warms up, runs the harness for each client count, waits for the
 workload, then captures the host inventory and the repetition's 1 s fleet
-series. Client counts remain separate in `summary.by_clients`. Each concurrent client
-uses its own Chrome window so background tabs cannot suspend animation frames; the
-harness records each client's `window_id` and refuses a surface whose clients share one.
+series. Daemon targets are summarized over the browser-active part of that
+series (see `summary.json` below). Client counts remain separate in
+`summary.by_clients`. Each concurrent client uses its own Chrome window so
+background tabs cannot suspend animation frames; the harness records each client's
+`window_id` and refuses a surface whose clients share one.
 
 ```bash
 python scripts/dashboard-perf/experiment.py --mode idle \
@@ -132,9 +134,10 @@ to run the real suite outside its separately scheduled task.
 - `inventory-before-<n>.json`, `inventory-after-<n>.json`: process parents,
   session/job/test markers and class totals; instance tokens are redacted.
 - `workload-<n>.stdout.log` and `.stdout.stderr.log`, `load-<n>.json`: raw
-  workload output, completion/timeout/exit, throughput, observed start/end and
-  coverage. Idle mode records null throughput/timeout rather than zero work.
-- `series-<n>.json`: raw 1 s samples for the repetition window.
+  workload output, completion/timeout/exit, throughput, observed start/end,
+  coverage and `helper_only_s` (time run after the last browser window). Idle
+  mode records null throughput/timeout rather than zero work.
+- `series-<n>.json`: raw 1 s samples for the whole repetition window.
 - `summary.json`: medians across repetitions, raw values and `(max-min)/median`
   spread (null for fewer than two values or zero median), separate client-count
   summaries, daemon histogram-derived loop p95/max/stalls >500 ms, API, pool,
@@ -143,11 +146,28 @@ to run the real suite outside its separately scheduled task.
   percentiles are never averaged. Missing probes stay null. Per-repetition
   daemon values and spread are retained alongside merged results.
 
-Compare against the envelope: task detail visible p95 ≤200 ms; small task/roster
-API reads p95 ≤500 ms and ≤2× idle; loop p95 ≤50 ms with no stall >500 ms; cold
-page ready ≤2 s. Derive browser p95 from the raw timings, and include errors,
-spread and load coverage in the evidence. Read probes cannot establish mutation
-error rate; that target requires a separately specified write workload.
+Daemon results have two activity scopes. `daemon`, `daemon_repetitions` and
+`daemon_spread` are **browser-active** (`daemon_scope`): only 1 s samples whose
+timestamp falls inside one of that repetition's harness runs, from its first cold
+load through its direct API reads. `by_clients.<N>.daemon` uses only that client
+count's runs. `whole_repetition` holds the same three fields over every sample.
+That includes the controller warm-up and, in loaded mode, the helper-only tail,
+because a repetition waits for its workload to finish. Idle has no such tail, so
+the whole-repetition scope compares unequal envelopes: a long quiet tail can pull
+its p95 under a target the browsers never met. It is accounting, not a verdict.
+`activity` lists, per repetition, the browser windows (`clients`, `start_ts`,
+`end_ts`), total/browser-active/excluded sample counts and `helper_only_s`: the
+seconds the workload ran after the repetition's last browser window, for every
+client count (null in idle mode). Workload completion, timeout, coverage and that
+tail stay in `load` and `load-<n>.json`. With no browser window the browser-active
+scope is empty and its values are null; it is never widened to the whole repetition.
+
+Compare the browser-active scope against the envelope: task detail visible p95
+≤200 ms; small task/roster API reads p95 ≤500 ms and ≤2× idle; loop p95 ≤50 ms
+with no stall >500 ms; cold page ready ≤2 s. Derive browser p95 from the raw
+timings, and include errors, spread, load coverage and the helper-only tail in the
+evidence. Read probes cannot establish mutation error rate; that target requires a
+separately specified write workload.
 
 ## Standalone tools
 

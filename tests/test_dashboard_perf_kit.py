@@ -333,8 +333,9 @@ def test_spread_and_summary_keep_raw_values_and_medians():
     assert exp.spread([100.0]) is None
     runs = [
         {"cold": {"tasks": {"ready_ms": v, "raw": [v]}}, "idle": {},
-         "api": {"POST /api/task/get": {"median_ms": v, "raw_ms": [v]}}}
-        for v in (100, 120, 110)
+         "api": {"POST /api/task/get": {"median_ms": v, "raw_ms": [v]}},
+         "repetition": rep, "manifest": {"clients": 1}, "start_ts": 0.0, "end_ts": 2.0}
+        for rep, v in enumerate((100, 120, 110), 1)
     ]
     loads = [{"throughput_iter_per_s": 1000.0, "timed_out": False}] * 3
     drift = new_hist()
@@ -365,12 +366,14 @@ def test_summary_merges_buckets_and_preserves_unknown_probes():
     for _ in range(99):
         observe(fast, 1)
     observe(slow, 800)
-    groups = [[{"perf": {"enabled": True, "loop": {"drift": h},
-                          "sampler": {"perf_ms": cost},
-                          "host": {"psi": {"cpu": {"some_avg10": cost}},
-                                   "ungated": {"pytest_processes": cost}}}}]
+    groups = [[{"ts": 1.0, "perf": {"enabled": True, "loop": {"drift": h},
+                                     "sampler": {"perf_ms": cost},
+                                     "host": {"psi": {"cpu": {"some_avg10": cost}},
+                                              "ungated": {"pytest_processes": cost}}}}]
               for h, cost in ((fast, 2), (slow, 9))]
-    out = exp.summarize([], [], groups)
+    runs = [{"repetition": rep, "manifest": {"clients": 1}, "start_ts": 0.0, "end_ts": 2.0}
+            for rep in (1, 2)]
+    out = exp.summarize(runs, [], groups)
     assert out["daemon"]["loop_drift_p95_ms"] == percentile(merge_hists([fast, slow]), .95)
     assert out["daemon"]["loop_drift_max_ms"] == 800
     assert out["daemon"]["stalls_over_500ms"] == 1
@@ -379,6 +382,73 @@ def test_summary_merges_buckets_and_preserves_unknown_probes():
     assert out["daemon"]["ungated_processes_max"] == 9
     assert out["daemon"]["sampler_perf_ms_p95"] == 9
     assert exp.summarize([], [], [[]])["daemon"]["stalls_over_500ms"] is None
+
+
+def drift_samples(timestamps, ms):
+    from src.metrics.histogram import new_hist, observe
+
+    out = []
+    for ts in timestamps:
+        drift = new_hist()
+        observe(drift, ms)
+        out.append({"ts": ts, "perf": {"enabled": True, "loop": {"drift": drift}}})
+    return out
+
+
+def quiet_tail_repetition():
+    """Warm-up, two browser runs at 100/200 ms drift, then 1000 s of helper-only quiet."""
+    runs = [{"repetition": 1, "manifest": {"clients": 1}, "start_ts": 100, "end_ts": 119},
+            {"repetition": 1, "manifest": {"clients": 3}, "start_ts": 125, "end_ts": 144}]
+    samples = (drift_samples(range(70, 100), 1) + drift_samples(range(100, 120), 100)
+               + drift_samples(range(120, 125), 1) + drift_samples(range(125, 145), 200)
+               + drift_samples(range(145, 1145), 1))
+    return runs, samples
+
+
+def test_a_quiet_helper_tail_cannot_dilute_the_browser_active_loop_p95():
+    exp = load_script("experiment")
+    runs, samples = quiet_tail_repetition()
+    assert exp.helper_only_s(runs, 1145) == 1001
+    assert exp.helper_only_s(runs, 130) == 0  # finished mid-browsing: coverage flags it
+    assert exp.helper_only_s([], 1145) is None
+    loads = [{"active": True, "start_ts": 70, "end_ts": 1145, "timed_out": True,
+              "helper_only_s": exp.helper_only_s(runs, 1145)}]
+    summary = exp.summarize(runs, loads, [samples])
+    # The whole repetition would pass loop p95 <=50 ms; the browsers saw 100-200 ms.
+    assert summary["whole_repetition"]["daemon"]["loop_drift_p95_ms"] <= 1
+    assert summary["daemon_scope"] == "browser_active"
+    assert summary["daemon"]["loop_drift_p95_ms"] > 50
+    assert summary["daemon"]["samples"] == 40
+    assert summary["daemon_repetitions"][0]["loop_drift_p95_ms"] > 50
+    assert summary["activity"] == [{
+        "repetition": 1,
+        "browser_windows": [{"clients": 1, "start_ts": 100, "end_ts": 119},
+                            {"clients": 3, "start_ts": 125, "end_ts": 144}],
+        "samples": 1075, "browser_active_samples": 40, "excluded_samples": 1035,
+        "helper_only_s": 1001,
+    }]
+    assert summary["load"]["timed_out_count"] == 1
+
+
+def test_client_count_summaries_scope_to_their_own_browser_windows():
+    exp = load_script("experiment")
+    runs, samples = quiet_tail_repetition()
+    loaded = [{"active": True, "end_ts": 1145, "helper_only_s": exp.helper_only_s(runs, 1145)}]
+    one, three = (exp.summarize([r for r in runs if r["manifest"]["clients"] == n], loaded,
+                                [samples]) for n in (1, 3))
+    assert one["daemon"]["loop_drift_p95_ms"] == pytest.approx(97.5)
+    assert three["daemon"]["loop_drift_p95_ms"] == pytest.approx(195)
+    assert [a["browser_windows"] for a in (*one["activity"], *three["activity"])] == [
+        [{"clients": 1, "start_ts": 100, "end_ts": 119}],
+        [{"clients": 3, "start_ts": 125, "end_ts": 144}]]
+    # The tail is the repetition's, not the time after this client count's own run.
+    assert one["activity"][0]["helper_only_s"] == three["activity"][0]["helper_only_s"] == 1001
+    idle = [{"active": False, "timed_out": None, "throughput_iter_per_s": None}]
+    assert exp.summarize(runs, idle, [samples])["activity"][0]["helper_only_s"] is None
+    # No browser window, no browser-active verdict: the scope stays empty, never widened.
+    empty = exp.summarize([], idle, [samples])
+    assert empty["daemon"]["samples"] == 0 and empty["daemon"]["loop_drift_p95_ms"] is None
+    assert empty["whole_repetition"]["daemon"]["samples"] == 1075
 
 
 def test_workload_coverage_flags_a_helper_that_finished_before_observation():
@@ -493,7 +563,8 @@ def test_api_probe_uses_real_contracts_and_reports_http_errors_and_missing_tasks
         thread.join()
 
 
-def test_experiment_writes_all_artifacts_and_keeps_client_counts_separate(tmp_path, monkeypatch):
+def test_experiment_writes_all_artifacts_and_keeps_client_counts_separate(
+        tmp_path, monkeypatch, capsys):
     exp = load_script("experiment")
     target = tmp_path / "target.yaml"
     target.write_text("database:\n  url: postgresql://aq:never-record-this@localhost:5533/isolated\n"
@@ -551,6 +622,16 @@ def test_experiment_writes_all_artifacts_and_keeps_client_counts_separate(tmp_pa
     assert summary["by_clients"]["3"]["cold"]["tasks"]["ready_ms"]["raw"] == [30] * 3
     assert summary["load"]["throughput_iter_per_s"]["median"] == 200
     assert summary["loaded_observations_covered"] is False
+    assert summary["daemon_scope"] == "browser_active"
+    assert [a["repetition"] for a in summary["activity"]] == [1, 2, 3]
+    for activity in summary["activity"]:
+        assert [w["clients"] for w in activity["browser_windows"]] == [1, 3]
+        assert activity["helper_only_s"] >= 0
+        load = json.loads((out / f"load-{activity['repetition']}.json").read_text())
+        assert load["helper_only_s"] == activity["helper_only_s"]
+    assert [len(a["browser_windows"]) for a in summary["by_clients"]["3"]["activity"]] == [1] * 3
+    printed = capsys.readouterr().out
+    assert "loop p95, browser-active:" in printed and "whole repetition:" in printed
     # A second run cannot overwrite the evidence.
     assert exp.main(["--mode", "idle", "--dashboard-url", "http://127.0.0.1:8092",
                      "--api-url", "http://127.0.0.1:8099", "--config", str(target),
