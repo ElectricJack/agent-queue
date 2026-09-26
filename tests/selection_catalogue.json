@@ -239,7 +239,8 @@
         "tests/test_conversation_limits.py",
         "tests/test_conversation_outbox.py",
         "tests/test_conversation_preconditions.py",
-        "tests/test_conversation_queries.py"
+        "tests/test_conversation_queries.py",
+        "tests/test_conversation_render.py"
       ]
     },
     "docs-guards": {
@@ -948,6 +949,7 @@
         "tests/test_conversation_outbox.py",
         "tests/test_conversation_preconditions.py",
         "tests/test_conversation_queries.py",
+        "tests/test_conversation_render.py",
         "tests/test_supervisor_capability_sync.py",
         "tests/test_supervisor_failure_triage.py",
         "tests/test_supervisor_global_lifecycle.py",
@@ -1219,7 +1221,7 @@
       ]
     }
   },
-  "digest": "sha256:134c8b371e261c173bb151e1a0dfe50e425a4c59f9bbaf1389e9fcda34ff584f",
+  "digest": "sha256:aa4065aad132d0d2574b8c8757bfd58c52514e69d7d389e201890e5b18e80833",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3761,6 +3763,18 @@
       ],
       "markers": [],
       "summary": "Durable supervisor conversations, inputs, backfill cursors and gaps on PostgreSQL."
+    },
+    "tests/test_conversation_render.py": {
+      "areas": [
+        "discord-conversations",
+        "supervisor"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.conversations.render"
+      ],
+      "markers": [],
+      "summary": "Explicit replies are bounded, mention-free and link-filtered."
     },
     "tests/test_costs.py": {
       "areas": [
@@ -11288,6 +11302,8 @@
         "src.conversations.outbox",
         "src.database",
         "src.database.tables",
+        "src.messages.delivery",
+        "src.models",
         "src.profiles.capabilities"
       ],
       "markers": [

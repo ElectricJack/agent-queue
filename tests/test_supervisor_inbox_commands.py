@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from src.commands.handler import CommandHandler
 from src.commands.principal import (
@@ -414,3 +414,283 @@ async def test_tombstone_replay_never_recreates_work(env):
     assert replay == {**first, "created": False, "state": "expired"}
     assert await counts(db) == (1, 1, 1)
     assert len(handler.orchestrator.conversation_outbox.rows) == 1
+
+
+def reply_args(first, **overrides):
+    return {
+        "conversation_id": first["conversation_id"],
+        "input_id": first["input_id"],
+        "text": "Answer from the supervisor",
+        "idempotency_key": "answer-1",
+        **overrides,
+    }
+
+
+async def live_supervisor(db, **overrides):
+    from src.models import SessionRecord
+    from src.profiles.capabilities import CapabilityPolicy
+
+    await db.create_session(
+        SessionRecord(
+            id="global-launch",
+            project_id=None,
+            profile_id="supervisor",
+            harness="codex",
+            provider="openai",
+            name="supervisor-global",
+            lifecycle="named",
+            work_dir="/tmp",
+            epoch="epoch",
+            instance_token="live-token",
+            started_at=NOW,
+            state="running",
+        )
+    )
+    return ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["supervisor_inbox_reply"]),
+        session_id="global-launch",
+        session_instance_token="live-token",
+        elevated=True,
+        **overrides,
+    )
+
+
+async def reply(handler, values, principal=TRUSTED_LOCAL):
+    with principal_context(principal):
+        return await handler.execute("supervisor_inbox_reply", values)
+
+
+async def test_reply_live_global_supervisor_is_durable_and_idempotent(env):
+    handler, db = env
+    first = await post(handler)
+    principal = await live_supervisor(db)
+    result = await reply(handler, reply_args(first), principal)
+    assert result == {
+        "success": True,
+        "created": True,
+        "reply_message_id": result["reply_message_id"],
+        "delivery_dedup_key": f"conv-reply:{result['reply_message_id']}",
+        "discord_text_chars": result["discord_text_chars"],
+        "truncated": False,
+    }
+    msg = await db.get_message(result["reply_message_id"])
+    assert (
+        msg.from_kind,
+        msg.from_id,
+        msg.to_kind,
+        msg.to_id,
+        msg.thread_id,
+        msg.reply_to_id,
+        msg.body_kind,
+        msg.body,
+    ) == (
+        "session",
+        "supervisor-global",
+        "user",
+        f"discord:{AUTHOR}",
+        f"conversation:{first['conversation_id']}",
+        first["supervisor_message_id"],
+        "conversation_reply",
+        "Answer from the supervisor",
+    )
+    assert (await db.get_conversation_input(first["input_id"]))["state"] == "answered"
+    rows = handler.orchestrator.conversation_outbox.rows
+    assert rows[-1]["payload"] == {
+        "conversation_id": first["conversation_id"],
+        "input_id": first["input_id"],
+        "reply_message_id": result["reply_message_id"],
+        "text": f"Answer from the supervisor (aq-conv:{result['delivery_dedup_key']})",
+    }
+    assert result["discord_text_chars"] == len(rows[-1]["payload"]["text"])
+    # The first durable text wins even when a retry carries a changed body.
+    replay = await reply(handler, reply_args(first, text="changed"), principal)
+    assert replay == {**result, "created": False}
+    assert len(rows) == 2
+    handler.orchestrator.bus.emit.assert_any_await(
+        "conversation.reply_queued.v1",
+        {
+            "conversation_id": first["conversation_id"],
+            "input_id": first["input_id"],
+            "reply_message_id": result["reply_message_id"],
+            "delivery_dedup_key": result["delivery_dedup_key"],
+            "created": True,
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    "mode", ["stale", "service", "project", "plain", "stopped", "absent", "playbook"]
+)
+async def test_reply_requires_live_global_supervisor_launch(env, mode):
+    from dataclasses import replace
+
+    handler, db = env
+    first = await post(handler)
+    principal = await live_supervisor(db)
+    if mode == "stale":
+        principal = replace(principal, session_instance_token="old-token")
+    elif mode == "service":
+        principal = GATEWAY
+    elif mode == "project":
+        principal = replace(principal, project_id="some-project")
+    elif mode == "plain":
+        principal = replace(principal, elevated=False)
+    elif mode == "playbook":
+        principal = replace(principal, kind=PrincipalKind.PLAYBOOK)
+    elif mode == "stopped":
+        await db.update_session("global-launch", state="stopped")
+    elif mode == "absent":
+        await db.update_session("global-launch", name="other")
+    with principal_context(principal):
+        result = await handler._cmd_supervisor_inbox_reply(reply_args(first))
+    assert result["error_code"] == "out_of_scope"
+    assert len(handler.orchestrator.conversation_outbox.rows) == 1
+    assert (await db.get_conversation_input(first["input_id"]))["state"] == "accepted"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "actor",
+        "actor_id",
+        "human",
+        "verified_actor",
+        "from_kind",
+        "from_id",
+        "to_kind",
+        "to_id",
+        "session",
+        "session_id",
+        "destination",
+        "thread_id",
+        "supervisor_owner",
+    ],
+)
+async def test_reply_rejects_spoofed_authority(env, field):
+    handler, _ = env
+    first = await post(handler)
+    assert (await reply(handler, reply_args(first, **{field: "forged"})))[
+        "error_code"
+    ] == "spoofed_identity"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("text", ""),
+        ("text", " " * 10),
+        ("text", "x" * 16001),
+        ("text", 1),
+        ("idempotency_key", ""),
+        ("idempotency_key", "x" * 129),
+        ("conversation_id", None),
+        ("input_id", []),
+    ],
+    ids=[
+        "empty-text",
+        "blank-text",
+        "long-text",
+        "nonstring-text",
+        "empty-key",
+        "long-key",
+        "missing-conversation",
+        "nonstring-input",
+    ],
+)
+async def test_reply_validates_request(env, field, value):
+    handler, _ = env
+    first = await post(handler)
+    assert (await reply(handler, reply_args(first, **{field: value})))[
+        "error_code"
+    ] == "invalid_request"
+
+
+async def test_reply_checks_input_binding_closed_and_revoked(env):
+    handler, db = env
+    first = await post(handler)
+    other = await post(handler, args(1))
+    assert (await reply(handler, reply_args(first, input_id=other["input_id"])))[
+        "error_code"
+    ] == "input_not_in_conversation"
+    assert (await reply(handler, reply_args(first, input_id="missing")))[
+        "error_code"
+    ] == "input_not_in_conversation"
+    assert (await reply(handler, reply_args(first, conversation_id="missing")))[
+        "error_code"
+    ] == "conversation_not_found"
+    await db.set_conversation_state(first["conversation_id"], state="closed", now=NOW)
+    assert (await reply(handler, reply_args(first)))["error_code"] == "conversation_closed"
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(conversation_inputs)
+            .where(conversation_inputs.c.id == other["input_id"])
+            .values(state="revoked")
+        )
+    assert (await reply(handler, reply_args(other)))["error_code"] == "input_revoked"
+
+
+async def test_reply_enqueue_recovery_uses_original_full_text(env):
+    handler, db = env
+    first = await post(handler)
+    outbox = handler.orchestrator.conversation_outbox
+    enqueue = outbox.enqueue
+    outbox.enqueue = AsyncMock(side_effect=RuntimeError("temporary outbox failure"))
+    original = "é" * 5000
+    failed = await reply(handler, reply_args(first, text=original))
+    assert "temporary outbox failure" in failed["error"]
+    assert (await db.get_conversation_input(first["input_id"]))["state"] == "answered"
+    outbox.enqueue = enqueue
+    handler.orchestrator.dashboard_links = SimpleNamespace(
+        resolve=AsyncMock(return_value=SimpleNamespace(url="https://dashboard.example"))
+    )
+    recovered = await reply(handler, reply_args(first, text="changed"))
+    assert recovered["created"] is False and recovered["truncated"] is True
+    assert recovered["discord_text_chars"] == 1900
+    assert (await db.get_message(recovered["reply_message_id"])).body == original
+    assert outbox.rows[-1]["payload"]["text"].startswith("é")
+
+
+async def test_reply_transcript_tail_and_message_sent_never_enqueue_delivery(env):
+    from src.messages.delivery import MessageDeliveryEngine
+
+    handler, db = env
+    first = await post(handler)
+    await db.mark_delivered(first["supervisor_message_id"], via="nudge")
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(messages)
+            .where(messages.c.id == first["supervisor_message_id"])
+            .values(delivered_at=NOW)
+        )
+    sessions = SimpleNamespace(tail_assistant_turn=AsyncMock(return_value="transcript answer"))
+    engine = MessageDeliveryEngine(db, sessions, handler.config, bus=handler.orchestrator.bus)
+    assert await engine.check_reply_timeouts() == 1
+    sessions.tail_assistant_turn.assert_awaited_once()
+    assert any(
+        call.args[0] == "message.sent" for call in handler.orchestrator.bus.emit.await_args_list
+    )
+    item = (await db.list_conversation_inputs(first["conversation_id"]))[0]
+    assert item["state"] == "accepted"
+    assert not any(
+        r["dedup_key"].startswith("conv-reply:")
+        for r in handler.orchestrator.conversation_outbox.rows
+    )
+    sent = await handler.execute(
+        "message_send",
+        {
+            "to_kind": "user",
+            "to_id": f"discord:{AUTHOR}",
+            "body": "generic answer",
+            "from_kind": "session",
+            "from_id": "supervisor-global",
+            "thread_id": f"conversation:{first['conversation_id']}",
+        },
+    )
+    assert "error" not in sent
+    await engine.run_delivery_pass()
+    assert not any(
+        r["dedup_key"].startswith("conv-reply:")
+        for r in handler.orchestrator.conversation_outbox.rows
+    )
+    assert (await db.get_conversation_input(first["input_id"]))["state"] == "accepted"

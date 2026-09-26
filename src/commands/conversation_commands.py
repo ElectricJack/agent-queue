@@ -2,24 +2,33 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from typing import Any
 
 from pydantic import ValidationError
 
-from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
+from src.commands.principal import (
+    TRUSTED_LOCAL,
+    PrincipalKind,
+    current_principal,
+    matches_session_instance,
+)
 from src.conversations.envelope import ConversationEnvelope
 from src.conversations.intake import normalise_text
 from src.conversations.limits import MAX_INPUT_CHARS, WINDOW_SECONDS
 from src.conversations.outbox import ConversationOutbox, UnboundOutbox
 from src.conversations.preconditions import conversation_preconditions
-from src.conversations.render import render_brief
+from src.conversations.render import render_brief, render_reply, sanitise_reply
 from src.database.queries.conversation_queries import (
     ConversationClosed,
+    ConversationConflict,
     ConversationNotFound,
     ConversationRateLimited,
+    ConversationStateError,
 )
 
+_LIVE_SESSION_STATES = frozenset({"starting", "running", "draining"})
 _FORBIDDEN_AUTHORITY_ARGS = frozenset(
     {
         "actor",
@@ -45,6 +54,115 @@ def _error(code: str, error: str, **details: Any) -> dict[str, Any]:
 
 class ConversationCommandsMixin:
     """Intake checks identity explicitly; SERVICE's stored DENY_ALL is not enforced."""
+
+    async def _cmd_supervisor_inbox_reply(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Only an explicit answer from the live global supervisor queues a reply."""
+        bad = sorted(_FORBIDDEN_AUTHORITY_ARGS.intersection(args))
+        if bad:
+            return _error("spoofed_identity", "caller identity and destination are server-derived")
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.LOCAL:
+            live = None
+            if (
+                principal.kind is PrincipalKind.SESSION
+                and principal.elevated
+                and principal.project_id is None
+            ):
+                live = await self.db.get_session_by_name("supervisor-global")
+            if (
+                live is None
+                or live.state not in _LIVE_SESSION_STATES
+                or live.project_id is not None
+                or principal.session_id != live.id
+                or not matches_session_instance(principal, live.instance_token)
+            ):
+                return _error("out_of_scope", "reply requires the live global supervisor launch")
+
+        required = {"conversation_id", "input_id", "text", "idempotency_key"}
+        if set(args) != required or any(
+            not isinstance(args.get(key), str) or not args[key].strip() for key in required
+        ):
+            return _error("invalid_request", "conversation_id, input_id, text and key are required")
+        if len(args["text"]) > 16000 or len(args["idempotency_key"]) > 128:
+            return _error("invalid_request", "reply text or idempotency key exceeds its limit")
+        conversation_id, input_id = args["conversation_id"], args["input_id"]
+        conversation = await self.db.get_conversation(conversation_id)
+        if conversation is None:
+            return _error("conversation_not_found", "conversation does not exist")
+        item = await self.db.get_conversation_input(input_id)
+        if item is None or item["conversation_id"] != conversation_id:
+            return _error("input_not_in_conversation", "input does not belong to this conversation")
+        if conversation["state"] == "closed":
+            return _error("conversation_closed", "conversation is closed")
+        if item["state"] == "revoked":
+            return _error("input_revoked", "conversation input is revoked")
+        outbox = getattr(self.orchestrator, "conversation_outbox", None) or UnboundOutbox()
+        if not outbox.bound:
+            return _error(
+                "preconditions_unmet", "conversation outbox unbound", unmet=["outbox_unbound"]
+            )
+
+        digest = hashlib.sha256(f"{conversation_id}:{args['idempotency_key']}".encode()).hexdigest()
+        reply_message_id = f"msg-conv-reply-{digest[:32]}"
+        try:
+            recorded = await self.db.record_conversation_reply(
+                conversation_id=conversation_id,
+                input_id=input_id,
+                reply_message_id=reply_message_id,
+                body=args["text"],
+                now=getattr(self, "_clock", time.time)(),
+            )
+        except ConversationNotFound:
+            return _error("conversation_not_found", "conversation or input no longer exists")
+        except ConversationConflict:
+            return _error("input_not_in_conversation", "input or idempotency key belongs elsewhere")
+        except ConversationClosed:
+            return _error("conversation_closed", "conversation is closed")
+        except ConversationStateError:
+            return _error("input_revoked", "conversation input is revoked")
+
+        # Repair a crash after persistence but before enqueue, using the first
+        # durable body rather than the retry's possibly changed text.
+        text = recorded["message"]["body"]
+        resolver = getattr(self.orchestrator, "dashboard_links", None)
+        base_url = (await resolver.resolve()).url if resolver is not None else ""
+        dedup_key = f"conv-reply:{reply_message_id}"
+        discord_text = render_reply(
+            text,
+            dedup_key=dedup_key,
+            base_url=base_url,
+            conversation_id=conversation_id,
+        )
+        await outbox.enqueue(
+            owner_id=conversation_id,
+            kind="reply",
+            dedup_key=dedup_key,
+            payload={
+                "conversation_id": conversation_id,
+                "input_id": input_id,
+                "reply_message_id": reply_message_id,
+                "text": discord_text,
+            },
+        )
+        await self.orchestrator.bus.emit(
+            "conversation.reply_queued.v1",
+            {
+                "conversation_id": conversation_id,
+                "input_id": input_id,
+                "reply_message_id": reply_message_id,
+                "delivery_dedup_key": dedup_key,
+                "created": recorded["created"],
+            },
+        )
+        return {
+            "success": True,
+            "created": recorded["created"],
+            "reply_message_id": reply_message_id,
+            "delivery_dedup_key": dedup_key,
+            "discord_text_chars": len(discord_text),
+            "truncated": discord_text
+            != f"{sanitise_reply(text, base_url=base_url)} (aq-conv:{dedup_key})",
+        }
 
     async def _conversation_notice(
         self,
