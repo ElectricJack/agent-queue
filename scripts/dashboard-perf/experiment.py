@@ -176,6 +176,32 @@ def daemon_summary(samples):
     }
 
 
+def browser_windows(runs):
+    """Each harness run's complete interval: cold/warm loads through its direct API reads."""
+    return [{"clients": get_path(r, "manifest", "clients"), "start_ts": r["start_ts"],
+             "end_ts": r["end_ts"]}
+            for r in runs if numeric(r.get("start_ts")) and numeric(r.get("end_ts"))]
+
+
+def browser_active(samples, windows):
+    """1 s samples stamped inside a browser window; warm-up and helper-only tail fall outside."""
+    return [s for s in samples if numeric(s.get("ts")) and
+            any(w["start_ts"] <= s["ts"] <= w["end_ts"] for w in windows)]
+
+
+def helper_only_s(runs, ended):
+    """Seconds a workload ran after its repetition's last browser window."""
+    last = max((r["end_ts"] for r in runs if numeric(r.get("end_ts"))), default=None)
+    return round(max(0, ended - last), 3) if numeric(ended) and last is not None else None
+
+
+def daemon_scope(series):
+    # Buckets add across seconds/repetitions. Never average percentiles.
+    repetitions = [daemon_summary(group) for group in series]
+    return {"daemon": daemon_summary([s for group in series for s in group]),
+            "daemon_repetitions": repetitions, "daemon_spread": numeric_summary(repetitions)}
+
+
 def summarize(runs: list[dict], loads: list[dict], series: list[list[dict]]) -> dict:
     out = {}
     for phase in ("cold", "warm", "idle", "api"):
@@ -195,10 +221,21 @@ def summarize(runs: list[dict], loads: list[dict], series: list[list[dict]]) -> 
                    "timed_out": [load.get("timed_out") for load in loads],
                    "timed_out_count": sum(load.get("timed_out") is True for load in loads),
                    "repetitions": loads}
-    # Buckets add across seconds/repetitions. Never average percentiles.
-    out["daemon"] = daemon_summary([s for group in series for s in group])
-    out["daemon_repetitions"] = [daemon_summary(group) for group in series]
-    out["daemon_spread"] = numeric_summary(out["daemon_repetitions"])
+    # The envelope is judged while browsers run. A loaded repetition also waits out its
+    # helper, so the whole-repetition series can end in a quiet tail idle never has.
+    active, out["activity"] = [], []
+    for index, samples in enumerate(series, 1):
+        load = loads[index - 1] if index <= len(loads) else {}
+        windows = browser_windows(r for r in runs if r.get("repetition") == index)
+        active.append(browser_active(samples, windows))
+        out["activity"].append({
+            "repetition": index, "browser_windows": windows, "samples": len(samples),
+            "browser_active_samples": len(active[-1]),
+            "excluded_samples": len(samples) - len(active[-1]),
+            "helper_only_s": load.get("helper_only_s")})
+    out["daemon_scope"] = "browser_active"
+    out.update(daemon_scope(active))
+    out["whole_repetition"] = daemon_scope(series)
     return out
 
 
@@ -439,7 +476,9 @@ def run_repetition(args, config, index):
             with (args.out / f"harness-{index}-clients-{clients}.log").open("w") as log:
                 subprocess.run(cmd, check=True, stdout=log, stderr=log,
                                timeout=workload_timeout(args) + 3600)
-            runs.append(json.loads(out.read_text()))
+            run = json.loads(out.read_text())
+            run["repetition"] = index
+            runs.append(run)
     finally:
         if workload:
             workload.finish(stop=sys.exc_info()[0] is not None)
@@ -455,7 +494,8 @@ def run_repetition(args, config, index):
             load.update(start_ts=workload.started, end_ts=workload.ended,
                         exit_code=workload.proc.returncode,
                         wrapper_timed_out=workload.timed_out,
-                        coverage=coverage(runs, workload.started, workload.ended))
+                        coverage=coverage(runs, workload.started, workload.ended),
+                        helper_only_s=helper_only_s(runs, workload.ended))
             if workload.timed_out:
                 load["timed_out"] = True
             load["covers_observations"] = bool(load["coverage"]) and all(
@@ -527,8 +567,12 @@ def main(argv=None) -> int:
             all(load.get("covers_observations") for load in loads) if args.mode != "idle" else None)
         write_json(args.out / "summary.json", summary)
         print(args.out)
-        print(f"loop p95: {summary['daemon']['loop_drift_p95_ms']} ms")
-        print(f"API p95: {summary['daemon']['api_all_p95_ms']} ms")
+        whole = summary["whole_repetition"]["daemon"]
+        print(f"loop p95, browser-active: {summary['daemon']['loop_drift_p95_ms']} ms "
+              f"(whole repetition: {whole['loop_drift_p95_ms']} ms)")
+        print(f"API p95, browser-active: {summary['daemon']['api_all_p95_ms']} ms "
+              f"(whole repetition: {whole['api_all_p95_ms']} ms)")
+        print(f"helper-only tail: {[a['helper_only_s'] for a in summary['activity']]} s")
         detail = get_path(summary, "interactions", "tasks: click task row → pane",
                           "visible_ms", "median")
         print(f"task-detail visible median: {detail} ms")
