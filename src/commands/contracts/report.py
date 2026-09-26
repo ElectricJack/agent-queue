@@ -39,6 +39,35 @@ class MorningReportPreviewValue(CommandValue):
     reason: str
 
 
+class MorningReportTickArgs(CommandArgs):
+    now: float | None = None
+
+
+class MorningReportTickValue(CommandValue):
+    report_id: str | None
+    state: str
+    reason: str | None
+    next_due_at: float | None
+    cancelled: int
+
+
+class ReportGetArgs(CommandArgs):
+    report_id: str
+
+
+class ReportListArgs(CommandArgs):
+    offset: int = 0
+    limit: int = 50
+
+
+class ReportGetValue(CommandValue):
+    report: dict[str, Any]
+
+
+class ReportListValue(CommandValue):
+    reports: list[dict[str, Any]]
+
+
 class ReportBriefArgs(CommandArgs):
     request_id: str
     offset: int = 0
@@ -120,6 +149,9 @@ def _registration(
             presentation=CommandPresentation(
                 title=name.replace("_", " ").title(),
                 summary={
+                    "morning_report_tick": "Reserve and recover the zoned daily report and deadline fallback.",
+                    "report_get": "Read a stored morning report in project scope.",
+                    "report_list": "List stored morning reports in project scope.",
                     "morning_report_preview": "Read bounded overnight evidence without writes or model calls.",
                     "report_request": "Queue one author wake for a reserved report.",
                     "report_brief": "Read a bounded, paged report brief and its CAS version.",
@@ -140,6 +172,14 @@ def register_report_contracts(registry: ContractRegistry) -> None:
             MorningReportPreviewValue,
             SideEffectClass.READ,
         ),
+        (
+            "morning_report_tick",
+            MorningReportTickArgs,
+            MorningReportTickValue,
+            SideEffectClass.CREATE,
+        ),
+        ("report_get", ReportGetArgs, ReportGetValue, SideEffectClass.READ),
+        ("report_list", ReportListArgs, ReportListValue, SideEffectClass.READ),
         ("report_request", ReportRequestArgs, ReportRequestValue, SideEffectClass.CREATE),
         ("report_brief", ReportBriefArgs, ReportBriefValue, SideEffectClass.READ),
         ("report_submit", ReportSubmitArgs, ReportSubmitValue, SideEffectClass.UPDATE),

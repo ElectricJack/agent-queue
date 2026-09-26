@@ -33,6 +33,7 @@ const ProjectSessions = lazy(() => import("./pages/project/Sessions"));
 const TaskDetail = lazy(() => import("./pages/TaskDetail"));
 const PlaybookDetail = lazy(() => import("./pages/PlaybookDetail"));
 const SessionDetail = lazy(() => import("./pages/SessionDetail"));
+const MorningReportPage = lazy(() => import("./pages/reports/MorningReportPage"));
 const TaskFiles = lazy(() => import("./pages/TaskFiles"));
 
 /** Index redirects must retain the shared URL-backed task filters. */
@@ -196,6 +197,7 @@ export default function App() {
               <Route path="config" element={<ProjectConfig />} />
             </Route>
 
+            <Route path="reports/:reportId" element={<MorningReportPage />} />
             <Route path="tasks/:taskId" element={<TaskDetail />} />
             <Route path="tasks/:taskId/files" element={<TaskFiles />} />
             <Route path="sessions/:sessionId" element={<SessionDetail />} />

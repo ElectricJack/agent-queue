@@ -111,6 +111,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "report_request": "report",
     "report_brief": "report",
     "morning_report_preview": "report",
+    "morning_report_tick": "report",
+    "report_get": "report",
+    "report_list": "report",
     "report_submit": "report",
     # dashboard — durable shared and roaming UI state
     "dashboard_state_list": "dashboard",
@@ -6857,6 +6860,37 @@ _ALL_TOOL_DEFINITIONS.extend(
 
 _ALL_TOOL_DEFINITIONS.extend(
     [
+        {
+            "name": "morning_report_tick",
+            "description": "Reserve/recover a daily morning report (service/system playbook only).",
+            "input_schema": {
+                "type": "object",
+                "properties": {"now": {"type": "number"}},
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "report_get",
+            "description": "Read an immutable stored morning report in project scope.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"report_id": {"type": "string"}},
+                "required": ["report_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "report_list",
+            "description": "List stored morning reports in project scope.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                },
+                "additionalProperties": False,
+            },
+        },
         {
             "name": "morning_report_preview",
             "description": "Read bounded morning evidence without writes, model calls or sends.",

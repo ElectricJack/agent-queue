@@ -118,3 +118,22 @@ def report_submit(
             },
         ),
     )
+
+
+@report.command("show")
+@click.argument("report_id")
+@click.pass_context
+@_handle_errors
+def report_show(ctx: click.Context, report_id: str) -> None:
+    """Read one stored morning report."""
+    emit(ctx, _execute(ctx, "report_get", {"report_id": report_id}))
+
+
+@report.command("list")
+@click.option("--offset", type=click.IntRange(0), default=0)
+@click.option("--limit", type=click.IntRange(1, 100), default=50)
+@click.pass_context
+@_handle_errors
+def report_list(ctx: click.Context, offset: int, limit: int) -> None:
+    """List stored morning reports visible to this caller."""
+    emit(ctx, _execute(ctx, "report_list", {"offset": offset, "limit": limit}))

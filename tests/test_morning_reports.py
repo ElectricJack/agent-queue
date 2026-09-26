@@ -462,3 +462,323 @@ async def test_git_failure_is_a_gap_and_command_operands_are_hashes():
     assert f"{HEAD}..{HEAD}" in log and log[-1] == "--"
     assert f"--max-count={MAX_COMMITS + 1}" in log
     assert all(kwargs["cwd"] == "/daemon/base" for _, kwargs in calls)
+
+
+# Durable scheduling and read surface (implementation plan 2).
+
+
+def utc(value):
+    return datetime.fromisoformat(value).replace(tzinfo=timezone.utc).timestamp()
+
+
+@pytest.mark.parametrize(
+    "day,clock,zone,expected",
+    [
+        ("2026-03-08", "02:30", "America/Los_Angeles", "2026-03-08T10:00:00"),
+        ("2026-11-01", "01:30", "America/Los_Angeles", "2026-11-01T08:30:00"),
+        ("2026-09-25", "07:00", "America/Los_Angeles", "2026-09-25T14:00:00"),
+        ("2026-09-25", "07:00", "UTC", "2026-09-25T07:00:00"),
+        ("2026-10-04", "02:15", "Australia/Lord_Howe", "2026-10-03T15:30:00"),
+    ],
+)
+def test_daily_boundary_resolves_gaps_first_fold_and_report_zone(day, clock, zone, expected):
+    from src.reports.schedule import planned_at
+
+    assert planned_at(datetime.fromisoformat(day).date(), clock, zone) == utc(expected)
+
+
+def test_morning_config_loads_validates_and_round_trips(tmp_path):
+    from dataclasses import asdict
+
+    from src.config import MorningReportsConfig, load_config
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "database:\n  url: postgresql://test:test@localhost/disposable\ndiscord:\n  bot_token: test\n  guild_id: test\nreports:\n  timezone: America/Los_Angeles\n  morning:\n"
+        "    enabled: true\n    time: '02:30'\n    project_ids: [p]\n"
+        "    destination: 'discord:123456789012345678'\n"
+    )
+    config = load_config(path).reports
+    assert not config.validate()
+    assert config.morning.enabled and config.morning.time == "02:30"
+    assert asdict(config)["morning"]["max_lookback_hours"] == 72
+    for values in (
+        {"time": "7:00"},
+        {"enabled": "false"},
+        {"max_lookback_hours": 73},
+        {"author_deadline_minutes": 0},
+        {"destination": "../../private"},
+        {"project_ids": [""]},
+    ):
+        assert MorningReportsConfig(**values).validate()
+    config.timezone = "invalid/report-zone"
+    assert config.validate()
+
+
+async def durable_result(*, window, healthy=True, quiet=False):
+    from src.reports.hourly import hash_brief
+
+    result, _, _ = await build()
+    brief = result["brief"]
+    brief["window"] = window
+    brief["source_cursors"] = {"completions": window["until"], "deliveries": window["until"]}
+    brief["source_heads"] = {"p": HEAD}
+    brief["coverage"] = {
+        "complete": healthy,
+        "gaps": [] if healthy else [{"source": "completions", "reason": "read_failed"}],
+        "warnings": ["late_arrivals_outside_72h_unsupported"],
+        "excluded_sources": [],
+    }
+    if not healthy:
+        brief["source_cursors"].pop("completions")
+    if quiet:
+        brief["facts"] = []
+        for project in brief["projects"]:
+            for group in ("landed", "pending", "failures"):
+                project[group] = []
+    return {
+        "brief": brief,
+        "brief_hash": hash_brief(brief),
+        "would_suppress": quiet and healthy,
+        "reason": "no_changes"
+        if quiet and healthy
+        else "activity"
+        if healthy
+        else "partial_sources",
+    }
+
+
+@pytest.fixture
+def scheduled(db, monkeypatch):
+    command = Commands(db)
+    command.orchestrator.config.reports.morning.enabled = True
+    command.orchestrator.config.reports.morning.project_ids = ["p"]
+
+    async def collect(*args, **kwargs):
+        return await durable_result(window=kwargs["window"])
+
+    collector = AsyncMock(side_effect=collect)
+    monkeypatch.setattr("src.reports.morning.collect_morning_evidence", collector)
+    return command, collector
+
+
+async def tick(command, now):
+    with principal_context(ExecutionPrincipal.service("morning-reports")):
+        return await command._cmd_morning_report_tick({"now": now})
+
+
+async def test_restart_before_inside_and_after_cutoff(scheduled):
+    command, collector = scheduled
+    assert (await tick(command, utc("2026-09-25T06:59:00")))["reason"] == "before_schedule"
+    collector.assert_not_awaited()
+    first = await tick(command, utc("2026-09-25T08:59:00"))
+    row = await command.db.get_morning_report(first["report_id"])
+    assert row["state"] == "ready"
+    assert row["window_end"] == utc("2026-09-25T07:00:00")
+    assert row["author_deadline"] == utc("2026-09-25T09:14:00")
+    assert (await tick(command, utc("2026-09-25T09:13:59")))["state"] == "ready"
+    assert (await tick(command, utc("2026-09-25T09:14:00")))["state"] == "final"
+    skipped = await tick(command, utc("2026-09-26T23:00:00"))
+    assert skipped["state"] == "skipped" and skipped["reason"] == "late_start"
+    collector.assert_awaited_once()
+    cursors = await command.db.list_morning_reports(limit=10)
+    assert len(cursors) == 2
+
+
+async def test_cutoff_boundary_is_inclusive_and_host_timezone_does_not_drive_tick(scheduled):
+    command, _ = scheduled
+    command.orchestrator.config.reports.timezone = "America/Los_Angeles"
+    first = await tick(command, utc("2026-09-25T16:00:00"))
+    row = await command.db.get_morning_report(first["report_id"])
+    assert row["local_date"] == "2026-09-25" and row["state"] == "ready"
+    assert row["planned_at"] == utc("2026-09-25T14:00:00")
+    assert (await tick(command, utc("2026-09-26T16:00:01")))["state"] == "skipped"
+
+
+async def test_concurrent_ticks_config_edits_and_restarts_reuse_frozen_snapshot(scheduled):
+    import asyncio
+
+    command, collector = scheduled
+    now = utc("2026-09-25T07:00:00")
+    results = await asyncio.gather(*(tick(command, now) for _ in range(4)))
+    assert {r["report_id"] for r in results} == {"morning-2026-09-25"}
+    collector.assert_awaited_once()
+    row = await command.db.get_morning_report(results[0]["report_id"])
+    command.orchestrator.config.reports.morning.time = "07:01"
+    command.orchestrator.config.reports.morning.max_lookback_hours = 48
+    await tick(command, now + 120)
+    assert (await command.db.get_morning_report(row["id"]))["brief_hash"] == row["brief_hash"]
+    assert (await command.db.get_morning_report(row["id"]))["config_snapshot"]["time"] == "07:00"
+    await tick(command, now + 901)
+    final = await command.db.get_morning_report(row["id"])
+    assert final["report"] == final["fallback"]
+    assert await command.db.finalize_morning_fallback(row["id"], now=now + 1000) is None
+    collector.assert_awaited_once()
+
+
+async def test_zone_change_guard_shows_next_due_and_does_not_reserve_twice(scheduled):
+    command, _ = scheduled
+    first = await tick(command, utc("2026-09-25T07:00:00"))
+    command.orchestrator.config.reports.timezone = "Pacific/Kiritimati"
+    guarded = await tick(command, utc("2026-09-25T17:00:00"))
+    assert guarded["reason"] == "timezone_guard"
+    assert guarded["report_id"] is None
+    assert guarded["next_due_at"] == utc("2026-09-26T17:00:00")
+    rows = await command.db.list_morning_reports()
+    assert [r["id"] for r in rows] == [first["report_id"]]
+
+
+async def test_quiet_day_advances_coverage_without_author_or_delivery(scheduled):
+    command, collector = scheduled
+    async def collect(*a, **kw):
+        return await durable_result(window=kw["window"], quiet=True)
+
+    collector.side_effect = collect
+    now = utc("2026-09-25T07:00:00")
+    assert (await tick(command, now))["state"] == "suppressed"
+    await tick(command, now + 86400)
+    assert collector.call_args.kwargs["window"]["since"] == now
+    async with command.db._engine.connect() as conn:
+        assert not (await conn.execute(select(tables.supervisor_report_requests))).all()
+        # Existing fixture digest rows are unchanged: morning coverage has no transport receipt.
+        assert len((await conn.execute(select(tables.digest_windows))).all()) == 1
+
+
+async def test_partial_source_recovery_uses_older_cursor_and_replay_membership(scheduled):
+    command, collector = scheduled
+    now = utc("2026-09-25T07:00:00")
+    async def partial_collect(*a, **kw):
+        return await durable_result(window=kw["window"], healthy=False)
+
+    collector.side_effect = partial_collect
+    first = await tick(command, now)
+    await tick(command, now + 900)
+    async with command.db._engine.connect() as conn:
+        rows = (await conn.execute(select(tables.morning_report_coverage))).mappings().all()
+    by_source = {r["source"]: r["covered_until"] for r in rows}
+    assert by_source["completions"] == now - 86400
+    assert by_source["deliveries"] == now
+    async def healthy_collect(*a, **kw):
+        return await durable_result(window=kw["window"])
+
+    collector.side_effect = healthy_collect
+    await tick(command, now + 86400)
+    kwargs = collector.call_args.kwargs
+    assert kwargs["window"]["since"] == now - 86400
+    assert kwargs["previous_heads"] == {"p": HEAD}
+    assert "completion:c1" in kwargs["reported_keys"]
+    await tick(command, now + 86400 + 900)
+    third = await tick(command, now + 2 * 86400)
+    assert third["state"] == "ready"
+    assert collector.call_args.kwargs["window"]["since"] == now + 86400
+    assert (await command.db.get_morning_report(first["report_id"]))["coverage"][
+        "complete"
+    ] is False
+
+
+async def test_failed_build_and_expired_lease_recover_original_context(scheduled):
+    command, collector = scheduled
+    now = utc("2026-09-25T07:00:00")
+    collector.side_effect = RuntimeError("snapshot unavailable")
+    first = await tick(command, now)
+    row = await command.db.get_morning_report(first["report_id"])
+    assert row["state"] == "failed"
+    original = row["build_context"]
+    await command.db.claim_morning_build(row["id"], owner="crashed", now=now)
+    await tick(command, now + 100)
+    assert collector.await_count == 1
+    async def healthy_collect(*a, **kw):
+        return await durable_result(window=kw["window"])
+
+    collector.side_effect = healthy_collect
+    await tick(command, now + 300)
+    assert collector.call_args.kwargs["window"] == original["window"]
+    assert collector.call_args.kwargs["now"] == now
+    assert (await command.db.get_morning_report(row["id"]))["state"] == "ready"
+
+
+async def test_long_outage_gap_and_skip_do_not_silently_advance_coverage(scheduled):
+    command, collector = scheduled
+    now = utc("2026-09-25T07:00:00")
+    await tick(command, now)
+    await tick(command, now + 900)
+    await tick(command, now + 86400 + 7201)
+    await tick(command, now + 5 * 86400)
+    window = collector.call_args.kwargs["window"]
+    assert window["since"] == now + 2 * 86400
+    assert window["omitted_interval"] == {"since": now, "until": now + 2 * 86400}
+
+
+async def test_disable_cancels_pending_preserves_final_readable_content(scheduled):
+    command, _ = scheduled
+    now = utc("2026-09-25T07:00:00")
+    first = await tick(command, now)
+    await tick(command, now + 900)
+    second = await tick(command, now + 86400)
+    command.orchestrator.config.reports.morning.enabled = False
+    disabled = await tick(command, now + 86400 + 60)
+    assert disabled["cancelled"] == 1
+    assert (await command.db.get_morning_report(first["report_id"]))["state"] == "final"
+    assert (await command.db.get_morning_report(second["report_id"]))["reason"] == "disabled"
+    assert (await command._cmd_report_get({"report_id": first["report_id"]}))["success"]
+
+
+async def test_report_reads_filter_fleet_content_and_reject_foreign_scope(scheduled):
+    command, _ = scheduled
+    command.orchestrator.config.reports.morning.project_ids = []
+    first = await tick(command, utc("2026-09-25T07:00:00"))
+    for project_id, allowed in (("p", True), ("q", False)):
+        principal = ExecutionPrincipal(
+            kind=PrincipalKind.SESSION, policy=DENY_ALL, project_id=project_id
+        )
+        with principal_context(principal):
+            result = await command._cmd_report_get({"report_id": first["report_id"]})
+            listed = await command._cmd_report_list({})
+        assert result["success"] == allowed
+        assert len(listed["reports"]) == int(allowed)
+        if allowed:
+            content = result["report"]["report"]
+            assert content["global_facts"] == []
+            assert content["summary"] == "Morning report for p."
+            assert "config_snapshot" not in result["report"]
+    worker = ExecutionPrincipal(kind=PrincipalKind.SESSION, policy=DENY_ALL, project_id="p")
+    with principal_context(worker):
+        assert (await command._cmd_morning_report_tick({}))["error_code"] == "out_of_scope"
+
+
+async def test_retention_preserves_coverage_and_only_prunes_terminal_reports(scheduled):
+    command, _ = scheduled
+    now = utc("2026-09-25T07:00:00")
+    first = await tick(command, now)
+    await tick(command, now + 900)
+    assert await command.db.prune_morning_reports(now=now + 91 * 86400) == 1
+    assert await command.db.get_morning_report(first["report_id"]) is None
+    async with command.db._engine.connect() as conn:
+        assert (await conn.execute(select(tables.morning_report_coverage))).all()
+        assert not (await conn.execute(select(tables.morning_report_facts))).all()
+
+
+async def test_fallback_is_bounded_evidence_linked_and_never_invents_manual_checks():
+    from src.reports.fallback import MAX_REPORT_BYTES, build_fallback
+
+    result, _, _ = await build()
+    report = build_fallback(result["brief"])
+    project = report["projects"][0]
+    assert project["manual_checks"] == []
+    assert {item["refs"][0] for item in project["pending"]} == {"completion:c2"}
+    assert all(item["verification_label"] == "agent-reported" for item in project["landed"])
+    assert len(json.dumps(report, ensure_ascii=False).encode()) <= MAX_REPORT_BYTES
+
+
+def test_cli_stored_report_reads_use_registered_commands(monkeypatch):
+    monkeypatch.setattr(
+        "src.cli.reports._execute",
+        lambda ctx, command, params: {"success": True, "command": command, **params},
+    )
+    runner = CliRunner()
+    shown = runner.invoke(cli, ["--json", "report", "show", "morning-2026-09-25"])
+    assert shown.exit_code == 0
+    assert json.loads(shown.output)["data"]["command"] == "report_get"
+    listed = runner.invoke(cli, ["--json", "report", "list", "--limit", "3"])
+    assert listed.exit_code == 0
+    assert json.loads(listed.output)["data"]["limit"] == 3

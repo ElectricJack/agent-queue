@@ -10,12 +10,13 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import digest_windows, messages, supervisor_report_requests
+from src.database.queries.morning_report_queries import MorningReportQueriesMixin
 
 _HOURLY_LOCK = 801739628126004092
 _OPEN_STATES = ("reserved", "requested")
 
 
-class ReportQueriesMixin:
+class ReportQueriesMixin(MorningReportQueriesMixin):
     async def collect_morning_report_sources(
         self, *, since: float, until: float, project_ids: tuple[str, ...] | None = None
     ) -> dict[str, Any]:

@@ -1777,6 +1777,68 @@ supervisor_report_requests = Table(
     Index("idx_supervisor_report_requests_state_deadline", "state", "deadline"),
 )
 
+morning_reports = Table(
+    "morning_reports",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("schedule_id", Text, nullable=False),
+    Column("local_date", Text, nullable=False),
+    Column("config_snapshot", JSON, nullable=False),
+    Column("scope_key", Text, nullable=False),
+    Column("timezone", Text, nullable=False),
+    Column("planned_at", Float, nullable=False),
+    Column("window_start", Float, nullable=False),
+    Column("window_end", Float, nullable=False),
+    Column("build_context", JSON, nullable=False),
+    Column("brief", JSON, nullable=True),
+    Column("brief_hash", Text, nullable=True),
+    Column("source_cursors", JSON, nullable=True),
+    Column("source_heads", JSON, nullable=True),
+    Column("state", Text, nullable=False, server_default="building"),
+    Column("reason", Text, nullable=True),
+    Column("fallback", JSON, nullable=True),
+    Column("report", JSON, nullable=True),
+    Column("coverage", JSON, nullable=True),
+    Column("author_deadline", Float, nullable=False),
+    Column("lease_owner", Text, nullable=True),
+    Column("lease_expires_at", Float, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("finalized_at", Float, nullable=True),
+    UniqueConstraint("schedule_id", "local_date", name="uq_morning_reports_day"),
+    CheckConstraint(
+        "state IN ('building','ready','authoring','final','suppressed','skipped','failed')",
+        name="ck_morning_reports_state",
+    ),
+    CheckConstraint("window_end > window_start", name="ck_morning_reports_window"),
+    Index("idx_morning_reports_state_deadline", "state", "author_deadline"),
+)
+
+# Coverage is independent of external transport receipts. Scope-specific
+# cursors prevent a changed project selection from consuming unseen evidence.
+morning_report_coverage = Table(
+    "morning_report_coverage",
+    metadata,
+    Column("schedule_id", Text, primary_key=True),
+    Column("scope_key", Text, primary_key=True),
+    Column("source", Text, primary_key=True),
+    Column("covered_until", Float, nullable=False),
+    Column("head_sha", Text, nullable=True),
+    Column("report_id", Text, nullable=False),
+)
+
+morning_report_facts = Table(
+    "morning_report_facts",
+    metadata,
+    Column("report_id", Text, ForeignKey("morning_reports.id", ondelete="CASCADE"),
+           primary_key=True),
+    Column("fact_key", Text, primary_key=True),
+    Column("source", Text, nullable=False),
+    Column("record_id", Text, nullable=False),
+    Column("project_id", Text, nullable=True),
+    Column("at", Float, nullable=False),
+    Index("idx_morning_report_facts_key", "fact_key"),
+)
+
 api_session_tokens = Table(
     "api_session_tokens",
     metadata,

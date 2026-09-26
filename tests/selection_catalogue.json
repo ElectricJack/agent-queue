@@ -1224,7 +1224,7 @@
       ]
     }
   },
-  "digest": "sha256:b100f78b3d9dacffa4ed01b399ab23153d8f34f0330dc484caa6aeab7f1ae06b",
+  "digest": "sha256:be7288973ac9c10a077eca71d9d3b645fd04a21fc30537cef997f8ed74df1df6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8178,9 +8178,11 @@
         "src.git.manager",
         "src.models",
         "src.profiles.capabilities",
+        "src.reports.fallback",
         "src.reports.git",
         "src.reports.hourly",
-        "src.reports.morning"
+        "src.reports.morning",
+        "src.reports.schedule"
       ],
       "markers": [
         "parametrize"
