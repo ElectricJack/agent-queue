@@ -2660,6 +2660,8 @@ async def test_operator_recovers_malformed_unwritten_resolution_with_fresh_succe
     assert stage["trigger_id"] == successor_id
     assert stage["dossier"]["current_conflict"]["intent_id"] == successor_id
     assert stage["dossier"]["superseded_conflict_intent_id"] == case["intent_id"]
+    delegate = await db.get_task("repair-task")
+    assert f"Current conflict intent: {successor_id}" in delegate.description
     assert (
         _git(["ls-remote", "origin", "refs/heads/aq/parent"], case["work"]).split()[0]
         == case["target"]
