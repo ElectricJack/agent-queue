@@ -445,11 +445,31 @@ class MonitoringMixin:
             return
         self._last_container_sweep = now
         candidates = await self.db.settle_candidates()
+        if candidates:
+            settled = await self._settle_seeds(set(candidates))
+            for cid in settled:
+                logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
+        await self.reconcile_stale_containers()
+
+    async def reconcile_stale_containers(self) -> list[str]:
+        """Complete BLOCKED/PAUSED containers whose children are all delivered.
+
+        The stale-status leg of settlement (``stale_container_clauses``).  A
+        child's completion settles its stranded container on the event path
+        only when every sibling is already delivered; a delivery that lands
+        later has no event, so the backstop sweep runs this every interval,
+        and :meth:`initialize` runs it once on start, because restarts and
+        updates are what strand these containers.  Returns the settled ids.
+        """
+        candidates = await self.db.stale_container_candidates()
         if not candidates:
-            return
+            return []
         settled = await self._settle_seeds(set(candidates))
         for cid in settled:
-            logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
+            logger.info(
+                "Completed stale container %s: every child is COMPLETED and delivered", cid
+            )
+        return settled
 
     async def _settle_seeds(self, seeds: set[str]) -> list[str]:
         """Run the §7 settlement predicate over *seeds* now, with post-commit fan-out.

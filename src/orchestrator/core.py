@@ -1527,6 +1527,13 @@ class Orchestrator(
             except Exception:
                 logger.error("Session adoption pass failed", exc_info=True)
         await self._recover_stale_state(skip_task_ids=adopted_task_ids)
+        # Restarts and updates are what strand a finished container BLOCKED or
+        # PAUSED; settle every one whose children are all delivered before the
+        # first tick rather than waiting for the first backstop sweep.
+        try:
+            await self.reconcile_stale_containers()
+        except Exception:
+            logger.error("Stale container reconciliation on start failed", exc_info=True)
         # Seed provider availability before the first tick (D5, D7): load
         # what the last run knew -- a restart must not spend its first
         # minute rediscovering that Codex is logged out -- and probe once.
