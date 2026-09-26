@@ -322,8 +322,20 @@ def task_claim(ctx: click.Context, task_id, claim_next, wait) -> None:
 @task.command("close")
 @click.argument("task_id", required=False)
 @click.option(
-    "--outcome", type=click.Choice(["pass", "fail"]), required=True, help="Overall task outcome."
+    "--outcome",
+    type=click.Choice(["pass", "fail"]),
+    default=None,
+    help="Overall task outcome (required unless --obsolete).",
 )
+@click.option(
+    "--obsolete",
+    is_flag=True,
+    help=(
+        "Operator/supervisor: retire superseded work instead of closing it with an outcome. "
+        "Releases its branch owners and parked development batches; needs TASK_ID and --reason."
+    ),
+)
+@click.option("--reason", default=None, help="Why the task is obsolete (with --obsolete).")
 @click.option("--summary", default=None, help="Summary for the reviewer/dashboard/vault note.")
 @click.option(
     "--failure-class",
@@ -373,6 +385,8 @@ def task_close(
     ctx: click.Context,
     task_id,
     outcome,
+    obsolete,
+    reason,
     summary,
     failure_class,
     work_outcome,
@@ -396,8 +410,32 @@ def task_close(
     the pool bootstrap prompt and ``aq-tasks`` tell workers to run --
     ``aq task close --outcome pass --claim-next`` -- since a pool worker's
     task changes with every claim.
+
+    ``--obsolete --reason "..."`` is the operator/supervisor form for work that
+    was superseded: no outcome, no completion pipeline, nothing published.
+    The task goes to COMPLETED as abandoned, its branch owners are released
+    through the release-owner safety proof, and it leaves any parked
+    development batch, so ``aq task delete`` works afterwards.
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
+    if obsolete:
+        if outcome:
+            raise click.UsageError("--obsolete is its own outcome; drop --outcome")
+        if not task_id:
+            raise click.UsageError("--obsolete needs TASK_ID")
+        if not (reason or "").strip():
+            raise click.UsageError("--obsolete needs --reason")
+
+        async def _close_obsolete():
+            async with _get_client(api_url) as client:
+                return await client.execute(
+                    "task_close", {"task_id": task_id, "obsolete": True, "reason": reason}
+                )
+
+        emit(ctx, _run(_close_obsolete()))
+        return
+    if not outcome:
+        raise click.UsageError("--outcome is required (or --obsolete --reason for superseded work)")
     resolved_epoch = resolve_claim_epoch(claim_epoch)
     args: dict = {"outcome": outcome}
     if task_id:

@@ -7,7 +7,7 @@ import time
 
 from sqlalchemy import delete, insert, select
 
-from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
+from src.database.queries.task_queries import STALE_OPEN_ATTENTION, TERMINAL_BLOCKED_META_KEY
 from src.database.tables import (
     events,
     integration_branch_owners,
@@ -168,7 +168,7 @@ class CollectingParentRecovery:
                 attention = json.loads(attention)
             except (ValueError, TypeError):
                 pass
-            if attention != "session_not_live":
+            if attention not in ("session_not_live", STALE_OPEN_ATTENTION):
                 return refused("the parent's operational failure is not a stale stopped session")
         live = await conn.scalar(
             select(sessions.c.id)

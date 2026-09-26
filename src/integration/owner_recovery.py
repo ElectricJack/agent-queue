@@ -161,6 +161,9 @@ class _Plan:
 class OwnerRecovery:
     """Prove a branch owner's writer gone and its branch safe, then release it."""
 
+    #: Handoff states this service will take through the proof.
+    recoverable_states: tuple[str, ...] = RECOVERABLE_STATES
+
     def __init__(
         self,
         db,
@@ -198,14 +201,14 @@ class OwnerRecovery:
             "workspace_id": row["workspace_id"],
         }
         try:
-            if row["handoff_state"] not in RECOVERABLE_STATES or (
+            if row["handoff_state"] not in self.recoverable_states or (
                 row["owner_role"] == COLLECTOR_ROLE
             ):
                 raise _Refusal(
                     NOT_RECOVERABLE_STATE,
                     f"a {row['owner_role']} row in {row['handoff_state']} names no writer to "
                     "recover; only worker and repair rows in "
-                    f"{' or '.join(RECOVERABLE_STATES)} are recoverable",
+                    f"{' or '.join(self.recoverable_states)} are recoverable",
                 )
             session = await self._prove_writer_gone(row, evidence)
             plan = await self._secure_branch(row, evidence, dry_run=dry_run)

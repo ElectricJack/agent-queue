@@ -682,6 +682,90 @@ class SessionCommandsMixin:
         session = await self.db.get_session(str(session_id))
         return session.task_id if session is not None else None
 
+    async def _close_task_obsolete(self, args: dict) -> dict:
+        """``aq task close <id> --obsolete --reason``: retire superseded work.
+
+        An operator or supervisor decision (``integration_operator``), never a
+        worker's: it releases the task's branch owners and drops it from parked
+        development batches (:mod:`src.integration.obsolete_close`).  No
+        completion pipeline runs and nothing is published.
+        """
+        from src.commands.supervisor_authority import integration_operator
+        from src.database.queries.hierarchy_queries import HierarchyError
+        from src.integration.obsolete_close import (
+            ObsoleteClose,
+            ObsoleteCloseRefused,
+            obsolete_owner_release_for,
+        )
+
+        task_id = str(args.get("task_id") or "").strip()
+        if not task_id:
+            return {
+                "success": False,
+                "code": "obsolete.task_required",
+                "error": "--obsolete needs the id of the task to close",
+            }
+        if args.get("outcome"):
+            return {
+                "success": False,
+                "code": "obsolete.outcome_conflict",
+                "error": "--obsolete is its own outcome; drop --outcome",
+            }
+        task = await self.db.get_task(task_id)
+        if task is None:
+            return {"success": False, "code": "obsolete.not_found", "error": f"No task '{task_id}'"}
+        principal, refusal = await integration_operator(self.db, task.project_id)
+        if refusal is not None:
+            return {
+                "success": False,
+                "code": "obsolete.not_authorized",
+                "error": (
+                    f"closing a task as obsolete is an operator or supervisor decision: {refusal}. "
+                    "A worker closes its own task with --outcome and names the superseding "
+                    "work in its summary."
+                ),
+            }
+        service = ObsoleteClose(
+            self.db, release_owner=obsolete_owner_release_for(self.orchestrator)
+        )
+        try:
+            result = await service.close(
+                task_id, reason=str(args.get("reason") or ""), principal=principal
+            )
+        except ObsoleteCloseRefused as exc:
+            return {"success": False, "code": exc.code, "error": exc.detail}
+        except HierarchyError as exc:
+            return {
+                "success": False,
+                "code": f"hierarchy.{exc.code}",
+                "error": f"hierarchy.{exc.code}: {exc.detail}",
+            }
+        cleanup = result["cleanup"]
+        if result["outcome"] == "closed":
+            body = (
+                f"Closed as obsolete by {principal} (was {result['previous_status']}): "
+                f"{result['reason']}"
+            )
+            try:
+                await self.db.add_task_comment(
+                    task_id,
+                    body,
+                    author_kind="user" if principal.startswith("human:") else "supervisor",
+                    author_id=principal,
+                )
+            except Exception:
+                logger.warning("Could not comment on obsolete task %s", task_id, exc_info=True)
+            refreshed = await self.db.get_task(task_id)
+            if refreshed is not None:
+                await self._emit_task_graph_change("task.updated", refreshed)
+        pending = cleanup.get("pending") or []
+        if pending:
+            result["note"] = (
+                f"{len(pending)} item(s) still held ({', '.join(sorted({p['reason'] for p in pending}))}); "
+                "the lifecycle sweep retries them"
+            )
+        return {"success": True, **result}
+
     async def _cmd_task_close(self, args: dict) -> dict:
         """Close a task with an outcome.  Backs ``aq task close``.
 
@@ -695,6 +779,8 @@ class SessionCommandsMixin:
         that is either a bug or an agent that wandered, and both should be
         loud rather than silently accepted.
         """
+        if args.get("obsolete"):
+            return await self._close_task_obsolete(args)
         task_id = args.get("task_id") or await self._scoped_held_task_id()
         if not task_id:
             return {

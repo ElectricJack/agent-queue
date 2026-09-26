@@ -13,8 +13,9 @@ version: 1
 areas:
   # ---------------------------------------------------------------- tasks
   - id: task-lifecycle
-    description: "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events and destructive-command authorization."
+    description: "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events, destructive-command authorization, and lifecycle cleanup (stale BLOCKED/PAUSED containers and tasks, obsolete closes, dangling-state doctor)."
     match:
+      - tests/test_lifecycle_cleanup.py
       - tests/test_state_machine.py
       - tests/test_ensure_task.py
       - tests/test_task_context.py

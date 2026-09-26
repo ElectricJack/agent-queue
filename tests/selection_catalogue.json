@@ -1042,12 +1042,13 @@
       ]
     },
     "task-lifecycle": {
-      "description": "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events and destructive-command authorization.",
+      "description": "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events, destructive-command authorization, and lifecycle cleanup (stale BLOCKED/PAUSED containers and tasks, obsolete closes, dangling-state doctor).",
       "modules": [
         "tests/test_cli_task_create_output.py",
         "tests/test_deliverables.py",
         "tests/test_dv2_phase1_models.py",
         "tests/test_ensure_task.py",
+        "tests/test_lifecycle_cleanup.py",
         "tests/test_models.py",
         "tests/test_reopen_with_feedback.py",
         "tests/test_state_machine.py",
@@ -1249,7 +1250,7 @@
       ]
     }
   },
-  "digest": "sha256:67dd1827752b17db972e226aad830404ca80f6cfb7c2abda8ffad985ff28495f",
+  "digest": "sha256:64aa8c66cc2fc66a761536f4dbd5450c616453ac81adafc309acf8567ab12ee6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7451,6 +7452,31 @@
       "markers": [],
       "summary": "Tests for L0 + L1 tier injection — Roadmap 3.3.7."
     },
+    "tests/test_lifecycle_cleanup.py": {
+      "areas": [
+        "task-lifecycle"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.commands.session_commands",
+        "src.config",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.queries.task_recovery_queries",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.task_checks",
+        "src.integration.development",
+        "src.integration.obsolete_close",
+        "src.integration.owner_recovery",
+        "src.models",
+        "src.orchestrator",
+        "src.profiles.capabilities"
+      ],
+      "markers": [],
+      "summary": "Lifecycle cleanup: stale containers, stale-open tasks, obsolete closes, doctor."
+    },
     "tests/test_list_playbooks_v2.py": {
       "areas": [
         "playbook-authoring"
@@ -11280,6 +11306,7 @@
         "src.sessions.harness_registry",
         "src.sessions.provider",
         "src.sessions.spec",
+        "src.sessions.transcripts",
         "src.sessions.transcripts.claude"
       ],
       "markers": [
@@ -11332,6 +11359,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.messages.delivery",
+        "src.messages.session_lens",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.workspace",
@@ -11345,7 +11373,8 @@
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.tmux",
-        "src.sessions.transcripts"
+        "src.sessions.transcripts",
+        "src.sessions.transcripts.codex"
       ],
       "markers": [
         "parametrize",

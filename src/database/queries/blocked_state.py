@@ -143,12 +143,31 @@ def development_delivery_receipt(task, project, repo):
     return delivered
 
 
+#: ``task_metadata`` key an obsolete close writes (``aq task close --obsolete``):
+#: the task's work was superseded, so there is nothing of it to publish.  JSON:
+#: ``reason``, ``closed_by``, ``closed_at``, ``previous_status`` and the
+#: ``cleanup`` it still owes (src/integration/obsolete_close.py).
+OBSOLETE_META_KEY = "obsolete"
+
+
+def obsolete_marker(task):
+    """``EXISTS``: the correlated *task* (table or alias) was closed as obsolete."""
+    marker = task_metadata.alias()
+    return (
+        select(literal(1))
+        .where(marker.c.task_id == task.c.id, marker.c.key == OBSOLETE_META_KEY)
+        .correlate(task)
+        .exists()
+    )
+
+
 def _development_delivery_pending(task, *, include_foreign_repos=False):
     """Completed code is usable only after publication to the configured default ref.
 
     Candidate preservation and parent aggregates are not worker checkout bases.
     A delivery of an older revision cannot release a new completion revision.
-    Branchless tasks and observed empty revisions have no artifact to publish.
+    Branchless tasks and observed empty revisions have no artifact to publish,
+    and an obsolete one (:data:`OBSOLETE_META_KEY`) has none worth publishing.
 
     *include_foreign_repos* also counts a task whose ``repo_id`` names a
     repository that is not one of its project's own.  The publisher never
@@ -180,6 +199,7 @@ def _development_delivery_pending(task, *, include_foreign_repos=False):
             ~development_empty_source(task, repo.c.id),
             repo_scope,
             ~delivered,
+            ~obsolete_marker(task),
         )
         .correlate(task)
         .exists()

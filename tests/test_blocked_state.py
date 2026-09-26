@@ -515,26 +515,29 @@ class TestConditionalDisposal:
         from src.database.queries.blocked_state import _blocks_unsat
 
         sql = str(sa_select(tasks_t.c.id).where(or_(_blocks_unsat(), _blocks_unsat())).compile())
-        # Each blocks clause checks development mode, its delivery and the
-        # revision-bound empty-source observation with independent aliases.
-        assert sql.count("EXISTS") == 8
+        # Each blocks clause checks development mode, its delivery, the
+        # revision-bound empty-source observation and whether the dependency
+        # was closed as obsolete, with independent aliases.
+        assert sql.count("EXISTS") == 10
         assert "task_dependencies AS task_dependencies_1" in sql
         assert "task_dependencies AS task_dependencies_2" in sql
         assert "task_metadata AS task_metadata_1" in sql
         assert "task_metadata AS task_metadata_2" in sql
+        assert "task_metadata AS task_metadata_3" in sql
+        assert "task_metadata AS task_metadata_4" in sql
         # `_blocked_ignoring_conditional` shares four clauses with
         # `blocked_predicate`; both must still carry every term, including
-        # the manual-pause dependency guard.
+        # the manual-pause dependency guard and the obsolete-dependency check.
         from src.database.queries.blocked_state import _blocked_ignoring_conditional
 
         assert (
-            str(sa_select(tasks_t.c.id).where(blocked_predicate()).compile()).count("EXISTS") == 10
+            str(sa_select(tasks_t.c.id).where(blocked_predicate()).compile()).count("EXISTS") == 11
         )
         assert (
             str(sa_select(tasks_t.c.id).where(_blocked_ignoring_conditional()).compile()).count(
                 "EXISTS"
             )
-            == 9
+            == 10
         )
 
 

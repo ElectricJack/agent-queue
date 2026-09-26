@@ -2747,7 +2747,9 @@
       "default": {
         "conditional_autoclose": true,
         "container_sweep_interval_seconds": 60,
-        "gate_sweep_interval_seconds": 30
+        "gate_sweep_interval_seconds": 30,
+        "lifecycle_sweep_interval_seconds": 300,
+        "stale_open_after_seconds": 21600
       },
       "properties": {
         "conditional_autoclose": {
@@ -2760,6 +2762,14 @@
         },
         "gate_sweep_interval_seconds": {
           "default": 30,
+          "type": "integer"
+        },
+        "lifecycle_sweep_interval_seconds": {
+          "default": 300,
+          "type": "integer"
+        },
+        "stale_open_after_seconds": {
+          "default": 21600,
           "type": "integer"
         }
       },
