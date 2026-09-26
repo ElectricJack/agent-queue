@@ -10,6 +10,7 @@ import sys
 import time
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from src.test_selection.load_closure import load_closure
 from src.test_selection.snapshot import take_snapshot
 from src.test_selection.static_impact import (
     PINNED_ENGINE,
+    PINNED_RUST_ENGINE,
     STATIC_ERROR,
     STATIC_TIMEOUT,
     STATIC_UNAVAILABLE,
@@ -140,13 +142,80 @@ def test_pyproject_pins_the_engine_the_adapter_expects():
     data = tomllib.loads((ROOT / "pyproject.toml").read_text())
     extras = data["project"]["optional-dependencies"]
     pin = "pytest-impacted==" + PINNED_ENGINE.split()[-1]
-    assert extras["test-selection"] == [pin]
+    assert extras["test-selection"] == [pin, "typesafe-sdk==0.7.1"]
     assert pin in extras["dev"]
+    assert extras["test-selection-fast"] == [
+        "pytest-impacted[fast]==" + PINNED_ENGINE.split()[-1],
+        "pytest-impacted-rs==" + PINNED_RUST_ENGINE.split()[-1],
+    ]
+    assert not any("pytest-impacted-rs" in dep or "[fast]" in dep for dep in extras["dev"])
 
 
 def test_engine_version_names_the_package_or_says_unavailable():
     version = engine_version()
     assert version == "unavailable" or version.startswith("pytest-impacted ")
+
+
+@pytest.mark.parametrize(
+    "rust_importable, rust_version, parser",
+    [
+        (False, None, "astroid 4.0.4"),
+        (False, "0.30.0", "astroid 4.0.4"),  # installed but cannot import
+        (True, "0.30.0", PINNED_RUST_ENGINE),
+        (True, "0.31.0", "pytest-impacted-rs 0.31.0"),
+        (True, None, "pytest-impacted-rs unavailable"),
+    ],
+)
+def test_engine_identity_reports_the_importable_parser(
+    monkeypatch, rust_importable, rust_version, parser
+):
+    versions = {"pytest-impacted": "0.30.0", "astroid": "4.0.4"}
+    if rust_version:
+        versions["pytest-impacted-rs"] = rust_version
+
+    def version(name):
+        if name not in versions:
+            raise static_impact.importlib.metadata.PackageNotFoundError(name)
+        return versions[name]
+
+    monkeypatch.setattr(static_impact.importlib.metadata, "version", version)
+    monkeypatch.setitem(
+        sys.modules,
+        "pytest_impacted_rs",
+        SimpleNamespace(parse_all_imports=lambda _: {}) if rust_importable else None,
+    )
+    assert engine_version() == f"{PINNED_ENGINE} ({parser})"
+
+
+def test_an_uninstalled_package_has_no_parser_identity(monkeypatch):
+    def missing(name):
+        raise static_impact.importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(static_impact.importlib.metadata, "version", missing)
+    assert engine_version() == "unavailable"
+
+
+@pytest.mark.parametrize("parser", ["astroid 4.0.4", PINNED_RUST_ENGINE])
+async def test_a_default_engine_records_its_parser(world, monkeypatch, tmp_path, parser):
+    repo, catalogue = world
+    fake, _ = _recording_engine(tmp_path, stdout="tests/test_a.py\n")
+    identity = f"{PINNED_ENGINE} ({parser})"
+    monkeypatch.setattr(static_impact, "engine_version", lambda: identity)
+    monkeypatch.setattr(static_impact.shutil, "which", lambda *args, **kwargs: fake)
+    _edit_a(repo)
+    result = await _impacted(repo, catalogue)
+    assert result.complete and result.modules == {"tests/test_a.py"}
+    assert result.engine == identity
+
+
+@pytest.mark.parametrize("parser", ["pytest-impacted-rs 0.31.0", "pytest-impacted-rs unavailable"])
+async def test_an_unevaluated_rust_parser_is_unavailable(world, monkeypatch, parser):
+    repo, catalogue = world
+    monkeypatch.setattr(static_impact, "engine_version", lambda: f"{PINNED_ENGINE} ({parser})")
+    result = await _impacted(repo, catalogue)
+    assert not result.complete and result.reason == STATIC_UNAVAILABLE
+    assert result.engine == "unavailable"
+    assert result.detail == f"version:0.30.0 ({parser})"
 
 
 async def test_an_unpinned_engine_is_unavailable(world, monkeypatch):
@@ -171,7 +240,7 @@ async def test_an_uninstalled_engine_is_unavailable(world, monkeypatch):
 async def test_no_engine_command_is_unavailable(world, monkeypatch, tmp_path):
     repo, catalogue = world
     snap = await take_snapshot(GitManager(), str(repo))
-    monkeypatch.setattr(static_impact, "engine_version", lambda: PINNED_ENGINE)
+    monkeypatch.setattr(static_impact, "engine_version", lambda: f"{PINNED_ENGINE} (astroid 4.0.4)")
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     monkeypatch.setattr(sys, "executable", str(tmp_path / "empty" / "python"))
     result = await PytestImpactedAdapter().impacted(snap, catalogue=catalogue)
@@ -648,7 +717,7 @@ class TestFixtureEvaluation:
         # b imports a inside a function, relatively: ``from .a import alpha``.
         assert result.modules == {"tests/test_a.py", "tests/sub/test_b.py"}
         assert result.unknown_outputs == 0 and result.widened_by is None
-        assert result.engine == PINNED_ENGINE
+        assert result.engine == engine_version()
 
     async def test_a_staged_edit_is_a_dirty_change_too(self, world):
         repo, catalogue = world
@@ -757,4 +826,6 @@ class TestFixtureEvaluation:
         assert result.complete and result.modules == frozenset() and result.unknown_outputs == 0
 
     def test_engine_version_is_pinned(self):
-        assert engine_version() == "pytest-impacted 0.30.0" == PINNED_ENGINE
+        identity = engine_version()
+        assert identity.startswith(PINNED_ENGINE + " (")
+        assert "astroid " in identity or identity == f"{PINNED_ENGINE} ({PINNED_RUST_ENGINE})"

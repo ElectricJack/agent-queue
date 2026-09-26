@@ -38,6 +38,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, MutableMapping
 from dataclasses import dataclass
 from typing import Any
@@ -45,6 +46,8 @@ from urllib.parse import quote
 
 import aiohttp
 from yarl import URL
+
+from src.dashboard_server.relay_stats import RelayStats
 
 __all__ = [
     "CHUNK_SIZE",
@@ -463,6 +466,7 @@ class DaemonProxy:
         connect_timeout: float = 2.0,
         header_timeout: float = 120.0,
         max_message_size: int = 16 * 1024 * 1024,
+        stats: RelayStats | None = None,
     ) -> None:
         base = URL(api_url.rstrip("/"))
         if base.scheme not in ("http", "https") or not base.host:
@@ -481,6 +485,8 @@ class DaemonProxy:
         self._closed = asyncio.Event()
         self._http_relays: set[asyncio.Task[None]] = set()
         self._ws_relays: set[_WebSocketRelay] = set()
+        self.stats = stats if stats is not None else RelayStats()
+        self.stats.open_relays = lambda: len(self._http_relays) + len(self._ws_relays)
 
     @property
     def api_url(self) -> str:
@@ -558,6 +564,7 @@ class DaemonProxy:
         retry_after: bool = False,
         extra: dict[str, Any] | None = None,
     ) -> tuple[int, list[tuple[bytes, bytes]], bytes]:
+        self.stats.failure(error)
         payload = {"ok": False, "error": error, "api_url": self._api_url, **(extra or {})}
         body = json.dumps(payload).encode("utf-8")
         headers = [
@@ -676,9 +683,11 @@ class DaemonProxy:
         try:
             try:
                 async with asyncio.timeout(self._header_timeout):
+                    started = time.perf_counter()
                     response = await session.request(
                         method, target, headers=headers, data=data, allow_redirects=False
                     )
+                    self.stats.observe_http((time.perf_counter() - started) * 1000)
             except (aiohttp.ClientConnectorError, aiohttp.ConnectionTimeoutError) as error:
                 logger.debug("daemon unreachable for %s %s: %s", method, target.path, error)
                 await exchange.respond(*self._unreachable())
@@ -750,6 +759,7 @@ class DaemonProxy:
 
         try:
             async with asyncio.timeout(self._header_timeout):
+                started = time.perf_counter()
                 upstream = await session.ws_connect(
                     target,
                     protocols=list(scope.get("subprotocols") or ()),
@@ -761,6 +771,7 @@ class DaemonProxy:
                     max_msg_size=self._max_message_size,
                     timeout=aiohttp.ClientWSTimeout(ws_receive=None, ws_close=_CLOSE_SECONDS),
                 )
+                self.stats.observe_ws_handshake((time.perf_counter() - started) * 1000)
         except aiohttp.WSServerHandshakeError as error:
             if error.status and error.status != 101:
                 # The daemon refused before accepting (a terminal's 4401/4403/

@@ -619,6 +619,7 @@
         "tests/test_metrics_histogram.py",
         "tests/test_metrics_host.py",
         "tests/test_metrics_perf.py",
+        "tests/test_metrics_relay.py",
         "tests/test_metrics_sampler.py"
       ]
     },
@@ -1055,7 +1056,8 @@
         "tests/test_selection_questions.py",
         "tests/test_selection_snapshot.py",
         "tests/test_selection_static_impact.py",
-        "tests/test_selection_testmon_experiment.py"
+        "tests/test_selection_testmon_experiment.py",
+        "tests/test_selection_typesafe.py"
       ]
     },
     "test-substrate": {
@@ -1204,7 +1206,7 @@
       ]
     }
   },
-  "digest": "sha256:d7199345ff76eec06585b70ac653a6e8f885a30bc7b0d6cae4a8b4095bf878a0",
+  "digest": "sha256:41a16d2fe44c6c3fecde71a1edd44c8ead2cb2e89a1fa07719d6b930bbdf279a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3820,6 +3822,7 @@
         "src.dashboard_server",
         "src.dashboard_server.__main__",
         "src.dashboard_server.app",
+        "src.dashboard_server.relay_stats",
         "src.dashboard_server.settings"
       ],
       "markers": [
@@ -3861,7 +3864,8 @@
       "default_arm": true,
       "imports": [
         "src.dashboard_server",
-        "src.dashboard_server.proxy"
+        "src.dashboard_server.proxy",
+        "src.dashboard_server.relay_stats"
       ],
       "markers": [
         "parametrize"
@@ -7535,6 +7539,21 @@
       ],
       "summary": "The perf registry never raises, bounds its labels, and the probe sees a stall."
     },
+    "tests/test_metrics_relay.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.metrics.histogram",
+        "src.metrics.relay"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Relay snapshots become once-only deltas, with honest gaps across restarts."
+    },
     "tests/test_metrics_sampler.py": {
       "areas": [
         "metrics"
@@ -7550,7 +7569,9 @@
         "src.metrics.sampler",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The metrics sampler: one row per tick, honest roll-ups, real retention."
     },
     "tests/test_mid_chain_rebase.py": {
@@ -10518,6 +10539,20 @@
         "slow"
       ],
       "summary": "pytest-testmon fixture experiment: recorded evidence for spec §5.2, never a selector."
+    },
+    "tests/test_selection_typesafe.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.test_selection.questions",
+        "src.test_selection.typesafe"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Offline contract checks for the TypeSafe selection boundary."
     },
     "tests/test_session_class_effort.py": {
       "areas": [
