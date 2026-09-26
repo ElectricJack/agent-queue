@@ -1310,6 +1310,9 @@ class DevelopmentIntegration:
                         cwd=str(store),
                     )
                 if result.returncode:
+                    conflicting_files = (await self.run_git(
+                        store, "diff", "--name-only", "--diff-filter=U"
+                    )).splitlines()
                     await self.run_git(store, "merge", "--abort")
                     await self.run_git(store, "checkout", "--detach", "--force", head)
                     now = time.time()
@@ -1323,7 +1326,10 @@ class DevelopmentIntegration:
                             "prepared_sha": None,
                             "state": "parked",
                             "manifest": [member],
-                            "evidence": {"kind": "merge_conflict", "detail": result.stdout[-4000:]},
+                            "evidence": {
+                                "kind": "merge_conflict", "detail": result.stdout[-4000:],
+                                "conflicting_files": conflicting_files,
+                            },
                             "reason": "source conflict; independent work may continue",
                             "created_at": now,
                             "updated_at": now,
@@ -2958,7 +2964,7 @@ class DevelopmentIntegration:
         self, project_id, repository_id, manifest, candidate_sha, *, reason, diagnostics=None,
         parked=None,
     ):
-        """File one deliberately-rooted repair with provenance and delivery holds.
+        """File or reuse one bounded repair with provenance and delivery holds.
 
         Development delivery can park a *set* of source tasks.  It must not
         pick one arbitrary source as a structural parent: that would both hide
@@ -2970,6 +2976,8 @@ class DevelopmentIntegration:
         source is already checkpointed.  The hierarchy writer has a narrowly
         authorised completed-parent exception for this case; it preserves the
         source placement without asking a completed task to execute again.
+        At the structural depth cap it is deliberately rooted instead, with
+        the same source delivery hold as a shared repair.
         A repair-of-repair remains rooted so the bounded recovery chain cannot
         consume structural hierarchy depth.
 
@@ -2984,6 +2992,7 @@ class DevelopmentIntegration:
         cycle.
         """
         from src.models import DepType, Task, TaskType
+        from src.task_names import MAX_STRUCTURAL_DEPTH
 
         identity = self._repair_identity(manifest)
         # Archive-aware, or an archived repair reads back as "never filed" and
@@ -3030,6 +3039,20 @@ class DevelopmentIntegration:
         if generation > 3:
             return None  # Keep the candidate parked for operator inspection; no unbounded repair chain.
         sources = "\n".join(f"- {m['task_id']}: {m.get('source_sha')}" for m in manifest)
+        repo = await self.db.get_repo(repository_id)
+        target_branch = repo.default_branch
+        branches = "\n".join(
+            f"- {member['task_id']}: {resolved[member['task_id']].branch_name}"
+            for member in manifest
+        )
+        conflict = parked is not None and parked.get("evidence", {}).get("kind") == "merge_conflict"
+        recovery = (
+            f"Fetch origin and rebase the listed source changes onto origin/{target_branch} "
+            "in your own task branch. Resolve the named conflicting files and preserve "
+            "the intended source changes. "
+            if conflict else
+            f"Preserve their intended changes and resolve against current origin/{target_branch}. "
+        )
         repair = Task(
                 id=identity,
                 project_id=project_id,
@@ -3037,12 +3060,14 @@ class DevelopmentIntegration:
                 title="Repair development integration: " + reason,
                 description=(
                     f"Development repair generation: {generation}\nThe development batch parked these source revisions:\n{sources}\n"
-                    f"Candidate/base: {candidate_sha}. Preserve their intended changes, resolve against current main, "
-                    "and publish the repair on your own task branch. Ordinary merge commits are allowed. "
+                    f"Candidate/base: {candidate_sha}.\nSource branches:\n{branches}\n"
+                    f"Publication target: refs/heads/{target_branch}.\n"
+                    + recovery
+                    + "Publish the repair on your own task branch. Ordinary merge commits are allowed. "
                     "Run focused local checks and close with actual evidence; no parent verifier or PR is required. "
                     "A passing close attests that every listed source revision is resolved; once your repair "
-                    "is delivered to main, that delivery also satisfies those sources for their successors. "
-                    "Do not push main. The development publisher will collect your branch. "
+                    f"is delivered to {target_branch}, that delivery also satisfies those sources for their successors. "
+                    f"Do not push {target_branch}. The development publisher will collect your branch. "
                     "This is one resumable repair task; queue and provider waits do not expire it."
                     + self._repair_failure_text(project_id, parked)
                 ),
@@ -3055,6 +3080,16 @@ class DevelopmentIntegration:
         # placement is an explicit policy choice rather than an accidental
         # omission.  Keep all source provenance independently of placement.
         async with self.db.immediate() as conn:
+            nest_repair = False
+            if single_original_source and not resolved[manifest[0]["task_id"]].archived:
+                # The source may already be at the hierarchy depth cap. A
+                # failed set_parent would roll back the repair every tick.
+                # Hold the hierarchy lock through the placement write so a
+                # concurrent move cannot invalidate this decision.
+                await self.db.lock_hierarchy_project(conn, project_id)
+                nest_repair = await self.db.structural_depth(
+                    manifest[0]["task_id"], conn=conn
+                ) < MAX_STRUCTURAL_DEPTH
             await self.db.create_task(repair, conn=conn)
             for member in manifest:
                 source_id = member["task_id"]
@@ -3083,12 +3118,12 @@ class DevelopmentIntegration:
                 # must never be mistaken for a release condition.  The
                 # source's blocking edge supplies that condition without
                 # giving the repair a reverse dependency on any source.
-                if not single_original_source:
+                if not nest_repair:
                     await self.db.add_dependency(
                         source_id, identity, DepType.BLOCKS.value,
                         description=f"required development repair: {reason}", conn=conn,
                     )
-            if single_original_source and not resolved[manifest[0]["task_id"]].archived:
+            if nest_repair:
                 await self.db.set_parent(
                     identity,
                     manifest[0]["task_id"],
@@ -3130,6 +3165,7 @@ class DevelopmentIntegration:
             "merge_conflict": (
                 evidence.get("detail") if evidence.get("kind") == "merge_conflict" else None
             ),
+            "conflicting_files": evidence.get("conflicting_files", []),
         }
 
     @staticmethod
@@ -3148,6 +3184,9 @@ class DevelopmentIntegration:
         ]
         if evidence.get("kind") == "merge_conflict":
             detail = str(evidence.get("detail") or "").strip()
+            files = evidence.get("conflicting_files") or []
+            if files:
+                lines += ["Conflicting files:", *(f"- {path}" for path in files)]
             lines += ["Merge conflict:", "```", detail[-REPAIR_OUTPUT_TAIL_CHARS:], "```"]
             return "\n".join(lines)
         tests = validation_outcomes.failing_tests(evidence)
