@@ -15,6 +15,8 @@ version: 1
 
 global_invalidators:            # any change -> M = U (spec §4.2)
   - "pyproject.toml"
+  - ".test_durations"
+  - "scripts/merge_test_durations.py"
   - "alembic.ini"
   - "tests/__init__.py"
   - "tests/conftest.py"

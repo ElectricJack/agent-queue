@@ -609,7 +609,7 @@
       ]
     },
     "metrics": {
-      "description": "Metrics: the fleet sampler with roll-ups and retention, the series API and WebSocket frame, chat-analyzer outcome metrics, fixed-bucket histograms, the perf registry and loop-lag probe, host PSI and test slots, route latency, pool-wait and query timing and the dashboard-perf kit.",
+      "description": "Metrics: per-second sampling, roll-ups and retention, series API and WebSocket, chat-analyzer outcomes, fixed histograms, perf registry and loop lag, host attribution, PSI and test slots, relay deltas, route latency, pool waits, query timing and the dashboard-perf kit.",
       "modules": [
         "tests/test_api_metrics.py",
         "tests/test_api_perf_middleware.py",
@@ -900,6 +900,7 @@
         "tests/test_cli_session_history.py",
         "tests/test_env_scrub.py",
         "tests/test_fake_session_script.py",
+        "tests/test_handoffs.py",
         "tests/test_resume_key_validation.py",
         "tests/test_runtimes_base.py",
         "tests/test_runtimes_registry.py",
@@ -935,10 +936,15 @@
       ]
     },
     "supervisor": {
-      "description": "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config and the blocked-task escalation playbook.",
+      "description": "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config, durable conversations and inbound conversation gates, and the blocked-task escalation playbook.",
       "modules": [
         "tests/test_blocked_task_escalation.py",
         "tests/test_config_supervisor.py",
+        "tests/test_conversation_intake.py",
+        "tests/test_conversation_limits.py",
+        "tests/test_conversation_outbox.py",
+        "tests/test_conversation_preconditions.py",
+        "tests/test_conversation_queries.py",
         "tests/test_supervisor_capability_sync.py",
         "tests/test_supervisor_failure_triage.py",
         "tests/test_supervisor_global_lifecycle.py",
@@ -1054,6 +1060,7 @@
       "modules": [
         "tests/test_selection_catalogue.py",
         "tests/test_selection_mandatory.py",
+        "tests/test_selection_policy.py",
         "tests/test_selection_questions.py",
         "tests/test_selection_snapshot.py",
         "tests/test_selection_static_impact.py",
@@ -1207,7 +1214,7 @@
       ]
     }
   },
-  "digest": "sha256:94146931305ebd9dfec3053551736e0943451e58eca73b77ece2c0943fca3528",
+  "digest": "sha256:67fa2e876894a4af7aa3f62fb4b6c692b6d8f341b7ff34dd23cc30d22ed03541",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3658,7 +3665,8 @@
     },
     "tests/test_conversation_intake.py": {
       "areas": [
-        "discord-conversations"
+        "discord-conversations",
+        "supervisor"
       ],
       "default_arm": true,
       "imports": [
@@ -3674,7 +3682,8 @@
     },
     "tests/test_conversation_limits.py": {
       "areas": [
-        "discord-conversations"
+        "discord-conversations",
+        "supervisor"
       ],
       "default_arm": true,
       "imports": [
@@ -3686,7 +3695,8 @@
     },
     "tests/test_conversation_outbox.py": {
       "areas": [
-        "discord-conversations"
+        "discord-conversations",
+        "supervisor"
       ],
       "default_arm": true,
       "imports": [
@@ -3697,7 +3707,8 @@
     },
     "tests/test_conversation_preconditions.py": {
       "areas": [
-        "discord-conversations"
+        "discord-conversations",
+        "supervisor"
       ],
       "default_arm": true,
       "imports": [
@@ -3709,7 +3720,8 @@
     },
     "tests/test_conversation_queries.py": {
       "areas": [
-        "discord-conversations"
+        "discord-conversations",
+        "supervisor"
       ],
       "default_arm": true,
       "imports": [
@@ -5629,7 +5641,8 @@
     },
     "tests/test_handoffs.py": {
       "areas": [
-        "prime"
+        "prime",
+        "session-runtime"
       ],
       "default_arm": true,
       "imports": [
@@ -10503,6 +10516,26 @@
       ],
       "markers": [],
       "summary": "The mandatory set ``M`` and the reason codes selection records carry."
+    },
+    "tests/test_selection_policy.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.test_selection",
+        "src.test_selection.catalogue",
+        "src.test_selection.mandatory",
+        "src.test_selection.policy",
+        "src.test_selection.reasons",
+        "src.test_selection.snapshot",
+        "src.test_selection.static_impact",
+        "src.test_selection.typesafe"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Pure policy composition: proposals, promoted omission and mandatory invariants."
     },
     "tests/test_selection_questions.py": {
       "areas": [

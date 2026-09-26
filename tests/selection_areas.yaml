@@ -185,6 +185,7 @@ areas:
     description: "Agent sessions: spec building (names, argv, env, prompt delivery), executable checks, the session provider contract, the session reconciler and exit classifier, session queries and commands, and the completion protocol."
     match:
       - tests/test_session_spec.py
+      - tests/test_handoffs.py
       - tests/test_session_executable.py
       - tests/test_session_provider_conformance.py
       - tests/test_session_reconciler.py
@@ -263,9 +264,10 @@ areas:
     description: "Activity digest: fact eligibility and dedup, rendering, window scheduling and delivery, digest commands, what a window may read, digest settings, and durable hourly report requests with CAS submission and deterministic fallback."
     match: [tests/test_digest*.py, tests/test_discord_settings.py, tests/test_report_requests.py]
   - id: supervisor
-    description: "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config and the blocked-task escalation playbook."
+    description: "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config, durable conversations and inbound conversation gates, and the blocked-task escalation playbook."
     match:
       - tests/test_supervisor_*.py
+      - tests/test_conversation_*.py
       - tests/test_config_supervisor.py
       - tests/test_blocked_task_escalation.py
 
@@ -353,6 +355,7 @@ areas:
     description: "Integration branch ownership: fenced repository-qualified owners, owner recovery and its sweeps, restoring missing canonical train owners, stale and finished owners, ownership transfer, workspace handoff, identity rebinding, ejection and delegate release."
     match:
       - tests/test_integration_ownership.py
+      - tests/test_canonical_reservation.py
       - tests/test_integration_owner_*.py
       - tests/test_integration_stale_owners.py
       - tests/test_integration_finished_owners.py
@@ -361,12 +364,12 @@ areas:
       - tests/test_integration_identity_rebind.py
       - tests/test_integration_delegate_release.py
       - tests/test_integration_eject.py
-      - tests/test_canonical_reservation.py
       - tests/test_doctor_stranded_fences_fix.py
   - id: integration-promotion
     description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication and legacy deliveries."
     match:
       - tests/test_integration_promotion.py
+      - tests/test_integration_child_delivery.py
       - tests/test_integration_main_promotion.py
       - tests/test_integration_parent_completion.py
       - tests/test_integration_root_pull_requests.py
@@ -548,8 +551,8 @@ areas:
     description: "Resource gating: per-session env caps, nice and cgroup scopes, the box-wide test-slot semaphore, orphaned test-run reaping, slot-wait reports, resources doctor checks and recorded test-baseline snapshots."
     match:
       - tests/test_resource_*.py
-      - tests/test_slot_report.py
       - tests/test_test_baseline.py
+      - tests/test_slot_report.py
   - id: test-substrate
     description: "The PostgreSQL test substrate: DSN leasing and run ownership, template-clone pool crash recovery, parallel-worker isolation, the reset-for-tests guard and operator test-database reaping."
     match:
@@ -629,7 +632,7 @@ areas:
       - tests/test_schedule.py
       - tests/test_timer_service*.py
   - id: metrics
-    description: "Metrics: the fleet sampler with roll-ups and retention, the series API and WebSocket frame, chat-analyzer outcome metrics, fixed-bucket histograms, the perf registry and loop-lag probe, host PSI and test slots, route latency, pool-wait and query timing and the dashboard-perf kit."
+    description: "Metrics: per-second sampling, roll-ups and retention, series API and WebSocket, chat-analyzer outcomes, fixed histograms, perf registry and loop lag, host attribution, PSI and test slots, relay deltas, route latency, pool waits, query timing and the dashboard-perf kit."
     match:
       - tests/test_metrics_*.py
       - tests/test_api_metrics.py
