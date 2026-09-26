@@ -76,27 +76,6 @@ jobs:
           - name: postgres-integration
             command: pytest tests/ -n auto --dist loadfile -m "integration or perf"
 
-    # Postgres backend for the perf/claim-query suite's Postgres parametrisation
-    # (tests/perf/conftest.py's ``any_db``, tests/test_claim_queries.py's ``db``) —
-    # spec §15.2 asserts the statement/latency budgets on Postgres, not just SQLite.
-    services:
-      postgres:
-        image: postgres:18
-        # Four xdist workers each lease multiple databases and can briefly
-        # exceed PostgreSQL's default 100 connections during the full suite.
-        command: postgres -c max_connections=300
-        env:
-          POSTGRES_USER: agent_queue
-          POSTGRES_PASSWORD: agent_queue
-          POSTGRES_DB: agent_queue
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
     env:
       # Base DSN -- ``tests/pg_dsn.py`` rewrites this per xdist worker
       # process (``postgresql+asyncpg://.../agent_queue_gw0``, ``..._gw1``,
@@ -129,6 +108,32 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
+      # Service containers cannot pass server arguments. Preserve PR #640's
+      # connection headroom and disable durability only for disposable CI data.
+      - name: Start PostgreSQL
+        run: |
+          docker run --detach --name ci-postgres \
+            --publish 127.0.0.1:5432:5432 \
+            --env POSTGRES_USER=agent_queue \
+            --env POSTGRES_PASSWORD=agent_queue \
+            --env POSTGRES_DB=agent_queue \
+            postgres:18 \
+            -c max_connections=300 \
+            -c fsync=off \
+            -c synchronous_commit=off \
+            -c full_page_writes=off
+          for attempt in {1..60}; do
+            # The entrypoint's temporary initialization server listens only on
+            # a Unix socket; require TCP so migrations see the final server.
+            if docker exec ci-postgres pg_isready \
+              -h 127.0.0.1 -U agent_queue -d agent_queue; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::PostgreSQL did not become ready after $attempt attempts"
+          exit 1
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -156,3 +161,11 @@ jobs:
 
       - name: Run tests
         run: ${{ matrix.suite.command }}
+
+      - name: PostgreSQL logs on failure
+        if: failure()
+        run: docker logs ci-postgres || true
+
+      - name: Remove PostgreSQL
+        if: always()
+        run: docker rm --force --volumes ci-postgres || true
