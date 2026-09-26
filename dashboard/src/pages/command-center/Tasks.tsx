@@ -1,6 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type { ProviderHeldTask } from "../../api/providers";
+import TaskCard from "../../components/TaskCard";
+import { useCompactViewport } from "../../hooks/useCompactViewport";
 import { holdKindLabel, providerName, stateLabel } from "../metrics/providerAvailabilityFormat";
 import { useListNav } from "../../shell/hotkeys/useListNav";
 import { useTaskWorkspace } from "./TaskWorkspace";
@@ -16,12 +18,19 @@ export default function CommandCenterTasks() {
   const { projectId, filters } = useTaskWorkspace();
   const { rows: filtered, isLoading, error, inWindow, activity, activityById, held, heldById, names } = useTaskListRows();
   const { selectedTaskId, selectTask, clearTask } = useTaskSelection();
-  // loop: false — with virtualized rows "next after the last mounted row"
-  // is the overscan edge, not the end of the list, so wrapping would jump
-  // the focus a window up instead of to the first task.
-  const bodyRef = useListNav<HTMLTableSectionElement>({ axis: "vertical", loop: false });
   const columns = (projectId ? 5 : 6) + (inWindow ? 2 : 0);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // Below 768 px the rows are touch cards (mobile dashboard §3 gap 6): the
+  // table needs 620 px. Inline editing and row menus stay on the desktop
+  // table and in the task pane, which is a full-screen sheet here.
+  const compact = useCompactViewport();
+  const bodyRef = useRef<HTMLTableSectionElement>(null);
+  const cardsRef = useRef<HTMLDivElement>(null);
+  // List navigation binds once, at mount, so it lives on the region, which
+  // outlasts a swap between table rows and cards when the width crosses
+  // 768 px. loop: false — with virtualized rows "next after the last mounted
+  // row" is the overscan edge, not the end of the list, so wrapping would
+  // jump the focus a window up instead of to the first task.
+  const scrollRef = useListNav<HTMLDivElement>({ axis: "vertical", loop: false });
   // The scroll element is the padded region, and the count line plus the
   // sticky header sit above the first row, so row 0 does not start at
   // scrollTop 0. scrollMargin tells the virtualizer where the list begins;
@@ -29,11 +38,11 @@ export default function CommandCenterTasks() {
   const [scrollMargin, setScrollMargin] = useState(0);
   useLayoutEffect(() => {
     const scroller = scrollRef.current;
-    const body = bodyRef.current;
+    const body = bodyRef.current ?? cardsRef.current;
     if (!scroller || !body) return;
     const offset = body.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
     setScrollMargin(Math.max(0, Math.round(offset)));
-  }, [bodyRef, error, isLoading, projectId, inWindow, filters.held]);
+  }, [scrollRef, error, isLoading, projectId, inWindow, filters.held, compact]);
   // Only the rows in view are mounted: the graph snapshot carries every task
   // in the project, and a 5,000-row table with three interactive cells per
   // row re-rendered on every keystroke and every live refetch. Keyboard list
@@ -41,7 +50,7 @@ export default function CommandCenterTasks() {
   const virtualizer = useVirtualizer({
     count: filtered.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 64,
+    estimateSize: () => (compact ? 104 : 64),
     overscan: 12,
     scrollMargin,
   });
@@ -51,9 +60,16 @@ export default function CommandCenterTasks() {
   const padBottom = items.length
     ? virtualizer.getTotalSize() - (items[items.length - 1]!.end - scrollMargin)
     : 0;
+  const emptyMessage = inWindow
+    ? "No work recorded in this time range."
+    : filters.held ? "No held tasks match these filters." : "No tasks match these filters.";
 
+  // From 768 px the table keeps its 620 px minimum and scrolls sideways inside
+  // this region when the rail and a pane leave it less (a landscape phone:
+  // 844 px less the rail); the page itself never does. Cards never need to.
   return (
-    <div role="region" aria-label="Task list" ref={scrollRef} className="h-full min-h-0 overflow-auto p-4"
+    <div role="region" aria-label="Task list" ref={scrollRef} className="h-full min-h-0 overflow-auto p-3 md:p-4"
+      data-allow-overflow-x={compact ? undefined : ""}
       onClick={(event) => {
         const target = event.target as HTMLElement;
         if (!target.closest('[data-task-row], button, input, select, textarea, a, [role="dialog"]')) clearTask();
@@ -78,6 +94,41 @@ export default function CommandCenterTasks() {
         </p>
       )}
       {error && <p role="alert" className="mb-3 rounded border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">Could not load tasks. Check the backend connection and try again.</p>}
+      {compact ? (
+        <>
+          {isLoading && <p className="p-4 text-gray-500">Loading tasks…</p>}
+          {!isLoading && !error && filtered.length === 0 && <p className="p-8 text-center text-gray-500">{emptyMessage}</p>}
+          <div ref={cardsRef} role="list" aria-label="Tasks" className="relative"
+            style={{ height: virtualizer.getTotalSize() }}>
+            {items.map((item) => {
+              const task = filtered[item.index]!;
+              const activityItem = inWindow ? activityById.get(task.id) : undefined;
+              const hold = filters.held ? heldById.get(task.id) : undefined;
+              return (
+                <div key={task.id} role="listitem" data-index={item.index} ref={virtualizer.measureElement}
+                  className="absolute left-0 top-0 w-full pb-2"
+                  style={{ transform: `translateY(${item.start - scrollMargin}px)` }}>
+                  <TaskCard
+                    task={task}
+                    selected={selectedTaskId === task.id}
+                    onSelect={() => selectTask(task)}
+                    projectName={projectId ? undefined : names.get(task.project_id ?? "") || task.project_id}
+                    note={(hold || activityItem) && <>
+                      {hold && <HoldNote hold={hold} />}
+                      {activityItem && (
+                        <span className="mt-1 flex flex-wrap items-start gap-x-3 gap-y-1">
+                          <ModelsCell item={activityItem} />
+                          <ActivityCell item={activityItem} />
+                        </span>
+                      )}
+                    </>}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        </>
+      ) : (
       <table className="w-full min-w-[620px] text-left text-sm" aria-rowcount={filtered.length + 1}>
         <thead className="sticky top-0 z-10 border-b border-gray-800 bg-gray-950 text-xs uppercase text-gray-500">
           <tr>
@@ -93,7 +144,7 @@ export default function CommandCenterTasks() {
         </thead>
         <tbody ref={bodyRef} className="divide-y divide-gray-800">
           {isLoading && <tr><td colSpan={columns} className="p-4 text-gray-500">Loading tasks…</td></tr>}
-          {!isLoading && !error && filtered.length === 0 && <tr><td colSpan={columns} className="p-8 text-center text-gray-500">{inWindow ? "No work recorded in this time range." : filters.held ? "No held tasks match these filters." : "No tasks match these filters."}</td></tr>}
+          {!isLoading && !error && filtered.length === 0 && <tr><td colSpan={columns} className="p-8 text-center text-gray-500">{emptyMessage}</td></tr>}
           {padTop > 0 && <tr aria-hidden="true"><td colSpan={columns} style={{ height: padTop, padding: 0, border: 0 }} /></tr>}
           {items.map((item) => {
             const task = filtered[item.index]!;
@@ -134,6 +185,7 @@ export default function CommandCenterTasks() {
           {padBottom > 0 && <tr aria-hidden="true"><td colSpan={columns} style={{ height: padBottom, padding: 0, border: 0 }} /></tr>}
         </tbody>
       </table>
+      )}
     </div>
   );
 }

@@ -63,7 +63,7 @@ export async function run(t) {
   // A pane opened below 768 px is a full-screen sheet as well; Back closes it.
   // (The Tasks tab's own compact layout is Task 8's check.)
   await t.page.goto(t.url(`/projects/${PROJECT}/tasks`), { waitUntil: "networkidle0" });
-  await t.page.click('[data-task-row="fixture-task-2"] td:first-child .line-clamp-2'); // the title: the row's centre can be its status select
+  await t.page.click('[data-task-row="fixture-task-2"] .line-clamp-2'); // the title: a table row's centre can be its status select
   await t.page.waitForSelector('[role=dialog][aria-label="Pane"]');
   const paneSheet = await rect(t.page, '[role=dialog][aria-label="Pane"]');
   assert.ok(paneSheet.width >= vp.width - 1 && paneSheet.height >= vp.height - 1, "the pane is not full-screen");
