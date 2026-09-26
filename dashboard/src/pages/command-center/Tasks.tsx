@@ -1,83 +1,25 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { Task } from "../../api/hooks";
-import { useProjectGraphs } from "../../api/graph";
-import { useRecentActivity, type TaskActivityItem } from "../../api/activity";
-import { useProviderHeldTasks, type ProviderHeldTask } from "../../api/providers";
+import type { ProviderHeldTask } from "../../api/providers";
 import { holdKindLabel, providerName, stateLabel } from "../metrics/providerAvailabilityFormat";
 import { useListNav } from "../../shell/hotkeys/useListNav";
 import { useTaskWorkspace } from "./TaskWorkspace";
-import { activityWindowHours, activityWindowLabel, matchesTask } from "./taskFilters";
+import { useTaskListRows } from "./useTaskListRows";
+import { activityWindowLabel } from "./taskFilters";
 import { ActivityCell, ModelsCell } from "./TaskActivityCells";
 import { absoluteTime } from "./activityFormat";
 import { CopyTaskIdButton } from "./CopyTaskIdButton";
 import { InlinePriority, InlineStatus, RowActions } from "./TaskRowActions";
 import { useTaskSelection } from "./useTaskSelection";
 
-/** Render an activity row through the same table as a graph task row. */
-function activityToTask(item: TaskActivityItem): Task {
-  const latest = item.attempts[0];
-  return {
-    id: item.task_id,
-    title: item.title,
-    status: item.status,
-    project_id: item.project_id ?? "",
-    priority: item.priority ?? undefined,
-    parent_task_id: item.parent_task_id,
-    assigned_agent: latest?.agent_name ?? latest?.agent_id ?? null,
-    assigned_agent_id: latest?.agent_id ?? null,
-    profile_id: latest?.profile_id ?? null,
-    intelligence_class: latest?.intelligence_class ?? null,
-    created_at: item.created_at ?? undefined,
-    updated_at: item.updated_at ?? undefined,
-    pr_url: item.pr_url,
-  } as unknown as Task;
-}
-
 export default function CommandCenterTasks() {
-  const { projectId, projectIds, projects, filters, isLoadingProjects, projectsError } = useTaskWorkspace();
-  // The ordinary list endpoint truncates completed history. Both workspace
-  // views use the complete graph snapshots so searches always cover the same tasks.
-  const { data: graph, isLoading: graphLoading, errors } = useProjectGraphs(projectIds);
-  // A time range answers "what was worked on", which the graph snapshot
-  // cannot: it carries no per-attempt model and drops archived tasks.  The
-  // activity read replaces the row source outright while a window is set.
-  const windowHours = activityWindowHours(filters.window);
-  const activity = useRecentActivity(windowHours, projectId);
-  const inWindow = windowHours !== null;
-  // "Held by provider" narrows to the server's held-task ids (D18/D20): a
-  // row carries no hold of its own, and whether a provider outage holds a
-  // task is the daemon's call, so the list is fetched only while the filter
-  // is on and never inferred from status or profile.
-  const held = useProviderHeldTasks(projectId, filters.held);
-  const heldById = useMemo(() => new Map(
-    (held.data?.tasks ?? []).map((item) => [item.task_id, item] as const)), [held.data]);
-  const isLoading = (inWindow
-    ? activity.isLoading
-    : graphLoading || (!projectId && isLoadingProjects)) || (filters.held && held.isLoading);
-  const error = (inWindow ? !!activity.error : projectsError || errors.some(Boolean))
-    || (filters.held && held.isError);
-  const activityById = useMemo(() => new Map(
-    (activity.data?.items ?? []).map((item) => [item.task_id, item] as const)), [activity.data]);
-  const tasks = useMemo<Task[]>(() => {
-    if (inWindow) return (activity.data?.items ?? []).map(activityToTask);
-    return graph.tasks.map((task) => ({
-      ...task, project_id: graph.taskProject[task.id] ?? "",
-      assigned_agent: task.assigned_agent_id, priority: task.priority ?? undefined,
-    }));
-  }, [graph, inWindow, activity.data]);
+  const { projectId, filters } = useTaskWorkspace();
+  const { rows: filtered, isLoading, error, inWindow, activity, activityById, held, heldById, names } = useTaskListRows();
   const { selectedTaskId, selectTask, clearTask } = useTaskSelection();
   // loop: false — with virtualized rows "next after the last mounted row"
   // is the overscan edge, not the end of the list, so wrapping would jump
   // the focus a window up instead of to the first task.
   const bodyRef = useListNav<HTMLTableSectionElement>({ axis: "vertical", loop: false });
-  const names = useMemo(() => new Map(projects.map((p) => [p.id, p.name || p.id])), [projects]);
-  const filtered = useMemo(
-    () => tasks.filter((task) => (!projectId || task.project_id === projectId)
-      && (!filters.held || heldById.has(task.id))
-      && matchesTask(task, filters, names.get(task.project_id ?? "") ?? "")),
-    [tasks, projectId, filters, names, heldById],
-  );
   const columns = (projectId ? 5 : 6) + (inWindow ? 2 : 0);
   const scrollRef = useRef<HTMLDivElement>(null);
   // The scroll element is the padded region, and the count line plus the
