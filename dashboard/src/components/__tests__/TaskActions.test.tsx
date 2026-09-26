@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import TaskActions from "../TaskActions";
+import { TerminalLinkModeProvider } from "../terminalLinks";
 
 const mockNavigate = vi.fn();
 const mockDelete = vi.fn();
@@ -264,6 +265,17 @@ describe("TaskActions ask-supervisor", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/agents?agent=supervisor-global", {
       state: { agentSelection: "replace", terminalFocus: "supervisor-global" },
     });
+  });
+
+  it("in watch mode opens the supervisor's focus session, never /agents", async () => {
+    mockNavigate.mockReset();
+    mockSendChatMessage.mockReset();
+    mockSendChatMessage.mockResolvedValue({ message_id: "m1" });
+
+    render(<TerminalLinkModeProvider mode="watch"><TaskActions task={blocked} /></TerminalLinkModeProvider>);
+    await userEvent.click(screen.getByRole("button", { name: "Ask supervisor why" }));
+
+    expect(mockNavigate).toHaveBeenCalledWith("/focus/sessions/supervisor-global");
   });
 
   it("is not offered for a task that is not blocked", () => {

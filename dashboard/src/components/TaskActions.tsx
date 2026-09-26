@@ -29,6 +29,8 @@ import Modal from "./Modal";
 import BranchDiscardPrompt from "./BranchDiscardPrompt";
 import TaskAgentTerminalButton from "./TaskAgentTerminalButton";
 import { canFocusTerminal } from "./terminalFocus";
+import { useTerminalLinkMode } from "./terminalLinks";
+import { focusSessionHref } from "../pages/focus/routes";
 import { workspaceHref } from "../shell/projectNavigation";
 
 interface TaskActionsProps {
@@ -47,6 +49,7 @@ const SUPERVISOR_THREAD = "dashboard:global";
 export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal }: TaskActionsProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const terminalMode = useTerminalLinkMode();
   const [modal, setModal] = useState<ModalType>(null);
   const [textInput, setTextInput] = useState("");
   // Set when a delete came back asking what to do about branches the subtree
@@ -76,7 +79,9 @@ export default function TaskActions({ task, returnTo, onDeleted, onOpenTerminal 
         sessionAddress: SUPERVISOR_SESSION,
         threadId: SUPERVISOR_THREAD,
       });
-      navigate(`/agents?agent=${SUPERVISOR_SESSION}`, { state: {
+      // Focus routes watch the supervisor's session instead of attaching on /agents.
+      if (terminalMode === "watch") navigate(focusSessionHref(SUPERVISOR_SESSION));
+      else navigate(`/agents?agent=${SUPERVISOR_SESSION}`, { state: {
         agentSelection: "replace",
         ...(canFocusTerminal() ? { terminalFocus: SUPERVISOR_SESSION } : {}),
       } });
