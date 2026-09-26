@@ -21,14 +21,12 @@ from src.integration.settling import note_approval
 from src.models import Project
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.profiles.capabilities import CapabilityPolicy
-from tests.db_fixtures import lease_dsn
 from tests.pg_dsn import create_scratch_database
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("integration-schedule.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("integration-schedule.db")
     await database.create_project(Project(id="p", name="integration project"))
     async with database.immediate() as conn:
         await conn.execute(
@@ -40,7 +38,6 @@ async def db(tmp_path):
             )
         )
     yield database
-    await database.close()
 
 
 async def _schedule_row(db):

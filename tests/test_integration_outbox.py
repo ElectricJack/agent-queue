@@ -12,7 +12,6 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.exc import DBAPIError
 
 from src.config import PlaybooksConfig
-from src.database import Database
 from src.database.tables import (
     integration_operation_artifact_pins,
     integration_batches,
@@ -36,19 +35,16 @@ from src.playbooks.artifact_store import ArtifactStore
 from src.playbooks.definition import PlaybookDefinition
 from src.playbooks import runtime as runtime_module
 from src.playbooks.runtime import V2PlaybookRuntime
-from tests.db_fixtures import lease_dsn
 
 
 NOW = 1_789_000_000.0
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("integration-outbox.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("integration-outbox.db")
     await database.create_project(Project(id="p", name="integration project"))
     yield database
-    await database.close()
 
 
 def _terminal_playbook(

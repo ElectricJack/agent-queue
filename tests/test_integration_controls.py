@@ -6,7 +6,6 @@ import pytest
 from sqlalchemy import event, insert, select, update
 from sqlalchemy.exc import DBAPIError
 
-from src.database import Database
 from src.database.tables import (
     gates,
     integration_history_waivers,
@@ -24,13 +23,11 @@ from src.database.tables import (
 )
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("integration-controls.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("integration-controls.db")
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(
         RepoConfig(
@@ -41,7 +38,6 @@ async def db(tmp_path):
         )
     )
     yield database
-    await database.close()
 
 
 async def test_project_control_state_is_typed_and_defaults_disabled(db):

@@ -14,7 +14,6 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     integration_batch_members,
@@ -40,16 +39,14 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
-from tests.db_fixtures import lease_dsn
 
 SHA = "a" * 40
 TREE = "b" * 40
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("delegate-release.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("delegate-release.db")
     await database.create_project(Project(id="p", name="Project"))
     await database.create_repo(
         RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK)
@@ -58,7 +55,6 @@ async def db(tmp_path):
         "p", hierarchical_integration_mode="hierarchy", integration_repository_id="repo"
     )
     yield database
-    await database.close()
 
 
 async def _task(db, task_id: str, status: TaskStatus = TaskStatus.COMPLETED) -> None:

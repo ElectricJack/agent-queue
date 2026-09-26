@@ -20,7 +20,6 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database import Database
 from src.database.queries.hierarchy_queries import (
     delivered_same_parent_prerequisites_when_hierarchical,
 )
@@ -56,7 +55,6 @@ from src.integration.models import (
 )
 from src.integration.promotion import PromotionService
 from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 _AMBIENT_IDENTITY_KEYS = (
     "GIT_AUTHOR_NAME",
@@ -102,7 +100,7 @@ def _policy_and_artifact() -> tuple[dict, ArtifactSnapshot]:
 
 
 @pytest.fixture
-async def case(tmp_path):
+async def case(tmp_path, reuse_database):
     """Train epic ``epic`` collecting its COMPLETED child ``epic.1``.
 
     The child's branch is published at ``head``, one commit past the origin
@@ -129,8 +127,7 @@ async def case(tmp_path):
     tree = _git(["rev-parse", "HEAD^{tree}"], work)
     _git(["push", "origin", "aq/epic.1"], work)
 
-    db = Database(lease_dsn("child-delivery.db"))
-    await db.initialize()
+    db = await reuse_database("child-delivery.db")
     await db.create_project(Project(id="p", name="train project"))
     await db.create_repo(
         RepoConfig(
@@ -197,7 +194,6 @@ async def case(tmp_path):
         db=db, hierarchy=hierarchy, promotion=promotion, base=base, head=head, tree=tree,
         work=work,
     )
-    await db.close()
 
 
 def _collector(case, delivery=None):

@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import insert, select, update
 
-from src.database import Database
 from src.database.tables import (
     events,
     projects,
@@ -29,7 +28,6 @@ from src.integration.root_pull_requests import (
     RootPullRequestReconciler,
 )
 from src.models import Project, RepoConfig, RepoSourceType
-from tests.db_fixtures import lease_dsn
 
 BASE = "b" * 40
 HEAD = "c" * 40
@@ -37,9 +35,8 @@ PR = "https://github.com/o/r/pull/9"
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("root-pull-requests.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("root-pull-requests.db")
     await database.create_project(Project(id="p", name="train project"))
     await database.create_repo(
         RepoConfig(
@@ -55,7 +52,6 @@ async def db():
         "p", hierarchical_integration_mode="train", integration_repository_id="repo"
     )
     yield database
-    await database.close()
 
 
 async def _root(

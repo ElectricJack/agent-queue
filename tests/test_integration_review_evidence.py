@@ -10,7 +10,6 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import delete, insert, select, update
 
-from src.database import Database
 from src.database.tables import (
     integration_parent_episodes,
     integration_parent_operation_completions,
@@ -40,7 +39,6 @@ from src.models import (
     TaskStatus,
     Workspace,
 )
-from tests.db_fixtures import lease_dsn
 
 
 def _git(args: list[str], cwd: Path | None = None) -> str:
@@ -50,7 +48,7 @@ def _git(args: list[str], cwd: Path | None = None) -> str:
 
 
 @pytest.fixture
-async def review_case(tmp_path):
+async def review_case(tmp_path, reuse_database):
     remote = tmp_path / "origin.git"
     work = tmp_path / "work"
     _git(["init", "--bare", "--initial-branch=main", str(remote)])
@@ -70,8 +68,7 @@ async def review_case(tmp_path):
     _git(["push", "origin", "aq/leaf"], work)
     _git(["push", "origin", f"{base}:refs/heads/aq/parent"], work)
 
-    db = Database(lease_dsn("review.db"))
-    await db.initialize()
+    db = await reuse_database("review.db")
     await db.create_project(Project(id="p", name="P"))
     await db.create_repo(
         RepoConfig(
@@ -199,7 +196,6 @@ async def review_case(tmp_path):
         "head": head,
         "work": work,
     }
-    await db.close()
 
 
 async def test_leaf_close_review_hook_and_delivery_promote_command_end_to_end(

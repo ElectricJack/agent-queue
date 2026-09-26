@@ -15,7 +15,6 @@ from sqlalchemy import func, insert, select, update
 from unittest.mock import AsyncMock
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from src.database import Database
 from src.database.tables import (
     integration_branch_owners,
     integration_check_evidence,
@@ -38,15 +37,13 @@ from src.git.manager import GitError, GitManager
 from src.integration.models import BranchKey, Fence, PromotionInput
 from src.integration.ownership import BranchOwnership
 from src.models import Project, RepoConfig, RepoSourceType, SessionRecord, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 _DEFAULT_INSTANCE = object()
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("promotion.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("promotion.db")
     await database.create_project(Project(id="project", name="Promotion project"))
     await database.create_repo(
         RepoConfig(
@@ -118,7 +115,6 @@ async def db(tmp_path):
             )
         )
     yield database
-    await database.close()
 
 
 def _review(*, evidence_id: str, generation: int, verdict: str = "approved") -> dict:

@@ -12,7 +12,6 @@ from sqlalchemy import insert, select, update
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.config import GitHubAppConfig
-from src.database import Database
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
     gates,
@@ -55,7 +54,6 @@ from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.playbooks.artifact_ref import ArtifactRef
 from src.playbooks.definition import PlaybookDefinition
 from src.profiles.capabilities import CapabilityPolicy
-from tests.db_fixtures import lease_dsn
 
 
 def _artifact(
@@ -164,9 +162,8 @@ def _policy(
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("operational-controls.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("operational-controls.db")
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(
         RepoConfig(
@@ -202,7 +199,6 @@ async def db(tmp_path):
         integration_mode="pull_request",
     )
     yield database
-    await database.close()
 
 
 async def _external_ready(_project_id: str, _repository_id: str) -> tuple[str, ...]:

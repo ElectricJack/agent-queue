@@ -19,7 +19,6 @@ from sqlalchemy import insert, select, update
 from src.commands.contracts.integration import IntegrationOperationalValue
 from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
-from src.database import Database
 from src.database.tables import (
     events,
     integration_branch_owners,
@@ -50,7 +49,6 @@ from src.integration.identity_rebind import (
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.profiles.capabilities import DENY_ALL
-from tests.db_fixtures import lease_dsn
 
 PRINCIPAL = "supervisor session:super-p"
 PREDECESSOR_AT = 100.0
@@ -180,7 +178,7 @@ class Env:
 
 
 @pytest.fixture
-async def env(tmp_path):
+async def env(tmp_path, reuse_database):
     origin = tmp_path / "origin.git"
     git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
     clone = tmp_path / "clone"
@@ -191,8 +189,7 @@ async def env(tmp_path):
     git(clone, "add", ".")
     git(clone, "commit", "-q", "-m", "base")
     git(clone, "push", "-q", "origin", "main")
-    db = Database(lease_dsn("identity-rebind.db"))
-    await db.initialize()
+    db = await reuse_database("identity-rebind.db")
     await db.create_project(Project(id="p", name="P"))
     await db.create_repo(
         RepoConfig(id="r", project_id="p", source_type=RepoSourceType.CLONE, url=str(origin))
@@ -208,7 +205,6 @@ async def env(tmp_path):
             )
         )
     yield Env(db=db, clone=clone, tmp_path=tmp_path)
-    await db.close()
 
 
 def _states(result) -> dict[str, str]:

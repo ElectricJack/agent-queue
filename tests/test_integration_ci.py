@@ -6,7 +6,6 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import event, insert, select, update
 
-from src.database import Database
 from src.database.tables import (
     integration_batches,
     integration_candidate_revisions,
@@ -35,7 +34,6 @@ from src.integration.ci import (
     select_trusted_attestation,
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
-from tests.db_fixtures import lease_dsn
 
 
 SHA = "a" * 40
@@ -733,9 +731,8 @@ async def test_publish_rejects_loose_numeric_app_identity(malformed_app_id):
 
 
 @pytest.fixture
-async def ci_db(tmp_path):
-    database = Database(lease_dsn("ci.db"))
-    await database.initialize()
+async def ci_db(tmp_path, reuse_database):
+    database = await reuse_database("ci.db")
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(
         RepoConfig(id="repo-config-1", project_id="p", source_type=RepoSourceType.LINK)
@@ -775,7 +772,6 @@ async def ci_db(tmp_path):
             )
         )
     yield database
-    await database.close()
 
 
 @pytest.mark.asyncio
