@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from fastapi import FastAPI, WebSocket
+from fastapi import APIRouter, FastAPI, WebSocket
 from fastapi.responses import StreamingResponse
 from httpx import ASGITransport, AsyncClient
 from starlette.applications import Starlette
@@ -27,22 +27,23 @@ from src.api.perf_middleware import RouteLatencyMiddleware, is_event_stream, rou
 from src.metrics.perf import PerfRegistry, install_registry
 
 
-def make_app(registry: PerfRegistry) -> FastAPI:
+def make_app(registry: PerfRegistry, *, included: bool = True) -> FastAPI:
     app = FastAPI()
+    router = APIRouter() if included else app
 
-    @app.get("/api/tasks/{task_id}")
+    @router.get("/api/tasks/{task_id}")
     async def get_task(task_id: str):
         return {"id": task_id}
 
-    @app.get("/api/boom")
+    @router.get("/api/boom")
     async def boom():
         raise RuntimeError("boom")
 
-    @app.get("/api/teapot", status_code=418)
+    @router.get("/api/teapot", status_code=418)
     async def teapot():
         return {}
 
-    @app.get("/api/sessions/{session_id}/pane")
+    @router.get("/api/sessions/{session_id}/pane")
     async def pane(session_id: str):
         async def gen():
             yield b"data: 1\n\n"
@@ -51,7 +52,7 @@ def make_app(registry: PerfRegistry) -> FastAPI:
 
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    @app.websocket("/ws/events")
+    @router.websocket("/ws/events")
     async def ws(websocket: WebSocket):
         if websocket.query_params.get("deny"):
             await websocket.close(code=4401)
@@ -68,6 +69,8 @@ def make_app(registry: PerfRegistry) -> FastAPI:
         return PlainTextResponse(request.path_params["name"])
 
     app.mount("/static", Starlette(routes=[Route("/{name}", asset)]))
+    if included:
+        app.include_router(router)
 
     app.add_middleware(RouteLatencyMiddleware, registry=registry)
     return app
@@ -133,6 +136,166 @@ async def test_an_unknown_method_is_folded_so_labels_stay_bounded(registry, clie
     async with client:
         await client.request("PROPFIND", "/nope")
     assert set(registry.snapshot()["api"]["routes"]) == {"OTHER unmatched"}
+
+
+@pytest.mark.parametrize("included", [False, True])
+async def test_flat_and_included_routes_keep_distinct_templates(registry, included):
+    app = make_app(registry, included=included)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        assert (await ac.get("/api/tasks/private-id")).status_code == 200
+        assert (await ac.get("/api/teapot")).status_code == 418
+        assert (await ac.post("/api/tasks/private-id")).status_code == 405
+    assert set(registry.snapshot()["api"]["routes"]) == {
+        "GET /api/tasks/{task_id}",
+        "GET /api/teapot",
+        "POST /api/tasks/{task_id}",
+    }
+
+
+async def test_nested_includes_use_effective_prefixes_and_full_match_precedence(registry):
+    app = FastAPI()
+    child = APIRouter()
+
+    @child.get("/tasks/{task_id:int}")
+    async def get_task(task_id: int):
+        return {"id": task_id}
+
+    parent = APIRouter()
+    parent.include_router(child, prefix="/v1")
+    app.include_router(parent, prefix="/api")
+    app.include_router(child, prefix="/other")
+    later = APIRouter()
+
+    @later.post("/tasks/{task_id:int}")
+    async def post_task(task_id: int):
+        return {"posted": task_id}
+
+    app.include_router(later, prefix="/api/v1")
+    app.add_middleware(RouteLatencyMiddleware, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        assert (await ac.get("/api/v1/tasks/123")).status_code == 200
+        assert (await ac.get("/other/tasks/123")).status_code == 200
+        assert (await ac.post("/api/v1/tasks/123")).json() == {"posted": 123}
+        assert (await ac.delete("/api/v1/tasks/123")).status_code == 405
+        assert (await ac.get("/api/v1/tasks/not-an-int")).status_code == 404
+    routes = registry.snapshot()["api"]["routes"]
+    assert set(routes) == {
+        "GET /api/v1/tasks/{task_id:int}",
+        "GET /other/tasks/{task_id:int}",
+        "POST /api/v1/tasks/{task_id:int}",
+        "DELETE /api/v1/tasks/{task_id:int}",
+        "GET unmatched",
+    }
+    assert routes["POST /api/v1/tasks/{task_id:int}"]["status"] == {"kind": "sum", "2xx": 1}
+
+
+def test_included_websockets_and_mounts_use_effective_prefixes(registry):
+    app = FastAPI()
+    router = APIRouter()
+
+    @router.websocket("/ws/{session_id}")
+    async def ws(websocket: WebSocket, session_id: str):
+        await websocket.accept()
+        await websocket.close()
+
+    async def asset(request):
+        return PlainTextResponse("asset")
+
+    app.mount("/api/static", Starlette(routes=[Route("/{name}", asset)]))
+    app.include_router(router, prefix="/api")
+    app.add_middleware(RouteLatencyMiddleware, registry=registry)
+    with TestClient(app) as tc:
+        with tc.websocket_connect("/api/ws/private-session"):
+            pass
+        assert tc.get("/api/static/private-file.js").status_code == 200
+    snap = registry.snapshot()
+    assert set(snap["api"]["streams"]) == {"WS /api/ws/{session_id}"}
+    assert snap["api"]["streams"]["WS /api/ws/{session_id}"]["open"] == 0
+    assert set(snap["api"]["routes"]) == {"GET MOUNT/api/static"}
+    assert "private-" not in repr(snap)
+
+
+async def test_included_endpoint_labels_still_obey_registry_capacity(registry, monkeypatch):
+    from src.metrics import perf
+
+    monkeypatch.setattr(perf, "ROUTE_LIMIT", 1)
+    async with AsyncClient(
+        transport=ASGITransport(app=make_app(registry)), base_url="http://t"
+    ) as ac:
+        assert (await ac.get("/api/tasks/private-id")).status_code == 200
+        assert (await ac.get("/api/teapot")).status_code == 418
+        assert (await ac.post("/api/tasks/other-private-id")).status_code == 405
+        assert (await ac.get("/api/tasks/another-private-id")).status_code == 200
+    routes = registry.snapshot()["api"]["routes"]
+    assert set(routes) == {"GET /api/tasks/{task_id}", perf.OVERFLOW_LABEL}
+    assert routes["GET /api/tasks/{task_id}"]["latency"]["count"] == 2
+    assert routes[perf.OVERFLOW_LABEL]["latency"]["count"] == 2
+    assert "private-id" not in repr(routes)
+
+
+async def test_include_router_post_reproduction_and_route_updates(registry):
+    app = FastAPI()
+    router = APIRouter()
+
+    @router.post("/api/agent/list")
+    async def agents():
+        return []
+
+    app.include_router(router)
+    app.add_middleware(RouteLatencyMiddleware, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        assert (await ac.post("/api/agent/list")).status_code == 200
+
+        # A later include must be observed rather than retaining our own stale
+        # flattened list. FastAPI snapshots routers when they are included.
+        additional = APIRouter()
+
+        @additional.get("/api/new")
+        async def new():
+            return {}
+
+        app.include_router(additional)
+        assert (await ac.get("/api/new")).status_code == 200
+    routes = registry.snapshot()["api"]["routes"]
+    assert set(routes) == {"POST /api/agent/list", "GET /api/new"}
+    assert [entry["latency"]["count"] for entry in routes.values()] == [1, 1]
+
+
+async def test_full_match_beats_an_earlier_included_partial_template(registry):
+    app = FastAPI()
+    router = APIRouter()
+
+    @router.get("/tasks/{task_id}")
+    async def get_task(task_id: str):
+        return {}
+
+    app.include_router(router, prefix="/api")
+
+    @app.post("/api/tasks/create")
+    async def create():
+        return {}
+
+    app.add_middleware(RouteLatencyMiddleware, registry=registry)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as ac:
+        assert (await ac.post("/api/tasks/create")).status_code == 200
+        assert (await ac.delete("/api/tasks/create")).status_code == 405
+    assert set(registry.snapshot()["api"]["routes"]) == {
+        "POST /api/tasks/create",
+        "DELETE /api/tasks/{task_id}",
+    }
+
+
+def test_pathless_foreign_matches_do_not_invent_a_root_template():
+    from types import SimpleNamespace
+
+    from starlette.routing import Match
+
+    class Pathless:
+        def matches(self, scope):
+            return Match.FULL, {}
+
+    app = SimpleNamespace(router=SimpleNamespace(routes=[Pathless()]))
+    assert route_label({"type": "http", "method": "GET", "app": app}) == "GET unmatched"
 
 
 async def test_an_exception_is_recorded_as_5xx_and_re_raised(registry, client):
