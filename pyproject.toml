@@ -152,6 +152,16 @@ cli = [
     "prompt-toolkit>=3.0",
     "agent-queue-api-client @ file:packages/aq-client",
 ]
+test-selection = [
+    # The static-impact adapter can still use astroid where no Rust wheel is available.
+    "pytest-impacted==0.30.0",
+]
+test-selection-fast = [
+    # Opt in on platforms with a compatible wheel. Keep the extension pinned:
+    # pytest-impacted's fast extra currently leaves its version unconstrained.
+    "pytest-impacted[fast]==0.30.0",
+    "pytest-impacted-rs==0.30.0",
+]
 dev = [
     # Exercise the optional legacy SQLite importer in the default test suite.
     "aiosqlite>=0.20.0",
@@ -161,6 +171,8 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=6.0",
     "pytest-xdist>=3.5",
+    # Exercise the Python static-impact fallback without requiring a Rust build.
+    "pytest-impacted==0.30.0",
     "ruff>=0.4.0",
     "pre-commit>=3.5.0",
     # Pinned exactly: the whole packages/aq-client/ tree (README.md included)
