@@ -501,6 +501,60 @@ async def _create_session_project(orch, *, project_id: str = "p-1") -> None:
     )
 
 
+@pytest.mark.parametrize("resolution", ["satisfied", "expired"])
+async def test_session_cycle_resolves_durable_waits_on_the_installed_handler(
+    session_orch, resolution, caplog
+):
+    """The daemon's global wait scan runs on the handler ``set_command_handler`` stores.
+
+    It once read an attribute the Orchestrator never had: every cycle logged an
+    AttributeError, and a task wait stayed active after its producer completed
+    and after its deadline passed, so the waiting worker never woke.
+    """
+    import time
+
+    from sqlalchemy import insert
+    from src.database.tables import agent_waits
+
+    orch = session_orch
+    orch.set_command_handler(CommandHandler(orch, orch.config))
+    await _create_session_project(orch)
+    await orch.db.create_task(
+        Task(id="producer", project_id="p-1", title="Producer", description="")
+    )
+    now = time.time()
+    async with orch.db.immediate() as conn:
+        await conn.execute(
+            insert(agent_waits).values(
+                id="w1",
+                project_id="p-1",
+                owner_kind="supervisor",
+                owner_id="supervisor-p-1",
+                session_id="supervisor-session",
+                session_instance_token="instance",
+                claim_epoch=0,
+                kind="task",
+                match={"task_id": "producer"},
+                state="active",
+                version=1,
+                created_at=now - 60,
+                deadline_at=now + 3600 if resolution == "satisfied" else now - 1,
+                idempotency_key="k1",
+            )
+        )
+    if resolution == "satisfied":
+        await orch.db.transition_task("producer", TaskStatus.COMPLETED)
+
+    await orch._reconcile_sessions()
+
+    assert "AgentWaitReconciler tick failed" not in caplog.text
+    wait = await orch.db.get_agent_wait("w1")
+    assert wait["state"] == resolution
+    assert wait["result_ref"] == "task:producer"
+    message = await orch.db.get_message(wait["result_message_id"])
+    assert message.body_kind == "wait_result"
+
+
 async def test_conditional_completion_cascades_contingency_to_noop_and_emits_event(
     orchestrator_factory,
 ):

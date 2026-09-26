@@ -3403,12 +3403,15 @@ class Orchestrator(
             await self.agent_questions.tick()
         except Exception:
             logger.error("AgentQuestionService tick failed", exc_info=True)
-        try:
-            from src.agent_waits import AgentWaitReconciler
+        if self._command_handler is not None:
+            try:
+                from src.agent_waits import AgentWaitReconciler
 
-            await AgentWaitReconciler(self.command_handler).tick()
-        except Exception:
-            logger.error("AgentWaitReconciler tick failed", exc_info=True)
+                result = await AgentWaitReconciler(self._command_handler).tick()
+                if not result.get("success"):
+                    logger.error("AgentWaitReconciler tick refused: %s", result)
+            except Exception:
+                logger.error("AgentWaitReconciler tick failed", exc_info=True)
         await self.session_reconciler.tick()
         from src.integration.completion_recovery import schedule_ready_owner_recovery
 
