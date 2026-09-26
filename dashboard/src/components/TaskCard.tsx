@@ -19,8 +19,8 @@ export interface TaskCardProps {
 /**
  * One task as a touch card (mobile dashboard §3 gap 6): the title wraps, even
  * an unbroken Unicode one, and the whole card is the target. It keeps the
- * table row's `data-task-row` marker, so the perf harness and keyboard list
- * navigation find it the same way.
+ * table row's `data-task-row` and `data-listnav` markers, so the perf harness
+ * and keyboard list navigation (useListNav) find it the same way.
  */
 export default function TaskCard({ task, projectName, note, selected = false, to, onSelect }: TaskCardProps) {
   const className = `block w-full rounded-lg border px-3 py-2 text-left ${
@@ -41,13 +41,13 @@ export default function TaskCard({ task, projectName, note, selected = false, to
   );
   if (to) {
     return (
-      <Link to={to} data-task-row={task.id} data-primary-control className={className} onClick={() => rememberTaskPreview(task)}>
+      <Link to={to} data-task-row={task.id} data-listnav="1" data-primary-control className={className} onClick={() => rememberTaskPreview(task)}>
         {body}
       </Link>
     );
   }
   return (
-    <button type="button" data-task-row={task.id} data-primary-control aria-pressed={selected} className={className} onClick={onSelect}>
+    <button type="button" data-task-row={task.id} data-listnav="1" data-primary-control aria-pressed={selected} className={className} onClick={onSelect}>
       {body}
     </button>
   );
