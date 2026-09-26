@@ -39,7 +39,7 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.integration.publishable_artifact import has_publishable_artifact
+from src.integration.publishable_artifact import development_empty_source, has_publishable_artifact
 from src.models import BLOCKING_DEP_TYPES, HOLD_LABEL_PREFIX, DepType, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -148,7 +148,7 @@ def _development_delivery_pending(task, *, include_foreign_repos=False):
 
     Candidate preservation and parent aggregates are not worker checkout bases.
     A delivery of an older revision cannot release a new completion revision.
-    Branchless tasks have no repository artifact to publish.
+    Branchless tasks and observed empty revisions have no artifact to publish.
 
     *include_foreign_repos* also counts a task whose ``repo_id`` names a
     repository that is not one of its project's own.  The publisher never
@@ -177,6 +177,7 @@ def _development_delivery_pending(task, *, include_foreign_repos=False):
             project.c.id == task.c.project_id,
             project.c.hierarchical_integration_mode == "development",
             has_publishable_artifact(task.c.branch_name),
+            ~development_empty_source(task, repo.c.id),
             repo_scope,
             ~delivered,
         )
