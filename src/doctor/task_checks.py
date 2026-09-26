@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy import or_, select, union_all
+from sqlalchemy import and_, or_, select, union_all
 
 from src.agent_waits import TERMINAL_TASK_STATUSES
 from src.database.queries.claim_queries import claim_frontier_predicates
-from src.database.tables import agent_waits, archived_tasks, tasks
+from src.database.tables import agent_waits, archived_tasks, messages, tasks
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.models import TaskStatus
 
@@ -17,21 +17,32 @@ _STALE_STATUSES = frozenset({TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED})
 
 
 async def _check_pending_timer_waits(ctx: DoctorContext) -> CheckResult:
-    """Timers become ready at due_at, even before their hard timeout."""
+    """Find missed timer resolution and resolved results that never reached their owner."""
     check_id = "waits.pending_timers"
     if ctx.db is None:
         return CheckResult(id=check_id, severity=Severity.INFO, detail="database unavailable")
     now = time.time()
+    delivery_grace = max(30.0, ctx.config.messages.delivery_interval * 2)
     due_at = agent_waits.c.match["due_at"].as_float()
     stmt = (
         select(
             agent_waits.c.id.label("wait_id"), agent_waits.c.project_id,
             agent_waits.c.owner_kind, agent_waits.c.owner_id, agent_waits.c.session_id,
             due_at.label("due_at"), agent_waits.c.deadline_at, agent_waits.c.checked_at,
+            agent_waits.c.state, agent_waits.c.resolved_at, agent_waits.c.result_message_id,
         )
+        .select_from(agent_waits.outerjoin(
+            messages, messages.c.id == agent_waits.c.result_message_id,
+        ))
         .where(
-            agent_waits.c.state == "active", agent_waits.c.kind == "timer",
-            or_(due_at <= now, agent_waits.c.deadline_at <= now),
+            agent_waits.c.kind == "timer",
+            or_(
+                and_(agent_waits.c.state == "active",
+                     or_(due_at <= now, agent_waits.c.deadline_at <= now)),
+                and_(agent_waits.c.state.in_(("satisfied", "expired")),
+                     agent_waits.c.resolved_at <= now - delivery_grace,
+                     messages.c.delivered_at.is_(None), messages.c.archived_at.is_(None)),
+            ),
         )
         .order_by(due_at, agent_waits.c.id)
         .limit(51)
@@ -40,10 +51,11 @@ async def _check_pending_timer_waits(ctx: DoctorContext) -> CheckResult:
         rows = (await conn.execute(stmt)).mappings().all()
     if not rows:
         return CheckResult(id=check_id, severity=Severity.OK,
-                           detail="no active timer wait is past its due instant or deadline")
+                           detail="no overdue timer waits or stalled timer result deliveries")
     return CheckResult(
         id=check_id, severity=Severity.WARN,
-        detail=f"{len(rows[:50])} active timer wait(s) are overdue; check wait reconciliation",
+        detail=(f"{len(rows[:50])} timer wait(s) need attention; "
+                "check wait reconciliation and result delivery"),
         data={"waits": [dict(row) for row in rows[:50]], "truncated": len(rows) > 50},
     )
 

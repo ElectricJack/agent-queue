@@ -98,6 +98,12 @@ For timers that missed their due instant, run
 timers as soon as `due_at` passes, including timers whose hard timeout remains
 in the future, and also flags timers past that timeout. It reports due and
 deadline times, the last reconciliation check, and wait, owner and session ids.
+It also flags resolved timers whose result remains undelivered for at least
+30 seconds (or two delivery intervals, whichever is longer), including the
+resolution time and result message id. An idle agent receives its result pointer
+even when its terminal keeps repainting: completed transcript turns determine
+idle status, and the next prompt makes the session busy again. Missing transcript
+evidence falls back to recent terminal activity.
 
 `agents.stuck_timeout_seconds` defaults to disabled (`0`) both with and without
 an `agents:` configuration section. Explicit configured limits still apply.
@@ -106,7 +112,8 @@ an `agents:` configuration section. Explicit configured limits still apply.
 
 The regular reconciler and delivery tests use a fake terminal and disposable
 PostgreSQL. A real tmux pool-terminal test uses a small local input stub and a
-32-second timer, with no model credentials or operator daemon:
+five-second timer and continuous idle terminal redraws, with no model credentials
+or operator daemon:
 
 ```bash
 aq test -m tmux -p no:xdist \

@@ -2825,6 +2825,268 @@ Append-only (except revocation) record of an omission policy a project earned: t
 | `revoked_at` | REAL | nullable | NULL while active |
 | `revoke_reason` | TEXT | nullable | Why it was revoked |
 
+### Table: `agent_waits`
+
+One row per durable condition an agent keeps open while it stays blocked on
+something external: a managed job, another task, an incoming message on a
+thread, or a timer (`docs/guides/agent-waits.md`). A wait holds the task
+`IN_PROGRESS` and retains its claim, workspace and pool seat; registration
+returns immediately, and resolution or expiry is a state change on the row,
+never a daemon-side timer. Soft owner references (`owner_kind`, `owner_id`,
+`claim_epoch`) survive archival and claim turnover — only `project_id` is a
+hard foreign key — and delivery receipts live exclusively on the result
+message (`result_message_id`), not here. `uq_agent_waits_idempotency` makes a
+repeated registration with the same key idempotent while a changed one is
+refused, and `uq_agent_waits_active_claim` (partial unique on
+`owner_id, claim_epoch` WHERE `state = 'active' AND owner_kind = 'task'`)
+keeps at most one live wait per task claim. Every wait is bounded: `deadline_at`
+must stay within 24 hours of `created_at`, and `version` fences optimistic
+updates against the epoch.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Wait id |
+| `project_id` | TEXT | NOT NULL, FK → projects | Project the wait belongs to |
+| `owner_kind` | TEXT | NOT NULL, CHECK: task, supervisor | Who is blocked on the condition |
+| `owner_id` | TEXT | NOT NULL | Task or supervisor id the wait is held for |
+| `session_id` | TEXT | NOT NULL | Session that registered the wait |
+| `session_instance_token` | TEXT | NOT NULL | Instance token of the registering session |
+| `claim_epoch` | INTEGER | NOT NULL | Claim epoch the wait is recorded under |
+| `kind` | TEXT | NOT NULL, CHECK: job, task, message, timer | Adapter that resolves the condition |
+| `match` | JSON | NOT NULL | Adapter-specific condition (ref, thread, due time…) |
+| `state` | TEXT | NOT NULL DEFAULT 'active', CHECK: active, satisfied, expired, cancelled | Lifecycle state |
+| `version` | INTEGER | NOT NULL DEFAULT 1 | Optimistic-update fence |
+| `created_at` | REAL | NOT NULL | Registration time |
+| `deadline_at` | REAL | NOT NULL, `> created_at` and within 24 h of it | Latest time the wait stays live |
+| `resolved_at` | REAL | nullable | When it left `active` |
+| `wait_resumed_at` | REAL | nullable | When its owner resumed work |
+| `checked_at` | REAL | NOT NULL DEFAULT 0 | Last probe time; sweep candidate index |
+| `result_ref` | TEXT | nullable | Adapter resolution reference |
+| `digest` | JSON | nullable | Resolution evidence summary |
+| `idempotency_key` | TEXT | NOT NULL | Registration key (`uq_agent_waits_idempotency`) |
+| `result_message_id` | TEXT | nullable | Message that carried the result to the owner |
+
+### Table: `jobs`
+
+One row per managed job: a detached, harness-independent command with an
+admission contract, a deterministic queue position and an authoritative
+result (`docs/specs/implementation/managed-jobs.md`). Submission is
+idempotent per owner via `uq_jobs_owner_key` on
+(`project_id`, `owner_kind`, `owner_id`, `idempotency_key`), and
+`request_hash` plus `preset_version` pin the exact request so a re-submitted
+key only replays an identical one. Managed jobs are independent of harness
+sessions: `submitter_session_id` is a soft reference, and the workspace pin
+is carried by `workspace_id` + `workspace_generation` with `job_workspace_pins`.
+Scheduling is bounded — `queue_deadline`, `run_timeout` and the derived
+`run_deadline` are mandatory, `weight > 0` and `priority_band BETWEEN 0 AND 2`
+(`ck_jobs_capacity`) — and the runner is fenced by `runner_nonce`, `boot_id`,
+`start_ticks` and `pid` so a recovered job can tell which process is
+authoritative. `result_version` / `result_ref` / `result` record the observed
+exit, integrity and rendered result; `cleanup_blocked` and
+`output_reservation_bytes` (default 64 MiB) keep the runner's cleanup and
+output-reservation contract visible on the row.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Job id |
+| `project_id` | TEXT | NOT NULL | Project (soft reference, no foreign key) |
+| `task_id` | TEXT | nullable | Owning task when `owner_kind = 'task'` |
+| `owner_kind` | TEXT | NOT NULL, CHECK: task, integration | Submission owner |
+| `owner_id` | TEXT | NOT NULL | Owner's task or integration operation id |
+| `submitter_session_id` | TEXT | nullable | Session that submitted, if any |
+| `claim_epoch` | INTEGER | nullable | Claim epoch the submission belonged to |
+| `integration_operation_id` | TEXT | nullable | Integration operation for `owner_kind = 'integration'` |
+| `idempotency_key` | TEXT | NOT NULL | Submission key (`uq_jobs_owner_key`) |
+| `request_hash` | TEXT | NOT NULL | Digest of the exact submission request |
+| `preset` | TEXT | NOT NULL | Preset id the job runs under |
+| `preset_version` | INTEGER | NOT NULL | Preset generation at submission |
+| `argv` | JSON | NOT NULL | The command to run |
+| `contract` | JSON | NOT NULL | Admission contract (budgets, limits, expectations) |
+| `workspace_id` | TEXT | NOT NULL | Workspace the job runs in |
+| `workspace_generation` | INTEGER | NOT NULL | Workspace generation pinned for the run |
+| `input_mode` | TEXT | NOT NULL, CHECK: live, snapshot | Whether inputs are live or a pinned snapshot |
+| `input_ref` | TEXT | nullable | Snapshot reference in `snapshot` mode |
+| `input_fingerprint` | TEXT | nullable | Fingerprint of the pinned inputs |
+| `input_stability` | TEXT | NOT NULL DEFAULT 'unverified' | Whether pinned inputs were verified stable |
+| `job_class` | TEXT | NOT NULL, CHECK: shared, exclusive | Admission class |
+| `weight` | INTEGER | NOT NULL, `> 0` | Queue weight |
+| `priority_band` | INTEGER | NOT NULL, `BETWEEN 0 AND 2` | Priority band |
+| `state` | TEXT | NOT NULL DEFAULT 'queued', CHECK: queued, starting, running, cancelling, succeeded, failed, cancelled, lost | Lifecycle state |
+| `state_version` | INTEGER | NOT NULL DEFAULT 0 | Fence for state transitions |
+| `submitted_at` | REAL | NOT NULL | Submission time |
+| `launch_at` | REAL | nullable | When launch was admitted |
+| `started_at` | REAL | nullable | When the runner started it |
+| `ended_at` | REAL | nullable | When it ended |
+| `queue_deadline` | REAL | NOT NULL | Latest time the job may start |
+| `run_timeout` | REAL | NOT NULL | Run budget in seconds |
+| `run_deadline` | REAL | nullable | Derived latest end time |
+| `runner_nonce` | TEXT | NOT NULL | Per-launch nonce binding a runner process |
+| `boot_id` | TEXT | nullable | Host boot id of the runner |
+| `pid` | INTEGER | nullable | Runner process id |
+| `start_ticks` | BIGINT | nullable | Ticks at process start |
+| `exit_code` | INTEGER | nullable | Observed exit code |
+| `signal` | INTEGER | nullable | Terminating signal, if any |
+| `infra_reason` | TEXT | nullable | Infrastructure failure reason, if any |
+| `measurements` | JSON | nullable | Runner measurements |
+| `result_version` | INTEGER | nullable | Result envelope generation |
+| `result_ref` | TEXT | nullable | Reference to the rendered result |
+| `result` | JSON | nullable | Result body |
+| `output_retention` | TEXT | NOT NULL DEFAULT 'reserved' | Retention contract for retained output |
+| `output_reservation_bytes` | BIGINT | NOT NULL DEFAULT 67108864 | Reserved output budget (default 64 MiB) |
+| `cleanup_blocked` | BOOLEAN | NOT NULL DEFAULT false | Cleanup blocked on an unresolved receipt |
+| `retry_of` | TEXT | nullable | Job id this job is a retry of |
+
+### Table: `job_workspace_pins`
+
+One row per job: the workspace generation the job is admitted to. Pins have
+no expiry and no cancellation path — only verified process cleanup may
+release them, including after a lost receipt — so a crashed runner can never
+leave a silently-reusable pin behind. `created_at` records admission for
+diagnostics; `idx_job_pins_workspace` lists the jobs currently pinning a
+workspace.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `job_id` | TEXT | PRIMARY KEY, FK → jobs | Pinned job |
+| `workspace_id` | TEXT | NOT NULL, FK → workspaces | Pinned workspace |
+| `generation` | INTEGER | NOT NULL | Workspace generation the job runs against |
+| `created_at` | REAL | NOT NULL | Admission time |
+
+### Table: `job_outbox`
+
+Bounded delivery of job receipts to their owner: one row per outbox `key`,
+with the rendered `payload` and the delivery watermark. `key` is the
+idempotency anchor (owner-scoped), so a crashed dispatch retries the same
+payload and `delivered_at` records when the receipt landed. Digest and
+escalation identities live in their own domain tables; this table is the
+job-domain's half of the receipt pipeline.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `key` | TEXT | PRIMARY KEY | Owner-scoped outbox key |
+| `job_id` | TEXT | NOT NULL, FK → jobs | Job the receipt belongs to |
+| `created_at` | REAL | NOT NULL | When the outbox row was written |
+| `payload` | JSON | NOT NULL | Frozen receipt delivered to the owner |
+| `delivered_at` | REAL | nullable | When delivery completed; NULL until then |
+
+### Table: `outbound_deliveries`
+
+Shared outbox for the newer report and conversation lifecycles that deliver
+prose to a user or channel rather than to a session. Digest and escalation
+identities remain in their established domain tables; rows here are
+transport-shaped and transport-neutral: a typed `destination`, a frozen
+`payload` (with `payload_hash` binding delivery to exactly that content) and
+a lease (`lease_owner`, `lease_expires_at`) that `ck_outbound_deliveries_lease`
+keeps non-null only while `state = 'sending'` — no two dispatchers can hold
+the same row. `dedup_key` (`uq_outbound_deliveries_dedup`) makes retrying the
+same business event idempotent, while `marker`
+(`uq_outbound_deliveries_marker`) anchors a bounded stream so re-sends stay
+within one marker window. `state = 'sent'` is only reachable with an
+`external_receipt_id` and `receipt_confirmed_at`
+(`ck_outbound_deliveries_receipt`): a network ack the platform confirms is
+what makes a delivery sent — `idx_outbound_deliveries_due`
+(`state`, `due_at`) is the dispatch loop's scan path.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Delivery id |
+| `owner_kind` | TEXT | NOT NULL | Domain owning the delivery (report, conversation, …) |
+| `owner_id` | TEXT | NOT NULL | Owner id in that domain |
+| `dedup_key` | TEXT | NOT NULL, UNIQUE | Business-event dedup anchor |
+| `destination` | JSON | NOT NULL | Typed delivery destination |
+| `payload` | JSON | NOT NULL | Frozen delivery content |
+| `payload_hash` | TEXT | NOT NULL | Digest of `payload`; delivery proves this bytes |
+| `marker` | TEXT | NOT NULL, UNIQUE | Bounded-stream anchor for re-sends |
+| `state` | TEXT | NOT NULL DEFAULT 'pending', CHECK: pending, sending, sent, retry, unknown, cancelled | Dispatch state |
+| `due_at` | REAL | NOT NULL | Earliest dispatch time |
+| `lease_owner` | TEXT | nullable | Dispatcher holding the row; NULL outside `sending` |
+| `lease_expires_at` | REAL | nullable | Lease end; NULL outside `sending` |
+| `attempt_count` | INTEGER | NOT NULL DEFAULT 0, `>= 0` | Delivery attempts so far |
+| `external_receipt_id` | TEXT | nullable | Platform receipt id; required once `sent` |
+| `receipt_confirmed_at` | REAL | nullable | Receipt confirmation time; required once `sent` |
+| `last_error` | TEXT | nullable | Last dispatch error, if any |
+| `created_at` | REAL | NOT NULL | When the row was written |
+| `updated_at` | REAL | NOT NULL | Last state change |
+
+### Table: `morning_reports`
+
+One row per (schedule, local date) for a durable morning/brief report
+(`docs/guides/supervisor-hourly-reports.md`), built by a lease-bounded
+author under an explicit `author_deadline`. The report is fully local on the
+row: `config_snapshot`, `build_context`, `brief` (+ `brief_hash`) are what the
+author received, `source_cursors` / `source_heads` are what it read, and
+`report` is the final rendered output (with `fallback` for the degraded
+path). `uq_morning_reports_day` keeps at most one report per schedule per
+local date, and `ck_morning_reports_window` keeps the observation window
+sane. `state` walks building → ready → authoring → final, with
+suppressed/skipped/failed as terminal non-final states, and
+`finalized_at` closes it out. `lease_owner` / `lease_expires_at` bind the
+author seat so a dead author cannot hold the day's report hostage.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Report id |
+| `schedule_id` | TEXT | NOT NULL | Schedule the report belongs to |
+| `local_date` | TEXT | NOT NULL | Local date the report covers (`uq_morning_reports_day`) |
+| `config_snapshot` | JSON | NOT NULL | Schedule config as resolved for this build |
+| `scope_key` | TEXT | NOT NULL | Coverage scope this report builds against |
+| `timezone` | TEXT | NOT NULL | Timezone the local date was computed in |
+| `planned_at` | REAL | NOT NULL | Planned build time |
+| `window_start` | REAL | NOT NULL | Observation window start |
+| `window_end` | REAL | NOT NULL, `> window_start` | Observation window end |
+| `build_context` | JSON | NOT NULL | Bounded context the author works from |
+| `brief` | JSON | nullable | The brief an author reads |
+| `brief_hash` | TEXT | nullable | Digest of `brief`; bounds the author's input |
+| `source_cursors` | JSON | nullable | Cursors the build read up to |
+| `source_heads` | JSON | nullable | Heads the build read up to |
+| `state` | TEXT | NOT NULL DEFAULT 'building', CHECK: building, ready, authoring, final, suppressed, skipped, failed | Lifecycle state |
+| `reason` | TEXT | nullable | State reason (suppression, failure, …) |
+| `fallback` | JSON | nullable | Fallback build when the primary path failed |
+| `report` | JSON | nullable | Final rendered report |
+| `coverage` | JSON | nullable | Coverage summary the build produced |
+| `author_deadline` | REAL | NOT NULL | Latest time the author may hold the seat |
+| `lease_owner` | TEXT | nullable | Author session holding the seat |
+| `lease_expires_at` | REAL | nullable | Author lease end |
+| `created_at` | REAL | NOT NULL | Row creation time |
+| `finalized_at` | REAL | nullable | When the report left authoring |
+
+### Table: `morning_report_coverage`
+
+Coverage is independent of external transport receipts: a schedule × scope ×
+source row records what has already been consumed so a changed project
+selection from the same source does not re-consume evidence. Scope keys keep
+cursors per (schedule, scope) — the same source serving two scopes holds two
+rows — and `report_id` binds each advancement to the `morning_reports` row
+that produced it, so coverage gaps trace back to a report rather than to a
+delivery.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `schedule_id` | TEXT | PRIMARY KEY | Covered schedule |
+| `scope_key` | TEXT | PRIMARY KEY | Coverage scope this row tracks |
+| `source` | TEXT | PRIMARY KEY | Source the cursor applies to |
+| `covered_until` | REAL | NOT NULL | Latest event time consumed |
+| `head_sha` | TEXT | nullable | Source head the cursor was observed at |
+| `report_id` | TEXT | NOT NULL | `morning_reports.id` that advanced this row |
+
+### Table: `morning_report_facts`
+
+Evidence facts a report cited — one row per (report id, fact key) — with the
+source and the record id the fact references. `project_id` is nullable
+because some facts are fleet-scoped, and `at` is the source-side timestamp the
+fact records, not the build time (that lives on the report). This is the
+audit trail for the `brief` an author read: a fact the report cites must be
+resolvable to a row here.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `report_id` | TEXT | PRIMARY KEY, FK → morning_reports (CASCADE) | Report the fact belongs to |
+| `fact_key` | TEXT | PRIMARY KEY | Fact identity within the report |
+| `source` | TEXT | NOT NULL | Source system the fact came from |
+| `record_id` | TEXT | NOT NULL | Record in that source the fact references |
+| `project_id` | TEXT | nullable | Project the fact is scoped to; NULL for fleet facts |
+| `at` | REAL | NOT NULL | Source timestamp the fact records |
+
 ---
 
 ## 4. Projects
