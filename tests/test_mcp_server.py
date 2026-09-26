@@ -677,6 +677,11 @@ class TestDriftDetection:
             # elevated/local-only on HTTP, so it carries a codegen-only
             # schema rather than an LLM-facing definition.
             "session_token",
+            # Daemon-only durable wait scan (src/commands/wait_commands.py).
+            # Excluded from MCP outright (DEFAULT_EXCLUDED_COMMANDS); the
+            # orchestrator supplies its clock, so it carries a codegen-only
+            # fallback schema rather than an LLM-facing definition.
+            "reconcile_agent_waits",
             # Harness-hook telemetry writer (src/commands/surface_commands.py).
             # Excluded from MCP outright (DEFAULT_EXCLUDED_COMMANDS): the hook
             # calls it over the CLI/HTTP surface and the session comes from the
