@@ -16,6 +16,30 @@ from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
+_REPORT_REQUEST_ROW = {
+    "id": "report-hourly-window",
+    "kind": "hourly",
+    "owner_ref": "window",
+    "destination": "discord:channel",
+    "visibility": {"project_ids": ["x"], "full_fleet": False},
+    "brief": {"title": "Hourly activity", "counts": {"completed": 2}},
+    "brief_hash": "brief-hash",
+    "fallback_text": "Two tasks completed.",
+    "author_session_id": "supervisor-session",
+    "state": "submitted",
+    "deadline": 3600.0,
+    "version": 3,
+    "request_message_id": "msg-report-hourly-window",
+    "submitted_text": "Completed two tasks with verified results.",
+    "submitted_hash": "submitted-hash",
+    "evidence_refs": ["task:p", "task:c"],
+    "source_links": ["https://example.com/results"],
+    "submitted_at": 120.0,
+    "skip_reason": None,
+    "created_at": 0.0,
+    "updated_at": 120.0,
+}
+
 
 def test_ordered_tables_covers_every_table() -> None:
     """Every schema table is imported or has a documented exclusion."""
@@ -98,14 +122,23 @@ async def _empty_pg_adapter():
 async def _seeded_source(tmp_path) -> str:
     """A SQLite source at head with rows across the deferred-FK tables:
     a self-FK parent pointer (tasks) and the agents⇄tasks circular FK."""
-    from sqlalchemy import text
+    from sqlalchemy import MetaData, insert, text
 
     from sqlalchemy.ext.asyncio import create_async_engine
+
+    from src.database.tables import supervisor_report_requests
+
+    # The legacy source predates PostgreSQL-only timestamp defaults. Keep
+    # production metadata intact while recreating its columns for the import.
+    source_metadata = MetaData()
+    for table in metadata.tables.values():
+        table.to_metadata(source_metadata)
+    source_metadata.tables["task_context"].c.created_at.server_default = None
 
     path = str(tmp_path / "source.db")
     source = create_async_engine(f"sqlite+aiosqlite:///{path}")
     async with source.begin() as conn:
-        await conn.run_sync(metadata.create_all)
+        await conn.run_sync(source_metadata.create_all)
         await conn.execute(text("INSERT INTO projects (id, name, created_at) VALUES ('x','x',0)"))
         await conn.execute(
             text("INSERT INTO agent_profiles (id, name, created_at, updated_at) "
@@ -131,6 +164,7 @@ async def _seeded_source(tmp_path) -> str:
                 "VALUES ('c','p',0)"
             )
         )
+        await conn.execute(insert(supervisor_report_requests), _REPORT_REQUEST_ROW)
         # playbook_activations -> playbook_artifacts is a plain (non-deferred)
         # FK, so the copy only works if both tables are in _ORDERED_TABLES and
         # the artifact is inserted first.
@@ -168,9 +202,10 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
     (agents⇄tasks circular FK) are inserted as NULL in pass one; pass two
     must put the source values back.
     """
-    from sqlalchemy import text
+    from sqlalchemy import select, text
 
     from src.database.legacy_sqlite_import import migrate_sqlite_to_postgres
+    from src.database.tables import supervisor_report_requests
 
     path = await _seeded_source(tmp_path)
     target = await _empty_pg_adapter()
@@ -179,7 +214,12 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
         assert set(counts) == {table.name for table in _ORDERED_TABLES}
         assert counts["tasks"] == 2 and counts["agents"] == 1
         assert counts["epic_dependencies"] == 1
+        assert counts["supervisor_report_requests"] == 1
         async with target._engine.connect() as conn:
+            report = (
+                await conn.execute(select(supervisor_report_requests))
+            ).mappings().one()
+            assert dict(report) == _REPORT_REQUEST_ROW
             assert (
                 await conn.execute(text("SELECT parent_task_id FROM tasks WHERE id='c'"))
             ).scalar() == "p"
