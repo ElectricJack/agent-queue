@@ -232,6 +232,7 @@ def test_seeded_supervisor_holds_every_operator_integration_control(tmp_path):
     parsed = parse_profile(_vault_profile_path(tmp_path, "supervisor").read_text(encoding="utf-8"))
     assert parsed.capabilities is not None
     supervisor = CapabilityPolicy.from_namespaces(**parsed.capabilities)
+    assert supervisor.allows_aq_command("session_kill")
     denied = sorted(
         command
         for command in OPERATOR_INTEGRATION_CONTROLS

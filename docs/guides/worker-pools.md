@@ -318,6 +318,13 @@ only after the pool has been continuously in surplus for
 claim attempt returns `drain_requested`. A busy worker is never drained
 mid-task.
 
+A pool session with `desired_state='stopped'` drains once it no longer owns a task
+assignment. An old
+`session.task_id` does not keep it alive after that task is reopened or claimed
+elsewhere: reconciliation detaches the stale pointer without changing the new
+holder's task. An active claim or attached integration writer still retains its
+ownership fence until release completes.
+
 `aq pool scale --now` is the exception: it terminates idle sessions above the
 new effective max immediately, oldest first, skipping the grace window.
 

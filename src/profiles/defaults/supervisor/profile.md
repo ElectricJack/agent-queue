@@ -150,6 +150,7 @@ the vault. The orchestrator schedules; you decide what exists to schedule.
     "review_submit",
     "review_withdraw",
     "session_drain_ack",
+    "session_kill",
     "session_list",
     "session_logs",
     "session_peek",
