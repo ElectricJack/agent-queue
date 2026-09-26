@@ -28,7 +28,7 @@
       ]
     },
     "api-contract": {
-      "description": "The generated API contract: the committed OpenAPI spec matching the live app, the generated Python client and its pinned generator, typed request models, the response-model registry and execute/typed error parity.",
+      "description": "The generated API contract: the committed OpenAPI spec matching the live app, Python and TypeScript clients with pinned local generators, typed request models, the response-model registry and execute/typed error parity.",
       "modules": [
         "tests/test_api_client_contract.py",
         "tests/test_api_codegen_input_models.py",
@@ -36,6 +36,7 @@
         "tests/test_api_execute_contract.py",
         "tests/test_cli_client_generated.py",
         "tests/test_regenerate_api_client_script.py",
+        "tests/test_regenerate_ts_client_script.py",
         "tests/test_response_model_registry.py"
       ]
     },
@@ -65,9 +66,10 @@
       ]
     },
     "ci-sentinel": {
-      "description": "The CI main sentinel and CI policy: the baseline status observation, repair keys and adoption, the shipped sentinel playbook and which GitHub workflow events run full CI.",
+      "description": "The CI main sentinel and CI policy: the baseline status observation, repair keys and adoption, the shipped sentinel playbook, which GitHub workflow events run full CI, and complete validated shard timing maps.",
       "modules": [
         "tests/test_ci_baseline_status.py",
+        "tests/test_ci_durations.py",
         "tests/test_ci_main_sentinel.py",
         "tests/test_ci_trigger_policy.py"
       ]
@@ -200,13 +202,14 @@
       ]
     },
     "digest": {
-      "description": "Activity digest: fact eligibility and dedup, rendering, window scheduling and delivery, digest commands, what a window may read, and digest settings.",
+      "description": "Activity digest and hourly reports: fact eligibility and dedup, rendering, window scheduling and delivery, author-request submission and deterministic fallback, visibility and quiet hours, digest commands, what a window may read, and digest settings.",
       "modules": [
         "tests/test_digest.py",
         "tests/test_digest_commands.py",
         "tests/test_digest_dispatch.py",
         "tests/test_digest_queries.py",
-        "tests/test_discord_settings.py"
+        "tests/test_discord_settings.py",
+        "tests/test_report_requests.py"
       ]
     },
     "discord": {
@@ -219,6 +222,7 @@
         "tests/test_discord_docs.py",
         "tests/test_discord_escalation_transport.py",
         "tests/test_discord_housekeeping.py",
+        "tests/test_discord_intake_diagnostics.py",
         "tests/test_discord_settings.py",
         "tests/test_discord_simplification_lifecycle.py",
         "tests/test_rate_guard.py",
@@ -371,6 +375,7 @@
         "tests/test_github_auth.py",
         "tests/test_github_client.py",
         "tests/test_github_contracts.py",
+        "tests/test_github_issue_triage.py",
         "tests/test_github_launcher_architecture.py",
         "tests/test_github_repository_creation.py",
         "tests/test_github_runner.py",
@@ -452,6 +457,7 @@
     "integration-ownership": {
       "description": "Integration branch ownership: fenced repository-qualified owners, owner recovery and its sweeps, stale and finished owners, ownership transfer, workspace handoff, identity rebinding, ejection and delegate release.",
       "modules": [
+        "tests/test_canonical_reservation.py",
         "tests/test_doctor_stranded_fences_fix.py",
         "tests/test_integration_delegate_release.py",
         "tests/test_integration_eject.py",
@@ -469,6 +475,7 @@
     "integration-promotion": {
       "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication and legacy deliveries.",
       "modules": [
+        "tests/test_integration_child_delivery.py",
         "tests/test_integration_legacy_deliveries.py",
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
@@ -590,10 +597,18 @@
       ]
     },
     "metrics": {
-      "description": "Metrics: the per-second fleet sampler with roll-ups and retention, the metrics series API and WebSocket frame, and chat-analyzer suggestion outcome metrics.",
+      "description": "Metrics: fleet sampling and roll-ups, histograms, bounded route and stream labels, query and pool timing, loop lag diagnostics, host pressure and process attribution, relay deltas, bounded dashboard load experiments, API and WebSocket frames, and suggestion outcomes.",
       "modules": [
         "tests/test_api_metrics.py",
+        "tests/test_api_perf_middleware.py",
         "tests/test_chat_analyzer_metrics.py",
+        "tests/test_dashboard_perf_kit.py",
+        "tests/test_doctor_perf_checks.py",
+        "tests/test_engine_perf_observer.py",
+        "tests/test_metrics_histogram.py",
+        "tests/test_metrics_host.py",
+        "tests/test_metrics_perf.py",
+        "tests/test_metrics_relay.py",
         "tests/test_metrics_sampler.py"
       ]
     },
@@ -613,6 +628,7 @@
         "tests/test_migration_escalation_state.py",
         "tests/test_migration_guard.py",
         "tests/test_migration_guard_restoration.py",
+        "tests/test_migration_handoff.py",
         "tests/test_migration_integration_cleanup.py",
         "tests/test_migration_integration_cleanup_hardening.py",
         "tests/test_migration_integration_controls.py",
@@ -630,6 +646,7 @@
         "tests/test_migration_single_head.py",
         "tests/test_migration_string_defaults.py",
         "tests/test_migration_subagent_events.py",
+        "tests/test_migration_supervisor_conversations.py",
         "tests/test_migration_token_cache_columns.py",
         "tests/test_migration_workspaces_v2.py",
         "tests/test_missing_fk_migration.py",
@@ -747,9 +764,10 @@
       ]
     },
     "prime": {
-      "description": "aq prime and agent guidance: the prime renderer and sections, hook envelopes and overrides, session and workspace description, and the prime/handoff/inbox CLI.",
+      "description": "aq prime and agent guidance: the prime renderer and sections, hook envelopes and overrides, session and workspace description, bounded handoff projections and historical payloads, and the prime/handoff/inbox CLI.",
       "modules": [
         "tests/test_cli_agent_surface.py",
+        "tests/test_handoffs.py",
         "tests/test_prime_hook_envelopes.py",
         "tests/test_prime_renderer.py",
         "tests/test_prime_session_workspace.py"
@@ -830,18 +848,20 @@
         "tests/test_costs.py",
         "tests/test_llm_usage.py",
         "tests/test_provider_doctor.py",
+        "tests/test_provider_usage_activity_doctor.py",
         "tests/test_provider_usage_probe.py",
         "tests/test_provider_usage_queries.py"
       ]
     },
     "resource-gating": {
-      "description": "Resource gating: per-session env caps, nice and cgroup scopes, the box-wide test-slot semaphore, orphaned test-run reaping, slot-wait reports and resources doctor checks.",
+      "description": "Resource gating and test evidence: per-session env caps, nice and cgroup scopes, the box-wide test-slot semaphore, orphaned test-run reaping, slot-wait reports, immutable baseline provenance and exact failure membership, and resources doctor checks.",
       "modules": [
         "tests/test_resource_doctor.py",
         "tests/test_resource_limits.py",
         "tests/test_resource_semaphore.py",
         "tests/test_resource_test_runs.py",
-        "tests/test_slot_report.py"
+        "tests/test_slot_report.py",
+        "tests/test_test_baseline.py"
       ]
     },
     "scheduling": {
@@ -914,6 +934,16 @@
         "tests/test_supervisor_global_token_loopback.py",
         "tests/test_supervisor_recovery.py",
         "tests/test_supervisor_recovery_api.py"
+      ]
+    },
+    "supervisor-conversations": {
+      "description": "Supervisor conversations: fail-closed Discord mention admission, gateway identity and escalation-thread precedence, numeric bounds, durable input deduplication and replies, thread binding and retention, backfill cursors and gaps, and outbox bindings.",
+      "modules": [
+        "tests/test_conversation_intake.py",
+        "tests/test_conversation_limits.py",
+        "tests/test_conversation_outbox.py",
+        "tests/test_conversation_preconditions.py",
+        "tests/test_conversation_queries.py"
       ]
     },
     "task-activity": {
@@ -1174,7 +1204,7 @@
       ]
     }
   },
-  "digest": "sha256:0039be81d5e82789734e0eb5082a1f4561871725d5abcd65cadeaaaa0d9b3aa6",
+  "digest": "sha256:078d900112fe693303a46436e2d53d86ce2ec87289f657f9d94f3142f96fa3d8",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2143,10 +2173,25 @@
         "src.database",
         "src.event_bus",
         "src.event_schemas",
+        "src.metrics.histogram",
+        "src.metrics.perf",
         "src.metrics.sampler"
       ],
       "markers": [],
       "summary": "``GET /api/metrics/series`` and the ``metrics.tick`` WebSocket frame."
+    },
+    "tests/test_api_perf_middleware.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api",
+        "src.api.perf_middleware",
+        "src.metrics.perf"
+      ],
+      "markers": [],
+      "summary": "Route labels are templates, streams are handshakes, failures are re-raised."
     },
     "tests/test_api_playbook_v2_commands.py": {
       "areas": [
@@ -2456,6 +2501,26 @@
       "markers": [],
       "summary": ""
     },
+    "tests/test_canonical_reservation.py": {
+      "areas": [
+        "integration-ownership"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.commands.task_commands",
+        "src.database",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.integration.canonical_reservation",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [],
+      "summary": "Recovery and diagnosis of missing canonical train branch owners."
+    },
     "tests/test_capability_operator_surfaces.py": {
       "areas": [
         "capabilities"
@@ -2601,6 +2666,17 @@
       ],
       "markers": [],
       "summary": "``ci_baseline_status`` — the observation half of the ci-main-sentinel."
+    },
+    "tests/test_ci_durations.py": {
+      "areas": [
+        "ci-sentinel"
+      ],
+      "default_arm": true,
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Refreshing timings must not replace a full map with partial shard data."
     },
     "tests/test_ci_main_sentinel.py": {
       "areas": [
@@ -2843,7 +2919,9 @@
         "src.api.models.task",
         "src.cli.formatter_registry"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Sparse-payload rendering through the formatter registry (api-cli plan 21)."
     },
     "tests/test_cli_global_options.py": {
@@ -3575,6 +3653,70 @@
       "markers": [],
       "summary": "Tests for pre-assignment constraint enforcement in the orchestrator."
     },
+    "tests/test_conversation_intake.py": {
+      "areas": [
+        "supervisor-conversations"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.conversations",
+        "src.conversations.intake",
+        "src.conversations.limits",
+        "src.conversations.preconditions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The pure Discord conversation classifier (mention-routing spec §4.1)."
+    },
+    "tests/test_conversation_limits.py": {
+      "areas": [
+        "supervisor-conversations"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.conversations",
+        "src.conversations.limits"
+      ],
+      "markers": [],
+      "summary": "The mention-routing spec's numeric bounds, pinned in one place (plan Task 3)."
+    },
+    "tests/test_conversation_outbox.py": {
+      "areas": [
+        "supervisor-conversations"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.conversations.outbox"
+      ],
+      "markers": [],
+      "summary": "The conversation outbox port and its unbound and recording bindings."
+    },
+    "tests/test_conversation_preconditions.py": {
+      "areas": [
+        "supervisor-conversations"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.conversations.preconditions"
+      ],
+      "markers": [],
+      "summary": "Fail-closed preconditions for Discord @mention conversations (mention-routing spec §4)."
+    },
+    "tests/test_conversation_queries.py": {
+      "areas": [
+        "supervisor-conversations"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.queries.conversation_queries",
+        "src.database.tables"
+      ],
+      "markers": [],
+      "summary": "Durable supervisor conversations, inputs, backfill cursors and gaps on PostgreSQL."
+    },
     "tests/test_costs.py": {
       "areas": [
         "provider-usage"
@@ -3654,6 +3796,20 @@
       "markers": [],
       "summary": "Ratchet: persistent dashboard feature state lives on the server, not in the browser."
     },
+    "tests/test_dashboard_perf_kit.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The experiment kit's pure parts: bounded load, attribution, identity, seeding."
+    },
     "tests/test_dashboard_server_app.py": {
       "areas": [
         "dashboard-server"
@@ -3664,6 +3820,7 @@
         "src.dashboard_server",
         "src.dashboard_server.__main__",
         "src.dashboard_server.app",
+        "src.dashboard_server.relay_stats",
         "src.dashboard_server.settings"
       ],
       "markers": [
@@ -3705,7 +3862,8 @@
       "default_arm": true,
       "imports": [
         "src.dashboard_server",
-        "src.dashboard_server.proxy"
+        "src.dashboard_server.proxy",
+        "src.dashboard_server.relay_stats"
       ],
       "markers": [
         "parametrize"
@@ -4071,6 +4229,7 @@
       "imports": [
         "src.api.codegen",
         "src.api.models",
+        "src.api.models.digest",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
@@ -4078,6 +4237,7 @@
         "src.database.tables",
         "src.digest",
         "src.digest.schedule",
+        "src.discord.intake_diagnostics",
         "src.event_bus",
         "src.models",
         "src.orchestrator",
@@ -4184,7 +4344,9 @@
       "default_arm": true,
       "imports": [
         "src.commands.handler",
-        "src.config"
+        "src.config",
+        "src.discord.escalation_intake",
+        "src.escalations.intake"
       ],
       "markers": [],
       "summary": "The Discord/escalation operator docs must describe surfaces that exist."
@@ -4215,6 +4377,22 @@
       ],
       "markers": [],
       "summary": "Only explicit channel-message purge remains; task-thread cleanup is retired."
+    },
+    "tests/test_discord_intake_diagnostics.py": {
+      "areas": [
+        "discord"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.discord",
+        "src.discord.bot",
+        "src.discord.escalation_intake",
+        "src.discord.intake_diagnostics",
+        "src.discord.rate_guard"
+      ],
+      "markers": [],
+      "summary": "Hour-window counts of ignored inbound Discord messages, by reason code."
     },
     "tests/test_discord_settings.py": {
       "areas": [
@@ -4375,6 +4553,22 @@
       ],
       "summary": "``integration.unreviewed_prs`` — the alarm for silently unreviewed work."
     },
+    "tests/test_doctor_perf_checks.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.doctor",
+        "src.doctor.perf_checks",
+        "src.metrics.histogram"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Sustained loop lag reports a timestamp and candidate causes, never a diagnosis."
+    },
     "tests/test_doctor_skill_checks.py": {
       "areas": [
         "doctor"
@@ -4470,7 +4664,8 @@
       "default_arm": true,
       "imports": [],
       "markers": [
-        "integration"
+        "integration",
+        "timeout"
       ],
       "summary": "Opt-in real-daemon acceptance test for the disposable CLI smoke kit."
     },
@@ -4546,6 +4741,19 @@
         "parametrize"
       ],
       "summary": "Verify that all bus.emit() calls in the codebase provide required schema fields."
+    },
+    "tests/test_engine_perf_observer.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.engine",
+        "src.metrics.perf"
+      ],
+      "markers": [],
+      "summary": "Pool wait and query duration reach the perf registry; statement text never does."
     },
     "tests/test_ensure_task.py": {
       "areas": [
@@ -5323,6 +5531,23 @@
       ],
       "summary": ""
     },
+    "tests/test_github_issue_triage.py": {
+      "areas": [
+        "github"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.github_issue_commands",
+        "src.event_bus",
+        "src.git.github",
+        "src.git.github_contracts",
+        "src.intelligence_classes",
+        "src.models",
+        "src.vault"
+      ],
+      "markers": [],
+      "summary": "Nightly issue scan and review-gated fix policy against a real task database."
+    },
     "tests/test_github_launcher_architecture.py": {
       "areas": [
         "github"
@@ -5376,6 +5601,23 @@
         "parametrize"
       ],
       "summary": "Every ``aq …`` the static guidance tells an agent to run must parse against the CLI."
+    },
+    "tests/test_handoffs.py": {
+      "areas": [
+        "prime"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.scope",
+        "src.commands.contracts",
+        "src.commands.contracts.handoff",
+        "src.handoffs",
+        "src.profiles.parser"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Wake projection byte budgets, historical-data handling, and command exposure."
     },
     "tests/test_harness_manifest.py": {
       "areas": [
@@ -5913,7 +6155,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.git.github_app",
         "src.git.github_contracts",
@@ -5936,7 +6177,6 @@
       "default_arm": true,
       "imports": [
         "src.commands.principal",
-        "src.database",
         "src.database.tables",
         "src.git.github_app",
         "src.git.manager",
@@ -5954,13 +6194,39 @@
       ],
       "summary": "Ordered, restartable root integration candidate construction."
     },
+    "tests/test_integration_child_delivery.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.task_checks",
+        "src.git.manager",
+        "src.integration.child_delivery",
+        "src.integration.collecting_parent_recovery",
+        "src.integration.collection",
+        "src.integration.hierarchy",
+        "src.integration.models",
+        "src.integration.promotion",
+        "src.integration.root_pull_requests",
+        "src.models",
+        "src.sessions.reconciler"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A completed child of a collecting parent is assembled, or says why not."
+    },
     "tests/test_integration_ci.py": {
       "areas": [
         "integration-trains"
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.integration.ci",
         "src.integration.repair",
@@ -5979,7 +6245,6 @@
       "default_arm": true,
       "imports": [
         "src.commands.principal",
-        "src.database",
         "src.database.adapters.postgresql",
         "src.database.tables",
         "src.git.github_app",
@@ -6043,7 +6308,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.integration.status",
         "src.models"
@@ -6059,7 +6323,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.doctor.integration_checks",
@@ -6082,7 +6345,6 @@
         "src.cli.integration",
         "src.commands.integration_commands",
         "src.commands.principal",
-        "src.database",
         "src.database.tables",
         "src.integration.candidates",
         "src.integration.controls",
@@ -6099,7 +6361,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.doctor",
         "src.doctor.integration_checks",
@@ -6155,7 +6416,6 @@
         "src.commands.contracts.integration",
         "src.commands.integration_commands",
         "src.commands.principal",
-        "src.database",
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
@@ -6176,8 +6436,8 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.engine",
+        "src.database.schema_key",
         "src.database.tables",
         "src.git.manager",
         "src.integration.controls",
@@ -6201,7 +6461,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.integration.legacy_repositories",
         "src.integration.status",
@@ -6269,7 +6528,6 @@
       "imports": [
         "src.commands.principal",
         "src.config",
-        "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.github",
@@ -6305,7 +6563,6 @@
         "src.commands.principal",
         "src.commands.project_commands",
         "src.commands.supervisor_authority",
-        "src.database",
         "src.database.tables",
         "src.integration.owner_recovery",
         "src.models",
@@ -6323,7 +6580,6 @@
       "default_arm": true,
       "imports": [
         "src.config",
-        "src.database",
         "src.database.tables",
         "src.integration.controls",
         "src.integration.outbox",
@@ -6344,7 +6600,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.git.manager",
         "src.integration.owner_recovery",
@@ -6387,7 +6642,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.integration.models",
         "src.integration.ownership",
@@ -6406,7 +6660,6 @@
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
-        "src.database",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
         "src.database.queries.task_queries",
@@ -6431,8 +6684,9 @@
       "default_arm": true,
       "imports": [
         "src.commands.principal",
-        "src.database",
         "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
         "src.git.manager",
         "src.integration.hierarchy",
         "src.integration.models",
@@ -6454,7 +6708,6 @@
       "default_arm": true,
       "imports": [
         "src.commands.principal",
-        "src.database",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
@@ -6501,7 +6754,6 @@
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.principal",
-        "src.database",
         "src.database.tables",
         "src.git.manager",
         "src.integration.models",
@@ -6523,7 +6775,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.integration.root_pull_requests",
         "src.models"
@@ -6559,7 +6810,6 @@
       "default_arm": true,
       "imports": [
         "src.commands.principal",
-        "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
@@ -6581,7 +6831,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.integration.models",
         "src.integration.scheduler",
@@ -6599,7 +6848,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.integration.settling",
         "src.models"
@@ -6613,7 +6861,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
         "src.database.tables",
         "src.git.manager",
         "src.integration.owner_recovery",
@@ -6631,7 +6878,6 @@
       "imports": [
         "src.commands.integration_commands",
         "src.commands.principal",
-        "src.database",
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
@@ -6918,7 +7164,8 @@
       "imports": [
         "src.config",
         "src.event_bus",
-        "src.main"
+        "src.main",
+        "src.remote_links"
       ],
       "markers": [
         "asyncio"
@@ -7234,12 +7481,75 @@
       "default_arm": true,
       "imports": [
         "src.database",
-        "src.database.queries.claim_queries"
+        "src.database.queries.claim_queries",
+        "src.database.queries.hierarchy_queries",
+        "src.database.queries.task_queries",
+        "src.models"
       ],
       "markers": [
         "parametrize"
       ],
       "summary": "Ratchet: no raw SQL cast of free-form metadata text to a numeric type."
+    },
+    "tests/test_metrics_histogram.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.metrics.histogram",
+        "src.metrics.sampler"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Fixed-bucket histograms: placement, merge by addition, derived percentiles."
+    },
+    "tests/test_metrics_host.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.metrics",
+        "src.metrics.host",
+        "src.resources.procs",
+        "src.resources.semaphore",
+        "src.resources.test_runs"
+      ],
+      "markers": [],
+      "summary": "PSI, test-slot occupancy and ungated attribution — nulls are admissions, never zeros."
+    },
+    "tests/test_metrics_perf.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.metrics.histogram",
+        "src.metrics.perf"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The perf registry never raises, bounds its labels, and the probe sees a stall."
+    },
+    "tests/test_metrics_relay.py": {
+      "areas": [
+        "metrics"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.metrics.histogram",
+        "src.metrics.relay"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Relay snapshots become once-only deltas, with honest gaps across restarts."
     },
     "tests/test_metrics_sampler.py": {
       "areas": [
@@ -7251,10 +7561,14 @@
         "src.database",
         "src.database.tables",
         "src.event_bus",
+        "src.metrics.histogram",
+        "src.metrics.perf",
         "src.metrics.sampler",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The metrics sampler: one row per tick, honest roll-ups, real retention."
     },
     "tests/test_mid_chain_rebase.py": {
@@ -7434,6 +7748,18 @@
       ],
       "summary": "Guard repair covers both the original squash and the legacy stamp bridge."
     },
+    "tests/test_migration_handoff.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "Upgrade legacy handoffs in a disposable database, not the operator database."
+    },
     "tests/test_migration_integration_cleanup.py": {
       "areas": [
         "migrations"
@@ -7560,7 +7886,8 @@
       ],
       "markers": [
         "integration",
-        "migration"
+        "migration",
+        "parametrize"
       ],
       "summary": "Fresh PostgreSQL baseline creation, usable defaults, and schema parity."
     },
@@ -7617,7 +7944,9 @@
       ],
       "default_arm": true,
       "imports": [],
-      "markers": [],
+      "markers": [
+        "filterwarnings"
+      ],
       "summary": "The alembic revision chain must have exactly one head."
     },
     "tests/test_migration_string_defaults.py": {
@@ -7642,6 +7971,18 @@
       ],
       "markers": [],
       "summary": "The baseline emits a native PostgreSQL boolean default for session hooks."
+    },
+    "tests/test_migration_supervisor_conversations.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The supervisor-conversation revision upgrades idempotently on PostgreSQL."
     },
     "tests/test_migration_token_cache_columns.py": {
       "areas": [
@@ -8617,7 +8958,10 @@
         "test-substrate"
       ],
       "default_arm": true,
-      "imports": [],
+      "imports": [
+        "src.database",
+        "src.models"
+      ],
       "markers": [
         "parametrize"
       ],
@@ -8706,6 +9050,7 @@
         "src.api.scope",
         "src.config",
         "src.database",
+        "src.handoffs",
         "src.models",
         "src.prime",
         "src.prime.models",
@@ -8818,6 +9163,7 @@
         "src.config",
         "src.git.github",
         "src.git.github_contracts",
+        "src.models",
         "src.profiles",
         "src.profiles.sync"
       ],
@@ -9393,6 +9739,21 @@
       "markers": [],
       "summary": "Launch suppression against an unavailable provider (provider-failover D11, D13)."
     },
+    "tests/test_provider_usage_activity_doctor.py": {
+      "areas": [
+        "provider-usage"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.doctor",
+        "src.doctor.models",
+        "src.doctor.provider_checks"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A broken quota feed must not be mistaken for an idle fleet."
+    },
     "tests/test_provider_usage_probe.py": {
       "areas": [
         "provider-usage"
@@ -9417,8 +9778,6 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.database",
-        "src.database.adapters.postgresql",
         "src.database.tables",
         "src.providers"
       ],
@@ -9515,6 +9874,17 @@
       ],
       "summary": "``scripts/regenerate-api-client.sh`` must not rewrite the environment it runs in."
     },
+    "tests/test_regenerate_ts_client_script.py": {
+      "areas": [
+        "api-contract"
+      ],
+      "default_arm": true,
+      "imports": [],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "TypeScript generation must use the checkout's locked tools, never npx's cache."
+    },
     "tests/test_release_artifact.py": {
       "areas": [
         "packaging"
@@ -9532,13 +9902,21 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.cli.app",
+        "src.cli.daemon",
+        "src.config",
+        "src.dashboard_server.process",
         "src.digest",
         "src.digest.facts",
+        "src.digest.schedule",
         "src.escalations",
-        "src.remote_links"
+        "src.remote_links",
+        "src.reviews.notifier"
       ],
-      "markers": [],
-      "summary": "Remote-safe dashboard links used by Discord delivery."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The one dashboard origin externally posted links name (src/remote_links.py)."
     },
     "tests/test_reopen_with_feedback.py": {
       "areas": [
@@ -9571,6 +9949,29 @@
         "parametrize"
       ],
       "summary": ""
+    },
+    "tests/test_report_requests.py": {
+      "areas": [
+        "digest"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.commands.report_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.digest",
+        "src.digest.aggregate",
+        "src.digest.eligibility",
+        "src.digest.facts",
+        "src.escalations.transport",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.reports.hourly"
+      ],
+      "markers": [],
+      "summary": "Durable hourly author requests, CAS submission and deterministic fallback."
     },
     "tests/test_required_playbooks.py": {
       "areas": [
@@ -9751,6 +10152,7 @@
         "src.cli.app",
         "src.cli.reviews",
         "src.event_bus",
+        "src.integration.hierarchy",
         "src.intelligence_classes",
         "src.models",
         "src.vault"
@@ -9822,7 +10224,9 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.config",
         "src.escalations.transport",
+        "src.remote_links",
         "src.reviews.notifier"
       ],
       "markers": [
@@ -10778,15 +11182,18 @@
       ],
       "default_arm": true,
       "imports": [
+        "src",
         "src.commands.handler",
         "src.config",
         "src.database",
         "src.database.tables",
         "src.event_bus",
+        "src.handoffs",
         "src.models"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Tests for the aq-surface Phase S0 CommandHandler additions."
     },
@@ -11409,6 +11816,17 @@
       ],
       "summary": "Terminal WebSocket security, flow control and fixed-session lifecycle."
     },
+    "tests/test_test_baseline.py": {
+      "areas": [
+        "resource-gating"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.resources.test_baseline"
+      ],
+      "markers": [],
+      "summary": "Exact membership and immutable provenance without a second pytest parser."
+    },
     "tests/test_test_db_reaper.py": {
       "areas": [
         "test-substrate"
@@ -11646,7 +12064,9 @@
         "src.sessions.transcripts.claude",
         "src.sessions.transcripts.codex"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Historical transcripts must never follow a reused workspace."
     },
     "tests/test_transcript_readers.py": {
@@ -11674,6 +12094,7 @@
         "src.database",
         "src.database.tables",
         "src.models",
+        "src.providers.snapshot",
         "src.sessions.transcripts.base",
         "src.sessions.transcripts.watcher"
       ],

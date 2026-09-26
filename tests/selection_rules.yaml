@@ -57,7 +57,6 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - ".superpowers/**"
   - "vault/**"
   - ".github/agent-queue-integration.example.json"
-  - "scripts/dashboard-perf/**"
   - "scripts/acceptance/**"
   - "scripts/check-outdated-deps.py"
   - "scripts/inflate_llm_logs.py"
@@ -82,6 +81,8 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["dashboard/src/pages/playbook-graph-v2/__tests__/graph.fixture.json"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
   - { paths: ["packages/**", "openapi.json"], areas: ["api-contract", "file-access"] }
   - { paths: [".github/workflows/**"], areas: ["ci-sentinel", "epic-trains"] }
+  - { paths: [".test_durations", "scripts/merge_test_durations.py"], areas: ["ci-sentinel"] }
+  - { paths: ["scripts/dashboard-perf/**"], areas: ["metrics"] }
   - { paths: ["setup.sh"], areas: ["install"] }
   - { paths: ["scripts/e2e*", "scripts/e2e/**"], areas: ["e2e-kit"] }
   - { paths: ["scripts/regenerate-api-client.sh", "scripts/regenerate-ts-client.sh", "scripts/openapi-python-client.yaml", "scripts/aq-client-boilerplate.sha256"], areas: ["api-contract"] }
@@ -152,6 +153,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/api/graph_layout.py", "src/api/models/graph_layout.py"], areas: ["graph-layout"] }
   - { paths: ["src/api/graph.py", "src/api/models/graph.py", "src/api/models/dashboard.py"], areas: ["dashboard-state"] }
   - { paths: ["src/api/metrics.py", "src/api/models/metrics.py"], areas: ["metrics"] }
+  - { paths: ["src/api/perf_middleware.py"], areas: ["metrics"] }
   - { paths: ["src/api/providers.py", "src/api/models/provider.py"], areas: ["provider-failover", "provider-usage"] }
   - { paths: ["src/api/pull_requests.py", "src/api/models/git.py"], areas: ["github"] }
   - { paths: ["src/api/task_files.py", "src/api/workspace_files.py", "src/api/file_serving.py", "src/api/task_attachments.py", "src/api/models/files.py"], areas: ["file-access"] }
@@ -266,6 +268,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/database/queries/task_subtask_queries.py"], areas: ["task-subtasks"] }
 
   - { paths: ["src/digest/**"], areas: ["digest"] }
+  - { paths: ["src/conversations/**", "src/database/queries/conversation_queries.py"], areas: ["supervisor-conversations"] }
   - { paths: ["src/discord/**"], areas: ["discord"] }
   - { paths: ["src/discord/escalation_*.py"], areas: ["escalations"] }
   - { paths: ["src/doctor/**"], areas: ["doctor"] }
@@ -281,6 +284,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/doctor/profile_checks.py"], areas: ["profiles"] }
   - { paths: ["src/doctor/project_checks.py"], areas: ["projects"] }
   - { paths: ["src/doctor/provider_*.py"], areas: ["provider-failover", "provider-usage"] }
+  - { paths: ["src/doctor/perf_checks.py"], areas: ["metrics"] }
   - { paths: ["src/doctor/resource_checks.py"], areas: ["resource-gating"] }
   - { paths: ["src/doctor/review_checks.py"], areas: ["document-reviews"] }
   - { paths: ["src/doctor/session_checks.py"], areas: ["session-runtime"] }
