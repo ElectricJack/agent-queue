@@ -17,7 +17,7 @@ from src.notifications.events import (
 )
 from src.models import Task, TaskStatus
 from src.database.queries.hierarchy_queries import CONTAINER_KEY
-from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
+from src.database.queries.task_queries import STALE_OPEN_ATTENTION, TERMINAL_BLOCKED_META_KEY
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
@@ -236,9 +236,14 @@ class MonitoringMixin:
         # One statement instead of one per BLOCKED task.  Every in-tree
         # writer stores a non-empty code, and task_edit normalises an empty
         # string to a delete, so "key present" is exactly "needs attention".
+        # ``stale_open`` is the one advisory code: it reports a long wait, it
+        # does not decide one, so it must not freeze the wait it reports.
         attention = await self.db.task_ids_with_meta(
             [task.id for task in blocked], "needs_attention"
         )
+        if attention:
+            codes = await self.db.get_task_meta_bulk(sorted(attention), "needs_attention")
+            attention = {tid for tid in attention if codes.get(tid) != STALE_OPEN_ATTENTION}
         blocked = [task for task in blocked if task.id not in attention]
         # A terminal close (hard failure, retry budget spent, pipeline stop,
         # timeout, operator stop) is BLOCKED by decision, not by the graph.
@@ -445,11 +450,31 @@ class MonitoringMixin:
             return
         self._last_container_sweep = now
         candidates = await self.db.settle_candidates()
+        if candidates:
+            settled = await self._settle_seeds(set(candidates))
+            for cid in settled:
+                logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
+        await self.reconcile_stale_containers()
+
+    async def reconcile_stale_containers(self) -> list[str]:
+        """Complete BLOCKED/PAUSED containers whose children are all delivered.
+
+        The stale-status leg of settlement (``stale_container_clauses``).  A
+        child's completion settles its stranded container on the event path
+        only when every sibling is already delivered; a delivery that lands
+        later has no event, so the backstop sweep runs this every interval,
+        and :meth:`initialize` runs it once on start, because restarts and
+        updates are what strand these containers.  Returns the settled ids.
+        """
+        candidates = await self.db.stale_container_candidates()
         if not candidates:
-            return
+            return []
         settled = await self._settle_seeds(set(candidates))
         for cid in settled:
-            logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
+            logger.info(
+                "Completed stale container %s: every child is COMPLETED and delivered", cid
+            )
+        return settled
 
     async def _settle_seeds(self, seeds: set[str]) -> list[str]:
         """Run the §7 settlement predicate over *seeds* now, with post-commit fan-out.

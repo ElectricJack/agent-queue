@@ -170,6 +170,26 @@ class DevelopmentBusy(RuntimeError):
     pass
 
 
+@asynccontextmanager
+async def publisher_exclusion(db, repository_id):
+    """Hold *repository_id*'s development publisher lock, or raise ``DevelopmentBusy``.
+
+    A dedicated connection owns a session advisory lock across short DB
+    commits.  A process death releases it; durable publishing rows retain
+    ambiguous writes.  Anything that rewrites a batch row outside the
+    publisher (an obsolete close dropping a parked batch) takes it too.
+    """
+    key = int.from_bytes(hashlib.sha256(repository_id.encode()).digest()[:8], "big", signed=True)
+    async with db._engine.connect() as conn:
+        acquired = await conn.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": key})
+        if not acquired:
+            raise DevelopmentBusy("repository publisher is already running")
+        try:
+            yield
+        finally:
+            await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+
+
 class DevelopmentIntegration:
     def __init__(
         self,
@@ -204,21 +224,8 @@ class DevelopmentIntegration:
         """
         self.next_due.pop(event.get("project_id"), None)
 
-    @asynccontextmanager
-    async def exclusion(self, repository_id):
-        # Dedicated connection owns a session advisory lock across short DB commits.
-        # A process death releases it; durable publishing rows retain ambiguous writes.
-        key = int.from_bytes(
-            hashlib.sha256(repository_id.encode()).digest()[:8], "big", signed=True
-        )
-        async with self.db._engine.connect() as conn:
-            acquired = await conn.scalar(text("SELECT pg_try_advisory_lock(:key)"), {"key": key})
-            if not acquired:
-                raise DevelopmentBusy("repository publisher is already running")
-            try:
-                yield
-            finally:
-                await conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": key})
+    def exclusion(self, repository_id):
+        return publisher_exclusion(self.db, repository_id)
 
     async def run_git(self, store, *args):
         result = await self.git.arun_git_result(list(args), cwd=str(store))
@@ -917,6 +924,8 @@ class DevelopmentIntegration:
             if not (retry or recover_child_id) and not await self._has_pending_work(
                 project_id, repo, now=time.time()
             ):
+                # Nothing is left to evaluate, so no skip record is current.
+                await self._clear_stale_skips(project_id, keep=set())
                 return {"outcome": "idle", "parked": []}
             store = await self.store(repo)
             await self.reconcile(repo, store)
@@ -969,6 +978,12 @@ class DevelopmentIntegration:
                                 (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
                                 has_publishable_artifact(tasks.c.branch_name),
                                 ~development_empty_source(tasks, repo.id),
+                                # Readiness's own delivery predicate: a delivered or
+                                # adopted completion, and superseded (obsolete) work,
+                                # drop out of candidate evaluation, cycle detection
+                                # included, exactly as ``_has_pending_work`` ignores
+                                # them.
+                                _development_delivery_pending(tasks),
                                 *([tasks.c.id == isolated_child] if isolated_child else []),
                                 # Completion chains can be assembled in this
                                 # batch. Keep gates and unfinished dependencies,
@@ -1131,6 +1146,12 @@ class DevelopmentIntegration:
                             )
                         ).all()
                         branch_by_id.update(archived)
+
+            # An obsolete dependency's work was superseded, not delivered;
+            # like a branchless task it has no source to wait for.
+            branch_by_id.update(
+                dict.fromkeys(await self.db.obsolete_task_ids(artifact_ids))
+            )
 
             def requires_publication(task_id):
                 # Missing tasks remain unavailable; only a known branchless
@@ -1422,6 +1443,8 @@ class DevelopmentIntegration:
                     processed.add(old_id)
                 if len(manifest) >= policy.max_batch_size:
                     break
+            if not recover_child_id:
+                await self._clear_stale_skips(project_id, keep=candidate_ids)
             await self._record_candidate_skips(processed, skipped)
             await self.run_git(store, "checkout", "--detach", "--force", head)
             if not manifest:
@@ -1499,6 +1522,37 @@ class DevelopmentIntegration:
                 repo, store, head if result["outcome"] == "delivered" else base
             )
             return result
+
+    async def _clear_stale_skips(self, project_id, *, keep):
+        """Drop skip records of tasks the publisher no longer evaluates.
+
+        A record describes the task's last evaluation.  Once the task is
+        delivered, adopted, obsolete, reopened or archived it is not a
+        candidate, so ``_record_candidate_skips`` never sees it again and the
+        record would otherwise claim a skip that no longer happens.
+        """
+        async with self.db._engine.begin() as conn:
+            stale = [
+                task_id
+                for task_id in (
+                    await conn.execute(
+                        select(task_metadata.c.task_id)
+                        .join(tasks, tasks.c.id == task_metadata.c.task_id)
+                        .where(
+                            tasks.c.project_id == project_id,
+                            task_metadata.c.key == PUBLISHER_SKIP_KEY,
+                        )
+                    )
+                ).scalars()
+                if task_id not in keep
+            ]
+            if stale:
+                await conn.execute(
+                    delete(task_metadata).where(
+                        task_metadata.c.task_id.in_(stale),
+                        task_metadata.c.key == PUBLISHER_SKIP_KEY,
+                    )
+                )
 
     async def _record_candidate_skips(self, processed, skipped):
         """Keep consecutive skip evidence across ticks and daemon restarts."""

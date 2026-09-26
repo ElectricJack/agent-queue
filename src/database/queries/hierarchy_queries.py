@@ -34,7 +34,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY, TransitionResult
+from src.database.queries.task_queries import (
+    INTEGRATION_REWORK_AT_KEY,
+    STALE_OPEN_ATTENTION,
+    TransitionResult,
+)
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -90,6 +94,18 @@ HIERARCHY_LOCK_NAMESPACE = 0x41514849
 #: have no structural depth bound, unlike parent-child nesting, so this must
 #: not be derived from MAX_STRUCTURAL_DEPTH.
 REACHABILITY_MAX_DEPTH = 10_000
+
+
+#: Statuses a finished container can be stranded in.  Restarts, updates and
+#: operator holds leave a container BLOCKED or PAUSED, and the ordinary §7 leg
+#: only settles IN_PROGRESS, so nothing moved such an epic once its last child
+#: was delivered (sharp-impact and agile-torrent, 2026-09-26).
+STALE_CONTAINER_STATUSES = (TaskStatus.BLOCKED.value, TaskStatus.PAUSED.value)
+#: Transition context (and audit event suffix) of the stale-status leg.
+STALE_CONTAINER_CONTEXT = "stale_container_settled"
+#: Hold metadata a stale PAUSED container keeps; settling it supersedes the
+#: hold, exactly as ``_resume_locked`` clears it on a manual resume.
+_STALE_CONTAINER_HOLD_KEYS = ("manual_pause", "manual_pause_withholds_children")
 
 
 def container_flag_exists():
@@ -166,6 +182,82 @@ def childless_held_open_container():
         ),
         ~exists(select(literal(1)).where(child.c.parent_task_id == tasks.c.id)),
     )
+
+
+def _settlement_clauses() -> list:
+    """The §7 conditions both settlement legs share, correlated to ``tasks``.
+
+    Container flag ∧ no live session holds it ∧ no non-COMPLETED child ∧ not
+    a childless held-open container ∧ no hierarchy/train collection episode
+    owns its completion.  The caller joins ``projects`` and adds the status.
+    """
+    child = tasks.alias("child")
+    return [
+        container_flag_exists(),
+        ~exists(
+            select(literal(1)).where(
+                and_(
+                    sessions.c.task_id == tasks.c.id,
+                    sessions.c.state.in_(LIVE_SESSION_STATES),
+                )
+            )
+        ),
+        ~exists(
+            select(literal(1)).where(
+                and_(
+                    child.c.parent_task_id == tasks.c.id,
+                    child.c.status != TaskStatus.COMPLETED.value,
+                )
+            )
+        ),
+        ~childless_held_open_container(),
+        or_(
+            ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            ~exists(
+                select(literal(1)).where(
+                    task_integration_checkpoints.c.task_id == tasks.c.id,
+                    task_integration_checkpoints.c.episode_id.is_not(None),
+                )
+            ),
+        ),
+    ]
+
+
+def stale_container_clauses() -> list:
+    """The stale-status leg: a BLOCKED/PAUSED container whose work is delivered.
+
+    On top of :func:`_settlement_clauses` it needs at least one child (a
+    childless container's stale status is not "left over from its children
+    finishing") and every child's work delivered.  Delivery is the development
+    publisher's receipt (``_development_delivery_pending``, foreign repos
+    included, as the archive sweep asks it): a delivered or adopted batch that
+    reached the default branch lists the child's latest completion source.  A
+    branchless child, and any child outside development mode, has nothing to
+    deliver.  A child that is itself a container proves delivery through its
+    own children when it settled, so it is not asked again.
+    """
+    from src.database.queries.blocked_state import _development_delivery_pending
+
+    child = tasks.alias("stale_child")
+    child_flag = task_metadata.alias("stale_child_flag")
+    return [
+        tasks.c.status.in_(STALE_CONTAINER_STATUSES),
+        *_settlement_clauses(),
+        exists(select(literal(1)).where(child.c.parent_task_id == tasks.c.id)),
+        ~exists(
+            select(literal(1)).where(
+                child.c.parent_task_id == tasks.c.id,
+                ~exists(
+                    select(literal(1)).where(
+                        child_flag.c.task_id == child.c.id,
+                        child_flag.c.key == CONTAINER_KEY,
+                        child_flag.c.value == CONTAINER_VALUE,
+                    )
+                ),
+                _development_delivery_pending(child, include_foreign_repos=True),
+            )
+        ),
+    ]
 
 
 #: Project ``hierarchical_integration_mode`` values that gate the two claim
@@ -797,6 +889,9 @@ class HierarchyQueryMixin:
                         select(task_metadata.c.task_id, task_metadata.c.key).where(
                             task_metadata.c.task_id.in_(child_ids),
                             task_metadata.c.key.in_(_PHASE_FAILURE_META_KEYS),
+                            # A stale-open flag is advisory: the child is
+                            # still an ordinary dependency block.
+                            task_metadata.c.value != json.dumps(STALE_OPEN_ATTENTION),
                         )
                     )
                 ).mappings().all()
@@ -1571,6 +1666,11 @@ class HierarchyQueryMixin:
         MAX_STRUCTURAL_DEPTH`` — not ``>=`` — or a 3-level cap would only
         ever let 2 ancestors settle before blocking (see
         ``test_settles_exactly_max_structural_depth_levels``).
+
+        A second, stricter leg settles a seeded container stranded BLOCKED or
+        PAUSED (:func:`stale_container_clauses`): it needs every child's work
+        delivered, not merely COMPLETED, and it supersedes the stale status and
+        any operator hold (:meth:`_settle_stale_container`).
         """
         result = TransitionResult()
         pending = {s for s in seeds if s}
@@ -1598,50 +1698,13 @@ class HierarchyQueryMixin:
             if has_episode:
                 await ParentCompletion(self).mark_ready_on(conn, parent_id)
 
-        child = tasks.alias("child")
         stmt = (
             select(tasks.c.id)
             .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
             .where(
-                and_(
-                    tasks.c.id.in_(sorted(pending)),
-                    tasks.c.status == TaskStatus.IN_PROGRESS.value,
-                    exists(
-                        select(literal(1)).where(
-                            and_(
-                                task_metadata.c.task_id == tasks.c.id,
-                                task_metadata.c.key == CONTAINER_KEY,
-                                task_metadata.c.value == CONTAINER_VALUE,
-                            )
-                        )
-                    ),
-                    ~exists(
-                        select(literal(1)).where(
-                            and_(
-                                sessions.c.task_id == tasks.c.id,
-                                sessions.c.state.in_(LIVE_SESSION_STATES),
-                            )
-                        )
-                    ),
-                    ~exists(
-                        select(literal(1)).where(
-                            and_(
-                                child.c.parent_task_id == tasks.c.id,
-                                child.c.status != TaskStatus.COMPLETED.value,
-                            )
-                        )
-                    ),
-                    ~childless_held_open_container(),
-                    or_(
-                        ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
-                        ~exists(
-                            select(literal(1)).where(
-                                task_integration_checkpoints.c.task_id == tasks.c.id,
-                                task_integration_checkpoints.c.episode_id.is_not(None),
-                            )
-                        ),
-                    ),
-                )
+                tasks.c.id.in_(sorted(pending)),
+                tasks.c.status == TaskStatus.IN_PROGRESS.value,
+                *_settlement_clauses(),
             )
         )
         hits = [r[0] for r in (await conn.execute(stmt)).fetchall()]
@@ -1656,74 +1719,123 @@ class HierarchyQueryMixin:
                 context="subtasks_completed",
                 _settle_depth=depth,
             )
-            # Report the container as settled only if the write actually
-            # landed: ``_apply_transition`` can decline (a missing row, an
-            # enforced invalid transition).  Announcing a completion that did
-            # not happen would emit ``task.completed`` for a task still
-            # IN_PROGRESS.  Recursion may also have settled it already, so
-            # the id is only appended once.
-            landed = (await conn.execute(select(tasks.c.status).where(tasks.c.id == cid))).scalar()
-            if landed == TaskStatus.COMPLETED.value and cid not in result.settled:
-                result.settled.append(cid)
-            for sid in res.settled:
-                if sid not in result.settled:
-                    result.settled.append(sid)
-            result.flipped |= res.flipped
-            result.ready.extend(res.ready)
+            await self._merge_settlement(conn, cid, res, result)
+        stale = (
+            select(tasks.c.id)
+            .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+            .where(tasks.c.id.in_(sorted(pending)), *stale_container_clauses())
+        )
+        for cid in [r[0] for r in (await conn.execute(stale)).fetchall()]:
+            res = await self._settle_stale_container(conn, cid, depth=depth)
+            if res is not None:
+                await self._merge_settlement(conn, cid, res, result)
         return result
+
+    async def _merge_settlement(self, conn, cid: str, res: TransitionResult, result) -> None:
+        """Fold one container's transition into the running settlement result.
+
+        Report the container as settled only if the write actually landed:
+        ``_apply_transition`` can decline (a missing row, an enforced invalid
+        transition).  Announcing a completion that did not happen would emit
+        ``task.completed`` for a task still open.  Recursion may also have
+        settled it already, so the id is only appended once.
+        """
+        landed = (await conn.execute(select(tasks.c.status).where(tasks.c.id == cid))).scalar()
+        if landed == TaskStatus.COMPLETED.value and cid not in result.settled:
+            result.settled.append(cid)
+        for sid in res.settled:
+            if sid not in result.settled:
+                result.settled.append(sid)
+        result.flipped |= res.flipped
+        result.ready.extend(res.ready)
+
+    async def _settle_stale_container(
+        self, conn, cid: str, *, depth: int
+    ) -> TransitionResult | None:
+        """Complete one BLOCKED/PAUSED container the stale leg selected.
+
+        Re-checked under the row lock, so a resume, a pause or a claim that
+        landed after the candidate read is left alone.  A pause whose session
+        cleanup is still pending is not settled: the hold's own retry owns
+        that session.  The hold metadata goes with the status, in the same
+        transaction, and the audit event names the status it left.
+        """
+        status = (
+            await conn.execute(select(tasks.c.status).where(tasks.c.id == cid).with_for_update())
+        ).scalar_one_or_none()
+        if status not in STALE_CONTAINER_STATUSES:
+            return None
+        pause = (
+            await conn.execute(
+                select(task_metadata.c.value).where(
+                    task_metadata.c.task_id == cid, task_metadata.c.key == "manual_pause"
+                )
+            )
+        ).scalar_one_or_none()
+        if pause is not None:
+            try:
+                if (json.loads(pause) or {}).get("cleanup_pending"):
+                    return None
+            except (TypeError, ValueError, AttributeError):
+                pass
+        await conn.execute(
+            delete(task_metadata).where(
+                task_metadata.c.task_id == cid,
+                task_metadata.c.key.in_(_STALE_CONTAINER_HOLD_KEYS),
+            )
+        )
+        res = await self._apply_transition(
+            conn,
+            cid,
+            TaskStatus.COMPLETED,
+            context=STALE_CONTAINER_CONTEXT,
+            force=True,
+            _manual_pause_control=True,
+            _settle_depth=depth,
+            resume_after=None,
+            assigned_agent_id=None,
+        )
+        project_id = (
+            await conn.execute(select(tasks.c.project_id).where(tasks.c.id == cid))
+        ).scalar_one_or_none()
+        await self.log_event(
+            f"task.{STALE_CONTAINER_CONTEXT}",
+            project_id=project_id,
+            task_id=cid,
+            payload=json.dumps({"from_status": status, "manual_hold": pause is not None}),
+            conn=conn,
+        )
+        return res
 
     async def settle_candidates(self) -> list[str]:
         """Every container the §7 predicate would settle right now (backstop).
 
-        Shares :func:`childless_held_open_container` with
-        :meth:`settle_containers`, so the backstop sweep cannot complete a
-        brand-new phase or standing parent the event path deliberately left
-        alone.
+        Shares :func:`_settlement_clauses` (and so
+        :func:`childless_held_open_container`) with :meth:`settle_containers`,
+        so the backstop sweep cannot complete a brand-new phase or standing
+        parent the event path deliberately left alone.
         """
-        child = tasks.alias("child")
         stmt = (
             select(tasks.c.id)
             .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
-            .where(
-                and_(
-                    tasks.c.status == TaskStatus.IN_PROGRESS.value,
-                    exists(
-                        select(literal(1)).where(
-                            and_(
-                                task_metadata.c.task_id == tasks.c.id,
-                                task_metadata.c.key == CONTAINER_KEY,
-                                task_metadata.c.value == CONTAINER_VALUE,
-                            )
-                        )
-                    ),
-                    ~exists(
-                        select(literal(1)).where(
-                            and_(
-                                sessions.c.task_id == tasks.c.id,
-                                sessions.c.state.in_(LIVE_SESSION_STATES),
-                            )
-                        )
-                    ),
-                    ~exists(
-                        select(literal(1)).where(
-                            and_(
-                                child.c.parent_task_id == tasks.c.id,
-                                child.c.status != TaskStatus.COMPLETED.value,
-                            )
-                        )
-                    ),
-                    ~childless_held_open_container(),
-                    or_(
-                        ~projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
-                        ~exists(
-                            select(literal(1)).where(
-                                task_integration_checkpoints.c.task_id == tasks.c.id,
-                                task_integration_checkpoints.c.episode_id.is_not(None),
-                            )
-                        ),
-                    ),
-                )
-            )
+            .where(tasks.c.status == TaskStatus.IN_PROGRESS.value, *_settlement_clauses())
+        )
+        async with self._engine.begin() as conn:
+            return [r[0] for r in (await conn.execute(stmt)).fetchall()]
+
+    async def stale_container_candidates(self) -> list[str]:
+        """BLOCKED/PAUSED containers whose children are all COMPLETED and delivered.
+
+        The stale-status leg's backstop and startup read (see
+        :func:`stale_container_clauses`).  The event path settles these when a
+        child's completion seeds the container; a delivery that lands later
+        has no such event, so the container sweep asks this every interval.
+        """
+        stmt = (
+            select(tasks.c.id)
+            .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+            .where(*stale_container_clauses())
+            .order_by(tasks.c.id)
         )
         async with self._engine.begin() as conn:
             return [r[0] for r in (await conn.execute(stmt)).fetchall()]

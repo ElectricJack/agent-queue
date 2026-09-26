@@ -938,6 +938,54 @@ async def test_unproven_repair_cycle_reports_both_tasks(setup, caplog):
         assert skip["dependency_id"] == dependency_id
 
 
+async def test_adopted_repair_cycle_drops_out_of_candidate_evaluation(setup, caplog):
+    """development-repair-528d…/-7c535…, 2026-09-26: after ``adopt --accept-equivalent``
+    recorded both repairs as delivered, every later tick still logged "skipping …
+    dependency cycle with …" for them.  Delivered and adopted completions leave
+    candidate evaluation, cycle detection included, and their stale skip records
+    go with them."""
+    import logging
+
+    db, service, _source, remote, _repo = setup
+    older, newer, older_sha, newer_sha = await repair_cycle(setup, source_contract=False)
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert (await db.get_task_meta(older, PUBLISHER_SKIP_KEY))["reason"] == "dependency_cycle"
+    now = time.time()
+    await service.save({
+        "id": "accepted-equivalent", "project_id": "p", "repository_id": "r",
+        "target_ref": "refs/heads/main", "expected_sha": None, "prepared_sha": None,
+        "state": "adopted",
+        "manifest": [
+            {"task_id": older, "source_sha": older_sha},
+            {"task_id": newer, "source_sha": newer_sha},
+        ],
+        "evidence": {"kind": "adopted"}, "reason": "accepted as equivalent",
+        "created_at": now, "updated_at": now,
+    })
+    assert not await _delivery_pending(db, older) and not await _delivery_pending(db, newer)
+    unrelated = await feature(setup, "unrelated")
+    caplog.clear()
+
+    with caplog.at_level(logging.WARNING, logger="src.integration.development"):
+        result = await service.sweep("p")
+
+    assert result["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", unrelated, "main") == ""
+    assert not any("cycle" in record.getMessage() for record in caplog.records)
+    assert await db.get_task_meta(older, PUBLISHER_SKIP_KEY) is None
+    assert await db.get_task_meta(newer, PUBLISHER_SKIP_KEY) is None
+
+
+async def test_idle_sweep_clears_skip_records_nothing_evaluates(setup):
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "done-elsewhere")
+    await db.set_task_meta("done-elsewhere", PUBLISHER_SKIP_KEY, {"reason": "missing_ref"})
+    await db.update_task("done-elsewhere", branch_name=None)  # nothing left to publish
+
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert await db.get_task_meta("done-elsewhere", PUBLISHER_SKIP_KEY) is None
+
+
 async def test_recover_child_command_reports_empty_exception_type():
     from src.commands.integration_commands import IntegrationCommandsMixin
 
