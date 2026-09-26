@@ -17,10 +17,13 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, insert, select, text, update
+from sqlalchemy import case, delete, func, insert, select, text, update
 
 from src.database.queries.blocked_state import _development_delivery_pending, blocked_predicate
-from src.database.tables import archived_tasks, projects, sessions, tasks
+from src.database.tables import (
+    archived_tasks, projects, sessions, task_completion_records,
+    task_metadata, tasks,
+)
 from src.database.tables import development_deliveries as deliveries
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration import development_validation as validation_outcomes
@@ -37,7 +40,9 @@ from src.integration.delivery_branches import (
     remote_heads,
 )
 from src.integration.development_validation import run_check as run_validation_check
-from src.integration.publishable_artifact import has_publishable_artifact
+from src.integration.publishable_artifact import (
+    EMPTY_SOURCE_KEY, development_empty_source, has_publishable_artifact,
+)
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -384,6 +389,63 @@ class DevelopmentIntegration:
             ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
         await self.db.log_blocked_flips(flipped)
         await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
+
+    async def _retire_empty_sources(self, repo, source_heads, history):
+        """Retire absent branches with no durable evidence of repository work.
+
+        The successful pruned fetch supplies the origin snapshot. Keep every
+        journaled source and reported commit: their absence requires recovery.
+        Record the empty revision without changing its canonical branch name.
+        """
+        journaled = {
+            member["task_id"] for row in history for member in _manifest_members(row["manifest"])
+        }
+        retired = []
+        async with self.db._engine.begin() as conn:
+            candidates = (await conn.execute(
+                select(tasks.c.id, tasks.c.branch_name, tasks.c.updated_at).where(
+                    tasks.c.project_id == repo.project_id,
+                    tasks.c.status == TaskStatus.COMPLETED.value,
+                    (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
+                    has_publishable_artifact(tasks.c.branch_name),
+                ).order_by(tasks.c.id).with_for_update()
+            )).all()
+            for task_id, branch, updated_at in candidates:
+                ref = "refs/remotes/origin/" + branch.removeprefix("refs/heads/")
+                if ref in source_heads or task_id in journaled:
+                    continue
+                records = (await conn.execute(
+                    select(task_completion_records.c.id, task_completion_records.c.commits).where(
+                        task_completion_records.c.task_id == task_id
+                    ).order_by(
+                        task_completion_records.c.completed_at.desc(),
+                        task_completion_records.c.id.desc(),
+                    )
+                )).all()
+                try:
+                    empty = all(json.loads(record.commits or "[]") == [] for record in records)
+                except ValueError:
+                    empty = False
+                if not empty:
+                    continue
+                await self.db._upsert_meta(task_id, EMPTY_SOURCE_KEY, {
+                    "branch_name": branch, "repository_id": repo.id,
+                    "task_updated_at": updated_at,
+                    "completion_id": records[0].id if records else None,
+                    "reason": "missing_ref_without_completion_commits", "observed_at": time.time(),
+                }, conn=conn)
+                await conn.execute(delete(task_metadata).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key == PUBLISHER_SKIP_KEY,
+                ))
+                retired.append(task_id)
+            flipped = await self.db.recompute_blocked(set(retired), conn=conn) if retired else set()
+            ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
+        await self.db.log_blocked_flips(flipped)
+        await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
+        for task_id in retired:
+            logger.info("development publisher retired empty missing source for %s", task_id)
+        return retired
 
     async def reconcile(self, repo, store):
         for row in await self.rows(repo.project_id):
@@ -864,6 +926,13 @@ class DevelopmentIntegration:
                 raise ValueError("default branch does not exist")
             await self.run_git(store, "checkout", "--detach", "--force", base)
             history = await self._release_unverified_parks(repo, await self.rows(project_id))
+            # Pin source observations before retiring empty completions and
+            # ordering dependencies. No per-task network requests are needed.
+            fetched = await self.run_git(
+                store, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/"
+            )
+            source_heads = dict(line.split(" ", 1) for line in fetched.splitlines())
+            await self._retire_empty_sources(repo, source_heads, history)
             done = {
                 (m["task_id"], m.get("source_sha"))
                 for r in history
@@ -899,6 +968,7 @@ class DevelopmentIntegration:
                                 tasks.c.status == "COMPLETED",
                                 (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
                                 has_publishable_artifact(tasks.c.branch_name),
+                                ~development_empty_source(tasks, repo.id),
                                 *([tasks.c.id == isolated_child] if isolated_child else []),
                                 # Completion chains can be assembled in this
                                 # batch. Keep gates and unfinished dependencies,
@@ -1041,7 +1111,10 @@ class DevelopmentIntegration:
                 async with self.db._engine.connect() as conn:
                     live = (
                         await conn.execute(
-                            select(tasks.c.id, tasks.c.branch_name)
+                            select(tasks.c.id, case(
+                                (development_empty_source(tasks, repo.id), None),
+                                else_=tasks.c.branch_name,
+                            ).label("branch_name"))
                             .where(tasks.c.id.in_(artifact_ids))
                         )
                     ).all()
@@ -1050,7 +1123,10 @@ class DevelopmentIntegration:
                     if missing:
                         archived = (
                             await conn.execute(
-                                select(archived_tasks.c.id, archived_tasks.c.branch_name)
+                                select(archived_tasks.c.id, case(
+                                    (development_empty_source(archived_tasks, repo.id), None),
+                                    else_=archived_tasks.c.branch_name,
+                                ).label("branch_name"))
                                 .where(archived_tasks.c.id.in_(missing))
                             )
                         ).all()
@@ -1116,12 +1192,6 @@ class DevelopmentIntegration:
                 )
             unavailable.update(cycle_blocked)
             assembly_id = uuid4().hex[:12]
-            # Fetch above pins one remote snapshot. Do not make a network request
-            # for every historical task branch on every sweep.
-            fetched = await self.run_git(
-                store, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/"
-            )
-            source_heads = dict(line.split(" ", 1) for line in fetched.splitlines())
             for task in ordered:
                 processed.add(task["id"])
                 replacements = {

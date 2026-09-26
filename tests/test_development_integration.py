@@ -17,7 +17,7 @@ from src.doctor.integration_checks import run_check as run_doctor_check
 from src.doctor.models import Severity
 from src.event_bus import EventBus
 from src.integration.development import (
-    PUBLISHER_SKIP_KEY, DevelopmentBusy, DevelopmentIntegration, DevelopmentPolicy,
+    EMPTY_SOURCE_KEY, PUBLISHER_SKIP_KEY, DevelopmentBusy, DevelopmentIntegration, DevelopmentPolicy,
 )
 from src.integration.development_validation import (
     DEFERRAL_KIND, FAILED, INFRA_ALERT_AFTER, INFRASTRUCTURE, PASSED,
@@ -642,7 +642,11 @@ async def test_branchless_dependency_ignores_parked_newer_attempt(setup):
 
 async def test_branchful_undelivered_dependency_still_blocks_publication(setup, caplog):
     db, service, source, remote, _repo = setup
-    await feature(setup, "unpublished")
+    head = await feature(setup, "unpublished")
+    await db.save_task_completion(TaskCompletion(
+        id="unpublished-close", task_id="unpublished", outcome="pass",
+        commits=[head], completed_at=time.time(),
+    ))
     git(source, "push", "origin", "--delete", "unpublished")
     await feature(setup, "dependent")
     await db.add_dependency("dependent", "unpublished")
@@ -656,6 +660,191 @@ async def test_branchful_undelivered_dependency_still_blocks_publication(setup, 
     assert any("dependent" in row.getMessage() and "unpublished" in row.getMessage()
                and "missing ref" in row.getMessage() for row in caplog.records)
     assert git(remote, "rev-parse", "main") != git(source, "rev-parse", "dependent")
+
+
+@pytest.mark.parametrize("completion_record", [False, True])
+@pytest.mark.parametrize("container", [False, True])
+async def test_missing_empty_source_releases_dependents_and_stops_git_sweeps(
+    setup, completion_record, container,
+):
+    db, service, _source, remote, repo = setup
+    branch = "aq/epic/empty" if container else "refs/heads/aq/empty"
+    await db.create_task(Task(
+        id="empty", project_id="p", title="empty", description="",
+        branch_name=branch, status=TaskStatus.COMPLETED,
+    ))
+    if container:
+        await db.set_task_meta("empty", "container", True)
+    if completion_record:
+        await db.save_task_completion(TaskCompletion(
+            id="empty-close", task_id="empty", outcome="pass", commits=[],
+            completed_at=time.time(),
+        ))
+    await db.set_task_meta("empty", PUBLISHER_SKIP_KEY, {
+        "reason": "missing_ref", "dependency_id": "empty", "consecutive_ticks": 479,
+    })
+    head = await feature(setup, "dependent")
+    await db.add_dependency("dependent", "empty")
+    await db.create_task(Task(
+        id="ready-after-empty", project_id="p", title="ready after empty", description="",
+        status=TaskStatus.READY,
+    ))
+    await db.add_dependency("ready-after-empty", "empty")
+    assert (await db.get_task("ready-after-empty")).is_blocked
+    assert await _delivery_pending(db, "empty")
+
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+
+    assert (await db.get_task("empty")).status == TaskStatus.COMPLETED
+    assert (await db.get_task("empty")).branch_name == branch
+    assert not await _delivery_pending(db, "empty")
+    assert not (await db.get_task("ready-after-empty")).is_blocked
+    assert not (await db.get_task("dependent")).is_blocked
+    assert await db.get_task_meta("empty", PUBLISHER_SKIP_KEY) is None
+    evidence = await db.get_task_meta("empty", EMPTY_SOURCE_KEY)
+    assert evidence["branch_name"] == branch
+    assert evidence["repository_id"] == repo.id
+    assert evidence["reason"] == "missing_ref_without_completion_commits"
+    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+    assert all(member["task_id"] != "empty" for row in await service.rows("p")
+               for member in row["manifest"])
+    # The new dependent delivery has one legitimate branch-cleanup pass.
+    await service.collect_delivered_branches("p")
+    with patch.object(service, "store", new_callable=AsyncMock) as store:
+        assert (await service.sweep("p"))["outcome"] == "idle"
+        assert (await service.sweep("p"))["outcome"] == "idle"
+    store.assert_not_awaited()
+
+
+async def test_missing_source_keeps_commits_from_earlier_completions(setup):
+    db, service, source, _remote, _repo = setup
+    head = await feature(setup, "unpublished")
+    await db.save_task_completion(TaskCompletion(
+        id="earlier-close", task_id="unpublished", outcome="pass",
+        commits=[head], completed_at=time.time() - 1,
+    ))
+    await db.save_task_completion(TaskCompletion(
+        id="latest-close", task_id="unpublished", outcome="pass",
+        commits=[], completed_at=time.time(),
+    ))
+    git(source, "push", "origin", "--delete", "unpublished")
+
+    assert (await service.sweep("p"))["outcome"] == "idle"
+
+    assert (await db.get_task("unpublished")).branch_name == "unpublished"
+    assert await _delivery_pending(db, "unpublished")
+    assert await db.get_task_meta("unpublished", EMPTY_SOURCE_KEY) is None
+    assert (await db.get_task_meta("unpublished", PUBLISHER_SKIP_KEY))["reason"] == "missing_ref"
+
+
+async def test_empty_missing_source_alone_becomes_idle_without_a_delivery(setup):
+    db, service, _source, _remote, _repo = setup
+    history = await service.rows("p")
+    await db.create_task(Task(
+        id="empty", project_id="p", title="empty", description="",
+        branch_name="aq/epic/empty", status=TaskStatus.COMPLETED,
+    ))
+
+    assert (await service.sweep("p"))["outcome"] == "idle"
+
+    assert (await db.get_task("empty")).branch_name == "aq/epic/empty"
+    assert await service.rows("p") == history
+    with patch.object(service, "store", new_callable=AsyncMock) as store:
+        assert (await service.sweep("p"))["outcome"] == "idle"
+    store.assert_not_awaited()
+
+
+async def test_missing_empty_canonical_branch_retains_its_identity(setup):
+    from src.database.tables import task_integration_checkpoints
+
+    db, service, _source, _remote, _repo = setup
+    await db.create_task(Task(
+        id="canonical", project_id="p", title="canonical", description="",
+        branch_name="aq/epic/canonical", status=TaskStatus.COMPLETED,
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(insert(task_integration_checkpoints).values(
+            task_id="canonical", repository_id="r", branch="aq/epic/canonical",
+            updated_at=time.time(),
+        ))
+
+    assert (await service.sweep("p"))["outcome"] == "idle"
+
+    assert (await db.get_task("canonical")).branch_name == "aq/epic/canonical"
+    assert not await _delivery_pending(db, "canonical")
+    assert await db.get_task_meta("canonical", EMPTY_SOURCE_KEY) is not None
+    with patch.object(service, "store", new_callable=AsyncMock) as store:
+        assert (await service.sweep("p"))["outcome"] == "idle"
+    store.assert_not_awaited()
+
+
+@pytest.mark.parametrize("new_completion", [False, True])
+async def test_empty_source_observation_does_not_hide_later_work(setup, new_completion):
+    db, service, source, remote, _repo = setup
+    await db.create_task(Task(
+        id="empty", project_id="p", title="empty", description="",
+        branch_name="aq/empty", status=TaskStatus.COMPLETED,
+    ))
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert not await _delivery_pending(db, "empty")
+    git(source, "checkout", "-b", "aq/empty")
+    (source / "later.txt").write_text("later work\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "later work")
+    head = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", "aq/empty")
+    if new_completion:
+        await db.save_task_completion(TaskCompletion(
+            id="later-close", task_id="empty", outcome="pass", commits=[head],
+            completed_at=time.time(),
+        ))
+    else:
+        await db.update_task("empty", status=TaskStatus.READY)
+        await db.update_task("empty", status=TaskStatus.COMPLETED)
+
+    assert await _delivery_pending(db, "empty")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert not await _delivery_pending(db, "empty")
+    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+
+
+async def test_origin_fetch_failure_does_not_retire_empty_source(setup):
+    from src.git.manager import GitError
+
+    db, service, _source, _remote, _repo = setup
+    await db.create_task(Task(
+        id="empty", project_id="p", title="empty", description="",
+        branch_name="aq/empty", status=TaskStatus.COMPLETED,
+    ))
+    with patch.object(service.git, "afetch_origin", side_effect=GitError("fetch failed")):
+        with pytest.raises(GitError, match="fetch failed"):
+            await service.sweep("p")
+
+    assert (await db.get_task("empty")).branch_name == "aq/empty"
+    assert await _delivery_pending(db, "empty")
+    assert await db.get_task_meta("empty", EMPTY_SOURCE_KEY) is None
+
+
+async def test_empty_source_observation_is_bound_to_the_delivery_repository(setup):
+    db, service, _source, remote, _repo = setup
+    await db.create_task(Task(
+        id="empty", project_id="p", title="empty", description="",
+        branch_name="aq/empty", status=TaskStatus.COMPLETED,
+    ))
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert not await _delivery_pending(db, "empty")
+    await db.create_repo(RepoConfig(
+        id="other-delivery", project_id="p", source_type=RepoSourceType.CLONE, url=str(remote),
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            integration_repository_id="other-delivery",
+        ))
+
+    assert await _delivery_pending(db, "empty")
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert not await _delivery_pending(db, "empty")
+    assert (await db.get_task_meta("empty", EMPTY_SOURCE_KEY))["repository_id"] == "other-delivery"
 
 
 async def test_parked_blocker_holds_dependent_and_names_both_tasks_in_log(setup, caplog):
