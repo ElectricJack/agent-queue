@@ -65,6 +65,9 @@ jobs:
     services:
       postgres:
         image: postgres:18
+        # Four xdist workers each lease multiple databases and can briefly
+        # exceed PostgreSQL's default 100 connections during the full suite.
+        command: postgres -c max_connections=300
         env:
           POSTGRES_USER: agent_queue
           POSTGRES_PASSWORD: agent_queue
