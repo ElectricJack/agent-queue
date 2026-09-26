@@ -57,7 +57,7 @@ jobs:
           - name: migration-and-slow
             command: pytest tests/ -n auto --dist loadfile -m "migration or slow"
           - name: postgres-integration
-            command: pytest tests/ -n auto --dist loadfile -m "integration or perf"
+            command: pytest tests/ -n auto --dist loadfile -m "integration or perf" --ignore=tests/test_e2e_cli_stateful.py
 
     # Postgres backend for the perf/claim-query suite's Postgres parametrisation
     # (tests/perf/conftest.py's ``any_db``, tests/test_claim_queries.py's ``db``) —
@@ -136,3 +136,67 @@ jobs:
 
       - name: Run tests
         run: ${{ matrix.suite.command }}
+
+  e2e-cli:
+    name: E2E CLI (${{ matrix.group }})
+    if: >-
+      github.event_name != 'pull_request' ||
+      (!github.event.pull_request.draft &&
+       !(github.event.pull_request.head.repo.full_name == github.repository &&
+         startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        # IDs in tests/test_e2e_cli_stateful.py; together these cover S1-S19.
+        group: [claims, cli, graphs, failover]
+
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: agent_queue
+          POSTGRES_PASSWORD: agent_queue
+          POSTGRES_DB: agent_queue
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      POSTGRES_TEST_DSN: postgresql+asyncpg://agent_queue:agent_queue@localhost:5432/agent_queue
+      AQ_REQUIRE_POSTGRES_TESTS: "1"
+      GIT_AUTHOR_NAME: CI
+      GIT_AUTHOR_EMAIL: ci@example.invalid
+      GIT_COMMITTER_NAME: CI
+      GIT_COMMITTER_EMAIL: ci@example.invalid
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Verify exact checkout
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project
+        run: pip install -e ".[dev,cli]"
+
+      # The smoke setup migrates its own unique disposable database. Run only
+      # this group's node, with no xdist workers or other suites competing.
+      - name: Run scenario group
+        run: pytest 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_stateful_cli_smoke[${{ matrix.group }}]' -m integration -s

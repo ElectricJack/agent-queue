@@ -18,6 +18,15 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+# Keep provider failover on its own runner: S16 alone takes about 3.5 minutes.
+# Each group starts from a fresh disposable world and preserves scenario order.
+SCENARIO_GROUPS = {
+    "claims": tuple(f"S{number}" for number in range(1, 8)),
+    "cli": tuple(f"S{number}" for number in range(8, 15)),
+    "graphs": ("S15", "S17", "S18", "S19"),
+    "failover": ("S16",),
+}
+
 
 def _unused_loopback_port() -> int:
     with socket.socket() as sock:
@@ -26,7 +35,8 @@ def _unused_loopback_port() -> int:
 
 
 @pytest.mark.integration
-def test_disposable_daemon_stateful_cli_smoke(tmp_path):
+@pytest.mark.parametrize("scenarios", SCENARIO_GROUPS.values(), ids=list(SCENARIO_GROUPS))
+def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
     env = {
         **os.environ,
         "AQ_E2E_HOME": str(tmp_path / "aq-e2e"),
@@ -53,19 +63,15 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path):
     try:
         subprocess.run([str(setup), "--reset"], cwd=REPO_ROOT, env=env, check=True, timeout=180)
         result = subprocess.run(
-            [str(smoke)],
+            [str(smoke), *scenarios],
             cwd=REPO_ROOT,
             env=env,
             capture_output=True,
             check=False,
             text=True,
-            # The full kit now covers S1-S19 and takes about eight minutes on
-            # an otherwise idle box, but 15-16 minutes when CI's xdist worker
-            # runs it beside the Postgres performance fixtures. Pool waits
-            # can grant one extra convergence window when the daemon reports
-            # an active launch or quarantine, so leave room for the smoke
-            # runner to report its own detailed failure before this cap.
-            timeout=1500,
+            # CI gives each group its own runner and a five-minute job budget.
+            # Leave a minute for environment/daemon setup and cleanup.
+            timeout=240,
         )
         # Keep the scenario durations visible on successful CI runs too;
         # a slow tail can otherwise only be diagnosed after a failure.
@@ -74,7 +80,11 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path):
             if line.startswith(("PASS S", "FAIL S"))
         ))
         assert result.returncode == 0, f"{result.stdout}\n--- stderr ---\n{result.stderr}"
-        assert "19/19 scenarios passed" in result.stdout
+        assert f"{len(scenarios)}/{len(scenarios)} scenarios passed" in result.stdout
+        passed = {
+            line.split()[1] for line in result.stdout.splitlines() if line.startswith("PASS S")
+        }
+        assert passed == set(scenarios), result.stdout
         for status in (
             "passed",
             "unsupported",

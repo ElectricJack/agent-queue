@@ -27,6 +27,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.profiles.parser import parse_profile
+from tests.test_e2e_cli_stateful import SCENARIO_GROUPS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SMOKE = REPO_ROOT / "scripts" / "e2e" / "smoke.py"
@@ -334,6 +335,15 @@ def test_stateful_scenarios_cover_the_audited_mutation_families():
     assert by_key["S17"].families == ("task graph/phases/subtasks",)
     assert by_key["S18"].families == ("playbooks/failure triage",)
     assert by_key["S19"].families == ("authentication/scoped graph/quota",)
+
+
+def test_ci_scenario_groups_cover_every_scenario_once():
+    smoke = _load_smoke()
+    grouped = [key for group in SCENARIO_GROUPS.values() for key in group]
+
+    assert len(SCENARIO_GROUPS) == 4
+    assert len(grouped) == len(set(grouped))
+    assert set(grouped) == {scenario.key for scenario in smoke.SCENARIOS}
 
 
 def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(monkeypatch):

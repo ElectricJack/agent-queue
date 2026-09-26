@@ -34,7 +34,7 @@ build](#there-is-no-documentation-build).
 
 | Workflow | Triggers | What it does |
 |---|---|---|
-| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch` | A four-arm test matrix against a real PostgreSQL service. |
+| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch` | Four suite arms and four stateful CLI scenario groups, each against its own PostgreSQL service. |
 | [`macos-acceptance.yml`](../../.github/workflows/macos-acceptance.yml) | Push to `ci/macos-acceptance**`; `workflow_dispatch` | The native macOS install journey, recorded by a human rather than gating a merge. |
 
 > **Note.** No workflow runs on a push to `main`. Everything that reaches
@@ -56,6 +56,7 @@ flowchart TD
     C --> F[default]
     C --> G[migration-and-slow]
     C --> H[postgres-integration]
+    C --> I[E2E CLI: claims, cli, graphs, failover]
 ```
 
 ### Which pull requests run
@@ -80,7 +81,7 @@ The job checks out the exact event SHA (the PR's merge with its base, for a
 | `cli-conformance` | `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py` |
 | `default` | `pytest tests/ -n auto --dist loadfile` |
 | `migration-and-slow` | `pytest tests/ -n auto --dist loadfile -m "migration or slow"` |
-| `postgres-integration` | `pytest tests/ -n auto --dist loadfile -m "integration or perf"` |
+| `postgres-integration` | `pytest tests/ -n auto --dist loadfile -m "integration or perf" --ignore=tests/test_e2e_cli_stateful.py` |
 
 `fail-fast: false`, so one red arm does not hide the others; the job times out
 at 30 minutes.
@@ -95,6 +96,25 @@ Wall-clock budgets still skip in the `postgres-integration` arm: they need
 `AQ_PERF_STRICT=1`, which CI does not set, because a hosted runner's load makes
 them measure the runner rather than the code. Statement-count budgets, which
 are deterministic, do run. See [testing](testing.md#latency-budgets).
+
+### Stateful CLI scenario groups
+
+The `e2e-cli` job runs the [Tier 1 end-to-end kit](../guides/e2e-swarm.md) on
+the same PR, candidate and parent events. Its four matrix entries run in
+parallel, with a five-minute budget per job and `fail-fast: false`:
+
+| Group | Scenarios |
+|---|---|
+| `claims` | S1–S7 |
+| `cli` | S8–S14 |
+| `graphs` | S15, S17–S19 |
+| `failover` | S16 |
+
+Each runner selects one parametrized node from `tests/test_e2e_cli_stateful.py`
+with `-m integration -s`. It creates and cleans up its own database, daemon,
+port, vault and repositories. S16 gets a runner of its own because provider
+failover is the longest scenario. No xdist workers or other test suites share
+these runners, and successful runs print every scenario's duration.
 
 ### Environment
 
@@ -184,7 +204,8 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
   *server*'s Python suites (`tests/test_dashboard_server_*.py`) do run, in the
   default arm like any other test file; they stage a small synthetic bundle
   rather than building the real one.
-* It does not run the [end-to-end kit](scripts.md#supported-end-to-end-kit).
+* It does not run Tier 2 of the [end-to-end kit](scripts.md#supported-end-to-end-kit),
+  which launches real provider sessions. The four E2E CLI groups run Tier 1.
 * It does not publish anything. There is no release workflow and no
   documentation deploy — see [builds and releases](releases.md) and
   [above](#there-is-no-documentation-build).
@@ -193,8 +214,8 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 
 | Input | Output |
 |---|---|
-| A PR into `main` opened, updated, reopened or marked ready | Four check runs on the PR's merge with its base |
-| A push to `aq/integration/**` or `aq/parent/**` | Four check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
+| A PR into `main` opened, updated, reopened or marked ready | Eight check runs on the PR's merge with its base |
+| A push to `aq/integration/**` or `aq/parent/**` | Eight check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
 | A draft PR, or a same-repository PR from `aq/integration/**` | A skipped job; the push run covers the integration head |
 | `workflow_dispatch` | The same matrix, on demand, from the Actions tab |
 

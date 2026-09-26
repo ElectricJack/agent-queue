@@ -70,6 +70,18 @@ Every CLI subprocess is
 forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
+CI runs all 19 scenarios in four parallel `e2e-cli` jobs: `claims` (S1–S7),
+`cli` (S8–S14), `graphs` (S15, S17–S19), and `failover` (S16). Each job
+owns a fresh disposable world and a five-minute budget. To reproduce one
+group locally through the same acceptance test:
+
+```bash
+aq test 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_stateful_cli_smoke[claims]' -m integration -s
+```
+
+Omit the node selector (`::…[claims]`) to run all four groups. The shell
+script still runs all scenarios serially when no IDs are supplied.
+
 A clean run:
 
 ```
