@@ -98,6 +98,20 @@ from .compiler_diagnostic_dto import CompilerDiagnosticDTO
 from .compiler_diagnostic_dto_severity import CompilerDiagnosticDTOSeverity
 from .contract_change_dto import ContractChangeDTO
 from .contract_change_dto_change import ContractChangeDTOChange
+from .conversation_backfill import ConversationBackfill
+from .conversation_backfill_cursors_item import ConversationBackfillCursorsItem
+from .conversation_backfill_gaps_item import ConversationBackfillGapsItem
+from .conversation_counts import ConversationCounts
+from .conversation_counts_by_state import ConversationCountsByState
+from .conversation_diagnostics import ConversationDiagnostics
+from .conversation_diagnostics_permissions_type_0 import ConversationDiagnosticsPermissionsType0
+from .conversation_history_record import ConversationHistoryRecord
+from .conversation_history_record_state import ConversationHistoryRecordState
+from .conversation_input_record import ConversationInputRecord
+from .conversation_intake import ConversationIntake
+from .conversation_intake_ignored import ConversationIntakeIgnored
+from .conversation_limits import ConversationLimits
+from .conversation_preconditions import ConversationPreconditions
 from .count_project_memory_files_request import CountProjectMemoryFilesRequest
 from .count_project_memory_files_response import CountProjectMemoryFilesResponse
 from .count_project_memory_files_response_422 import CountProjectMemoryFilesResponse422
@@ -1201,9 +1215,14 @@ from .subagent_event_response_422 import SubagentEventResponse422
 from .subagent_metrics import SubagentMetrics
 from .subagent_metrics_by_session import SubagentMetricsBySession
 from .subagent_rollup import SubagentRollup
+from .supervisor_inbox_error_response import SupervisorInboxErrorResponse
+from .supervisor_inbox_history_request import SupervisorInboxHistoryRequest
+from .supervisor_inbox_history_request_states_type_0_item import SupervisorInboxHistoryRequestStatesType0Item
+from .supervisor_inbox_history_response import SupervisorInboxHistoryResponse
 from .supervisor_inbox_reply_request import SupervisorInboxReplyRequest
 from .supervisor_inbox_reply_response import SupervisorInboxReplyResponse
-from .supervisor_inbox_reply_response_422 import SupervisorInboxReplyResponse422
+from .supervisor_inbox_status_request import SupervisorInboxStatusRequest
+from .supervisor_inbox_status_response import SupervisorInboxStatusResponse
 from .tail_api_streams_stream_id_tail_get_response_tail_api_streams_stream_id_tail_get import (
     TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet,
 )
@@ -1461,6 +1480,20 @@ __all__ = (
     "CompilerDiagnosticDTOSeverity",
     "ContractChangeDTO",
     "ContractChangeDTOChange",
+    "ConversationBackfill",
+    "ConversationBackfillCursorsItem",
+    "ConversationBackfillGapsItem",
+    "ConversationCounts",
+    "ConversationCountsByState",
+    "ConversationDiagnostics",
+    "ConversationDiagnosticsPermissionsType0",
+    "ConversationHistoryRecord",
+    "ConversationHistoryRecordState",
+    "ConversationInputRecord",
+    "ConversationIntake",
+    "ConversationIntakeIgnored",
+    "ConversationLimits",
+    "ConversationPreconditions",
     "CountProjectMemoryFilesRequest",
     "CountProjectMemoryFilesResponse",
     "CountProjectMemoryFilesResponse422",
@@ -2554,9 +2587,14 @@ __all__ = (
     "SubagentMetrics",
     "SubagentMetricsBySession",
     "SubagentRollup",
+    "SupervisorInboxErrorResponse",
+    "SupervisorInboxHistoryRequest",
+    "SupervisorInboxHistoryRequestStatesType0Item",
+    "SupervisorInboxHistoryResponse",
     "SupervisorInboxReplyRequest",
     "SupervisorInboxReplyResponse",
-    "SupervisorInboxReplyResponse422",
+    "SupervisorInboxStatusRequest",
+    "SupervisorInboxStatusResponse",
     "TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet",
     "TaskActivityAttempt",
     "TaskActivityItem",

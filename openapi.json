@@ -11015,6 +11015,48 @@
         }
       }
     },
+    "/api/supervisor_inbox/history": {
+      "post": {
+        "tags": [
+          "supervisor_inbox"
+        ],
+        "summary": "Page conversations or one conversation's inputs, newest first.",
+        "description": "Page conversations or one conversation's inputs, newest first.",
+        "operationId": "supervisor_inbox_history",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorInboxHistoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/supervisor_inbox/reply": {
       "post": {
         "tags": [
@@ -11049,12 +11091,49 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
+                  "$ref": "#/components/schemas/SupervisorInboxErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/supervisor_inbox/status": {
+      "post": {
+        "tags": [
+          "supervisor_inbox"
+        ],
+        "summary": "Read global supervisor conversation health, limits and intake diagnostics.",
+        "description": "Read global supervisor conversation health, limits and intake diagnostics.",
+        "operationId": "supervisor_inbox_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorInboxStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorInboxErrorResponse"
                 }
               }
             }
@@ -19144,6 +19223,382 @@
           "change"
         ],
         "title": "ContractChangeDTO"
+      },
+      "ConversationBackfill": {
+        "properties": {
+          "cursors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Cursors"
+          },
+          "gaps": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Gaps"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursors",
+          "gaps"
+        ],
+        "title": "ConversationBackfill"
+      },
+      "ConversationCounts": {
+        "properties": {
+          "by_state": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By State"
+          },
+          "inputs_pending_supervisor": {
+            "type": "integer",
+            "title": "Inputs Pending Supervisor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "by_state",
+          "inputs_pending_supervisor"
+        ],
+        "title": "ConversationCounts"
+      },
+      "ConversationDiagnostics": {
+        "properties": {
+          "message_content_intent": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Content Intent"
+          },
+          "permissions": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "boolean"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permissions"
+          },
+          "outbox_bound": {
+            "type": "boolean",
+            "title": "Outbox Bound"
+          }
+        },
+        "type": "object",
+        "required": [
+          "message_content_intent",
+          "permissions",
+          "outbox_bound"
+        ],
+        "title": "ConversationDiagnostics"
+      },
+      "ConversationHistoryRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "transport": {
+            "type": "string",
+            "title": "Transport"
+          },
+          "guild_id": {
+            "type": "string",
+            "title": "Guild Id"
+          },
+          "channel_id": {
+            "type": "string",
+            "title": "Channel Id"
+          },
+          "external_root_message_id": {
+            "type": "string",
+            "title": "External Root Message Id"
+          },
+          "external_thread_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Thread Id"
+          },
+          "thread_id": {
+            "type": "string",
+            "title": "Thread Id"
+          },
+          "created_by": {
+            "type": "string",
+            "title": "Created By"
+          },
+          "audience": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Audience"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "opening",
+              "open",
+              "closed",
+              "delivery_blocked"
+            ],
+            "title": "State"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "number",
+            "title": "Updated At"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "inputs": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationInputRecord"
+            },
+            "type": "array",
+            "title": "Inputs"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "transport",
+          "guild_id",
+          "channel_id",
+          "external_root_message_id",
+          "external_thread_id",
+          "thread_id",
+          "created_by",
+          "audience",
+          "state",
+          "created_at",
+          "updated_at",
+          "closed_at",
+          "inputs",
+          "next_before"
+        ],
+        "title": "ConversationHistoryRecord"
+      },
+      "ConversationInputRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "conversation_id": {
+            "type": "string",
+            "title": "Conversation Id"
+          },
+          "verified_actor": {
+            "type": "string",
+            "title": "Verified Actor"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          },
+          "text_expired": {
+            "type": "boolean",
+            "title": "Text Expired"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "received_at": {
+            "type": "number",
+            "title": "Received At"
+          },
+          "reply_message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply Message Id"
+          },
+          "reply_body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply Body"
+          },
+          "reply_created_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply Created At"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "id",
+          "conversation_id",
+          "verified_actor",
+          "text",
+          "text_expired",
+          "state",
+          "received_at",
+          "reply_message_id",
+          "reply_body",
+          "reply_created_at"
+        ],
+        "title": "ConversationInputRecord"
+      },
+      "ConversationIntake": {
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "window_seconds": {
+            "type": "integer",
+            "title": "Window Seconds"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "ignored": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Ignored"
+          }
+        },
+        "type": "object",
+        "required": [
+          "available",
+          "window_seconds",
+          "total",
+          "ignored"
+        ],
+        "title": "ConversationIntake"
+      },
+      "ConversationLimits": {
+        "properties": {
+          "max_input_chars": {
+            "type": "integer",
+            "title": "Max Input Chars"
+          },
+          "author_window_limit": {
+            "type": "integer",
+            "title": "Author Window Limit"
+          },
+          "channel_window_limit": {
+            "type": "integer",
+            "title": "Channel Window Limit"
+          },
+          "window_seconds": {
+            "type": "integer",
+            "title": "Window Seconds"
+          },
+          "max_reply_chars": {
+            "type": "integer",
+            "title": "Max Reply Chars"
+          }
+        },
+        "type": "object",
+        "required": [
+          "max_input_chars",
+          "author_window_limit",
+          "channel_window_limit",
+          "window_seconds",
+          "max_reply_chars"
+        ],
+        "title": "ConversationLimits"
+      },
+      "ConversationPreconditions": {
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "title": "Ok"
+          },
+          "unmet": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Unmet"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ok",
+          "unmet"
+        ],
+        "title": "ConversationPreconditions"
       },
       "CountProjectMemoryFilesRequest": {
         "properties": {
@@ -48664,29 +49119,146 @@
         "title": "SubagentRollup",
         "description": "Sub-agent totals across a set of agents.\n\n``complete`` is a conjunction: one live session without harness hooks\nmakes every number here a lower bound, and callers must say so rather\nthan present a floor as a total."
       },
+      "SupervisorInboxErrorResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": false
+          },
+          "error_code": {
+            "type": "string",
+            "title": "Error Code"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "additionalProperties": true,
+        "type": "object",
+        "required": [
+          "error_code",
+          "error"
+        ],
+        "title": "SupervisorInboxErrorResponse"
+      },
+      "SupervisorInboxHistoryRequest": {
+        "properties": {
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "states": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "opening",
+                    "open",
+                    "closed",
+                    "delivery_blocked"
+                  ]
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "States"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 50
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SupervisorInboxHistoryRequest"
+      },
+      "SupervisorInboxHistoryResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "conversations": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationHistoryRecord"
+            },
+            "type": "array",
+            "title": "Conversations"
+          },
+          "next_before": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Before"
+          }
+        },
+        "type": "object",
+        "required": [
+          "conversations",
+          "next_before"
+        ],
+        "title": "SupervisorInboxHistoryResponse"
+      },
       "SupervisorInboxReplyRequest": {
         "properties": {
           "conversation_id": {
             "type": "string",
-            "title": "Conversation Id",
-            "description": ""
+            "minLength": 1,
+            "title": "Conversation Id"
           },
           "input_id": {
             "type": "string",
-            "title": "Input Id",
-            "description": ""
+            "minLength": 1,
+            "title": "Input Id"
           },
           "text": {
             "type": "string",
-            "title": "Text",
-            "description": ""
+            "maxLength": 16000,
+            "minLength": 1,
+            "title": "Text"
           },
           "idempotency_key": {
             "type": "string",
-            "title": "Idempotency Key",
-            "description": ""
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Idempotency Key"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "conversation_id",
@@ -48733,6 +49305,54 @@
           "truncated"
         ],
         "title": "SupervisorInboxReplyResponse"
+      },
+      "SupervisorInboxStatusRequest": {
+        "properties": {},
+        "additionalProperties": false,
+        "type": "object",
+        "title": "SupervisorInboxStatusRequest"
+      },
+      "SupervisorInboxStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled"
+          },
+          "preconditions": {
+            "$ref": "#/components/schemas/ConversationPreconditions"
+          },
+          "diagnostics": {
+            "$ref": "#/components/schemas/ConversationDiagnostics"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/ConversationLimits"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/ConversationCounts"
+          },
+          "backfill": {
+            "$ref": "#/components/schemas/ConversationBackfill"
+          },
+          "intake": {
+            "$ref": "#/components/schemas/ConversationIntake"
+          }
+        },
+        "type": "object",
+        "required": [
+          "enabled",
+          "preconditions",
+          "diagnostics",
+          "limits",
+          "counts",
+          "backfill",
+          "intake"
+        ],
+        "title": "SupervisorInboxStatusResponse"
       },
       "TaskActivityAttempt": {
         "properties": {

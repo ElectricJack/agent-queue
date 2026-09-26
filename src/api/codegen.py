@@ -30,6 +30,7 @@ from src.api.models.dashboard import (
     DashboardStateErrorResponse,
 )
 from src.api.models.escalation import EscalationErrorResponse
+from src.api.models.supervisor_inbox import SupervisorInboxErrorResponse
 from src.api.models.system import (
     DeleteIntelligenceClassConflictResponse,
     EditIntelligenceClassConflictResponse,
@@ -123,6 +124,9 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "escalation_update",
             "escalation_apply_reply",
             "supervisor_inbox_reply",
+            "supervisor_inbox_post",
+            "supervisor_inbox_status",
+            "supervisor_inbox_history",
             "digest_preview",
             "digest_status",
             "report_request",
@@ -481,6 +485,8 @@ def build_category_routers() -> list[APIRouter]:
                                 if cmd_name in DASHBOARD_STATE_COMMANDS
                                 else {"model": EscalationErrorResponse}
                                 if cmd_name.startswith(("escalation_", "digest_"))
+                                else {"model": SupervisorInboxErrorResponse}
+                                if cmd_name.startswith("supervisor_inbox_")
                                 else {"model": HierarchyRefusalResponse}
                                 if cmd_name in HIERARCHY_REFUSAL_COMMANDS
                                 else {

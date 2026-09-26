@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import time
 from typing import Any
 
@@ -16,7 +17,13 @@ from src.commands.principal import (
 )
 from src.conversations.envelope import ConversationEnvelope
 from src.conversations.intake import normalise_text
-from src.conversations.limits import MAX_INPUT_CHARS, WINDOW_SECONDS
+from src.conversations.limits import (
+    AUTHOR_WINDOW_LIMIT,
+    CHANNEL_WINDOW_LIMIT,
+    MAX_INPUT_CHARS,
+    MAX_REPLY_CHARS,
+    WINDOW_SECONDS,
+)
 from src.conversations.outbox import ConversationOutbox, UnboundOutbox
 from src.conversations.preconditions import conversation_preconditions
 from src.conversations.render import render_brief, render_reply, sanitise_reply
@@ -26,6 +33,7 @@ from src.database.queries.conversation_queries import (
     ConversationNotFound,
     ConversationRateLimited,
     ConversationStateError,
+    CONVERSATION_STATES,
 )
 
 _LIVE_SESSION_STATES = frozenset({"starting", "running", "draining"})
@@ -54,6 +62,117 @@ def _error(code: str, error: str, **details: Any) -> dict[str, Any]:
 
 class ConversationCommandsMixin:
     """Intake checks identity explicitly; SERVICE's stored DENY_ALL is not enforced."""
+
+    def _conversation_read_allowed(self) -> bool:
+        principal = current_principal() or TRUSTED_LOCAL
+        return principal.kind is PrincipalKind.LOCAL or (
+            principal.kind is PrincipalKind.SESSION
+            and principal.elevated
+            and principal.project_id is None
+        )
+
+    async def _cmd_supervisor_inbox_status(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Installation-wide health without contacting Discord or changing state."""
+        if not self._conversation_read_allowed():
+            return _error("out_of_scope", "conversation reads require local or global supervisor")
+        if args:
+            return _error("invalid_request", "status takes no arguments")
+        from src.discord.intake_diagnostics import empty_snapshot
+
+        bot = getattr(self.orchestrator, "_discord_bot", None)
+        cutover = getattr(bot, "_cutover_report", None)
+        outbox = getattr(self.orchestrator, "conversation_outbox", None) or UnboundOutbox()
+        preconditions = conversation_preconditions(
+            self.config, cutover_status=getattr(cutover, "status", None), outbox_bound=outbox.bound
+        )
+        diagnostics = {"message_content_intent": None, "permissions": None}
+        if bot is not None:
+            backfill = getattr(bot, "_conversation_backfill", None)
+            if backfill is not None:
+                diagnostics = backfill().diagnostics(bot)
+            else:
+                diagnostics["message_content_intent"] = getattr(
+                    getattr(bot, "intents", None), "message_content", None
+                )
+        counter = getattr(bot, "_intake_diagnostics", None)
+        return {
+            "success": True,
+            "enabled": self.config.discord.conversation.enabled,
+            "preconditions": {"ok": preconditions.ok, "unmet": list(preconditions.unmet)},
+            "diagnostics": {**diagnostics, "outbox_bound": outbox.bound},
+            "limits": {
+                "max_input_chars": MAX_INPUT_CHARS,
+                "author_window_limit": AUTHOR_WINDOW_LIMIT,
+                "channel_window_limit": CHANNEL_WINDOW_LIMIT,
+                "window_seconds": WINDOW_SECONDS,
+                "max_reply_chars": MAX_REPLY_CHARS,
+            },
+            "counts": await self.db.conversation_counts(),
+            "backfill": {
+                "cursors": await self.db.list_backfill_cursors(),
+                "gaps": await self.db.list_intake_gaps(),
+            },
+            "intake": counter.snapshot() if counter is not None else empty_snapshot(),
+        }
+
+    async def _cmd_supervisor_inbox_history(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Page conversations or the inputs of one conversation, newest first."""
+        if not self._conversation_read_allowed():
+            return _error("out_of_scope", "conversation reads require local or global supervisor")
+        conversation_id = args.get("conversation_id")
+        states, limit, before = args.get("states"), args.get("limit", 50), args.get("before")
+        if (
+            set(args) - {"conversation_id", "states", "limit", "before"}
+            or (
+                conversation_id is not None
+                and (not isinstance(conversation_id, str) or not conversation_id.strip())
+            )
+            or (
+                states is not None
+                and (
+                    not isinstance(states, list)
+                    or any(not isinstance(s, str) or s not in CONVERSATION_STATES for s in states)
+                )
+            )
+            or isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+            or (
+                before is not None
+                and (
+                    isinstance(before, bool)
+                    or not isinstance(before, (int, float))
+                    or not math.isfinite(before)
+                )
+            )
+        ):
+            return _error("invalid_request", "invalid history filter or pagination arguments")
+
+        next_before = None
+        if conversation_id is not None:
+            conversation = await self.db.get_conversation(conversation_id)
+            if conversation is None:
+                return _error("conversation_not_found", "conversation does not exist")
+            conversations = [conversation] if not states or conversation["state"] in states else []
+        else:
+            rows = await self.db.list_conversations(states=states, limit=limit + 1, before=before)
+            conversations = rows[:limit]
+            if len(rows) > limit:
+                next_before = conversations[-1]["updated_at"]
+
+        history = []
+        for conversation in conversations:
+            rows = await self.db.list_conversation_inputs(
+                conversation["id"],
+                limit=limit + 1,
+                before=before if conversation_id is not None else None,
+            )
+            inputs = [{**item, "text_expired": item["text"] is None} for item in rows[:limit]]
+            input_before = inputs[-1]["received_at"] if len(rows) > limit else None
+            history.append({**conversation, "inputs": inputs, "next_before": input_before})
+            if conversation_id is not None:
+                next_before = input_before
+        return {"success": True, "conversations": history, "next_before": next_before}
 
     async def _cmd_supervisor_inbox_reply(self, args: dict[str, Any]) -> dict[str, Any]:
         """Only an explicit answer from the live global supervisor queues a reply."""

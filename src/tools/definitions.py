@@ -89,6 +89,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "escalation_apply_reply": "escalation",
     "supervisor_inbox_post": "supervisor_inbox",
     "supervisor_inbox_reply": "supervisor_inbox",
+    "supervisor_inbox_status": "supervisor_inbox",
+    "supervisor_inbox_history": "supervisor_inbox",
     # document reviews
     "review_submit": "review",
     "github_issue_triage": "github_issue",
@@ -6945,3 +6947,29 @@ _ALL_TOOL_DEFINITIONS.append({
         "additionalProperties": False,
     },
 })
+
+_ALL_TOOL_DEFINITIONS.extend([
+    {
+        "name": "supervisor_inbox_status",
+        "description": "Read global supervisor conversation health, limits and intake diagnostics.",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "supervisor_inbox_history",
+        "description": "Page conversations or one conversation's inputs, newest first.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "conversation_id": {"type": "string", "minLength": 1},
+                "states": {
+                    "type": "array", "items": {"type": "string", "enum": [
+                        "opening", "open", "closed", "delivery_blocked"
+                    ]},
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+                "before": {"type": "number", "description": "Exclusive epoch-second cursor."},
+            },
+            "additionalProperties": False,
+        },
+    },
+])

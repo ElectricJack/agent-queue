@@ -917,6 +917,23 @@ class ConversationQueriesMixin:
     # Backfill cursors and gaps
     # ------------------------------------------------------------------
 
+    async def list_backfill_cursors(self) -> list[dict[str, Any]]:
+        """All persisted channel/thread positions, in stable destination order."""
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(conversation_backfill_cursors).order_by(
+                            conversation_backfill_cursors.c.transport,
+                            conversation_backfill_cursors.c.channel_id,
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(row) for row in rows]
+
     async def get_backfill_cursor(
         self, *, transport: str, channel_id: str
     ) -> dict[str, Any] | None:
