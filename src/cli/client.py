@@ -399,9 +399,15 @@ class CLIClient:
     async def start_stream(
         self, command: list[str], cwd: str, *,
         title: str | None = None, session_id: str, project_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> dict:
         assert self._http is not None, "CLIClient not connected"
-        payload: dict = {"command": command, "cwd": cwd, "session_id": session_id}
+        import uuid
+
+        payload: dict = {
+            "command": command, "cwd": cwd, "session_id": session_id,
+            "idempotency_key": idempotency_key or "stream-" + uuid.uuid4().hex,
+        }
         if title:
             payload["title"] = title
         if project_id:

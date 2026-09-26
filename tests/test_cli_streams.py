@@ -20,6 +20,7 @@ def test_stream_start_invokes_client_with_argv_after_dashdash():
         result = runner.invoke(
             cli, ["stream", "start", "--title", "Running pytest",
                   "--session-id", "supervisor-global", "--cwd", "/tmp",
+                  "--idempotency-key", "replay-key",
                   "--", "pytest", "tests/", "-x"],
         )
     assert result.exit_code == 0, result.output
@@ -27,6 +28,7 @@ def test_stream_start_invokes_client_with_argv_after_dashdash():
     client.start_stream.assert_awaited_once_with(
         ["pytest", "tests/", "-x"], "/tmp",
         title="Running pytest", session_id="supervisor-global", project_id=None,
+        idempotency_key="replay-key",
     )
 
 

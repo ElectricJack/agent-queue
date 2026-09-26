@@ -136,7 +136,14 @@ class JobQueriesMixin:
             .mappings()
             .first()
         )
-        if not ws or ws["project_id"] != values["project_id"] or not ws["enabled"]:
+        integration_snapshot = (
+            values["owner_kind"] == "integration"
+            and values["input_mode"] == "snapshot"
+            and ws and ws["kind_id"] == "job-snapshot"
+        )
+        if not ws or ws["project_id"] != values["project_id"] or (
+            not ws["enabled"] and not integration_snapshot
+        ):
             raise JobError("jobs.cwd_invalid")
         if ws["generation"] != values["workspace_generation"]:
             raise JobError("jobs.workspace_busy")

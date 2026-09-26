@@ -9268,6 +9268,7 @@
         ],
         "optional": [
           "--title",
+          "--idempotency-key",
           "--project"
         ],
         "structured": [],

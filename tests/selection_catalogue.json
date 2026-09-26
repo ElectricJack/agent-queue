@@ -1243,7 +1243,7 @@
       ]
     }
   },
-  "digest": "sha256:93efefd89adb7a96adf169714131ae9a4415f6c1117b0c5aa3f222b6c574373e",
+  "digest": "sha256:963bfd3b9d69c6bdbcbcd187fad95c4600291ce786549046351ad43779d3ada3",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4331,8 +4331,10 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands",
         "src.commands.integration_commands",
         "src.commands.principal",
+        "src.config",
         "src.database",
         "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
@@ -4350,9 +4352,12 @@
         "src.integration.development_validation",
         "src.integration.owner_recovery",
         "src.integration.status",
+        "src.jobs.adapters",
+        "src.jobs.policy",
         "src.models",
         "src.prime.sections",
-        "src.profiles.capabilities"
+        "src.profiles.capabilities",
+        "src.resources.box_lock"
       ],
       "markers": [
         "parametrize"
@@ -11443,16 +11448,21 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api",
         "src.api.auth",
+        "src.api.dependencies",
         "src.api.streams",
-        "src.database",
+        "src.commands",
+        "src.config",
+        "src.database.tables",
+        "src.jobs.artifacts",
+        "src.jobs.policy",
         "src.models"
       ],
       "markers": [
-        "asyncio",
         "parametrize"
       ],
-      "summary": "Streams API tests (spec §8.7). Mirrors tests/test_session_stream_api.py's"
+      "summary": "Console viewers submit finite jobs and never own process lifetime."
     },
     "tests/test_streams_registry.py": {
       "areas": [

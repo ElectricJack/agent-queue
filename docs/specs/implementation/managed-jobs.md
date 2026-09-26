@@ -71,3 +71,38 @@ task; supervisors can subscribe within their project. Terminal digests retain
 actual failure/cancellation/lost outcomes and point to `aq job result ID`.
 Installed worker templates need the usual grants reseed; see the
 [wait guide](../../guides/agent-waits.md). No schema revision is needed in phase 3.
+
+Phase 4 removes the publisher's shell runner and the console registry's process
+spawner. Existing command syntax is translated only to finite `test`, `lint`,
+`build`, and `e2e` presets; arbitrary shell commands have no fallback. Admission
+remains off by default. Existing publisher policies containing shell pipelines or
+other unsupported commands defer with `jobs.preset_denied` until the operator
+selects supported presets and enables configured admission.
+
+Publisher checks belong to a deterministic integration operation and run at band
+zero in detached commit clones under `<data_dir>/job-snapshots/`. These snapshots
+have disabled `job-snapshot` workspace rows, so workers cannot acquire them. A
+snapshot has its own object storage, remains pinned until verified cleanup, and
+records the candidate SHA and server interpreter version. Verified terminal
+snapshots are removed when their 90-day result retention expires; cleanup I/O
+failures retain metadata for retry. Submission keys retain
+one job across response loss or publisher restart; infrastructure deferrals use a
+new attempt key, while unresolved cleanup blocks replacement. Queue and run
+budgets remain separate and are capped by the accepted job policy. Caller
+cancellation does not cancel execution. A successful result attests only when its
+SHA and tracked-input fingerprint match the submitted snapshot; generated
+untracked test artifacts do not change the committed input. Pytest exit 5 fails
+validation under result v1.
+
+A console stream's id is its canonical job id. `aq stream start` submits for a
+held task session in that task's workspace, prints its replay key, and accepts
+`--idempotency-key` for explicit replay. `StreamRegistry` owns only bounded
+viewers; dropping one never signals a job or releases its pin. Metadata, tail,
+SSE and cancellation use job scope, including after restart. Retained output is
+read through one serialized reader per watched job. Frame sequence/resume values
+are logical byte offsets; `gap` frames carry `after` and `next`, and oversized
+lines are split into bounded chunks. `GET /api/jobs/{job_id}/output?after=OFFSET`
+uses the same SSE viewer. Two attachments per principal/job and bounded queues
+prevent slow clients from blocking execution; a slow attachment disconnects with
+a resume cursor. Expired output returns 410 with result metadata. Explicit stream
+kill delegates cancellation to the queue's verified cleanup path.

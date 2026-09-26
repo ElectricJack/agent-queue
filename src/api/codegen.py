@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 API_EXCLUDED = {
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
     "job_reconcile",
+    "job_submit_integration",
 
     "load_tools",
     "reply_to_user",

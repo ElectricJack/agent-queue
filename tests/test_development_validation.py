@@ -11,8 +11,6 @@ failed parks a batch.
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
 from src.integration.development_result_parser import (
@@ -34,102 +32,90 @@ from src.integration.development_validation import (
 )
 
 
-def _slot_command(*, wait: float, run: float, code: int = 0, echo: str = "") -> str:
-    """A command that queues like ``aq test`` does, then "runs" for *run* seconds."""
-    return (
-        'python3 -c "import json, sys, time; '
-        "open(sys.argv[1], 'a').write(json.dumps({'event': 'waiting', 'at': time.time()}) + '\\n')"
-        '" "$AQ_TEST_SLOT_REPORT"; '
-        f"sleep {wait}; "
-        'python3 -c "import json, sys, time; '
-        "open(sys.argv[1], 'a').write(json.dumps({'event': 'acquired', 'at': time.time(), "
-        f"'waited': {wait}, 'slot': 0}}) + '\\n')"
-        '" "$AQ_TEST_SLOT_REPORT"; '
-        f"{f'echo {echo}; ' if echo else ''}"
-        f"sleep {run}; exit {code}"
+async def _run(result, tmp_path, *, timeout=1, slot_wait=5):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    result = {
+        "job_id": "job", "input_ref": "candidate", "input_stability": "stable",
+        "input_mode": "snapshot", "exit_code": 0, "outcome": PASSED,
+        "queue_seconds": 0, "run_seconds": 0.1, **result,
+    }
+    job = {"id": "job", "result": result, "state": "succeeded"}
+    client = SimpleNamespace(submit=AsyncMock(return_value=job), wait=AsyncMock(return_value=job))
+    check = await run_check(
+        "aq test tests/test_a.py", cwd=tmp_path, timeout_seconds=timeout,
+        slot_wait_seconds=slot_wait, job_client=client, project_id="p",
+        operation_id="operation", input_ref="candidate", idempotency_key="key",
     )
-
-
-async def _run(command, tmp_path, *, timeout=1, slot_wait=5, grace=0.0):
-    return await run_check(
-        command,
-        cwd=tmp_path,
-        timeout_seconds=timeout,
-        slot_wait_seconds=slot_wait,
-        report_path=tmp_path / "slot.jsonl",
-        poll_seconds=0.05,
-        slot_grace_seconds=grace,
+    client.submit.assert_awaited_once_with(
+        project_id="p", operation_id="operation", store=str(tmp_path), input_ref="candidate",
+        preset="test", argv=["tests/test_a.py"], idempotency_key="key",
+        queue_seconds=slot_wait, run_seconds=timeout,
     )
+    return check
 
 
-# -- the run budget ---------------------------------------------------------
-
-
-async def test_slot_wait_is_not_charged_to_the_run_budget(tmp_path):
-    # 1.5 s queued + 0.3 s running against a 1 s budget: the run fits.
-    check = await _run(_slot_command(wait=1.5, run=0.3), tmp_path, timeout=1)
+async def test_queue_wait_is_not_charged_to_the_run_budget(tmp_path):
+    check = await _run({"queue_seconds": 1.5, "run_seconds": 0.3}, tmp_path)
     assert check["outcome"] == PASSED
-    assert check["exit_code"] == 0
-    assert check["slot_wait_seconds"] >= 1.4
-    assert check["duration_seconds"] > 1.0
-    assert check["run_seconds"] < 1.0
+    assert check["slot_wait_seconds"] == 1.5
+    assert check["run_seconds"] == 0.3
+    assert check["duration_seconds"] == 1.8
 
 
-async def test_a_slot_wait_past_its_own_bound_is_infrastructure(tmp_path):
-    started = time.monotonic()
-    check = await _run(_slot_command(wait=30, run=0), tmp_path, timeout=60, slot_wait=1)
-    assert time.monotonic() - started < 10
+@pytest.mark.parametrize("reason", ["queue_timeout", "run_timeout", "output_store_failed"])
+async def test_queue_infrastructure_never_parks_a_batch(tmp_path, reason):
+    check = await _run({"outcome": INFRASTRUCTURE, "infra_reason": reason}, tmp_path)
     assert check["outcome"] == INFRASTRUCTURE
-    assert check["infra_reason"] == "slot_unavailable"
-    assert check["failing_tests"] == []
+    assert check["infra_reason"] == reason
+    assert check["job_id"] == "job"
 
 
-async def test_a_timeout_mid_run_is_infrastructure_and_keeps_the_output(tmp_path):
-    check = await _run("echo collected 119 items; sleep 30", tmp_path, timeout=1)
+@pytest.mark.parametrize("outcome", ["lost", "cancelled"])
+async def test_lost_and_cancelled_jobs_defer_validation(tmp_path, outcome):
+    check = await _run({"outcome": outcome, "exit_code": None}, tmp_path)
     assert check["outcome"] == INFRASTRUCTURE
-    assert check["infra_reason"] == "timeout"
-    assert check["exit_code"] == 124
-    # The old runner replaced everything with "validation timed out".
-    assert "collected 119 items" in check["output"]
-    assert "timed out" in check["detail"]
+    assert check["infra_reason"] == outcome
 
 
-async def test_aq_test_giving_up_on_a_slot_is_infrastructure(tmp_path):
-    check = await _run("echo 'aq test: no test slot free after 600s'; exit 75", tmp_path)
-    assert check["outcome"] == INFRASTRUCTURE
-    assert check["infra_reason"] == "slot_unavailable"
-
-
-async def test_a_killed_process_is_infrastructure(tmp_path):
-    check = await _run("echo started; kill -KILL $$", tmp_path)
-    assert check["outcome"] == INFRASTRUCTURE
-    assert check["infra_reason"] == "killed"
-    assert "started" in check["output"]
-
-
-async def test_a_real_failure_names_the_failing_test(tmp_path):
-    output = (
-        "FAILED tests/test_development_integration.py::test_batch - "
-        "AssertionError: assert 'parked' == 'delivered'\n"
-        "1 failed, 118 passed in 209.00s"
-    )
-    check = await _run(f"printf '%s\\n' \"{output}\"; exit 1", tmp_path)
+async def test_real_failure_keeps_result_identity_and_failures_first_excerpt(tmp_path):
+    failing = [{"id": "tests/test_a.py::test_batch", "reason": "assert 1 == 2"}]
+    check = await _run({
+        "outcome": FAILED, "exit_code": 1, "failing_tests": failing,
+        "excerpt": "first failure then tail", "result_hash": "immutable-hash",
+    }, tmp_path)
     assert check["outcome"] == FAILED
-    assert check["infra_reason"] is None
-    assert [t["id"] for t in check["failing_tests"]] == [
-        "tests/test_development_integration.py::test_batch"
-    ]
-    assert check["summary"] == {"failed": 1, "passed": 118}
+    assert check["failing_tests"] == failing
+    assert check["output"] == "first failure then tail"
+    assert check["result_hash"] == "immutable-hash"
 
 
-async def test_the_evidence_records_command_timing_and_exit(tmp_path):
-    check = await _run("echo hi", tmp_path)
-    assert check["command"] == "echo hi"
-    assert check["exit_code"] == 0
-    assert check["outcome"] == PASSED
-    assert check["slot_wait_seconds"] == 0.0
-    assert check["run_seconds"] == pytest.approx(check["duration_seconds"])
-    assert check["output"].strip() == "hi"
+@pytest.mark.parametrize("change", [
+    {"input_ref": "other"}, {"input_stability": "unverified"},
+])
+async def test_modified_snapshot_never_attests_a_pass(tmp_path, change):
+    check = await _run(change, tmp_path)
+    assert check["outcome"] == INFRASTRUCTURE
+    assert check["infra_reason"] == "snapshot_modified"
+
+
+async def test_disabled_queue_and_arbitrary_shell_defer_without_a_spawn(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    import asyncio
+
+    spawn = AsyncMock(side_effect=AssertionError("adapters must not spawn"))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    for command, client, reason in [
+        ("aq test tests/a.py", None, "jobs.disabled"),
+        ("echo hello", SimpleNamespace(submit=AsyncMock()), "jobs.preset_denied"),
+    ]:
+        check = await run_check(command, cwd=tmp_path, timeout_seconds=1,
+                                slot_wait_seconds=1, job_client=client)
+        assert check["outcome"] == INFRASTRUCTURE
+        assert check["infra_reason"] == reason
+    spawn.assert_not_awaited()
 
 
 # -- classification ---------------------------------------------------------
@@ -417,20 +403,14 @@ def test_junit_artifact_byte_limit_is_explicit():
     assert classify_report(0, report)[:2] == (INFRASTRUCTURE, "junit_limit")
 
 
-async def test_runner_classifies_early_failure_after_output_tail_is_overwritten(tmp_path):
-    script = tmp_path / "noisy.py"
-    script.write_text(
-        "import sys\n"
-        "print('ERROR tests/test_a.py - ImportError: missing module')\n"
-        "sys.stdout.write('passing noise\\n' * 40000)\n"
-        "sys.exit(2)\n"
-    )
-    check = await _run(f"python3 {script}", tmp_path, timeout=10)
-    assert check["outcome"] == FAILED
-    assert check["failing_tests"] == [
+def test_streaming_parser_keeps_early_failure_after_large_output():
+    parser = PytestOutputParser()
+    parser.feed(b"ERROR tests/test_a.py - ImportError: missing module\n")
+    for _ in range(100):
+        parser.feed(b"passing noise\n" * 400)
+    assert parser.finish().failing == [
         {"id": "tests/test_a.py", "reason": "ImportError: missing module"}
     ]
-    assert "ImportError" not in check["output"]
 
 
 def test_outage_words_in_a_node_id_cannot_hide_a_real_assertion():
@@ -440,15 +420,14 @@ def test_outage_words_in_a_node_id_cannot_hide_a_real_assertion():
     assert classify_report(1, report)[:2] == (FAILED, None)
 
 
-async def test_runner_parser_error_cannot_pass(tmp_path, monkeypatch):
+def test_streaming_parser_error_cannot_pass(monkeypatch):
     def broken(_self, _text):
         raise RuntimeError("parser broke")
 
     monkeypatch.setattr(PytestOutputParser, "_text", broken)
-    check = await _run("echo successful", tmp_path)
-    assert check["exit_code"] == 0
-    assert check["outcome"] == INFRASTRUCTURE
-    assert check["infra_reason"] == "text_parser_error"
+    parser = PytestOutputParser()
+    parser.feed(b"successful\n")
+    assert classify_report(0, parser.finish())[:2] == (INFRASTRUCTURE, "text_parser_error")
 
 
 def test_junit_empty_suite_is_not_validation_and_kills_keep_signal_outcomes():
