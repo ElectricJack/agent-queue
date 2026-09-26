@@ -859,7 +859,9 @@ def uninstall_service(
         if error:
             errors.append(f"{mechanism}: {error}")
     record = paths.record_path.exists()
-    if not dry_run:
+    if not dry_run and not errors:
+        # Kept when an entry could not be removed: a surviving cron entry reads
+        # its PATH from this record, and a rerun needs to know what to remove.
         paths.record_path.unlink(missing_ok=True)
         state_path(paths.aq_home).unlink(missing_ok=True)
     if not removed and not record:

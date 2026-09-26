@@ -258,8 +258,8 @@ PostgreSQL, and never while `~/.agent-queue/daemon.stopped` exists — the marke
 `aq stop`, `aq restart`, `aq update` and the daemon's `shutdown` command write
 and `aq start` removes — or while `aq start` / `aq update` hold their locks. Its
 start is `aq start --unless-stopped`, which respects that marker instead of
-removing it and exits `16` when one is recorded, also one recorded while it was
-starting. Failed starts back off up to 30 minutes; five in a row against a
+removing it and exits `16` when one is recorded — also one recorded while it was
+starting — or when an `aq update` began meanwhile. Failed starts back off up to 30 minutes; five in a row against a
 reachable database stop it until a reboot, a manual start or
 `aq service check --reset`, while a database outage is waited out. At most five
 automatic starts happen per hour. It logs every decision to

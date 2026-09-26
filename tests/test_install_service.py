@@ -448,6 +448,7 @@ def test_the_local_host_reads_the_stop_marker_aq_stop_writes(tmp_path, monkeypat
 
     monkeypatch.setattr(daemon_mod, "CONFIG_DIR", str(tmp_path))
     monkeypatch.setattr(daemon_mod, "PID_FILE", str(tmp_path / "daemon.pid"))
+    monkeypatch.setattr(daemon_mod, "LOCK_DIR", str(tmp_path / "daemon.lock"))
     monkeypatch.setattr(daemon_mod, "_find_daemon_pid", lambda: None)
     host = wd.LocalHost(home=tmp_path)
 
@@ -469,8 +470,8 @@ def test_the_local_host_sees_a_start_or_update_in_progress(tmp_path):
 
     lock = tmp_path / "daemon.lock"
     assert acquire_start_lock(str(lock))  # owned by this (live) process
-    os.utime(lock, (clock.now - 86400,) * 2)
-    assert "aq start" in host.busy()  # old, but its owner is alive: a long backup
+    os.utime(lock, (clock.now - 3600,) * 2)
+    assert "aq start" in host.busy()  # an hour old, but its owner is alive: a long backup
 
     (lock / "owner").write_text(str(_dead_pid()))
     assert host.busy() is None and not lock.exists()  # owner died: abandoned, removed
@@ -1221,12 +1222,25 @@ def test_a_boot_gives_a_given_up_watchdog_a_fresh_start():
     assert state.start_failures == 0 and state.starts == []
 
 
-def test_the_loop_treats_its_first_check_as_a_boot(tmp_path):
+def test_the_loop_treats_its_first_check_as_a_boot_only_after_a_reboot(tmp_path, monkeypatch):
+    given_up = WatchdogState(
+        start_failures=MAX_START_FAILURES, down_checks=3, last_check=1_000_000.0, boot_id="boot-a"
+    )
+
+    # Restarted on new code (same boot): a crash-looping daemon gets no fresh starts.
+    monkeypatch.setattr(wd, "boot_identity", lambda: "boot-a")
     host, clock = FakeHost(tmp_path), Clock()
-    wd.save_state(tmp_path, WatchdogState(start_failures=MAX_START_FAILURES, last_check=clock.now))
-    waits = iter([True])
-    assert wd.run_loop(host, now=clock, wait=lambda seconds: next(waits)) == 0
-    assert host.started == 1  # no confirmation, no stale give-up
+    wd.save_state(tmp_path, given_up)
+    assert wd.run_loop(host, now=clock, wait=lambda seconds: True) == 0
+    assert host.started == 0 and wd.load_state(tmp_path).verdict == "gave_up"
+
+    # After a reboot: a fresh start, without the confirmation.
+    monkeypatch.setattr(wd, "boot_identity", lambda: "boot-b")
+    host = FakeHost(tmp_path)
+    wd.save_state(tmp_path, given_up)
+    assert wd.run_loop(host, now=clock, wait=lambda seconds: True) == 0
+    assert host.started == 1
+    assert wd.load_state(tmp_path).boot_id == "boot-b"
 
 
 def test_a_stop_recorded_while_the_watchdog_starts_is_a_stop_not_a_failure(tmp_path):
@@ -1312,9 +1326,13 @@ def test_a_damaged_cron_block_is_never_guessed_at(paths, venv):
 
     action = _install(paths, venv, runner, LINUX_NO_BUS)
     assert not action.ok and "end" in action.summary.lower()
+    paths.record_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.record_path.write_text(json.dumps({"mechanism": MECHANISM_CRON, "path": "/x"}))
     removal = uninstall_service(runner=runner, paths=paths)
     assert not removal.ok
     assert runner.input_for("crontab", "-") is None  # never written back
+    # The surviving entries still read their PATH from the record: it stays.
+    assert paths.record_path.exists()
 
 
 def test_uninstall_plans_a_service_the_record_does_not_list(tmp_path):

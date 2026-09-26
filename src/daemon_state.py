@@ -45,6 +45,7 @@ __all__ = [
     "STOP_INTENT_FILENAME",
     "StopIntent",
     "acquire_start_lock",
+    "boot_identity",
     "clear_stop_intent",
     "configured_database_endpoint",
     "database_reachable",
@@ -55,6 +56,7 @@ __all__ = [
     "read_stop_intent",
     "record_stop_intent",
     "release_start_lock",
+    "start_lock_owner",
     "start_lock_state",
 ]
 
@@ -71,17 +73,28 @@ STOPPED_EXIT_CODE = 16
 # The start lock
 # ---------------------------------------------------------------------------
 
-#: ``aq start`` holds ``daemon.lock`` (a directory) for the whole start; the
-#: PID of the process holding it is written inside, so a lock whose owner died
-#: -- a start that was killed -- is recognisably abandoned rather than merely
-#: old.  A long pre-migration backup is old but very much alive.
+#: ``aq start`` holds ``daemon.lock`` (a directory) for the whole start.  Its
+#: owner -- PID and boot -- is written inside, so a lock whose owner is gone is
+#: recognisably abandoned rather than merely old: a long pre-migration backup
+#: is old but very much alive, while a start cut off by a power loss leaves a
+#: PID that the next boot may hand to anything.
 START_LOCK_OWNER = "owner"
 LOCK_ABSENT = "absent"
 LOCK_HELD = "held"
 LOCK_ABANDONED = "abandoned"
-#: A lock with no owner file (written by a release that predates it) counts as
-#: abandoned only after this long.
+#: A lock with no owner file counts as abandoned after this long.
 _OWNERLESS_LOCK_STALE_AFTER = 1800.0
+#: Backstop where there is no boot id (macOS): no start takes this long.
+_LOCK_MAX_AGE = 4 * 3600.0
+
+
+def boot_identity() -> str:
+    """This boot's id (Linux), or ``""`` where the kernel does not say."""
+    try:
+        with open("/proc/sys/kernel/random/boot_id", encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
 
 
 def acquire_start_lock(lock_dir: str) -> bool:
@@ -90,21 +103,53 @@ def acquire_start_lock(lock_dir: str) -> bool:
         os.makedirs(lock_dir)
     except FileExistsError:
         return False
+    owner = {"pid": os.getpid(), "boot": boot_identity()}
     try:
         with open(os.path.join(lock_dir, START_LOCK_OWNER), "w", encoding="utf-8") as handle:
-            handle.write(str(os.getpid()))
+            handle.write(json.dumps(owner))
     except OSError:
         pass
     return True
 
 
-def release_start_lock(lock_dir: str) -> None:
-    """Remove the start lock and its owner note, if they are there."""
+def _read_owner(lock_dir: str) -> dict[str, Any] | None:
+    try:
+        with open(os.path.join(lock_dir, START_LOCK_OWNER), encoding="utf-8") as handle:
+            raw = handle.read().strip()
+    except OSError:
+        return None
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return None
+    if isinstance(payload, int):
+        return {"pid": payload, "boot": ""}
+    if isinstance(payload, dict) and isinstance(payload.get("pid"), int):
+        return {"pid": payload["pid"], "boot": str(payload.get("boot") or "")}
+    return None
+
+
+def start_lock_owner(lock_dir: str) -> int | None:
+    """The PID recorded as holding the start lock, if any."""
+    owner = _read_owner(lock_dir)
+    return owner["pid"] if owner else None
+
+
+def release_start_lock(lock_dir: str, *, owner: int | None = None) -> bool:
+    """Remove the start lock; with *owner*, only while that PID still holds it.
+
+    A start releasing its own lock, or a cleaner removing one it judged
+    abandoned, passes the owner it saw: a lock another start has taken since
+    is not theirs to remove.  Returns whether it was removed.
+    """
+    if owner is not None and start_lock_owner(lock_dir) != owner:
+        return False
     _remove(os.path.join(lock_dir, START_LOCK_OWNER))
     try:
         os.rmdir(lock_dir)
     except OSError:
-        pass
+        return False
+    return True
 
 
 def start_lock_state(lock_dir: str, *, now: float | None = None) -> str:
@@ -113,17 +158,22 @@ def start_lock_state(lock_dir: str, *, now: float | None = None) -> str:
         age = (time.time() if now is None else now) - os.stat(lock_dir).st_mtime
     except OSError:
         return LOCK_ABSENT
-    try:
-        with open(os.path.join(lock_dir, START_LOCK_OWNER), encoding="utf-8") as handle:
-            owner = int(handle.read().strip())
-    except (OSError, ValueError):
+    owner = _read_owner(lock_dir)
+    if owner is None:
         return LOCK_ABANDONED if age > _OWNERLESS_LOCK_STALE_AFTER else LOCK_HELD
+    boot = boot_identity()
+    if owner["boot"] and boot and owner["boot"] != boot:
+        return LOCK_ABANDONED  # taken before a reboot: whatever has that PID now, it is not it
+    if age > _LOCK_MAX_AGE:
+        return LOCK_ABANDONED
     try:
-        os.kill(owner, 0)
+        os.kill(owner["pid"], 0)
     except ProcessLookupError:
         return LOCK_ABANDONED
+    except PermissionError:
+        return LOCK_ABANDONED  # another user's process: not an `aq start` of ours
     except OSError:
-        return LOCK_HELD  # alive, owned by someone else
+        return LOCK_HELD
     return LOCK_HELD
 
 

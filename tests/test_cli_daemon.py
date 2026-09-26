@@ -35,8 +35,10 @@ def _no_dashboard_server(monkeypatch):
 @pytest.fixture(autouse=True)
 def _private_daemon_home(tmp_path, monkeypatch):
     """`aq stop` records, and `aq start` clears, ``daemon.stopped`` in CONFIG_DIR;
-    never let a test touch the operator's (their auto-restart service reads it)."""
+    never let a test touch the operator's (their auto-restart service reads it),
+    nor wait on the operator's start lock."""
     monkeypatch.setattr(daemon_mod, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(daemon_mod, "LOCK_DIR", str(tmp_path / "daemon.lock"))
 
 
 @pytest.fixture(autouse=True)
@@ -770,11 +772,34 @@ def test_a_stop_during_the_database_wait_stops_the_start_before_it_spawns(
 
     monkeypatch.setattr(daemon_mod, "_ensure_database", database_comes_up_as_the_operator_stops)
 
+    # The operator's own start reports it like any start that did not happen...
+    assert daemon_mod.start_daemon() is False
+    assert not (startable / "daemon.lock").exists()
+    # ...and the watchdog's is told it was held, so it is not counted a failure.
+    (startable / "daemon.stopped").unlink()
     with pytest.raises(daemon_mod.StartHeld) as held:
-        daemon_mod.start_daemon()
+        daemon_mod.start_daemon(unless_stopped=True)
     assert held.value.during
     no_popen.assert_not_called()
     assert not (startable / "daemon.lock").exists()
+
+
+def test_the_watchdogs_start_never_spawns_during_an_update(startable, monkeypatch, no_popen):
+    """`aq update` saw the daemon down, so it would neither stop nor restart it."""
+    (startable / "update.lock").write_text("")
+    with pytest.raises(daemon_mod.StartHeld) as held:
+        daemon_mod.start_daemon(unless_stopped=True)
+    assert "aq update" in str(held.value)
+
+    def update_begins_during_the_database_wait():
+        (startable / "update.lock").write_text("")
+        return True
+
+    (startable / "update.lock").unlink()
+    monkeypatch.setattr(daemon_mod, "_ensure_database", update_begins_during_the_database_wait)
+    with pytest.raises(daemon_mod.StartHeld):
+        daemon_mod.start_daemon(unless_stopped=True)
+    no_popen.assert_not_called()
 
 
 def test_stop_waits_for_a_start_in_progress_and_stops_what_it_spawned(tmp_path, monkeypatch):
@@ -825,3 +850,32 @@ def test_an_abandoned_start_lock_does_not_block_the_next_start(startable, monkey
     assert daemon_mod.start_daemon() is False  # stops at the (patched) database
     assert reached == [1]
     assert not lock.exists()
+
+
+def test_a_lock_taken_before_a_reboot_or_by_another_user_is_abandoned(tmp_path, monkeypatch):
+    import json
+
+    import src.daemon_state as state_mod
+    from src.daemon_state import LOCK_ABANDONED, LOCK_HELD, start_lock_state
+
+    lock = tmp_path / "daemon.lock"
+    lock.mkdir()
+    monkeypatch.setattr(state_mod, "boot_identity", lambda: "boot-now")
+    (lock / "owner").write_text(json.dumps({"pid": __import__("os").getpid(), "boot": "boot-now"}))
+    assert start_lock_state(str(lock)) == LOCK_HELD
+    (lock / "owner").write_text(json.dumps({"pid": __import__("os").getpid(), "boot": "boot-before"}))
+    assert start_lock_state(str(lock)) == LOCK_ABANDONED  # PID reused after a reboot
+    if __import__("os").getuid() != 0:
+        (lock / "owner").write_text(json.dumps({"pid": 1, "boot": "boot-now"}))
+        assert start_lock_state(str(lock)) == LOCK_ABANDONED  # not a process of ours
+
+
+def test_a_lock_is_only_released_by_the_owner_that_was_seen(tmp_path):
+    from src.daemon_state import acquire_start_lock, release_start_lock
+
+    lock = str(tmp_path / "daemon.lock")
+    assert acquire_start_lock(lock)
+    assert release_start_lock(lock, owner=_dead_pid()) is False  # taken by someone else since
+    assert (tmp_path / "daemon.lock").is_dir()
+    assert release_start_lock(lock, owner=__import__("os").getpid()) is True
+    assert not (tmp_path / "daemon.lock").exists()

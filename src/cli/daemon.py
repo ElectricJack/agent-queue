@@ -38,6 +38,7 @@ from src.daemon_state import (
     read_stop_intent,
     record_stop_intent,
     release_start_lock,
+    start_lock_owner,
     start_lock_state,
 )
 from src.env_scrub import harness_session_markers, strip_harness_session_markers
@@ -87,6 +88,38 @@ class StartHeld(Exception):
         super().__init__(
             f"the daemon was stopped on purpose by {intent.by} {when}; not starting it"
         )
+
+
+#: ``aq update`` holds this (``src.install.update.LOCK_NAME``) for the whole
+#: update; the watchdog's start must not spawn a daemon in the middle of it.
+UPDATE_LOCK_NAME = "update.lock"
+#: An update lock older than this no longer holds a start back.
+UPDATE_LOCK_STALE_AFTER = 7200.0
+
+
+def _update_in_progress() -> StopIntent | None:
+    """An ``aq update`` holding its lock, as the stop it amounts to."""
+    try:
+        since = os.stat(os.path.join(CONFIG_DIR, UPDATE_LOCK_NAME)).st_mtime
+    except OSError:
+        return None
+    if time.time() - since > UPDATE_LOCK_STALE_AFTER:
+        return None
+    return StopIntent(by="aq update (in progress)", at=since)
+
+
+def _held_for(*, unless_stopped: bool) -> StopIntent | None:
+    """What forbids spawning a daemon right now, if anything.
+
+    A recorded stop always does.  The watchdog's start (``unless_stopped``)
+    also yields to an ``aq update``: the update decided the daemon was down,
+    so it will neither stop what the watchdog starts nor restart it on the
+    new code.
+    """
+    intent = read_stop_intent(path=_stop_intent_path())
+    if intent is None and unless_stopped:
+        intent = _update_in_progress()
+    return intent
 
 
 #: How long ``aq stop`` waits for a start that is already running to either
@@ -565,7 +598,7 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
     again just before the daemon is spawned.
     """
     if unless_stopped:
-        intent = read_stop_intent(path=_stop_intent_path())
+        intent = _held_for(unless_stopped=True)
         if intent is not None:
             raise StartHeld(intent, during=False)
     else:
@@ -586,9 +619,10 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
     # window in which a second `aq start` -- the auto-restart service's -- used
     # to pass the "already running" check and race this one.
     if not acquire_start_lock(LOCK_DIR):
+        owner = start_lock_owner(LOCK_DIR)
         if start_lock_state(LOCK_DIR) == LOCK_ABANDONED:
             # The start that held it was killed; its lock proves nothing.
-            release_start_lock(LOCK_DIR)
+            release_start_lock(LOCK_DIR, owner=owner)
         if not acquire_start_lock(LOCK_DIR):
             console.print(
                 "[bold red]Error:[/] Another start is in progress.\n"
@@ -621,9 +655,15 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
         # first and then waits for this lock, so a stop that arrived during the
         # database wait or the backup is seen here, and one that arrives after
         # this check finds the PID written a moment later.
-        intent = read_stop_intent(path=_stop_intent_path())
+        intent = _held_for(unless_stopped=unless_stopped)
         if intent is not None:
-            raise StartHeld(intent, during=True)
+            held = StartHeld(intent, during=True)
+            if unless_stopped:
+                raise held
+            # An operator's own start stopped by a later `aq stop`: report it
+            # like any other start that did not happen, for every caller.
+            console.print(f"[yellow]Not started:[/] {held}.")
+            return False
         existing = _find_daemon_pid()
         if existing:
             console.print(f"[yellow]Daemon is already running[/] (PID {existing})")
@@ -723,7 +763,7 @@ def start_daemon(*, unless_stopped: bool = False) -> bool:
         console.print(f"[dim]Logs: tail -f {LOG_PATH}[/]")
         return True
     finally:
-        release_start_lock(LOCK_DIR)
+        release_start_lock(LOCK_DIR, owner=os.getpid())
 
 
 #: tmux session-name prefixes the daemon owns: ``s-<task_id>`` for task
@@ -842,8 +882,9 @@ def stop_daemon(quiet: bool = False) -> bool:
         os.remove(PID_FILE)
     except OSError:
         pass
+    owner = start_lock_owner(LOCK_DIR)
     if start_lock_state(LOCK_DIR) == LOCK_ABANDONED:
-        release_start_lock(LOCK_DIR)
+        release_start_lock(LOCK_DIR, owner=owner)
     return True
 
 
@@ -1147,10 +1188,6 @@ def daemon_restart(ctx: click.Context, no_dashboard: bool, no_dashboard_server: 
         stop_dashboard_server(quiet=True)
     stop_daemon(quiet=True)
     time.sleep(1)
-    try:
-        started = start_daemon()
-    except StartHeld as held:  # an `aq stop` landed while this restart was starting
-        _report_held(held)
-    if not started:
+    if not start_daemon():
         raise SystemExit(1)
     _after_daemon_started(no_dashboard=no_dashboard, no_dashboard_server=no_dashboard_server)

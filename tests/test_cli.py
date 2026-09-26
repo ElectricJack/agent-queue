@@ -1293,6 +1293,7 @@ class TestDaemonCommands:
         # ~/.agent-queue PID file: that one may be the operator's -- nor write
         # the stop marker the operator's auto-restart service reads.
         monkeypatch.setattr("src.cli.daemon.CONFIG_DIR", str(tmp_path))
+        monkeypatch.setattr("src.cli.daemon.LOCK_DIR", str(tmp_path / "daemon.lock"))
         monkeypatch.delenv("AQ_SESSION_ID", raising=False)
         monkeypatch.delenv("AQ_SESSION_KIND", raising=False)
         monkeypatch.delenv("AQ_DB_SCOPE", raising=False)

@@ -62,10 +62,12 @@ from src.daemon_state import (
     STOP_INTENT_FILENAME,
     STOPPED_EXIT_CODE,
     StopIntent,
+    boot_identity,
     database_reachable,
     find_daemon_pid,
     read_stop_intent,
     release_start_lock,
+    start_lock_owner,
     start_lock_state,
 )
 
@@ -165,6 +167,8 @@ class WatchdogState:
     last_start: dict[str, Any] | None = None
     #: Who last checked: ``loop`` (``aq service run``) or ``check`` (cron).
     mode: str = ""
+    #: The boot the last check ran in (Linux ``boot_id``; ``""`` elsewhere).
+    boot_id: str = ""
     interval: float = DEFAULT_INTERVAL
     pid: int | None = None
 
@@ -488,6 +492,7 @@ def tick(
         state.mode = mode
         state.interval = interval
         state.pid = os.getpid()
+        state.boot_id = boot_identity()
         if verdict.value != previous.verdict or reset:
             append_log(home, f"{verdict.value}: {detail}", now=observation.now)
 
@@ -576,6 +581,17 @@ def _tail(text: str, lines: int) -> str:
 EXIT_RELOAD = 75
 
 
+def rebooted_since_last_check(home: Path) -> bool:
+    """Whether the machine booted since the last recorded check (Linux only).
+
+    Where the kernel gives no boot id, a reboot shows up as the long gap
+    between checks that :func:`decide` already treats as a fresh start.
+    """
+    current = boot_identity()
+    previous = load_state(home).boot_id
+    return bool(current and previous and current != previous)
+
+
 def files_fingerprint(paths: tuple[Path, ...]) -> tuple[float, ...]:
     """Modification times of *paths* (``0.0`` for a missing one)."""
     stamps: list[float] = []
@@ -607,11 +623,12 @@ def run_loop(
     append_log(
         home, f"watchdog started (PID {os.getpid()}, checking every {interval:g}s)", now=now()
     )
-    first = True
+    # The loop's first check after a reboot is a boot check: no stale give-up
+    # carries over.  A restart of the loop itself (new code, a crash) is not --
+    # otherwise every reload would hand a crash-looping daemon fresh starts.
+    first = rebooted_since_last_check(home)
     while True:
         try:
-            # The loop's first check is a fresh start (boot, or the service
-            # manager restarting the watchdog): no stale give-up carries over.
             tick(host, now=now, mode="loop", interval=interval, boot=first)
         except Exception as error:  # noqa: BLE001 - the loop outlives one bad check
             append_log(home, f"check failed: {error!r}", now=now())
@@ -711,13 +728,15 @@ class LocalHost:
     def busy(self) -> str | None:
         home = Path(self.home)
         start_lock = home / START_LOCK_NAME
+        owner = start_lock_owner(str(start_lock))
         state = start_lock_state(str(start_lock), now=self.clock())
         if state == LOCK_HELD:
             # Held by a live `aq start`, however long its backup takes.
             return f"an `aq start` is in progress ({start_lock})"
         if state == LOCK_ABANDONED:
-            # Its owner died (a killed start); the next `aq start` needs it gone.
-            release_start_lock(str(start_lock))
+            # Its owner is gone (a killed start, or one cut off by a reboot);
+            # removed only if no new start has taken it since we looked.
+            release_start_lock(str(start_lock), owner=owner)
         update_lock = home / UPDATE_LOCK_NAME
         age = _age(update_lock, self.clock())
         if age is not None and age < UPDATE_LOCK_STALE_AFTER:
@@ -876,6 +895,7 @@ __all__ = [
     "main",
     "observe",
     "read_install_record",
+    "rebooted_since_last_check",
     "record_start",
     "resolve_aq",
     "run_loop",
