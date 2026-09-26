@@ -197,3 +197,12 @@ def test_generic_and_typed_routes_preserve_error_details_and_status_contracts(su
     assert body["ok"] is False
     assert "not available over the API" in body["error"]
     assert records == []
+
+
+async def test_supervisor_intake_cannot_be_called_through_generic_http(surfaces):
+    client, records = surfaces
+    response = client.post(
+        "/api/execute", json={"command": "supervisor_inbox_post", "args": {"provenance": "test"}}
+    )
+    assert response.status_code == 403
+    assert records == []

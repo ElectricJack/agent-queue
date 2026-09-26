@@ -935,7 +935,7 @@
       ]
     },
     "supervisor": {
-      "description": "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config and the blocked-task escalation playbook.",
+      "description": "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config, verified supervisor inbox intake and the blocked-task escalation playbook.",
       "modules": [
         "tests/test_blocked_task_escalation.py",
         "tests/test_config_supervisor.py",
@@ -944,6 +944,7 @@
         "tests/test_supervisor_global_lifecycle.py",
         "tests/test_supervisor_global_scope.py",
         "tests/test_supervisor_global_token_loopback.py",
+        "tests/test_supervisor_inbox_commands.py",
         "tests/test_supervisor_recovery.py",
         "tests/test_supervisor_recovery_api.py"
       ]
@@ -1207,7 +1208,7 @@
       ]
     }
   },
-  "digest": "sha256:94146931305ebd9dfec3053551736e0943451e58eca73b77ece2c0943fca3528",
+  "digest": "sha256:19f83991b04e039f7f3fc4d1c5a5c8e2e8f73f2b407773a86c214cdd82f20842",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11179,6 +11180,25 @@
         "asyncio"
       ],
       "summary": "Loopback restriction on global-admin bearer tokens."
+    },
+    "tests/test_supervisor_inbox_commands.py": {
+      "areas": [
+        "supervisor"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.conversations.outbox",
+        "src.database",
+        "src.database.tables",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Verified internal intake, durable quotas and replay-safe conversation notifications."
     },
     "tests/test_supervisor_recovery.py": {
       "areas": [

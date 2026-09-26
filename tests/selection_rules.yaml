@@ -134,7 +134,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/assignment_routing.py", "src/explain.py"], areas: ["task-routing", "work-graph"] }
   - { paths: ["src/claim_file.py", "src/pool_claims.py"], areas: ["claims", "worker-pools"] }
   - { paths: ["src/config_editor.py", "src/config_secrets.py", "src/config_tuning.py", "src/portable_config.py"], areas: ["config"] }
-  - { paths: ["src/conversations/**"], areas: ["discord-conversations"] }
+  - { paths: ["src/conversations/**"], areas: ["discord-conversations", "supervisor"] }
   - { paths: ["src/deliverables.py", "src/state_machine.py", "src/task_summary.py", "src/task_names.py"], areas: ["task-lifecycle"] }
   - { paths: ["src/docs_urls.py"], areas: ["docs-guards", "playbook-authoring"] }
   - { paths: ["src/embedded_mcp.py", "src/mcp_interfaces.py", "src/mcp_registration.py", "src/known_tools.py"], areas: ["tools-mcp"] }
@@ -203,6 +203,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/commands/contracts/**", "src/commands/authorization.py", "src/commands/principal.py", "src/commands/supervisor_authority.py"], areas: ["capabilities", "playbook-authoring", "docs-guards"] }
   - { paths: ["src/commands/agent_commands.py", "src/commands/flock_commands.py"], areas: ["agent-roster"] }
   - { paths: ["src/commands/ci_commands.py"], areas: ["ci-sentinel"] }
+  - { paths: ["src/commands/conversation_commands.py"], areas: ["supervisor", "discord-conversations"] }
   - { paths: ["src/commands/claim_commands.py"], areas: ["claims", "worker-pools"] }
   - { paths: ["src/commands/dashboard_state_commands.py"], areas: ["dashboard-state"] }
   - { paths: ["src/commands/digest_commands.py"], areas: ["digest"] }
@@ -250,7 +251,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/database/queries/blocked_state.py", "src/database/queries/gate_queries.py", "src/database/queries/event_queries.py"], areas: ["work-graph"] }
   - { paths: ["src/database/queries/chat_queries.py"], areas: ["metrics"] }
   - { paths: ["src/database/queries/claim_queries.py"], areas: ["claims", "worker-pools"] }
-  - { paths: ["src/database/queries/conversation_queries.py"], areas: ["discord-conversations"] }
+  - { paths: ["src/database/queries/conversation_queries.py"], areas: ["discord-conversations", "supervisor"] }
   - { paths: ["src/database/queries/dashboard_state_queries.py", "src/database/queries/layout_queries.py"], areas: ["dashboard-state", "graph-layout"] }
   - { paths: ["src/database/queries/dependency_queries.py"], areas: ["task-dependencies"] }
   - { paths: ["src/database/queries/digest_queries.py"], areas: ["digest"] }

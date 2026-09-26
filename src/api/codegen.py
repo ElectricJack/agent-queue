@@ -63,6 +63,8 @@ API_EXCLUDED = {
     # ``POST /api/sessions/{name}/message`` (src/api/messages.py); the
     # codegen route would duplicate it and confuse the dashboard chat page.
     "message_send",
+    # Gateway-authenticated conversation provenance is never an HTTP body.
+    "supervisor_inbox_post",
     # Daemon-internal compatibility hook for the retired blocked-task
     # subscriber. ``task_failure_triage_notify`` is the reviewed successor.
     "task_recovery_notify",
