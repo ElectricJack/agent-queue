@@ -2578,6 +2578,31 @@ class TestIdlePoolWorkerOnUsageLimitScreen:
         assert pool_reconciler.test_orch.terminations == [(row.id, "usage_limit_screen")]
 
 
+def _installed_wait_orchestrator(db, config, registry, tmp_path, monkeypatch):
+    """Real daemon wiring without starting services or touching the operator's state."""
+    from src.commands import CommandHandler
+    from src.commands.contracts import builtin
+    from src.orchestrator import Orchestrator
+
+    config.data_dir = str(tmp_path / "state")
+    config.workspace_dir = str(tmp_path / "workspaces")
+    monkeypatch.setattr("src.orchestrator.core.create_database", lambda _: db)
+    # set_command_handler also installs a process-global contract provider.
+    monkeypatch.setattr(builtin, "_handler_provider", builtin._handler_provider)
+    orch = Orchestrator(config)
+    orch.session_providers = registry
+    orch.session_reconciler.providers = registry
+    orch.set_command_handler(CommandHandler(orch, config))
+    return orch
+
+
+@pytest.fixture
+def installed_wait_reconciler(db, config, registry, tmp_path, monkeypatch):
+    return _installed_wait_orchestrator(
+        db, config, registry, tmp_path, monkeypatch
+    ).session_reconciler
+
+
 async def _waiting_session(db, provider, rec, config, tmp_path, lifecycle="task", timeout=7200):
     """Real wait commands, claim and workspace, with only the terminal faked."""
     from types import SimpleNamespace
@@ -2603,7 +2628,10 @@ async def _waiting_session(db, provider, rec, config, tmp_path, lifecycle="task"
         orch.bus = SimpleNamespace(emit=AsyncMock())
     # The attribute the real Orchestrator stores (``set_command_handler``);
     # a fake spelling here once hid a reconciler that never ran in the daemon.
-    orch._command_handler = CommandHandler(orch, config)
+    if hasattr(orch, "set_command_handler"):
+        orch.set_command_handler(CommandHandler(orch, config))
+    else:
+        orch._command_handler = CommandHandler(orch, config)
     await db.create_task(Task(id="producer", project_id="p1", title="Producer", description=""))
     wait = await db.register_agent_wait(
         identity=dict(session_id=row.id, instance_token=row.instance_token, project_id="p1",
@@ -2638,12 +2666,15 @@ async def test_long_wait_preserves_claim_workspace_and_silent_activity(
 @pytest.mark.parametrize("resolution", ["completed", "expired", "missing", "cancelled"])
 @pytest.mark.parametrize("lifecycle", ["task", "pool"])
 async def test_wait_wake_gets_fresh_lease_and_resets_stall_ladder(
-    db, provider, pool_reconciler, config, tmp_path, resolution, lifecycle, monkeypatch
+    db, provider, installed_wait_reconciler, config, tmp_path, resolution, lifecycle,
+    monkeypatch, caplog,
 ):
-    from sqlalchemy import delete
-    from src.database.tables import tasks
+    from sqlalchemy import delete, insert
+    from src.agent_waits import AgentWaitReconciler
+    from src.database.tables import agent_waits, tasks
 
-    rec = pool_reconciler
+    rec = installed_wait_reconciler
+    config.swarm.enabled = lifecycle == "pool"
     config.agents_config.stuck_timeout_seconds = 30  # less than one lease
     row, wait = await _waiting_session(db, provider, rec, config, tmp_path, lifecycle)
     await db.set_task_meta("t1", META_STALL_NUDGES, "3")
@@ -2651,6 +2682,7 @@ async def test_wait_wake_gets_fresh_lease_and_resets_stall_ladder(
     resumed = NOW + 7200
     monkeypatch.setattr("src.sessions.reconciler.time.time", lambda: resumed)
     if resolution == "completed":
+        resumed = NOW + 3600  # complete while the wait's deadline is still in the future
         await db.transition_task("producer", TaskStatus.COMPLETED)
     elif resolution == "missing":
         async with db._engine.begin() as conn:
@@ -2658,20 +2690,51 @@ async def test_wait_wake_gets_fresh_lease_and_resets_stall_ladder(
         resumed = NOW + 3600
     elif resolution == "cancelled":
         await db.cancel_agent_wait(wait["id"], identity=None, now=resumed)
-    # Do not run the global scan: lease consumers must target this wait themselves.
+    if resolution in {"completed", "expired"}:
+        # Fill the earlier scan candidates: the owner's wait must be resolved
+        # by the session fallback even after a successful bounded global scan.
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(agent_waits), [
+                dict(
+                    id=f"ahead-{index}", project_id="p1", owner_kind="supervisor",
+                    owner_id="supervisor-p1", session_id="supervisor-session",
+                    session_instance_token="supervisor-token", claim_epoch=0,
+                    kind="timer", match={"due_at": NOW + 1}, state="active",
+                    created_at=NOW, deadline_at=NOW + 1, idempotency_key=f"ahead-{index}",
+                )
+                for index in range(100)
+            ])
+        scan = await AgentWaitReconciler(rec.orchestrator._command_handler).tick(now=resumed)
+        assert scan["success"]
+        assert scan["scanned"] == scan["resolved"] == 100
+        assert (await db.get_agent_wait(wait["id"]))["state"] == "active"
+    # Drive the session pass directly; no second global scan can mask the fallback.
     await rec.tick(now=resumed)
     result = await db.get_agent_wait(wait["id"])
-    assert result["state"] != "active"
+    assert result["state"] == {
+        "completed": "satisfied", "expired": "expired", "missing": "satisfied",
+        "cancelled": "cancelled",
+    }[resolution]
     assert result["wait_resumed_at"] == resumed
+    message = await db.get_message(result["result_message_id"])
+    assert message.body_kind == "wait_result"
+    assert message.to_id == "t1"
     assert (await db.get_session(row.id)).state == "running"
     assert await db.get_task_meta("t1", META_STALL_NUDGES) == "0"
     assert await db.get_task_meta("t1", META_STALL_LAST_ACTION) == str(resumed)
     await rec.tick(now=resumed + config.sessions.lease_ttl_seconds)
-    assert (await db.get_session(row.id)).state == "running"
+    current = await db.get_session(row.id)
+    assert current.state == "running"
+    assert current.last_activity == NOW - 10000
+    assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+    assert (await db.get_agent("a1")).state == AgentState.BUSY
+    assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+    assert (await db.get_agent_wait(wait["id"]))["result_message_id"] == message.id
     assert provider.sent_nudges == []
     # Grace is bounded: a session that ignores the result is enforced normally.
     await rec.tick(now=resumed + config.sessions.lease_ttl_seconds + 1)
     assert (await db.get_session(row.id)).state == "stopped"
+    assert "Session reconciler step" not in caplog.text
 
 
 async def test_unrelated_wait_and_stale_epoch_cannot_exempt_a_stall(
@@ -2739,7 +2802,7 @@ async def test_restart_reconstructs_wait_exemption_without_heartbeat(
 
 
 @pytest.mark.tmux
-async def test_opt_in_real_harness_wait_idle(db, config, tmp_path):
+async def test_opt_in_real_harness_wait_idle(db, config, tmp_path, monkeypatch):
     """AQ_WAIT_REAL_HARNESS=codex|claude enables a paid, isolated live-idle probe.
 
     Observe actual transcripts across more than one shortened lease interval:
@@ -2751,9 +2814,7 @@ async def test_opt_in_real_harness_wait_idle(db, config, tmp_path):
     import time
     import uuid
     from types import SimpleNamespace
-    from unittest.mock import AsyncMock
     from pathlib import Path
-    from src.commands import CommandHandler
     from src.sessions.harness_parser import parse_harness_markdown
     from src.sessions.tmux import TmuxProvider
     from src.sessions.transcripts import resolve_reader
@@ -2822,10 +2883,9 @@ async def test_opt_in_real_harness_wait_idle(db, config, tmp_path):
             state="running", agent_id="a1", last_activity=launch,
         )
         await db.create_session(row)
-        orch = SimpleNamespace(db=db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
-        orch._command_handler = CommandHandler(orch, config)
         registry = SimpleNamespace(create=lambda *_: provider)
-        rec = SessionReconciler(db, config, registry, orchestrator=orch)
+        orch = _installed_wait_orchestrator(db, config, registry, tmp_path, monkeypatch)
+        rec = orch.session_reconciler
         now = time.time()
         wait = await db.register_agent_wait(
             identity=dict(session_id=row.id, instance_token=token, project_id="p1",
