@@ -1,7 +1,8 @@
 // Layout-check stub: the built bundle plus a fake daemon on 127.0.0.1:<ephemeral>.
 // Static rules mirror src/dashboard_server/bundle.py _resolve: a listed file,
-// else index.html for a suffix-less path, else 404. Never bind a fixed port —
-// 5173 is the operator's dashboard on this box and 8081/8082 are daemon ports.
+// else index.html unless the suffix is a static-asset suffix, else 404. Never
+// bind a fixed port — 5173 is the operator's dashboard on this box and
+// 8081/8082 are daemon ports.
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
@@ -45,12 +46,17 @@ async function isFile(path) {
   try { return (await stat(path)).isFile(); } catch { return false; }
 }
 
+// Mirrors STATIC_SUFFIXES in src/dashboard_server/bundle.py.
+const STATIC_SUFFIXES = new Set([".html", ".htm", ".js", ".mjs", ".cjs", ".css", ".map", ".json", ".txt", ".xml",
+  ".svg", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".bmp",
+  ".woff", ".woff2", ".ttf", ".otf", ".eot", ".wasm", ".webmanifest", ".pdf", ".zip"]);
+
 export function staticTarget(root, pathname, exists) {
   const relative = decodeURIComponent(pathname).replace(/^\/+/, "");
   const file = resolve(root, relative);
   if (file !== root && !file.startsWith(root + sep)) return null;
   if (relative && exists) return file;
-  return extname(relative) ? null : join(root, "index.html");
+  return STATIC_SUFFIXES.has(extname(relative).toLowerCase()) ? null : join(root, "index.html");
 }
 
 export async function startStubServer({ distDir, fixtures }) {
