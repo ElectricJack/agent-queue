@@ -1438,6 +1438,61 @@ async def _find_stuck_children(ctx: DoctorContext) -> list[dict]:
     return findings
 
 
+async def _check_blocked_collectors(ctx: DoctorContext) -> CheckResult:
+    """Expose parents that the PAUSED-only collection scan cannot see."""
+    from sqlalchemy import and_, select
+
+    from src.database.tables import (
+        integration_repair_operations,
+        projects,
+        task_integration_checkpoints,
+        tasks,
+    )
+
+    check_id = "integration.blocked_collectors"
+    if ctx.db is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="database not initialised — parent collection state unknown",
+        )
+    checkpoint = task_integration_checkpoints
+    operation = integration_repair_operations
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(
+            select(
+                tasks.c.id.label("task_id"), tasks.c.project_id,
+                checkpoint.c.episode_id, checkpoint.c.generation,
+                operation.c.id.label("operation_id"),
+                operation.c.state.label("operation_state"),
+            )
+            .join(checkpoint, checkpoint.c.task_id == tasks.c.id)
+            .join(projects, projects.c.id == tasks.c.project_id)
+            .outerjoin(operation, and_(
+                operation.c.parent_task_id == tasks.c.id,
+                operation.c.episode_id == checkpoint.c.episode_id,
+            ))
+            .where(
+                tasks.c.status == TaskStatus.BLOCKED.value,
+                checkpoint.c.state == "awaiting_children",
+                projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            )
+            .order_by(tasks.c.id)
+        )).mappings().all()
+    findings = [dict(row) for row in rows]
+    return CheckResult(
+        id=check_id,
+        severity=Severity.WARN if findings else Severity.OK,
+        detail=(
+            f"{len(findings)} BLOCKED parent(s) still await children; collection only scans "
+            "PAUSED parents. Inspect the episode, operation and transition context before "
+            "recovery; human_required repair operations need explicit integration resume"
+            if findings else "no BLOCKED parent is stranded awaiting children"
+        ),
+        data={"count": len(findings), "parents": findings},
+    )
+
+
 async def _check_stuck_children(ctx: DoctorContext) -> CheckResult:
     if ctx.db is None:
         return CheckResult(
@@ -1750,6 +1805,11 @@ def integration_checks() -> list[DoctorCheck]:
         DoctorCheck(
             id="integration.stuck_children",
             run=_check_stuck_children,
+            owner=OWNER,
+        ),
+        DoctorCheck(
+            id="integration.blocked_collectors",
+            run=_check_blocked_collectors,
             owner=OWNER,
         ),
         # Fixable, unlike ``integration.stranded_fences``, because it only

@@ -918,6 +918,25 @@ class TaskQueryMixin:
                 TaskStatus.IN_PROGRESS if await self.is_container(task_id, conn=conn)
                 else TaskStatus.READY
             )
+        # Removing an operator hold does not authorize aggregate verification.
+        # A managed container stays with its collector; IN_PROGRESS here used
+        # to bypass the READY-only wake guard and orphan recovery subsequently
+        # blocked it against the previous worker's stopped session.
+        managed_episode = await conn.scalar(
+            select(task_integration_checkpoints.c.task_id)
+            .join(tasks, tasks.c.id == task_integration_checkpoints.c.task_id)
+            .join(projects, projects.c.id == tasks.c.project_id)
+            .where(
+                tasks.c.id == task_id,
+                task_integration_checkpoints.c.episode_id.is_not(None),
+                task_integration_checkpoints.c.state == "awaiting_children",
+                projects.c.hierarchical_integration_mode.in_(("hierarchy", "train")),
+            )
+        )
+        if managed_episode is not None and prior in {
+            TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
+        }:
+            prior = TaskStatus.PAUSED
         await conn.execute(delete(task_metadata).where(
             task_metadata.c.task_id == task_id,
             task_metadata.c.key == "manual_pause_withholds_children",
@@ -1252,7 +1271,9 @@ class TaskQueryMixin:
                     ):
                         result.ready.append((tid, "unblocked"))
         else:
-            if current_status == TaskStatus.PAUSED and new_status == TaskStatus.READY:
+            if current_status == TaskStatus.PAUSED and new_status in {
+                TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS,
+            }:
                 managed_parent = (
                     await conn.execute(
                         select(task_integration_checkpoints.c.task_id).where(

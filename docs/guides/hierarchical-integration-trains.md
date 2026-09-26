@@ -38,6 +38,15 @@ Always take `GENERATION` and, for a history waiver, `BLOCKER_DIGEST` from a
 fresh `aq integration status` result. A stale result is returned as stale; the
 CLI never rereads and retries a mutation against a newer generation.
 
+`aq doctor --check integration.blocked_collectors` reports managed parents that
+are `BLOCKED` while their checkpoints still await children. For a displaced root
+whose active episode still owns a reserved collector fence, run
+`aq integration redrive-root <parent>`; a `would_collect` dry run can be applied
+with `--apply --head <reported-checkpoint-sha> --reason ...` to restore `PAUSED`
+collection. This resumes delivery through the existing collector. It leaves manual
+holds, live writers and terminal failures guarded. An operation in `human_required`
+requires its existing `aq integration resume <operation-id>` recovery instead.
+
 ## 1. Upgrade the existing backend
 
 From the installed checkout, inspect the configured database without changing

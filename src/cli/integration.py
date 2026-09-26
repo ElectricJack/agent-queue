@@ -441,7 +441,9 @@ def integration_redrive_root(
     and whether that head is already on the default branch, and answers
     `would_open`, `nothing_to_redrive`, `blocked` or `not_eligible` with the
     reason and the head.  `--apply` needs that head and a reason, and opens
-    the PR only for it.
+    the PR only for it. A wrongly BLOCKED collecting root instead reports
+    `would_collect`; applying restores PAUSED under its existing collector
+    fence and episode. Operator holds and terminal repair failures stay guarded.
     """
     if apply and not (expected_head_sha and reason):
         raise click.UsageError("--apply requires --head and --reason")

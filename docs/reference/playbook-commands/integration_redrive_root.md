@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:d7200b21a059b31675ed241994584514d32df60af78257eae798778accc35259` |
+| Contract fingerprint | `sha256:53b6a4faf937f248eb3217c8ff3c53cc8801e54a31ac23a23e776e42c20fcf2b` |
 
 ## Parameters
 
@@ -52,11 +52,13 @@ Projected into the run receipt: `task_id`, `project_id`, `kind`, `branch`, `head
 |---|---|---|
 | `blocked` | failure | — |
 | `changed` | failure | — |
+| `collecting` | success | — |
 | `invalid` | failure | — |
 | `not_eligible` | failure | — |
 | `not_found` | failure | — |
 | `nothing_to_redrive` | success | — |
 | `opened` | success | — |
+| `would_collect` | success | — |
 | `would_open` | success | — |
 
 ## Declared effects
@@ -73,6 +75,13 @@ Explain why a COMPLETED train root has no pull request, and open it for
 exactly the head a dry run reported. The train seats a root only once it has
 a PR and an approved review of its exact head (`eligible_root_page_on`), so
 a root without one never delivers.
+
+For a wrongly BLOCKED managed root still awaiting children, the same control
+reports `would_collect` and restores PAUSED collection with `--apply`. This
+requires the reported checkpoint head, an audit reason, the matching active
+episode and a reserved collector fence. It refuses manual holds, live task
+holders, terminal failures and human-required repair operations. Normal
+collection then delivers children and schedules guarded aggregate verification.
 
 ## When a playbook uses it
 
@@ -101,6 +110,10 @@ A dry run writes nothing and makes only GitHub reads. Applying creates the
 GitHub pull request, stores it on `tasks.pr_url`, and logs one
 `integration.root_redriven` event carrying the operator, reason, head and
 outcome.
+
+Collection recovery preserves the branch, checkpoint, episode and generation,
+and logs `integration.collection_redriven` in the recovery transaction. Its dry
+run reads database state only.
 
 ## Failure modes and diagnostics
 

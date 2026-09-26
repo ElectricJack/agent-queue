@@ -984,6 +984,8 @@ INTEGRATION_CLEAR_STALE_REQUEST = _operational_contract(
 REDRIVE_ROOT_OUTCOMES = (
     "would_open",
     "opened",
+    "would_collect",
+    "collecting",
     "nothing_to_redrive",
     "blocked",
     "changed",
@@ -996,7 +998,7 @@ INTEGRATION_REDRIVE_ROOT = _operational_contract(
     "integration_redrive_root",
     IntegrationRedriveRootArgs,
     REDRIVE_ROOT_OUTCOMES,
-    successes=frozenset({"would_open", "opened", "nothing_to_redrive"}),
+    successes=frozenset({"would_open", "opened", "would_collect", "collecting", "nothing_to_redrive"}),
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationRedriveRootValue,
 )

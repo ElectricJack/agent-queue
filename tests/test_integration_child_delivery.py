@@ -281,6 +281,10 @@ async def _sibling_admitted(db) -> bool:
 
 async def test_unreviewed_completed_child_is_receipted_after_one_collector_tick(case):
     """vivid-ridge: the child is assembled and its sibling enters the frontier."""
+    await _receipt_completed_child(case)
+
+
+async def _receipt_completed_child(case):
     assert await _evidence(case.db) == []
     assert not await _sibling_admitted(case.db)
 
@@ -612,3 +616,195 @@ async def test_doctor_ignores_fresh_and_delivered_children(case):
         )
     delivered = await run_check(case.db, "integration.stuck_children")
     assert delivered.severity.value == "ok"
+
+
+async def test_removing_manual_hold_preserves_collecting_parent(case):
+    """Resume removes the hold; it cannot start an unverified parent worker."""
+    before = await case.db.get_integration_checkpoint("epic")
+    snapshot = await case.db.pause_task("epic")
+    await case.db.finish_task_pause("epic", snapshot)
+
+    resumed = await case.db.resume_task("epic")
+
+    assert resumed.status == TaskStatus.PAUSED
+    assert resumed.resume_after is None
+    assert await case.db.get_task_meta("epic", "manual_pause") is None
+    assert await case.db.get_integration_checkpoint("epic") == before
+    assert await case.db.recover_orphaned_pause("epic") is None
+    await _collector(case).tick(10.0)
+    assert len(await _delivery_ready(case.db)) == 1
+
+
+@pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS])
+async def test_collecting_parent_requires_verifier_for_every_worker_wake(case, status):
+    from src.database.queries.hierarchy_queries import HierarchyError
+
+    with pytest.raises(HierarchyError, match="guarded verifier wake"):
+        await case.db.transition_task(
+            "epic", status, context="manual_resume", force=True, _manual_pause_control=True,
+        )
+    assert (await case.db.get_task("epic")).status == TaskStatus.PAUSED
+
+
+async def _block_collector(case):
+    # Reproduce the old resume path, then the stopped-session orphan verdict.
+    async with case.db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "epic").values(status="IN_PROGRESS"))
+    await case.db.transition_task("epic", TaskStatus.BLOCKED, context="session_not_live")
+    await case.db.set_task_meta("epic", "needs_attention", "session_not_live")
+
+
+async def test_redrive_root_restores_blocked_collection_and_receipts_the_child(case):
+    from src.integration.root_pull_requests import RootDeliveryRedrive
+
+    await _block_collector(case)
+    redrive = RootDeliveryRedrive(case.db, case.promotion.git)
+    diagnosis = await redrive.run("epic")
+    assert diagnosis["outcome"] == "would_collect"
+    assert diagnosis["head_sha"] == case.base
+    assert (await case.db.get_task("epic")).status == TaskStatus.BLOCKED
+    assert await _delivery_ready(case.db) == []
+
+    restored = await redrive.run(
+        "epic", dry_run=False, expected_head_sha=diagnosis["head_sha"],
+        reason="restore displaced collector", operator_id="supervisor:p",
+    )
+    assert restored["outcome"] == "collecting"
+    assert (await case.db.get_task("epic")).status == TaskStatus.PAUSED
+    assert await case.db.get_task_meta("epic", "needs_attention") is None
+    async with case.db._engine.connect() as conn:
+        audit = (await conn.execute(select(events).where(
+            events.c.event_type == "integration.collection_redriven",
+        ))).mappings().one()
+    assert json.loads(audit["payload"])["reason"] == "restore displaced collector"
+    # Exercise the real Git promotion and prove that the dependent re-enters
+    # the claim frontier, not merely that a status column changed.
+    await _receipt_completed_child(case)
+
+
+async def test_redrive_collection_refuses_a_different_head(case):
+    from src.integration.collecting_parent_recovery import CollectingParentRecovery
+
+    await _block_collector(case)
+    result = await CollectingParentRecovery(case.db).run(
+        "epic", dry_run=False, expected_head_sha="f" * 40, reason="wrong head",
+    )
+    assert result["outcome"] == "changed"
+    assert (await case.db.get_task("epic")).status == TaskStatus.BLOCKED
+
+
+@pytest.mark.parametrize("blocker", ["manual_pause", "terminal", "human_required", "owner", "episode"])
+async def test_redrive_collection_does_not_override_real_blockers(case, blocker):
+    from src.database.tables import integration_branch_owners, integration_repair_operations
+    from src.integration.collecting_parent_recovery import CollectingParentRecovery
+
+    await _block_collector(case)
+    if blocker == "manual_pause":
+        await case.db.set_task_meta("epic", "manual_pause", {"status": "BLOCKED"})
+    elif blocker == "terminal":
+        await case.db.set_task_meta("epic", "blocked_terminal", "integration_repair_exhausted")
+    else:
+        async with case.db.immediate() as conn:
+            if blocker == "human_required":
+                await conn.execute(update(integration_repair_operations).values(state="human_required"))
+            elif blocker == "owner":
+                await conn.execute(update(integration_branch_owners).values(owner_role="repair"))
+            else:
+                await conn.execute(update(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == "epic",
+                ).values(episode_id=None))
+    result = await CollectingParentRecovery(case.db).run(
+        "epic", dry_run=False, expected_head_sha=case.base, reason="must refuse",
+    )
+    assert result["outcome"] == "blocked"
+    assert (await case.db.get_task("epic")).status == TaskStatus.BLOCKED
+
+
+async def test_doctor_reports_collectors_hidden_by_blocked_status(case):
+    await _block_collector(case)
+    result = await run_check(case.db, "integration.blocked_collectors")
+    assert result.severity.value == "warn"
+    [parent] = result.data["parents"]
+    assert parent["task_id"] == "epic"
+    assert parent["operation_state"] == "active"
+    assert parent["episode_id"] is not None
+
+    # Even a missing episode must be visible; the child alarm only scans
+    # parents with live operations and would otherwise report a clean bill.
+    async with case.db.immediate() as conn:
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "epic",
+        ).values(episode_id=None))
+    missing = await run_check(case.db, "integration.blocked_collectors")
+    assert missing.data["parents"][0]["operation_id"] is None
+    assert missing.severity.value == "warn"
+
+
+async def test_resume_collecting_parent_survives_stopped_session_orphan_sweep(case):
+    from src.config import AppConfig
+    from src.models import SessionRecord
+    from src.sessions.reconciler import SessionReconciler
+
+    await case.db.create_session(SessionRecord(
+        id="old-parent-writer", project_id="p", profile_id="worker", harness="codex",
+        provider="fake", name="old-parent-writer", lifecycle="task", work_dir=str(case.work),
+        epoch="old-daemon", instance_token="old-writer", started_at=1.0, task_id="epic",
+        state="stopped", desired_state="stopped", ended_at=2.0,
+    ))
+    snapshot = await case.db.pause_task("epic")
+    await case.db.finish_task_pause("epic", snapshot)
+    await case.db.resume_task("epic")
+    # This is the restart path that used to turn IN_PROGRESS into BLOCKED.
+    await SessionReconciler(case.db, AppConfig(), providers=None)._step_orphans([], 10.0)
+    assert (await case.db.get_task("epic")).status == TaskStatus.PAUSED
+    assert await case.db.get_task_meta("epic", "needs_attention") is None
+    await _collector(case).tick(10.0)
+    assert len(await _delivery_ready(case.db)) == 1
+
+
+async def test_removing_hold_does_not_restore_a_blocked_parent_to_collection(case):
+    await _block_collector(case)
+    snapshot = await case.db.pause_task("epic")
+    await case.db.finish_task_pause("epic", snapshot)
+    resumed = await case.db.resume_task("epic")
+    assert resumed.status == TaskStatus.BLOCKED
+
+
+async def test_collection_redrive_rechecks_a_later_hold_before_mutating(case, monkeypatch):
+    from src.integration.collecting_parent_recovery import CollectingParentRecovery
+
+    await _block_collector(case)
+    recovery = CollectingParentRecovery(case.db)
+    diagnose = recovery.diagnose
+
+    async def hold_after_diagnosis(task_id):
+        result = await diagnose(task_id)
+        await case.db.set_task_meta(task_id, "manual_pause", {"status": "BLOCKED"})
+        return result
+
+    monkeypatch.setattr(recovery, "diagnose", hold_after_diagnosis)
+    result = await recovery.run(
+        "epic", dry_run=False, expected_head_sha=case.base, reason="race a hold",
+    )
+    assert result["outcome"] == "changed"
+    assert (await case.db.get_task("epic")).status == TaskStatus.BLOCKED
+    assert await case.db.get_task_meta("epic", "manual_pause") == {"status": "BLOCKED"}
+
+
+async def test_collection_redrive_refuses_a_live_parent_session(case):
+    from src.integration.collecting_parent_recovery import CollectingParentRecovery
+    from src.models import SessionRecord
+
+    await _block_collector(case)
+    await case.db.create_session(SessionRecord(
+        id="live-parent", project_id="p", profile_id="worker", harness="codex",
+        provider="fake", name="live-parent", lifecycle="pool", work_dir=str(case.work),
+        epoch="daemon", instance_token="live-writer", started_at=1.0, task_id="epic",
+        state="running",
+    ))
+    result = await CollectingParentRecovery(case.db).run(
+        "epic", dry_run=False, expected_head_sha=case.base, reason="must refuse live writer",
+    )
+    assert result["outcome"] == "blocked"
+    assert "session or workspace" in result["reason"]
+    assert (await case.db.get_task("epic")).status == TaskStatus.BLOCKED

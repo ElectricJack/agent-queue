@@ -688,7 +688,9 @@ class IntegrationCommandsMixin:
             operator_id=principal,
         )
         return {
-            "success": result["outcome"] in {"would_open", "opened", "nothing_to_redrive"},
+            "success": result["outcome"] in {
+                "would_open", "opened", "would_collect", "collecting", "nothing_to_redrive",
+            },
             "dry_run": request.dry_run,
             **result,
         }
