@@ -317,8 +317,7 @@ class LayoutDriver:
         self.tidy_job_seconds = tidy_job_seconds
 
     async def _blocked_ids(self, project_id: str) -> set[str]:
-        tasks = await self.db.list_tasks(project_id=project_id)
-        return {t.id for t in tasks if getattr(t, "is_blocked", False)}
+        return await self.db.load_layout_blocked_ids(project_id)
 
     async def full_layout(
         self,

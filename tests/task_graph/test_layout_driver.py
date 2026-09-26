@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, update
 
 from src.database import Database
 from src.models import Project, Task, TaskStatus
@@ -33,6 +33,31 @@ async def seed_epic(db, epic="e", n=3, completed=0):
     for cid in kids[:completed]:
         await db.transition_task(cid, TaskStatus.COMPLETED, force=True)
     return kids
+
+
+async def test_layout_blocked_counts_do_not_materialize_task_rows(db, monkeypatch):
+    from src.database.tables import tasks
+
+    kids = await seed_epic(db, n=2)
+    await db.create_project(Project(id="p2", name="Other"))
+    await db.create_task(Task(id="other", project_id="p2", title="Other", description=""))
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).values(is_blocked=False))
+        await conn.execute(
+            update(tasks).where(tasks.c.id.in_([kids[0], "other"])).values(is_blocked=True)
+        )
+
+    def refuse_task_rows(*args, **kwargs):
+        raise AssertionError("layout must not hydrate full Task rows")
+
+    monkeypatch.setattr(db, "_row_to_task", refuse_task_rows)
+    driver = LayoutDriver(db)
+    assert await driver._blocked_ids("p1") == {kids[0]}
+    assert await driver._blocked_ids("p2") == {"other"}
+    assert await driver._blocked_ids("missing") == set()
+    await driver.full_layout("p1", "all")
+    rows = await db.load_layout_rows("p1", "all", ["e", *kids])
+    assert rows["e"].agg_blocked == 1
 
 
 async def test_full_layout_nests_children_inside_container(db):
