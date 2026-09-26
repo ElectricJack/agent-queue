@@ -936,8 +936,11 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
 
     The control-plane `default-pipeline.md` and `default-assignment-routing.md`,
     blocked-task escalation, provider failover, provider usage, and supervisor
-    failure triage ship installed by default. Retired playbooks must stay
-    absent so bootstrap cannot recreate a catalog entry that an operator deleted.
+    failure triage ship installed by default, as do the optional, disabled
+    `morning-report.md` and `supervisor-hourly-report.md` report sources
+    (docs/specs/config.md, docs/guides/supervisor-hourly-reports.md). Retired
+    playbooks must stay absent so bootstrap cannot recreate a catalog entry that
+    an operator deleted.
     """
     result = ensure_default_playbooks(str(tmp_path))
 
@@ -946,9 +949,11 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
         "blocked-task-escalation.md",
         "default-assignment-routing.md",
         "default-pipeline.md",
+        "morning-report.md",
         "provider-failover.md",
         "provider-usage-probe.md",
         "supervisor-failure-triage.md",
+        "supervisor-hourly-report.md",
     ]
 
     # All expected files must exist on disk
@@ -962,6 +967,33 @@ def test_ensure_default_playbooks_installs_all_defaults(tmp_path):
     # No extra files should be present (only .md files from the defaults dir)
     installed = sorted(f.name for f in playbooks_dir.iterdir() if f.suffix == ".md")
     assert installed == expected_files
+
+
+def test_ensure_default_playbooks_installs_report_playbooks_disabled(tmp_path):
+    """The report playbooks install as disabled sources and are never auto-activated.
+
+    Both are optional policies the operator imports and activates explicitly
+    (docs/specs/config.md, docs/guides/supervisor-hourly-reports.md), so the
+    shipped source says ``enabled: false`` and neither id is a required or
+    first-start default activation.
+    """
+    import yaml
+
+    from src.playbooks.required import (
+        DEFAULT_SYSTEM_PLAYBOOK_IDS,
+        REQUIRED_SYSTEM_PLAYBOOK_IDS,
+    )
+
+    ensure_default_playbooks(str(tmp_path))
+
+    playbooks_dir = tmp_path / "vault" / "system" / "playbooks"
+    for playbook_id in ("morning-report", "supervisor-hourly-report"):
+        content = (playbooks_dir / f"{playbook_id}.md").read_text(encoding="utf-8")
+        frontmatter = yaml.safe_load(content.split("---", 2)[1])
+        assert frontmatter["id"] == playbook_id
+        assert frontmatter["enabled"] is False, f"{playbook_id} must ship disabled"
+        assert playbook_id not in REQUIRED_SYSTEM_PLAYBOOK_IDS
+        assert playbook_id not in DEFAULT_SYSTEM_PLAYBOOK_IDS
 
 
 def test_ensure_default_playbooks_idempotent(tmp_path):
