@@ -16,6 +16,10 @@ from tests.pg_dsn import ensure_worker_postgres_dsn
 
 POSTGRES_DSN = ensure_worker_postgres_dsn()
 
+# The legacy import still ships, but creating and copying a source schema is
+# migration work, not part of the default developer/CI run.
+pytestmark = pytest.mark.migration
+
 
 def test_ordered_tables_covers_every_table() -> None:
     """Every schema table is imported or has a documented exclusion."""
@@ -96,16 +100,24 @@ async def _empty_pg_adapter():
 
 
 async def _seeded_source(tmp_path) -> str:
-    """A SQLite source at head with rows across the deferred-FK tables:
+    """A synthetic legacy SQLite source with rows across the deferred-FK tables:
     a self-FK parent pointer (tasks) and the agents⇄tasks circular FK."""
-    from sqlalchemy import text
+    from sqlalchemy import DefaultClause, MetaData, text
 
     from sqlalchemy.ext.asyncio import create_async_engine
+
+    # Source databases predate the PostgreSQL-only daemon. Clone the metadata
+    # before substituting the legacy timestamp default; never mutate the
+    # production tables just to make a SQLite source fixture compile.
+    legacy_metadata = MetaData()
+    for table in metadata.tables.values():
+        table.to_metadata(legacy_metadata)
+    legacy_metadata.tables["task_context"].c.created_at.server_default = DefaultClause("0")
 
     path = str(tmp_path / "source.db")
     source = create_async_engine(f"sqlite+aiosqlite:///{path}")
     async with source.begin() as conn:
-        await conn.run_sync(metadata.create_all)
+        await conn.run_sync(legacy_metadata.create_all)
         await conn.execute(text("INSERT INTO projects (id, name, created_at) VALUES ('x','x',0)"))
         await conn.execute(
             text("INSERT INTO agent_profiles (id, name, created_at, updated_at) "
