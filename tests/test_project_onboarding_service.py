@@ -24,7 +24,11 @@ from src.git.manager import GitError, GitManager
 from src.models import Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
 from src.projects.github import GhClient
-from src.git.github_contracts import GitHubCredentialIdentity, GitHubRepositoryBinding
+from src.git.github_contracts import (
+    GitHubCredentialIdentity,
+    GitHubCredentialMode,
+    GitHubRepositoryBinding,
+)
 from src.projects.github import parse_github_repository
 from src.projects.onboarding import ProjectOnboardingService
 from tests.pg_dsn import ensure_worker_postgres_dsn
@@ -814,6 +818,47 @@ async def test_init_create_github_configures_origin_and_pushes_commit(
         "final_directory",
     }
     assert "ghp_" not in repr(record)
+
+
+async def test_init_create_github_in_app_mode_uses_authenticated_push(
+    onboarding, tmp_path, monkeypatch
+):
+    _, database, config, root, _ = onboarding
+    remote = _make_bare_remote(tmp_path / "created.git", with_commit=False)
+    gh, _ = _fake_gh(tmp_path)
+    git = _git_with_local_remote(remote)
+    git.github_access = SimpleNamespace(auth=SimpleNamespace(mode=GitHubCredentialMode.APP))
+    authenticated_push = AsyncMock(return_value="published-oid")
+    monkeypatch.setattr(git, "apush_branch", authenticated_push)
+    original_arun = git._arun
+
+    async def reject_legacy_push(args, **kwargs):
+        if args and args[0] == "push":
+            raise AssertionError("onboarding used ambient Git push in App mode")
+        return await original_arun(args, **kwargs)
+
+    monkeypatch.setattr(git, "_arun", reject_legacy_push)
+    service = ProjectOnboardingService(database, config, git, gh_client=gh)
+    result = await service.onboard_project(
+        _request(
+            request_id="create-app",
+            source_mode="init",
+            relative_path="widgets",
+            project_id="widgets",
+            project_name="Widgets",
+            create_readme=True,
+            create_github=True,
+            github_owner="acme",
+            github_repo="widgets",
+        )
+    )
+
+    destination = root / "widgets"
+    assert "branch_pushed" in result.actions
+    authenticated_push.assert_awaited_once()
+    assert authenticated_push.await_args.args[1] == "main"
+    assert _git(destination, "config", "branch.main.remote").stdout.strip() == "origin"
+    assert _git(destination, "config", "branch.main.merge").stdout.strip() == "refs/heads/main"
 
 
 async def test_init_create_github_without_commit_configures_remote_without_push(

@@ -81,6 +81,62 @@ def test_check_names():
     assert all(c.owner == "swarm-work-model" for c in pool_checks.CHECKS)
 
 
+async def test_stranded_branch_doctor_fetches_with_recorded_repository(
+    monkeypatch, tmp_path
+):
+    project = SimpleNamespace(id="proj", repo_url="https://github.com/acme/widgets.git")
+    git = SimpleNamespace(
+        bind_github_repository=AsyncMock(return_value=object()),
+        afetch_origin=AsyncMock(),
+        alist_remote_branches=AsyncMock(return_value=set()),
+    )
+    monkeypatch.setattr(pool_checks, "GitManager", lambda _access: git)
+    monkeypatch.setattr(
+        pool_checks, "_project_checkouts",
+        AsyncMock(return_value=[("proj", str(tmp_path), "main")]),
+    )
+    ctx = SimpleNamespace(
+        config=SimpleNamespace(
+            integration=SimpleNamespace(github_app=None)
+        ),
+        db=SimpleNamespace(get_project=AsyncMock(return_value=project)),
+    )
+
+    assert await pool_checks._find_stranded_feature_branches(ctx) == {
+        "stranded": [], "stale": [], "unknown": 0
+    }
+    git.afetch_origin.assert_awaited_once_with(
+        str(tmp_path), repository_url=project.repo_url, all_heads=True
+    )
+
+
+async def test_doctor_default_branch_discovery_uses_recorded_repository(
+    monkeypatch, tmp_path
+):
+    project = SimpleNamespace(
+        id="proj", repo_url="https://github.com/acme/widgets.git",
+        repo_default_branch=None,
+    )
+    git = SimpleNamespace(aget_default_branch=AsyncMock(return_value="trunk"))
+    monkeypatch.setattr(pool_checks, "GitManager", lambda _access: git)
+    ctx = SimpleNamespace(
+        config=SimpleNamespace(
+            integration=SimpleNamespace(github_app=None)
+        ),
+        db=SimpleNamespace(
+            list_projects=AsyncMock(return_value=[project]),
+            get_project_workspace_path=AsyncMock(return_value=str(tmp_path)),
+        ),
+    )
+
+    assert await pool_checks._project_checkouts(ctx) == [
+        ("proj", str(tmp_path), "trunk")
+    ]
+    git.aget_default_branch.assert_awaited_once_with(
+        str(tmp_path), repository_url=project.repo_url
+    )
+
+
 async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db):
     """Claimed workers and a pane that is still changing are not findings."""
     from src.sessions.harness_parser import Harness

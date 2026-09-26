@@ -675,7 +675,9 @@ _MAX_BRANCH_PROBES = 40
 async def _project_checkouts(ctx: DoctorContext) -> list[tuple[str, str, str]]:
     """``(project_id, checkout_path, default_branch)`` per project, best-effort."""
     out: list[tuple[str, str, str]] = []
-    git = GitManager()
+    from src.git.github import GitHubAccess
+
+    git = GitManager(GitHubAccess.from_config(ctx.config.integration.github_app))
     for project in await ctx.db.list_projects():
         checkout = await ctx.db.get_project_workspace_path(project.id)
         if not checkout or not Path(checkout).is_dir():
@@ -683,7 +685,9 @@ async def _project_checkouts(ctx: DoctorContext) -> list[tuple[str, str, str]]:
         default = project.repo_default_branch
         if not default:
             try:
-                default = await git.aget_default_branch(checkout)
+                default = await git.aget_default_branch(
+                    checkout, repository_url=project.repo_url
+                )
             except Exception:
                 continue
         out.append((project.id, checkout, default))
@@ -730,7 +734,9 @@ async def _find_stranded_feature_branches(ctx: DoctorContext) -> dict:
             unknown += 1
             continue
         try:
-            await git._arun(["fetch", "origin", "--prune"], cwd=checkout)
+            await git.afetch_origin(
+                checkout, repository_url=project.repo_url, all_heads=True
+            )
         except Exception:
             # Stale remote-tracking refs still answer the question, just
             # less freshly.  Never fatal: doctor runs offline too.
