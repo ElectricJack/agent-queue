@@ -49,6 +49,8 @@ class JobService:
         input_ref=None,
         trusted_band=2,
         wait_identity=None,
+        queue_seconds=None,
+        run_seconds=None,
     ):
         cfg = self.settings
         if not cfg.enabled:
@@ -99,6 +101,10 @@ class JobService:
             "input_ref": input_ref,
             "wait": wait_identity is not None,
         }
+        if queue_seconds is not None or run_seconds is not None:
+            if owner_kind != "integration" or input_mode != "snapshot":
+                raise JobError("jobs.preset_denied")
+            canonical.update(queue_seconds=queue_seconds, run_seconds=run_seconds)
         job_id, nonce, now = str(uuid.uuid4()), uuid.uuid4().hex, time.time()
         env = {
             "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin",
@@ -178,6 +184,12 @@ class JobService:
             "run_timeout": cfg.run_seconds,
             "runner_nonce": nonce,
         }
+        if queue_seconds is not None:
+            values["queue_deadline"] = now + max(
+                0, min(queue_seconds, values["queue_deadline"] - now)
+            )
+        if run_seconds is not None:
+            values["run_timeout"] = max(1, min(run_seconds, cfg.run_seconds))
         await self.sweep(reserve=True)
         return await self.db.submit_job(
             values,

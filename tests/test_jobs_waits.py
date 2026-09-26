@@ -32,6 +32,37 @@ from tests.test_jobs_queries import values
 env = _wait_env
 
 
+async def test_managed_finite_console_start_submits_and_cancel_uses_queue(setup, tmp_path, monkeypatch):
+    import src.api.streams as streams
+    from httpx import ASGITransport, AsyncClient
+    from tests.test_jobs_attachments import app_for
+
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.resources.jobs.enabled = True
+    handler = CommandHandler(SimpleNamespace(db=setup.db, plugin_registry=None), config)
+    spawn = AsyncMock(side_effect=AssertionError("managed stream must not spawn"))
+    monkeypatch.setattr(streams, "_spawn_and_pump", spawn)
+    app = app_for(handler)
+    app.include_router(streams.build_streams_router(
+        db=setup.db, config=config, workspace_dir=str(tmp_path), handler=handler,
+    ))
+    body = dict(command=["ruff", "check", "example.py"], cwd=str(tmp_path),
+                session_id="s", project_id="p", idempotency_key="stream")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        started = await client.post("/api/streams", json=body)
+        assert started.status_code == 200, started.text
+        job_id = started.json()["stream_id"]
+        assert (await setup.db.get_job(job_id))["preset"] == "lint"
+        replay = await client.post("/api/streams", json=body)
+        assert replay.json()["stream_id"] == job_id
+        refused = await client.post("/api/streams", json={**body, "command": ["sleep", "100"]})
+        assert refused.status_code == 400
+        cancelled = await client.post(f"/api/streams/{job_id}/kill")
+        assert cancelled.json()["status"] == "killed"
+        assert (await setup.db.get_job(job_id))["state"] == "cancelled"
+    spawn.assert_not_awaited()
+
+
 @pytest.fixture
 async def setup(env, tmp_path):
     await env.db.create_workspace(

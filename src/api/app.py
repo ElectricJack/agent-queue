@@ -31,6 +31,7 @@ from src.api.providers import router as providers_router
 from src.api.pane_stream import router as pane_router
 from src.api.sessions import router as sessions_router
 from src.api.streams import router as streams_router
+from src.api.job_output import router as job_output_router
 from src.api.task_attachments import router as task_attachments_router
 from src.api.task_files import router as task_files_router
 from src.api.task_sessions import router as task_sessions_router
@@ -155,6 +156,7 @@ def create_app(
     # Streamable-command registry (console-stream pane view): POST/GET
     # /api/streams* — start/metadata/subscribe/tail/kill.
     app.include_router(streams_router)
+    app.include_router(job_output_router)
 
     # Task file preview (Phase 5): GET /api/tasks/{id}/files + /file
     app.include_router(task_files_router)

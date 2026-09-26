@@ -155,6 +155,7 @@ export default function ConsoleStreamPane({
     <div className="flex h-full flex-col bg-neutral-950 text-neutral-100 font-mono text-xs">
       <div className="flex items-center gap-2 border-b border-neutral-800 px-2 py-1">
         <StatusChip status={stream.status} exitCode={stream.exitCode} elapsed={elapsed} />
+        {stream.truncated && <span className="text-amber-400">Some output was omitted</span>}
       </div>
       <div
         ref={scrollRef}

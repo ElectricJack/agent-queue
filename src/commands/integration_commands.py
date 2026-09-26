@@ -2310,9 +2310,10 @@ class IntegrationCommandsMixin:
         from src.integration.development import DevelopmentIntegration
         service = getattr(self.orchestrator, "development_integration", None)
         if service is not None:
+            service.job_service_factory = self._jobs
             return service
         return DevelopmentIntegration(self.db, data_dir=self.config.data_dir,
-                                      git=self.orchestrator.git)
+                                      git=self.orchestrator.git, job_service_factory=self._jobs)
 
     async def _cmd_integration_develop(self, args: dict) -> dict:
         operator_id, refusal = await integration_operator(

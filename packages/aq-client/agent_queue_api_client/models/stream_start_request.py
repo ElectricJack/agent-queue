@@ -20,6 +20,7 @@ class StreamStartRequest:
         session_id (str):
         title (None | str | Unset):
         project_id (None | str | Unset):
+        idempotency_key (None | str | Unset):
     """
 
     command: Any
@@ -27,6 +28,7 @@ class StreamStartRequest:
     session_id: str
     title: None | str | Unset = UNSET
     project_id: None | str | Unset = UNSET
+    idempotency_key: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +50,12 @@ class StreamStartRequest:
         else:
             project_id = self.project_id
 
+        idempotency_key: None | str | Unset
+        if isinstance(self.idempotency_key, Unset):
+            idempotency_key = UNSET
+        else:
+            idempotency_key = self.idempotency_key
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -61,6 +69,8 @@ class StreamStartRequest:
             field_dict["title"] = title
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
+        if idempotency_key is not UNSET:
+            field_dict["idempotency_key"] = idempotency_key
 
         return field_dict
 
@@ -91,12 +101,22 @@ class StreamStartRequest:
 
         project_id = _parse_project_id(d.pop("project_id", UNSET))
 
+        def _parse_idempotency_key(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        idempotency_key = _parse_idempotency_key(d.pop("idempotency_key", UNSET))
+
         stream_start_request = cls(
             command=command,
             cwd=cwd,
             session_id=session_id,
             title=title,
             project_id=project_id,
+            idempotency_key=idempotency_key,
         )
 
         stream_start_request.additional_properties = d

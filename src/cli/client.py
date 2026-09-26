@@ -19,6 +19,7 @@ without schema setup or data migrations.
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import pkgutil
@@ -393,6 +394,21 @@ class CLIClient:
         return resp.json()
 
     # -- Streams (console-stream pane view) --------------------------------
+
+    async def job_output(self, job_id: str, *, after: int = 0):
+        """Yield retained-output SSE frames with logical byte cursors."""
+        try:
+            async with self._http.stream(
+                "GET", f"/api/jobs/{job_id}/output", params={"after": after}, timeout=None,
+            ) as response:
+                if response.status_code != 200:
+                    await response.aread()
+                    raise CommandError("job_output", _relay_error(response))
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        yield json.loads(line[6:])
+        except httpx.ConnectError as exc:
+            raise DaemonNotRunningError(str(exc)) from exc
     # Bespoke router, not /api/execute — mirrors send_session_message's
     # direct-httpx pattern above.
 
