@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 398,
+    "leaf_commands": 400,
     "registration": {
-      "generated": 271,
-      "handwritten": 127
+      "generated": 272,
+      "handwritten": 128
     },
     "ownership": {
-      "core": 359,
+      "core": 361,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 397
+      "supported": 399
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 271,
-      "registration": 113
+      "dispatch": 272,
+      "registration": 114
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 338
+      "untested": 340
     }
   },
   "commands": [
@@ -7883,6 +7883,78 @@
           "--api-url"
         ],
         "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq report morning",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.reports.morning_report",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--dry-run"
+        ],
+        "optional": [
+          "--since",
+          "--until",
+          "--project-id",
+          "--max-lookback-hours",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq report morning-preview",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "morning_report_preview",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--now",
+          "--since",
+          "--until",
+          "--project-ids",
+          "--max-lookback-hours",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--project-ids"
+        ],
         "nullable": []
       }
     },

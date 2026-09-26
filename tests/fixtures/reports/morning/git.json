@@ -1,0 +1,21 @@
+[
+  {
+    "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "previous_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "ref": "refs/heads/main",
+    "commits": [
+      {
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "at": 90000,
+        "subject": "Add morning preview"
+      }
+    ],
+    "files": [],
+    "diffstat": " src/cli/reports.py | 5 +++++\n 1 file changed, 5 insertions(+)",
+    "ancestry": {
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "landed"
+    },
+    "gaps": [],
+    "warnings": []
+  }
+]

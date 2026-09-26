@@ -68,6 +68,11 @@ def _encoded(brief: dict) -> bytes:
     )
 
 
+def hash_brief(brief: dict) -> str:
+    """Canonical evidence hash shared by read-only and durable report builders."""
+    return hashlib.sha256(_encoded(brief)).hexdigest()
+
+
 def build_hourly_brief(
     result: DigestResult,
     window: DigestWindow,
@@ -127,4 +132,4 @@ def build_hourly_brief(
             brief["omitted"]["facts"] += 1
         else:
             raise ValueError("report brief metadata exceeds 24 KiB")
-    return brief, hashlib.sha256(_encoded(brief)).hexdigest()
+    return brief, hash_brief(brief)

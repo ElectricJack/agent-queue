@@ -1,0 +1,20 @@
+[
+  {
+    "id": "attempt-1",
+    "session_id": "s1",
+    "task_id": "t3",
+    "project_id": "p",
+    "profile_id": "worker-codex",
+    "name": "task",
+    "lifecycle": "task",
+    "harness": "codex",
+    "provider": "openai",
+    "state": "stopped",
+    "work_dir": "/configured/worker",
+    "started_at": 89000,
+    "session_started_at": 89000,
+    "ended_at": 90004,
+    "end_reason": "timeout",
+    "outcome": "fail"
+  }
+]

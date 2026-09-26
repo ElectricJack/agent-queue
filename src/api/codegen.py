@@ -126,6 +126,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "digest_preview",
             "digest_status",
             "report_request",
+            "morning_report_preview",
             "report_brief",
             "report_submit",
             "delete_task",

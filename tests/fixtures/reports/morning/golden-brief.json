@@ -1,0 +1,244 @@
+{
+  "version": 1,
+  "kind": "morning",
+  "window": {
+    "since": 86400,
+    "until": 172800,
+    "omitted_interval": null,
+    "replay_since": -86400,
+    "late_arrivals_supported_hours": 72
+  },
+  "facts": [
+    {
+      "key": "completion:c1",
+      "source": "completion",
+      "record_id": "c1",
+      "project_id": "p",
+      "task_id": "t1",
+      "at": 90000.0,
+      "late": false,
+      "detail": {
+        "title": "CLI update",
+        "outcome": "pass",
+        "changes": "Add morning preview",
+        "summary": "CLI update",
+        "verification": "focused tests passed",
+        "tests": [
+          "aq test tests/test_report_requests.py"
+        ],
+        "verification_label": "agent-reported",
+        "commits": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ],
+        "pr_url": "https://github.com/example/repo/pull/1",
+        "shipment": "landed"
+      }
+    },
+    {
+      "key": "git:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source": "git",
+      "record_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "project_id": "p",
+      "task_id": null,
+      "at": 90000,
+      "late": false,
+      "detail": {
+        "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "at": 90000,
+        "subject": "Add morning preview",
+        "shipment": "landed",
+        "time_basis": "committer_time"
+      }
+    },
+    {
+      "key": "completion:c2",
+      "source": "completion",
+      "record_id": "c2",
+      "project_id": "p",
+      "task_id": "t2",
+      "at": 90001.0,
+      "late": false,
+      "detail": {
+        "title": "Pending PR",
+        "outcome": "pass",
+        "changes": "Open PR",
+        "summary": "Pending PR",
+        "verification": "",
+        "tests": [],
+        "verification_label": "agent-reported",
+        "commits": [],
+        "pr_url": "https://github.com/example/repo/pull/2",
+        "shipment": "pending"
+      }
+    },
+    {
+      "key": "delivery:d1",
+      "source": "delivery",
+      "record_id": "d1",
+      "project_id": "p",
+      "task_id": null,
+      "at": 90003.0,
+      "late": false,
+      "detail": {
+        "state": "delivered",
+        "target_ref": "main",
+        "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "shipment": "landed",
+        "manifest": {
+          "members": [
+            {
+              "task_id": "t1"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "key": "attempt:attempt-1",
+      "source": "attempt",
+      "record_id": "attempt-1",
+      "project_id": "p",
+      "task_id": "t3",
+      "at": 90004.0,
+      "late": false,
+      "detail": {
+        "outcome": "fail",
+        "end_reason": "timeout",
+        "state": "stopped"
+      }
+    },
+    {
+      "key": "incident:recovery-1",
+      "source": "incident",
+      "record_id": "recovery-1",
+      "project_id": "p",
+      "task_id": "t3",
+      "at": 90004.0,
+      "late": false,
+      "detail": {
+        "reason": "timeout",
+        "status": "FAILED",
+        "unresolved": true
+      }
+    },
+    {
+      "key": "escalation:e1",
+      "source": "escalation",
+      "record_id": "e1",
+      "project_id": "p",
+      "task_id": "t3",
+      "at": 90005.0,
+      "late": false,
+      "detail": {
+        "state": "needs_human",
+        "severity": "high",
+        "summary": "Needs investigation",
+        "unresolved": true
+      }
+    },
+    {
+      "key": "provider:1",
+      "source": "provider",
+      "record_id": "1",
+      "project_id": null,
+      "task_id": null,
+      "at": 90006.0,
+      "late": false,
+      "detail": {
+        "provider": "openai",
+        "from_state": "available",
+        "to_state": "usage_limited",
+        "reason_code": "quota"
+      }
+    },
+    {
+      "key": "reroute:1",
+      "source": "reroute",
+      "record_id": "1",
+      "project_id": "p",
+      "task_id": "t3",
+      "at": 90007.0,
+      "late": false,
+      "detail": {
+        "from_provider": "openai",
+        "to_provider": "anthropic",
+        "reason_code": "provider_unavailable"
+      }
+    }
+  ],
+  "projects": [
+    {
+      "id": "p",
+      "name": "Project P",
+      "landed": [
+        "completion:c1",
+        "git:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delivery:d1"
+      ],
+      "pending": [
+        "completion:c2"
+      ],
+      "failures": [
+        "attempt:attempt-1",
+        "incident:recovery-1",
+        "escalation:e1"
+      ]
+    }
+  ],
+  "git": {
+    "p": {
+      "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "previous_head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "ref": "refs/heads/main",
+      "commits": [
+        {
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "at": 90000,
+          "subject": "Add morning preview"
+        }
+      ],
+      "files": [],
+      "diffstat": " src/cli/reports.py | 5 +++++\n 1 file changed, 5 insertions(+)",
+      "ancestry": {
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "landed"
+      },
+      "gaps": [],
+      "warnings": [],
+      "repository_id": "repo-p"
+    }
+  },
+  "digest_context": [
+    {
+      "id": "digest-1",
+      "send_status": "suppressed",
+      "window_end": 90008
+    }
+  ],
+  "coverage": {
+    "complete": true,
+    "gaps": [],
+    "excluded_sources": [],
+    "warnings": [
+      "late_arrivals_outside_72h_unsupported",
+      "ci_not_collected"
+    ]
+  },
+  "source_cursors": {
+    "completions": 172800,
+    "deliveries": 172800,
+    "incidents": 172800,
+    "escalations": 172800,
+    "attempts": 172800,
+    "providers": 172800,
+    "reroutes": 172800,
+    "digests": 172800,
+    "repos": 172800,
+    "workspaces": 172800
+  },
+  "source_heads": {
+    "p": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "omitted": {
+    "facts": 0
+  }
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import time
 from typing import Any
@@ -26,6 +27,59 @@ def _clean_prose(raw: str) -> str:
 
 
 class ReportCommandsMixin:
+    async def _cmd_morning_report_preview(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Collect evidence without reserving, persisting, waking or sending."""
+        from src.reports.morning import collect_morning_evidence, preview_until, report_window
+
+        config = self.orchestrator.config.reports
+        principal = current_principal()
+        requested = args.get("project_ids")
+        if requested is not None and (
+            not isinstance(requested, list)
+            or not requested
+            or len(requested) > 100
+            or any(not isinstance(item, str) or not item for item in requested)
+        ):
+            return _error("report.invalid", "project_ids must contain 1–100 project ids")
+        morning = getattr(config, "morning", None)
+        configured = tuple(getattr(morning, "project_ids", ()) or ())
+        scope = tuple(sorted(set(requested))) if requested is not None else configured or None
+        if configured and scope is not None and not set(scope) <= set(configured):
+            return _error("out_of_scope", "project selection exceeds configured visibility")
+        if principal is not None and principal.kind in (
+            PrincipalKind.SESSION,
+            PrincipalKind.PLAYBOOK,
+        ):
+            if principal.project_id is not None:
+                if (scope is not None and principal.project_id not in scope) or (
+                    requested is not None and set(requested) != {principal.project_id}
+                ):
+                    return _error("out_of_scope", "preview belongs to another project")
+                scope = (principal.project_id,)
+            elif not principal.elevated:
+                return _error("out_of_scope", "a project-scoped principal is required")
+        try:
+            now = float(args["now"]) if args.get("now") is not None else time.time()
+            if not math.isfinite(now):
+                raise ValueError("now must be finite")
+            until = (
+                float(args["until"])
+                if args.get("until") is not None
+                else preview_until(now, config.timezone)
+            )
+            since = float(args["since"]) if args.get("since") is not None else None
+            window = report_window(since, until, int(args.get("max_lookback_hours", 72)))
+            result = await collect_morning_evidence(
+                self.db, self.orchestrator.git, window=window, now=now, project_ids=scope
+            )
+        except (TypeError, ValueError, OverflowError):
+            return _error("report.invalid", "invalid UTC window or report settings")
+        except Exception:
+            return _error("report.source_unavailable", "could not establish the read-only snapshot")
+        if scope is not None and set(scope) != {row["id"] for row in result["brief"]["projects"]}:
+            return _error("report.invalid", "unknown configured project selection")
+        return {"success": True, **result}
+
     async def _report_reader_allowed(self, row: dict[str, Any]) -> bool:
         principal = current_principal()
         if principal is None or principal.kind == PrincipalKind.LOCAL:
@@ -124,9 +178,10 @@ class ReportCommandsMixin:
         ):
             return _error("report.invalid", "shipment claims require delivery evidence")
         text = _clean_prose(raw)
-        dashboard_footer = str(row["brief"].get("dashboard_url") or "").strip() or str(
-            row["brief"].get("dashboard_notice") or ""
-        ).strip()
+        dashboard_footer = (
+            str(row["brief"].get("dashboard_url") or "").strip()
+            or str(row["brief"].get("dashboard_notice") or "").strip()
+        )
         if dashboard_footer:
             text = f"{text}\n{sanitise(dashboard_footer)}"
         total = f"{text}\n{marker_for(row['owner_ref'])}"
