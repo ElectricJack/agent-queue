@@ -168,6 +168,17 @@ def test_supervisor_can_rebind_a_reused_task_identity():
     assert "`aq integration rebind-reused-identity --discard-tip`" in confirm_first
 
 
+def test_supervisor_inbox_grants_exclude_internal_intake():
+    granted = set(_parsed("supervisor").capabilities["aq_commands"])
+    assert {
+        "supervisor_inbox_history",
+        "supervisor_inbox_reply",
+        "supervisor_inbox_status",
+    } <= granted
+    assert "supervisor_inbox_post" not in granted
+    assert granted <= _builtin_command_names()
+
+
 # ---------------------------------------------------------------------------
 # Emergent-work prime section vs. the profile-owned capability gate
 # ---------------------------------------------------------------------------
