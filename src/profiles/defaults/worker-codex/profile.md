@@ -106,7 +106,11 @@ somehow declares none.
     "task_subtask_add",
     "task_subtask_get",
     "task_subtask_update",
-    "task_subtasks"
+    "task_subtasks",
+    "test_select",
+    "test_selection_observe",
+    "test_selection_recheck",
+    "test_selection_show"
   ],
   "plugin_tools": [
     "git_create_pr",

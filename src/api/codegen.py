@@ -134,6 +134,14 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "supervisor_inbox_history",
             "digest_preview",
             "digest_status",
+            "test_select",
+            "test_selection_recheck",
+            "test_selection_observe",
+            "test_selection_show",
+            "test_selection_list",
+            "test_selection_policy_show",
+            "test_selection_promote",
+            "test_selection_revoke",
             "job_submit",
             "job_get",
             "job_list",
@@ -285,6 +293,9 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
         # typed routes.  Strip any client-supplied ``_scope`` before we
         # inject the middleware-derived one — clients cannot spoof identity.
         args = body.model_dump(exclude_none=True)
+        if cmd_name == "test_select" and "workspace" in body.model_fields_set:
+            # Any caller-supplied worker workspace is spoofing, including null.
+            args["workspace"] = body.workspace
         if cmd_name == "task_set":
             # Explicit null is invalid, not omission. Preserve it so the
             # command rejects before writing any accompanying legacy field.

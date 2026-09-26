@@ -57,6 +57,10 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "memory_save",
         "memory_search",
         "task_claim",
+        "test_select",
+        "test_selection_recheck",
+        "test_selection_observe",
+        "test_selection_show",
         # The second half of the completion protocol.  ``aq task close``
         # transitions the task; ``aq session drain-ack`` says "I am done,
         # you may kill me" — and it is the documented next move on
@@ -166,6 +170,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_transfer_owner",
     }
 )
+LOCAL_TEST_SELECTION_CONTROLS = frozenset({"test_selection_promote", "test_selection_revoke"})
 LOCAL_REVIEW_CONTROLS = frozenset({"review_delegate", "review_import_edits"})
 #: ``edit_project`` fields that bind or change a project's integration
 #: configuration.  An elevated supervisor session reaches the handler, which
@@ -212,6 +217,8 @@ def check_command_scope(command: str, args: dict, scope: RequestScope) -> str | 
         return "out of scope: conversation reads require local operator or global supervisor"
     if command in OPERATOR_INTEGRATION_CONTROLS and not scope.elevated:
         return "out of scope: integration control requires local operator or supervisor"
+    if command in LOCAL_TEST_SELECTION_CONTROLS:
+        return "out of scope: test-selection promotion requires local operator"
     if command in LOCAL_REVIEW_CONTROLS:
         return "out of scope: review control requires local operator"
     if (

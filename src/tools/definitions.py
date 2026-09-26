@@ -9,6 +9,15 @@ from __future__ import annotations
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
+    "test_select": "test_selection",
+    "test_selection_recheck": "test_selection",
+    "test_selection_observe": "test_selection",
+    "test_selection_show": "test_selection",
+    "test_selection_list": "test_selection",
+    "test_selection_policy_show": "test_selection",
+    "test_selection_promote": "test_selection",
+    "test_selection_revoke": "test_selection",
+
     # git — migrated to aq-git internal plugin (src/plugins/internal/git.py)
     # project
     # discord — explicit historical-message housekeeping
@@ -7178,3 +7187,148 @@ _ALL_TOOL_DEFINITIONS.extend([
         ("job_logs", "Read retained output ranges with explicit gaps."),
     )
 ])
+
+# Explicit smart-test-selection command surface.
+_ALL_TOOL_DEFINITIONS.extend(
+    [
+        {
+            "name": "test_select",
+            "description": "Record a scoped smart test selection proposal.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "claim_epoch": {"type": "integer"},
+                    "mode": {
+                        "default": "shadow",
+                        "enum": ["plan_only", "shadow", "enforce"],
+                        "type": "string",
+                    },
+                    "base_ref": {"type": "string"},
+                    "targets": {"default": [], "items": {"type": "string"}, "type": "array"},
+                    "narrowing_flags": {
+                        "default": [],
+                        "items": {"type": "string"},
+                        "type": "array",
+                    },
+                    "jev": {"default": True, "type": "boolean"},
+                    "marker_policy": {
+                        "default": "default",
+                        "enum": ["default", "all"],
+                        "type": "string",
+                    },
+                    "acceptance_commands": {
+                        "default": [],
+                        "items": {"type": "string"},
+                        "type": "array",
+                    },
+                    "workspace": {"type": "string"},
+                    "project_id": {"type": "string"},
+                },
+                "type": "object",
+            },
+        },
+        {
+            "name": "test_selection_recheck",
+            "description": "Check whether a recorded selection snapshot is stale.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {"selection_id": {"type": "string"}},
+                "required": ["selection_id"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "test_selection_observe",
+            "description": "Append execution evidence to a visible selection.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "selection_id": {"type": "string"},
+                    "exit_code": {"type": "integer"},
+                    "duration_ms": {"type": "integer"},
+                    "executed_modules": {"items": {"type": "string"}, "type": "array"},
+                    "failed_node_ids": {
+                        "default": [],
+                        "items": {"type": "string"},
+                        "type": "array",
+                    },
+                    "payload": {"additionalProperties": True, "default": {}, "type": "object"},
+                },
+                "required": ["selection_id", "exit_code", "duration_ms", "executed_modules"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "test_selection_show",
+            "description": "Read a selection and its appended observations.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {"selection_id": {"type": "string"}},
+                "required": ["selection_id"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "test_selection_list",
+            "description": "List recorded selections in one project.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "task_id": {"type": "string"},
+                    "limit": {"default": 50, "type": "integer"},
+                    "before": {"type": "number"},
+                },
+                "required": ["project_id"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "test_selection_policy_show",
+            "description": "Read selection settings, active promotion and latest digests.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {"project_id": {"type": "string"}},
+                "required": ["project_id"],
+                "type": "object",
+            },
+        },
+        {
+            "name": "test_selection_promote",
+            "description": "Locally promote an evaluated omission-policy identity.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "model": {"type": "string"},
+                    "question_schema_version": {"type": "integer"},
+                    "catalogue_digest": {"type": "string"},
+                    "rules_digest": {"type": "string"},
+                    "policy_digest": {"type": "string"},
+                    "evidence": {"additionalProperties": True, "type": "object"},
+                },
+                "required": [
+                    "project_id",
+                    "model",
+                    "question_schema_version",
+                    "catalogue_digest",
+                    "rules_digest",
+                    "policy_digest",
+                    "evidence",
+                ],
+                "type": "object",
+            },
+        },
+        {
+            "name": "test_selection_revoke",
+            "description": "Locally revoke an omission-policy promotion once.",
+            "input_schema": {
+                "additionalProperties": False,
+                "properties": {"promotion_id": {"type": "string"}, "reason": {"type": "string"}},
+                "required": ["promotion_id", "reason"],
+                "type": "object",
+            },
+        },
+    ]
+)

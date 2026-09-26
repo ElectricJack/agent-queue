@@ -1378,6 +1378,42 @@ from .task_subtask_with_context import TaskSubtaskWithContext
 from .task_subtasks_request import TaskSubtasksRequest
 from .task_subtasks_response import TaskSubtasksResponse
 from .task_subtasks_response_422 import TaskSubtasksResponse422
+from .test_select_request import TestSelectRequest
+from .test_select_response import TestSelectResponse
+from .test_select_response_422 import TestSelectResponse422
+from .test_select_response_pending_obligations_item import TestSelectResponsePendingObligationsItem
+from .test_select_response_reasons import TestSelectResponseReasons
+from .test_select_response_record import TestSelectResponseRecord
+from .test_selection_list_request import TestSelectionListRequest
+from .test_selection_list_response import TestSelectionListResponse
+from .test_selection_list_response_422 import TestSelectionListResponse422
+from .test_selection_list_response_selections_item import TestSelectionListResponseSelectionsItem
+from .test_selection_observe_request import TestSelectionObserveRequest
+from .test_selection_observe_request_payload import TestSelectionObserveRequestPayload
+from .test_selection_observe_response import TestSelectionObserveResponse
+from .test_selection_observe_response_422 import TestSelectionObserveResponse422
+from .test_selection_policy_response import TestSelectionPolicyResponse
+from .test_selection_policy_response_config import TestSelectionPolicyResponseConfig
+from .test_selection_policy_response_latest_digests_type_0 import TestSelectionPolicyResponseLatestDigestsType0
+from .test_selection_policy_response_promotion_type_0 import TestSelectionPolicyResponsePromotionType0
+from .test_selection_policy_show_request import TestSelectionPolicyShowRequest
+from .test_selection_policy_show_response_422 import TestSelectionPolicyShowResponse422
+from .test_selection_promote_request import TestSelectionPromoteRequest
+from .test_selection_promote_request_evidence import TestSelectionPromoteRequestEvidence
+from .test_selection_promote_response import TestSelectionPromoteResponse
+from .test_selection_promote_response_422 import TestSelectionPromoteResponse422
+from .test_selection_promote_response_promotion import TestSelectionPromoteResponsePromotion
+from .test_selection_recheck_request import TestSelectionRecheckRequest
+from .test_selection_recheck_response import TestSelectionRecheckResponse
+from .test_selection_recheck_response_422 import TestSelectionRecheckResponse422
+from .test_selection_revoke_request import TestSelectionRevokeRequest
+from .test_selection_revoke_response import TestSelectionRevokeResponse
+from .test_selection_revoke_response_422 import TestSelectionRevokeResponse422
+from .test_selection_show_request import TestSelectionShowRequest
+from .test_selection_show_response import TestSelectionShowResponse
+from .test_selection_show_response_422 import TestSelectionShowResponse422
+from .test_selection_show_response_observations_item import TestSelectionShowResponseObservationsItem
+from .test_selection_show_response_selection import TestSelectionShowResponseSelection
 from .test_slots_perf import TestSlotsPerf
 from .throughput_metrics import ThroughputMetrics
 from .tidy_request import TidyRequest
@@ -2803,6 +2839,42 @@ __all__ = (
     "TaskSubtaskUpdateResponse",
     "TaskSubtaskUpdateResponse422",
     "TaskSubtaskWithContext",
+    "TestSelectionListRequest",
+    "TestSelectionListResponse",
+    "TestSelectionListResponse422",
+    "TestSelectionListResponseSelectionsItem",
+    "TestSelectionObserveRequest",
+    "TestSelectionObserveRequestPayload",
+    "TestSelectionObserveResponse",
+    "TestSelectionObserveResponse422",
+    "TestSelectionPolicyResponse",
+    "TestSelectionPolicyResponseConfig",
+    "TestSelectionPolicyResponseLatestDigestsType0",
+    "TestSelectionPolicyResponsePromotionType0",
+    "TestSelectionPolicyShowRequest",
+    "TestSelectionPolicyShowResponse422",
+    "TestSelectionPromoteRequest",
+    "TestSelectionPromoteRequestEvidence",
+    "TestSelectionPromoteResponse",
+    "TestSelectionPromoteResponse422",
+    "TestSelectionPromoteResponsePromotion",
+    "TestSelectionRecheckRequest",
+    "TestSelectionRecheckResponse",
+    "TestSelectionRecheckResponse422",
+    "TestSelectionRevokeRequest",
+    "TestSelectionRevokeResponse",
+    "TestSelectionRevokeResponse422",
+    "TestSelectionShowRequest",
+    "TestSelectionShowResponse",
+    "TestSelectionShowResponse422",
+    "TestSelectionShowResponseObservationsItem",
+    "TestSelectionShowResponseSelection",
+    "TestSelectRequest",
+    "TestSelectResponse",
+    "TestSelectResponse422",
+    "TestSelectResponsePendingObligationsItem",
+    "TestSelectResponseReasons",
+    "TestSelectResponseRecord",
     "TestSlotsPerf",
     "ThroughputMetrics",
     "TidyRequest",

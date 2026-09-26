@@ -836,6 +836,26 @@ _ESCALATION_SCHEMAS: dict[str, EventSchema] = {
     },
 }
 
+# Explicit selection lifecycle; no source excerpts or provider credentials.
+_TEST_SELECTION_SCHEMAS: dict[str, EventSchema] = {
+    "test_selection.recorded.v1": {
+        "required": ["project_id", "selection_id", "mode", "task_id", "full_required",
+                     "jev_status", "final_count", "fallback_count"],
+        "optional": [],
+        "types": {"project_id": str, "selection_id": str, "mode": str,
+                  "task_id": (str, type(None)), "full_required": bool,
+                  "jev_status": str, "final_count": int, "fallback_count": int},
+    },
+    "test_selection.promoted.v1": {
+        "required": ["project_id", "promotion_id", "model"], "optional": [],
+        "types": {"project_id": str, "promotion_id": str, "model": str},
+    },
+    "test_selection.revoked.v1": {
+        "required": ["promotion_id", "reason"], "optional": [],
+        "types": {"promotion_id": str, "reason": str},
+    },
+}
+
 # Document-review lifecycle.  The database is authoritative; these payloads
 # are compact invalidation/audit hints for the dashboard and playbooks.
 _REVIEW_SCHEMAS: dict[str, EventSchema] = {
@@ -1778,6 +1798,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_CHAT_SCHEMAS,
     **_ESCALATION_SCHEMAS,
     **_REVIEW_SCHEMAS,
+    **_TEST_SELECTION_SCHEMAS,
     **_GIT_SCHEMAS,
     **_WORKTREE_SCHEMAS,
     **_MERGE_SCHEMAS,

@@ -386,6 +386,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/task_graph/layout/**"], areas: ["graph-layout"] }
   - { paths: ["src/task_graph/formulas.py"], areas: ["formulas"] }
   - { paths: ["src/test_selection/**"], areas: ["test-selection"] }
+  - { paths: ["src/commands/test_selection_commands.py", "src/commands/contracts/test_selection.py", "src/api/models/test_selection.py"], areas: ["test-selection"] }
   - { paths: ["src/test_selection/discovery.py"], areas: ["cli-test-runner"] }
   - { paths: ["src/tokens/**"], areas: ["provider-usage"] }
   - { paths: ["src/tools/**"], areas: ["tools-mcp", "api-contract"] }

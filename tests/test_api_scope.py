@@ -41,6 +41,16 @@ EXPECTED_AGENT_COMMANDS = {
     "memory_save",
     "memory_search",
     "task_claim",
+    "job_submit",
+    "job_get",
+    "job_list",
+    "job_cancel",
+    "job_result",
+    "job_logs",
+    "test_select",
+    "test_selection_recheck",
+    "test_selection_observe",
+    "test_selection_show",
     "session_drain_ack",
     "create_task",
     "create_task_graph",
@@ -380,3 +390,15 @@ def test_supervisor_inbox_reads_require_local_or_global_elevated_scope():
         )) is None
         for scope in (SESSION, RequestScope(kind="session", elevated=True, project_id="p1")):
             assert "conversation reads" in check_command_scope(command, {}, scope)
+
+
+def test_test_selection_promotion_is_local_only():
+    for command in ("test_selection_promote", "test_selection_revoke"):
+        assert check_command_scope(command, {}, LOCAL_SCOPE) is None
+        for scope in (SESSION, RequestScope(kind="session", elevated=True)):
+            assert check_command_scope(command, {}, scope) == (
+                "out of scope: test-selection promotion requires local operator"
+            )
+    assert check_command_scope("test_selection_list", {}, SESSION) == (
+        "out of scope: test_selection_list"
+    )
