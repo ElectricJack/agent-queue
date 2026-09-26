@@ -23,6 +23,7 @@ See specs/main.md for the full specification.
 from __future__ import annotations
 
 import asyncio
+import gc
 import inspect
 import logging
 import os
@@ -104,8 +105,30 @@ async def _run_scheduler_cycles(orch: Orchestrator, shutdown_event: asyncio.Even
             pass
 
 
-async def run(config_path: str, profile: str | None = None) -> bool:
-    """Run the daemon. Returns True if a restart was requested."""
+def _freeze_startup_heap() -> None:
+    """Keep the objects built at startup out of every later full collection.
+
+    Modules, models, routers and caches make up most of the daemon's ~500k
+    tracked objects and live as long as the process, yet each generation-2
+    collection re-traverses all of them.  On a 10k-task install those
+    collections ran every few seconds at 250-450 ms each, holding the event
+    loop -- the largest source of loop stalls (wise-ember.16).  Frozen, a
+    full collection only walks what the running daemon allocated since.
+    Garbage is collected first so none of it is frozen.
+    """
+    gc.collect()
+    gc.freeze()
+
+
+async def run(
+    config_path: str, profile: str | None = None, *, freeze_startup_heap: bool = False
+) -> bool:
+    """Run the daemon. Returns True if a restart was requested.
+
+    *freeze_startup_heap* is the process entry point's opt-in
+    (:func:`_freeze_startup_heap`); in-process callers such as tests leave it
+    off, since a freeze would outlive them.
+    """
     # A daemon launched by an interactive Claude Code or Codex session must
     # not retain that session's control variables.  Remove them before setup,
     # config loading, or constructing any child-launching subsystem.
@@ -381,6 +404,8 @@ async def run(config_path: str, profile: str | None = None) -> bool:
             name="aq-review-notifier",
         )
         try:
+            if freeze_startup_heap:
+                _freeze_startup_heap()
             await _run_scheduler_cycles(orch, shutdown_event)
         finally:
             review_notifier_task.cancel()
@@ -605,7 +630,7 @@ def main():
     if validate_only:
         sys.exit(_validate_config_only(config_path, profile))
 
-    restart = asyncio.run(run(config_path, profile=profile))
+    restart = asyncio.run(run(config_path, profile=profile, freeze_startup_heap=True))
     if restart:
         # Wait before re-exec to let platform rate limits settle.
         # Discord in particular rate-limits the initial GET /users/@me
