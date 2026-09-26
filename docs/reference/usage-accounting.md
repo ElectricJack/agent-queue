@@ -295,6 +295,7 @@ are present, `llm:` wins.
 | `GET /api/providers/usage` ([`src/api/providers.py`](../../src/api/providers.py)) | Newest snapshot per series; `?provider=` filters, `?since=` adds history (max 2000 points per series). |
 | `GET /api/metrics/series` ([`src/api/metrics.py`](../../src/api/metrics.py)) | Includes the `tokens` block: per-minute rates overall and `by_model`, plus `unattributed_per_min`. |
 | `aq doctor --check providers.claude_usage` ([`src/doctor/provider_checks.py`](../../src/doctor/provider_checks.py)) | Report-only health verdict. No `--fix`. |
+| `aq doctor --check providers.usage_activity_gap` | Report-only warning when a provider's newest quota confirmation trails its newest live session activity by more than 30 minutes. No `--fix`. |
 
 ### Probe outcomes
 
@@ -321,6 +322,15 @@ last good reading always survives.
 
 Wording faults are reported before staleness: when a probe is both stale and
 unparsed, "the regex needs a human" is the sentence that gets it fixed.
+
+`providers.usage_activity_gap` compares `last_seen_at` (falling back to
+`observed_at`) with live session activity, independently of wall-clock age.
+An idle fleet's old snapshot does not trigger it. With no snapshot, live
+activity must extend more than 30 minutes past the earliest live launch before
+it warns. Providers without quota feeds and a deliberately disabled Claude
+probe are excluded. Codex rollout adoption backfills the latest complete quota
+record using its original timestamp, even when a checkpoint or replay guard
+skips historical token and output records.
 
 ## Log files — [`src/llm_logger.py`](../../src/llm_logger.py)
 

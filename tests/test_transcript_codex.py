@@ -197,3 +197,41 @@ async def test_a_quota_only_entry_does_not_read_as_an_active_turn(tmp_path: Path
     reader = CodexTranscriptReader(base_dir=tmp_path)
     entries, _ = await reader.read_new(path, 0)
     assert reader.infer_activity(entries) == "idle"
+
+
+@pytest.mark.parametrize("tail_bytes", [0, 65536, 150000])
+async def test_quota_backfill_finds_latest_complete_valid_reading(tmp_path, tail_bytes):
+    old = _token_count_line(info=INFO, rate_limits=RATE_LIMITS)
+    latest = _token_count_line(info=INFO, rate_limits={
+        "primary": {"used_percent": 15.0, "resets_in_seconds": 60}, "plan_type": "pro",
+    })
+    latest["timestamp"] = "2026-09-26T03:35:33Z"
+    undated = _token_count_line(rate_limits=RATE_LIMITS)
+    undated.pop("timestamp")
+    path = _rollout(tmp_path, [old, latest, undated,
+        _token_count_line(rate_limits={"primary": {"used_percent": "bad"}}),
+        {"type": "response_item", "payload": {"output": "x" * tail_bytes}},
+    ])
+    with path.open("a") as file:
+        file.write('not json "rate_limits"\n')
+        file.write(json.dumps(old))  # valid JSON, but not a complete record yet
+    reader = CodexTranscriptReader(tmp_path)
+    entry = await reader.read_latest_provider_usage(path)
+    assert entry.usage is None
+    assert entry.text == ""
+    assert entry.rate_limits["account_label"] == "pro"
+    window = entry.rate_limits["windows"][0]
+    assert window["used_percent"] == 15.0
+    assert window["resets_at"] == entry.ts + 60
+    assert entry.ts == 1790393733
+
+
+@pytest.mark.parametrize("body", ["", "x" * 150000, '{"rate_limits":{}}\n'])
+async def test_quota_backfill_without_a_reading_is_absent(tmp_path, body):
+    path = _rollout(tmp_path, [])
+    path.write_text(body)
+    assert await CodexTranscriptReader(tmp_path).read_latest_provider_usage(path) is None
+
+
+async def test_quota_backfill_missing_file_is_absent(tmp_path):
+    assert await CodexTranscriptReader(tmp_path).read_latest_provider_usage(tmp_path / "gone") is None
