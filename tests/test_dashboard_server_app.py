@@ -34,6 +34,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from src.dashboard_server import __main__ as server_main
 from src.dashboard_server.app import DashboardServerApp, classify, create_app
+from src.dashboard_server.relay_stats import RelayStats
 from src.dashboard_server.settings import (
     DashboardServerSettings,
     SettingsError,
@@ -85,6 +86,7 @@ class StubProxy:
     """Stands in for DaemonProxy: records what reached it and answers 299."""
 
     def __init__(self, upstream_ok: bool = True) -> None:
+        self.stats = RelayStats()
         self.http_paths: list[str] = []
         self.ws_paths: list[str] = []
         self.started = 0
@@ -131,6 +133,7 @@ def _client(app: DashboardServerApp, peer: str = "127.0.0.1") -> httpx.AsyncClie
     ("path", "kind"),
     [
         ("/__aq/health", "identity"),
+        ("/__aq/metrics", "metrics"),
         ("/__aq", "reserved"),
         ("/__aq/other", "reserved"),
         ("/api", "proxy"),
@@ -487,6 +490,28 @@ def test_the_dashboard_server_imports_nothing_from_the_daemon():
         [sys.executable, "-c", probe], cwd=ROOT, capture_output=True, text=True, check=True,
     )
     assert result.stdout.strip() == "[]"
+
+
+def test_metrics_route_is_cumulative_and_served_get_and_head_only(tmp_path):
+    app, proxy = _app(tmp_path)
+    proxy.stats.observe_http(5)
+    proxy.stats.observe_ws_handshake(7)
+    proxy.stats.failure("daemon_timeout")
+    with TestClient(app) as client:
+        response = client.get("/__aq/metrics")
+        body = response.json()
+        assert body["service"] == "aq-dashboard-server"
+        assert body["pid"] == os.getpid() and body["now"] >= body["epoch"]
+        assert body["http"]["count"] == body["ws_handshake"]["count"] == 1
+        assert body["upstream_failures"]["daemon_timeout"] == 1
+        assert client.get("/__aq/metrics").json()["http"] == body["http"]
+        assert response.headers[OWN_HEADER] == "1.2.3"
+        assert response.headers["cache-control"] == "no-store"
+        head = client.head("/__aq/metrics")
+        assert head.status_code == 200 and head.content == b""
+        denied = client.post("/__aq/metrics")
+        assert denied.status_code == 405 and denied.headers["allow"] == "GET, HEAD"
+        assert client.get("/__aq/metrics/unknown").status_code == 404
 
 
 # -- End to end over real sockets --------------------------------------------
