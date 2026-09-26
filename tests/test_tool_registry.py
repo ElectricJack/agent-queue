@@ -135,6 +135,7 @@ def test_registry_has_categories(registry):
         "formula",
         "graph",
         "github_issue",
+        "test_selection",
         "report",
         "wait",
         "job",

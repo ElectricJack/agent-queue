@@ -11,6 +11,7 @@ import {
 import { PANE_REGISTRY as DEFAULT_REGISTRY, type PaneEntry } from "./registry";
 import { useShellPreferences, withPaneWidth, withRightSurface } from "../shell/useShellPreferences";
 import { useSettledWidth } from "../shell/useSettledWidth";
+import { useCompactViewport } from "../hooks/useCompactViewport";
 
 export type PaneState =
   | { kind: "closed" }
@@ -66,8 +67,9 @@ interface Props {
   registryOverride?: Record<string, PaneEntry>;
   /**
    * Skip restoring the roaming last pane. App sets it, once, when the page
-   * loads on a focus route (mobile dashboard §4.2), so a desktop's pane never
-   * pops up in a phone's first view — even after it leaves the focus tree.
+   * loads on a focus route or a compact viewport (mobile dashboard §4.2, D7),
+   * so a desktop's pane never pops up in a phone's first view — even after it
+   * leaves the focus tree.
    */
   suppressRestore?: boolean;
 }
@@ -100,11 +102,15 @@ export function ShellPaneProvider({ children, registryOverride, suppressRestore 
   const getSnapshot = useCallback(() => stateRef.current, []);
   const { pane, origin } = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
+  // Below 768 px the pane is a full-screen sheet: what a phone opens does not
+  // roam to the desktop (mobile dashboard D7), and there is no width to keep.
+  const compact = useCompactViewport();
   const persistPane = useCallback(
     (next: { view: string; args: Record<string, unknown> } | null) => {
+      if (compact) return;
       void update(withRightSurface({ pane: next }));
     },
-    [update],
+    [update, compact],
   );
 
   useEffect(() => {
@@ -190,8 +196,8 @@ export function ShellPaneProvider({ children, registryOverride, suppressRestore 
 
   const view = pane.kind === "open" ? pane.view : null;
   const persistWidth = useCallback(
-    (id: string, width: number) => update(withPaneWidth(id, width)),
-    [update],
+    (id: string, width: number) => (compact ? Promise.resolve() : update(withPaneWidth(id, width))),
+    [update, compact],
   );
   const [width, setWidth] = useSettledWidth(
     view,

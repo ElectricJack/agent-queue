@@ -6,6 +6,7 @@ import { useProjects } from "./api/hooks";
 import { useShellPreferences } from "./shell/useShellPreferences";
 import { loadWorkspaceGraph, loadWorkspaceTasks } from "./routeChunks";
 import { isFocusPath } from "./pages/focus/routes";
+import { isCompactViewport } from "./hooks/useCompactViewport";
 
 const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
 const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
@@ -152,9 +153,9 @@ function RouteFallback() {
 
 export default function App() {
   const location = useLocation();
-  // Decided once, at first render: a page that loads on a focus route never
-  // gets the desktop's roaming pane popped over it.
-  const [suppressRestore] = useState(() => isFocusPath(location.pathname));
+  // Decided once, at first render: a page that loads on a focus route or on a
+  // compact viewport never gets the desktop's roaming pane popped over it.
+  const [suppressRestore] = useState(() => isFocusPath(location.pathname) || isCompactViewport());
   return (
     <ShellPaneProvider suppressRestore={suppressRestore}>
       <ProjectScopePaneSync />
