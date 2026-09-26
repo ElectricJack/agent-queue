@@ -63,7 +63,7 @@ export default function WatchTerminal({
   useFocusTrap(sheet, full.open, { onEscape: full.hide });
 
   useEffect(() => {
-    if (!full.open && document.fullscreenElement && document.fullscreenElement === sheet.current) {
+    if (!full.open && sheet.current && document.fullscreenElement === sheet.current) {
       void document.exitFullscreen().catch(() => {});
     }
   }, [full.open]);
