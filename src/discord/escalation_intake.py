@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from src.commands.principal import ExecutionPrincipal, principal_context
@@ -53,6 +54,15 @@ CLASSIFY_ERROR_CODE = "classify_error"
 def _raw_id(obj: Any) -> str | None:
     value = getattr(obj, "id", None)
     return str(value) if value not in (None, "") else None
+
+
+@dataclass(frozen=True)
+class IntakeOutcome:
+    """Separate escalation ownership from failure to classify safely."""
+
+    consumed: bool
+    failed: bool
+    decision: IntakeDecision | None
 
 
 class DiscordEscalationIntake:
@@ -125,12 +135,18 @@ class DiscordEscalationIntake:
         )
 
     async def handle(self, message: Any, *, bot_user_id: int | None) -> bool:
-        """Consume *message* as an escalation reply; ``False`` if it is not one.
+        """The legacy boolean interface, including diagnostics for non-escalations."""
+        outcome = await self.handle_detailed(message, bot_user_id=bot_user_id)
+        if not outcome.consumed and not outcome.failed and outcome.decision is not None:
+            self._log_ignore(None, outcome.decision.code, message)
+        return outcome.consumed
 
-        Returning ``False`` leaves the bot's ordinary routing untouched.
-        Returning ``True`` means the message belonged to an incident and must
-        not also be forwarded as general supervisor chat — that would deliver
-        the same words twice and is what "no general chatbot" rules out.
+    async def handle_detailed(self, message: Any, *, bot_user_id: int | None) -> IntakeOutcome:
+        """Consume an escalation or tell the router whether it may continue.
+
+        A classification failure cannot fall through. Persistence refusals and
+        errors still consume the incident's message. Non-escalation diagnostics
+        belong to the router, which knows whether conversations accept it.
         """
         observed: InboundMessage | None = None
         try:
@@ -139,10 +155,20 @@ class DiscordEscalationIntake:
         except Exception:
             logger.warning("escalation intake failed to classify a message", exc_info=True)
             self._log_ignore(observed, CLASSIFY_ERROR_CODE, message)
-            return False
+            return IntakeOutcome(consumed=False, failed=True, decision=None)
         if decision.action not in (ACTION_ACCEPT, ACTION_CLOSED):
-            self._log_ignore(observed, decision.code, message)
-            return False
+            # These gates follow a durable binding, so even a refused reply is
+            # exclusively escalation input. Other ignores may still be chat.
+            consumed = decision.code in {
+                "binding_channel_mismatch",
+                "binding_thread_mismatch",
+                "empty_text",
+                "oversize",
+                "no_message_id",
+            }
+            if consumed:
+                self._log_ignore(observed, decision.code, message)
+            return IntakeOutcome(consumed=consumed, failed=False, decision=decision)
 
         principal = ExecutionPrincipal.service(f"discord:{observed.author_id}")
         try:
@@ -163,12 +189,12 @@ class DiscordEscalationIntake:
             )
             # Consumed either way: retrying it as generic supervisor chat would
             # smuggle the same words in through a path with no provenance.
-            return True
+            return IntakeOutcome(consumed=True, failed=False, decision=decision)
         if isinstance(result, dict) and result.get("error"):
             logger.warning(
                 "escalation reply for %s refused: %s", decision.escalation_id, result["error"]
             )
-            return True
+            return IntakeOutcome(consumed=True, failed=False, decision=decision)
 
         # The acknowledgement (or, for a closed incident, the closed-state
         # guidance) is a planned delivery, not a direct send: reconciling now
@@ -179,7 +205,7 @@ class DiscordEscalationIntake:
                 await self._reconcile(decision.escalation_id)
             except Exception:
                 logger.debug("post-reply reconcile failed; the cycle will retry", exc_info=True)
-        return True
+        return IntakeOutcome(consumed=True, failed=False, decision=decision)
 
     def _log_ignore(self, observed: InboundMessage | None, code: str, message: Any) -> None:
         """The one INFO line for an ignored message: code and ids, never content."""
@@ -208,4 +234,4 @@ class DiscordEscalationIntake:
                 logger.debug("intake ignore hook failed", exc_info=True)
 
 
-__all__ = ["CLASSIFY_ERROR_CODE", "DiscordEscalationIntake"]
+__all__ = ["CLASSIFY_ERROR_CODE", "DiscordEscalationIntake", "IntakeOutcome"]
