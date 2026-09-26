@@ -122,6 +122,10 @@ agent on the machine. Rationale and the baseline workflow:
   failure never fails your task and never justifies weakening or skipping a test; name it
   in the close summary. Task authors specify focused and area checks, never "run the full
   suite before closing".
+- **Adding or moving a test module:** `python scripts/generate-selection-catalogue.py` and
+  commit `tests/selection_catalogue.json`; a new module must match an area in
+  `tests/selection_areas.yaml`, and a new file outside an owned path needs a rule in
+  `tests/selection_rules.yaml` (`tests/test_selection_catalogue.py` names what is missing).
 - **Swarm end to end:** after any change to claims, pools, formulas, the task hierarchy or
   provider failover, run `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` (real daemon,
   real PostgreSQL, no LLM, ~8 min) — [docs/guides/e2e-swarm.md](docs/guides/e2e-swarm.md).

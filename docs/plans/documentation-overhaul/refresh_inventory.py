@@ -411,6 +411,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Pool claim bookkeeping."),
     ("src/resources/**", "scheduler", "docs/guides/resource-gating.md", PRODUCTION,
      "Per-session resource caps and the box-wide test slot semaphore."),
+    ("src/test_selection/**", "scheduler", "docs/guides/resource-gating.md", PRODUCTION,
+     "Smart test selection: test discovery, the selection catalogue, rules and policy."),
 
     ("src/profiles/mcp_registry.py", "plugins", "docs/guides/plugins-and-mcp.md",
      PRODUCTION, "In-memory MCP server registry backed by the vault."),
