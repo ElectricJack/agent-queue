@@ -743,44 +743,65 @@ class TestPerfSuiteStaysOutOfTheDefaultRun:
     that forgets the marker again should fail here instead.
     """
 
+    @staticmethod
+    def _module_has_perf_marker(source):
+        """Inspect literal module markers without importing perf's DB fixtures."""
+        import ast
+
+        def is_perf(node):
+            if isinstance(node, ast.Call):
+                node = node.func
+            return (
+                isinstance(node, ast.Attribute)
+                and node.attr == "perf"
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "mark"
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "pytest"
+            )
+
+        marker = None
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.Assign):
+                targets = node.targets
+            elif isinstance(node, (ast.AnnAssign, ast.AugAssign)):
+                targets = [node.target]
+            else:
+                continue
+            if any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets):
+                # Reassignment replaces earlier markers, including the exact
+                # skipif-only regression that this check originally caught.
+                marker = node.value if not isinstance(node, ast.AugAssign) else None
+        if isinstance(marker, (ast.List, ast.Tuple)):
+            return any(is_perf(item) for item in marker.elts)
+        return is_perf(marker)
+
+    @pytest.mark.parametrize(("source", "expected"), [
+        ("pytestmark = pytest.mark.perf", True),
+        ("pytestmark = pytest.mark.perf()", True),
+        ("pytestmark: list = [pytest.mark.perf, pytest.mark.skipif(True)]", True),
+        ("pytestmark = (pytest.mark.skipif(True), pytest.mark.perf)", True),
+        ("pytestmark = pytest.mark.skipif(True, reason='pytest.mark.perf')", False),
+        ("pytestmark = pytest.mark.perf\npytestmark = pytest.mark.skipif(True)", False),
+        ("def test_one():\n    marker = pytest.mark.perf", False),
+        ("# pytestmark = pytest.mark.perf", False),
+    ])
+    def test_static_perf_marker_check(self, source, expected):
+        assert self._module_has_perf_marker(source) is expected
+
     def test_no_unmarked_tests_under_tests_perf(self):
-        import os
-        import subprocess
-        import sys
         from pathlib import Path
 
         root = Path(__file__).resolve().parent.parent
-        env = os.environ.copy()
-        # Perf's conftest resolves its run-owned database at import time, so
-        # preserve this parent test run's disposable server configuration.
-        assert env.get("POSTGRES_TEST_DSN")
-        env.pop("AQ_REQUIRE_POSTGRES_TESTS", None)
-        proc = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pytest",
-                "-p",
-                "no:xdist",
-                "--co",
-                "-q",
-                "-m",
-                "not perf",
-                "tests/perf",
-            ],
-            cwd=root,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            check=False,
-        )
-        # pytest exits 5 when the run collected nothing, which is the whole
-        # assertion: `-m "not perf"` is what CI's default job selects.
-        assert proc.returncode == 5, (
-            "tests under tests/perf/ are selected by the default suite's "
-            f"-m 'not perf'; add pytest.mark.perf to their pytestmark\n"
-            f"{proc.stdout}{proc.stderr}"
+        modules = sorted((root / "tests" / "perf").rglob("test_*.py"))
+        assert modules
+        unmarked = [
+            str(path.relative_to(root))
+            for path in modules
+            if not self._module_has_perf_marker(path.read_text())
+        ]
+        assert not unmarked, (
+            "add a literal pytest.mark.perf to each module's pytestmark: " + ", ".join(unmarked)
         )
 
 

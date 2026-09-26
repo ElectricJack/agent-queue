@@ -222,6 +222,7 @@
         "tests/test_discord_docs.py",
         "tests/test_discord_escalation_transport.py",
         "tests/test_discord_housekeeping.py",
+        "tests/test_discord_inbound_router.py",
         "tests/test_discord_intake_diagnostics.py",
         "tests/test_discord_settings.py",
         "tests/test_discord_simplification_lifecycle.py",
@@ -1206,7 +1207,7 @@
       ]
     }
   },
-  "digest": "sha256:41a16d2fe44c6c3fecde71a1edd44c8ead2cb2e89a1fa07719d6b930bbdf279a",
+  "digest": "sha256:f2c2f46fdb1be5772a2b5624c6eb01ba86b853ac1d18644e9c64b67e63cc90f7",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3805,7 +3806,8 @@
       "default_arm": true,
       "imports": [
         "src.config",
-        "src.database"
+        "src.database",
+        "src.metrics.histogram"
       ],
       "markers": [
         "parametrize"
@@ -4379,6 +4381,26 @@
       ],
       "markers": [],
       "summary": "Only explicit channel-message purge remains; task-thread cleanup is retired."
+    },
+    "tests/test_discord_inbound_router.py": {
+      "areas": [
+        "discord"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.discord.bot",
+        "src.discord.escalation_intake",
+        "src.discord.inbound",
+        "src.discord.intake_diagnostics",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Exclusive escalation routing and opt-in gateway conversations."
     },
     "tests/test_discord_intake_diagnostics.py": {
       "areas": [
@@ -7595,13 +7617,14 @@
       "areas": [
         "database"
       ],
-      "default_arm": true,
+      "default_arm": false,
       "imports": [
         "src.database.adapters.postgresql",
         "src.database.legacy_sqlite_import",
         "src.database.tables"
       ],
       "markers": [
+        "migration",
         "parametrize",
         "skipif"
       ],
@@ -8960,13 +8983,14 @@
       "areas": [
         "test-substrate"
       ],
-      "default_arm": true,
+      "default_arm": false,
       "imports": [
         "src.database",
         "src.models"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "slow"
       ],
       "summary": "Parallel test workers must not destroy one another's databases."
     },
