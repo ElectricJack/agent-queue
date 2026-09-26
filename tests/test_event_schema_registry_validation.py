@@ -72,6 +72,13 @@ def _register_typed_schemas(monkeypatch):
 
 # Maps event_type -> minimal valid payload (all required fields present)
 _CANONICAL_PAYLOADS: dict[str, dict] = {
+    "conversation.reply_queued.v1": {
+        "conversation_id": "conv-1",
+        "input_id": "cinput-1",
+        "reply_message_id": "msg-conv-reply-1",
+        "delivery_dedup_key": "conv-reply:msg-conv-reply-1",
+        "created": True,
+    },
     "conversation.input_received.v1": {
         "conversation_id": "conv-1",
         "input_id": "cinput-1",

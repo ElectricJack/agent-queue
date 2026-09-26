@@ -1201,6 +1201,9 @@ from .subagent_event_response_422 import SubagentEventResponse422
 from .subagent_metrics import SubagentMetrics
 from .subagent_metrics_by_session import SubagentMetricsBySession
 from .subagent_rollup import SubagentRollup
+from .supervisor_inbox_reply_request import SupervisorInboxReplyRequest
+from .supervisor_inbox_reply_response import SupervisorInboxReplyResponse
+from .supervisor_inbox_reply_response_422 import SupervisorInboxReplyResponse422
 from .tail_api_streams_stream_id_tail_get_response_tail_api_streams_stream_id_tail_get import (
     TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet,
 )
@@ -2551,6 +2554,9 @@ __all__ = (
     "SubagentMetrics",
     "SubagentMetricsBySession",
     "SubagentRollup",
+    "SupervisorInboxReplyRequest",
+    "SupervisorInboxReplyResponse",
+    "SupervisorInboxReplyResponse422",
     "TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet",
     "TaskActivityAttempt",
     "TaskActivityItem",
