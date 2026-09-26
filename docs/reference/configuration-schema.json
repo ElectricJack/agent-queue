@@ -1975,6 +1975,74 @@
       "type": "object",
       "x-reload": "hot"
     },
+    "reports": {
+      "additionalProperties": false,
+      "default": {
+        "hourly": {
+          "enabled": false,
+          "full_fleet_visibility": false,
+          "grace_minutes": 5,
+          "max_requests_per_day": 12,
+          "quiet_hours": null
+        },
+        "timezone": "UTC"
+      },
+      "properties": {
+        "hourly": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false,
+            "full_fleet_visibility": false,
+            "grace_minutes": 5,
+            "max_requests_per_day": 12,
+            "quiet_hours": null
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "full_fleet_visibility": {
+              "default": false,
+              "type": "boolean"
+            },
+            "grace_minutes": {
+              "default": 5,
+              "type": "integer"
+            },
+            "max_requests_per_day": {
+              "default": 12,
+              "type": "integer"
+            },
+            "quiet_hours": {
+              "additionalProperties": false,
+              "default": null,
+              "properties": {
+                "end": {
+                  "default": "",
+                  "type": "string"
+                },
+                "start": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "timezone": {
+          "default": "UTC",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "restart"
+    },
     "resources": {
       "additionalProperties": false,
       "default": {
@@ -2425,6 +2493,101 @@
       "x-note": "Framework overhaul: pull-based worker pools (claims, pool reconciliation).",
       "x-reload": "hot"
     },
+    "test_selection": {
+      "additionalProperties": false,
+      "default": {
+        "api_key_env": "TYPESAFE_API_KEY",
+        "base_url": null,
+        "cache_entries": 256,
+        "default_base_ref": null,
+        "enabled": false,
+        "enforce_enabled": false,
+        "excerpt_lines": 40,
+        "jev_enabled": false,
+        "max_requests": 4,
+        "max_state_plus_question_tokens": 32000,
+        "max_total_tokens": 64000,
+        "model": "jev-1.13.0",
+        "request_concurrency": 2,
+        "retention_days": 90,
+        "rpc_deadline_seconds": 2.0,
+        "static_timeout_seconds": 60.0
+      },
+      "properties": {
+        "api_key_env": {
+          "default": "TYPESAFE_API_KEY",
+          "type": "string"
+        },
+        "base_url": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cache_entries": {
+          "default": 256,
+          "type": "integer"
+        },
+        "default_base_ref": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "enforce_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "excerpt_lines": {
+          "default": 40,
+          "type": "integer"
+        },
+        "jev_enabled": {
+          "default": false,
+          "type": "boolean"
+        },
+        "max_requests": {
+          "default": 4,
+          "type": "integer"
+        },
+        "max_state_plus_question_tokens": {
+          "default": 32000,
+          "type": "integer"
+        },
+        "max_total_tokens": {
+          "default": 64000,
+          "type": "integer"
+        },
+        "model": {
+          "default": "jev-1.13.0",
+          "type": "string"
+        },
+        "request_concurrency": {
+          "default": 2,
+          "type": "integer"
+        },
+        "retention_days": {
+          "default": 90,
+          "type": "integer"
+        },
+        "rpc_deadline_seconds": {
+          "default": 2.0,
+          "type": "number"
+        },
+        "static_timeout_seconds": {
+          "default": 60.0,
+          "type": "number"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "validate_events": {
       "default": true,
       "type": "boolean",
@@ -2538,6 +2701,7 @@
       "state_machine",
       "surface",
       "swarm",
+      "test_selection",
       "work_graph"
     ],
     "other": [],
@@ -2560,6 +2724,7 @@
       "messaging_platform",
       "playbooks",
       "profile",
+      "reports",
       "security",
       "sessions",
       "streams",
