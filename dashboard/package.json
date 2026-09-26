@@ -13,7 +13,9 @@
     "lint": "eslint .",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "check:layout": "node layout-checks/run.mjs",
+    "check:layout:selftest": "node layout-checks/selftest.mjs"
   },
   "dependencies": {
     "@aq/ts-client": "*",
@@ -62,6 +64,7 @@
     "jest-axe": "^11.0.0",
     "jsdom": "^30.0.1",
     "postcss": "^8.4.49",
+    "puppeteer-core": "24.43.1",
     "tailwindcss": "^4.0.0",
     "typescript": "~5.7.0",
     "typescript-eslint": "^8.18.0",

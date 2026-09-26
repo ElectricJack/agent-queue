@@ -1,0 +1,11 @@
+{
+  "fixture-session": [
+    { "source": "pane", "type": "screen", "seq": 1, "ts": 1790000000, "screen": "\u001b[32mworker-a\u001b[0m $ aq task claim --next --wait 60\nclaimed: fixture-task-1 — a very long line that is wider than any phone in portrait so the terminal must scroll sideways inside itself and never widen the page ................................................................\n\u001b[1m●\u001b[0m Running tests…" }
+  ],
+  "fixture-pool-1": [
+    { "source": "pane", "type": "screen", "seq": 1, "ts": 1790000000, "screen": "pool worker idle" }
+  ],
+  "*": [
+    { "source": "pane", "type": "screen", "seq": 1, "ts": 1790000000, "screen": "$" }
+  ]
+}

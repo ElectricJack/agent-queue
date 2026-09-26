@@ -22,16 +22,11 @@ database on the same PostgreSQL instance isolates data but shares buffers, IO
 and connections; a separate instance on the same disk still shares disk IO.
 `pg_identity.py` records endpoint identity without printing credentials.
 
-Node needs `puppeteer-core@24` (24.33 or later, for window pages and
-`page.windowId()`) and Chrome (`CHROME`, default `/usr/bin/google-chrome`).
-Install Puppeteer in a temporary tools directory, then expose its
-`node_modules` to these scripts with a local, untracked symlink:
-
-```bash
-perf_tools=$(mktemp -d)
-npm install --prefix "$perf_tools" puppeteer-core@24
-ln -s "$perf_tools/node_modules" scripts/dashboard-perf/node_modules
-```
+Node needs `puppeteer-core` and Chrome (`CHROME`, default
+`/usr/bin/google-chrome`). `puppeteer-core` is pinned as a `dashboard`
+development dependency and hoisted to the repository's root `node_modules`,
+so `npm install` at the repository root is all these scripts need — the same
+pin the layout checks (`dashboard/layout-checks/`) use.
 
 Build and stage the verified bundle in this checkout, with API URL overrides
 cleared by the release builder. This does not install it or restart anything:
