@@ -13,7 +13,6 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from src.cli.integration import integration as integration_cli
 from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
-from src.database import Database
 from src.database.tables import (
     events,
     integration_batch_members,
@@ -25,20 +24,17 @@ from src.integration.candidates import CandidateService
 from src.integration.scheduler import IntegrationScheduler, TrainService
 from src.models import Project, RepoConfig, RepoSourceType
 from src.profiles.capabilities import DENY_ALL
-from tests.db_fixtures import lease_dsn
 from tests.test_integration_sealing import _enable_train, _request, _seed_leaf
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("integration-eject.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("integration-eject.db")
     await database.create_project(Project(id="p", name="integration project"))
     await database.create_repo(
         RepoConfig(id="repo", project_id="p", source_type=RepoSourceType.LINK, default_branch="main")
     )
     yield database
-    await database.close()
 
 
 @pytest.fixture

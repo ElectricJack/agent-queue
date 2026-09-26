@@ -66,9 +66,8 @@ def _git(args, cwd):
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("hierarchy.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("hierarchy.db")
     await database.create_project(Project(id="p", name="hierarchy"))
     await database.create_repo(
         RepoConfig(
@@ -124,7 +123,6 @@ async def db(tmp_path):
         ).model_dump(mode="json"),
     )
     yield database
-    await database.close()
 
 
 @pytest.fixture

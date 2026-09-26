@@ -11,7 +11,6 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
-from src.database import Database
 from src.database.tables import (
     integration_batches,
     integration_branch_owners,
@@ -60,7 +59,6 @@ from src.models import (
 )
 from src.profiles.capabilities import CapabilityPolicy
 from src.scheduler import AssignAction
-from tests.db_fixtures import lease_dsn
 
 STARTING_SHA = "a" * 40
 
@@ -129,12 +127,10 @@ def _policy() -> dict:
 
 
 @pytest.fixture
-async def db(tmp_path):
-    database = Database(lease_dsn("repair.db"))
-    await database.initialize()
+async def db(tmp_path, reuse_database):
+    database = await reuse_database("repair.db")
     await _configure_db(database)
     yield database
-    await database.close()
 
 
 async def _configure_db(database) -> None:

@@ -16,7 +16,6 @@ from sqlalchemy import delete, insert, select, update
 
 from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
-from src.database import Database
 from src.database.tables import (
     events,
     integration_batches,
@@ -41,13 +40,11 @@ from src.integration.stale_schedule import (
 )
 from src.models import Project
 from src.profiles.capabilities import DENY_ALL
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("integration-stale-schedule"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("integration-stale-schedule")
     await database.create_project(Project(id="p", name="train project"))
     async with database.immediate() as conn:
         await conn.execute(
@@ -59,7 +56,6 @@ async def db():
             )
         )
     yield database
-    await database.close()
 
 
 async def _schedule(db) -> dict:

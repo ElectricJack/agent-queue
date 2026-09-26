@@ -9,6 +9,77 @@ from tests import db_fixtures, pg_dsn
 from tests.db_fixtures import LeasePool, lease_dsn
 
 
+def test_initialized_database_survives_row_reset_and_new_event_loop(monkeypatch, request):
+    """Reuse initialization, preserve seeds, and isolate adapters and pool options."""
+    from sqlalchemy import text
+    from sqlalchemy.pool import NullPool
+    from unittest.mock import AsyncMock
+
+    from src.database import Database
+    from src.models import Project
+    from tests.db_fixtures import InitializedDatabases
+
+    dsn = lease_dsn("reused")
+    cache = InitializedDatabases()
+    initialized = []
+    original_initialize = Database.initialize
+
+    async def initialize(database):
+        initialized.append(database)
+        await original_initialize(database)
+
+    monkeypatch.setattr(Database, "initialize", initialize)
+
+    async def first_test():
+        database = await cache.get(dsn)
+        try:
+            await database.create_project(Project(id="old-test", name="Old test"))
+            database.set_ready_listener(AsyncMock())
+            database.set_state_machine_enforcement(True)
+            database._get_merge_slot_lock()
+        finally:
+            await database.close()
+        # The same teardown used by _pg_backend, with migration rows restored.
+        await db_fixtures.reset_all(dsn)
+        await db_fixtures.restore_seed(dsn, db_fixtures._SEED)
+        return database
+
+    async def second_test(previous):
+        database = await cache.get(dsn)
+        try:
+            assert database is not previous
+            assert database._engine is not previous._engine
+            assert isinstance(database._engine.pool, NullPool)
+            assert database._ready_listener is None
+            assert not getattr(database, "_sm_enforce", False)
+            assert database._get_merge_slot_lock() is not previous._get_merge_slot_lock()
+            assert await database.get_project("old-test") is None
+            async with database._engine.connect() as conn:
+                kinds = set((await conn.execute(text("SELECT id FROM workspace_kinds"))).scalars())
+            assert {"project-repo", "vault", "readonly-dir"} <= kinds
+            await database.create_project(Project(id="new-test", name="New test"))
+        finally:
+            await database.close()
+
+    previous = asyncio.run(first_test())
+    request.getfixturevalue("unpooled_postgres")
+    asyncio.run(second_test(previous))
+    assert initialized == [previous]
+
+
+async def test_reuse_database_keeps_distinct_leases_isolated(reuse_database):
+    from src.models import Project
+
+    first = await reuse_database("first")
+    second = await reuse_database("second")
+    assert await reuse_database("first") is first
+    assert first is not second
+    await first.create_project(Project(id="p", name="First"))
+    assert await second.get_project("p") is None
+    await second.create_project(Project(id="p", name="Second"))
+    assert (await first.get_project("p")).name == "First"
+
+
 def test_separate_test_runs_have_distinct_lease_names():
     dsn = lease_dsn("base")
     first = LeasePool(dsn, "gw0")

@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import insert, select
 
-from src.database import Database
 from src.database.tables import project_integration_schedules
 from src.integration.settling import (
     SETTLING_CAP_SECONDS,
@@ -15,13 +14,11 @@ from src.integration.settling import (
     settled,
 )
 from src.models import Project
-from tests.db_fixtures import lease_dsn
 
 
 @pytest.fixture
-async def db():
-    database = Database(lease_dsn("integration-settling.db"))
-    await database.initialize()
+async def db(reuse_database):
+    database = await reuse_database("integration-settling.db")
     await database.create_project(Project(id="p", name="settling project"))
     async with database.immediate() as conn:
         await conn.execute(
@@ -30,7 +27,6 @@ async def db():
             )
         )
     yield database
-    await database.close()
 
 
 async def _window(db):
