@@ -215,7 +215,7 @@ describe("TaskDetailPane — header, description, actions", () => {
     screen.getByRole("button", { name: "Open agent terminal" }).click();
     expect(mockNavigate).toHaveBeenCalledWith(
       { pathname: "/agents", search: "agent=agent-1" },
-      { state: { agentSelection: "replace" } },
+      { state: { agentSelection: "replace", terminalFocus: "agent-1" } },
     );
     expect(mockClose).toHaveBeenCalledOnce();
   });
