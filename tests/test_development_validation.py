@@ -16,8 +16,8 @@ import time
 import pytest
 
 from src.integration.development_result_parser import (
-    MAX_FAILURE_BYTES,
     MAX_FAILING_TESTS,
+    MAX_FAILURE_BYTES,
     MAX_JUNIT_BYTES,
     MAX_LINE_BYTES,
     PytestOutputParser,

@@ -176,7 +176,7 @@ class PytestOutputParser:
         try:
             for offset in range(0, len(chunk), _CHUNK_BYTES):
                 self._text(self._decoder.decode(chunk[offset : offset + _CHUNK_BYTES]))
-        except Exception:
+        except Exception:  # noqa: BLE001 - a parser bug must not stall the runner
             # Parsing never prevents a runner from draining its pipe, and a
             # partial report never upgrades a nonzero exit to a success.
             self._error = "text_parser_error"
@@ -237,7 +237,7 @@ class PytestOutputParser:
                 if not self._error:
                     self._text(self._decoder.decode(b"", final=True))
                     self._consume_line()
-            except Exception:
+            except Exception:  # noqa: BLE001 - a parser bug is a report error
                 self._error = "text_parser_error"
                 self._summary = None
             self._finished = self._failures.report(
@@ -359,7 +359,7 @@ def parse_junit(chunks: Iterable[bytes] | None) -> PytestReport:
             error = "malformed_junit"
         except ValueError as exc:
             error = str(exc)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a parser bug is a report error
             error = "junit_parser_error"
     summary = None if error else {key: count for key, count in counts.items() if count}
     return failures.report(
