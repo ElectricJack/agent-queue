@@ -73,6 +73,11 @@ vi.mock("./pages/settings/IntelligenceClassesStub", () => ({ default: () => <h1>
 vi.mock("./pages/PlaybookDetail", () => ({ default: () => <h1>Playbook detail</h1> }));
 vi.mock("./pages/reports/MorningReportPage", () => ({ default: () => <h1>Morning report read page</h1> }));
 vi.mock("./pages/reviews/ReviewsInbox", () => ({ default: () => <h1>Reviews inbox</h1> }));
+// The focus home's sections read agents, pools, usage and task graphs; this
+// suite is about routing, so the home renders its chrome around empty sections.
+vi.mock("./pages/focus/ActiveSessions", () => ({ default: () => null }));
+vi.mock("./pages/metrics/ProviderUsage", () => ({ default: () => null }));
+vi.mock("./pages/focus/FocusTaskList", () => ({ default: () => null }));
 
 function WorkspaceProbe({ title }: { title: string }) {
   const { projectId } = useParams();
