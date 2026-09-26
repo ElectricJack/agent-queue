@@ -2796,6 +2796,12 @@ class Orchestrator(
         the daemon — it logs the error and retries on the next cycle.
         """
         try:
+            handler = getattr(self, "_command_handler", None)
+            if getattr(type(handler), "_cmd_job_reconcile", None):
+                try:
+                    await handler._cmd_job_reconcile({})
+                except Exception:
+                    logger.error("Job reconciliation error", exc_info=True)
             # ── Phase 1: Promotion cascade ──────────────────────────────────
             # These steps form a "promotion cascade": a resolved gate can
             # immediately unblock a DEFINED task in the same cycle.  Breaking

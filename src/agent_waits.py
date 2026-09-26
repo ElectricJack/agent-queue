@@ -126,8 +126,12 @@ class AgentWaitReconciler:
     def __init__(self, handler):
         self.handler = handler
 
-    async def tick(self, *, now: float | None = None) -> dict[str, Any]:
+    async def tick(
+        self, *, now: float | None = None, wait_id: str | None = None
+    ) -> dict[str, Any]:
         from src.commands.principal import ExecutionPrincipal, principal_context
 
         with principal_context(ExecutionPrincipal.service("agent-waits")):
-            return await self.handler.execute("reconcile_agent_waits", {"now": now})
+            return await self.handler.execute(
+                "reconcile_agent_waits", {"now": now, "wait_id": wait_id}
+            )

@@ -61,6 +61,7 @@ from src.playbooks.validation import (  # noqa: E402
 
 FIXTURE_ROOT = REPO_ROOT / "tests" / "fixtures" / "playbooks" / "v2"
 SHIPPED = {
+    "supervisor-hourly-report": "src/prompts/default_playbooks/supervisor-hourly-report.md",
     "default-pipeline": "src/prompts/default_playbooks/default-pipeline.md",
     "default-assignment-routing": "src/prompts/default_playbooks/default-assignment-routing.md",
     "ci-main-sentinel": "src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md",
@@ -267,6 +268,8 @@ def _load(rel_path: str) -> PlaybookSource:
 
 
 def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
+    if playbook_id == "supervisor-hourly-report":
+        return _supervisor_hourly_report_body(source)
     if playbook_id == "default-pipeline":
         return _default_pipeline_body(source)
     if playbook_id == "default-assignment-routing":
@@ -932,6 +935,27 @@ def _blocked_task_escalation_body(source: PlaybookSource) -> dict[str, Any]:
             failed: _terminal(rule, "failed", index.step_ref(rule, None)),
         },
     }
+
+
+def _supervisor_hourly_report_body(source: PlaybookSource) -> dict[str, Any]:
+    index = ProseIndex(source, source.vault_path)
+    rules, steps = [], {}
+    for rule, event_type in (("request-window", "digest.window_ready"),
+                             ("recover-window", "timer.1m")):
+        call, done, failed = (f"{rule}--{suffix}" for suffix in ("request", "done", "failed"))
+        rules.append({
+            "id": rule, "name": rule, "trigger": {"event_type": event_type},
+            "entry_step": call, "source": index.rule_ref(rule),
+        })
+        steps[call] = {
+            "type": "command", "rule": rule, "title": "request",
+            "source": index.step_ref(rule, 1), "command": "report_reconcile",
+            "inputs": {}, "save_result_as": "requests",
+            "transitions": {"completed": done, "rejected": failed, "runtime_error": failed},
+        }
+        steps[done] = _terminal(rule, "completed", index.step_ref(rule, None))
+        steps[failed] = _terminal(rule, "failed", index.step_ref(rule, None))
+    return {"rules": rules, "steps": steps}
 
 
 def _supervisor_failure_triage_body(source: PlaybookSource) -> dict[str, Any]:

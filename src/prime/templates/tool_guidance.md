@@ -14,6 +14,12 @@ are stuck; exit code 75 means no slot came free, which is retryable and not a te
 raise `-n` above what the session was given — the cap is what keeps concurrent agents from
 saturating the machine.
 
+For a supported task, message or timer condition, use `aq wait register` with
+an idempotency key and end your turn. An active durable wait retains your claim,
+workspace and pool seat without heartbeat turns. Resume from the result pointer
+with `aq wait show WAIT_ID --json`. Registration returns immediately; job waits
+are unavailable until the job queue adapter is installed.
+
 Run focused tests for what changed and the related area suite, and record the exact commands.
 Full-suite runs belong to CI and tasks whose subject is the suite; do not run one as a routine
 close check. Compare failures with the project's recorded known-failing baseline note instead

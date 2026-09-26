@@ -542,7 +542,34 @@ class AgentWaitQueriesMixin:
                 return None
             return dict(row)
 
-    async def reconcile_agent_waits(self, *, now: float, limit: int = 100) -> dict:
+    async def agent_wait_for_claim(self, session, claim_epoch: int) -> dict | None:
+        """Latest blocking wait for this live instance and claim, never its predecessor."""
+        async with self._engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        select(waits).where(
+                            waits.c.session_id == session.id,
+                            waits.c.session_instance_token == session.instance_token,
+                            waits.c.owner_kind == "task",
+                            waits.c.owner_id == session.task_id,
+                            waits.c.claim_epoch == claim_epoch,
+                        ).order_by(
+                            case((waits.c.state == "active", 0), else_=1),
+                            waits.c.wait_resumed_at.desc().nulls_last(),
+                            waits.c.created_at.desc(),
+                            waits.c.id,
+                        ).limit(1)
+                    )
+                ).mappings().first()
+            )
+            if row and await self._blocking_wait_current(conn, dict(row)):
+                return dict(row)
+            return None
+
+    async def reconcile_agent_waits(
+        self, *, now: float, limit: int = 100, wait_id: str | None = None
+    ) -> dict:
         """At most 100 indexed candidates, including pending terminal outbox rows."""
         async with self._engine.connect() as conn:
             candidates = [
@@ -556,6 +583,7 @@ class AgentWaitQueriesMixin:
                                 waits.c.result_message_id.is_(None),
                             )
                         )
+                        .where(waits.c.id == wait_id if wait_id else True)
                         .order_by(
                             case((waits.c.deadline_at <= now, 0), else_=1),
                             waits.c.checked_at,

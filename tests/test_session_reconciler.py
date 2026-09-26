@@ -2576,3 +2576,300 @@ class TestIdlePoolWorkerOnUsageLimitScreen:
         await pool_reconciler._step_abandoned_pool_claim_loop([row], NOW)
 
         assert pool_reconciler.test_orch.terminations == [(row.id, "usage_limit_screen")]
+
+
+async def _waiting_session(db, provider, rec, config, tmp_path, lifecycle="task", timeout=7200):
+    """Real wait commands, claim and workspace, with only the terminal faked."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src.commands import CommandHandler
+
+    await _task(db)
+    await _busy_agent_and_workspace(db, tmp_path)
+    task = await db.get_task("t1")
+    row = await _session(
+        db, provider, agent_id="a1", lifecycle=lifecycle,
+        claim_phase="active" if lifecycle == "pool" else None,
+        last_claim_epoch=task.claim_epoch if lifecycle == "pool" else None,
+        started_at=NOW - 10000, last_activity=NOW - 10000,
+    )
+    provider.sessions[row.name].activity = NOW - 10000
+    # The test clock must also govern subsequent nudges/teardown.
+    orch = rec.orchestrator
+    if orch is None:
+        orch = SimpleNamespace(db=db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+        rec.orchestrator = orch
+    if not hasattr(orch, "bus"):
+        orch.bus = SimpleNamespace(emit=AsyncMock())
+    orch.command_handler = CommandHandler(orch, config)
+    await db.create_task(Task(id="producer", project_id="p1", title="Producer", description=""))
+    wait = await db.register_agent_wait(
+        identity=dict(session_id=row.id, instance_token=row.instance_token, project_id="p1",
+                      claim_epoch=task.claim_epoch, elevated=False),
+        kind="task", match={"task_id": "producer"}, deadline_at=NOW + timeout,
+        idempotency_key="durable", now=NOW,
+    )
+    return row, wait
+
+
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+async def test_long_wait_preserves_claim_workspace_and_silent_activity(
+    db, provider, pool_reconciler, config, tmp_path, lifecycle, monkeypatch
+):
+    config.agents_config.stuck_timeout_seconds = 60
+    rec = pool_reconciler
+    row, _ = await _waiting_session(db, provider, rec, config, tmp_path, lifecycle)
+    monkeypatch.setattr("src.sessions.reconciler.time.time", lambda: NOW)
+    for tick in (NOW, NOW + 1800, NOW + 3600, NOW + 7199):
+        await rec.tick(now=tick)
+        current = await db.get_session(row.id)
+        assert current.state == "running"
+        assert current.task_id == "t1"
+        assert current.last_activity == NOW - 10000
+        assert (await db.get_task("t1")).status == TaskStatus.IN_PROGRESS
+        assert (await db.get_agent("a1")).state == AgentState.BUSY
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+    assert provider.sent_nudges == []
+    assert rec.test_orch.terminations == []
+
+
+@pytest.mark.parametrize("resolution", ["completed", "expired", "missing", "cancelled"])
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
+async def test_wait_wake_gets_fresh_lease_and_resets_stall_ladder(
+    db, provider, pool_reconciler, config, tmp_path, resolution, lifecycle, monkeypatch
+):
+    from sqlalchemy import delete
+    from src.database.tables import tasks
+
+    rec = pool_reconciler
+    config.agents_config.stuck_timeout_seconds = 30  # less than one lease
+    row, wait = await _waiting_session(db, provider, rec, config, tmp_path, lifecycle)
+    await db.set_task_meta("t1", META_STALL_NUDGES, "3")
+    await db.set_task_meta("t1", META_STALL_LAST_ACTION, str(NOW - 5000))
+    resumed = NOW + 7200
+    monkeypatch.setattr("src.sessions.reconciler.time.time", lambda: resumed)
+    if resolution == "completed":
+        await db.transition_task("producer", TaskStatus.COMPLETED)
+    elif resolution == "missing":
+        async with db._engine.begin() as conn:
+            await conn.execute(delete(tasks).where(tasks.c.id == "producer"))
+        resumed = NOW + 3600
+    elif resolution == "cancelled":
+        await db.cancel_agent_wait(wait["id"], identity=None, now=resumed)
+    # Do not run the global scan: lease consumers must target this wait themselves.
+    await rec.tick(now=resumed)
+    result = await db.get_agent_wait(wait["id"])
+    assert result["state"] != "active"
+    assert result["wait_resumed_at"] == resumed
+    assert (await db.get_session(row.id)).state == "running"
+    assert await db.get_task_meta("t1", META_STALL_NUDGES) == "0"
+    assert await db.get_task_meta("t1", META_STALL_LAST_ACTION) == str(resumed)
+    await rec.tick(now=resumed + config.sessions.lease_ttl_seconds)
+    assert (await db.get_session(row.id)).state == "running"
+    assert provider.sent_nudges == []
+    # Grace is bounded: a session that ignores the result is enforced normally.
+    await rec.tick(now=resumed + config.sessions.lease_ttl_seconds + 1)
+    assert (await db.get_session(row.id)).state == "stopped"
+
+
+async def test_unrelated_wait_and_stale_epoch_cannot_exempt_a_stall(
+    db, provider, reconciler, config, tmp_path, monkeypatch
+):
+    from sqlalchemy import update
+    from src.database.tables import tasks
+
+    row, wait = await _waiting_session(db, provider, reconciler, config, tmp_path)
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "t1").values(claim_epoch=2))
+    monkeypatch.setattr("src.sessions.reconciler.time.time", lambda: NOW)
+    await reconciler.tick(now=NOW)
+    assert len(provider.sent_nudges) == 1
+    assert (await db.get_session(row.id)).state == "running"
+    assert await db.blocking_wait_for(row, 2, NOW) is None
+    assert await db.agent_wait_for_claim(row, 2) is None
+    # A producer's existence, or a wait belonging to another claim, supplies no exemption.
+    await db.reconcile_agent_waits(now=NOW)
+    assert (await db.get_agent_wait(wait["id"]))["state"] == "cancelled"
+
+
+async def test_dead_waiting_session_is_recovered_and_old_result_survives(
+    db, provider, releasing_reconciler, config, tmp_path, monkeypatch
+):
+    rec = releasing_reconciler
+    row, wait = await _waiting_session(db, provider, rec, config, tmp_path)
+    monkeypatch.setattr("src.sessions.reconciler.time.time", lambda: NOW)
+    await provider.stop(rec._handle(row))
+    await rec.tick(now=NOW)
+    assert (await db.get_session(row.id)).state != "running"
+    assert (await db.get_task("t1")).status != TaskStatus.IN_PROGRESS
+    await db.reconcile_agent_waits(now=NOW + 1)
+    result = await db.get_agent_wait(wait["id"])
+    assert result["state"] == "cancelled"
+    assert await db.get_message(result["result_message_id"])
+
+
+async def test_manual_pause_is_not_unpaused_by_wait_result(
+    db, provider, reconciler, config, tmp_path, monkeypatch
+):
+    row, wait = await _waiting_session(db, provider, reconciler, config, tmp_path)
+    await db.transition_task("t1", TaskStatus.PAUSED, resume_after=None)
+    monkeypatch.setattr("src.sessions.reconciler.time.time", lambda: NOW)
+    await reconciler.tick(now=NOW)
+    await db.reconcile_agent_waits(now=NOW + 1)
+    assert (await db.get_task("t1")).status == TaskStatus.PAUSED
+    assert (await db.get_task("t1")).resume_after is None
+    assert (await db.get_agent_wait(wait["id"]))["state"] == "cancelled"
+    assert (await db.get_session(row.id)).state == "stopped"
+
+
+async def test_restart_reconstructs_wait_exemption_without_heartbeat(
+    db, provider, pool_reconciler, registry, bus, config, tmp_path
+):
+    row, _ = await _waiting_session(db, provider, pool_reconciler, config, tmp_path, "pool")
+    restarted = SessionReconciler(
+        db, config, registry, bus=bus, orchestrator=pool_reconciler.orchestrator, epoch="restart"
+    )
+    await restarted.adopt_on_start()
+    await restarted.tick(now=NOW + 3600)
+    assert (await db.get_session(row.id)).state == "running"
+    assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+    assert provider.sent_nudges == []
+
+
+@pytest.mark.tmux
+async def test_opt_in_real_harness_wait_idle(db, config, tmp_path):
+    """AQ_WAIT_REAL_HARNESS=codex|claude enables a paid, isolated live-idle probe.
+
+    Observe actual transcripts across more than one shortened lease interval:
+    no heartbeat/tool/model turn while waiting, then one result-pointer nudge.
+    This never launches or contacts the operator daemon.
+    """
+    import os
+    import shutil
+    import time
+    import uuid
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from pathlib import Path
+    from src.commands import CommandHandler
+    from src.sessions.harness_parser import parse_harness_markdown
+    from src.sessions.tmux import TmuxProvider
+    from src.sessions.transcripts import resolve_reader
+    from src.messages.delivery import MessageDeliveryEngine
+
+    harness_id = os.environ.get("AQ_WAIT_REAL_HARNESS")
+    if not harness_id:
+        pytest.skip("opt in with AQ_WAIT_REAL_HARNESS=codex or claude (uses installed credentials)")
+    assert harness_id in {"codex", "claude"}
+    assert shutil.which(harness_id) and shutil.which("tmux"), "real harness and tmux required"
+    harness = parse_harness_markdown(
+        Path(f"src/sessions/default_harnesses/{harness_id}.md").read_text()
+    ).harness
+    assert harness is not None
+    config.sessions.provider = "tmux"
+    config.sessions.tmux_socket = f"aq-wait-test-{uuid.uuid4().hex[:10]}"
+    config.sessions.lease_ttl_seconds = 3
+    config.agents_config.stuck_timeout_seconds = 3
+    config.data_dir = str(tmp_path / "state")
+    provider = TmuxProvider(config=config)
+    launch = time.time()
+    token = uuid.uuid4().hex
+    prompt = (
+        "This is an isolated live-idle test. Reply exactly WAIT_IDLE and end your turn. "
+        "Use no tools and do not poll or sleep. If another prompt arrives, reply WAIT_RESULT "
+        "and end that turn, again without tools."
+    )
+    child_env = {k: v for k, v in os.environ.items() if not k.startswith("AQ_")}
+    child_env.pop("CLAUDECODE", None)
+    child_env.update(AQ_SESSION_ID="wait-probe", AQ_INSTANCE_TOKEN=token)
+    work = tmp_path / "harness"
+    work.mkdir()
+    args = (harness_id,)
+    if harness_id == "claude":
+        args += ("--session-id", str(uuid.uuid4()))
+    spec = SessionSpec(
+        session_name="s-wait-probe", work_dir=str(work), command=(*args, prompt),
+        env=child_env, instance_token=token, process_names=harness.process_names,
+        ready_delay_ms=harness.ready_delay_ms, ready_prompt_prefix=harness.ready_prompt_prefix,
+        dialogs=harness.dialogs, skip_escape_before_enter=harness.skip_escape_before_enter,
+        composer_clear_keys=harness.composer_clear_keys,
+    )
+    reader = resolve_reader(harness_id)
+    assert reader is not None
+    handle = None
+    try:
+        handle = await provider.start(spec)
+        # Initial model turn is setup, not the measured idle interval.
+        path = None
+        for _ in range(120):
+            path = reader.resolve_path(str(work), None)
+            if path:
+                entries, offset = await reader.read_new(path, 0)
+                if any(e.turn_complete for e in entries) and reader.activity(entries) == "idle":
+                    break
+            await asyncio.sleep(0.5)
+        else:
+            pytest.fail("real harness did not finish its initial turn within 60 seconds")
+        await _task(db)
+        await _busy_agent_and_workspace(db, work)
+        task = await db.get_task("t1")
+        row = SessionRecord(
+            id="wait-probe", project_id="p1", profile_id="worker", harness=harness_id,
+            provider="tmux", name=spec.session_name, lifecycle="task", work_dir=str(work),
+            epoch="probe", instance_token=token, started_at=launch, task_id="t1",
+            state="running", agent_id="a1", last_activity=launch,
+        )
+        await db.create_session(row)
+        orch = SimpleNamespace(db=db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+        orch.command_handler = CommandHandler(orch, config)
+        registry = SimpleNamespace(create=lambda *_: provider)
+        rec = SessionReconciler(db, config, registry, orchestrator=orch)
+        now = time.time()
+        wait = await db.register_agent_wait(
+            identity=dict(session_id=row.id, instance_token=token, project_id="p1",
+                          claim_epoch=task.claim_epoch, elevated=False),
+            kind="timer", match={"due_at": now + 60}, deadline_at=now + 120,
+            idempotency_key="idle-probe", now=now,
+        )
+        for _ in range(8):
+            await rec.tick(now=time.time())
+            await asyncio.sleep(1)
+        idle_entries, _ = await reader.read_new(path, offset)
+        assert not [
+            e for e in idle_entries
+            if e.type in {"user", "tool_use"} or e.usage
+            or (e.type == "assistant" and (e.text or e.turn_complete))
+        ]
+        assert (await db.get_session(row.id)).state == "running"
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+        assert await db.get_task_meta("t1", META_STALL_NUDGES) is None
+        # Resolve normally and deliver using the real provider input channel.
+        await db.cancel_agent_wait(wait["id"], identity=None, now=time.time())
+        class IdleLens:
+            async def activity(self, **_):
+                return "idle"
+
+            async def nudge(self, *, text, **_):
+                await provider.nudge(handle, text)
+                return True
+
+        engine = MessageDeliveryEngine(db, IdleLens(), config)
+        assert (await engine.run_delivery_pass())["delivered"] == 1
+        assert (await engine.run_delivery_pass())["delivered"] == 0
+        result_seen = False
+        for _ in range(120):
+            after, _ = await reader.read_new(path, offset)
+            if any(e.type == "user" and f"aq wait show {wait['id']}" in e.text for e in after):
+                result_seen = True
+                break
+            await asyncio.sleep(0.5)
+        assert result_seen, "result pointer did not reach the real transcript"
+    finally:
+        await provider.stop(handle or SessionHandle(spec.session_name, "tmux", token), grace=1)
+        process = await asyncio.create_subprocess_exec(
+            "tmux", "-L", config.sessions.tmux_socket, "kill-server",
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(process.wait(), timeout=10)
+        socket_root = Path(os.environ.get("TMUX_TMPDIR", "/tmp")) / f"tmux-{os.getuid()}"
+        (socket_root / config.sessions.tmux_socket).unlink(missing_ok=True)

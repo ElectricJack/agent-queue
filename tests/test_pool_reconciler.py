@@ -1163,3 +1163,33 @@ async def test_cancellation_after_session_insert_preserves_durable_owner(orch, d
     provider = orch.session_providers.create("fake", orch.config)
     assert len(provider.sessions) == 1
     assert not orch._pool_launches
+
+
+async def test_timeout_pool_cleanup_respects_wait_but_operator_stop_wins(orch, db, monkeypatch):
+    from src.models import TaskStatus
+
+    await ready(db, "waiting")
+    sid = await orch._launch_pool_session(await db.get_project(PROJECT_ID), await db.get_profile("worker"))
+    row = await db.get_session(sid)
+    await db.transition_task("waiting", TaskStatus.IN_PROGRESS, assigned_agent_id=row.agent_id)
+    task = await db.get_task("waiting")
+    await db.update_agent(row.agent_id, state=AgentState.BUSY, current_task_id="waiting")
+    await db.update_session(sid, task_id="waiting", claim_phase="active", last_claim_epoch=task.claim_epoch)
+    now = time.time()
+    wait = await db.register_agent_wait(
+        identity=dict(session_id=sid, instance_token=row.instance_token, project_id=PROJECT_ID,
+                      claim_epoch=task.claim_epoch, elevated=False),
+        kind="timer", match={"due_at": now + 1000}, deadline_at=now + 2000,
+        idempotency_key="pool-cleanup", now=now,
+    )
+    row = await db.get_session(sid)
+    for reason in ("stalled", "stuck_timeout", "prepare_timeout", "claim_loop_stalled"):
+        await orch._terminate_pool_session(row, reason=reason)
+        current = await db.get_session(sid)
+        assert current.state == "running" and current.task_id == "waiting"
+        assert (await db.get_agent(row.agent_id)).state == AgentState.BUSY
+        assert (await db.get_agent_wait(wait["id"]))["state"] == "active"
+    await orch._terminate_pool_session(row, reason="operator")
+    assert (await db.get_session(sid)).state == "stopped"
+    await db.reconcile_agent_waits(now=now + 1)
+    assert (await db.get_agent_wait(wait["id"]))["state"] == "cancelled"

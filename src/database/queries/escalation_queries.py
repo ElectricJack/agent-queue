@@ -1521,19 +1521,23 @@ class EscalationQueriesMixin:
             ),
         )
         async with self.immediate() as conn:
-            ids = (
+            candidates = (
                 (
                     await conn.execute(
-                        select(digest_windows.c.id)
+                        select(digest_windows.c.id, digest_windows.c.send_status)
                         .where(due)
                         .order_by(digest_windows.c.due_at, digest_windows.c.id)
                         .limit(limit)
                         .with_for_update(skip_locked=True)
                     )
                 )
-                .scalars()
+                .mappings()
                 .all()
             )
+            ids = [candidate["id"] for candidate in candidates]
+            reclaimed = {
+                candidate["id"] for candidate in candidates if candidate["send_status"] == "sending"
+            }
             if not ids:
                 return []
             rows = (
@@ -1569,7 +1573,7 @@ class EscalationQueriesMixin:
                 )
             )
         by_id = {row["id"]: dict(row) for row in rows}
-        return [by_id[item_id] for item_id in ids]
+        return [{**by_id[item_id], "reclaimed": item_id in reclaimed} for item_id in ids]
 
     async def finish_digest_delivery(
         self,

@@ -99,7 +99,7 @@
       "default": {
         "graceful_shutdown_timeout_seconds": 30,
         "heartbeat_interval_seconds": 30,
-        "stuck_timeout_seconds": 1800
+        "stuck_timeout_seconds": 0
       },
       "properties": {
         "graceful_shutdown_timeout_seconds": {
@@ -111,7 +111,7 @@
           "type": "integer"
         },
         "stuck_timeout_seconds": {
-          "default": 1800,
+          "default": 0,
           "type": "integer"
         }
       },
@@ -1975,6 +1975,129 @@
       "type": "object",
       "x-reload": "hot"
     },
+    "reports": {
+      "additionalProperties": false,
+      "default": {
+        "hourly": {
+          "enabled": false,
+          "full_fleet_visibility": false,
+          "grace_minutes": 5,
+          "max_requests_per_day": 12,
+          "quiet_hours": null
+        },
+        "morning": {
+          "author_deadline_minutes": 15,
+          "destination": "",
+          "enabled": false,
+          "late_cutoff_minutes": 120,
+          "max_lookback_hours": 72,
+          "project_ids": [],
+          "time": "07:00"
+        },
+        "timezone": "UTC"
+      },
+      "properties": {
+        "hourly": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false,
+            "full_fleet_visibility": false,
+            "grace_minutes": 5,
+            "max_requests_per_day": 12,
+            "quiet_hours": null
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "full_fleet_visibility": {
+              "default": false,
+              "type": "boolean"
+            },
+            "grace_minutes": {
+              "default": 5,
+              "type": "integer"
+            },
+            "max_requests_per_day": {
+              "default": 12,
+              "type": "integer"
+            },
+            "quiet_hours": {
+              "additionalProperties": false,
+              "default": null,
+              "properties": {
+                "end": {
+                  "default": "",
+                  "type": "string"
+                },
+                "start": {
+                  "default": "",
+                  "type": "string"
+                }
+              },
+              "type": [
+                "object",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "morning": {
+          "additionalProperties": false,
+          "default": {
+            "author_deadline_minutes": 15,
+            "destination": "",
+            "enabled": false,
+            "late_cutoff_minutes": 120,
+            "max_lookback_hours": 72,
+            "project_ids": [],
+            "time": "07:00"
+          },
+          "properties": {
+            "author_deadline_minutes": {
+              "default": 15,
+              "type": "integer"
+            },
+            "destination": {
+              "default": "",
+              "type": "string"
+            },
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "late_cutoff_minutes": {
+              "default": 120,
+              "type": "integer"
+            },
+            "max_lookback_hours": {
+              "default": 72,
+              "type": "integer"
+            },
+            "project_ids": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "time": {
+              "default": "07:00",
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "timezone": {
+          "default": "UTC",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "restart"
+    },
     "resources": {
       "additionalProperties": false,
       "default": {
@@ -1985,6 +2108,21 @@
         },
         "cores": null,
         "enabled": true,
+        "jobs": {
+          "enabled": false,
+          "exclusive_queue_seconds": 5400,
+          "head_bytes": 1048576,
+          "log_budget_bytes": 2147483648,
+          "log_days": 14,
+          "max_queued": 100,
+          "per_task_active": 2,
+          "per_task_queued": 10,
+          "result_days": 90,
+          "run_seconds": 7200,
+          "shared_queue_seconds": 1800,
+          "tail_bytes": 66060288,
+          "test_database_url": ""
+        },
         "load_warn_ratio": 1.0,
         "max_concurrent_agents": 8,
         "max_pytest_processes": 24,
@@ -2030,6 +2168,79 @@
         "enabled": {
           "default": true,
           "type": "boolean"
+        },
+        "jobs": {
+          "additionalProperties": false,
+          "default": {
+            "enabled": false,
+            "exclusive_queue_seconds": 5400,
+            "head_bytes": 1048576,
+            "log_budget_bytes": 2147483648,
+            "log_days": 14,
+            "max_queued": 100,
+            "per_task_active": 2,
+            "per_task_queued": 10,
+            "result_days": 90,
+            "run_seconds": 7200,
+            "shared_queue_seconds": 1800,
+            "tail_bytes": 66060288,
+            "test_database_url": ""
+          },
+          "properties": {
+            "enabled": {
+              "default": false,
+              "type": "boolean"
+            },
+            "exclusive_queue_seconds": {
+              "default": 5400,
+              "type": "integer"
+            },
+            "head_bytes": {
+              "default": 1048576,
+              "type": "integer"
+            },
+            "log_budget_bytes": {
+              "default": 2147483648,
+              "type": "integer"
+            },
+            "log_days": {
+              "default": 14,
+              "type": "integer"
+            },
+            "max_queued": {
+              "default": 100,
+              "type": "integer"
+            },
+            "per_task_active": {
+              "default": 2,
+              "type": "integer"
+            },
+            "per_task_queued": {
+              "default": 10,
+              "type": "integer"
+            },
+            "result_days": {
+              "default": 90,
+              "type": "integer"
+            },
+            "run_seconds": {
+              "default": 7200,
+              "type": "integer"
+            },
+            "shared_queue_seconds": {
+              "default": 1800,
+              "type": "integer"
+            },
+            "tail_bytes": {
+              "default": 66060288,
+              "type": "integer"
+            },
+            "test_database_url": {
+              "default": "",
+              "type": "string"
+            }
+          },
+          "type": "object"
         },
         "load_warn_ratio": {
           "default": 1.0,
@@ -2560,6 +2771,7 @@
       "messaging_platform",
       "playbooks",
       "profile",
+      "reports",
       "security",
       "sessions",
       "streams",

@@ -265,7 +265,7 @@ areas:
     match: [tests/test_escalation_*.py, tests/test_discord_escalation_transport.py]
   - id: digest
     description: "Activity digest: fact eligibility and dedup, rendering, window scheduling and delivery, digest commands, what a window may read, digest settings, and durable hourly report requests with CAS submission and deterministic fallback."
-    match: [tests/test_digest*.py, tests/test_discord_settings.py, tests/test_report_requests.py, tests/test_morning_reports.py]
+    match: [tests/test_digest*.py, tests/test_discord_settings.py, tests/test_report_requests.py, tests/test_morning_reports.py, tests/test_report_delivery.py]
   - id: supervisor
     description: "The supervisor: global cold start and admin scope, global-admin token loopback, recovery incidents and claim-fenced decisions, failure triage, config, durable conversations, inbound conversation gates, verified supervisor inbox intake and the blocked-task escalation playbook."
     match:
@@ -550,6 +550,9 @@ areas:
   - id: test-selection
     description: "Smart test selection: test module discovery, the generated selection catalogue, the reviewed area, mandatory-rule and omission-policy artifacts and the selection library built on them."
     match: [tests/test_selection_*.py]
+  - id: managed-jobs
+    description: "Managed jobs: detached execution, crash receipts, idempotency, workspace pins, bounded output and immutable results."
+    match: [tests/test_jobs_*.py]
   - id: resource-gating
     description: "Resource gating: per-session env caps, nice and cgroup scopes, the box-wide test-slot semaphore, orphaned test-run reaping, slot-wait reports, resources doctor checks and recorded test-baseline snapshots."
     match:

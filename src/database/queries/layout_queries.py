@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
 from collections.abc import Iterable
+from itertools import islice
 
 from sqlalchemy import case, delete, exists, func, insert, select, update
 
@@ -18,6 +20,9 @@ from src.database.tables import (
     project_layout_meta,
 )
 
+
+LAYOUT_WRITE_BATCH_SIZE = 256
+"""Bound synchronous parameter preparation between event-loop yields during publication."""
 
 MAX_REFLOW_SCOPES_PER_JOB = 32
 """Bound one periodic reflow group, even for a very busy project."""
@@ -1082,6 +1087,19 @@ class LayoutQueryMixin:
             return [dict(m) for m in res.mappings()]
 
     # ── snapshot & rows ──────────────────────────────────────────────────
+    async def load_layout_blocked_ids(self, project_id: str) -> set[str]:
+        """Read only the blocked IDs needed for layout aggregate counters."""
+        from src.database.tables import tasks
+
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                select(tasks.c.id).where(
+                    tasks.c.project_id == project_id,
+                    tasks.c.is_blocked != 0,
+                )
+            )
+            return set(result.scalars())
+
     async def load_project_snapshot(self, project_id: str):
         from src.database.queries.hierarchy_queries import (
             CONTAINER_KEY,
@@ -1428,45 +1446,50 @@ class LayoutQueryMixin:
             # upserts, so its entry overwrites and the last write wins.
             touched: dict[str, tuple[float, float, float, float]] = {}
             if write_set.upserts:
-                rows_vals = [
-                    {
-                        "project_id": project_id,
-                        "variant": variant,
-                        "task_id": r.task_id,
-                        "container_id": r.container_id,
-                        "path": r.path,
-                        "depth": r.depth,
-                        "rank": r.rank,
-                        "order_key": r.order_key,
-                        "w": r.w,
-                        "h": r.h,
-                        "rel_x": r.rel_x,
-                        "rel_y": r.rel_y,
-                        "abs_x": r.abs_x,
-                        "abs_y": r.abs_y,
-                        "kind": r.kind,
-                        "agg_children": r.agg_children,
-                        "agg_descendants": r.agg_descendants,
-                        "agg_completed": r.agg_completed,
-                        "agg_running": r.agg_running,
-                        "agg_blocked": r.agg_blocked,
-                        "agg_active": r.agg_active,
-                    }
-                    for r in write_set.upserts
-                ]
-                update_cols = [
-                    k for k in rows_vals[0] if k not in ("project_id", "variant", "task_id")
-                ]
-                ins = (postgresql.insert if dialect == "postgresql" else sqlite.insert)(
-                    task_layouts
-                )
-                upd = {k: ins.excluded[k] for k in update_cols}
-                stmt = ins.on_conflict_do_update(
-                    index_elements=["project_id", "variant", "task_id"], set_=upd
-                )
-                await conn.execute(stmt, rows_vals)
-                for r in write_set.upserts:
-                    touched[r.task_id] = (r.abs_x, r.abs_y, r.w, r.h)
+                # Keep parameter construction and executemany bounded; a
+                # 10k-row publication otherwise starves health on this loop.
+                # All batches share this transaction and its meta-row lock.
+                for chunk in _chunks(write_set.upserts, LAYOUT_WRITE_BATCH_SIZE):
+                    rows_vals = [
+                        {
+                            "project_id": project_id,
+                            "variant": variant,
+                            "task_id": r.task_id,
+                            "container_id": r.container_id,
+                            "path": r.path,
+                            "depth": r.depth,
+                            "rank": r.rank,
+                            "order_key": r.order_key,
+                            "w": r.w,
+                            "h": r.h,
+                            "rel_x": r.rel_x,
+                            "rel_y": r.rel_y,
+                            "abs_x": r.abs_x,
+                            "abs_y": r.abs_y,
+                            "kind": r.kind,
+                            "agg_children": r.agg_children,
+                            "agg_descendants": r.agg_descendants,
+                            "agg_completed": r.agg_completed,
+                            "agg_running": r.agg_running,
+                            "agg_blocked": r.agg_blocked,
+                            "agg_active": r.agg_active,
+                        }
+                        for r in chunk
+                    ]
+                    update_cols = [
+                        k for k in rows_vals[0] if k not in ("project_id", "variant", "task_id")
+                    ]
+                    ins = (postgresql.insert if dialect == "postgresql" else sqlite.insert)(
+                        task_layouts
+                    )
+                    upd = {k: ins.excluded[k] for k in update_cols}
+                    stmt = ins.on_conflict_do_update(
+                        index_elements=["project_id", "variant", "task_id"], set_=upd
+                    )
+                    await conn.execute(stmt, rows_vals)
+                    for r in chunk:
+                        touched[r.task_id] = (r.abs_x, r.abs_y, r.w, r.h)
+                    await asyncio.sleep(0)
 
             # translations — descendants only; the container's own row is
             # upserted separately by the pass that moved it (controller
@@ -1501,14 +1524,15 @@ class LayoutQueryMixin:
 
             # cells for every touched row
             if touched:
-                await conn.execute(
-                    delete(cells).where(
-                        cells.c.project_id == project_id,
-                        cells.c.variant == variant,
-                        cells.c.task_id.in_(list(touched)),
+                for chunk in _chunks(list(touched), LAYOUT_WRITE_BATCH_SIZE):
+                    await conn.execute(
+                        delete(cells).where(
+                            cells.c.project_id == project_id,
+                            cells.c.variant == variant,
+                            cells.c.task_id.in_(chunk),
+                        )
                     )
-                )
-                crow = [
+                cell_values = (
                     {
                         "project_id": project_id,
                         "variant": variant,
@@ -1518,9 +1542,10 @@ class LayoutQueryMixin:
                     }
                     for tid, (bx, by, bw, bh) in touched.items()
                     for cx, cy in cells_for_box(bx, by, bw, bh)
-                ]
-                if crow:
+                )
+                while crow := list(islice(cell_values, LAYOUT_WRITE_BATCH_SIZE)):
                     await conn.execute(insert(cells), crow)
+                    await asyncio.sleep(0)
 
             # meta
             count = (

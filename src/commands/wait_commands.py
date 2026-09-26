@@ -174,5 +174,7 @@ class WaitCommandsMixin:
         if principal is None or principal.kind != PrincipalKind.SERVICE:
             return _error("out_of_scope", "only the daemon may reconcile agent waits")
         now = args.get("now")
-        result = await self.db.reconcile_agent_waits(now=time.time() if now is None else now)
+        result = await self.db.reconcile_agent_waits(
+            now=time.time() if now is None else now, wait_id=args.get("wait_id")
+        )
         return {"success": True, **result}

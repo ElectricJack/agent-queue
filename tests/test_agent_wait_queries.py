@@ -461,3 +461,46 @@ async def test_migration_adds_sequence_to_existing_messages_and_is_idempotent(en
         body="post-upgrade",
     )
     assert 0 < old.created_seq < new.created_seq
+
+
+async def test_current_claim_wait_and_resumed_baseline_are_epoch_and_instance_fenced(env):
+    from dataclasses import replace
+
+    wait = await register(env)
+    assert (await env.db.agent_wait_for_claim(env.session, 1))["id"] == wait["id"]
+    await env.db.cancel_agent_wait(wait["id"], identity=env.identity, now=NOW + 10)
+    assert (await env.db.agent_wait_for_claim(env.session, 1))["wait_resumed_at"] == NOW + 10
+    assert await env.db.agent_wait_for_claim(env.session, 2) is None
+    assert await env.db.agent_wait_for_claim(replace(env.session, instance_token="other"), 1) is None
+    await env.db.update_session("s", state="stopped")
+    assert await env.db.agent_wait_for_claim(env.session, 1) is None
+
+
+async def test_new_active_wait_wins_over_old_result_with_equal_creation_time(env):
+    first = await register(env)
+    await env.db.cancel_agent_wait(first["id"], identity=env.identity, now=NOW + 1)
+    second = await register(env, key="next")
+    assert (await env.db.agent_wait_for_claim(env.session, 1))["id"] == second["id"]
+    assert await env.db.blocking_wait_for(env.session, 1, NOW + 2)
+
+
+async def test_targeted_resolution_cannot_be_starved_by_pending_outbox_history(env):
+    from src.database.tables import agent_waits
+    from sqlalchemy import insert
+
+    wait = await register(env)
+    # A hundred old outbox intents outrank the owner's new active wait in
+    # the global scan. The lease consumer targets this exact wait identity.
+    history = [
+        dict(wait, id=f"old-outbox-{i}", state="cancelled", result_message_id=None,
+             deadline_at=NOW - 1, idempotency_key=f"old-{i}", created_at=NOW - 100,
+             wait_resumed_at=NOW - 100, resolved_at=NOW - 100)
+        for i in range(100)
+    ]
+    async with env.db._engine.begin() as conn:
+        await conn.execute(insert(agent_waits), history)
+    await complete(env.db)
+    result = await env.db.reconcile_agent_waits(now=NOW + 200, wait_id=wait["id"])
+    assert result["scanned"] == 1 and result["resolved"] == 1
+    assert (await env.db.get_agent_wait(wait["id"]))["wait_resumed_at"] == NOW + 200
+    assert (await env.db.get_agent_wait("old-outbox-0"))["result_message_id"] is None

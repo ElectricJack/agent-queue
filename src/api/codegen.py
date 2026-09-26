@@ -54,6 +54,15 @@ logger = logging.getLogger(__name__)
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
+    # Phase 2 execution substrate; public job/wait adapters land in phase 3.
+    "job_submit",
+    "job_get",
+    "job_list",
+    "job_cancel",
+    "job_result",
+    "job_logs",
+    "job_reconcile",
+
     "load_tools",
     "reply_to_user",
     # Runs an LLM-authored string through /bin/sh on the daemon host
@@ -131,6 +140,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "digest_preview",
             "digest_status",
             "report_request",
+            "report_reconcile",
             "morning_report_preview",
             "morning_report_tick",
             "report_get",

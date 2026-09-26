@@ -218,6 +218,7 @@
         "tests/test_digest_queries.py",
         "tests/test_discord_settings.py",
         "tests/test_morning_reports.py",
+        "tests/test_report_delivery.py",
         "tests/test_report_requests.py"
       ]
     },
@@ -584,6 +585,15 @@
         "tests/test_llm_logger.py",
         "tests/test_log_access.py",
         "tests/test_logging_config.py"
+      ]
+    },
+    "managed-jobs": {
+      "description": "Managed jobs: detached execution, crash receipts, idempotency, workspace pins, bounded output and immutable results.",
+      "modules": [
+        "tests/test_jobs_output.py",
+        "tests/test_jobs_queries.py",
+        "tests/test_jobs_recovery.py",
+        "tests/test_jobs_runner.py"
       ]
     },
     "memory-facts": {
@@ -1232,7 +1242,7 @@
       ]
     }
   },
-  "digest": "sha256:0f8950c2880843f87ff4ef6a47378f846b58cb6e96bcad03ddb83cbc7a396eda",
+  "digest": "sha256:15aa737d8809898d448b0211b5b6a68cddab73497d171b1afeab2c82d2f475e3",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1642,13 +1652,16 @@
       "default_arm": true,
       "imports": [
         "src.database",
+        "src.database.queries.layout_queries",
         "src.database.tables",
         "src.models",
         "src.task_graph.layout.driver",
         "src.task_graph.layout.flow",
         "src.task_graph.layout.model"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": ""
     },
     "tests/task_graph/test_layout_step.py": {
@@ -2428,7 +2441,9 @@
         "src.sessions.harness_parser",
         "src.sessions.harness_registry"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Assignment routing after the playbook cutover: the task row is the route."
     },
     "tests/test_attestation_check_run_id.py": {
@@ -5841,8 +5856,7 @@
         "src.discord.adapter",
         "src.main",
         "src.messaging.base",
-        "src.messaging.null_adapter",
-        "src.models"
+        "src.messaging.null_adapter"
       ],
       "markers": [
         "asyncio",
@@ -7222,6 +7236,79 @@
       "markers": [],
       "summary": ""
     },
+    "tests/test_jobs_output.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.development_result_parser",
+        "src.jobs.artifacts",
+        "src.jobs.result"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Logical output retention, crash fencing and deterministic result v1."
+    },
+    "tests/test_jobs_queries.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.jobs.policy",
+        "src.jobs.result",
+        "src.jobs.service",
+        "src.jobs.workspace",
+        "src.models"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "Idempotency races, atomic outbox and non-expiring workspace pins."
+    },
+    "tests/test_jobs_recovery.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.job_commands",
+        "src.config",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.resource_checks",
+        "src.jobs.artifacts",
+        "src.jobs.policy",
+        "src.jobs.result",
+        "src.jobs.service"
+      ],
+      "markers": [],
+      "summary": "Receipt adoption, retention, authorization and deterministic admission."
+    },
+    "tests/test_jobs_runner.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.jobs.artifacts",
+        "src.jobs.identity",
+        "src.jobs.runner",
+        "src.resources.box_lock",
+        "src.resources.semaphore",
+        "src.resources.test_runs",
+        "src.sessions.proctable"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Detached runner crash boundary tested with explicit artifact barriers."
+    },
     "tests/test_known_tools.py": {
       "areas": [
         "install"
@@ -7346,7 +7433,8 @@
         "src.remote_links"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Process-lifecycle tests for the daemon entry point (platform plan 4-7, 23)."
     },
@@ -10168,6 +10256,30 @@
       ],
       "summary": ""
     },
+    "tests/test_report_delivery.py": {
+      "areas": [
+        "digest"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.commands.report_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.digest",
+        "src.escalations.transport",
+        "src.models",
+        "src.playbooks.authoring",
+        "src.playbooks.definition",
+        "src.playbooks.required",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Shared outboxes, frozen routes and lost-event hourly author recovery."
+    },
     "tests/test_report_requests.py": {
       "areas": [
         "digest"
@@ -11002,11 +11114,13 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands",
         "src.config",
         "src.database",
         "src.database.tables",
         "src.integration.models",
         "src.integration.ownership",
+        "src.messages.delivery",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.workspace",
@@ -11018,10 +11132,13 @@
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
         "src.sessions.provider",
-        "src.sessions.reconciler"
+        "src.sessions.reconciler",
+        "src.sessions.tmux",
+        "src.sessions.transcripts"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "tmux"
       ],
       "summary": "SessionReconciler and the exit classifier, on FakeProvider."
     },

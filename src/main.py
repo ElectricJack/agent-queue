@@ -350,6 +350,11 @@ async def run(config_path: str, profile: str | None = None) -> bool:
                 rate_guard=_bot_rate_guard(bot),
                 escalation_priority=orch.db.count_due_escalation_deliveries,
                 event_bus=orch.bus,
+                include_outbound=True,
+                authoring_ready=lambda: bool(
+                    orch.playbook_manager is not None
+                    and orch.playbook_manager.is_active("supervisor-hourly-report")
+                ),
             )
             logger.info("Digest scheduler wired to the Discord transport")
         elif bot is not None:
@@ -481,14 +486,13 @@ async def _health_checks(orch: Orchestrator, adapter: MessagingAdapter) -> dict:
     except Exception as e:
         checks["agents"] = {"ok": False, "error": str(e)}
 
-    # Task counts
+    # Aggregate counts avoid materializing the entire ready backlog on every probe.
     try:
-        in_progress = await orch.db.list_tasks(status=TaskStatus.IN_PROGRESS)
-        ready = await orch.db.list_tasks(status=TaskStatus.READY)
+        task_counts = await orch.db.count_tasks_by_status()
         checks["tasks"] = {
             "ok": True,
-            "in_progress": len(in_progress),
-            "ready": len(ready),
+            "in_progress": task_counts.get(TaskStatus.IN_PROGRESS.value, 0),
+            "ready": task_counts.get(TaskStatus.READY.value, 0),
         }
     except Exception as e:
         checks["tasks"] = {"ok": False, "error": str(e)}

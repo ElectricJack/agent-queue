@@ -506,7 +506,12 @@ async def build_messages_section(
             header = f"[{msg.id} from {msg.from_kind}:{msg.from_id}]"
             if getattr(msg, "subject", None):
                 header = f"{header} {msg.subject}"
-            parts.append(f"{header}\n{msg.body}")
+            body = msg.body
+            if getattr(msg, "body_kind", None) == "wait_result":
+                from src.messages.delivery import _render_nudge
+
+                body = f"{_render_nudge([msg])}\n{body}"
+            parts.append(f"{header}\n{body}")
             if mark_delivered:
                 try:
                     await db.mark_delivered(msg.id, via="prime")

@@ -596,3 +596,19 @@ def test_hot_reload_round_trip_does_not_touch_the_retired_section(config_dir):
 
     assert reloaded.scheduling.min_task_guarantee == 9
     assert not hasattr(reloaded, "chat_analyzer")
+
+
+@pytest.mark.parametrize("agents", [None, {}, {"stuck_timeout_seconds": 73}])
+def test_stuck_timeout_construction_paths_agree(tmp_path, agents):
+    from src.config import AgentsDefaultConfig
+
+    assert AgentsDefaultConfig().stuck_timeout_seconds == 0
+    values = {"messaging_platform": "none",
+              "database": {"url": "postgresql://u:p@localhost:5534/disposable"}}
+    if agents is not None:
+        values["agents"] = agents
+    path = tmp_path / "wait-config.yaml"
+    path.write_text(yaml.safe_dump(values))
+    assert load_config(str(path)).agents_config.stuck_timeout_seconds == (
+        agents.get("stuck_timeout_seconds", 0) if agents else 0
+    )

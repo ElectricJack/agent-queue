@@ -518,7 +518,7 @@ class AgentsDefaultConfig:
     """Default timeouts for agent health monitoring and graceful shutdown."""
 
     heartbeat_interval_seconds: int = 30
-    stuck_timeout_seconds: int = 1800  # 30 min; 0 = no timeout
+    stuck_timeout_seconds: int = 0  # disabled; explicit limits remain honored
     graceful_shutdown_timeout_seconds: int = 30
 
     def validate(self) -> list[ConfigError]:
@@ -2318,6 +2318,67 @@ class ResourceCgroupConfig:
 
 
 @dataclass
+class JobsConfig:
+    """Managed execution rollout; admission remains opt-in during phase 2."""
+
+    enabled: bool = False
+    test_database_url: str = ""
+    max_queued: int = 100
+    per_task_queued: int = 10
+    per_task_active: int = 2
+    shared_queue_seconds: int = 1800
+    exclusive_queue_seconds: int = 5400
+    run_seconds: int = 7200
+    head_bytes: int = 1024 * 1024
+    tail_bytes: int = 63 * 1024 * 1024
+    log_budget_bytes: int = 2 * 1024**3
+    log_days: int = 14
+    result_days: int = 90
+
+    def validate(self) -> list[ConfigError]:
+        errors = []
+        if not isinstance(self.enabled, bool):
+            errors.append(ConfigError("resources.jobs", "enabled", "must be a boolean"))
+        if not isinstance(self.test_database_url, str) or (
+            self.test_database_url and not is_postgres_url(self.test_database_url)
+        ):
+            errors.append(
+                ConfigError(
+                    "resources.jobs", "test_database_url", "must be a disposable PostgreSQL DSN"
+                )
+            )
+        for name in (
+            "max_queued",
+            "per_task_queued",
+            "per_task_active",
+            "shared_queue_seconds",
+            "exclusive_queue_seconds",
+            "run_seconds",
+            "head_bytes",
+            "tail_bytes",
+            "log_budget_bytes",
+            "log_days",
+            "result_days",
+        ):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                errors.append(ConfigError("resources.jobs", name, "must be a positive integer"))
+        if (isinstance(self.head_bytes, int) and self.head_bytes > 1024**2) or (
+            isinstance(self.tail_bytes, int) and self.tail_bytes > 63 * 1024**2
+        ):
+            errors.append(
+                ConfigError("resources.jobs", "head_bytes", "per-job output cap is 64 MiB")
+            )
+        if (
+            isinstance(self.result_days, int)
+            and isinstance(self.log_days, int)
+            and self.result_days < self.log_days
+        ):
+            errors.append(ConfigError("resources.jobs", "result_days", "must cover log retention"))
+        return errors
+
+
+@dataclass
 class ResourcesConfig:
     """Resource gating so N concurrent agents cannot saturate one box.
 
@@ -2367,6 +2428,7 @@ class ResourcesConfig:
     #: processes box-wide.
     max_pytest_processes: int = 24
     cgroups: ResourceCgroupConfig = field(default_factory=ResourceCgroupConfig)
+    jobs: JobsConfig = field(default_factory=JobsConfig)
 
     def core_count(self) -> int:
         """The core budget: configured ``cores``, else the machine's."""
@@ -2410,6 +2472,7 @@ class ResourcesConfig:
         if self.load_warn_ratio <= 0:
             errors.append(ConfigError("resources", "load_warn_ratio", "must be positive"))
         errors.extend(self.cgroups.validate())
+        errors.extend(self.jobs.validate())
         return errors
 
 
@@ -4616,6 +4679,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             load_warn_ratio=float(res.get("load_warn_ratio", 1.0)),
             max_pytest_processes=int(res.get("max_pytest_processes", 24)),
             cgroups=cgroups,
+            jobs=JobsConfig(**_dataclass_kwargs(JobsConfig, res.get("jobs"))),
         )
 
     if "metrics" in raw:

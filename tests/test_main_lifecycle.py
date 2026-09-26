@@ -217,7 +217,7 @@ async def test_health_checks_reports_each_failed_dependency_independently(tmp_pa
             # First call (database check) fails; second (agents check) is
             # healthy — proving the checks are independent.
             list_agents=AsyncMock(side_effect=[RuntimeError("db down"), []]),
-            list_tasks=AsyncMock(side_effect=RuntimeError("query timeout")),
+            count_tasks_by_status=AsyncMock(side_effect=RuntimeError("query timeout")),
         ),
     )
     adapter = _FakeAdapter([])
@@ -233,6 +233,38 @@ async def test_health_checks_reports_each_failed_dependency_independently(tmp_pa
     assert checks["messaging"]["ok"] is False
     assert checks["messaging"]["platform"] == "fake"
     assert checks["messaging"]["connected"] is False
+
+
+@pytest.mark.parametrize(
+    ("counts", "expected"),
+    [
+        ({}, {"ok": True, "in_progress": 0, "ready": 0}),
+        ({"READY": 10_000}, {"ok": True, "in_progress": 0, "ready": 10_000}),
+        (
+            {"IN_PROGRESS": 7, "READY": 10_000, "COMPLETED": 23},
+            {"ok": True, "in_progress": 7, "ready": 10_000},
+        ),
+    ],
+)
+async def test_health_checks_counts_tasks_without_loading_rows(tmp_path, counts, expected):
+    """Health probes use global aggregates even with a large ready backlog."""
+    db = SimpleNamespace(
+        list_agents=AsyncMock(return_value=[]),
+        count_tasks_by_status=AsyncMock(return_value=counts),
+        list_tasks=AsyncMock(side_effect=AssertionError("health must not load task rows")),
+    )
+    orch = SimpleNamespace(
+        config=_postgres_config(tmp_path),
+        _paused=False,
+        _running_tasks={},
+        db=db,
+    )
+
+    checks = await main_mod._health_checks(orch, _FakeAdapter([]))
+
+    assert checks["tasks"] == expected
+    db.count_tasks_by_status.assert_awaited_once_with()
+    db.list_tasks.assert_not_called()
 
 
 async def test_readiness_race_tasks_are_awaited_after_cancellation(monkeypatch, tmp_path):

@@ -83,6 +83,35 @@ class ReportQueriesMixin(MorningReportQueriesMixin):
             return None, "duplicate"
         return request_id, None
 
+    async def list_reserved_hourly_reports(self, *, now: float, limit: int = 20) -> list[dict]:
+        """Recover lost window-ready events without building an author backlog."""
+        if not 1 <= limit <= 20:
+            raise ValueError("report reconciliation is bounded to 20 rows")
+        async with self._engine.connect() as conn:
+            rows = (
+                (
+                    await conn.execute(
+                        select(supervisor_report_requests)
+                        .join(
+                            digest_windows,
+                            digest_windows.c.id == supervisor_report_requests.c.owner_ref,
+                        )
+                        .where(
+                            supervisor_report_requests.c.kind == "hourly",
+                            supervisor_report_requests.c.state == "reserved",
+                            supervisor_report_requests.c.deadline > now,
+                            digest_windows.c.send_status == "pending",
+                            digest_windows.c.lease_owner.is_(None),
+                        )
+                        .order_by(supervisor_report_requests.c.created_at)
+                        .limit(limit)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        return [dict(row) for row in rows]
+
     async def get_report_request(self, request_id: str) -> dict[str, Any] | None:
         async with self._engine.connect() as conn:
             row = (
