@@ -119,6 +119,7 @@ beforeEach(() => {
   FitAddonMock.instances = [];
   vi.stubGlobal("WebSocket", TerminalSocketMock);
   vi.stubGlobal("EventSource", vi.fn());
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 800, height: 400 } as DOMRect);
   api.listAgents.mockResolvedValue({ data: { agents: [
     agent("fixed", "Builder", "implementer"),
     agent("pooled", "worker-standard-9f2a", "worker-standard"),

@@ -468,7 +468,7 @@ class ReportCommandsMixin:
         )
 
     async def _submit_morning_report(self, row: dict, args: dict) -> dict:
-        from urllib.parse import quote
+        from src.dashboard_paths import report_path, task_path
         from src.reports.authoring import validate_morning_report
 
         if not self._morning_author_allowed(row):
@@ -484,9 +484,9 @@ class ReportCommandsMixin:
         facts = {fact["key"]: fact for fact in row["brief"]["facts"]}
         source_links = list(
             dict.fromkeys(
-                f"/tasks/{quote(facts[ref]['task_id'], safe='')}"
+                task_path(facts[ref]["task_id"])
                 if facts[ref].get("task_id")
-                else f"/reports/{quote(row['owner_ref'], safe='')}"
+                else report_path(row["owner_ref"])
                 for ref in refs
             )
         )

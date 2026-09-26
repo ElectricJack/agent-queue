@@ -150,6 +150,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/main.py"], areas: ["orchestrator", "daemon-cli"] }
   - { paths: ["src/orphan_workflow_recovery.py", "src/workflow_pipeline_view.py", "src/workflow_stage_resume_handler.py"], areas: ["orchestrator"] }
   - { paths: ["src/prompt_builder.py", "src/prompt_manager.py"], areas: ["prompts"] }
+  - { paths: ["src/dashboard_paths.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/remote_links.py"], areas: ["messaging-adapters", "digest"] }
   - { paths: ["src/review_keys.py"], areas: ["document-reviews"] }
   - { paths: ["src/schedule.py", "src/scheduler.py", "src/timer_service.py"], areas: ["scheduling"] }

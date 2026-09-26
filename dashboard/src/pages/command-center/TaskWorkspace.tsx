@@ -27,9 +27,14 @@ interface TaskWorkspaceValue {
 }
 const TaskWorkspaceContext = createContext<TaskWorkspaceValue | null>(null);
 
-/** The route is the only project scope; query parameters travel with every tab. */
-export function TaskWorkspaceProvider({ children }: { children: ReactNode }) {
-  const { projectId } = useParams<{ projectId: string }>();
+/**
+ * The route is the project scope; query parameters travel with every tab.
+ * `scope` overrides the route for a page that is not under
+ * /projects/:projectId — the focus home passes its `?project=`.
+ */
+export function TaskWorkspaceProvider({ children, scope }: { children: ReactNode; scope?: { projectId?: string } }) {
+  const route = useParams<{ projectId: string }>();
+  const projectId = scope ? scope.projectId : route.projectId;
   const navigate = useNavigate();
   const { data: projects = EMPTY_PROJECTS, isLoading: isLoadingProjects, error: projectsError } = useProjects();
   const [params, setParams] = useSearchParams();
