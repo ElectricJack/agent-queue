@@ -15,6 +15,14 @@ class ReportRequestResponse(BaseModel):
     deadline: float
 
 
+class MorningReportPreviewResponse(BaseModel):
+    success: bool = True
+    brief: dict[str, Any]
+    brief_hash: str
+    would_suppress: bool
+    reason: str
+
+
 class ReportBriefResponse(BaseModel):
     success: bool = True
     request_id: str
@@ -38,6 +46,7 @@ class ReportSubmitResponse(BaseModel):
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "morning_report_preview": MorningReportPreviewResponse,
     "report_request": ReportRequestResponse,
     "report_brief": ReportBriefResponse,
     "report_submit": ReportSubmitResponse,

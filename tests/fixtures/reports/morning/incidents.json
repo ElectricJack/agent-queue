@@ -1,0 +1,10 @@
+[
+  {
+    "task_id": "t3",
+    "project_id": "p",
+    "title": "Failed task",
+    "status": "FAILED",
+    "updated_at": 90004,
+    "value": "{\"id\": \"recovery-1\", \"reason\": \"timeout\"}"
+  }
+]

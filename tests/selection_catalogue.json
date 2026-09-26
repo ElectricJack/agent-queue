@@ -217,6 +217,7 @@
         "tests/test_digest_dispatch.py",
         "tests/test_digest_queries.py",
         "tests/test_discord_settings.py",
+        "tests/test_morning_reports.py",
         "tests/test_report_requests.py"
       ]
     },
@@ -1231,7 +1232,7 @@
       ]
     }
   },
-  "digest": "sha256:7b5560197e107bf8e6b1a2536a4975010e9299bfb806362ce6788b97c0ab56eb",
+  "digest": "sha256:a0014543be85ee144e9e23746060a594db8a69e0769a203de15ed951f244f714",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8223,6 +8224,30 @@
       ],
       "markers": [],
       "summary": ""
+    },
+    "tests/test_morning_reports.py": {
+      "areas": [
+        "digest"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app",
+        "src.commands.principal",
+        "src.commands.report_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.git.manager",
+        "src.models",
+        "src.profiles.capabilities",
+        "src.reports.git",
+        "src.reports.hourly",
+        "src.reports.morning"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Frozen source evidence, no-write previews, late facts and honest git proofs."
     },
     "tests/test_notes_plugin.py": {
       "areas": [

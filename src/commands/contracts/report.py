@@ -24,6 +24,21 @@ class ReportRequestArgs(CommandArgs):
     request_id: str
 
 
+class MorningReportPreviewArgs(CommandArgs):
+    now: float | None = None
+    since: float | None = None
+    until: float | None = None
+    project_ids: list[str] | None = None
+    max_lookback_hours: int = 72
+
+
+class MorningReportPreviewValue(CommandValue):
+    brief: dict[str, Any]
+    brief_hash: str
+    would_suppress: bool
+    reason: str
+
+
 class ReportBriefArgs(CommandArgs):
     request_id: str
     offset: int = 0
@@ -105,6 +120,7 @@ def _registration(
             presentation=CommandPresentation(
                 title=name.replace("_", " ").title(),
                 summary={
+                    "morning_report_preview": "Read bounded overnight evidence without writes or model calls.",
                     "report_request": "Queue one author wake for a reserved report.",
                     "report_brief": "Read a bounded, paged report brief and its CAS version.",
                     "report_submit": "Submit one authored report before its deadline.",
@@ -118,6 +134,12 @@ def _registration(
 
 def register_report_contracts(registry: ContractRegistry) -> None:
     for name, args, result, effect in (
+        (
+            "morning_report_preview",
+            MorningReportPreviewArgs,
+            MorningReportPreviewValue,
+            SideEffectClass.READ,
+        ),
         ("report_request", ReportRequestArgs, ReportRequestValue, SideEffectClass.CREATE),
         ("report_brief", ReportBriefArgs, ReportBriefValue, SideEffectClass.READ),
         ("report_submit", ReportSubmitArgs, ReportSubmitValue, SideEffectClass.UPDATE),

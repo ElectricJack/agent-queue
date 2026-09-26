@@ -126,6 +126,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/fixtures/harnesses/**"], areas: ["harnesses"] }
   - { paths: ["tests/fixtures/playbooks/**"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine", "shipped-playbooks", "ci-sentinel", "supervisor", "task-routing", "epic-trains", "integration-promotion", "document-reviews", "docs-guards"] }
   - { paths: ["tests/fixtures/provider_failover/**"], areas: ["provider-failover", "e2e-kit"] }
+  - { paths: ["tests/fixtures/reports/**"], areas: ["digest"] }
   - { paths: ["tests/fixtures/task_graphs/**"], areas: ["task-graph-creation", "intelligence-classes", "integration-trains"] }
   - { paths: ["tests/fixtures/transcripts/**"], areas: ["transcripts"] }
 
@@ -258,6 +259,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/database/queries/dashboard_state_queries.py", "src/database/queries/layout_queries.py"], areas: ["dashboard-state", "graph-layout"] }
   - { paths: ["src/database/queries/dependency_queries.py"], areas: ["task-dependencies"] }
   - { paths: ["src/database/queries/digest_queries.py"], areas: ["digest"] }
+  - { paths: ["src/database/queries/report_queries.py"], areas: ["digest"] }
   - { paths: ["src/database/queries/escalation_queries.py"], areas: ["escalations"] }
   - { paths: ["src/database/queries/hierarchy_queries.py", "src/database/queries/task_identity.py", "src/database/queries/task_references.py"], areas: ["task-hierarchy", "task-archive"] }
   - { paths: ["src/database/queries/integration_*.py", "src/database/queries/pull_request_queries.py", "src/database/queries/repo_queries.py"], areas: ["integration-trains", "integration-ownership", "integration-promotion"] }
