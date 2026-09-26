@@ -264,7 +264,9 @@ def test_public_contracts_transports_and_shipped_grants():
     for template in ("worker-codex", "worker-claude"):
         profile = parse_profile(Path(f"src/profiles/defaults/{template}/profile.md").read_text())
         assert names <= set(profile.capabilities["aq_commands"])
-    assert "job_reconcile" in API_EXCLUDED & EXCLUDED & DEFAULT_EXCLUDED_COMMANDS
+    assert {"job_reconcile", "job_submit_integration"} <= (
+        API_EXCLUDED & EXCLUDED & DEFAULT_EXCLUDED_COMMANDS
+    )
 
 
 def test_job_cli_and_detach_mint_keys_use_epoch_and_never_fallback(monkeypatch):

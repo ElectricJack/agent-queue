@@ -62,6 +62,16 @@ describe("useConsoleStream", () => {
     expect(result.current.lines[0]).toMatchObject({ stream: "stdout", text: "hi" });
   });
 
+  it("renders a retained-output gap and marks the view truncated", async () => {
+    const { result } = renderHook(() => useConsoleStream("abc"));
+    act(() => FakeEventSource.instances[0]!.emit({
+      type: "gap", seq: 128, after: 8, next: 128,
+      text: "[output gap: 8..128]", ts: 1,
+    }));
+    await waitFor(() => expect(result.current.truncated).toBe(true));
+    expect(result.current.lines[0]!.text).toBe("[output gap: 8..128]");
+  });
+
   it("flips to exited on an exit frame and closes the EventSource", async () => {
     const { result } = renderHook(() => useConsoleStream("abc"));
     const es = FakeEventSource.instances[0]!;

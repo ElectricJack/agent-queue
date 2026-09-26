@@ -1888,9 +1888,12 @@ class Orchestrator(
             return await provider.confirm_stopped(SessionHandle(
                 name=session["name"], provider=session["provider"], instance_token=session["instance_token"]))
 
+        from src.jobs.adapters import PublisherJobs
+
         self.development_integration = DevelopmentIntegration(
             self.db, data_dir=self.config.data_dir, git=self.git,
             confirm_stopped=development_confirm_stopped,
+            job_client=PublisherJobs(lambda: self._command_handler),
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery

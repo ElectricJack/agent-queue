@@ -25,7 +25,7 @@ export interface ConsoleStreamState {
 }
 
 interface RawFrame {
-  type: "line" | "exit" | "killed";
+  type: "line" | "exit" | "killed" | "gap";
   seq: number;
   stream?: "stdout" | "stderr";
   text?: string;
@@ -135,8 +135,8 @@ export function useConsoleStream(streamId: string | null | undefined): ConsoleSt
           return;
         }
         afterSeqRef.current = frame.seq;
-        if (frame.type === "line") {
-          appendLine(frame);
+        if (frame.type === "line" || frame.type === "gap") {
+          appendLine(frame.type === "gap" ? { ...frame, truncated: true } : frame);
         } else if (frame.type === "exit") {
           setState((prev) => ({ ...prev, status: "exited", exitCode: frame.rc ?? null, endedAt: frame.ts }));
           es.close();

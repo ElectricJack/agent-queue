@@ -22,14 +22,14 @@ from src.resources.semaphore import SlotTimeout
 from src.git.manager import GitManager
 
 
-async def fingerprint(cwd: Path) -> tuple[str | None, str | None]:
+async def fingerprint(cwd: Path, *, tracked_only=False) -> tuple[str | None, str | None]:
     import hashlib
 
     manager = GitManager()
     try:
         head = (await manager._arun(["rev-parse", "HEAD"], cwd=str(cwd))).strip()
         diff = await manager._arun(["diff", "--binary", "HEAD"], cwd=str(cwd))
-        names = await manager._arun(
+        names = "" if tracked_only else await manager._arun(
             ["ls-files", "--others", "--exclude-standard", "-z"], cwd=str(cwd)
         )
 
@@ -96,8 +96,17 @@ async def supervise(directory: Path) -> None:
                 raise InterruptedError()
             started = time.time()
             before = await asyncio.wait_for(
-                fingerprint(Path(job["contract"]["cwd"])), min(30, job["run_timeout"])
+                fingerprint(
+                    Path(job["contract"]["cwd"]), tracked_only=job["input_mode"] == "snapshot"
+                ),
+                min(30, job["run_timeout"]),
             )
+            if job["input_mode"] == "snapshot":
+                import hashlib
+
+                if before != (job["input_ref"], hashlib.sha256(b"").hexdigest()):
+                    infra = "snapshot_modified"
+                    raise ValueError("snapshot changed before execution")
             store = await asyncio.to_thread(
                 OutputStore,
                 directory,
@@ -182,7 +191,12 @@ async def supervise(directory: Path) -> None:
                     pumping.cancel()
                     await asyncio.gather(pumping, return_exceptions=True)
             try:
-                after = await asyncio.wait_for(fingerprint(Path(job["contract"]["cwd"])), 30)
+                after = await asyncio.wait_for(
+                    fingerprint(
+                        Path(job["contract"]["cwd"]), tracked_only=job["input_mode"] == "snapshot"
+                    ),
+                    30,
+                )
             except TimeoutError:
                 after = (None, None)
             report = parser.finish()
@@ -231,7 +245,7 @@ async def supervise(directory: Path) -> None:
             infra = "incompatible_lock_client"
             report = parser.finish()
         except Exception:  # receipts must distinguish supervisor failure from assertions
-            infra = "output_store_failed" if output_failed else "runner_failed"
+            infra = infra or ("output_store_failed" if output_failed else "runner_failed")
             report = parser.finish()
             if child:
                 await stop_tree(nonce)

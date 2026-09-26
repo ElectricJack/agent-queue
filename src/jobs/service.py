@@ -49,6 +49,9 @@ class JobService:
         input_ref=None,
         trusted_band=2,
         wait_identity=None,
+        queue_seconds=None,
+        run_seconds=None,
+        adapter_request_hash=None,
     ):
         cfg = self.settings
         if not cfg.enabled:
@@ -77,8 +80,7 @@ class JobService:
             a in {"-m", "--markexpr"} or a.startswith("--markexpr=") for a in args
         ):
             argv += ["-m", self.config.resources.test_deselect_markers]
-        # Phase 4 provisions immutable integration snapshots. Refuse any
-        # snapshot without a verified clean commit rather than claiming one.
+        # Integration inputs must name a verified detached commit snapshot.
         if input_mode == "snapshot":
             from src.git.manager import GitManager
 
@@ -98,6 +100,9 @@ class JobService:
             "input_mode": input_mode,
             "input_ref": input_ref,
             "wait": wait_identity is not None,
+            "queue_seconds": queue_seconds,
+            "run_seconds": run_seconds,
+            "adapter_request_hash": adapter_request_hash,
         }
         job_id, nonce, now = str(uuid.uuid4()), uuid.uuid4().hex, time.time()
         env = {
@@ -145,7 +150,18 @@ class JobService:
             "nice": self.config.resources.session_nice,
             "head_bytes": cfg.head_bytes,
             "tail_bytes": cfg.tail_bytes,
+            "adapter_request_hash": adapter_request_hash,
+            "tool_versions": {"python": sys.version, "executable": sys.executable},
         }
+        if (queue_seconds is not None or run_seconds is not None) and owner_kind != "integration":
+            raise JobError("jobs.preset_denied")
+        default_queue = (
+            cfg.exclusive_queue_seconds if job_class == "exclusive" else cfg.shared_queue_seconds
+        )
+        queue_budget = min(default_queue, queue_seconds) if queue_seconds is not None else default_queue
+        run_budget = min(cfg.run_seconds, run_seconds) if run_seconds is not None else cfg.run_seconds
+        if queue_budget < 0 or run_budget <= 0:
+            raise JobError("jobs.deadline_invalid")
         values = {
             "id": job_id,
             "project_id": project_id,
@@ -169,13 +185,8 @@ class JobService:
             "weight": accepted.weight,
             "priority_band": trusted_band,
             "submitted_at": now,
-            "queue_deadline": now
-            + (
-                cfg.exclusive_queue_seconds
-                if job_class == "exclusive"
-                else cfg.shared_queue_seconds
-            ),
-            "run_timeout": cfg.run_seconds,
+            "queue_deadline": now + queue_budget,
+            "run_timeout": run_budget,
             "runner_nonce": nonce,
         }
         await self.sweep(reserve=True)
@@ -431,9 +442,29 @@ class JobService:
                 await self.db.expire_job_output(job["id"])
                 reserved -= job["output_reservation_bytes"]
             if old > cfg.result_days * 86400:
-                if await self.db.purge_terminal_job(job["id"]):
-                    import shutil
+                import shutil
 
+                snapshot_ws = None
+                if job["owner_kind"] == "integration" and job["input_mode"] == "snapshot":
+                    snapshot = Path(job["contract"]["cwd"])
+                    root = Path(self.config.data_dir) / "job-snapshots"
+                    ws = await self.db.get_workspace(job["workspace_id"])
+                    # Only internally provisioned, disabled snapshots may be
+                    # removed. Keep metadata on I/O failure so a sweep retries.
+                    if (
+                        ws and ws.kind_id == "job-snapshot" and not ws.enabled
+                        and snapshot.parent == root
+                        and job["workspace_id"] == "job-snapshot-" + snapshot.name
+                    ):
+                        from src.jobs.workspace import mutation_guard
+
+                        async with mutation_guard(self.db, ws):
+                            if await asyncio.to_thread(snapshot.exists):
+                                await asyncio.to_thread(shutil.rmtree, snapshot)
+                        snapshot_ws = ws
+                if await self.db.purge_terminal_job(job["id"]):
+                    if snapshot_ws:
+                        await self.db.delete_workspace(snapshot_ws.id)
                     directory = await asyncio.to_thread(
                         job_directory, Path(self.config.data_dir), job["id"]
                     )
