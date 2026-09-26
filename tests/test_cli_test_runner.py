@@ -617,6 +617,59 @@ class TestOrphanedRuns:
 
 
 class TestSignalForwarding:
+    def test_pytest_runs_under_shared_versioned_box_admission(
+        self, runner, monkeypatch, isolated_test_slots
+    ):
+        from src.resources.box_lock import BoxLock, PROTOCOL_RECORD
+        from src.resources.semaphore import SlotTimeout
+
+        box = BoxLock(isolated_test_slots, 2)
+
+        def run(_argv, **_kwargs):
+            snapshot = box.snapshot()
+            assert snapshot["box"]["mode"] == "shared"
+            assert not snapshot["turnstile"]["held"]
+            holder = box.semaphore.snapshot()["slots"][0]["holder"]
+            assert holder["box_protocol"] == PROTOCOL_RECORD
+            with pytest.raises(SlotTimeout):
+                with box.acquire(exclusive=True, timeout=0):
+                    pytest.fail("exclusive admitted during pytest")
+            return 0
+
+        monkeypatch.setattr("src.cli.test_runner._run_forwarding_signals", run)
+        result = runner.invoke(cli, ["test", "tests/test_config.py"])
+        assert result.exit_code == 0, result.output
+        assert not box.snapshot()["box"]["held"]
+
+    def test_status_names_held_old_clients_but_ignores_stale_records(
+        self, runner, isolated_test_slots
+    ):
+        from src.resources.semaphore import SlotSemaphore
+
+        sem = SlotSemaphore(isolated_test_slots, 2)
+        with sem.acquire(timeout=0):
+            result = runner.invoke(cli, ["test", "--aq-status"])
+            assert result.exit_code == 0, result.output
+            assert "incompatible slot-only client" in result.output
+            assert "Box-lock protocol v1" in result.output
+        assert (
+            "incompatible slot-only client"
+            not in runner.invoke(cli, ["test", "--aq-status"]).output
+        )
+
+    def test_unknown_box_protocol_refuses_pytest_retryably(
+        self, runner, monkeypatch, isolated_test_slots
+    ):
+        isolated_test_slots.mkdir(parents=True, exist_ok=True)
+        (isolated_test_slots / "protocol.json").write_text('{"version":999}')
+        monkeypatch.setattr(
+            "src.cli.test_runner._run_forwarding_signals",
+            lambda *_args, **_kwargs: pytest.fail("unknown protocol must not execute pytest"),
+        )
+        result = runner.invoke(cli, ["test", "tests/test_config.py"])
+        assert result.exit_code == 75, result.output
+        assert "incompatible box-lock protocol" in result.output
+
     def test_inheritable_slot_fd_reaches_the_pytest_process(self, tmp_path):
         import os
         import sys

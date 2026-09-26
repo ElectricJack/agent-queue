@@ -9,12 +9,8 @@ created file look old.  Missing file metadata is never an invitation to drop.
 from __future__ import annotations
 
 import re
-import fcntl
-import json
-import os
 import subprocess
 import sys
-import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -24,6 +20,9 @@ from collections.abc import Iterable, Iterator
 from urllib.parse import urlsplit
 
 import yaml
+
+from src.resources.box_lock import BoxLock, observed_slot_count  # noqa: F401 - public alias
+from src.resources.semaphore import SlotTimeout
 
 TEST_NAME = re.compile(r"aq_test_[A-Za-z0-9_]+\Z")
 TEMPLATE_NAME = re.compile(r"aq_tmpl_([0-9a-f]{16})\Z")
@@ -171,47 +170,16 @@ def live_pytest_pids() -> list[int]:
     return sorted(result)
 
 
-def observed_slot_count(lock_dir: Path, configured_slots: int) -> int:
-    """Also reserve slots left by a larger AQ_TEST_SLOTS override."""
-    count = max(1, configured_slots)
-    for path in lock_dir.glob("slot-*.lock"):
-        match = re.fullmatch(r"slot-([0-9]+)\.lock", path.name)
-        if match:
-            count = max(count, int(match.group(1)) + 1)
-    return count
-
-
 @contextmanager
 def reserve_all_test_slots(lock_dir: Path, slots: int) -> Iterator[None]:
-    """Block new `aq test` runs; fail immediately if any slot is occupied."""
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    held: list[int] = []
+    """Use common exclusive admission, including the legacy slot fence."""
     try:
-        for slot in range(max(1, slots)):
-            fd = os.open(lock_dir / f"slot-{slot}.lock", os.O_RDWR | os.O_CREAT, 0o644)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                os.close(fd)
-                raise RuntimeError(f"test slot {slot} is occupied; refusing cleanup") from exc
-            held.append(fd)
-            os.ftruncate(fd, 0)
-            os.write(
-                fd,
-                json.dumps(
-                    {
-                        "slot": slot,
-                        "pid": os.getpid(),
-                        "since": time.time(),
-                        "command": "test-db-reaper",
-                    }
-                ).encode(),
-            )
-        yield
-    finally:
-        for fd in reversed(held):
-            os.ftruncate(fd, 0)
-            os.close(fd)
+        with BoxLock(lock_dir, max(1, slots)).acquire(
+            exclusive=True, timeout=0, meta={"command": "test-db-reaper"}
+        ):
+            yield
+    except SlotTimeout as exc:
+        raise RuntimeError("box or test slot is occupied; refusing cleanup") from exc
 
 
 def decide(

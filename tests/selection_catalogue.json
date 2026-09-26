@@ -1223,7 +1223,7 @@
       ]
     }
   },
-  "digest": "sha256:36c18b76d0bee99c52b25f0256a72e7d2b7ca15003a379fe0e699830a04f54a2",
+  "digest": "sha256:9ccb93ae2d6dfea9c32ae3d79817eedb271edd2d280b4575088734979580dd51",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3163,9 +3163,12 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.cli.auto_commands"
+        "src.cli.auto_commands",
+        "src.tools.definitions"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Auto-generated CLI options carry structured values, not their text."
     },
     "tests/test_cli_system_config.py": {
@@ -3250,6 +3253,7 @@
         "src.cli.app",
         "src.cli.test_runner",
         "src.config",
+        "src.resources.box_lock",
         "src.resources.semaphore",
         "src.resources.slot_report"
       ],
@@ -10185,9 +10189,12 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.resources.box_lock",
         "src.resources.semaphore"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Resource gating layer 2 — the box-wide ``aq test`` slot semaphore."
     },
     "tests/test_resource_test_runs.py": {
@@ -11319,12 +11326,14 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.models.supervisor_inbox",
         "src.commands.handler",
         "src.commands.principal",
         "src.config",
         "src.conversations.outbox",
         "src.database",
         "src.database.tables",
+        "src.discord.intake_diagnostics",
         "src.messages.delivery",
         "src.models",
         "src.profiles.capabilities"
@@ -12026,6 +12035,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.resources.box_lock",
         "src.resources.semaphore",
         "src.resources.test_db_reaper"
       ],
