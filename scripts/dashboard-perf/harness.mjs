@@ -1,5 +1,5 @@
 // Dashboard performance harness: puppeteer-core over CDP against a served build.
-// Usage: node harness.mjs <baseUrl> <outJson> [--api URL] [--clients N] [--warmup-ms N] [--observe-ms N] [--idle-ms N] [--runs N] [--cpu N] [--only a,b] [--project id] [--no-interactions] [--task-detail-only]
+// Usage: node harness.mjs <baseUrl> <outJson> [--api URL] [--clients N] [--warmup-ms N] [--observe-ms N] [--idle-ms N] [--runs N] [--cpu N] [--only a,b] [--project id] [--viewport WxH] [--no-interactions] [--task-detail-only]
 // See README.md next to this file.
 import { probeApi } from "./api.mjs";
 import { writeFileSync } from "node:fs";
@@ -19,6 +19,8 @@ const RUNS = Number(opt("--runs", "3"));
 const CPU = Number(opt("--cpu", "1"));
 const ONLY = opt("--only", "")?.split(",").filter(Boolean);
 const PROJECT = opt("--project", "agent-queue");
+const VIEWPORT = opt("--viewport", "1600x1000");
+const [VIEW_W, VIEW_H] = /^\d+x\d+$/.test(VIEWPORT) ? VIEWPORT.split("x").map(Number) : [0, 0];
 
 // Installed before any page script: long tasks, event timing, React commits.
 const INSTRUMENT = () => {
@@ -155,6 +157,10 @@ const SURFACES = {
     path: `/projects/${PROJECT}/overview`,
     ready: `() => { const m = document.querySelector('main'); return !!m && ${noLoading}() && m.innerText.length > 200; }`,
   },
+  focus: {
+    path: `/focus`,
+    ready: `() => document.querySelectorAll('[data-task-row]').length > 0 && ${noLoading}()`,
+  },
 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -172,7 +178,7 @@ async function newPage(browser, separateWindow = false) {
   // puppeteer-core 24's lookup, and the next surface's clients then fail.
   const page = await browser.newPage(separateWindow ? { type: "window", background: false } : undefined);
   const windowId = separateWindow ? await page.windowId() : null;
-  await page.setViewport({ width: 1600, height: 1000 });
+  await page.setViewport({ width: VIEW_W, height: VIEW_H });
   const cdp = await page.createCDPSession();
   await cdp.send("Network.enable");
   if (CPU > 1) await cdp.send("Emulation.setCPUThrottlingRate", { rate: CPU });
@@ -523,14 +529,14 @@ async function main() {
   const browser = await puppeteer.launch({
     executablePath: process.env.CHROME ?? "/usr/bin/google-chrome",
     headless: "new",
-    args: ["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1600,1000"],
+    args: ["--no-sandbox", "--disable-dev-shm-usage", `--window-size=${VIEW_W},${VIEW_H}`],
   });
   const surfaces = ONLY?.length ? ONLY : Object.keys(SURFACES);
   try {
     const res = { base: BASE, cpu: CPU, idle_ms: IDLE_MS, runs: RUNS, cold: {}, warm: {}, idle: {}, interactions: [] };
 
     res.manifest = {
-      chrome: await browser.version(), viewport: [1600, 1000], warmup_ms: WARMUP_MS,
+      chrome: await browser.version(), viewport: [VIEW_W, VIEW_H], warmup_ms: WARMUP_MS,
       observe_ms: IDLE_MS, runs: RUNS, clients: CLIENTS, api: API || null,
     };
     res.start_ts = Date.now() / 1000;
@@ -637,13 +643,17 @@ async function main() {
   }
 }
 if (!BASE || !OUT || args.includes("--help")) {
-  console.error("Usage: node harness.mjs <baseUrl> <outJson> [--api URL] [--clients N] [--warmup-ms N] [--observe-ms N] [--idle-ms N] [--runs N] [--cpu N] [--only a,b] [--project id] [--no-interactions] [--task-detail-only]");
+  console.error("Usage: node harness.mjs <baseUrl> <outJson> [--api URL] [--clients N] [--warmup-ms N] [--observe-ms N] [--idle-ms N] [--runs N] [--cpu N] [--only a,b] [--project id] [--viewport WxH] [--no-interactions] [--task-detail-only]");
   process.exit(args.includes("--help") ? 0 : 2);
 }
 if (!Number.isInteger(CLIENTS) || CLIENTS < 1 || !Number.isInteger(RUNS) || RUNS < 1 ||
     !Number.isFinite(WARMUP_MS) || WARMUP_MS < 0 || !Number.isFinite(IDLE_MS) || IDLE_MS < 0 ||
     !Number.isFinite(CPU) || CPU < 1 || ONLY.some((key) => !SURFACES[key])) {
   console.error("Invalid clients, runs, duration, CPU rate or surface");
+  process.exit(2);
+}
+if (!(VIEW_W > 0 && VIEW_H > 0)) {
+  console.error("--viewport takes WIDTHxHEIGHT, e.g. 390x844");
   process.exit(2);
 }
 main().catch((e) => {

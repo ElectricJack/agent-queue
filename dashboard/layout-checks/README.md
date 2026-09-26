@@ -21,6 +21,9 @@ isPhone, url(path), sockets, shot(label) }`; `stub` records `requests`,
 `unhandled` and `terminalUpgrades` and takes `override(key, handler)` and the
 pane/event controls in `server.mjs`. Fixtures are `fixtures/<area>.mjs`
 exporting `routes`; a key defined twice, or a request with no fixture, fails
-the run. Mark primary controls `data-primary-control`; mark an intentional
+the run. `fixtures/pane-frames.json` is the pane stream the stub replays;
+`tests/test_pane_stream_api.py` holds its frames to the real route's keys and
+value types, so change the fixture, never that test. Mark primary controls
+`data-primary-control`; mark an intentional
 sideways scroller `data-allow-overflow-x`. The dashboard is not built in
 GitHub CI: record this command on your close.

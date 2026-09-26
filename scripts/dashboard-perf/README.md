@@ -70,6 +70,12 @@ series (see `summary.json` below). Client counts remain separate in
 background tabs cannot suspend animation frames; the harness records each client's
 `window_id` and refuses a surface whose clients share one.
 
+The mobile dashboard's surface is `focus` (`/focus`). Measure it at a phone
+viewport with the same one- and three-client protocol, through `harness.mjs`
+(`experiment.py` measures the desktop surfaces at 1600×1000):
+`--only focus --viewport 390x844 --clients 1` and `--clients 3`. Browser
+numbers are reported beside, never instead of, the desktop surfaces.
+
 ```bash
 python scripts/dashboard-perf/experiment.py --mode idle \
   --dashboard-url http://127.0.0.1:8092 --api-url "$AQ_E2E_API_URL" \
@@ -173,7 +179,9 @@ node scripts/dashboard-perf/harness.mjs http://127.0.0.1:8092 result.json \
 node scripts/dashboard-perf/api.mjs "$AQ_E2E_API_URL" perf-fixture
 ```
 
-`--observe-ms` aliases `--idle-ms` (the new flag wins). `--no-interactions`
+`--observe-ms` aliases `--idle-ms` (the new flag wins). `--viewport WxH`
+sets every page's viewport and the manifest's `viewport` (default
+`1600x1000`). `--no-interactions`
 skips interactions; `--task-detail-only` measures only the two task-row pane
 opens used by the experiment. The full interaction mode also measures search,
 graph tabs/nodes, reviews filters and metrics range. Cold loads use fresh pages;
@@ -187,12 +195,14 @@ including full response delivery and bounded request timeouts. A missing task
 id is reported explicitly rather than silently dropped.
 
 `node scripts/dashboard-perf/smoke.mjs` checks three concurrent clients in
-separate windows on two consecutive surfaces, duration-alias precedence,
+separate windows on three consecutive surfaces (`tasks`, `agents`, `focus`) at
+a 390×844 viewport, duration-alias precedence,
 manifests and raw browser/API samples against an ephemeral local HTTP fixture
 with real Chrome. It touches no daemon or database
 and bounds/cleans its browser process group. This is a harness regression check,
 not a latency benchmark.
 
-`focus.mjs` profiles one surface; `chunks.mjs` reports static chunk sizes. Prior
+`focus.mjs` profiles the requests a tab fires when it regains visibility (not
+the `focus` surface); `chunks.mjs` reports static chunk sizes. Prior
 observations live in
 [`2026-09-23-dashboard-performance.md`](../../docs/superpowers/specs/2026-09-23-dashboard-performance.md).
