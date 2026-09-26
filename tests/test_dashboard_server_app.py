@@ -590,6 +590,46 @@ async def test_a_websocket_echoes_through_the_server_with_its_origin_and_host_in
         assert len(daemon.websockets) == 1
 
 
+async def test_a_trusted_lan_terminal_relays_input_and_output_through_serve_mode(tmp_path):
+    """Model the WSL port-forward peer while exercising the real WebSocket relay."""
+    daemon = FakeDaemon()
+    origin = "http://192.168.1.69:5173"
+    async with serve_asgi(daemon.app) as daemon_url:
+        app = create_app(DashboardServerSettings(
+            host="0.0.0.0", api_url=daemon_url, trusted_origins=(origin,),
+            bundle_directory=stage_bundle(tmp_path),
+        ))
+
+        async def lan_app(scope, receive, send):
+            if scope["type"] == "websocket":
+                scope = {**scope, "client": ("172.29.48.1", 50000)}
+                scope["headers"] = [
+                    (key, origin.removeprefix("http://").encode() if key == b"host" else value)
+                    for key, value in scope["headers"]
+                ]
+            await app(scope, receive, send)
+
+        async with serve_asgi(lan_app) as url:
+            async with connect(
+                _ws(url) + "/ws/terminal/s1", origin=origin,
+                subprotocols=[TERMINAL_PROTOCOL],
+            ) as ws:
+                assert ws.subprotocol == TERMINAL_PROTOCOL
+                control = '{"type":"input","data":"hello"}'
+                await ws.send(control)
+                assert await asyncio.wait_for(ws.recv(), 5) == control
+                await ws.send(b"\x1b[32mterminal output\x1b[0m")
+                assert await asyncio.wait_for(ws.recv(), 5) == b"\x1b[32mterminal output\x1b[0m"
+            for denied_origin in (None, "http://evil.example"):
+                with pytest.raises(InvalidStatus) as denied:
+                    async with connect(_ws(url) + "/ws/terminal/s1", origin=denied_origin):
+                        pass
+                assert denied.value.response.status_code == 403
+        assert len(daemon.websockets) == 1
+        assert daemon.websockets[0].header("origin") == origin
+        assert daemon.websockets[0].header("host") == "192.168.1.69:5173"
+
+
 async def test_with_the_daemon_down_the_page_loads_and_the_api_says_why(tmp_path):
     async with _served(tmp_path, f"http://127.0.0.1:{unused_port()}") as url:
         async with aiohttp.ClientSession() as client:

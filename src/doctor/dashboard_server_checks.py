@@ -390,7 +390,8 @@ async def _check_exposure(ctx: DoctorContext) -> CheckResult:
         detail=(
             f"dashboard.server.host is {host}: anyone who can reach port {section.port} gets the "
             "operator console -- every /api route with local-operator scope, with no login "
-            "(terminals and bearer tokens stay loopback-only). Prefer 127.0.0.1 and "
+            "(remote terminals require trusted origins; bearer tokens stay loopback-only). "
+            "Prefer 127.0.0.1 and "
             f"`ssh -L {section.port}:127.0.0.1:{section.port}`; see "
             "docs/specs/dashboard-server.md §3.4"
         ),
