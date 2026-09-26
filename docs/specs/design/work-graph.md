@@ -351,6 +351,23 @@ A phase may sit at the project root or nest one level under an epic (the existin
 
 **Refused in `hierarchy`/`train`.** One check (`phase_mode_refusal`, `src/database/queries/hierarchy_queries.py`) and one code, `hierarchy.phases_unsupported_mode`, behind both doors — `phase_create` and a graph declaring `phases:`. In those modes a phase container owns a branch and its children deliver *to it*, so phase *N+1* can open on a base that lacks phase *N*'s work and one FAILED child strands the whole stage's delivery: the hazard `hierarchy.parent_key_unsupported_mode` (§13d) already bars for standing parents. `disabled`, `observe` and `development` are unaffected — a container there is a plain task row with no branch, and in `development` an inter-phase gate releases on COMPLETED alone precisely because `_development_delivery_pending` requires a `branch_name` the container does not have.
 
+**Empty missing sources in development (2026-09-26).** Historical completed containers
+and ordinary tasks can retain a branch name that was never published to origin. After
+a successful pruned origin fetch, the development publisher retires that branch requirement
+when the source ref is absent, every completion record has no commits (including tasks
+with no completion record), and no delivery journal manifest names the task. Branch
+identities, including canonical integration checkpoints, remain intact. The observation
+is kept in `task_metadata.development_empty_source`, bound to the repository, branch,
+task update timestamp and latest completion id; reopening, editing the task or recording
+another completion invalidates it. Both readiness and candidate collection treat the
+observed revision as branchless. The stale `development_publisher_skip` is removed.
+Retirement and dependent blocked-state recomputation commit together, before the batch
+orders dependencies.
+The task stays COMPLETED, requires no synthetic delivery receipt, and no longer keeps an
+otherwise idle project opening Git transport on every tick. Any reported commits or
+journal artifacts, including parked sources, still require delivery or recovery. A
+failed origin fetch cannot prove an absent source and never retires a branch.
+
 ## 13c. In-task subtasks
 
 **Implemented, graph-visibility branch.** A subtask is a durable checklist row in its own table, `task_subtasks` (migration `a00000000010`) — modelled on `task_comments`, not on `tasks`: no foreign key to `tasks.id` (so it survives archive), no branch, no schedulability, and no hierarchy depth cost. It exists purely to let one agent track a decomposition of the single task it holds; it never appears on the claim frontier and never gates `is_blocked`.
