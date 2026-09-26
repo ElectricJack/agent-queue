@@ -38,6 +38,7 @@ export function PoolSupplyRow({ pool }: { pool: PoolStatusRow }) {
       <span title={"Bounds: min_active " + pool.min_active + ", max_active " + (pool.max_active ?? "unbounded")}>
         [{pool.min_active}–{pool.max_active ?? "∞"}]
       </span>
+      {pool.service_tier && <span>Codex {pool.service_tier}</span>}
     </span>
   );
 }

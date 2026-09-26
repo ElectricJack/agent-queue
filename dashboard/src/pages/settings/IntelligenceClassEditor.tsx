@@ -151,6 +151,14 @@ export default function IntelligenceClassEditor({ row, onClose }: { row: Intelli
                               {effort.values.map((level) => <option key={level} value={level}>{level}</option>)}
                             </select>
                           </label>}
+                          {provider === "codex" && <label className="block text-xs text-gray-400">Codex service tier
+                            <select value={fieldText(slice.service_tier)} onChange={(event) => setField(provider, "service_tier", event.target.value)} className={inputClass}>
+                              <option value="">No override</option>
+                              {!["default", "fast", ""].includes(fieldText(slice.service_tier)) && <option value={fieldText(slice.service_tier)}>Existing: {fieldText(slice.service_tier)}</option>}
+                              <option value="default">default</option>
+                              <option value="fast">fast</option>
+                            </select>
+                          </label>}
                           {provider === "google" && <label className="block text-xs text-gray-400">Google thinking budget
                             <input inputMode="numeric" value={fieldText(slice.thinking_budget)}
                               onChange={(event) => setField(provider, "thinking_budget", event.target.value)} placeholder="No override" className={inputClass} />

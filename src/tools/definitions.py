@@ -2964,6 +2964,11 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "boolean",
                     "description": "Enable Codex --full-auto (requires harness 'codex')",
                 },
+                "codex_service_tier": {
+                    "type": "string",
+                    "enum": ["default", "fast"],
+                    "description": "Codex launch service tier override (optional)",
+                },
                 "claude_dangerously_skip_permissions": {
                     "type": "boolean",
                     "description": (
@@ -3019,6 +3024,11 @@ _ALL_TOOL_DEFINITIONS = [
                 "codex_full_auto": {
                     "type": "boolean",
                     "description": "Enable or disable Codex --full-auto",
+                },
+                "codex_service_tier": {
+                    "type": "string",
+                    "enum": ["default", "fast"],
+                    "description": "Codex service tier override; null clears it",
                 },
                 "claude_dangerously_skip_permissions": {
                     "type": "boolean",

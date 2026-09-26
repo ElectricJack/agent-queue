@@ -79,6 +79,7 @@ class ProfileQueryMixin:
                     model=profile.model,
                     permission_mode=profile.permission_mode,
                     codex_full_auto=profile.codex_full_auto,
+                    codex_service_tier=profile.codex_service_tier,
                     claude_dangerously_skip_permissions=(
                         profile.claude_dangerously_skip_permissions
                     ),
@@ -171,6 +172,7 @@ class ProfileQueryMixin:
                 model=profile.model,
                 permission_mode=profile.permission_mode,
                 codex_full_auto=profile.codex_full_auto,
+                codex_service_tier=profile.codex_service_tier,
                 claude_dangerously_skip_permissions=(
                     profile.claude_dangerously_skip_permissions
                 ),
@@ -258,6 +260,7 @@ class ProfileQueryMixin:
             model=row["model"],
             permission_mode=row["permission_mode"],
             codex_full_auto=bool(row.get("codex_full_auto", 0)),
+            codex_service_tier=row.get("codex_service_tier"),
             claude_dangerously_skip_permissions=bool(
                 row.get("claude_dangerously_skip_permissions", 0)
             ),

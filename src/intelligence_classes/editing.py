@@ -129,6 +129,13 @@ def _validate_mapping(mapping, original: dict) -> str:
                     raise IntelligenceClassEditError(
                         f"{provider}.{field} must be one of {', '.join(sorted(values))}"
                     )
+        if provider == "codex":
+            tier = config.get("service_tier", _MISSING)
+            if tier is not _MISSING and not _same_json(tier, old.get("service_tier", _MISSING)):
+                if not isinstance(tier, str) or tier not in {"default", "fast"}:
+                    raise IntelligenceClassEditError(
+                        "codex.service_tier must be one of default, fast"
+                    )
         # Fable supports adaptive thinking only. Preserve an existing legacy
         # pair on unrelated edits, but never introduce a disabled-thinking pair.
         if (

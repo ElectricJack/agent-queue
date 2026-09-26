@@ -111,6 +111,7 @@ class ProfileSummary(BaseModel):
     harness: str | None = None
     default_class: str = ""
     codex_full_auto: bool = False
+    codex_service_tier: str | None = None
     claude_dangerously_skip_permissions: bool = False
     allowed_tools: list[str] = []
     mcp_servers: list[str] = []
@@ -201,6 +202,7 @@ class ProfileDetail(BaseModel):
     default_class: str = ""
     permission_mode: str = ""
     codex_full_auto: bool = False
+    codex_service_tier: str | None = None
     claude_dangerously_skip_permissions: bool = False
     allowed_tools: list[str] = []
     mcp_servers: list[str] = []
