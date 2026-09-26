@@ -24,7 +24,6 @@ from src.integration.development_validation import (
 )
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus, Workspace
 from tests.db_fixtures import lease_dsn
-from tests.test_development_validation import _slot_command
 
 
 def git(path, *args):
@@ -34,7 +33,7 @@ def git(path, *args):
 
 
 @pytest.fixture
-async def setup(tmp_path):
+async def setup(tmp_path, monkeypatch):
     remote = tmp_path / "remote.git"
     git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
     source = tmp_path / "source"
@@ -54,7 +53,24 @@ async def setup(tmp_path):
         await conn.execute(
             update(projects).where(projects.c.id == "p").values(integration_repository_id="r")
         )
-    service = DevelopmentIntegration(db, data_dir=tmp_path / "data", git=GitManager())
+    # These publisher scenarios use tiny shell fixtures, executed exclusively
+    # by the real detached job runner. Production translation remains preset-only.
+    from types import SimpleNamespace
+    from src.commands import CommandHandler
+    from src.config import AppConfig
+    from src.jobs.adapters import PublisherJobs
+    from src.jobs.policy import Preset
+
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.resources.jobs.enabled = True
+    monkeypatch.setattr("src.integration.development_validation.finite_command",
+                        lambda command: ("lint", [command]))
+    monkeypatch.setattr("src.jobs.service.presets",
+                        lambda root: {"lint": Preset("lint", ("/bin/bash", "-c"))})
+    handler = CommandHandler(SimpleNamespace(db=db, config=config), config)
+    service = DevelopmentIntegration(db, data_dir=tmp_path / "data", git=GitManager(),
+                                     job_client=PublisherJobs(handler))
+    service.validation_poll_seconds = 0.05
     await service.configure(
         "p",
         {"validation": "focused", "commands": ["test -f base.txt"]},
@@ -2866,7 +2882,6 @@ async def test_doctor_reports_a_project_it_cannot_reach(setup, tmp_path):
 async def _policy(service, **policy):
     # Supervise at test speed: poll every 50 ms, no grace past the slot bound.
     service.validation_poll_seconds = 0.05
-    service.slot_wait_grace_seconds = 0.0
     await service.configure("p", policy, reason="validation test", operator_id="local")
 
 
@@ -2888,11 +2903,23 @@ async def test_a_slot_wait_longer_than_the_timeout_still_delivers(setup):
     # budget, then a run that fits in it.
     await _policy(
         service,
-        commands=[_slot_command(wait=1.5, run=0.2)],
+        commands=["sleep 0.2"],
         timeout_seconds=1,
         slot_wait_seconds=30,
     )
-    result = await service.sweep("p")
+    import asyncio
+    from src.resources.box_lock import BoxLock
+
+    box = BoxLock(service.data_dir.parent / "locks/test-slots", 4)
+    with box.acquire(exclusive=True, timeout=1):
+        pending = asyncio.create_task(service.sweep("p"))
+        # Wait for a submitted runner before measuring a blocked admission.
+        async def queued():
+            while not await db.list_jobs(active=True):
+                await asyncio.sleep(0.01)
+        await asyncio.wait_for(queued(), 10)
+        await asyncio.sleep(1.5)
+    result = await pending
     assert result["outcome"] == "delivered"
     assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
     check = next(
@@ -2908,15 +2935,19 @@ async def test_a_slot_wait_past_its_bound_defers_without_parking_or_a_repair(set
     await feature(setup, "one")
     await _policy(
         service,
-        commands=[_slot_command(wait=30, run=0)],
+        commands=["true"],
         timeout_seconds=60,
         slot_wait_seconds=1,
     )
     started = time.monotonic()
-    result = await service.sweep("p")
+    from src.resources.box_lock import BoxLock
+
+    box = BoxLock(service.data_dir.parent / "locks/test-slots", 4)
+    with box.acquire(exclusive=True, timeout=1):
+        result = await service.sweep("p")
     assert time.monotonic() - started < 20
     assert result["outcome"] == "deferred"
-    assert result["reason"] == "slot_unavailable"
+    assert result["reason"] == "queue_timeout"
     assert git(remote, "rev-parse", "main") == before
     rows = await service.rows("p")
     assert not [r for r in rows if r["state"] == "parked"]
@@ -2960,22 +2991,22 @@ async def test_a_timeout_mid_run_defers_as_infrastructure_with_its_output(setup)
     await _policy(service, commands=["echo collected 119 items; sleep 30"], timeout_seconds=1)
     result = await service.sweep("p")
     assert result["outcome"] == "deferred"
-    assert result["reason"] == "timeout"
+    assert result["reason"] == "run_timeout"
     assert not [r for r in await service.rows("p") if r["state"] == "parked"]
     assert await _repairs(db) == []
     (deferral,) = await _deferrals(service)
     assert deferral["id"] == result["deferral"]["id"]
     run = deferral["evidence"]["runs"][-1]
-    assert run["reason"] == "timeout"
+    assert run["reason"] == "run_timeout"
     assert run["members"] == ["one"]
-    assert run["checks"][0]["exit_code"] == 124
+    assert run["checks"][0]["exit_code"] < 0
     assert "collected 119 items" in run["checks"][0]["output"]
 
 
 async def test_consecutive_infrastructure_outcomes_surface_once_not_as_repairs(setup):
     db, service, _source, _remote, _repo = setup
     await feature(setup, "one")
-    await _policy(service, commands=["echo 'no tests ran in 0.01s'; exit 5"])
+    await _policy(service, commands=["echo collected 119 items; sleep 30"], timeout_seconds=1)
     for tick in range(1, INFRA_ALERT_AFTER + 2):
         result = await service.sweep("p")
         assert result["outcome"] == "deferred"
@@ -2988,13 +3019,13 @@ async def test_consecutive_infrastructure_outcomes_surface_once_not_as_repairs(s
     stall = doctor.data["stalls"][0]
     assert stall["cause"] == "validation_infrastructure"
     assert stall["task_ids"] == ["one"]
-    assert "no_tests_collected" in doctor.detail
+    assert "run_timeout" in doctor.detail
     async with db._engine.connect() as conn:
         sent = (await conn.execute(
             select(messages).where(messages.c.to_id == "supervisor-p")
         )).mappings().all()
     assert len(sent) == 1, "one supervisor message per streak, not one per tick"
-    assert "no_tests_collected" in sent[0]["body"] and "one" in sent[0]["body"]
+    assert "run_timeout" in sent[0]["body"] and "one" in sent[0]["body"]
 
     # A run that reaches a real conclusion ends the streak and clears doctor.
     await _policy(service, commands=["true"])
@@ -3035,3 +3066,131 @@ async def test_a_batch_parked_for_a_timeout_before_this_fix_is_released_not_repa
     assert legacy["state"] == "cancelled"
     assert legacy["evidence"]["released"]["conclusion"] == INFRASTRUCTURE
     assert await _repairs(db) == []
+
+
+async def test_publisher_queue_replay_uses_one_snapshot_job_and_immutable_result(setup):
+    db, service, _source, _remote, repo = setup
+    await feature(setup, "queued-source")
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered"
+    job, = await db.list_jobs(project_id="p")
+    assert job["owner_kind"] == "integration" and job["task_id"] is None
+    assert job["integration_operation_id"] == job["owner_id"]
+    assert job["priority_band"] == 0 and job["input_mode"] == "snapshot"
+    assert job["result"]["input_ref"] == git(_remote, "rev-parse", "main")
+    assert job["result"]["input_stability"] == "stable"
+    snapshot = Path(job["contract"]["cwd"])
+    assert snapshot != await service.store(repo)
+    assert git(snapshot, "rev-parse", "HEAD") == job["input_ref"]
+    assert not (await db.get_workspace(job["workspace_id"])).enabled
+    request = dict(
+        project_id="p", operation_id=job["owner_id"], store=str(await service.store(repo)),
+        input_ref=job["input_ref"], preset="lint", argv=["test -f base.txt"],
+        idempotency_key=job["idempotency_key"], queue_seconds=600, run_seconds=300,
+    )
+    # A lost response followed by publisher restart attaches to the same row,
+    # even when the completed snapshot has generated untracked output.
+    (snapshot / "test-output").write_text("generated")
+    from src.jobs.adapters import PublisherJobs
+    restarted = PublisherJobs(service.job_client.handler)
+    replay = await restarted.submit(**request)
+    assert replay["id"] == job["id"] and replay["result"] == job["result"]
+    assert len(await db.list_jobs(project_id="p")) == 1
+    from src.jobs.policy import JobError
+    with pytest.raises(JobError, match="jobs.idempotency_conflict"):
+        await restarted.submit(**{**request, "run_seconds": 301})
+
+
+async def test_publisher_caller_cancellation_preserves_execution_and_pin(setup):
+    import asyncio
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    head = git(store, "rev-parse", "HEAD")
+    job = await service.job_client.submit(
+        project_id="p", operation_id="operation", store=str(store), input_ref=head,
+        preset="lint", argv=["sleep 30"], idempotency_key="caller-cancel",
+        queue_seconds=30, run_seconds=60,
+    )
+    waiter = asyncio.create_task(service.job_client.wait(job, poll_seconds=0.02))
+    async def launched():
+        while not (Path(service.data_dir.parent) / "runs" / job["id"] / "started.json").exists():
+            await asyncio.sleep(0.02)
+    await asyncio.wait_for(launched(), 20)
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert await db.workspace_has_job_pin(job["workspace_id"])
+    assert (await db.get_job(job["id"]))["state"] not in {"cancelled", "failed", "lost"}
+    await service.job_client.handler._cmd_job_cancel({"job_id": job["id"]})
+    finished = await asyncio.wait_for(service.job_client.wait(job, poll_seconds=0.02), 20)
+    assert finished["state"] == "cancelled"
+    assert not await db.workspace_has_job_pin(job["workspace_id"])
+
+
+async def test_snapshot_source_changes_before_execution_cannot_attest(setup):
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    job = await service.job_client.submit(
+        project_id="p", operation_id="operation", store=str(store),
+        input_ref=git(store, "rev-parse", "HEAD"), preset="lint", argv=["true"],
+        idempotency_key="changed-snapshot", queue_seconds=30, run_seconds=60,
+    )
+    (Path(job["contract"]["cwd"]) / "base.txt").write_text("changed source")
+    finished = await service.job_client.wait(job, poll_seconds=0.02)
+    assert finished["result"]["outcome"] == "infrastructure"
+    assert finished["result"]["infra_reason"] == "snapshot_modified"
+    assert not await db.workspace_has_job_pin(job["workspace_id"])
+
+
+async def test_publisher_does_not_replace_a_job_with_uncertain_cleanup(setup):
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    request = dict(
+        project_id="p", operation_id="quarantined-operation", store=str(store),
+        input_ref=git(store, "rev-parse", "HEAD"), preset="lint", argv=["true"],
+        idempotency_key="first-attempt", queue_seconds=30, run_seconds=60,
+    )
+    job = await service.job_client.submit(**request)
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time() - 31)
+    await service.job_client.handler._jobs().reconcile(job)
+    lost = await db.get_job(job["id"])
+    assert lost["state"] == "lost" and lost["cleanup_blocked"]
+    from src.jobs.policy import JobError
+    with pytest.raises(JobError, match="jobs.cleanup_blocked"):
+        await service.job_client.submit(**{**request, "idempotency_key": "retry-attempt"})
+    assert len(await db.list_jobs(project_id="p")) == 1
+    assert await db.workspace_has_job_pin(job["workspace_id"])
+
+
+async def test_result_retention_removes_only_verified_terminal_snapshot(setup, monkeypatch):
+    from src.database.tables import jobs
+    db, service, _source, _remote, repo = setup
+    store = await service.store(repo)
+    job = await service.job_client.submit(
+        project_id="p", operation_id="retention", store=str(store),
+        input_ref=git(store, "rev-parse", "HEAD"), preset="lint", argv=["true"],
+        idempotency_key="retention", queue_seconds=30, run_seconds=60,
+    )
+    await service.job_client.wait(job, poll_seconds=0.02)
+    snapshot = Path(job["contract"]["cwd"])
+    async with db._engine.begin() as conn:
+        await conn.execute(update(jobs).where(jobs.c.id == job["id"]).values(
+            ended_at=time.time() - 91 * 86400,
+        ))
+    import shutil
+    original = shutil.rmtree
+
+    def refuse_snapshot(path, *args, **kwargs):
+        if Path(path) == snapshot:
+            raise OSError("snapshot cleanup unavailable")
+        return original(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "rmtree", refuse_snapshot)
+        with pytest.raises(OSError, match="snapshot cleanup unavailable"):
+            await service.job_client.handler._jobs().sweep()
+    assert await db.get_job(job["id"]) is not None and snapshot.exists()
+    await service.job_client.handler._jobs().sweep()
+    assert await db.get_job(job["id"]) is None
+    assert await db.get_workspace(job["workspace_id"]) is None
+    assert not snapshot.exists() and store.exists()

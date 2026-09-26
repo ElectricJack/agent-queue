@@ -157,6 +157,7 @@ HANDCRAFTED_COVERAGE = {
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
     "job_reconcile",
+    "job_submit_integration",
 
     "shutdown",
     "restart_daemon",
