@@ -20,19 +20,23 @@ in the default suite, where a worker running the tests for their own change
 trips over it immediately.
 
 Fix a second head with ``alembic merge -m "<why>" <head-a> <head-b>``, and
-commit the generated merge revision.
+commit the generated merge revision. Duplicate revision IDs must instead
+be renumbered and re-chained; treat Alembic's warning as an error even if
+a later revision masks the collision behind a single head.
 """
 
 from __future__ import annotations
 
 import pathlib
 
+import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
+@pytest.mark.filterwarnings("error:Revision .* is present more than once:UserWarning")
 def test_alembic_chain_is_single_headed():
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
     heads = script.get_heads()

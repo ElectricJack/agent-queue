@@ -20,6 +20,7 @@ import pytest
 from sqlalchemy import func, insert, select, update
 
 from src.database import Database
+from src.database.schema_key import alembic_head_revisions
 from src.database.tables import (
     development_deliveries,
     integration_legacy_deliveries,
@@ -784,7 +785,7 @@ async def test_upgrade_creates_the_table_on_a_database_built_before_it():
                 "ck_integration_legacy_deliveries_delivered_sha",
             }
             version = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "a00000000024"
+        assert (version,) == alembic_head_revisions()
         # Idempotent: a second pass over the upgraded database is a no-op.
         await run_schema_setup(engine)
     finally:
@@ -850,7 +851,7 @@ async def test_upgrade_widens_the_proofs_of_a_table_built_before_them():
                      "proof": proof},
                 )
             version = await conn.scalar(text("SELECT version_num FROM alembic_version"))
-        assert version == "a00000000024"
+        assert (version,) == alembic_head_revisions()
         with pytest.raises(IntegrityError):
             async with engine.begin() as conn:
                 await conn.execute(
