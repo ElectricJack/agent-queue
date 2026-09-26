@@ -4512,3 +4512,107 @@ integration_legacy_deliveries = Table(
     ),
     Index("idx_integration_legacy_deliveries_parent", "project_id", "parent_task_id"),
 )
+
+
+# Immutable recommendations; execution/CI evidence is appended separately.
+test_selections = Table(
+    "test_selections",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    # Archive removes the live task row. Preserve its identity in immutable
+    # selection history until retention expires, as escalation audit rows do.
+    Column("task_id", Text, nullable=True),
+    Column("session_id", Text, nullable=True),
+    Column("claim_epoch", Integer, nullable=True),
+    Column("mode", Text, nullable=False),
+    Column("workspace", Text, nullable=False),
+    Column("base_ref", Text, nullable=False),
+    Column("base_sha", Text, nullable=False),
+    Column("head_sha", Text, nullable=False),
+    Column("dirty_fingerprint", Text, nullable=False),
+    Column("snapshot_fingerprint", Text, nullable=False),
+    Column("snapshot_complete", Boolean, nullable=False, server_default=true()),
+    Column("incomplete_reason", Text, nullable=True),
+    Column("catalogue_digest", Text, nullable=False),
+    Column("rules_digest", Text, nullable=False),
+    Column("policy_digest", Text, nullable=False),
+    Column("question_schema_version", Integer, nullable=False),
+    Column("static_engine", Text, nullable=False),
+    Column("marker_policy", Text, nullable=False, server_default="default"),
+    Column("cache_key", Text, nullable=False),
+    Column("jev_requested_model", Text, nullable=True),
+    Column("jev_returned_model", Text, nullable=True),
+    Column("jev_status", Text, nullable=False),
+    Column("fallback_reason", Text, nullable=True),
+    Column("full_required", Boolean, nullable=False, server_default=false()),
+    Column("jev_used_for_omission", Boolean, nullable=False, server_default=false()),
+    Column("promotion_id", Text, nullable=True),
+    Column("area_decisions", JSON, nullable=False),
+    Column("mandatory_modules", JSON, nullable=False),
+    Column("static_modules", JSON, nullable=False),
+    Column("jev_modules", JSON, nullable=True),
+    Column("fallback_modules", JSON, nullable=False),
+    Column("final_modules", JSON, nullable=False),
+    Column("reasons", JSON, nullable=False),
+    Column("pending_obligations", JSON, nullable=False),
+    Column("argv", JSON, nullable=False),
+    Column("elapsed_ms", JSON, nullable=False),
+    Column("usage", JSON, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint("mode IN ('plan_only','shadow','enforce')", name="ck_test_selections_mode"),
+    CheckConstraint(
+        "jev_status IN ('ok','partial','disabled','unconfigured','unavailable',"
+        "'invalid','over_budget','timeout','model_drift')",
+        name="ck_test_selections_jev_status",
+    ),
+    CheckConstraint(
+        "marker_policy IN ('default','all')", name="ck_test_selections_marker_policy"
+    ),
+    Index("idx_test_selections_project_created", "project_id", "created_at"),
+    Index("idx_test_selections_task_created", "task_id", "created_at"),
+)
+
+test_selection_observations = Table(
+    "test_selection_observations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column(
+        "selection_id", Text, ForeignKey("test_selections.id", ondelete="CASCADE"), nullable=False
+    ),
+    Column("kind", Text, nullable=False),
+    Column("source", Text, nullable=False),
+    Column("exit_code", Integer, nullable=True),
+    Column("duration_ms", Integer, nullable=True),
+    Column("executed_modules", JSON, nullable=False),
+    Column("failed_node_ids", JSON, nullable=False),
+    Column("payload", JSON, nullable=False),
+    Column("observed_at", Float, nullable=False),
+    CheckConstraint(
+        "kind IN ('execution','ci','replay')", name="ck_test_selection_observations_kind"
+    ),
+    Index("idx_test_selection_observations_selection", "selection_id", "observed_at"),
+)
+
+test_selection_promotions = Table(
+    "test_selection_promotions",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("model", Text, nullable=False),
+    Column("question_schema_version", Integer, nullable=False),
+    Column("catalogue_digest", Text, nullable=False),
+    Column("rules_digest", Text, nullable=False),
+    Column("policy_digest", Text, nullable=False),
+    Column("evidence", JSON, nullable=False),
+    Column("promoted_by", Text, nullable=False),
+    Column("promoted_at", Float, nullable=False),
+    Column("revoked_at", Float, nullable=True),
+    Column("revoke_reason", Text, nullable=True),
+    Index(
+        "uq_test_selection_promotions_active",
+        "project_id",
+        unique=True,
+        postgresql_where=text("revoked_at IS NULL"),
+    ),
+)

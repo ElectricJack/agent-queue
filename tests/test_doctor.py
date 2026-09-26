@@ -73,14 +73,15 @@ class TestRegistry:
 
     def test_default_registry_has_all_builtins(self):
         from src.doctor.capability_checks import capability_checks
-        from src.doctor.db_checks import db_checks
         from src.doctor.dashboard_server_checks import dashboard_server_checks
         from src.doctor.dashboard_state_checks import dashboard_state_checks
+        from src.doctor.db_checks import db_checks
         from src.doctor.formula_checks import formula_checks
         from src.doctor.git_checks import git_checks
         from src.doctor.hierarchy_checks import hierarchy_checks
         from src.doctor.integration_checks import integration_checks
         from src.doctor.intelligence_class_checks import intelligence_class_checks
+        from src.doctor.perf_checks import perf_checks
         from src.doctor.playbook_v2_checks import playbook_v2_checks
         from src.doctor.pool_checks import pool_checks
         from src.doctor.profile_checks import profile_checks
@@ -115,6 +116,7 @@ class TestRegistry:
             | {c.id for c in dashboard_state_checks()}
             | {c.id for c in dashboard_server_checks()}
             | {c.id for c in playbook_v2_checks()}
+            | {c.id for c in perf_checks()}
             | {c.id for c in project_checks()}
             | {c.id for c in provider_checks()}
             | {c.id for c in review_checks()}
