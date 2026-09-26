@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, cleanup, renderHook } from "@testing-library/react";
-import { usePaneStream } from "../usePaneStream";
+import { MAX_SCREEN_CHARS, usePaneStream } from "../usePaneStream";
 
 const api = vi.hoisted(() => ({ sessionShow: vi.fn() }));
 vi.mock("../../api/client", () => api);
@@ -184,4 +184,57 @@ it("manual pane recovery opens one subscription and ignores old callbacks", () =
   act(() => old.onmessage?.({ data: JSON.stringify({ type: "screen", screen: "stale" }) }));
   expect(result.current.screen).toBe("new");
   expect(old.closed).toBe(true);
+});
+
+describe("usePaneStream — stale screen and manual reconnect", () => {
+  it("marks the screen interrupted from a drop until the next frame, keeping it on show", async () => {
+    const { result } = pane(() => usePaneStream("s1"));
+    send({ type: "screen", screen: "kept", seq: 1 });
+    expect(result.current.lastFrameAt).not.toBeNull();
+    expect(result.current.interrupted).toBe(false);
+    act(() => MockEventSource.last?.onerror?.());
+    expect(result.current.status).toBe("reconnecting");
+    expect(result.current.interrupted).toBe(true);
+    expect(result.current.screen).toBe("kept");
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    act(() => MockEventSource.last?.onopen?.());
+    expect(result.current.interrupted).toBe(true); // connected, but nothing new on screen yet
+    send({ type: "screen", screen: "fresh", seq: 2 });
+    expect(result.current.interrupted).toBe(false);
+    expect(result.current.screen).toBe("fresh");
+  });
+
+  it("reconnect after an error frame opens a fresh stream and keeps the last screen", () => {
+    const { result } = pane(() => usePaneStream("s1"));
+    send({ type: "screen", screen: "kept", seq: 1 });
+    send({ type: "error", message: "tmux is gone", seq: 2 });
+    const first = MockEventSource.last!;
+    expect(first.closed).toBe(true);
+    act(() => result.current.reconnect());
+    act(() => vi.advanceTimersByTime(0));
+    expect(MockEventSource.last).not.toBe(first);
+    expect(result.current.screen).toBe("kept");
+    expect(result.current.status).toBe("connecting");
+    expect(result.current.interrupted).toBe(true);
+    send({ type: "screen", screen: "after reconnect", seq: 1 });
+    expect(result.current.status).toBe("open");
+    expect(result.current.screen).toBe("after reconnect");
+  });
+
+  it("a different session starts blank", () => {
+    const { result, rerender } = renderHook(({ id }) => usePaneStream(id), { initialProps: { id: "s1" } });
+    act(() => vi.advanceTimersByTime(0));
+    send({ type: "screen", screen: "s1 screen", seq: 1 });
+    rerender({ id: "s2" });
+    expect(result.current.screen).toBeNull();
+    expect(result.current.lastFrameAt).toBeNull();
+    expect(result.current.interrupted).toBe(false);
+  });
+
+  it("bounds a runaway screen to its newest characters", () => {
+    const { result } = pane(() => usePaneStream("s1"));
+    send({ type: "screen", screen: "old" + "x".repeat(MAX_SCREEN_CHARS), seq: 1 });
+    expect(result.current.screen).toHaveLength(MAX_SCREEN_CHARS);
+    expect(result.current.screen!.startsWith("old")).toBe(false);
+  });
 });
