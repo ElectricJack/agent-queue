@@ -303,3 +303,74 @@ describe("unified task table", () => {
   });
 
 });
+
+describe("below 768 px", () => {
+  const original = window.matchMedia;
+  beforeEach(() => {
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true, writable: true,
+      value: (query: string) => ({ matches: query === "(max-width: 767.98px)", media: query,
+        addEventListener: () => {}, removeEventListener: () => {} }),
+    });
+  });
+  afterEach(() => {
+    Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original });
+  });
+
+  it("renders cards, not the wide table, and a tap opens the task pane", () => {
+    render(<Tasks />);
+    expect(screen.queryByRole("table")).toBeNull();
+    const card = screen.getByRole("button", { name: /Fix checkout/ });
+    expect(card).toHaveAttribute("data-task-row", "first");
+    fireEvent.click(card);
+    expect(mocks.open).toHaveBeenCalledWith("task-detail", { taskId: "first" });
+  });
+
+  it("marks the open task's card as selected", () => {
+    mocks.state = { kind: "open", view: "task-detail", args: { taskId: "first" }, width: 480 };
+    render(<Tasks />);
+    expect(screen.getByRole("button", { name: /Fix checkout/ })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("walks the cards with the arrow keys, as the table's rows", () => {
+    mocks.filters.showCompleted = true;
+    render(<Tasks />);
+    const first = screen.getByRole("button", { name: /Fix checkout/ });
+    first.focus();
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(screen.getByRole("button", { name: /Completed checkout/ })).toHaveFocus();
+  });
+
+  it("shows the models and last activity on cards in a time range", () => {
+    mocks.filters = { ...mocks.filters, window: "24h" };
+    mocks.activityData = windowResponse([
+      activityItem({ attempts: [attempt()], attempt_count: 1, models: ["claude-opus-5"] }),
+    ]);
+    render(<Tasks />);
+    const card = screen.getByRole("button", { name: /Fix checkout/ });
+    expect(card).toHaveTextContent("claude-opus-5");
+    expect(card).toHaveTextContent("10m ago");
+  });
+
+  it("keeps the held-task note and the empty state on cards", () => {
+    mocks.filters = { ...mocks.filters, held: true };
+    mocks.heldData = { success: true, now: NOW, total: 0, by_kind: {}, tasks: [] };
+    render(<Tasks />);
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByText("No held tasks match these filters.")).toBeInTheDocument();
+  });
+
+  it("virtualises the cards when there are thousands of tasks", () => {
+    const original = [...mocks.tasks];
+    const many = Array.from({ length: 3000 }, (_, i) => ({
+      id: `bulk-${i}`, title: `Bulk ${i}`, project_id: "alpha", status: "READY", priority: 100,
+    }));
+    mocks.tasks.splice(0, mocks.tasks.length, ...many);
+    try {
+      render(<Tasks />);
+      const cards = document.querySelectorAll("button[data-task-row]");
+      expect(cards.length).toBeGreaterThan(0);
+      expect(cards.length).toBeLessThan(200);
+    } finally { mocks.tasks.splice(0, mocks.tasks.length, ...original); }
+  });
+});
