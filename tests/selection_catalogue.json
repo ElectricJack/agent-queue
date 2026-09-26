@@ -1223,7 +1223,7 @@
       ]
     }
   },
-  "digest": "sha256:9ccb93ae2d6dfea9c32ae3d79817eedb271edd2d280b4575088734979580dd51",
+  "digest": "sha256:4a29b0ea7bab80b7d31483a415fba194e40172a1f1662885e7990d8e912da000",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4286,6 +4286,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.integration.development_result_parser",
         "src.integration.development_validation"
       ],
       "markers": [
