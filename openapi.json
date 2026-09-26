@@ -10686,6 +10686,53 @@
         }
       }
     },
+    "/api/report/reconcile": {
+      "post": {
+        "tags": [
+          "report"
+        ],
+        "summary": "Recover reserved hourly report requests; install-wide service only.",
+        "description": "Recover reserved hourly report requests; install-wide service only.",
+        "operationId": "report_reconcile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReportReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportReconcileResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/report/request": {
       "post": {
         "tags": [
@@ -45056,6 +45103,29 @@
           "manual_checks"
         ],
         "title": "ReportProject"
+      },
+      "ReportReconcileRequest": {
+        "properties": {},
+        "type": "object",
+        "title": "ReportReconcileRequest"
+      },
+      "ReportReconcileResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "requested": {
+            "type": "integer",
+            "title": "Requested"
+          }
+        },
+        "type": "object",
+        "required": [
+          "requested"
+        ],
+        "title": "ReportReconcileResponse"
       },
       "ReportRequestRequest": {
         "properties": {

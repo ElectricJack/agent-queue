@@ -266,12 +266,60 @@ class ReportCommandsMixin:
             and session.lifecycle == "named"
         )
 
+    def _report_service_allowed(self) -> bool:
+        principal = current_principal()
+        return bool(
+            principal
+            and principal.kind in (PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK)
+            and principal.project_id is None
+        )
+
+    async def _cmd_report_reconcile(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Recover reserved hourly requests after a lost event or daemon restart."""
+        if not self._report_service_allowed():
+            return _error(
+                "out_of_scope", "only the install-wide report service/playbook may request"
+            )
+        config = self.orchestrator.config
+        now = time.time()
+        schedule = schedule_for(config.discord)
+        if not config.reports.hourly.enabled or not schedule.enabled:
+            await self.db.cancel_hourly_reports(now=now)
+            return {"success": True, "requested": 0}
+        full_fleet = config.reports.hourly.full_fleet_visibility and not schedule.project_ids
+        await self.db.invalidate_hourly_visibility(
+            destination=schedule.destination,
+            full_fleet=full_fleet,
+            now=now,
+        )
+        count = 0
+        for row in await self.db.list_reserved_hourly_reports(now=now):
+            result = await self._cmd_report_request({"request_id": row["id"]})
+            count += bool(result.get("success"))
+        return {"success": True, "requested": count}
+
     async def _cmd_report_request(self, args: dict[str, Any]) -> dict[str, Any]:
         """Queue a single durable supervisor wake for a reserved request."""
-        principal = current_principal()
-        if principal is None or principal.kind != PrincipalKind.SERVICE:
-            return _error("out_of_scope", "only the report service may request an author turn")
+        if not self._report_service_allowed():
+            return _error(
+                "out_of_scope", "only the install-wide report service/playbook may request"
+            )
         request_id = str(args.get("request_id") or "")
+        row = await self.db.get_report_request(request_id)
+        if row is None:
+            return _error("report.closed", "report request is missing or closed")
+        if row["kind"] == "hourly":
+            config = self.orchestrator.config
+            policy = config.reports.hourly
+            current = schedule_for(config.discord)
+            if (
+                not policy.enabled
+                or not current.enabled
+                or not policy.full_fleet_visibility
+                or current.project_ids
+                or current.destination != row["destination"]
+            ):
+                return _error("report.closed", "report authoring or visibility changed")
         row = await self.db.request_report(request_id, now=time.time())
         if row is None:
             return _error("report.closed", "report request is missing or closed")

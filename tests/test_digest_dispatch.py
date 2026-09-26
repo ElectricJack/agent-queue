@@ -499,13 +499,15 @@ async def test_unreconcilable_ambiguity_is_recorded_unknown_not_reposted(db):
 
     transport.post_root = ambiguous
     first = await service.pump()
-    assert first.retried == 1
+    assert first.unknown == 1
+    assert first.retried == 0
     stored = await db.get_digest_window(row["id"])
+    assert stored["send_status"] == "unknown"
     assert stored["last_error"].startswith("ambiguous:")
 
     clock.now = stored["due_at"]
     second = await service.pump()
-    assert second.unknown == 1
+    assert second.unknown == 0  # unknown sends are never automatically reclaimed
     assert transport.messages == {}
     final = await db.get_digest_window(row["id"])
     assert final["send_status"] == "unknown"

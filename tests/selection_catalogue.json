@@ -218,6 +218,7 @@
         "tests/test_digest_queries.py",
         "tests/test_discord_settings.py",
         "tests/test_morning_reports.py",
+        "tests/test_report_delivery.py",
         "tests/test_report_requests.py"
       ]
     },
@@ -1232,7 +1233,7 @@
       ]
     }
   },
-  "digest": "sha256:0f8950c2880843f87ff4ef6a47378f846b58cb6e96bcad03ddb83cbc7a396eda",
+  "digest": "sha256:784c7023b5cae43ab297132c1e9c2b6f489f474adb15396a86f3aa977f4b1b9d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10168,6 +10169,30 @@
       ],
       "summary": ""
     },
+    "tests/test_report_delivery.py": {
+      "areas": [
+        "digest"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.commands.report_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.digest",
+        "src.escalations.transport",
+        "src.models",
+        "src.playbooks.authoring",
+        "src.playbooks.definition",
+        "src.playbooks.required",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Shared outboxes, frozen routes and lost-event hourly author recovery."
+    },
     "tests/test_report_requests.py": {
       "areas": [
         "digest"
@@ -11002,11 +11027,13 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands",
         "src.config",
         "src.database",
         "src.database.tables",
         "src.integration.models",
         "src.integration.ownership",
+        "src.messages.delivery",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.workspace",
@@ -11018,10 +11045,13 @@
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
         "src.sessions.provider",
-        "src.sessions.reconciler"
+        "src.sessions.reconciler",
+        "src.sessions.tmux",
+        "src.sessions.transcripts"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "tmux"
       ],
       "summary": "SessionReconciler and the exit classifier, on FakeProvider."
     },

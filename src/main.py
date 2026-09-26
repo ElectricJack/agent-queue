@@ -350,6 +350,11 @@ async def run(config_path: str, profile: str | None = None) -> bool:
                 rate_guard=_bot_rate_guard(bot),
                 escalation_priority=orch.db.count_due_escalation_deliveries,
                 event_bus=orch.bus,
+                include_outbound=True,
+                authoring_ready=lambda: bool(
+                    orch.playbook_manager is not None
+                    and orch.playbook_manager.is_active("supervisor-hourly-report")
+                ),
             )
             logger.info("Digest scheduler wired to the Discord transport")
         elif bot is not None:

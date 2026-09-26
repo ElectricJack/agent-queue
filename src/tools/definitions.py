@@ -113,6 +113,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "wait_list": "wait",
     "wait_cancel": "wait",
     "report_request": "report",
+    "report_reconcile": "report",
     "report_brief": "report",
     "morning_report_preview": "report",
     "morning_report_tick": "report",
@@ -6909,6 +6910,13 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "max_lookback_hours": {"type": "integer", "minimum": 1, "maximum": 72},
                 },
                 "additionalProperties": False,
+            },
+        },
+        {
+            "name": "report_reconcile",
+            "description": "Recover reserved hourly report requests; install-wide service only.",
+            "input_schema": {
+                "type": "object", "properties": {}, "additionalProperties": False,
             },
         },
         {

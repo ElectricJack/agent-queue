@@ -20,6 +20,14 @@ from src.commands.contracts.registry import CommandRegistration, ContractRegistr
 from src.commands.principal import principal_context
 
 
+class ReportReconcileArgs(CommandArgs):
+    pass
+
+
+class ReportReconcileValue(CommandValue):
+    requested: int
+
+
 class ReportRequestArgs(CommandArgs):
     request_id: str
 
@@ -154,6 +162,7 @@ def _registration(
                     "report_list": "List stored morning reports in project scope.",
                     "morning_report_preview": "Read bounded overnight evidence without writes or model calls.",
                     "report_request": "Queue one author wake for a reserved report.",
+                    "report_reconcile": "Recover reserved hourly report requests after lost events.",
                     "report_brief": "Read a bounded, paged report brief and its CAS version.",
                     "report_submit": "Submit one authored report before its deadline.",
                 }[name],
@@ -180,6 +189,7 @@ def register_report_contracts(registry: ContractRegistry) -> None:
         ),
         ("report_get", ReportGetArgs, ReportGetValue, SideEffectClass.READ),
         ("report_list", ReportListArgs, ReportListValue, SideEffectClass.READ),
+        ("report_reconcile", ReportReconcileArgs, ReportReconcileValue, SideEffectClass.CREATE),
         ("report_request", ReportRequestArgs, ReportRequestValue, SideEffectClass.CREATE),
         ("report_brief", ReportBriefArgs, ReportBriefValue, SideEffectClass.READ),
         ("report_submit", ReportSubmitArgs, ReportSubmitValue, SideEffectClass.UPDATE),

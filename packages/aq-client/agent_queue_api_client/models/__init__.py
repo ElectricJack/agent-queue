@@ -1042,6 +1042,9 @@ from .report_list_request import ReportListRequest
 from .report_list_response import ReportListResponse
 from .report_list_response_422 import ReportListResponse422
 from .report_project import ReportProject
+from .report_reconcile_request import ReportReconcileRequest
+from .report_reconcile_response import ReportReconcileResponse
+from .report_reconcile_response_422 import ReportReconcileResponse422
 from .report_request_request import ReportRequestRequest
 from .report_request_response import ReportRequestResponse
 from .report_request_response_422 import ReportRequestResponse422
@@ -2450,6 +2453,9 @@ __all__ = (
     "ReportListResponse",
     "ReportListResponse422",
     "ReportProject",
+    "ReportReconcileRequest",
+    "ReportReconcileResponse",
+    "ReportReconcileResponse422",
     "ReportRequestRequest",
     "ReportRequestResponse",
     "ReportRequestResponse422",

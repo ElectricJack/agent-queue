@@ -121,6 +121,15 @@ class V2PlaybookRuntime:
         self._required_playbook_status = required_playbook_status or {}
         self._required_inactive_ids: set[str] = set(REQUIRED_SYSTEM_PLAYBOOK_IDS)
 
+    def is_active(self, playbook_id: str) -> bool:
+        """Whether a healthy system activation currently owns this optional policy."""
+        return any(
+            target.playbook_id == playbook_id
+            and target.scope == "system"
+            and target.definition is not None
+            for target in self._integration_destinations
+        )
+
     async def refresh(self) -> None:
         rows = await self._db.list_playbook_activations(enabled_only=False)
         enabled_rows = [row for row in rows if row.get("enabled") is True]
