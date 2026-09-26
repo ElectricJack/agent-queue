@@ -112,7 +112,7 @@ operator's browser without ever advertising a loopback-only address.
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
-| [src/remote_links.py](../../../src/remote_links.py) | Resolves a safe, non-loopback dashboard base URL for links sent to remote operators. | [concepts/messaging.md](../../concepts/messaging.md) | `tests/test_remote_links.py`. Returns no link when the configured URL is not safe to expose. |
+| [src/remote_links.py](../../../src/remote_links.py) | The one dashboard origin that escalations, the digest, reviews and `digest_preview` link to: `dashboard.server.public_url`, else a Tailscale-confirmed `dashboard.server.host`, else an explicit notice. Never `health_check.base_url`. Cached async resolver, plus the diagnostics behind `aq dashboard link` and `dashboard.remote_link`. | [guides/dashboard.md](../../guides/dashboard.md#dashboard-links-in-discord-posts) | `tests/test_remote_links.py`. A configured origin is never reported as verified reachable. |
 
 ## Command and configuration surfaces
 

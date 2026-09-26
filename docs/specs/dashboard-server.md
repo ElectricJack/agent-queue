@@ -296,6 +296,14 @@ remote bearers.
 (`ssh -L 8082:127.0.0.1:8082 host`): the origin is then `http://localhost:8082`
 and everything, terminals included, works with no configuration.
 
+**Links posted off the machine** (Discord escalations, digests, reviews) name
+`dashboard.server.public_url` only: an operator-run, authenticated tailnet proxy
+to the loopback server, listed in `trusted_dashboard_origins`. They never name
+`health_check.base_url`, and a loopback bind is never rewritten to a tailnet
+address. AQ binds nothing wider and runs no `tailscale serve` for this
+(`src/remote_links.py`;
+[guide](../guides/dashboard.md#dashboard-links-in-discord-posts)).
+
 ## 4. Bundle ownership
 
 * `src/dashboard_assets/` stays the data package: `pyproject.toml` keeps

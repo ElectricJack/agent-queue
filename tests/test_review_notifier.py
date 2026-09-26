@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
+from src.config import DashboardServerConfig
 from src.escalations.transport import (
     TransportAmbiguous,
     TransportRetryable,
     TransportUnavailable,
 )
-from src.reviews.notifier import DEFAULT_BASE_URL, ReviewNotifier
+from src.remote_links import DashboardLinkResolver
+from src.reviews.notifier import ReviewNotifier
 
 
 class FakeTransport:
@@ -133,11 +136,29 @@ async def test_unconfigured_discord_marks_reviews_notified(transport, channel_id
         assert transport.posts == []
 
 
-async def test_default_base_url_is_the_local_dashboard():
+async def test_without_an_origin_the_post_carries_a_notice_never_a_loopback_link():
+    """A ``127.0.0.1`` link in Discord names the reader's machine (link spec §4.1)."""
     db = FakeDatabase([review()])
     transport = FakeTransport()
     notifier = ReviewNotifier(db, transport, "123")
 
-    assert DEFAULT_BASE_URL == "http://127.0.0.1:8082"
     assert await notifier.tick() == 1
-    assert transport.posts[0][1].endswith("http://127.0.0.1:8082/reviews/rev-bright-harbor")
+    content = transport.posts[0][1]
+    assert "127.0.0.1" not in content and "/reviews/" not in content
+    assert content.endswith("open it on the daemon host).")
+
+
+async def test_the_link_resolver_supplies_the_review_origin():
+    config = SimpleNamespace(
+        dashboard_server=DashboardServerConfig(public_url="https://queue.tail1234.ts.net/"),
+    )
+    db = FakeDatabase([review()])
+    transport = FakeTransport()
+    notifier = ReviewNotifier(
+        db, transport, "123", links=DashboardLinkResolver(lambda: config),
+    )
+
+    assert await notifier.tick() == 1
+    assert transport.posts[0][1].endswith(
+        "https://queue.tail1234.ts.net/reviews/rev-bright-harbor"
+    )

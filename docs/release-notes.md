@@ -9,6 +9,28 @@ entries are dated by the day the change reached `main` rather than numbered.
 A wheel installation gets the same change when it upgrades to a release built
 after that date.
 
+## 2026-09-25 — Discord dashboard links name `dashboard.server.public_url`
+
+**What changed.** Escalation posts, the hourly digest, document-review posts
+and the digest preview now link to one origin: `dashboard.server.public_url`
+(also accepted as `dashboard.public_url`). Before this, escalations and the
+digest named `health_check.base_url`, the daemon's own port 8081, which serves
+no dashboard pages. When that address was loopback they swapped in a Tailscale
+address, which was still unreachable. Review posts named `http://127.0.0.1:8082`.
+With no `public_url`, a post now carries `Remote dashboard link unavailable
+(<reason>; open it on the daemon host).`, unless `dashboard.server.host` is this
+machine's Tailscale address. Setting both spellings of `public_url` to different
+values is now a validation error; an invalid value is a warning.
+
+**What you do.** To get working links from a phone, run an authenticated
+tailnet reverse proxy to `127.0.0.1:8082`, then set its origin as
+`dashboard.server.public_url` and in `api_auth.trusted_dashboard_origins`
+([guide](guides/dashboard.md#dashboard-links-in-discord-posts)). Check the
+result with `aq dashboard link` or `aq doctor --check dashboard.remote_link`.
+Nothing else changes and there is no migration.
+
+**Undo.** Remove `public_url`, and posts go back to the notice. Posts already
+sent are never edited.
 ## 2026-09-25 — App-mode Git no longer fails anonymous reads
 
 With `integration.github_app` configured, fetches, clones and remote-head reads

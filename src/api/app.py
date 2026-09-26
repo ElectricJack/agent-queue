@@ -205,15 +205,11 @@ def create_app(
     # from dashboard.server alone — never the request's Host — with a wildcard
     # bind rendered as 127.0.0.1.
     def _dashboard_hint_url() -> str | None:
-        server = config.dashboard_server
-        if not server.enabled:
-            return None
-        host = server.host
-        if host in {"0.0.0.0", "::"}:
-            host = "127.0.0.1"
-        if ":" in host:
-            host = f"[{host}]"
-        return f"http://{host}:{server.port}/"
+        # The link resolver's local mode: a pointer for a browser on this
+        # machine, never the public origin external links name.
+        from src.remote_links import local_dashboard_url
+
+        return local_dashboard_url(config)
 
     @app.api_route("/dashboard", methods=["GET", "HEAD"], include_in_schema=False)
     @app.api_route("/dashboard/{rest:path}", methods=["GET", "HEAD"], include_in_schema=False)

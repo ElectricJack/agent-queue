@@ -11,10 +11,9 @@ from src.escalations.transport import (
     TransportRetryable,
     TransportUnavailable,
 )
+from src.remote_links import DashboardLink, DashboardLinkSource
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_BASE_URL = "http://127.0.0.1:8082"
 
 
 class ReviewNotifier:
@@ -31,12 +30,18 @@ class ReviewNotifier:
         db: Any,
         transport: Any | None,
         channel_id: str,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: str = "",
+        *,
+        links: DashboardLinkSource | None = None,
     ) -> None:
         self.db = db
         self.transport = transport
         self.channel_id = str(channel_id or "")
-        self.base_url = (base_url or DEFAULT_BASE_URL).strip().rstrip("/") or DEFAULT_BASE_URL
+        # ``links`` (the daemon's DashboardLinkResolver) wins.  There is no
+        # loopback default: a ``127.0.0.1`` link in Discord names the reader's
+        # own machine, so without an origin the post carries the notice.
+        self.base_url = (base_url or "").strip().rstrip("/")
+        self._links = links
 
     async def tick(self) -> int:
         """Deliver pending review revisions and return those handled this tick."""
@@ -112,7 +117,13 @@ class ReviewNotifier:
         ]
         if changes_note:
             lines.append(str(changes_note))
-        lines.append(f"{self.base_url}/reviews/{review['id']}")
+        link = await self._links.resolve() if self._links is not None else DashboardLink(
+            url=self.base_url
+        )
+        if link.url:
+            lines.append(f"{link.url}/reviews/{review['id']}")
+        else:
+            lines.append(link.unavailable_notice)
         return "\n".join(lines)
 
     async def _changes_note(self, review: dict, revision: int) -> str | None:
