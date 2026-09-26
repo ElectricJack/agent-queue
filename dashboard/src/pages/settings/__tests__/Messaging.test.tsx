@@ -86,6 +86,18 @@ function renderPage() {
 }
 
 describe("Messaging settings", () => {
+  it("links to supervisor conversations only when the server feature flag is enabled", () => {
+    api.config = { config: { discord: baseDiscord({ conversation: { enabled: true } }) } };
+    renderPage();
+    expect(screen.getByRole("link", { name: "Supervisor conversations" })).toHaveAttribute("href", "/conversations");
+  });
+
+  it.each([undefined, { enabled: false }])("keeps the conversation entry point off for %j", (conversation) => {
+    api.config = { config: { discord: baseDiscord({ conversation }) } };
+    renderPage();
+    expect(screen.queryByRole("link", { name: "Supervisor conversations" })).not.toBeInTheDocument();
+  });
+
   it("saves independent digest and escalation settings to the discord config section", async () => {
     renderPage();
     fireEvent.change(screen.getByLabelText("Interval (minutes)"), { target: { value: "120" } });

@@ -118,6 +118,12 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("Dashboard navigation", () => {
+  it("mounts the separate supervisor conversation route and retains the thread URL", async () => {
+    renderApp("/conversations?conversation=conv-one");
+    await screen.findByRole("heading", { name: "Former Home chat" });
+    expect(screen.getByLabelText("Current location")).toHaveTextContent("/conversations?conversation=conv-one");
+  });
+
   it("routes the Reviews nav destination", async () => {
     renderApp("/reviews");
     expect(await screen.findByRole("heading", { name: "Reviews inbox" })).toBeInTheDocument();
