@@ -867,6 +867,29 @@ class ConversationQueriesMixin:
     # Retention
     # ------------------------------------------------------------------
 
+    async def list_expired_conversation_message_ids(
+        self, *, older_than: float, limit: int = 1000
+    ) -> list[str]:
+        """A bounded batch of unarchived old messages in conversation threads.
+
+        Join by thread rather than input pointers: this includes every reply,
+        even after a later reply replaces an input's current reply pointer.
+        """
+        statement = (
+            select(messages.c.id)
+            .select_from(
+                messages.join(
+                    supervisor_conversations,
+                    messages.c.thread_id == supervisor_conversations.c.thread_id,
+                )
+            )
+            .where(messages.c.created_at < older_than, messages.c.archived_at.is_(None))
+            .order_by(messages.c.created_at, messages.c.id)
+            .limit(max(1, int(limit)))
+        )
+        async with self._engine.connect() as conn:
+            return list((await conn.execute(statement)).scalars())
+
     async def expire_conversation_text(self, *, older_than: float, now: float) -> int:
         """Null the text of inputs received before *older_than*.
 
