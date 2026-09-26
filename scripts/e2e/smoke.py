@@ -2162,7 +2162,8 @@ def _prepare_failover_recovery(state: dict) -> str:
     """Prepare recovery through public commands, without replaying outage assertions.
 
     A real login failure creates the provider incident. One preferred task is
-    rerouted and stays queued on provb; the pinned and solo tasks stay on prova.
+    rerouted and stays queued on provb; the remaining preferred, class-only,
+    pinned and solo tasks stay on prova, matching S16a's unfinished task mix.
     This is the boundary recovery needs, independently of S16a's fixture.
     """
     _failover_baseline()
@@ -2170,6 +2171,11 @@ def _prepare_failover_recovery(state: dict) -> str:
     moved = failover_task("S16 recovery moved", STD_A, "std-high", priority=20)
     pinned = failover_task("S16 recovery pinned", STD_A, "std-high", priority=15, pin=True)
     solo = failover_task("S16 recovery solo", SOLO_A, "solo-high", priority=40)
+    failover_task("S16 recovery preferred", STD_A, "std-high", priority=30)
+    for priority in (25, 35):
+        task_id = failover_task("S16 recovery class-only", STD_A, "std-high", priority=priority)
+        edited = api("edit_task", {"task_id": task_id, "provider_intent": "class_only"})
+        check(edited.get("updated") == task_id, f"recovery fixture class-only edit: {edited}")
     wait_provider(PROVA, ("unauthenticated",), what="the recovery fixture login failure")
     sweep = reroute()
     check([row["task_id"] for row in sweep["moved"]] == [moved], f"recovery fixture sweep: {sweep}")
