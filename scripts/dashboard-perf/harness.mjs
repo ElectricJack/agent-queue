@@ -1,7 +1,7 @@
 // Dashboard performance harness: puppeteer-core over CDP against a served build.
-// Usage: node harness.mjs <baseUrl> <outJson> [--idle-ms N] [--runs N] [--cpu N] [--only a,b] [--project id] [--no-interactions]
+// Usage: node harness.mjs <baseUrl> <outJson> [--api URL] [--clients N] [--warmup-ms N] [--observe-ms N] [--idle-ms N] [--runs N] [--cpu N] [--only a,b] [--project id] [--no-interactions] [--task-detail-only]
 // See README.md next to this file.
-import puppeteer from "puppeteer-core";
+import { probeApi } from "./api.mjs";
 import { writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
@@ -11,7 +11,10 @@ const opt = (name, dflt) => {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : dflt;
 };
-const IDLE_MS = Number(opt("--idle-ms", "60000"));
+const API = opt("--api", "");
+const CLIENTS = Number(opt("--clients", "1"));
+const WARMUP_MS = Number(opt("--warmup-ms", "0"));
+const IDLE_MS = Number(opt("--observe-ms", opt("--idle-ms", "60000")));
 const RUNS = Number(opt("--runs", "3"));
 const CPU = Number(opt("--cpu", "1"));
 const ONLY = opt("--only", "")?.split(",").filter(Boolean);
@@ -95,17 +98,27 @@ const INSTRUMENT = () => {
     new Promise((resolve) => {
       const pred = new Function("return (" + src + ")()");
       const t0 = performance.now();
+      let finished = false;
+      const finish = (value) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        resolve(value);
+      };
+      // rAF may stop in a background/frozen page; readiness must still time out.
+      const timer = setTimeout(() => finish(-1), timeout);
       const tick = () => {
+        if (finished) return;
         let ok = false;
         try {
           ok = !!pred();
         } catch {}
         if (ok) {
           // Next frame after the DOM holds: the paint that shows it.
-          requestAnimationFrame(() => resolve(performance.now()));
+          requestAnimationFrame(() => finish(performance.now()));
           return;
         }
-        if (performance.now() - t0 > timeout) return resolve(-1);
+        if (performance.now() - t0 > timeout) return finish(-1);
         requestAnimationFrame(tick);
       };
       tick();
@@ -152,8 +165,23 @@ const median = (xs) => {
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 };
 
-async function newPage(browser) {
-  const page = await browser.newPage();
+let clientWindow = 0;
+async function newPage(browser, separateWindow = false) {
+  let page;
+  if (separateWindow) {
+    // An inactive tab suspends requestAnimationFrame, including __waitFor.
+    // Each measured client needs its own foreground window.
+    const marker = `about:blank#aq-perf-client-${++clientWindow}`;
+    const session = await browser.target().createCDPSession();
+    try {
+      await session.send("Target.createTarget", { url: marker, newWindow: true, background: false });
+      page = await (await browser.waitForTarget((target) => target.url() === marker)).page();
+    } finally {
+      await session.detach();
+    }
+  } else {
+    page = await browser.newPage();
+  }
   await page.setViewport({ width: 1600, height: 1000 });
   const cdp = await page.createCDPSession();
   await cdp.send("Network.enable");
@@ -279,7 +307,7 @@ async function warmNav(page, key) {
 }
 
 async function idle(page, net, ms) {
-  await sleep(3000);
+  const startTs = Date.now() / 1000;
   const before = await snapshot(page);
   const apiBefore = net.api.length;
   const wsBefore = net.ws;
@@ -291,6 +319,8 @@ async function idle(page, net, ms) {
   for (const a of api) byPath[a.path] = (byPath[a.path] || 0) + 1;
   const mins = ms / 60000;
   return {
+    start_ts: startTs,
+    end_ts: Date.now() / 1000,
     api_per_min: +(api.length / mins).toFixed(1),
     ws_frames_per_min: +((net.ws - wsBefore) / mins).toFixed(1),
     ws_kb_per_min: +((net.wsBytes - wsBytesBefore) / 1024 / mins).toFixed(1),
@@ -361,6 +391,10 @@ async function interactions(browser) {
         `() => { const s = document.querySelector('[data-testid="shell-pane-scroller"]'); const h = s && s.querySelector('h2'); return !!h && h.innerText.trim() === ${JSON.stringify(title)} && /attachments/i.test(s.innerText); }`,
       ),
     );
+  }
+  if (args.includes("--task-detail-only")) {
+    await page.close();
+    return out;
   }
   await sleep(1500);
   await page.keyboard.press("Escape");
@@ -495,80 +529,127 @@ async function interactions(browser) {
 }
 
 async function main() {
+  const { default: puppeteer } = await import("puppeteer-core");
   const browser = await puppeteer.launch({
     executablePath: process.env.CHROME ?? "/usr/bin/google-chrome",
     headless: "new",
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1600,1000"],
   });
   const surfaces = ONLY?.length ? ONLY : Object.keys(SURFACES);
-  const res = { base: BASE, cpu: CPU, idle_ms: IDLE_MS, runs: RUNS, cold: {}, warm: {}, idle: {}, interactions: [] };
+  try {
+    const res = { base: BASE, cpu: CPU, idle_ms: IDLE_MS, runs: RUNS, cold: {}, warm: {}, idle: {}, interactions: [] };
 
-  for (const key of surfaces) {
-    const runs = [];
-    for (let i = 0; i < RUNS; i++) runs.push(await coldLoad(browser, key));
-    res.cold[key] = {
-      ready_ms: median(runs.map((r) => r.ready_ms)),
-      lt_count: median(runs.map((r) => r.lt_load.count)),
-      tbt: median(runs.map((r) => r.lt_load.tbt)),
-      api_requests: median(runs.map((r) => r.api_requests_load)),
-      js_kb: Math.round(median(runs.map((r) => r.js_bytes)) / 1024),
-      commits: median(runs.map((r) => r.commits_load)),
-      script_ms: median(runs.map((r) => r.script_ms)),
-      task_ms: median(runs.map((r) => r.task_ms)),
-      raw: runs.map((r) => r.ready_ms),
+    res.manifest = {
+      chrome: await browser.version(), viewport: [1600, 1000], warmup_ms: WARMUP_MS,
+      observe_ms: IDLE_MS, runs: RUNS, clients: CLIENTS, api: API || null,
     };
-    console.error("cold", key, JSON.stringify(res.cold[key]));
-  }
+    res.start_ts = Date.now() / 1000;
 
-  // Warm navigation: cycle through the surfaces in one SPA session.
-  {
-    const { page } = await newPage(browser);
-    await page.goto(BASE + SURFACES.tasks.path, { waitUntil: "domcontentloaded" });
-    await page.evaluate((src) => window.__waitFor(src, 20000), SURFACES.tasks.ready);
-    await sleep(3000);
-    const order = surfaces.filter((k) => k !== "tasks").concat(["tasks"]);
-    const all = {};
-    for (let i = 0; i < RUNS; i++) {
-      for (const key of order) (all[key] ??= []).push(await warmNav(page, key));
-    }
-    for (const [key, runs] of Object.entries(all)) {
-      res.warm[key] = {
-        ready_ms: median(runs.map((r) => r.ready_ms)),
-        tbt: median(runs.map((r) => r.lt.tbt)),
-        lt_count: median(runs.map((r) => r.lt.count)),
-        commits: median(runs.map((r) => r.commits)),
-        fibers: median(runs.map((r) => r.fibers)),
-        via: runs[0].via,
-        raw: runs.map((r) => r.ready_ms),
-      };
-      console.error("warm", key, JSON.stringify(res.warm[key]));
-    }
-    await page.close();
-  }
-
-  if (!process.argv.includes("--no-interactions")) {
-    for (let i = 0; i < RUNS; i++) {
-      try {
-        res.interactions.push(await interactions(browser));
-      } catch (e) {
-        console.error("interactions failed", e);
-      }
-    }
-    console.error("interactions", JSON.stringify(res.interactions.at(-1)));
-  }
-
-  if (IDLE_MS > 0) {
     for (const key of surfaces) {
-      const { page, net } = await newPage(browser);
-      await page.goto(BASE + SURFACES[key].path, { waitUntil: "domcontentloaded" });
-      await page.evaluate((src) => window.__waitFor(src, 20000), SURFACES[key].ready);
-      res.idle[key] = await idle(page, net, IDLE_MS);
-      console.error("idle", key, JSON.stringify(res.idle[key]));
+      const runs = [];
+      for (let i = 0; i < RUNS; i++) runs.push(await coldLoad(browser, key));
+      res.cold[key] = {
+        ready_ms: median(runs.map((r) => r.ready_ms)),
+        lt_count: median(runs.map((r) => r.lt_load.count)),
+        tbt: median(runs.map((r) => r.lt_load.tbt)),
+        api_requests: median(runs.map((r) => r.api_requests_load)),
+        js_kb: Math.round(median(runs.map((r) => r.js_bytes)) / 1024),
+        commits: median(runs.map((r) => r.commits_load)),
+        script_ms: median(runs.map((r) => r.script_ms)),
+        task_ms: median(runs.map((r) => r.task_ms)),
+        raw: runs.map((r) => r.ready_ms),
+        raw_samples: runs,
+      };
+      console.error("cold", key, JSON.stringify(res.cold[key]));
+    }
+
+    // Warm navigation: cycle through the surfaces in one SPA session.
+    {
+      const { page } = await newPage(browser);
+      await page.goto(BASE + SURFACES.tasks.path, { waitUntil: "domcontentloaded" });
+      await page.evaluate((src) => window.__waitFor(src, 20000), SURFACES.tasks.ready);
+      await sleep(3000);
+      const order = surfaces.filter((k) => k !== "tasks").concat(["tasks"]);
+      const all = {};
+      for (let i = 0; i < RUNS; i++) {
+        for (const key of order) (all[key] ??= []).push(await warmNav(page, key));
+      }
+      for (const [key, runs] of Object.entries(all)) {
+        res.warm[key] = {
+          ready_ms: median(runs.map((r) => r.ready_ms)),
+          tbt: median(runs.map((r) => r.lt.tbt)),
+          lt_count: median(runs.map((r) => r.lt.count)),
+          commits: median(runs.map((r) => r.commits)),
+          fibers: median(runs.map((r) => r.fibers)),
+          via: runs[0].via,
+          raw: runs.map((r) => r.ready_ms),
+          raw_samples: runs,
+        };
+        console.error("warm", key, JSON.stringify(res.warm[key]));
+      }
       await page.close();
     }
+
+    if (!process.argv.includes("--no-interactions")) {
+      for (let i = 0; i < RUNS; i++) {
+        try {
+          res.interactions.push(await interactions(browser));
+        } catch (e) {
+          (res.interaction_errors ??= []).push(String(e));
+          console.error("interactions failed", e);
+        }
+      }
+      console.error("interactions", JSON.stringify(res.interactions.at(-1)));
+    }
+
+    if (IDLE_MS > 0) {
+      for (const key of surfaces) {
+        const pages = [];
+        try {
+          await Promise.all(Array.from({ length: CLIENTS }, async () => {
+            const client = await newPage(browser, CLIENTS > 1);
+            pages.push(client);
+            await client.page.goto(BASE + SURFACES[key].path, { waitUntil: "domcontentloaded" });
+            const ready = await client.page.evaluate((src) => window.__waitFor(src, 20000), SURFACES[key].ready);
+            if (ready < 0) throw new Error(`idle surface ${key} did not become ready`);
+            await sleep(WARMUP_MS);
+          }));
+          const clients = await Promise.all(pages.map(({ page, net }) => idle(page, net, IDLE_MS)));
+          const aggregate = { clients };
+          for (const field of ["api_per_min", "ws_frames_per_min", "ws_kb_per_min", "commits_per_min", "fibers_per_min"])
+            aggregate[field] = median(clients.map((c) => c[field]));
+          aggregate.lt = Object.fromEntries(["count", "tbt", "max"].map((field) => [field, median(clients.map((c) => c.lt[field]))]));
+          aggregate.by_path = {};
+          for (const c of clients)
+            for (const [path, count] of Object.entries(c.by_path))
+              aggregate.by_path[path] = (aggregate.by_path[path] ?? 0) + count;
+          res.idle[key] = aggregate;
+          console.error("idle", key, JSON.stringify(aggregate));
+        } finally {
+          await Promise.all(pages.map(({ page }) => page.close()));
+        }
+      }
+    }
+    if (API) {
+      res.api_start_ts = Date.now() / 1000;
+      res.api = await probeApi(API, { project: PROJECT });
+      res.api_end_ts = Date.now() / 1000;
+    }
+    res.end_ts = Date.now() / 1000;
+    writeFileSync(OUT, JSON.stringify(res, null, 2));
+  } finally {
+    await browser.close();
   }
-  await browser.close();
-  writeFileSync(OUT, JSON.stringify(res, null, 2));
+}
+if (!BASE || !OUT || args.includes("--help")) {
+  console.error("Usage: node harness.mjs <baseUrl> <outJson> [--api URL] [--clients N] [--warmup-ms N] [--observe-ms N] [--idle-ms N] [--runs N] [--cpu N] [--only a,b] [--project id] [--no-interactions] [--task-detail-only]");
+  process.exit(args.includes("--help") ? 0 : 2);
+}
+if (!Number.isInteger(CLIENTS) || CLIENTS < 1 || !Number.isInteger(RUNS) || RUNS < 1 ||
+    !Number.isFinite(WARMUP_MS) || WARMUP_MS < 0 || !Number.isFinite(IDLE_MS) || IDLE_MS < 0 ||
+    !Number.isFinite(CPU) || CPU < 1 || ONLY.some((key) => !SURFACES[key])) {
+  console.error("Invalid clients, runs, duration, CPU rate or surface");
+  process.exit(2);
 }
 main().catch((e) => {
   console.error(e);
