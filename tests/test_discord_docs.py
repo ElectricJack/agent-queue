@@ -36,14 +36,47 @@ def test_migration_guide_yaml_is_a_valid_discord_config() -> None:
     assert blocks, "the migration runbook no longer shows a settings block"
 
     raw = yaml.safe_load(blocks[0])["discord"]
-    from src.config import DiscordDigestConfig, DiscordEscalationConfig
+    from src.config import DiscordConversationConfig, DiscordDigestConfig, DiscordEscalationConfig
 
     digest = DiscordDigestConfig(**raw.pop("digest"))
     escalation = DiscordEscalationConfig(**raw.pop("escalation"))
-    config = DiscordConfig(**raw, digest=digest, escalation=escalation)
+    conversation = DiscordConversationConfig(**raw.pop("conversation"))
+    config = DiscordConfig(**raw, digest=digest, escalation=escalation, conversation=conversation)
 
     assert config.validate() == [], "the documented Discord settings do not validate"
     assert config.warnings() == [], "the documented Discord settings warn"
+    assert not config.conversation.enabled, "migration must not implicitly enable conversations"
+
+
+def test_conversation_guide_yaml_validates_with_the_documented_trust_warning() -> None:
+    """The opt-in example must validate, and enabling must warn about elevation."""
+    from src.config import DiscordConversationConfig
+
+    text = (DOCS / "guides" / "discord-conversations.md").read_text(encoding="utf-8")
+    blocks = re.findall(r"```yaml\n(.*?)```", text, re.DOTALL)
+    assert blocks, "the conversation guide no longer shows an opt-in example"
+    raw = yaml.safe_load(blocks[0])
+    discord = raw["discord"]
+    conversation = DiscordConversationConfig(**discord.pop("conversation"))
+    config = DiscordConfig(**discord, conversation=conversation)
+
+    assert config.validate() == []
+    assert config.conversation.enabled
+    assert raw["messages"]["enabled"] and raw["sessions"]["enabled"]
+    assert len(config.warnings()) == 1
+    assert "elevated global supervisor" in config.warnings()[0]
+
+
+def test_conversation_guide_documents_every_precondition_and_ignore_code() -> None:
+    """Status codes and the guide link must survive changes to the live intake gates."""
+    from src.conversations.intake import CONVERSATION_CODES
+    from src.conversations.preconditions import PRECONDITION_CODES
+
+    guide = (DOCS / "guides" / "discord-conversations.md").read_text(encoding="utf-8")
+    for code in (*PRECONDITION_CODES, *CONVERSATION_CODES):
+        assert f"`{code}`" in guide, f"the conversation guide does not explain {code!r}"
+    index = (DOCS / "guides" / "README.md").read_text(encoding="utf-8")
+    assert "discord-conversations.md" in index
 
 
 def test_documented_digest_status_fields_are_produced() -> None:
