@@ -11,7 +11,8 @@ from src.escalations.transport import (
     TransportRetryable,
     TransportUnavailable,
 )
-from src.reviews.notifier import DEFAULT_BASE_URL, ReviewNotifier
+from src.remote_links import DashboardLink
+from src.reviews.notifier import ReviewNotifier
 
 
 class FakeTransport:
@@ -133,11 +134,32 @@ async def test_unconfigured_discord_marks_reviews_notified(transport, channel_id
         assert transport.posts == []
 
 
-async def test_default_base_url_is_the_local_dashboard():
+async def test_without_a_link_the_post_carries_the_notice_never_a_loopback_url():
     db = FakeDatabase([review()])
     transport = FakeTransport()
     notifier = ReviewNotifier(db, transport, "123")
 
-    assert DEFAULT_BASE_URL == "http://127.0.0.1:8082"
     assert await notifier.tick() == 1
-    assert transport.posts[0][1].endswith("http://127.0.0.1:8082/reviews/rev-bright-harbor")
+    content = transport.posts[0][1]
+    assert content.endswith(
+        "Remote dashboard link unavailable (no dashboard.server.public_url is configured; "
+        "open it on the daemon host)."
+    )
+    assert "127.0.0.1" not in content and "localhost" not in content
+
+
+async def test_the_link_resolver_supplies_the_review_origin():
+    class Resolver:
+        calls = 0
+
+        async def resolve(self):
+            Resolver.calls += 1
+            return DashboardLink(url="https://aq.tailnet.ts.net", reason="public_url")
+
+    db = FakeDatabase([review()])
+    transport = FakeTransport()
+    notifier = ReviewNotifier(db, transport, "123", link_resolver=Resolver())
+
+    assert await notifier.tick() == 1
+    assert transport.posts[0][1].endswith("https://aq.tailnet.ts.net/reviews/rev-bright-harbor")
+    assert Resolver.calls == 1

@@ -87,7 +87,7 @@ aq system config schema
 | health_check, monitoring, logging, archive, auto_task | Health endpoint, task monitoring, logs, archival, and automatic task policy. | Operational settings; use the schema for bounds. |
 | security, api_auth, surface, state_machine, work_graph, integration | Security/auth, agent ergonomics, task-state enforcement, graph behavior, and delivery integration. | Current settings; not evidence that historical designs are active. |
 | swarm, resources, metrics, graph_layout | Pull pools, per-session limits/test slots, fleet metrics, and graph layout. | Resources defaults gate shared machine capacity. |
-| dashboard_server (YAML `dashboard.server`) | The dashboard server process: `enabled`, `host` (an IP literal or `localhost`), `port` (default 8082, or 8083 when `mcp_server.port` is 8082; never the daemon's). | Read when the dashboard server starts, so restarting it applies an edit; the daemon needs no restart. See [dashboard server settings](#dashboard-server-settings). |
+| dashboard_server (YAML `dashboard.server`) | The dashboard server process: `enabled`, `host` (an IP literal or `localhost`), `port` (default 8082, or 8083 when `mcp_server.port` is 8082; never the daemon's); `public_url` and `tailscale_path` for links sent off the machine. | Read when the dashboard server starts, so restarting it applies an edit; the daemon needs no restart, and it reads `public_url` per link. See [dashboard server settings](#dashboard-server-settings). |
 | global_token_budget_daily, max_daily_playbook_tokens, max_concurrent_playbook_runs, rate_limits | Installation-wide token and playbook limits. | Limits are optional except playbook concurrency's default. |
 
 ## GitHub credentials
@@ -286,6 +286,8 @@ dashboard:
     enabled: true      # `aq start` manages it when a verified bundle is installed
     host: 127.0.0.1    # an IP literal or `localhost`
     port: 8082
+    public_url: ""     # the origin Discord links name, e.g. https://aq.<tailnet>.ts.net
+    tailscale_path: "" # the tailscale CLI, when not on PATH
 ~~~
 
 | Key | Default | Meaning |
@@ -293,6 +295,8 @@ dashboard:
 | `enabled` | `true` | Whether `aq start` and `aq restart` start the dashboard server. With `false` they start only the daemon (`aq stop` still stops a dashboard server that is running), and the daemon's `/dashboard` pointer answers `404` with `"dashboard_url": null` instead of redirecting to the dashboard server. There is deliberately no setting that makes the daemon serve the dashboard again. |
 | `host` | `127.0.0.1` | The bind address. Must be an IP literal or `localhost` — never a DNS name, which could be re-pointed. `0.0.0.0`, `::` or a LAN address exposes the operator console to that network; read [what a LAN bind exposes](../guides/dashboard.md#reaching-it-from-another-machine) first. |
 | `port` | `8082` | The bind port, 1–65535, and never `mcp_server.port` (a validation error). When unset and `mcp_server.port` is 8082, the default steps aside to **8083**, so a daemon moved to 8082 before the dashboard server existed keeps a config that loads. A port you set is never moved, and a busy port is a startup failure, never an auto-increment: the URL stays predictable for bookmarks and the installer. |
+| `public_url` | `""` | The dashboard origin every link sent off this machine names: Discord digests, escalations and document reviews, and the digest preview. An `http(s)` origin with no credentials, query, fragment or path (a trailing `/` is fine), never loopback or a wildcard; it is used exactly, normalised. `dashboard.public_url` is an accepted alias; when both are set and differ, remote links are disabled until they agree. An invalid value is a load warning, not a startup failure. Empty means no remote link unless `host` is this node's own Tailscale address. `health_check.base_url` is never used instead: the daemon serves no dashboard pages. See [links in Discord posts](../guides/dashboard.md#links-in-discord-posts). |
+| `tailscale_path` | `""` | The `tailscale` executable to ask for this node's addresses when a link depends on a tailnet bind. Empty searches `PATH` only. Not needed when `public_url` is set. |
 
 The dashboard server reads these once, when it starts, so `aq dashboard restart`
 applies an edit and the daemon needs no restart. It reads the YAML directly
@@ -310,8 +314,10 @@ answers `421 misdirected_host` (unknown `Host`) or `403 origin_not_allowed`
 (unknown `Origin`), and the daemon refuses its terminals `4403`.
 
 `aq doctor` checks the section without importing the dashboard server:
-`dashboard.server.running`, `dashboard.server.bundle`, `dashboard.server.port`
-and `dashboard.server.exposure` (a warning while `host` is not loopback)
+`dashboard.server.running`, `dashboard.server.bundle`, `dashboard.server.port`,
+`dashboard.server.exposure` (a warning while `host` is not loopback) and
+`dashboard.remote_link` (the origin links name and why, and a warning when the
+edge would refuse it)
 ([src/doctor/dashboard_server_checks.py](../../src/doctor/dashboard_server_checks.py)).
 
 ## Reload and restart

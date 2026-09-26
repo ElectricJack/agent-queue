@@ -9,6 +9,27 @@ entries are dated by the day the change reached `main` rather than numbered.
 A wheel installation gets the same change when it upgrades to a release built
 after that date.
 
+## 2026-09-25 — Discord dashboard links name `dashboard.server.public_url`
+
+Digest, escalation and document-review posts, and the digest preview, now link
+to one origin: `dashboard.server.public_url` (alias `dashboard.public_url`).
+Before, digests and escalations named the daemon's health port (`:8081`, which
+serves no dashboard pages) rewritten to the machine's Tailscale address, and
+review posts named `http://127.0.0.1:8082`. Neither opened from a phone. The
+Tailscale rewrite is gone: a loopback dashboard never becomes a tailnet link,
+and `health_check.base_url` is no longer consulted for links.
+
+**What to do:** to get links, put an authenticated tailnet reverse proxy in
+front of the loopback dashboard server, set `dashboard.server.public_url` to its
+exact origin, add that origin to `api_auth.trusted_dashboard_origins`, and run
+`aq dashboard restart`. Until then posts say *Remote dashboard link unavailable*
+with the reason. `aq dashboard link` and `aq doctor --check dashboard.remote_link`
+show the chosen origin and why ([links in Discord posts](guides/dashboard.md#links-in-discord-posts)).
+If both `public_url` keys are set and differ, links stay off until they agree.
+
+**Undo:** clear `dashboard.server.public_url`; new posts carry the notice again.
+Posts already sent are not edited. No migration.
+
 ## 2026-09-22 — GitHub credentials share AQ's `gh` path (staged)
 
 AQ now selects one GitHub credential mode at daemon startup for its

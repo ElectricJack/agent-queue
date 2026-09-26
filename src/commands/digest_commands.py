@@ -134,11 +134,15 @@ class DigestCommandsMixin:
             provider_facts=provider_facts_enabled(self.orchestrator.config),
         )
         categories = frozenset(c for c in schedule.categories if c in CATEGORIES)
+        # The same resolver real delivery renders with, so the preview's
+        # footer is the link (or notice) the next digest would carry.
+        link = await self.orchestrator.dashboard_link.resolve()
         result = build_digest(
             inputs,
             project_ids=frozenset(scope) if scope else None,
             categories=categories or None,
-            dashboard_url=args.get("dashboard_url", "") or "",
+            dashboard_url=link.url,
+            dashboard_notice=link.notice,
         )
         return {
             "success": True,

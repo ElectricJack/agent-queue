@@ -304,7 +304,13 @@ def _field_default(f: dataclasses.Field) -> Any:
         except Exception:
             return dataclasses.MISSING
         if dataclasses.is_dataclass(value):
-            return dataclasses.asdict(value)
+            # Internal ``_`` fields are not schema properties, so they are not
+            # part of a section's default either.
+            return {
+                key: item
+                for key, item in dataclasses.asdict(value).items()
+                if not key.startswith("_")
+            }
         return value
     return dataclasses.MISSING
 

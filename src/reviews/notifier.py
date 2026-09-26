@@ -11,10 +11,9 @@ from src.escalations.transport import (
     TransportRetryable,
     TransportUnavailable,
 )
+from src.remote_links import StaticDashboardLink
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_BASE_URL = "http://127.0.0.1:8082"
 
 
 class ReviewNotifier:
@@ -24,6 +23,11 @@ class ReviewNotifier:
     retryable or unavailable Discord send deliberately leaves it unchanged;
     an ambiguous send advances it because a duplicate review announcement is
     worse than a possible miss.
+
+    The review link uses the one dashboard origin (``link_resolver``,
+    src/remote_links.py).  With neither a resolver nor a ``base_url`` the post
+    carries the unavailable notice: a loopback URL in Discord points at the
+    reader's machine, never at this one.
     """
 
     def __init__(
@@ -31,12 +35,14 @@ class ReviewNotifier:
         db: Any,
         transport: Any | None,
         channel_id: str,
-        base_url: str = DEFAULT_BASE_URL,
+        base_url: str = "",
+        *,
+        link_resolver: Any | None = None,
     ) -> None:
         self.db = db
         self.transport = transport
         self.channel_id = str(channel_id or "")
-        self.base_url = (base_url or DEFAULT_BASE_URL).strip().rstrip("/") or DEFAULT_BASE_URL
+        self._links = link_resolver or StaticDashboardLink(base_url or "")
 
     async def tick(self) -> int:
         """Deliver pending review revisions and return those handled this tick."""
@@ -112,7 +118,8 @@ class ReviewNotifier:
         ]
         if changes_note:
             lines.append(str(changes_note))
-        lines.append(f"{self.base_url}/reviews/{review['id']}")
+        link = await self._links.resolve()
+        lines.append(f"{link.url}/reviews/{review['id']}" if link.url else link.notice)
         return "\n".join(lines)
 
     async def _changes_note(self, review: dict, revision: int) -> str | None:

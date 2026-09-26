@@ -100,12 +100,15 @@ the daemon is down. `aq start`, `aq stop` and `aq restart` call them when a
 bundle is installed: `--no-dashboard` only skips the Vite prompt of a source
 checkout, and `--no-dashboard-server` leaves the server alone. `aq status`
 reports it as `dashboard_server` under `--json`, and `aq doctor` checks
-`dashboard.server.running`, `.bundle`, `.port` and `.exposure`. The `state-*`
+`dashboard.server.running`, `.bundle`, `.port` and `.exposure`. `link` shows the
+origin Discord links name and why ([links in Discord posts](../../guides/dashboard.md#links-in-discord-posts)),
+the same report as `aq doctor --check dashboard.remote_link`. The `state-*`
 leaves are generated from the dashboard-state commands.
 
 
 | Command | Daemon command | Kind | What it does |
 |---|---|---|---|
+| `aq dashboard link` | `—` | hand | Show the dashboard origin Discord links name, and why. |
 | `aq dashboard restart` | `—` | hand | Restart the dashboard server, picking up changed settings or a rebuilt bundle. |
 | `aq dashboard serve` | `—` | hand | Serve the verified dashboard and proxy the daemon, in the foreground. |
 | `aq dashboard start` | `—` | hand | Start the dashboard server in the background (idempotent). |

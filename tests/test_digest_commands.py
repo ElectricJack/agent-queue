@@ -169,7 +169,24 @@ class TestPreview:
         inputs = await db.collect_digest_activity(
             DigestWindow(since=NOW - HOUR, until=NOW), now=NOW
         )
-        assert result["text"] == build_digest(inputs).text
+        link = await handler.orchestrator.dashboard_link.resolve()
+        assert result["text"] == build_digest(
+            inputs, dashboard_url=link.url, dashboard_notice=link.notice
+        ).text
+
+    async def test_preview_footer_is_the_link_real_delivery_renders(self, env):
+        """Same resolver as delivery: the configured origin, never the health URL."""
+        handler, db, config = env
+        await completed_task(db, "t1", title="Ship the digest")
+        config.health_check.base_url = "http://100.99.1.2:8081"
+
+        unconfigured = await handler.execute("digest_preview", {"now": NOW})
+        config.dashboard_server.public_url = "https://aq.tailnet.ts.net/"
+        configured = await handler.execute("digest_preview", {"now": NOW})
+
+        assert "Remote dashboard link unavailable (" in unconfigured["text"]
+        assert "https://aq.tailnet.ts.net" in configured["text"]
+        assert ":8081" not in unconfigured["text"] + configured["text"]
 
     async def test_preview_writes_nothing(self, env):
         handler, db, _config = env

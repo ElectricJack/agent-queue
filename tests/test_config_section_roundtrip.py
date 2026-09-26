@@ -42,8 +42,8 @@ NON_DEFAULT_VALUES = {
 
 # Sections that do not read every field they declare.
 #
-# Empty, and meant to stay that way.  steady-ridge-97 fixed ``playbooks``;
-# grand-glacier-97 closed the remaining six (``chat_analyzer`` -- since
+# Empty but for internal fields, and meant to stay that way.  steady-ridge-97
+# fixed ``playbooks``; grand-glacier-97 closed the remaining six (``chat_analyzer`` -- since
 # deleted as dead by prime-torrent-81 -- and ``streams`` were read from no
 # YAML key at all; ``logging``, ``monitoring``, ``memory`` and ``metrics``
 # read a subset) by deriving the loader's keyword list from
@@ -51,7 +51,12 @@ NON_DEFAULT_VALUES = {
 # only with a comment saying why that field is deliberately not operator-
 # settable; the comparison below is exact in both directions, so a new gap
 # fails the test and so does a recorded gap fixed without deleting its entry.
-KNOWN_LOADER_GAPS: dict[str, list[str]] = {}
+KNOWN_LOADER_GAPS: dict[str, list[str]] = {
+    # Internal (underscore, so absent from the config schema too): the parser
+    # fills it from ``dashboard.public_url`` to detect a conflict with the
+    # canonical ``dashboard.server.public_url``; it is never a YAML key.
+    "dashboard_server": ["_public_url_alias"],
+}
 
 _ERROR_RE = re.compile(r"\[(\w+)\] (\w+):")
 

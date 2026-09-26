@@ -980,9 +980,11 @@ class HealthCheckConfig:
     When enabled, the daemon exposes ``/health``, ``/ready``, and
     ``/plans/<task_id>`` endpoints on the configured port.
 
-    ``base_url`` is the externally-reachable URL used to generate links
+    ``base_url`` is the externally-reachable URL of these daemon routes
     (e.g. a tunnel URL like ``https://myqueue.example.com``).  When empty
-    the daemon falls back to ``http://localhost:{port}``.
+    the daemon falls back to ``http://localhost:{port}``.  It is never a
+    dashboard link: those come from ``dashboard.server.public_url`` alone
+    (:mod:`src.remote_links`), because the daemon serves no dashboard pages.
     """
 
     enabled: bool = True
@@ -2831,9 +2833,18 @@ class DashboardServerConfig:
     enabled: bool = True
     host: str = "127.0.0.1"
     port: int = DEFAULT_DASHBOARD_SERVER_PORT
-    #: Public dashboard origin used in links sent outside the local machine.
-    #: Empty preserves the local host-and-port URL.
+    #: Public dashboard origin used in links sent outside the local machine
+    #: (Discord digests, escalations, reviews).  Canonical; ``dashboard.public_url``
+    #: is an accepted alias, and a conflicting pair disables remote links.
+    #: Empty means no remote link unless ``host`` is this node's Tailscale
+    #: address (:mod:`src.remote_links`).
     public_url: str = ""
+    #: The ``tailscale`` CLI to probe when a link depends on a tailnet bind.
+    #: Empty searches ``PATH`` only.
+    tailscale_path: str = ""
+    #: ``dashboard.public_url`` as written, kept to detect a conflict with
+    #: ``public_url``.  Internal: filled by the parser, never from YAML.
+    _public_url_alias: str = field(default="", repr=False)
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
@@ -2852,6 +2863,21 @@ class DashboardServerConfig:
             ))
         if not isinstance(self.public_url, str):
             errors.append(ConfigError("dashboard", "public_url", "must be a string"))
+        elif self.public_url.strip():
+            # A warning, never fatal: a bad link setting must not stop the
+            # daemon or the dashboard server.  The link resolver refuses the
+            # same values and names the reason in `aq dashboard link`.
+            from src.remote_links import public_url_problem
+
+            problem = public_url_problem(self.public_url, alias=self._public_url_alias)
+            if problem:
+                errors.append(ConfigError(
+                    "dashboard.server", "public_url",
+                    f"{problem}; remote dashboard links are disabled",
+                    severity="warning",
+                ))
+        if not isinstance(self.tailscale_path, str):
+            errors.append(ConfigError("dashboard.server", "tailscale_path", "must be a string"))
         return errors
 
 
@@ -2866,8 +2892,14 @@ def dashboard_server_config_from_raw(raw: Mapping[str, object]) -> DashboardServ
     nested = dashboard.get("server") if isinstance(dashboard, Mapping) else None
     section = nested if isinstance(nested, Mapping) else raw.get("dashboard_server")
     kwargs = _dataclass_kwargs(DashboardServerConfig, section)
-    if isinstance(dashboard, Mapping) and "public_url" in dashboard:
-        kwargs["public_url"] = dashboard["public_url"]
+    kwargs.pop("_public_url_alias", None)
+    alias = dashboard.get("public_url") if isinstance(dashboard, Mapping) else None
+    if alias is not None:
+        # ``dashboard.server.public_url`` is canonical; the alias fills in
+        # only when it is absent.  Both kept, so a disagreement is refused
+        # rather than one of them silently winning.
+        kwargs["_public_url_alias"] = alias
+        kwargs.setdefault("public_url", alias)
     kwargs.setdefault("port", default_dashboard_server_port(raw))
     return DashboardServerConfig(**kwargs)
 

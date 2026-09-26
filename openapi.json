@@ -20787,18 +20787,6 @@
       },
       "DigestPreviewRequest": {
         "properties": {
-          "dashboard_url": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Dashboard Url",
-            "description": ""
-          },
           "now": {
             "anyOf": [
               {

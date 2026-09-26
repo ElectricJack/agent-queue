@@ -22,8 +22,9 @@ daemon.py          `aq start` / `stop` / `restart` — the daemon, plus the dash
                    `--no-dashboard-server` leaves the server alone)
 dashboard.py       Hand-written `aq dashboard` group (the generated `state-*` commands merge
                    into it): `serve` (foreground) and `start|stop|restart|status` (background,
-                   via src/dashboard_server/process.py); also the helpers `aq start|stop|
-                   restart|status` call, so the PID/log/config paths come from daemon.py
+                   via src/dashboard_server/process.py), `link` (the remote link origin,
+                   src/remote_links.py); also the helpers `aq start|stop|restart|status`
+                   call, so the PID/log/config paths come from daemon.py
 db.py              `aq db` — the operator's migration door (`current`, `upgrade`)
 doctor.py          `aq doctor` and `aq costs`
 envelope.py        Versioned JSON envelope: envelope(), error_envelope(), emit(),

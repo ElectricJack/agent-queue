@@ -344,6 +344,32 @@ async def test_repeated_events_and_a_second_daemon_produce_one_post_and_one_thre
     assert roots[0]["thread_id"] and roots[0]["root_message_id"]
 
 
+async def test_root_and_opener_render_the_shared_link_resolvers_origin(db):
+    """The daemon wires one resolver; each rendered payload asks it for the origin."""
+    from src.remote_links import DashboardLink
+
+    class Resolver:
+        calls = 0
+
+        async def resolve(self):
+            Resolver.calls += 1
+            return DashboardLink(url="https://aq.tailnet.ts.net", reason="public_url")
+
+    await make_incident(db)
+    sink = SinkTransport()
+
+    await make_service(db, sink, link_resolver=Resolver()).tick()
+
+    texts = [message.content for message in sink.messages.values()]
+    assert len(texts) == 2  # root and thread opener
+    assert all(
+        "https://aq.tailnet.ts.net/settings/messaging#escalation-reply-esc-1" in text
+        for text in texts
+    )
+    assert not any(BASE_URL in text for text in texts)
+    assert Resolver.calls == 2
+
+
 async def test_restart_rebinds_from_stored_ids_rather_than_reposting(db):
     await make_incident(db)
     sink = SinkTransport()

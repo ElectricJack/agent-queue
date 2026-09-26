@@ -15,21 +15,13 @@ T = TypeVar("T", bound="DigestPreviewRequest")
 class DigestPreviewRequest:
     """
     Attributes:
-        dashboard_url (None | str | Unset):
         now (float | None | Unset): Evaluate as of this epoch time.
     """
 
-    dashboard_url: None | str | Unset = UNSET
     now: float | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        dashboard_url: None | str | Unset
-        if isinstance(self.dashboard_url, Unset):
-            dashboard_url = UNSET
-        else:
-            dashboard_url = self.dashboard_url
-
         now: float | None | Unset
         if isinstance(self.now, Unset):
             now = UNSET
@@ -39,8 +31,6 @@ class DigestPreviewRequest:
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
-        if dashboard_url is not UNSET:
-            field_dict["dashboard_url"] = dashboard_url
         if now is not UNSET:
             field_dict["now"] = now
 
@@ -49,15 +39,6 @@ class DigestPreviewRequest:
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         d = dict(src_dict)
-
-        def _parse_dashboard_url(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        dashboard_url = _parse_dashboard_url(d.pop("dashboard_url", UNSET))
 
         def _parse_now(data: object) -> float | None | Unset:
             if data is None:
@@ -69,7 +50,6 @@ class DigestPreviewRequest:
         now = _parse_now(d.pop("now", UNSET))
 
         digest_preview_request = cls(
-            dashboard_url=dashboard_url,
             now=now,
         )
 

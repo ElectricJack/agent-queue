@@ -16,6 +16,9 @@ the dashboard server is never the daemon's child to supervise.
   which needs Node.js and minutes, so it is named rather than run.
 * ``dashboard.server.port``     -- the configured port answers as something else.
 * ``dashboard.server.exposure`` -- a non-loopback bind, and what that hands out.
+* ``dashboard.remote_link``     -- the origin Discord links name, where it came
+  from, whether the edge admits it and whether the Tailscale CLI answers
+  (src/remote_links.py).  Reachability from another machine is never claimed.
 """
 
 from __future__ import annotations
@@ -40,6 +43,7 @@ RUNNING = "dashboard.server.running"
 BUNDLE = "dashboard.server.bundle"
 PORT = "dashboard.server.port"
 EXPOSURE = "dashboard.server.exposure"
+REMOTE_LINK = "dashboard.remote_link"
 
 #: What the dashboard server's ``/__aq/health`` names itself
 #: (``src.dashboard_server.process.SERVICE_NAME``; a test keeps them equal).
@@ -394,6 +398,62 @@ async def _check_exposure(ctx: DoctorContext) -> CheckResult:
 
 
 # ---------------------------------------------------------------------------
+# dashboard.remote_link
+# ---------------------------------------------------------------------------
+
+#: Unavailable because nothing asks for a remote link: the default install.
+_NOT_CONFIGURED = "not_configured"
+
+
+async def _check_remote_link(ctx: DoctorContext) -> CheckResult:
+    from src import remote_links
+
+    settings = remote_links.DashboardLinkSettings.from_config(ctx.config)
+    # The daemon's own resolver when there is one, so the answer is the link
+    # the next Discord post will carry (its cache, generation and all).
+    resolver = getattr(getattr(ctx.handler, "orchestrator", None), "dashboard_link", None)
+    link = await resolver.resolve() if resolver is not None else None
+    report = await remote_links.diagnose_dashboard_link(
+        settings, link, probe=remote_links.probe_tailscale
+    )
+    section = _section(ctx)
+    health = "disabled"
+    if settings.enabled and section is not None:
+        health = {"ours": "running", "foreign": "foreign", "none": "not_answering"}[
+            (await _probe_async(_url(section)))[0]
+        ]
+    report["server"] = {"enabled": settings.enabled, "health": health}
+    tailscale = report["tailscale"]
+    cli = f"tailscale CLI {tailscale['cli']}"
+
+    if not report["available"]:
+        severity = (
+            Severity.INFO if report["reason"] in {_NOT_CONFIGURED, "server_disabled"}
+            else Severity.WARN
+        )
+        return CheckResult(
+            id=REMOTE_LINK, severity=severity,
+            detail=f"no remote dashboard link ({report['reason']}): {report['detail']}; "
+            f"Discord posts carry a notice instead ({cli})",
+            data=report,
+        )
+    problems = []
+    if report["edge_compatible"] is False:
+        problems.append(report["edge"]["detail"])
+    if health != "running":
+        problems.append(f"the dashboard server is {health.replace('_', ' ')} on this machine")
+    detail = (
+        f"links name {report['url']} ({report['source']}); "
+        + ("; ".join(problems) + "; " if problems else "")
+        + f"remote reachability unverified ({cli})"
+    )
+    return CheckResult(
+        id=REMOTE_LINK, severity=Severity.WARN if problems else Severity.OK,
+        detail=detail, data=report,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
@@ -407,6 +467,7 @@ def dashboard_server_checks() -> list[DoctorCheck]:
         DoctorCheck(id=BUNDLE, run=_check_bundle, owner=OWNER),
         DoctorCheck(id=PORT, run=_check_port, timeout_s=10.0, owner=OWNER),
         DoctorCheck(id=EXPOSURE, run=_check_exposure, owner=OWNER),
+        DoctorCheck(id=REMOTE_LINK, run=_check_remote_link, timeout_s=10.0, owner=OWNER),
     ]
 
 

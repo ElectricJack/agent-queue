@@ -100,7 +100,7 @@ def _fix(check_id: str, ctx: DoctorContext):
 def test_the_checks_are_registered_by_the_default_registry():
     ids = set(default_registry().ids())
 
-    assert {checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE} <= ids
+    assert {checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE, checks.REMOTE_LINK} <= ids
 
 
 @pytest.mark.parametrize("check_id", [checks.RUNNING, checks.BUNDLE, checks.PORT, checks.EXPOSURE])
@@ -295,6 +295,111 @@ def test_a_non_loopback_bind_warns_what_it_exposes(host):
     assert result.severity is Severity.WARN
     assert "operator console" in result.detail and "no login" in result.detail
     assert "ssh -L 8082:127.0.0.1:8082" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# dashboard.remote_link
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_tailscale(monkeypatch) -> list[str]:
+    """The tailscale CLI answers "missing"; records each probe."""
+    from src import remote_links
+
+    calls: list[str] = []
+
+    async def probe(path: str) -> remote_links.TailscaleProbe:
+        calls.append(path)
+        return remote_links.TailscaleProbe("missing", detail="the tailscale CLI is not on PATH")
+
+    monkeypatch.setattr(remote_links, "probe_tailscale", probe)
+    return calls
+
+
+def _link_ctx(trusted: list[str] | None = None, handler: Any = None, **server: Any):
+    from src.config import ApiAuthConfig
+
+    config = SimpleNamespace(
+        dashboard_server=DashboardServerConfig(**server),
+        api_auth=ApiAuthConfig(trusted_dashboard_origins=trusted or []),
+    )
+    return DoctorContext(config=config, handler=handler)  # type: ignore[arg-type]
+
+
+def test_the_default_loopback_install_has_no_remote_link_as_info(no_tailscale, monkeypatch):
+    _probe(monkeypatch, ("ours", _ours(1, None)))
+
+    result = _run(checks.REMOTE_LINK, _link_ctx())
+
+    assert result.severity is Severity.INFO
+    assert result.detail.startswith("no remote dashboard link (not_configured)")
+    assert "tailscale CLI missing" in result.detail
+    assert result.data["remote_reachability"] == "unverified"
+    assert result.data["server"] == {"enabled": True, "health": "running"}
+    assert no_tailscale == [""]
+
+
+def test_a_trusted_public_url_on_a_running_server_passes(no_tailscale, monkeypatch):
+    _probe(monkeypatch, ("ours", _ours(1, None)))
+
+    result = _run(
+        checks.REMOTE_LINK,
+        _link_ctx(public_url="https://aq.tailnet.ts.net", trusted=["https://aq.tailnet.ts.net"]),
+    )
+
+    assert result.severity is Severity.OK
+    assert result.detail == (
+        "links name https://aq.tailnet.ts.net (dashboard.server.public_url); "
+        "remote reachability unverified (tailscale CLI missing)"
+    )
+    assert result.data["edge"]["compatible"] is True
+
+
+def test_an_untrusted_public_url_or_a_silent_server_warns(no_tailscale, monkeypatch):
+    _probe(monkeypatch, ("none", None))
+
+    result = _run(checks.REMOTE_LINK, _link_ctx(public_url="https://aq.tailnet.ts.net"))
+
+    assert result.severity is Severity.WARN
+    assert "api_auth.trusted_dashboard_origins" in result.detail
+    assert "not answering" in result.detail
+
+
+def test_a_misconfigured_link_warns_and_a_disabled_server_is_info(no_tailscale, monkeypatch):
+    monkeypatch.setattr(checks, "_probe", lambda url: pytest.fail("no probe when disabled"))
+    conflict = DashboardServerConfig(public_url="https://aq.tailnet.ts.net")
+    conflict._public_url_alias = "https://old.tailnet.ts.net"
+
+    disabled = _run(checks.REMOTE_LINK, _link_ctx(enabled=False))
+    ctx = _link_ctx(enabled=False)
+    ctx.config.dashboard_server = DashboardServerConfig(
+        enabled=False, public_url="https://aq.tailnet.ts.net/path"
+    )
+    still_disabled = _run(checks.REMOTE_LINK, ctx)
+    monkeypatch.setattr(checks, "_probe", lambda url: ("ours", _ours(1, None)))
+    ctx.config.dashboard_server = conflict
+    conflicting = _run(checks.REMOTE_LINK, ctx)
+
+    assert disabled.severity is still_disabled.severity is Severity.INFO
+    assert "dashboard.server.enabled: false" in disabled.detail
+    assert conflicting.severity is Severity.WARN
+    assert "public_url_conflict" in conflicting.detail
+
+
+def test_the_daemons_own_resolver_answers_when_there_is_one(no_tailscale, monkeypatch):
+    from src.remote_links import DashboardLinkResolver
+
+    _probe(monkeypatch, ("ours", _ours(1, None)))
+    ctx = _link_ctx(public_url="https://aq.tailnet.ts.net", trusted=["https://aq.tailnet.ts.net"])
+    resolver = DashboardLinkResolver(lambda: ctx.config)
+    ctx.handler = SimpleNamespace(orchestrator=SimpleNamespace(dashboard_link=resolver))
+
+    result = _run(checks.REMOTE_LINK, ctx)
+
+    assert result.severity is Severity.OK
+    assert result.data["generation"] == 1
+    assert resolver.current is not None and resolver.current.url == result.data["url"]
 
 
 # ---------------------------------------------------------------------------

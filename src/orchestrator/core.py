@@ -374,6 +374,14 @@ class Orchestrator(
         # and delivery both live in the service, so nothing about the cycle
         # depends on whether Discord is reachable.
         self.digest_schedule = None
+        # The one dashboard origin every link sent off this machine names
+        # (digest, escalations, reviews, the digest preview, `aq doctor`).
+        # Reads the config through a getter, so an edited public_url bites on
+        # the next render; resolving is lazy and never touches the network
+        # unless the answer depends on the local Tailscale address.
+        from src.remote_links import DashboardLinkResolver
+
+        self.dashboard_link = DashboardLinkResolver(lambda: self.config)
         # MCP server registry — populated from vault/mcp-servers/*.md and
         # vault/projects/*/mcp-servers/*.md on startup, kept current by the
         # vault watcher.  Resolves the ``list[str]`` of names on each

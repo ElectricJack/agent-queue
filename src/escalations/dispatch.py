@@ -64,6 +64,7 @@ from src.escalations.transport import (
     TransportError,
     TransportMissing,
 )
+from src.remote_links import StaticDashboardLink
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,7 @@ class EscalationDeliveryService:
         lease_owner: str,
         base_url: str = "",
         dashboard_notice: str = "",
+        link_resolver: Any | None = None,
         clock: Callable[[], float] = time.time,
         rate_guard: Callable[[], bool] | None = None,
         on_status: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
@@ -113,8 +115,9 @@ class EscalationDeliveryService:
         self.transport = transport
         self._config = config
         self._lease_owner = lease_owner
-        self._base_url = base_url
-        self._dashboard_notice = dashboard_notice
+        # The dashboard origin, resolved each time a payload is rendered
+        # (src/remote_links.py); a fixed base/notice without a resolver.
+        self._links = link_resolver or StaticDashboardLink(base_url, dashboard_notice)
         self._clock = clock
         self._rate_guard = rate_guard
         self._on_status = on_status
@@ -415,19 +418,20 @@ class EscalationDeliveryService:
         dedup_key = str(row["dedup_key"])
         marker = marker_for(dedup_key)
         replacement = bool((row.get("payload") or {}).get("replacement"))
+        link = await self._links.resolve()
         content = (
             render_resolved_root(
                 facts,
-                base_url=self._base_url,
+                base_url=link.url,
                 dedup_key=dedup_key,
-                dashboard_notice=self._dashboard_notice,
+                dashboard_notice=link.notice,
             )
             if facts.is_terminal
             else render_root(
                 facts,
                 mentions=self._mentions(),
-                base_url=self._base_url,
-                dashboard_notice=self._dashboard_notice,
+                base_url=link.url,
+                dashboard_notice=link.notice,
                 dedup_key=dedup_key,
                 replacement=replacement,
             )
@@ -546,15 +550,16 @@ class EscalationDeliveryService:
             )
 
         opener_key = f"{dedup_key}:thread"
+        link = await self._links.resolve()
         outcome, error = await self._send_thread_text(
             row,
             report,
             binding=current,
             content=render_thread_opener(
                 facts,
-                base_url=self._base_url,
+                base_url=link.url,
                 dedup_key=opener_key,
-                dashboard_notice=self._dashboard_notice,
+                dashboard_notice=link.notice,
             ),
             dedup_key=opener_key,
             reconcile=opener_may_exist,
@@ -760,6 +765,7 @@ class EscalationDeliveryService:
         dedup_key = str(row["dedup_key"])
         receipt: str | None = None
         thread_note: str | None = None
+        link = await self._links.resolve()
         if binding.has_thread:
             outcome, error = await self._send_thread_text(
                 row,
@@ -767,9 +773,9 @@ class EscalationDeliveryService:
                 binding=binding,
                 content=render_resolution(
                     facts,
-                    base_url=self._base_url,
+                    base_url=link.url,
                     dedup_key=dedup_key,
-                    dashboard_notice=self._dashboard_notice,
+                    dashboard_notice=link.notice,
                 ),
                 dedup_key=dedup_key,
             )
@@ -793,9 +799,9 @@ class EscalationDeliveryService:
                 root_message_id=str(binding.root_message_id),
                 content=render_resolved_root(
                     facts,
-                    base_url=self._base_url,
+                    base_url=link.url,
                     dedup_key=f"{dedup_key}:root",
-                    dashboard_notice=self._dashboard_notice,
+                    dashboard_notice=link.notice,
                 ),
             )
         except TransportMissing as exc:

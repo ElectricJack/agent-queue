@@ -60,6 +60,52 @@ When the server is bound to a non-loopback address:
 
 With `api_auth.require_session_token: true`, a LAN browser gets `401` on everything except the health paths, since it holds no token and the dashboard server refuses remote bearer tokens. `aq doctor --check dashboard.server.exposure` warns while a non-loopback bind is configured. The gates are in [src/dashboard_server/edge.py](../../src/dashboard_server/edge.py); the reasoning is in the [design record](../specs/dashboard-server.md) §3.
 
+### Links in Discord posts
+
+Digests, escalations and document-review posts link into the dashboard, and so
+does the digest preview. All of them name one origin, resolved by
+[src/remote_links.py](../../src/remote_links.py):
+
+1. `dashboard.server.public_url` (alias `dashboard.public_url`), exactly, when it
+   is a valid `http(s)` origin that is not loopback or a wildcard.
+2. Otherwise `http://<host>:<port>` only when `dashboard.server.host` is this
+   node's own Tailscale address, confirmed with `tailscale ip`.
+3. Otherwise no link: the post says `Remote dashboard link unavailable (<reason>;
+   open it on the daemon host).`
+
+A loopback bind is never rewritten to the machine's Tailscale address — a
+tailnet identity does not make `127.0.0.1:8082` reachable from a phone — and the
+daemon's own port (8081, `health_check.base_url`) is never a dashboard link,
+because the daemon serves no dashboard pages. Changing `public_url` takes effect
+on the next post; a post already sent is not edited.
+
+```bash
+aq dashboard link            # the origin, its config source, and why
+aq doctor --check dashboard.remote_link
+```
+
+Both report the chosen origin, the setting it came from, whether the dashboard
+server's Host/Origin gates admit it, whether the server answers locally and
+whether the `tailscale` CLI does. Neither can tell whether another device
+reaches the link: "configured" is not "reachable", so they always say
+*remote reachability unverified*. Open the link from the other device.
+
+**The supported remote setup** keeps the dashboard server on loopback and puts
+an operator-configured, authenticated reverse proxy on your tailnet in front of
+it:
+
+- the proxy forwards to `http://127.0.0.1:8082`, and its exact public origin
+  (`https://aq.<tailnet>.ts.net`, say) is both `dashboard.server.public_url` and
+  an entry in `api_auth.trusted_dashboard_origins` (then `aq dashboard restart`);
+- your tailnet ACL admits only your own devices. The proxied dashboard grants
+  local-operator power with no login, and because the proxy connects from
+  loopback it also passes the terminal and bearer-token peer gate; Host/Origin
+  checks stop other websites, not other people.
+
+AQ never runs `tailscale serve`, binds wider or changes network policy for you.
+Verify the proxy yourself — a page load, an API read, the live event stream, and
+a refused request under a wrong `Host` — before relying on the links.
+
 ## A realistic tour
 
 Assume the daemon and dashboard server are running (`aq start`), the dashboard is open at `http://127.0.0.1:8082/`, a project named `demo` exists, and a task has been created for it.

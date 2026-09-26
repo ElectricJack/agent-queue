@@ -2,27 +2,27 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 386,
+    "leaf_commands": 387,
     "registration": {
       "generated": 265,
-      "handwritten": 121
+      "handwritten": 122
     },
     "ownership": {
-      "core": 347,
+      "core": 348,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 385
+      "supported": 386
     },
     "evidence_level": {
-      "behavioral": 14,
+      "behavioral": 15,
       "dispatch": 265,
       "registration": 107
     },
     "acceptance_status": {
-      "working": 59,
+      "working": 60,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
@@ -864,6 +864,36 @@
       }
     },
     {
+      "path": "aq dashboard link",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.dashboard.dashboard_link",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "behavioral",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "working",
+      "acceptance_evidence": [
+        "focused-behavioral-tests"
+      ],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq dashboard restart",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -1261,7 +1291,6 @@
       "parameters": {
         "required": [],
         "optional": [
-          "--dashboard-url",
           "--now",
           "--json",
           "--brief",

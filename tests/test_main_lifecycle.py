@@ -20,6 +20,7 @@ import pytest
 import src.main as main_mod
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.event_bus import EventBus
+from src.remote_links import StaticDashboardLink
 
 
 class LoginFailure(Exception):
@@ -88,6 +89,8 @@ def _install_run_env(monkeypatch, config, adapter):
             self._command_handler = None
             self._runtimes = None
             self.doctor_registry = None
+            # The shared link resolver the review notifier is wired with.
+            self.dashboard_link = StaticDashboardLink()
 
         async def initialize(self):
             events.append("orch.initialize")

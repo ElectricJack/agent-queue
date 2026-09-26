@@ -6748,7 +6748,6 @@ _ALL_TOOL_DEFINITIONS.extend(
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "dashboard_url": {"type": "string"},
                     "now": {"type": "number", "description": "Evaluate as of this epoch time."},
                 },
                 "additionalProperties": False,

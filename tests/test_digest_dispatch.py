@@ -171,6 +171,32 @@ async def test_an_hour_with_work_reserves_one_window_and_sends_one_message(db):
     assert rows[0]["payload"]["reported_keys"]
 
 
+async def test_the_footer_is_the_link_resolved_when_the_window_is_built(db):
+    """The daemon wires the shared resolver; a static base_url is the fallback."""
+    from src.remote_links import DashboardLink
+
+    class Resolver:
+        calls = 0
+
+        async def resolve(self):
+            Resolver.calls += 1
+            return DashboardLink(url="https://aq.tailnet.ts.net", reason="public_url")
+
+    await complete(db, "t1", at=BASE + 600, summary="finished the migration")
+    clock = Clock(BASE + HOUR + 30)
+    service = make_service(
+        db, transport := SinkTransport(), clock=clock, link_resolver=Resolver()
+    )
+    service._anchors[(f"discord:{CHANNEL}", schedule_for(make_config()).generation)] = BASE
+
+    await service.tick()
+
+    posted = next(iter(transport.messages.values())).content
+    assert "https://aq.tailnet.ts.net" in posted
+    assert BASE_URL not in posted
+    assert Resolver.calls == 1
+
+
 async def test_an_idle_hour_is_persisted_as_silence_rather_than_rescanned(db):
     clock = Clock(BASE + HOUR + 30)
     service = make_service(db, transport := SinkTransport(), clock=clock)

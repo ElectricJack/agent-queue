@@ -221,7 +221,8 @@
         "enabled": true,
         "host": "127.0.0.1",
         "port": 8082,
-        "public_url": ""
+        "public_url": "",
+        "tailscale_path": ""
       },
       "properties": {
         "enabled": {
@@ -237,6 +238,10 @@
           "type": "integer"
         },
         "public_url": {
+          "default": "",
+          "type": "string"
+        },
+        "tailscale_path": {
           "default": "",
           "type": "string"
         }

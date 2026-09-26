@@ -59,6 +59,7 @@ from src.escalations.transport import (
     TransportRetryable,
     TransportUnavailable,
 )
+from src.remote_links import StaticDashboardLink
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,7 @@ class DigestScheduleService:
         lease_owner: str,
         base_url: str = "",
         dashboard_notice: str = "",
+        link_resolver: Any | None = None,
         clock: Callable[[], float] = time.time,
         rate_guard: Callable[[], bool] | None = None,
         escalation_priority: Callable[[float], Awaitable[int]] | None = None,
@@ -155,8 +157,9 @@ class DigestScheduleService:
         self.transport = transport
         self._config = config
         self._lease_owner = lease_owner
-        self._base_url = base_url
-        self._dashboard_notice = dashboard_notice
+        # The dashboard origin, resolved when a window's message is built and
+        # then frozen in its payload (src/remote_links.py).
+        self._links = link_resolver or StaticDashboardLink(base_url, dashboard_notice)
         self._clock = clock
         self._rate_guard = rate_guard
         self._escalation_priority = escalation_priority
@@ -309,12 +312,13 @@ class DigestScheduleService:
             provider_facts=provider_facts_enabled(self._config),
         )
         categories = frozenset(c for c in schedule.categories if c in CATEGORIES)
+        link = await self._links.resolve()
         return build_digest(
             inputs,
             project_ids=frozenset(schedule.project_ids) if schedule.project_ids else None,
             categories=categories or None,
-            dashboard_url=self._base_url,
-            dashboard_notice=self._dashboard_notice,
+            dashboard_url=link.url,
+            dashboard_notice=link.notice,
             max_chars=MAX_CHARS - MARKER_RESERVE,
         )
 

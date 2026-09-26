@@ -838,3 +838,56 @@ def test_aq_status_with_the_daemon_down_still_reports_the_dashboard_server(runne
     details = _json(result)["error"]["details"]
     assert details["dashboard_server"]["state"] == "stopped"
     assert details["daemon"]["state"] == "unreachable"
+
+
+# ---------------------------------------------------------------------------
+# aq dashboard link
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_tailscale(monkeypatch):
+    from src import remote_links
+
+    async def probe(path: str) -> remote_links.TailscaleProbe:
+        return remote_links.TailscaleProbe("missing", detail="the tailscale CLI is not on PATH")
+
+    monkeypatch.setattr(remote_links, "probe_tailscale", probe)
+
+
+def test_aq_dashboard_link_reports_the_configured_origin(runner, state, no_tailscale):
+    """Read-only and local: no daemon answers, the server is stopped, and it still answers."""
+    state.config.write_text(
+        f"dashboard:\n  server:\n    port: {state.port}\n"
+        "    public_url: https://aq.tailnet.ts.net/\n"
+        "api_auth:\n  trusted_dashboard_origins: [https://aq.tailnet.ts.net]\n"
+        "health_check:\n  base_url: http://100.99.1.2:8081\n",
+        encoding="utf-8",
+    )
+
+    machine = runner.invoke(cli, ["--json", "dashboard", "link"])
+    human = runner.invoke(cli, ["dashboard", "link"])
+
+    assert machine.exit_code == 0, machine.output
+    data = _json(machine)["data"]
+    assert data["url"] == "https://aq.tailnet.ts.net"
+    assert data["source"] == "dashboard.server.public_url"
+    assert data["edge"]["compatible"] is True
+    assert data["server"] == {"enabled": True, "state": "stopped"}
+    assert data["tailscale"]["cli"] == "missing"
+    assert data["remote_reachability"] == "unverified"
+    assert human.exit_code == 0, human.output
+    assert "Dashboard link: https://aq.tailnet.ts.net" in human.output
+    assert "remote reachability: unverified" in human.output
+
+
+def test_aq_dashboard_link_explains_a_missing_link(runner, state, no_tailscale):
+    """The default loopback install: a notice, never the health URL or a loopback URL."""
+    result = runner.invoke(cli, ["--json", "dashboard", "link"])
+
+    assert result.exit_code == 0, result.output
+    data = _json(result)["data"]
+    assert data["url"] == "" and data["reason"] == "not_configured"
+    assert data["notice"].startswith("Remote dashboard link unavailable (")
+    assert ":8081" not in data["notice"] + data["detail"]
+    assert "127.0.0.1:" not in data["notice"]

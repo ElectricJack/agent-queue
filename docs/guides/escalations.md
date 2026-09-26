@@ -112,11 +112,12 @@ One message, at most 1,200 characters, never split across posts:
 • agent-queue: completed — document the escalation guide (solid-grove.19)
 • agent-queue: progress — pull request ready — fix the claim race (solid-grove.7)
 • demo: started — add a health endpoint (demo.4)
-+2 more · 1 open escalation · http://localhost:8081
++2 more · 1 open escalation · https://aq.example.ts.net
 ```
 
 Counts first, then at most three highlights, then the overflow count, the
-number of open escalations and the dashboard link. If the highlights would
+number of open escalations and the dashboard link — `dashboard.server.public_url`,
+or a notice saying why there is none ([links in Discord posts](dashboard.md#links-in-discord-posts)). If the highlights would
 push the message over the limit, the least informative one is folded into the
 `+N more` count rather than starting a second message.
 

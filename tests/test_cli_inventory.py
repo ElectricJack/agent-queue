@@ -86,8 +86,9 @@ def test_acceptance_statuses_are_conservative_and_preserve_removed_surfaces():
     counts = inventory["counts"]["acceptance_status"]
     assert {k: counts[k] for k in ("working", "broken", "obsolete", "unsupported")} == {
         # +4: `aq dashboard start|stop|restart|status`, earned by
-        # tests/test_cli_dashboard_server.py against a real server process.
-        "working": 59,
+        # tests/test_cli_dashboard_server.py against a real server process;
+        # +1: `aq dashboard link`, its JSON and human output against a real config.
+        "working": 60,
         "broken": 0,
         "obsolete": 1,
         "unsupported": 0,

@@ -235,6 +235,64 @@ def dashboard_restart(ctx: click.Context) -> None:
     _finish(ctx, start_dashboard_server(api_url=_api_url(ctx)))
 
 
+@dashboard_group.command("link")
+@click.pass_context
+def dashboard_link(ctx: click.Context) -> None:
+    """Show the dashboard origin Discord links name, and why.
+
+    Read-only and local: resolves dashboard.server.public_url (alias
+    dashboard.public_url) or a confirmed Tailscale bind from config.yaml the
+    way the daemon does, and reports the config source, whether the dashboard
+    server's Host/Origin gates admit it, whether the server answers here and
+    whether the tailscale CLI does.  A health port is never a dashboard link,
+    and reachability from another machine is always unverified.
+    """
+    import asyncio
+
+    from src import remote_links
+    from src.dashboard_server.settings import SettingsError, _read_yaml
+
+    from .envelope import emit, emit_error
+
+    files = server_files()
+    try:
+        settings = remote_links.DashboardLinkSettings.from_raw(_read_yaml(files.config))
+    except (SettingsError, TypeError, ValueError) as error:
+        message = f"cannot read {files.config}: {error}"
+        if (ctx.find_root().obj or {}).get("json"):
+            emit_error("dashboard_link_config", message)
+        else:
+            console.print(f"[bold red]Error:[/] {escape(message)}", highlight=False)
+        raise SystemExit(1) from error
+    report = asyncio.run(
+        remote_links.diagnose_dashboard_link(settings, probe=remote_links.probe_tailscale)
+    )
+    status = dashboard_server_status(api_url=_api_url(ctx))
+    report["server"] = {"enabled": settings.enabled, "state": status.state}
+
+    def _render(data: dict[str, Any]) -> None:
+        if data["url"]:
+            console.print(f"[bold]Dashboard link:[/] [green]{escape(data['url'])}[/]")
+        else:
+            console.print("[bold]Dashboard link:[/] [yellow]unavailable[/]")
+            console.print(f"  posts say: {data['notice']}", highlight=False, markup=False)
+        lines = [
+            f"reason: {data['reason']} -- {data['detail']}",
+            f"source: {data['source']}",
+        ]
+        if data["edge"]["detail"]:
+            lines.append(f"edge: {data['edge']['detail']}")
+        lines.append(f"dashboard server: {data['server']['state']}")
+        tailscale = data["tailscale"]
+        addresses = ", ".join(tailscale["addresses"]) or tailscale["detail"]
+        lines.append(f"tailscale CLI: {tailscale['cli']} ({addresses})")
+        lines.append("remote reachability: unverified -- open the link from the other device")
+        for line in lines:
+            console.print(f"  {line}", style="dim", highlight=False, markup=False)
+
+    emit(ctx, report, render=_render)
+
+
 @dashboard_group.command("status")
 @click.pass_context
 def dashboard_status(ctx: click.Context) -> None:
