@@ -52,6 +52,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EXCLUDED_COMMANDS = {
     "reconcile_agent_waits",  # daemon-only bounded durable scan
+    # Phase 2 execution substrate; public job/wait adapters land in phase 3.
+    "job_submit",
+    "job_get",
+    "job_list",
+    "job_cancel",
+    "job_result",
+    "job_logs",
+    "job_reconcile",
+
     "shutdown",
     "restart_daemon",
     "update_and_restart",

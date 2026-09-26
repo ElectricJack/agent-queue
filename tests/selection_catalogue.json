@@ -586,6 +586,15 @@
         "tests/test_logging_config.py"
       ]
     },
+    "managed-jobs": {
+      "description": "Managed jobs: detached execution, crash receipts, idempotency, workspace pins, bounded output and immutable results.",
+      "modules": [
+        "tests/test_jobs_output.py",
+        "tests/test_jobs_queries.py",
+        "tests/test_jobs_recovery.py",
+        "tests/test_jobs_runner.py"
+      ]
+    },
     "memory-facts": {
       "description": "Memory and facts: the facts.md parser and renderer, the vault facts handler and bidirectional KV sync, memory plugin extension points, MCP memory round trips and L0/L1 tier injection.",
       "modules": [
@@ -1232,7 +1241,7 @@
       ]
     }
   },
-  "digest": "sha256:0f8950c2880843f87ff4ef6a47378f846b58cb6e96bcad03ddb83cbc7a396eda",
+  "digest": "sha256:f032f274b2fe6478d11ca0b7707f4fc9a624d2899ab8be4a0dcb4715932f5384",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7222,6 +7231,79 @@
       "markers": [],
       "summary": ""
     },
+    "tests/test_jobs_output.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.development_result_parser",
+        "src.jobs.artifacts",
+        "src.jobs.result"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Logical output retention, crash fencing and deterministic result v1."
+    },
+    "tests/test_jobs_queries.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.jobs.policy",
+        "src.jobs.result",
+        "src.jobs.service",
+        "src.jobs.workspace",
+        "src.models"
+      ],
+      "markers": [
+        "migration"
+      ],
+      "summary": "Idempotency races, atomic outbox and non-expiring workspace pins."
+    },
+    "tests/test_jobs_recovery.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.job_commands",
+        "src.config",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.resource_checks",
+        "src.jobs.artifacts",
+        "src.jobs.policy",
+        "src.jobs.result",
+        "src.jobs.service"
+      ],
+      "markers": [],
+      "summary": "Receipt adoption, retention, authorization and deterministic admission."
+    },
+    "tests/test_jobs_runner.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.jobs.artifacts",
+        "src.jobs.identity",
+        "src.jobs.runner",
+        "src.resources.box_lock",
+        "src.resources.semaphore",
+        "src.resources.test_runs",
+        "src.sessions.proctable"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Detached runner crash boundary tested with explicit artifact barriers."
+    },
     "tests/test_known_tools.py": {
       "areas": [
         "install"
@@ -11002,11 +11084,13 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands",
         "src.config",
         "src.database",
         "src.database.tables",
         "src.integration.models",
         "src.integration.ownership",
+        "src.messages.delivery",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.workspace",
@@ -11018,10 +11102,13 @@
         "src.sessions.harness_parser",
         "src.sessions.harness_registry",
         "src.sessions.provider",
-        "src.sessions.reconciler"
+        "src.sessions.reconciler",
+        "src.sessions.tmux",
+        "src.sessions.transcripts"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "tmux"
       ],
       "summary": "SessionReconciler and the exit classifier, on FakeProvider."
     },

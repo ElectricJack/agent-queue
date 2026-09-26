@@ -150,6 +150,15 @@ HANDCRAFTED_COVERAGE = {
 
 # Commands to exclude entirely from the CLI (dangerous or irrelevant).
 EXCLUDED = {
+    # Phase 2 execution substrate; public job/wait adapters land in phase 3.
+    "job_submit",
+    "job_get",
+    "job_list",
+    "job_cancel",
+    "job_result",
+    "job_logs",
+    "job_reconcile",
+
     "shutdown",
     "restart_daemon",
     "update_and_restart",

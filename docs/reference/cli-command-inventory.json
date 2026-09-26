@@ -11383,12 +11383,15 @@
         "required": [],
         "optional": [
           "--now",
+          "--wait-id",
           "--json",
           "--brief",
           "--api-url"
         ],
         "structured": [],
-        "nullable": []
+        "nullable": [
+          "--wait-id"
+        ]
       }
     },
     {
