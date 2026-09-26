@@ -20,7 +20,8 @@ Key method call hierarchy (read these to understand the full lifecycle)::
     run_one_cycle()                       # Main loop entry (~5s interval)
     ├── _resume_paused_tasks()            # Backoff timer expiry
     ├── _check_defined_tasks()            # Dependency promotion
-    ├── _sweep_container_completion()     # backstop only
+    ├── _sweep_container_completion()     # backstop + stale containers
+    ├── _sweep_lifecycle()                # stale-open tasks, obsolete cleanup
     ├── _check_stuck_defined_tasks()      # Monitoring alerts
     ├── _check_failed_blocked_tasks()    # Periodic failed/blocked report
     ├── _schedule()                       # Proportional fair-share assignment
@@ -107,6 +108,7 @@ from src.orchestrator.events import EventsMixin
 from src.orchestrator.execution import ExecutionMixin
 from src.orchestrator.git_ops import GitOpsMixin
 from src.orchestrator.layout_step import LayoutStepMixin
+from src.orchestrator.lifecycle import LifecycleMixin
 from src.orchestrator.monitoring import MonitoringMixin
 from src.orchestrator.pools import PoolsMixin
 from src.orchestrator.pr_polling import PRPollingMixin
@@ -189,6 +191,7 @@ class Orchestrator(
     WorkspaceMixin,
     ExecutionMixin,
     MonitoringMixin,
+    LifecycleMixin,
     GitOpsMixin,
     PRPollingMixin,
     ContextMixin,
@@ -1533,7 +1536,7 @@ class Orchestrator(
         try:
             await self.reconcile_stale_containers()
         except Exception:
-            logger.error("Stale container reconciliation on start failed", exc_info=True)
+            logger.exception("Stale container reconciliation on start failed")
         # Seed provider availability before the first tick (D5, D7): load
         # what the last run knew -- a restart must not spend its first
         # minute rediscovering that Codex is logged out -- and probe once.
@@ -2867,6 +2870,15 @@ class Orchestrator(
             #     itself is event-driven inside transition_task; this only
             #     catches containers the event path somehow missed.
             await self._sweep_container_completion()
+
+            # 3d. Lifecycle sweep: re-check BLOCKED/PAUSED tasks past
+            #     ``work_graph.stale_open_after_seconds`` (unblock, else flag
+            #     stale_open for the supervisor) and retry obsolete-close
+            #     cleanup a publishing batch or owner proof held back.
+            try:
+                await self._sweep_lifecycle()
+            except Exception:
+                logger.exception("Lifecycle sweep error")
 
             # 4. Monitoring: detect DEFINED tasks stuck beyond threshold.
             #    Runs after promotion so we don't false-alarm on tasks that

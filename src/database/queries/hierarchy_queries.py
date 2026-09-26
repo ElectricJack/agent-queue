@@ -34,7 +34,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.queries.task_queries import INTEGRATION_REWORK_AT_KEY, TransitionResult
+from src.database.queries.task_queries import (
+    INTEGRATION_REWORK_AT_KEY,
+    STALE_OPEN_ATTENTION,
+    TransitionResult,
+)
 from src.database.tables import (
     agents,
     integration_batch_members,
@@ -885,6 +889,9 @@ class HierarchyQueryMixin:
                         select(task_metadata.c.task_id, task_metadata.c.key).where(
                             task_metadata.c.task_id.in_(child_ids),
                             task_metadata.c.key.in_(_PHASE_FAILURE_META_KEYS),
+                            # A stale-open flag is advisory: the child is
+                            # still an ordinary dependency block.
+                            task_metadata.c.value != json.dumps(STALE_OPEN_ATTENTION),
                         )
                     )
                 ).mappings().all()

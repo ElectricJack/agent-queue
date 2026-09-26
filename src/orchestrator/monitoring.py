@@ -17,7 +17,7 @@ from src.notifications.events import (
 )
 from src.models import Task, TaskStatus
 from src.database.queries.hierarchy_queries import CONTAINER_KEY
-from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
+from src.database.queries.task_queries import STALE_OPEN_ATTENTION, TERMINAL_BLOCKED_META_KEY
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
@@ -236,9 +236,14 @@ class MonitoringMixin:
         # One statement instead of one per BLOCKED task.  Every in-tree
         # writer stores a non-empty code, and task_edit normalises an empty
         # string to a delete, so "key present" is exactly "needs attention".
+        # ``stale_open`` is the one advisory code: it reports a long wait, it
+        # does not decide one, so it must not freeze the wait it reports.
         attention = await self.db.task_ids_with_meta(
             [task.id for task in blocked], "needs_attention"
         )
+        if attention:
+            codes = await self.db.get_task_meta_bulk(sorted(attention), "needs_attention")
+            attention = {tid for tid in attention if codes.get(tid) != STALE_OPEN_ATTENTION}
         blocked = [task for task in blocked if task.id not in attention]
         # A terminal close (hard failure, retry budget spent, pipeline stop,
         # timeout, operator stop) is BLOCKED by decision, not by the graph.

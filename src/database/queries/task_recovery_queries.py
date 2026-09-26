@@ -10,6 +10,7 @@ import time
 from sqlalchemy import and_, delete, insert, or_, select, update
 
 from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
+from src.database.queries.task_queries import STALE_OPEN_ATTENTION
 from src.database.tables import (
     agent_questions,
     agents,
@@ -91,7 +92,9 @@ def _decoded(raw):
 def incident_reason(meta, task=None):
     """The failure one incident is about: an operational exit, else a terminal close leg."""
     reason = meta.get("needs_attention")
-    if isinstance(reason, str) and reason:
+    # ``stale_open`` is the lifecycle sweep's advisory flag with its own
+    # supervisor message; it is never a failure to recover.
+    if isinstance(reason, str) and reason and reason != STALE_OPEN_ATTENTION:
         return reason
     reason = meta.get(TERMINAL_BLOCKED_KEY)
     if isinstance(reason, str) and reason and reason not in _NOT_INCIDENTS:
