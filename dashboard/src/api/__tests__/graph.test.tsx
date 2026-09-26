@@ -50,8 +50,8 @@ describe("initial-route reads", () => {
     qc.clear();
   });
 
-  it("shares the complete one-hour history with the mounted Metrics page", async () => {
-    const data = { step: "1s", samples: [], from_ts: 0, to_ts: 3600, truncated: false };
+  it("shares the one-hour minute overview with the mounted Metrics page", async () => {
+    const data = { step: "1m", samples: [], from_ts: 0, to_ts: 3600, truncated: false };
     mockMetrics.mockResolvedValue({ data });
     const qc = new QueryClient();
     await prefetchInitialRoute(qc, "/metrics");
@@ -60,7 +60,7 @@ describe("initial-route reads", () => {
     expect(mockMetrics).toHaveBeenCalledTimes(1);
     const options = mockMetrics.mock.calls[0]![0];
     expect(options.query.to - options.query.from).toBe(3600);
-    expect(options.query.step).toBe("auto");
+    expect(options.query.step).toBe("1m");
     qc.clear();
   });
 

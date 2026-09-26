@@ -39,13 +39,21 @@ vi.mock("../TimeSeriesChart", () => ({
   },
 }));
 
-const api = vi.hoisted(() => ({ calls: [] as unknown[], response: null as MetricsSeriesResponse | null }));
+const api = vi.hoisted(() => ({
+  calls: [] as unknown[],
+  response: null as MetricsSeriesResponse | null,
+  detail: null as Promise<{ data: MetricsSeriesResponse }> | null,
+}));
 vi.mock("../../../api/client", async () => {
   const actual = await vi.importActual<Record<string, unknown>>("../../../api/client");
   return {
     ...actual,
     getMetricsSeriesApiMetricsSeriesGet: async (options: unknown) => {
       api.calls.push(options);
+      const { query } = options as { query: { step: string; from: number; to: number } };
+      if (api.detail && query.step === "auto" && query.to - query.from === 3600) {
+        return api.detail;
+      }
       return { data: api.response };
     },
     // The page renders the provider cards too; stub their fetch so this test
@@ -91,6 +99,7 @@ function page() {
 beforeEach(() => {
   plots.calls = [];
   api.calls = [];
+  api.detail = null;
   api.response = {
     step: "1s",
     from_ts: 1000,
@@ -180,7 +189,7 @@ describe("Metrics page", () => {
   it("appends a live tick without refetching history", async () => {
     render(page());
     await screen.findByTestId("chart-Running agents");
-    expect(api.calls).toHaveLength(1);
+    await waitFor(() => expect(api.calls).toHaveLength(2));
 
     act(() => {
       __dispatchEventForTests({
@@ -193,8 +202,8 @@ describe("Metrics page", () => {
     await waitFor(() =>
       expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "4"),
     );
-    // The whole point of the WS tick: no second request at 1 Hz.
-    expect(api.calls).toHaveLength(1);
+    // Only overview + detail; the 1 Hz tick makes no request.
+    expect(api.calls).toHaveLength(2);
   });
 
   it("ignores a tick that predates the fetched window", async () => {
@@ -215,12 +224,13 @@ describe("Metrics page", () => {
   it("refetches with a new window when the range changes", async () => {
     render(page());
     await screen.findByTestId("chart-Running agents");
+    await waitFor(() => expect(api.calls).toHaveLength(2));
     const first = api.calls[0] as { query: { from: number; to: number } };
 
     fireEvent.click(screen.getByRole("button", { name: "24h" }));
 
-    await waitFor(() => expect(api.calls).toHaveLength(2));
-    const second = api.calls[1] as { query: { from: number; to: number } };
+    await waitFor(() => expect(api.calls).toHaveLength(3));
+    const second = api.calls[2] as { query: { from: number; to: number } };
     expect(second.query.to - second.query.from).toBeCloseTo(86_400, 0);
     expect(first.query.to - first.query.from).toBeCloseTo(3_600, 0);
   });
@@ -229,6 +239,101 @@ describe("Metrics page", () => {
     api.response = { ...api.response!, step: "1m" };
     render(page());
     expect(await screen.findByText(/1-minute averages/)).toBeInTheDocument();
+  });
+
+  it("paints minute history and keeps every live second when detail replaces it", async () => {
+    api.response = { ...api.response!, step: "1m", samples: [sample(1000), sample(1060)] };
+    let finish!: (response: { data: MetricsSeriesResponse }) => void;
+    api.detail = new Promise((resolve) => { finish = resolve; });
+    render(page());
+    await screen.findByTestId("chart-Running agents");
+    expect(screen.getByText(/1-minute averages.*loading 1-second detail/)).toBeInTheDocument();
+    await waitFor(() => expect(api.calls).toHaveLength(2));
+    expect((api.calls[0] as { query: { step: string } }).query.step).toBe("1m");
+    expect((api.calls[1] as { query: { step: string } }).query.step).toBe("auto");
+    for (const ts of [1062, 1063, 1064]) {
+      act(() => __dispatchEventForTests({
+        _event_type: "metrics.tick", event_type: "metrics.tick", ...sample(ts),
+      } as never));
+    }
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "5");
+    await act(async () => finish({ data: {
+      ...api.response!, step: "1s", samples: [sample(1060), sample(1061), sample(1062)],
+    } }));
+    await waitFor(() => expect(screen.getByText(/1-second samples/)).toBeInTheDocument());
+    // 1062 is superseded; the two ticks received after the request began stay.
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "5");
+    expect(screen.queryByText(/loading 1-second detail/)).not.toBeInTheDocument();
+    expect(api.calls).toHaveLength(2);
+  });
+
+  it("waits for detail when minute history is empty, including on a cold daemon", async () => {
+    api.response = { ...api.response!, step: "1m", samples: [] };
+    let finish!: (response: { data: MetricsSeriesResponse }) => void;
+    api.detail = new Promise((resolve) => { finish = resolve; });
+    render(page());
+    await waitFor(() => expect(api.calls).toHaveLength(2));
+    expect(screen.getByText("Loading history…")).toBeInTheDocument();
+    expect(screen.queryByTestId("chart-Running agents")).not.toBeInTheDocument();
+    await act(async () => finish({ data: { ...api.response!, step: "1s" } }));
+    await screen.findByTestId("chart-Running agents");
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "0");
+    expect(screen.queryByText("Loading history…")).not.toBeInTheDocument();
+  });
+
+  it("keeps the overview and reports a failed detail request", async () => {
+    api.response = { ...api.response!, step: "1m" };
+    api.detail = Promise.reject(new Error("detail unavailable"));
+    // The mock's deferred failure is consumed after the two paint frames.
+    void api.detail.catch(() => {});
+    render(page());
+    await screen.findByText(/Could not load 1-second detail/);
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "3");
+    expect(screen.getByText(/1-minute averages/)).toBeInTheDocument();
+    expect(screen.queryByText(/loading 1-second detail/)).not.toBeInTheDocument();
+  });
+
+  it("restores sustained-lag diagnostics when second-level detail arrives", async () => {
+    api.response = { ...api.response!, step: "1m", samples: [
+      perfSample(1000, 900), perfSample(1060, 900), perfSample(1120, 900),
+    ] };
+    let finish!: (response: { data: MetricsSeriesResponse }) => void;
+    api.detail = new Promise((resolve) => { finish = resolve; });
+    render(page());
+    await screen.findByTestId("chart-Running agents");
+    expect(screen.queryByRole("status", { name: "Event-loop lag" })).not.toBeInTheDocument();
+    await waitFor(() => expect(api.calls).toHaveLength(2));
+    await act(async () => finish({ data: { ...api.response!, step: "1s", samples: lagRows() } }));
+    await screen.findByRole("status", { name: "Event-loop lag" });
+    expect(screen.getByText(/1-second samples/)).toBeInTheDocument();
+  });
+
+  it("keeps successful second-level history labelled correctly if a reload fails", async () => {
+    render(page());
+    await waitFor(() => expect(api.calls).toHaveLength(2));
+    await screen.findByText(/1-second samples/);
+    api.detail = Promise.reject(new Error("reload unavailable"));
+    void api.detail.catch(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "Reload history" }));
+    await screen.findByText(/Could not load metrics history/);
+    expect(screen.getByText(/1-second samples/)).toBeInTheDocument();
+    expect(screen.queryByText(/Showing minute history/)).not.toBeInTheDocument();
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "3");
+  });
+
+  it("ignores late hour detail after switching to the five-minute window", async () => {
+    let finish!: (response: { data: MetricsSeriesResponse }) => void;
+    api.detail = new Promise((resolve) => { finish = resolve; });
+    render(page());
+    await waitFor(() => expect(api.calls).toHaveLength(2));
+    api.response = { ...api.response!, samples: [sample(2000)] };
+    fireEvent.click(screen.getByRole("button", { name: "5m" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "1"),
+    );
+    await act(async () => finish({ data: { ...api.response!, samples: [sample(1000), sample(1001)] } }));
+    expect(screen.getByTestId("chart-Running agents")).toHaveAttribute("data-points", "1");
+    expect(api.calls).toHaveLength(3);
   });
 });
 
