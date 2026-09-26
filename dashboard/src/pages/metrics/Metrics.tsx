@@ -13,6 +13,7 @@ import { RANGES, type RangeKey } from "../../api/metrics";
 import { useEventStreamStatus } from "../../ws/EventStreamProvider";
 import ProviderUsage from "./ProviderUsage";
 import StatTiles from "./StatTiles";
+import SustainedLagBanner from "./SustainedLagBanner";
 import TimeSeriesChart from "./TimeSeriesChart";
 import { buildCharts } from "./series";
 import { useMetricsFeed } from "./useMetricsFeed";
@@ -94,6 +95,8 @@ export default function Metrics() {
           Could not load metrics history: {String((feed.error as Error)?.message ?? feed.error)}
         </p>
       )}
+
+      <SustainedLagBanner samples={feed.samples} />
 
       <StatTiles sample={feed.latest} />
 

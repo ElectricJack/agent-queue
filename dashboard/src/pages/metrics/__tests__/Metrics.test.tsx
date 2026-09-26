@@ -6,6 +6,8 @@ import { toAlignedData, type Series } from "../chartData";
 import { breakdownKeys, buildCharts, pick } from "../series";
 import { __dispatchEventForTests } from "../../../ws/useEventStream";
 import type { MetricsSample, MetricsSeriesResponse } from "../../../api/metrics";
+import SustainedLagBanner, { sustainedLag } from "../SustainedLagBanner";
+import { BOUNDS_MS, type Hist } from "../histogram";
 
 // ``useEventStream`` opens its singleton socket at import time; stub the
 // constructor before that module is evaluated.
@@ -227,5 +229,149 @@ describe("Metrics page", () => {
     api.response = { ...api.response!, step: "1m" };
     render(page());
     expect(await screen.findByText(/1-minute averages/)).toBeInTheDocument();
+  });
+});
+
+function hist(value: number, count = 1): Hist {
+  const counts = new Array(BOUNDS_MS.length + 1).fill(0);
+  const index = BOUNDS_MS.findIndex((bound) => value <= bound);
+  counts[index < 0 ? BOUNDS_MS.length : index] = count;
+  return { kind: "hist", counts, count, sum: value * count, max: value };
+}
+
+function perfSample(ts: number, drift: number, pool = 1): MetricsSample {
+  return sample(ts, {
+    perf: {
+      enabled: true,
+      loop: { drift: hist(drift), probe_interval_ms: 100 },
+      db: {
+        pool_wait: hist(pool), query: hist(1),
+        counters: { kind: "sum", slow_queries: 2 }, pool: { checked_out: 3 },
+      },
+      host: {
+        psi: { cpu: { some_avg10: 20 }, io: null, memory: null },
+        test_slots: { used: 1, total: 4, waiting: 2, orphaned: 0 },
+        ungated: { unattributed: 5 },
+      },
+      api: { all: hist(20), routes: {}, streams: {}, errors: { kind: "sum" } },
+      relay: { available: true, http: hist(30) },
+    },
+  });
+}
+
+function lagRows(length = 130): MetricsSample[] {
+  return Array.from({ length }, (_, i) => perfSample(1000 + i, 900, 400));
+}
+
+describe("sustained loop lag", () => {
+  it("requires 120 nonempty loop histograms and p95 strictly above 500 ms", () => {
+    expect(sustainedLag([])).toBeNull();
+    expect(sustainedLag(lagRows(119))).toBeNull();
+    expect(sustainedLag(lagRows(120))?.samples).toBe(120);
+    expect(sustainedLag(Array.from({ length: 130 }, (_, i) => perfSample(1000 + i, 5))))
+      .toBeNull();
+    // Uniform observations in (200, 500] produce a p95 below the warning threshold.
+    expect(sustainedLag(Array.from({ length: 130 }, (_, i) => perfSample(1000 + i, 500))))
+      .toBeNull();
+    const boundary = hist(500, 95);
+    boundary.counts[9] = 5;
+    boundary.count = 100;
+    boundary.sum += 900 * 5;
+    boundary.max = 900;
+    const atThreshold = lagRows();
+    for (const row of atThreshold) row.perf!.loop!.drift = boundary;
+    expect(sustainedLag(atThreshold)).toBeNull(); // merged p95 is exactly 500
+    const rows = lagRows();
+    for (const row of rows.slice(0, 11)) row.perf!.loop!.drift = hist(0, 0);
+    expect(sustainedLag(rows)).toBeNull();
+  });
+
+  it("uses only the last 180 seconds relative to the newest sample", () => {
+    const verdict = sustainedLag(lagRows(400))!;
+    expect(verdict.since).toBe(1219);
+    expect(verdict.samples).toBe(181);
+    expect(verdict.p95).toBeCloseTo(975);
+    expect(sustainedLag(lagRows(), 60)).toBeNull();
+  });
+
+  it("ignores old high lag after probes are switched off", () => {
+    expect(sustainedLag([...lagRows(), sample(1130, { perf: { enabled: false } })]))
+      .toBeNull();
+  });
+
+  it("ranks pool, query, latest available PSI and the slowest qualified route", () => {
+    const rows = lagRows();
+    rows[0]!.perf!.db!.query = hist(400, 1000);
+    rows[0]!.perf!.host!.psi = {
+      memory: { some_avg10: 5 }, io: { some_avg10: 20 }, cpu: { some_avg10: 20 },
+    };
+    for (const row of rows.slice(1)) row.perf!.host!.psi = { cpu: null, io: null, memory: null };
+    rows[0]!.perf!.api!.routes = {
+      "GET /api/tasks/{task_id}": { latency: hist(400, 10) },
+      "GET /api/agents": { latency: hist(900, 5) },
+      "GET /api/rare": { latency: hist(9000, 9) },
+    };
+    rows[1]!.perf!.api!.routes = { "GET /api/agents": { latency: hist(900, 5) } };
+    expect(sustainedLag(rows)?.candidates).toEqual([
+      "db_pool_wait", "db_query", "host_memory_pressure", "host_io_pressure",
+      "host_cpu_pressure", "api_route:GET /api/agents",
+    ]);
+  });
+
+  it("uses synchronous Python as a fallback and respects latest lower pressure", () => {
+    const rows = Array.from({ length: 130 }, (_, i) => perfSample(1000 + i, 900));
+    rows[rows.length - 1]!.perf!.host!.psi = { cpu: { some_avg10: 0 } };
+    expect(sustainedLag(rows)?.candidates).toEqual(["synchronous_python"]);
+  });
+
+  it("renders the banner and five charts using stored histogram buckets", async () => {
+    api.response = { ...api.response!, samples: lagRows(), to_ts: 1130 };
+    render(page());
+    const banner = await screen.findByRole("status", { name: "Event-loop lag" });
+    expect(banner).toHaveTextContent("975 ms sustained since 00:16:40Z");
+    expect(banner).toHaveTextContent("candidate causes, not a diagnosis");
+    expect(banner).toHaveTextContent("db_pool_wait");
+    const titles = plots.calls.map((call) => call.title);
+    for (const title of [
+      "Event-loop lag", "API latency", "Database", "Host pressure", "Test slots and ungated load",
+    ]) expect(titles).toContain(title);
+  });
+
+  it("renders no banner for a short window", () => {
+    render(<SustainedLagBanner samples={lagRows(30)} />);
+    expect(screen.queryByRole("status", { name: "Event-loop lag" })).not.toBeInTheDocument();
+  });
+});
+
+describe("performance chart readings", () => {
+  it("derives latencies from buckets and reads the matching gauges and counters", () => {
+    const row = perfSample(1000, 900, 400);
+    const charts = buildCharts([row]);
+    const machineIndex = charts.findIndex((chart) => chart.id === "load");
+    const perf = charts.slice(machineIndex + 1, machineIndex + 6);
+    expect(perf.map((chart) => chart.title)).toEqual([
+      "Event-loop lag", "API latency", "Database", "Host pressure", "Test slots and ungated load",
+    ]);
+    const readings = perf.map((chart) => chart.series.map((series) => series.value(row)));
+    expect(readings).toEqual([
+      [975, 900], [19.5, 15, 48.5], [485, 0.95, 3, 2],
+      [20, null, null], [1, 4, 2, 0, 5],
+    ]);
+    for (const chart of perf) {
+      for (const series of chart.series) expect(series.value(sample(2))).toBeNull();
+    }
+  });
+
+  it("keeps empty histograms and disabled probes as chart gaps", () => {
+    const row = perfSample(1000, 900, 400);
+    row.perf!.loop!.drift = hist(0, 0);
+    const charts = buildCharts([row]);
+    const loop = charts.find((chart) => chart.title === "Event-loop lag")!;
+    expect(loop.series.map((series) => series.value(row))).toEqual([null, null]);
+    row.perf!.enabled = false;
+    const start = charts.findIndex((chart) => chart.title === "Event-loop lag");
+    for (const chart of charts.slice(start, start + 5)) {
+      for (const series of chart.series) expect(series.value(row)).toBeNull();
+    }
   });
 });

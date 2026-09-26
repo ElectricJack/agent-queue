@@ -8,6 +8,7 @@
 
 import type { Series } from "./chartData";
 import type { MetricsSample } from "../../api/metrics";
+import { histPercentile, pickHist } from "./histogram";
 
 type Sample = Record<string, unknown>;
 
@@ -74,6 +75,24 @@ function fixed(defs: Array<[string, string, string]>): Series[] {
     label,
     color,
     value: (sample: Sample) => pick(sample, key),
+  }));
+}
+
+function p(path: string, q: number, label: string, color: string): Series {
+  return {
+    key: `${path}.p${q * 100}`, label, color,
+    value: (sample) => histPercentile(sample, path, q),
+  };
+}
+
+/** Probe shutdown and unavailable readings are gaps, including on gauge lines. */
+function perfSeries(series: Series[]): Series[] {
+  return series.map((definition) => ({
+    ...definition,
+    value: (sample) => {
+      const perf = sample.perf as { enabled?: boolean } | undefined;
+      return perf?.enabled === false ? null : definition.value(sample);
+    },
   }));
 }
 
@@ -200,6 +219,66 @@ export function buildCharts(samples: MetricsSample[]): ChartDef[] {
         ["machine.load15", "15 min", PALETTE[2]],
         ["machine.cpu_count", "cores", PALETTE[3]],
       ]),
+    },
+    {
+      id: "loop-lag",
+      title: "Event-loop lag",
+      unit: "ms",
+      series: perfSeries([
+        p("perf.loop.drift", 0.95, "p95", PALETTE[0]),
+        {
+          key: "perf.loop.drift.max", label: "max", color: PALETTE[3],
+          value: (sample) => {
+            const hist = pickHist(sample, "perf.loop.drift");
+            return hist && hist.count > 0 ? hist.max : null;
+          },
+        },
+      ]),
+    },
+    {
+      id: "api-latency",
+      title: "API latency",
+      unit: "ms",
+      series: perfSeries([
+        p("perf.api.all", 0.95, "all p95", PALETTE[0]),
+        p("perf.api.all", 0.5, "all p50", PALETTE[1]),
+        p("perf.relay.http", 0.95, "relay to daemon p95", PALETTE[2]),
+      ]),
+    },
+    {
+      id: "database",
+      title: "Database",
+      unit: "ms / count",
+      series: perfSeries([
+        p("perf.db.pool_wait", 0.95, "pool wait p95", PALETTE[0]),
+        p("perf.db.query", 0.95, "query p95", PALETTE[1]),
+        ...fixed([
+          ["perf.db.pool.checked_out", "connections checked out", PALETTE[4]],
+          ["perf.db.counters.slow_queries", "slow queries", PALETTE[3]],
+        ]),
+      ]),
+    },
+    {
+      id: "host-pressure",
+      title: "Host pressure",
+      unit: "%",
+      series: perfSeries(fixed([
+        ["perf.host.psi.cpu.some_avg10", "CPU", PALETTE[0]],
+        ["perf.host.psi.io.some_avg10", "I/O", PALETTE[2]],
+        ["perf.host.psi.memory.some_avg10", "memory", PALETTE[3]],
+      ])),
+    },
+    {
+      id: "test-load",
+      title: "Test slots and ungated load",
+      unit: "count",
+      series: perfSeries(fixed([
+        ["perf.host.test_slots.used", "used", PALETTE[0]],
+        ["perf.host.test_slots.total", "total", PALETTE[6]],
+        ["perf.host.test_slots.waiting", "waiting", PALETTE[2]],
+        ["perf.host.test_slots.orphaned", "orphaned", PALETTE[3]],
+        ["perf.host.ungated.unattributed", "unattributed pytest processes", PALETTE[4]],
+      ])),
     },
     {
       id: "memory",
