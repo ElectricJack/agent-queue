@@ -896,6 +896,87 @@ async def test_app_fetch_requires_explicit_authority_for_github_remote(tmp_path)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["pull", "merge", "default_branch"])
+async def test_legacy_git_operations_refuse_unbound_app_origin(
+    tmp_path, monkeypatch, operation
+):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _git(["init", "--initial-branch=main"], checkout)
+    _git(["config", "user.name", "Test"], checkout)
+    _git(["config", "user.email", "test@example.com"], checkout)
+    (checkout / "file.txt").write_text("base")
+    _git(["add", "file.txt"], checkout)
+    _git(["commit", "-m", "base"], checkout)
+    _git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], checkout)
+    access = _BoundAppAccess()
+    manager = GitManager(github_access=access)
+    helper_called = tmp_path / "operator-helper-called"
+    helper = tmp_path / "operator-helper"
+    helper.write_text(f"#!/bin/sh\ntouch {helper_called}\n")
+    helper.chmod(0o700)
+    global_config = tmp_path / "operator-gitconfig"
+    global_config.write_text(f"[credential]\n\thelper = !{helper}\n")
+    monkeypatch.setitem(manager._SUBPROCESS_ENV, "GIT_CONFIG_GLOBAL", str(global_config))
+    original_arun = manager._arun
+
+    async def reject_ambient_network(args, **kwargs):
+        if args[0] in {"fetch", "pull", "push", "ls-remote"}:
+            raise AssertionError("legacy network Git bypassed App authentication")
+        return await original_arun(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_arun", reject_ambient_network)
+    if operation == "pull":
+        call = manager.apull_branch(str(checkout), "main")
+    elif operation == "merge":
+        call = manager.amerge_branch(str(checkout), "main")
+    else:
+        _git(["branch", "-m", "topic"], checkout)
+        call = manager.aget_default_branch(str(checkout))
+    with pytest.raises(GitError, match="authorized GitHub repository is required"):
+        await call
+    assert not helper_called.exists()
+    assert access.requested == []
+    assert access.token_requests == []
+
+
+@pytest.mark.asyncio
+async def test_app_pull_fetches_authorized_origin_then_merges_local_ref(tmp_path, monkeypatch):
+    checkout, _target, _trap, base, tip = _git_push_case(tmp_path)
+    _git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], checkout)
+    _git(["update-ref", "refs/remotes/origin/main", tip], checkout)
+    _git(["reset", "--hard", base], checkout)
+    manager = GitManager(github_access=_BoundAppAccess())
+    fetch = AsyncMock()
+    monkeypatch.setattr(manager, "afetch_origin", fetch)
+    assert await manager.apull_branch(
+        str(checkout), "main", repository_url="https://github.com/acme/widgets.git"
+    ) == "main"
+    fetch.assert_awaited_once_with(
+        str(checkout), repository_url="https://github.com/acme/widgets.git"
+    )
+    assert _git(["rev-parse", "HEAD"], checkout) == tip
+
+
+@pytest.mark.asyncio
+async def test_app_merge_fetches_authorized_origin_before_reset(tmp_path, monkeypatch):
+    checkout, _target, _trap, base, tip = _git_push_case(tmp_path)
+    _git(["remote", "add", "origin", "https://github.com/acme/widgets.git"], checkout)
+    _git(["branch", "feature", tip], checkout)
+    _git(["update-ref", "refs/remotes/origin/main", base], checkout)
+    manager = GitManager(github_access=_BoundAppAccess())
+    fetch = AsyncMock()
+    monkeypatch.setattr(manager, "afetch_origin", fetch)
+    assert await manager.amerge_branch(
+        str(checkout), "feature", repository_url="https://github.com/acme/widgets.git"
+    )
+    fetch.assert_awaited_once_with(
+        str(checkout), repository_url="https://github.com/acme/widgets.git"
+    )
+    assert _git(["rev-parse", "HEAD"], checkout) == tip
+
+
+@pytest.mark.asyncio
 async def test_authenticated_default_branch_discovery_uses_pinned_https_source(
     tmp_path, monkeypatch
 ):

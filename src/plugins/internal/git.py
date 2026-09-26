@@ -978,7 +978,9 @@ class GitPlugin(InternalPlugin):
             return err
         branch = args.get("branch") or None
         try:
-            pulled = await self._git.apull_branch(checkout_path, branch)
+            pulled = await self._git.apull_branch(
+                checkout_path, branch, repository_url=project.repo_url if project else None
+            )
         except GitError as e:
             return {"error": str(e)}
         return {"project_id": args.get("project_id", ""), "pulled": pulled}
@@ -1022,7 +1024,10 @@ class GitPlugin(InternalPlugin):
             or "main"
         )
         try:
-            success = await self._git.amerge_branch(checkout_path, branch_name, default_branch)
+            success = await self._git.amerge_branch(
+                checkout_path, branch_name, default_branch,
+                repository_url=project.repo_url if project else None,
+            )
         except GitError as e:
             return {"error": str(e)}
         if not success:
@@ -1294,7 +1299,10 @@ class GitPlugin(InternalPlugin):
             return err
         default_branch = project.repo_default_branch if project else "main"
         try:
-            success = await self._git.amerge_branch(checkout_path, branch_name, default_branch)
+            success = await self._git.amerge_branch(
+                checkout_path, branch_name, default_branch,
+                repository_url=project.repo_url if project else None,
+            )
         except GitError as e:
             return {"error": str(e)}
         warning = await self._warn_if_in_progress(args["project_id"])

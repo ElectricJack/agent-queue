@@ -835,10 +835,24 @@ class ProjectOnboardingService:
 
         if await self.git.arev_parse(str(repository), "HEAD") is not None:
             try:
-                await self.git._arun(
-                    ["push", "-u", "origin", "--", default_branch],
-                    cwd=str(repository),
-                )
+                if (
+                    self.git.github_access is not None
+                    and self.git.github_access.auth.mode is GitHubCredentialMode.APP
+                ):
+                    await self.git.apush_branch(str(repository), default_branch)
+                    await self.git._arun(
+                        ["config", f"branch.{default_branch}.remote", "origin"],
+                        cwd=str(repository),
+                    )
+                    await self.git._arun(
+                        ["config", f"branch.{default_branch}.merge", f"refs/heads/{default_branch}"],
+                        cwd=str(repository),
+                    )
+                else:
+                    await self.git._arun(
+                        ["push", "-u", "origin", "--", default_branch],
+                        cwd=str(repository),
+                    )
             except (GitError, OSError) as exc:
                 raise ProjectOnboardingError(
                     ProjectOnboardingErrorCode.PUSH_FAILED,

@@ -2340,12 +2340,20 @@ class GitManager:
         self,
         checkout_path: str,
         branch_name: str | None = None,
+        *,
+        repository_url: str | None = None,
     ) -> str:
         if not branch_name:
             branch_name = await self.aget_current_branch(checkout_path)
             if not branch_name:
                 raise GitError("Could not determine current branch")
         _validate_ref(branch_name)
+        if self.github_access is not None and self.github_access.auth.mode is GitHubCredentialMode.APP:
+            await self.afetch_origin(checkout_path, repository_url=repository_url or "")
+            await self._arun(
+                ["merge", f"refs/remotes/origin/{branch_name}"], cwd=checkout_path
+            )
+            return branch_name
         await self._arun(["pull", "origin", branch_name], cwd=checkout_path)
         return branch_name
 
@@ -2487,15 +2495,29 @@ class GitManager:
         checkout_path: str,
         branch_name: str,
         default_branch: str = "main",
+        *,
+        repository_url: str | None = None,
     ) -> bool:
         _validate_ref(branch_name)
         _validate_ref(default_branch, field="default branch")
         await self._arun(["checkout", default_branch], cwd=checkout_path)
-        try:
-            await self._arun(["fetch", "origin"], cwd=checkout_path)
-            await self._arun(["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path)
-        except GitError:
-            pass
+        if self.github_access is not None and self.github_access.auth.mode is GitHubCredentialMode.APP:
+            has_remote = await self.ahas_remote(checkout_path, strict=True)
+            if has_remote is None:
+                raise GitError("could not inspect origin before App merge")
+            if has_remote:
+                await self.afetch_origin(checkout_path, repository_url=repository_url or "")
+                await self._arun(
+                    ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path
+                )
+        else:
+            try:
+                await self._arun(["fetch", "origin"], cwd=checkout_path)
+                await self._arun(
+                    ["reset", "--hard", f"origin/{default_branch}"], cwd=checkout_path
+                )
+            except GitError:
+                pass
         try:
             await self._arun(["merge", branch_name], cwd=checkout_path)
             return True
@@ -5329,6 +5351,8 @@ class GitManager:
                 return branch
             except GitError:
                 continue
+        if self.github_access is not None and self.github_access.auth.mode is GitHubCredentialMode.APP:
+            raise GitError("authorized GitHub repository is required for App default branch discovery")
         try:
             remote_branches = await self._arun(
                 ["ls-remote", "--heads", "origin"], cwd=checkout_path
