@@ -374,6 +374,55 @@ _CLI_CATEGORY_OVERRIDES: dict[str, str] = {
 # A command that needs arguments and appears in neither table is a bug, not a
 # no-argument command — ``_discover_all_commands`` logs a warning naming it.
 _FALLBACK_INPUT_SCHEMAS: dict[str, dict] = {
+    # Phase 2 internal commands; transport exclusions remain until phase 3.
+    "job_submit": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string"},
+            "task_id": {"type": "string"},
+            "claim_epoch": {"type": "integer"},
+            "preset": {"type": "string"},
+            "argv": {"type": "array", "items": {"type": "string"}},
+            "idempotency_key": {"type": "string"},
+            "wait": {"type": "boolean"},
+        },
+        "required": ["preset", "idempotency_key"],
+    },
+    "job_list": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string"},
+            "task_id": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+        },
+    },
+    "job_get": {
+        "type": "object",
+        "properties": {"job_id": {"type": "string", "format": "uuid"}},
+        "required": ["job_id"],
+    },
+    "job_cancel": {
+        "type": "object",
+        "properties": {"job_id": {"type": "string", "format": "uuid"}},
+        "required": ["job_id"],
+    },
+    "job_result": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "format": "uuid"},
+            "max_bytes": {"type": "integer", "minimum": 0, "maximum": 8192},
+        },
+        "required": ["job_id"],
+    },
+    "job_logs": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "format": "uuid"},
+            "after": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 1048576},
+        },
+        "required": ["job_id"],
+    },
     # -- explain + ready frontier (work-graph WG-4) ------------------------
     "explain_task": {
         "type": "object",
