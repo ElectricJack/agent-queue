@@ -322,6 +322,11 @@ destinations, isolated Git configuration, disabled worker hooks and helpers,
 credential broker checks, immutable object import and process cleanup.
 Tokens remain in the existing broker mechanism for Git, rather than remote
 URLs, Git configuration, command arguments or worker environments.
+The broker is Git's only credential source: every inherited helper is
+cleared and the Git configuration, home directory and `.netrc` are isolated.
+A read that GitHub answers anonymously (a public repository) therefore
+succeeds without requesting the token. A request the broker refuses is a
+failure, and so is a push the broker did not authenticate.
 
 For a delivery push, resolve the local source once, validate the exact tree or
 diff for reserved paths, observe the remote target through authenticated
