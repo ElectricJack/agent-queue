@@ -82,8 +82,24 @@ The job checks out the exact event SHA (the PR's merge with its base, for a
 | `migration-and-slow` | `pytest tests/ -n auto --dist loadfile -m "migration or slow"` |
 | `postgres-integration` | `pytest tests/ -n auto --dist loadfile -m "integration or perf"` |
 
-`fail-fast: false`, so one red arm does not hide the others; the job times out
-at 30 minutes.
+Every arm appends `--timeout=120 --durations=50 -rfE` to its command.
+`pytest-timeout` (installed by the `dev` extra) limits each test to 120 seconds,
+including fixture setup and teardown. A timeout names the failed test and dumps
+thread stacks; `-rfE` keeps failed/error node IDs in the final summary, and
+`--durations=50` reports the 50 slowest setup, call and teardown phases.
+
+Known slow tests may use a bounded `@pytest.mark.timeout(seconds)` override.
+The stateful CLI smoke has a 1,800-second limit covering its existing setup,
+smoke subprocess and cleanup deadlines. This does not extend the job deadline.
+See [pytest-timeout's documentation](https://github.com/pytest-dev/pytest-timeout)
+for marker precedence and timeout behavior.
+
+`fail-fast: false`, so one red arm does not hide the others; each job times out
+at 10 minutes, including installation and migrations. These limits bound
+failures and improve diagnostics. Profiling on 2026-09-26 measured
+the default suite at about 21 minutes and the stateful CLI smoke at 11–16
+minutes. Those workloads need further runtime or sharding work to finish within
+the cap and reach the goal of less than five minutes per job.
 
 The `default` arm inherits the marker deselects from `pyproject.toml`'s
 `addopts`, which is why the other two arms exist: they select exactly what the
