@@ -125,6 +125,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/fixtures/harnesses/**"], areas: ["harnesses"] }
   - { paths: ["tests/fixtures/playbooks/**"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine", "shipped-playbooks", "ci-sentinel", "supervisor", "task-routing", "epic-trains", "integration-promotion", "document-reviews", "docs-guards"] }
   - { paths: ["tests/fixtures/provider_failover/**"], areas: ["provider-failover", "e2e-kit"] }
+  - { paths: ["tests/fixtures/reports/**"], areas: ["digest"] }
   - { paths: ["tests/fixtures/task_graphs/**"], areas: ["task-graph-creation", "intelligence-classes", "integration-trains"] }
   - { paths: ["tests/fixtures/transcripts/**"], areas: ["transcripts"] }
 
