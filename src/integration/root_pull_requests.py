@@ -230,6 +230,13 @@ class RootDeliveryRedrive:
         operator_id: str | None = None,
     ) -> dict[str, Any]:
         diagnosis = await self.diagnose(task_id)
+        if diagnosis["outcome"] == "would_collect":
+            from src.integration.collecting_parent_recovery import CollectingParentRecovery
+
+            return await CollectingParentRecovery(self.db, clock=self.clock).run(
+                task_id, dry_run=dry_run, expected_head_sha=expected_head_sha,
+                reason=reason, operator_id=operator_id,
+            )
         if dry_run or diagnosis["outcome"] != "would_open":
             return diagnosis
         if diagnosis.get("head_sha") != expected_head_sha:
@@ -294,6 +301,10 @@ class RootDeliveryRedrive:
             if task["parent_task_id"] is not None:
                 return {**base, "outcome": "not_eligible",
                         "reason": "not a root: its parent collects it"}
+            if task["status"] == TaskStatus.BLOCKED.value:
+                from src.integration.collecting_parent_recovery import CollectingParentRecovery
+
+                return await CollectingParentRecovery(self.db, clock=self.clock).diagnose(task_id)
             if task["status"] != TaskStatus.COMPLETED.value:
                 return {**base, "outcome": "not_eligible",
                         "reason": f"the root is {task['status']}, not COMPLETED"}
