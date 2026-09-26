@@ -133,6 +133,23 @@ def prime(ctx: click.Context, task_id, session_id, work_dir, hook_json, hook_for
 @cli.command("handoff")
 @click.argument("subject", required=False)
 @click.argument("detail", required=False)
+@click.option("--schema-version", type=click.Choice(["1"]), default=None)
+@click.option("--goal", default=None, help="Goal to resume.")
+@click.option("--completed", multiple=True, help="Completed work (repeatable, at most 20).")
+@click.option("--next-step", default=None, help="Concrete next action after wake.")
+@click.option("--waiting-for", default=None, help="What must resolve before continuing.")
+@click.option("--file", "files", multiple=True, help="Relevant path (repeatable, at most 20).")
+@click.option("--decision", "decisions", multiple=True, help="Decision (repeatable, at most 20).")
+@click.option("--do-not-repeat", multiple=True, help="Rejected approach (repeatable, at most 20).")
+@click.option(
+    "--uncertainty",
+    "uncertainties",
+    multiple=True,
+    help="Open uncertainty (repeatable, at most 20).",
+)
+@click.option(
+    "--idempotency-key", default=None, help="Optional retry key, unique within this claim."
+)
 @click.option(
     "--auto",
     is_flag=True,
@@ -145,8 +162,30 @@ def prime(ctx: click.Context, task_id, session_id, work_dir, hook_json, hook_for
 @claim_epoch_option
 @click.pass_context
 @_handle_errors
-def handoff(ctx: click.Context, subject, detail, auto, task_id, session_id, claim_epoch) -> None:
-    """Record a handoff note; request a session restart unless ``--auto`` (design §6.1)."""
+def handoff(
+    ctx: click.Context,
+    subject,
+    detail,
+    auto,
+    task_id,
+    session_id,
+    claim_epoch,
+    schema_version,
+    goal,
+    completed,
+    next_step,
+    waiting_for,
+    files,
+    decisions,
+    do_not_repeat,
+    uncertainties,
+    idempotency_key,
+) -> None:
+    """Record a bounded handoff; non-auto requests a restart (it does not perform one).
+
+    Structured agent text is limited to 8 KiB UTF-8 in total. Empty automatic
+    hooks preserve the existing note. The daemon annotates current checkout facts.
+    """
     resolved_task_id = task_id or os.environ.get("AQ_TASK_ID")
     resolved_session_id = session_id or os.environ.get("AQ_SESSION_ID")
     resolved_epoch = resolve_claim_epoch(claim_epoch)
@@ -162,6 +201,25 @@ def handoff(ctx: click.Context, subject, detail, auto, task_id, session_id, clai
             args["subject"] = subject
         if detail:
             args["detail"] = detail
+        if schema_version:
+            args["schema_version"] = int(schema_version)
+        for field, value in (
+            ("goal", goal),
+            ("next_step", next_step),
+            ("waiting_for", waiting_for),
+            ("idempotency_key", idempotency_key),
+        ):
+            if value is not None:
+                args[field] = value
+        for field, value in (
+            ("completed", completed),
+            ("files", files),
+            ("decisions", decisions),
+            ("do_not_repeat", do_not_repeat),
+            ("uncertainties", uncertainties),
+        ):
+            if value:
+                args[field] = list(value)
         if resolved_epoch is not None:
             args["claim_epoch"] = resolved_epoch
         async with _get_client(api_url) as client:

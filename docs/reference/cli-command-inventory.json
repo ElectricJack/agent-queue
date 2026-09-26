@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 391,
+    "leaf_commands": 392,
     "registration": {
       "generated": 269,
-      "handwritten": 122
+      "handwritten": 123
     },
     "ownership": {
-      "core": 352,
+      "core": 353,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 390
+      "supported": 391
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 269,
-      "registration": 108
+      "registration": 109
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 331
+      "untested": 332
     }
   },
   "commands": [
@@ -132,6 +132,7 @@
           "--harness",
           "--permission-mode",
           "--codex-full-auto",
+          "--codex-service-tier",
           "--claude-dangerously-skip-permissions",
           "--allowed-tools",
           "--mcp-servers",
@@ -283,6 +284,7 @@
           "--harness",
           "--permission-mode",
           "--codex-full-auto",
+          "--codex-service-tier",
           "--claude-dangerously-skip-permissions",
           "--allowed-tools",
           "--mcp-servers",
@@ -3188,6 +3190,16 @@
         "optional": [
           "subject",
           "detail",
+          "--schema-version",
+          "--goal",
+          "--completed",
+          "--next-step",
+          "--waiting-for",
+          "--file",
+          "--decision",
+          "--do-not-repeat",
+          "--uncertainty",
+          "--idempotency-key",
           "--auto",
           "--task-id",
           "--session-id",

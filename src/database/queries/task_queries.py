@@ -1934,9 +1934,65 @@ class TaskQueryMixin:
                     type=type,
                     label=label,
                     content=content,
+                    created_at=time.time(),
                 )
             )
         return ctx_id
+
+
+    async def add_task_handoff(
+        self,
+        task_id: str,
+        *,
+        content: str,
+        claim_epoch: int,
+        session_id: str | None,
+        idempotency_key: str | None,
+        created_at: float,
+    ) -> tuple[str, bool]:
+        """Append once per claim/key, fencing annotations collected before this write."""
+        async with self._engine.begin() as conn:
+            current = (
+                await conn.execute(
+                    select(tasks.c.claim_epoch).where(tasks.c.id == task_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if current is None or current != claim_epoch:
+                raise ValueError("stale_claim: ownership changed while recording handoff")
+            if session_id:
+                held = (
+                    await conn.execute(
+                        select(sessions.c.task_id).where(sessions.c.id == session_id)
+                    )
+                ).scalar_one_or_none()
+                if held != task_id:
+                    raise ValueError("stale_claim: session no longer holds this task")
+            if idempotency_key:
+                existing = (
+                    await conn.execute(
+                        select(task_context.c.id).where(
+                            task_context.c.task_id == task_id,
+                            task_context.c.claim_epoch == claim_epoch,
+                            task_context.c.idempotency_key == idempotency_key,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing:
+                    return existing, False
+            ctx_id = str(uuid.uuid4())[:12]
+            await conn.execute(
+                insert(task_context).values(
+                    id=ctx_id,
+                    task_id=task_id,
+                    type="handoff",
+                    label="handoff",
+                    content=content,
+                    claim_epoch=claim_epoch,
+                    idempotency_key=idempotency_key,
+                    created_at=created_at,
+                )
+            )
+            return ctx_id, True
 
     async def get_task_contexts(self, task_id: str) -> list[dict]:
         """Return all task_context rows for *task_id* as dicts."""
@@ -1948,7 +2004,12 @@ class TaskQueryMixin:
                     task_context.c.type,
                     task_context.c.label,
                     task_context.c.content,
-                ).where(task_context.c.task_id == task_id)
+                    task_context.c.created_at,
+                    task_context.c.claim_epoch,
+                    task_context.c.idempotency_key,
+                )
+                .where(task_context.c.task_id == task_id)
+                .order_by(task_context.c.created_at, task_context.c.id)
             )
             return [dict(r) for r in result.mappings().fetchall()]
 

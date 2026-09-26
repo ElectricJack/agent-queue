@@ -544,6 +544,18 @@ task_context = Table(
     Column("type", Text, nullable=False),
     Column("label", Text, nullable=True),
     Column("content", Text, nullable=False),
+    Column(
+        "created_at",
+        Float,
+        nullable=False,
+        server_default=text("EXTRACT(EPOCH FROM clock_timestamp())"),
+    ),
+    Column("claim_epoch", BigInteger, nullable=True),
+    Column("idempotency_key", Text, nullable=True),
+    Index("idx_task_context_latest", "task_id", "type", "created_at", "id"),
+    UniqueConstraint(
+        "task_id", "claim_epoch", "idempotency_key", name="uq_task_context_handoff_retry"
+    ),
 )
 
 task_comments = Table(
