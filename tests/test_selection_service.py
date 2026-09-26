@@ -6,7 +6,8 @@ from dataclasses import asdict, replace
 import pytest
 import yaml
 
-from src.config import AppConfig, TestSelectionConfig as SelectionConfig, load_config
+from src.config import AppConfig, load_config
+from src.config import TestSelectionConfig as SelectionConfig
 from src.database import Database
 from src.git.manager import GitManager
 from src.models import Project
