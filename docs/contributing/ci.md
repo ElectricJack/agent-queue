@@ -14,8 +14,8 @@ to appear.
 
 ## Vocabulary
 
-* **Suite arm** — one entry in the test job's matrix. Four run in parallel,
-  each with its own pytest command.
+* **Suite arm** — one entry in the test job's matrix. Eleven run in parallel:
+  eight default shards and three specialized arms, each with its own command.
 * **Integration branch** — a branch AQ's integration service creates to assemble
   and test candidate work before it reaches `main`; its refs look like
   `aq/integration/p-<32 hex>/r-<32 hex>`. The train promotes the exact SHA
@@ -34,7 +34,7 @@ build](#there-is-no-documentation-build).
 
 | Workflow | Triggers | What it does |
 |---|---|---|
-| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch` | A four-arm test matrix against a real PostgreSQL service. |
+| [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch` | Eight default shards and three specialized arms against real PostgreSQL services. |
 | [`macos-acceptance.yml`](../../.github/workflows/macos-acceptance.yml) | Push to `ci/macos-acceptance**`; `workflow_dispatch` | The native macOS install journey, recorded by a human rather than gating a merge. |
 
 > **Note.** No workflow runs on a push to `main`. Everything that reaches
@@ -53,7 +53,7 @@ flowchart TD
     S -->|no| C[test matrix]
     B[push to aq/integration or aq/parent,<br/>or workflow_dispatch] --> C
     C --> E[cli-conformance]
-    C --> F[default]
+    C --> F[default: shards 1–8]
     C --> G[migration-and-slow]
     C --> H[postgres-integration]
 ```
@@ -73,19 +73,19 @@ alike, with two exceptions decided by the job's `if:`:
 The job checks out the exact event SHA (the PR's merge with its base, for a
 `pull_request` event) and asserts it with `git rev-parse HEAD`.
 
-### The four suite arms
+### The suite arms
 
 | Arm | Command |
 |---|---|
 | `cli-conformance` | `aq test tests/test_cli_inventory.py tests/test_cli_conformance.py` |
-| `default` | `pytest tests/ -n auto --dist loadfile` |
+| `default-1/8` … `default-8/8` | `pytest tests/ -n 4 --dist loadfile --splits 8 --group N --splitting-algorithm least_duration` |
 | `migration-and-slow` | `pytest tests/ -n auto --dist loadfile -m "migration or slow"` |
 | `postgres-integration` | `pytest tests/ -n auto --dist loadfile -m "integration or perf"` |
 
 `fail-fast: false`, so one red arm does not hide the others; the job times out
 at 30 minutes.
 
-The `default` arm inherits the marker deselects from `pyproject.toml`'s
+The default shards inherit the marker deselects from `pyproject.toml`'s
 `addopts`, which is why the other two arms exist: they select exactly what the
 default one drops. The `cli-conformance` arm is separated so a CLI-surface
 change fails visibly instead of inside fourteen thousand other results, and it
@@ -95,6 +95,48 @@ Wall-clock budgets still skip in the `postgres-integration` arm: they need
 `AQ_PERF_STRICT=1`, which CI does not set, because a hosted runner's load makes
 them measure the runner rather than the code. Statement-count budgets, which
 are deterministic, do run. See [testing](testing.md#latency-budgets).
+
+### Default shard timings and refresh
+
+[`pytest-split`](https://github.com/jerry-git/pytest-split) selects each default
+shard using the committed [`.test_durations`](../../.test_durations) map. The
+`least_duration` algorithm balances the sum of test times, including fixture
+setup and teardown. Selection happens before xdist assigns the selected files
+to four workers with `--dist loadfile`. The eight groups are disjoint and
+together select the complete default suite. New test IDs use the average
+stored duration; removed IDs do not affect selection.
+
+The target is at most 4.5 minutes per default shard job, leaving headroom below
+the five-minute CI job goal. Stored test seconds are summed across workers;
+they are a balancing input, not a wall-clock guarantee. Check the actual job
+times after changing the shard count or refreshing the map. The separately
+selected integration and migration suites retain their own commands.
+
+The initial map comes from the 2026-09-26 local default profile with eight
+workers (`local-default-n8.txt` in the task's CI profiling data). It sums the
+reported setup, call, and teardown phases. That run had failures and setup
+errors, so these are seed timings, not passing-test evidence. Pytest hid phases
+below 0.005 seconds; collected IDs without reported timings are seeded with
+0.015 seconds (three phases at that reporting threshold). The map is filtered
+to the default test IDs collected when it was created.
+
+Refresh from an unsharded default run on the disposable PostgreSQL test service:
+
+```bash
+aq test tests/ --store-durations --clean-durations
+```
+
+This uses the normal test slot, full-suite lock, and worker cap, and replaces
+the map with measured setup, call, and teardown times while removing stale IDs.
+Review the run result and the `.test_durations` diff, then commit the updated
+map. Do not add `--splits` or `--group` to this refresh command: a cleaned map
+from a single shard would discard the other seven shards' measurements.
+
+Every shard has its own check name. The parent and root required-check lists
+in [the train policy](../config/agent-queue-train-policy.json) must include all
+eight. Existing installations using the former `Tests (default)` name need the
+operator to rebind that policy and update any explicit merge-required checks
+or GitHub branch rules when adopting this workflow.
 
 ### Environment
 
@@ -220,7 +262,7 @@ pushes nothing.
 ## Related pages
 
 * [Local checks](checks.md) — how to be reasonably sure before you push.
-* [Testing](testing.md) — the markers the four arms slice by.
+* [Testing](testing.md) — the markers the suite arms slice by.
 * [Code generation](codegen.md) — the drift guards CI enforces.
 * [Pull requests and delivery](pull-requests.md) — how work actually reaches `main`.
 * [CI at integration boundaries](../guides/integration-ci-boundaries.md) — the
