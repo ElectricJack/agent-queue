@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-102 commands are registered.
+105 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -142,11 +142,14 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`github_issue_triage`](github_issue_triage.md) | Triage GitHub issues | File bounded investigations and label the corresponding issues. |
 | [`list_projects`](list_projects.md) | List projects | Read the configured projects without changing them. |
 | [`morning_report_preview`](morning_report_preview.md) | Morning Report Preview | Read bounded overnight evidence without writes or model calls. |
+| [`morning_report_tick`](morning_report_tick.md) | Morning Report Tick | Reserve and recover the zoned daily report and deadline fallback. |
 | [`provider_availability_notify`](provider_availability_notify.md) | Announce a provider's availability change | Message the global supervisor and the human once when a provider moves between launchable and unavailable; a repeat for the same change sends nothing. |
 | [`provider_reroute`](provider_reroute.md) | Re-route work off an unavailable provider | Move queued work whose provider is unavailable to the same intelligence class on an available provider, a few tasks at a time; pinned tasks and single-provider classes hold. |
 | [`provider_usage_probe`](provider_usage_probe.md) | Probe a provider's remaining quota | Ask a provider's own CLI what is left of the account's limit windows and record the reading. Free to run and never billed against the quota it reports. |
 | [`render_prompt`](render_prompt.md) | Render a prompt | Render a bundled or project prompt with explicit variables. |
 | [`report_brief`](report_brief.md) | Report Brief | Read a bounded, paged report brief and its CAS version. |
+| [`report_get`](report_get.md) | Report Get | Read a stored morning report in project scope. |
+| [`report_list`](report_list.md) | Report List | List stored morning reports in project scope. |
 | [`report_request`](report_request.md) | Report Request | Queue one author wake for a reserved report. |
 | [`report_submit`](report_submit.md) | Report Submit | Submit one authored report before its deadline. |
 | [`supervisor_inbox_history`](supervisor_inbox_history.md) | Supervisor Inbox History | Page conversations by update time or one conversation's inputs by receipt time. |
