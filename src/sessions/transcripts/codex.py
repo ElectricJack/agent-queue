@@ -418,12 +418,13 @@ class CodexTranscriptReader(TranscriptReader):
         if not launched or not wanted:
             return None
         matches = []
-        # Restrict discovery by the launch's UTC date (including midnight
-        # skew), not the newest files anywhere on a busy host.
+        # Codex names date partitions in local time but stamps metadata in
+        # UTC. Adjacent dates cover every timezone, even after a daemon
+        # restart changes TZ; identity still comes from cwd + launch time.
         from datetime import datetime, timezone
         days = {
             datetime.fromtimestamp(launched + skew, timezone.utc).strftime("%Y/%m/%d")
-            for skew in (-10, 0, 60)
+            for skew in (-86410, -10, 0, 60, 86460)
         }
         for day in sorted(days):
             for path in (self._sessions_root / day).glob("rollout-*.jsonl"):
@@ -442,6 +443,58 @@ class CodexTranscriptReader(TranscriptReader):
                 except (OSError, ValueError, AttributeError):
                     continue
         return matches[0] if len(matches) == 1 else None
+
+    @staticmethod
+    def _latest_provider_usage_sync(path: Path) -> TranscriptEntry | None:
+        """Scan backwards for the last complete quota record, without parsing turns.
+
+        Read in chunks so a long rollout need not be loaded into memory or
+        replayed through the conversation parser. Ignore an unfinished last
+        line just as the incremental reader does.
+        """
+        try:
+            with path.open("rb") as file:
+                position = file.seek(0, 2)
+                remainder = b""
+                at_end = True
+                while position:
+                    start = max(0, position - 65536)
+                    file.seek(start)
+                    lines = (file.read(position - start) + remainder).split(b"\n")
+                    remainder = lines.pop(0)
+                    if at_end and lines:
+                        lines.pop()  # empty or incomplete trailing record
+                        at_end = False
+                    position = start
+                    if not position and not at_end:
+                        lines.insert(0, remainder)
+                    for line in reversed(lines):
+                        if b'"rate_limits"' not in line:
+                            continue
+                        try:
+                            raw = json.loads(line)
+                        except (ValueError, UnicodeDecodeError):
+                            continue
+                        if not isinstance(raw, dict) or raw.get("type") != "event_msg":
+                            continue
+                        payload = raw.get("payload")
+                        if not isinstance(payload, dict) or payload.get("type") != "token_count":
+                            continue
+                        ts = parse_iso_ts(raw.get("timestamp"))
+                        block = _rate_limits_from_payload(payload, observed_at=ts)
+                        # Recovery must never stamp an undated reading as now.
+                        if block and math.isfinite(ts) and ts > 0:
+                            return TranscriptEntry(
+                                uuid=f"{path.stem}:quota-backfill", parent_uuid=None,
+                                type="assistant", text="", model=None, usage=None,
+                                ts=ts, rate_limits=block,
+                            )
+        except OSError:
+            logger.debug("codex quota recovery failed for %s", path, exc_info=True)
+        return None
+
+    async def read_latest_provider_usage(self, path: Path) -> TranscriptEntry | None:
+        return await asyncio.to_thread(self._latest_provider_usage_sync, path)
 
     # -- incremental read --------------------------------------------------
 

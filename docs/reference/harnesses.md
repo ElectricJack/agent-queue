@@ -307,7 +307,7 @@ own shell.
 | Harness | Location | How a session is resolved |
 |---|---|---|
 | Claude | `~/.claude/projects/<slug>/<session-uuid>.jsonl`, slug derived from the working directory | direct path |
-| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-<iso>-<uuid>.jsonl` | reads `session_meta.payload.cwd` from each candidate's first line, newest first, capped at 200 files — then by filename once the UUID is learned |
+| Codex | `~/.codex/sessions/YYYY/MM/DD/rollout-<iso>-<uuid>.jsonl` | searches the UTC launch date and adjacent local-date partitions for a unique metadata cwd/launch-time match — then by exact UUID once learned |
 | Gemini | not read | pane capture is the observation path |
 
 Gemini deliberately declares no `transcript_paths`: it writes session data in a
@@ -319,6 +319,12 @@ Reads are byte-offset incremental, and the offset is mirrored durably keyed by
 that dies and is relaunched on the same workspace resolves to the same file
 under a new session id — an in-memory offset of zero would replay the entire
 file, re-emitting every past turn and charging every past token a second time.
+
+On adoption, Codex's latest complete quota record is recovered independently
+of that checkpoint and the historical replay guard. It keeps the record's
+original timestamp and recovers existing rollouts after discovery outages
+without replaying tokens or output. Local-date filenames may be a day apart
+from UTC metadata; restarting the daemon preserves the original launch time.
 
 ### What AQ derives from a transcript
 
