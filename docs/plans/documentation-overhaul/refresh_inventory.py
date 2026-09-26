@@ -449,6 +449,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Terminal pane registry."),
     ("src/claim_file.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
      "`.aq/claim.json` read/write helpers."),
+    ("src/handoffs.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
+     "Structured handoff notes and the bounded wake context replacing transcripts."),
     ("src/env_scrub.py", "sessions", "docs/concepts/sessions.md", PRODUCTION,
      "Removes operator secrets from worker environments."),
 
@@ -601,6 +603,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Discord gateway: digest delivery, escalation threads and intake."),
     ("src/digest/**", "communications", "docs/concepts/messaging.md", PRODUCTION,
      "Activity digest facts, eligibility, rendering and dispatch."),
+    ("src/reports/**", "communications", "docs/concepts/messaging.md",
+     PRODUCTION, "Durable supervisor report requests and the hourly report policy."),
     ("src/escalations/**", "communications", "docs/concepts/messaging.md",
      PRODUCTION, "Escalation incidents, delivery outbox and inbound intake."),
 
