@@ -5,7 +5,8 @@ protocol instead of writing another graph engine, and makes that adoption
 depend on fixture evidence (``tests/test_selection_static_impact.py``).
 :class:`PytestImpactedAdapter` drives the library's standalone
 ``impacted-tests`` command, the one interface it documents for listing
-impacted test files without running pytest, and never imports the library.
+impacted test files without running pytest. It probes the optional parser
+extension only to record the active backend; it does not use library graph APIs.
 Only the pinned version (:data:`PINNED_ENGINE`) is used unless a caller names
 an executable.
 
@@ -75,6 +76,7 @@ ENGINE_EXECUTABLE = "impacted-tests"
 ENGINE_UNAVAILABLE = "unavailable"
 #: The version the fixture evaluation covers; ``pyproject.toml`` pins the same.
 PINNED_ENGINE = "pytest-impacted 0.30.0"
+PINNED_RUST_ENGINE = "pytest-impacted-rs 0.30.0"
 #: The label of an engine a caller named: its version is not checked.
 UNVERIFIED_ENGINE = "pytest-impacted (unverified)"
 
@@ -85,7 +87,7 @@ _LOAD_CLOSURE_SCRIPT = Path(__file__).with_name("load_closure.py")
 class StaticResult:
     modules: frozenset[str]  # catalogued test modules, posix relative to the workspace
     complete: bool
-    engine: str  # PINNED_ENGINE | UNVERIFIED_ENGINE | "fixed" | "unavailable"
+    engine: str  # package + active parser versions | UNVERIFIED_ENGINE | "fixed" | "unavailable"
     reason: str | None  # one of STATIC_REASONS; None when complete
     unknown_outputs: int  # distinct paths the engine named that are no catalogued module
     elapsed_ms: int
@@ -103,22 +105,50 @@ class StaticImpact(Protocol):
 
 
 def engine_version() -> str:
-    """``"pytest-impacted <version>"`` as installed with this interpreter, or ``"unavailable"``."""
+    """Installed engine and active parser versions, or ``"unavailable"``.
+
+    The pinned release's ``_rust.py`` uses this same extension import check.
+    Metadata alone cannot distinguish a usable wheel from one that fails to
+    import. Probe only the evaluated engine release; graph analysis stays in
+    the standalone command.
+    """
     try:
-        return f"{ENGINE_DISTRIBUTION} {importlib.metadata.version(ENGINE_DISTRIBUTION)}"
+        engine = f"{ENGINE_DISTRIBUTION} {importlib.metadata.version(ENGINE_DISTRIBUTION)}"
     except importlib.metadata.PackageNotFoundError:
         return ENGINE_UNAVAILABLE
+    if engine != PINNED_ENGINE:
+        return engine
+    try:
+        from pytest_impacted_rs import parse_all_imports  # noqa: F401
+    except ImportError:
+        parser = "astroid"
+    else:
+        parser = "pytest-impacted-rs"
+    try:
+        version = importlib.metadata.version(parser)
+    except importlib.metadata.PackageNotFoundError:
+        version = ENGINE_UNAVAILABLE
+    return f"{engine} ({parser} {version})"
+
+
+def _pinned_engine(engine: str) -> bool:
+    """Both graph and active Rust parser must be the fixture-evaluated releases."""
+    return engine == f"{PINNED_ENGINE} ({PINNED_RUST_ENGINE})" or (
+        engine.startswith(f"{PINNED_ENGINE} (astroid ")
+        and engine.endswith(")")
+        and engine != f"{PINNED_ENGINE} (astroid {ENGINE_UNAVAILABLE})"
+    )
 
 
 def default_executable() -> str | None:
     """The pinned engine's ``impacted-tests``: beside this interpreter, else on ``PATH``.
 
-    ``None`` unless :data:`PINNED_ENGINE` is what this interpreter has
+    ``None`` unless this interpreter has the evaluated engine and parser
     installed. A daemon started as ``.venv/bin/agent-queue`` need not have
     ``.venv/bin`` on its ``PATH``, but the ``test-selection`` extra installs
     the command next to the interpreter.
     """
-    if engine_version() != PINNED_ENGINE:
+    if not _pinned_engine(engine_version()):
         return None
     if sys.executable:
         beside = shutil.which(ENGINE_EXECUTABLE, path=os.path.dirname(sys.executable))
@@ -209,7 +239,7 @@ class PytestImpactedAdapter:
         if self._executable is not None:
             executable, engine = self._executable, UNVERIFIED_ENGINE
         else:
-            executable, engine = default_executable(), PINNED_ENGINE
+            executable, engine = default_executable(), engine_version()
             if executable is None:
                 return result(
                     engine=ENGINE_UNAVAILABLE, reason=STATIC_UNAVAILABLE, detail=_missing_engine()
@@ -365,7 +395,7 @@ def _missing_engine() -> str:
     installed = engine_version()
     if installed == ENGINE_UNAVAILABLE:
         return "not_installed"
-    if installed != PINNED_ENGINE:
+    if not _pinned_engine(installed):
         return f"version:{installed.removeprefix(ENGINE_DISTRIBUTION).strip()}"
     return "not_found"
 

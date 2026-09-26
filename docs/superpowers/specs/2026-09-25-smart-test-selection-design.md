@@ -278,6 +278,25 @@ If two observations are combined, use their union and preserve old/new graph
 edges; failure or unsupported imports widens the result. Prefer this reuse to
 writing another graph engine, but adoption depends on the fixture evidence.
 
+The evaluated engine is `pytest-impacted==0.30.0`. On this repository its
+astroid parser exceeds the adapter's 60-second deadline when branch and dirty
+observations run together. Keep that deadline and the conservative timeout
+fallback. Offer `.[test-selection-fast]` with `pytest-impacted[fast]==0.30.0`
+and an explicit `pytest-impacted-rs==0.30.0` pin; keep `.[test-selection]` and
+`dev` on the plain Python dependency so CI need not build Rust. Prefer a
+wheel-only install (`pip install --only-binary=:all: -e '.[test-selection-fast]'`)
+on supported platforms. The 0.30.0 release publishes CPython 3.11+ ABI wheels
+for Linux glibc x86_64/aarch64, macOS x86_64/arm64, and Windows amd64; other
+platforms can use the Python fallback.
+[Release files](https://pypi.org/project/pytest-impacted-rs/0.30.0/#files)
+
+Record the active parser and its distribution version in the static engine
+identity. Match the pinned release's extension import check, rather than
+inferring activation from installed metadata: an installed extension that
+cannot import uses astroid. An active Rust extension at an unevaluated version
+is unavailable to the adapter. Run the same fixture evaluation under both
+backends before adopting the fast extra; equal fixture results are required.
+
 No static graph proves absence of data-file, registry or source-scanning effects.
 The rule map remains required. Broad hub impact is recorded honestly; Jev's
 separately promoted omission policy is the proposed way to reduce that area set.
