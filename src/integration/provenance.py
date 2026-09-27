@@ -18,6 +18,18 @@ MAX_REPLACEMENTS = 1000
 MAX_RECORD_BYTES = 64 * 1024
 
 
+class ProvenanceMigrationRequired(ValueError):
+    """Legacy repair evidence needs an authorized operator migration."""
+
+    def __init__(self, detail: str, project_id: str):
+        self.context = {
+            "fixable_by": "operator",
+            "precondition": "provenance_migration",
+            "remedy": f"aq integration migrate-provenance {project_id} --apply",
+        }
+        super().__init__(detail)
+
+
 def task_message(message: str, task_id: str) -> str:
     """Append task identity without amending history or changing hook configuration."""
     if not task_id or any(ord(c) < 32 for c in task_id):
@@ -270,18 +282,22 @@ async def record_worker_completion(
         # a full set of original completions; a reopened original fails closed.
         replaces = []
         if not isinstance(contract, list) or len(contract) > 100:
-            raise ValueError("invalid exact development repair contract")
+            raise ProvenanceMigrationRequired("invalid exact development repair contract", project.id)
         for member in contract:
             completion = await db.get_task_completion(member["task_id"])
             if completion is None or completion.outcome != "pass":
-                raise ValueError("repair source has no passing immutable completion")
+                raise ProvenanceMigrationRequired(
+                    "repair source has no passing immutable completion", project.id
+                )
             original = CompletionIdentity(project.id, repo.id, member["task_id"], completion.id)
             if await store.read_completion(original) is None:
                 # Upgrade bridge: only a full, matching final completion
                 # source can be retained automatically. Ambiguous old closes
                 # still require the explicit migration inventory.
                 if not completion.commits or completion.commits[-1] != member["source_sha"]:
-                    raise ValueError("unlabelled repair source requires exact provenance migration")
+                    raise ProvenanceMigrationRequired(
+                        "unlabelled repair source requires exact provenance migration", project.id
+                    )
                 await store.write_completion(CompletedSource(original, member["source_sha"]))
             replaces.append(CompletedSource(original, member["source_sha"]))
         await store.write_replacement(source_oid=source, base_oid=base, replaces=replaces,
