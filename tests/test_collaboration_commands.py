@@ -195,13 +195,14 @@ def member(thread, task_id):
 
 
 async def test_worker_cannot_create_even_with_the_capability(env):
-    result = await run(
-        env,
-        "collaboration_create",
-        {"task_ids": ["one", "two"], "idempotency_key": "k", "claim_epoch": 1},
-        worker(),
-    )
-    assert result["error_code"] == "collaboration.out_of_scope"
+    for epoch in (1, 0):  # a live or a stale claim alike
+        result = await run(
+            env,
+            "collaboration_create",
+            {"task_ids": ["one", "two"], "idempotency_key": "k", "claim_epoch": epoch},
+            worker(),
+        )
+        assert result["error_code"] == "collaboration.out_of_scope"
     assert await env.db.list_collaboration_threads(project_id="p") == []
     assert await body_kind_count(env, "collaboration_invite") == 0
 

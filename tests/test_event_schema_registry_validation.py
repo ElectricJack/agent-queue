@@ -379,6 +379,13 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "body": "3 tasks are running.",
         "thread_id": "discord:5678",
     },
+    "collaboration.created": {
+        "thread_id": "collab-0123456789abcdef",
+        "project_id": "proj-1",
+        "task_ids": ["task-a", "task-b"],
+        "created_by_id": "supervisor-proj-1",
+        "deadline_at": 1800007200.0,
+    },
     # Durable human escalation state hints (Discord simplification §5)
     "escalation.created.v1": {
         "version": 1,

@@ -190,11 +190,17 @@ class CollaborationCommandsMixin:
 
     async def _cmd_collaboration_create(self, args):
         try:
-            caller = await self._collaboration_caller(args, mutation=False)
-            if caller["kind"] == "member":
+            # Refuse a worker before its claim or arguments are examined.
+            principal = current_principal()
+            if (
+                principal is not None
+                and principal.kind == PrincipalKind.SESSION
+                and not principal.elevated
+            ):
                 raise CollaborationError(
                     "out_of_scope", "only the operator or a supervisor creates collaborations"
                 )
+            caller = await self._collaboration_caller(args, mutation=True)
             values = CollaborationCreateArgs.model_validate(args)
             if self._messages_disabled_error():
                 return {"success": False, "error": MESSAGES_DISABLED_ERROR}
