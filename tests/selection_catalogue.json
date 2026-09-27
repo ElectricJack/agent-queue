@@ -1222,6 +1222,7 @@
       "description": "Worker pools: global per-profile sizing, per-project placement, the pool reconciler and session carve-outs, pool doctor checks, pool API endpoints, default install pools and the swarm config and surface.",
       "modules": [
         "tests/test_install_pools.py",
+        "tests/test_pool_admin.py",
         "tests/test_pool_agent_routing.py",
         "tests/test_pool_api_postgres.py",
         "tests/test_pool_doctor.py",
@@ -1278,7 +1279,7 @@
       ]
     }
   },
-  "digest": "sha256:9ebe80d87b1a9f2d80c3a4d4a7bdee41c3347d4b852f27809bcc811112e08927",
+  "digest": "sha256:d84c80cc690d8fdc305b6a5d380dd0e038c9680a46735b9b0b7f821a2386bddf",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -9548,6 +9549,28 @@
         "asyncio"
       ],
       "summary": "Tests for the plugin system: base classes, loader, registry, and DB queries."
+    },
+    "tests/test_pool_admin.py": {
+      "areas": [
+        "worker-pools"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.pool_admin",
+        "src.config",
+        "src.database",
+        "src.event_bus",
+        "src.event_schemas",
+        "src.models",
+        "src.orchestrator",
+        "src.profiles.parser",
+        "src.profiles.sync"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reusable pool edits preserve single-profile command semantics and audit data."
     },
     "tests/test_pool_agent_routing.py": {
       "areas": [
