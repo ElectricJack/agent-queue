@@ -233,6 +233,8 @@ def summarize(runs: list[dict], loads: list[dict], series: list[list[dict]]) -> 
             "browser_active_samples": len(active[-1]),
             "excluded_samples": len(samples) - len(active[-1]),
             "helper_only_s": load.get("helper_only_s")})
+        if "series_collection" in load:
+            out["activity"][-1]["series_collection"] = load["series_collection"]
     out["daemon_scope"] = "browser_active"
     out.update(daemon_scope(active))
     out["whole_repetition"] = daemon_scope(series)
@@ -256,6 +258,31 @@ def fetch_series(base, start=None, end=None):
     if not isinstance(response.get("samples"), list):
         raise ProtocolError("metrics series must contain samples")
     return response["samples"]
+
+
+def collect_completed_series(base, start, end, *, timeout_s=30.0, poll_s=0.25):
+    """Retain the closing counter snapshot without extending browser windows.
+
+    Series timestamps are floored to 1s buckets. A bucket strictly after end
+    guarantees its counter snapshot happened after the final completed probes.
+    Persistence is batched, so wait for publication rather than a fixed sleep.
+    """
+    started = time.monotonic()
+    while True:
+        # An upper bound of end would exclude the very snapshot we need.
+        samples = fetch_series(base, start)
+        boundary = min((s["ts"] for s in samples if numeric(s.get("ts")) and s["ts"] > end),
+                       default=None)
+        elapsed = time.monotonic() - started
+        if boundary is not None:
+            return [s for s in samples if numeric(s.get("ts")) and start <= s["ts"] <= boundary], {
+                "scope": "repetition_through_completion_boundary", "start_ts": start,
+                "repetition_end_ts": end, "boundary_sample_ts": boundary,
+                "wait_s": round(elapsed, 3),
+            }
+        if elapsed >= timeout_s:
+            raise ProtocolError("metrics series did not publish a post-completion 1s sample")
+        time.sleep(min(poll_s, timeout_s - elapsed))
 
 
 def load_args(args):
@@ -501,7 +528,9 @@ def run_repetition(args, config, index):
             load["covers_observations"] = bool(load["coverage"]) and all(
                 c["fraction"] >= .99 for c in load["coverage"])
         write_json(args.out / f"load-{index}.json", load)
-    samples = fetch_series(args.api_url, start, end)
+    samples, collection = collect_completed_series(args.api_url, start, end)
+    load["series_collection"] = collection
+    write_json(args.out / f"load-{index}.json", load)
     write_json(args.out / f"series-{index}.json", samples)
     return runs, load, samples
 
