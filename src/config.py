@@ -2848,6 +2848,22 @@ class ProviderFailoverRerouteConfig:
 
 
 @dataclass
+class ProviderFailoverSpillConfig:
+    """Capacity spill (D24): READY work leaves a pool that cannot serve it.
+
+    Runs inside the automatic re-route sweep, so it applies only when
+    failover would (``mode: enforce`` and ``reroute.enabled``).  A spill move
+    counts toward ``reroute.max_auto_per_task`` and
+    ``reroute.task_cooldown_seconds`` like any automatic move.
+    """
+
+    enabled: bool = True
+    #: How long a task must have waited (``now - tasks.updated_at``) first.
+    after_seconds: int = 300
+    max_per_sweep: int = 5
+
+
+@dataclass
 class ProviderFailoverNotifyConfig:
     """Who hears about a state change, and when a human is paged (D19)."""
 
@@ -2901,6 +2917,7 @@ class ProviderFailoverConfig:
         default_factory=ProviderFailoverOverrideConfig
     )
     reroute: ProviderFailoverRerouteConfig = field(default_factory=ProviderFailoverRerouteConfig)
+    spill: ProviderFailoverSpillConfig = field(default_factory=ProviderFailoverSpillConfig)
     notify: ProviderFailoverNotifyConfig = field(default_factory=ProviderFailoverNotifyConfig)
     doctor: ProviderFailoverDoctorConfig = field(default_factory=ProviderFailoverDoctorConfig)
     evidence: ProviderFailoverEvidenceConfig = field(
@@ -2977,6 +2994,7 @@ class ProviderFailoverConfig:
             "rate_limit.exits_to_trip": self.rate_limit.exits_to_trip,
             "reroute.max_per_sweep": self.reroute.max_per_sweep,
             "reroute.max_auto_per_task": self.reroute.max_auto_per_task,
+            "spill.max_per_sweep": self.spill.max_per_sweep,
             "notify.flap_threshold": self.notify.flap_threshold,
             "evidence.keep": self.evidence.keep,
         }
@@ -3010,6 +3028,7 @@ class ProviderFailoverConfig:
             "override.default_ttl_seconds": self.override.default_ttl_seconds,
             "override.max_ttl_seconds": self.override.max_ttl_seconds,
             "reroute.task_cooldown_seconds": self.reroute.task_cooldown_seconds,
+            "spill.after_seconds": self.spill.after_seconds,
             "notify.escalate_failing_after_seconds": self.notify.escalate_failing_after_seconds,
             "notify.escalate_all_down_after_seconds": self.notify.escalate_all_down_after_seconds,
             "doctor.held_warn_seconds": self.doctor.held_warn_seconds,
@@ -3045,6 +3064,7 @@ PROVIDER_FAILOVER_SUBSECTIONS: dict[str, type] = {
     "recovery": ProviderFailoverRecoveryConfig,
     "override": ProviderFailoverOverrideConfig,
     "reroute": ProviderFailoverRerouteConfig,
+    "spill": ProviderFailoverSpillConfig,
     "notify": ProviderFailoverNotifyConfig,
     "doctor": ProviderFailoverDoctorConfig,
     "evidence": ProviderFailoverEvidenceConfig,

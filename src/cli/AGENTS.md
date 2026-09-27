@@ -17,6 +17,7 @@ agent_surface.py   Agent-facing surface: `aq schema`, `aq prime`, `aq handoff`
 claim_epoch.py     Shared --claim-epoch resolution for pool-session mutators
                    (reads <work_dir>/.aq/claim.json, falls back to $AQ_CLAIM_EPOCH)
 client.py          CLIClient — async REST client for CLI operations (see Transport below)
+collaboration.py   `aq collaboration {create,accept,show,list,close}` — bounded task threads
 daemon.py          `aq start` / `stop` / `restart` — the daemon, plus the dashboard server when a
                    bundle is installed (`--no-dashboard` only skips the Vite prompt;
                    `--no-dashboard-server` leaves the server alone)

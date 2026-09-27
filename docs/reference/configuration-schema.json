@@ -1646,6 +1646,11 @@
           "target_backlog_factor": 1.0,
           "task_cooldown_seconds": 1800
         },
+        "spill": {
+          "after_seconds": 300,
+          "enabled": true,
+          "max_per_sweep": 5
+        },
         "usage": {
           "degraded_percent": 85.0,
           "exhausted_percent": 99.0,
@@ -1895,6 +1900,29 @@
             },
             "task_cooldown_seconds": {
               "default": 1800,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "spill": {
+          "additionalProperties": false,
+          "default": {
+            "after_seconds": 300,
+            "enabled": true,
+            "max_per_sweep": 5
+          },
+          "properties": {
+            "after_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "max_per_sweep": {
+              "default": 5,
               "type": "integer"
             }
           },

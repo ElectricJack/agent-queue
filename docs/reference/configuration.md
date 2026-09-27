@@ -231,6 +231,20 @@ skips the trickle and the per-task limits.
 | `reroute.task_cooldown_seconds` | `1800` | `>= 0`; `0` disables | A task moved automatically is not moved automatically again inside this window. |
 | `reroute.max_auto_per_task` | `2` | `>= 1` | After this many automatic moves a task holds for a human (`reroute_limit_reached`). |
 
+**`spill`** — capacity spill: the second pass of the automatic sweep moves READY work
+off a pool that cannot serve it (full, disabled, quarantined or out of project room) to a
+same-class pool with free capacity in the same project
+([provider-failover D24](../specs/provider-failover.md#4a-capacity-spill-d24)). It runs
+only when failover would (`mode: enforce`, `reroute.enabled: true`), never moves a
+`pinned` task or a task off its project's preferred provider, and each move counts
+toward `reroute.max_auto_per_task` and `reroute.task_cooldown_seconds`.
+
+| Key | Default | Bounds | What it does |
+|---|---|---|---|
+| `spill.enabled` | `true` | boolean | `false` turns the spill pass off; failover is unaffected. |
+| `spill.after_seconds` | `300` | `>= 0` | A task spills only after waiting this long (`now - updated_at`); until then it holds `spill_waiting`. |
+| `spill.max_per_sweep` | `5` | `>= 1` | Most tasks one sweep spills; the rest hold `spill_sweep_limit` for the next sweep. |
+
 **`notify`**, **`doctor`** and **`evidence`**.
 
 | Key | Default | Bounds | What it does |
