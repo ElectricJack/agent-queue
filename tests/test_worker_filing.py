@@ -298,7 +298,7 @@ class TestFiling:
         assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"held"}
         assert (await db.get_task("held")).filed_count == 0
 
-    async def test_scoped_graph_refuses_foreign_root_and_document_parents_before_writes(
+    async def test_scoped_graph_refuses_foreign_parents_and_bare_roots_before_writes(
         self, handler, db
     ):
         sid = await holding_session(db)
@@ -310,18 +310,21 @@ class TestFiling:
             "parent_id": "elsewhere",
             "reason": "An invalid parent was requested",
         })
+        foreign_container = await h._cmd_create_task_graph({
+            "graph": worker_graph("one", parent=True),
+            "parent_id": "elsewhere",
+            "reason": "A new container somewhere foreign was requested",
+        })
+        # A root graph must name the container it creates there.
         root = await h._cmd_create_task_graph({
             "graph": worker_graph("one"),
             "parent_id": None,
-            "reason": "An invalid root was requested",
-        })
-        document_parent = await h._cmd_create_task_graph({
-            "graph": worker_graph("one", parent=True),
-            "reason": "An invalid document parent was requested",
+            "reason": "A root without a container was requested",
         })
 
-        for result in (foreign, root, document_parent):
+        for result in (foreign, foreign_container):
             assert result["code"] == "hierarchy.parent_out_of_scope"
+        assert root["code"] == "graph.root_needs_parent"
         assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"held", "elsewhere"}
         assert (await db.get_task("held")).filed_count == 0
 
@@ -428,6 +431,121 @@ async def test_local_task_creation_does_not_accept_spoofed_session_provenance(ha
     })
     created = await db.get_task(result["task_id"])
     assert created.created_by_kind is None and created.created_by_id is None
+
+
+class TestWorkerGraphContainer:
+    """A worker graph's ``parent:`` block creates its container (bold-flare-35).
+
+    The container is written and flagged in the graph's own transaction, so no
+    pool worker can lease an empty epic before its children are linked under
+    it (prime-glacier.1), and a planner no longer has to hand the graph to the
+    supervisor (noble-crest).
+    """
+
+    async def _is_container(self, db, task_id):
+        async with db._engine.connect() as conn:
+            return await db.is_container(task_id, conn=conn)
+
+    async def _origins(self, db, task_id):
+        async with db._engine.connect() as conn:
+            return await db.discovered_from_origins(task_id, conn=conn)
+
+    async def test_the_new_container_goes_under_the_held_task_by_default(self, handler, db):
+        sid = await holding_session(db)
+
+        report = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": worker_graph("one", parent=True),
+            "reason": "held decomposes into an epic",
+        })
+
+        assert report.get("created") is True, report
+        epic = report["parent_id"]
+        assert epic == "held.1"
+        assert report["task_ids"] == ["held.1.1"]
+        container = await db.get_task(epic)
+        assert container.parent_task_id == "held"
+        assert (container.status, container.assigned_agent_id) == (TaskStatus.IN_PROGRESS, None)
+        assert (container.created_by_kind, container.created_by_id) == ("session", sid)
+        assert await self._is_container(db, epic)
+        node = await db.get_task("held.1.1")
+        assert node.parent_task_id == epic
+        assert "held" in await self._origins(db, "held.1.1")
+        # One filing for the container, one for the node.
+        assert (await db.get_task("held")).filed_count == 2
+        # The holder filed it, so its own claim is not a misclaimed container.
+        assert await db.list_container_claims() == []
+
+    async def test_a_root_container_waits_for_triage_and_frees_the_held_task(
+        self, handler, db
+    ):
+        sid = await holding_session(db)
+
+        report = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": worker_graph("one", parent=True),
+            "root": True,
+            "reason": "the plan's implementation epic",
+        })
+
+        assert report.get("created") is True, report
+        epic = report["parent_id"]
+        assert "." not in epic
+        container = await db.get_task(epic)
+        assert container.parent_task_id is None
+        assert (container.created_by_kind, container.created_by_id) == ("session", sid)
+        # A worker's root filing is admitted through a routing gate (§12); the
+        # container holds its children back until triage resolves it.
+        assert container.status is TaskStatus.DEFINED
+        assert container.is_blocked
+        gates = await db.get_gates_for_task(epic)
+        assert [g["gate_type"] for g in gates] == ["routing"]
+        assert await self._is_container(db, epic)
+        assert "held" in await self._origins(db, epic)
+        [node] = report["task_ids"]
+        assert (await db.get_task(node)).parent_task_id == epic
+        # Nothing hangs under the planner's own task, so it can close.
+        assert await db.open_children("held") == []
+
+    async def test_a_container_under_a_child_task_would_exceed_the_depth_cap(self, handler, db):
+        sid = await holding_child_session(db)
+
+        refused = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": worker_graph("one", parent=True),
+            "reason": "too deep",
+        })
+        assert refused["code"] == "hierarchy.depth"
+
+        at_root = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": worker_graph("one", parent=True),
+            "root": True,
+            "reason": "an epic beside the current one",
+        })
+        assert at_root.get("created") is True, at_root
+
+    async def test_a_dry_run_reports_the_container_without_writing(self, handler, db):
+        sid = await holding_session(db)
+
+        report = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": worker_graph("one", parent=True),
+            "reason": "preview the epic",
+            "dry_run": True,
+        })
+
+        assert report["dry_run"] is True
+        assert report["parent_id"] == "held.?"
+        assert report["parent_title"] == "Misleading new parent"
+        assert report["provisional"] is True
+        assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"held"}
+        assert (await db.get_task("held")).filed_count == 0
+
+    async def test_root_and_parent_id_are_mutually_exclusive(self, handler, db):
+        sid = await holding_session(db)
+        refused = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": worker_graph("one", parent=True),
+            "root": True,
+            "parent_id": "held",
+            "reason": "conflicting placement",
+        })
+        assert refused["code"] == "hierarchy.parent_conflict"
 
 
 async def holding_child_session(db, sid="s1", epic_id="epic", task_id="epic.1"):

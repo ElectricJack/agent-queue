@@ -5436,6 +5436,18 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": False,
                 },
                 "parent_id": {"type": "string"},
+                "root": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "For a worker-filed graph that declares a document-level parent: "
+                        "create that new container at the project root instead of under "
+                        "the held task. It carries a discovered-from edge to the held task "
+                        "and the routing gate every worker root filing gets, and its "
+                        "children wait behind it until the gate is resolved. Mutually "
+                        "exclusive with parent_id."
+                    ),
+                },
                 "reason": {
                     "type": "string",
                     "description": (

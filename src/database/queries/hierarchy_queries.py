@@ -135,8 +135,9 @@ def container_flag_exists():
 def childless_held_open_container():
     """``WHERE`` clause: the row is a held-open container with no children.
 
-    A *held-open* container — a phase (A1) or a keyed standing parent (A2) —
-    is created *before* the work that belongs to it, so it spends a window
+    A *held-open* container — a phase (A1), a keyed standing parent (A2) or a
+    declared container (``create_task(container=true)``, bold-flare-35) — is
+    created *before* the work that belongs to it, so it spends a window
     with no children at all.  The §7 settlement predicate below asks "no
     child is un-COMPLETED", which is vacuously true of zero children, and
     would therefore complete such a container the instant the promotion

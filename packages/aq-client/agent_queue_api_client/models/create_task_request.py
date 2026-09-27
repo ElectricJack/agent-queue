@@ -71,6 +71,9 @@ class CreateTaskRequest:
             parent_id and root, and refused for worker sessions, which already file under the task they hold.
         parent_title (None | str | Unset): Title for the standing container when parent_key has to create one. Defaults
             to the key, title-cased.
+        container (bool | Unset): Create the task as a container (an epic whose children are filed or reparented under
+            it afterwards). It is flagged in the creation transaction, so no worker ever claims it, and it stays open until
+            its children finish. Default: False.
         depends_on (list[Any] | None | Unset): Task IDs or described dependency edges (optional).
         discovered_from (None | str | Unset): Task ID this work was discovered from (provenance, swarm-work-model §9; a
             worker-filed caller is restricted to the held task's subtree).
@@ -104,6 +107,7 @@ class CreateTaskRequest:
     root: bool | Unset = False
     parent_key: None | str | Unset = UNSET
     parent_title: None | str | Unset = UNSET
+    container: bool | Unset = False
     depends_on: list[Any] | None | Unset = UNSET
     discovered_from: None | str | Unset = UNSET
     reason: None | str | Unset = UNSET
@@ -237,6 +241,8 @@ class CreateTaskRequest:
         else:
             parent_title = self.parent_title
 
+        container = self.container
+
         depends_on: list[Any] | None | Unset
         if isinstance(self.depends_on, Unset):
             depends_on = UNSET
@@ -319,6 +325,8 @@ class CreateTaskRequest:
             field_dict["parent_key"] = parent_key
         if parent_title is not UNSET:
             field_dict["parent_title"] = parent_title
+        if container is not UNSET:
+            field_dict["container"] = container
         if depends_on is not UNSET:
             field_dict["depends_on"] = depends_on
         if discovered_from is not UNSET:
@@ -529,6 +537,8 @@ class CreateTaskRequest:
 
         parent_title = _parse_parent_title(d.pop("parent_title", UNSET))
 
+        container = d.pop("container", UNSET)
+
         def _parse_depends_on(data: object) -> list[Any] | None | Unset:
             if data is None:
                 return data
@@ -605,6 +615,7 @@ class CreateTaskRequest:
             root=root,
             parent_key=parent_key,
             parent_title=parent_title,
+            container=container,
             depends_on=depends_on,
             discovered_from=discovered_from,
             reason=reason,
