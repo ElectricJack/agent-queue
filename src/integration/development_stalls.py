@@ -74,6 +74,7 @@ STALL_MESSAGE_KIND = "development_publisher_stall"
 
 #: Reasons whose outcome is a merge against the current target, so a moved
 #: target is new evidence.
+#: Keep ``parent_unavailable`` for persisted skips from legacy parent assembly.
 TARGET_SENSITIVE_REASONS = frozenset({"merge_conflict", "parent_unavailable"})
 
 #: Reasons a live repair can resolve, and whose task that repair would free:
@@ -102,6 +103,7 @@ _RECOVERY = {
         "batch in `aq integration status`, then repair, adopt or cancel it"
     ),
     "merge_conflict": "its source conflicts with the target: rebase it in a repair",
+    # Legacy persisted reason; flat batch assembly does not emit sibling holds.
     "parent_unavailable": "a sibling conflicted in parent assembly",
 }
 
