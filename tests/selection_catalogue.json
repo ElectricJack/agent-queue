@@ -470,6 +470,7 @@
         "tests/test_install_cli.py",
         "tests/test_install_dashboard.py",
         "tests/test_install_engine.py",
+        "tests/test_install_graft.py",
         "tests/test_install_integration.py",
         "tests/test_install_lifecycle.py",
         "tests/test_install_logins.py",
@@ -1281,7 +1282,7 @@
       ]
     }
   },
-  "digest": "sha256:3810ce87373d45a391a94402fc1001872f36beec192602c815bfc31f5386bc5e",
+  "digest": "sha256:1c3ba1873e1072de02adc64497b31e98e258a3e1d6c84f3c43c0601b896e675f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6382,13 +6383,17 @@
         "src.cli",
         "src.cli.app",
         "src.cli.install",
+        "src.install.command",
+        "src.install.graft",
         "src.install.onboarding",
         "src.install.prerequisites",
         "src.install.results",
         "src.install.steps",
         "src.install.wizard"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``aq install`` — flags, exit codes, JSON payload and the documented contract."
     },
     "tests/test_install_dashboard.py": {
@@ -6428,6 +6433,26 @@
       ],
       "markers": [],
       "summary": "The installer engine: ordering, idempotent reruns, resume and secrecy."
+    },
+    "tests/test_install_graft.py": {
+      "areas": [
+        "install"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.install.command",
+        "src.install.engine",
+        "src.install.graft",
+        "src.install.platform",
+        "src.install.prerequisites",
+        "src.install.results",
+        "src.install.steps",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "graft in ``aq install``: offered, pinned, per repository, never global."
     },
     "tests/test_install_integration.py": {
       "areas": [
@@ -6505,6 +6530,7 @@
       "imports": [
         "src.install.command",
         "src.install.engine",
+        "src.install.graft",
         "src.install.logins",
         "src.install.macos",
         "src.install.onboarding",
@@ -6650,6 +6676,7 @@
       "default_arm": true,
       "imports": [
         "src.install",
+        "src.install.graft",
         "src.install.logins",
         "src.install.onboarding",
         "src.install.pools",

@@ -8,14 +8,14 @@ would actually feel.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
+from src.install.graft import CAPABILITY_GRAFT, GraftCli
 from src.install.logins import AuthProbe
-from src.install.pools import PoolDefaults
 from src.install.onboarding import CAPABILITY_DAEMON, CAPABILITY_DISCORD, STEP_CHECK, STEP_DASHBOARD
+from src.install.pools import PoolDefaults
 from src.install.postgres_steps import CAPABILITY_MANAGED
 from src.install.results import (
     InstallOutcome,
@@ -56,11 +56,13 @@ def question(questions, question_id):
 # ---------------------------------------------------------------------------
 
 
-def test_an_ordinary_run_asks_only_which_coding_agents_to_use():
+def test_an_ordinary_run_asks_only_which_coding_agents_and_whether_to_use_graft():
     """The database, the daemon and Discord are decided from the machine.
 
     A newcomer once answered "yes, install PostgreSQL" beside a server that was
     already running; the choices a person cannot usefully make are not asked.
+    graft is a person's choice (it installs a global npm package), so it is
+    offered in an ordinary run.
     """
     questions = question_plan(probes=(), postgres_reachable=True)
 
@@ -68,11 +70,13 @@ def test_an_ordinary_run_asks_only_which_coding_agents_to_use():
         "provider.claude",
         "provider.codex",
         "provider.gemini",
+        "graft",
     ]
     assert [item.id for item in questions_to_ask(questions, advanced=True)] == [
         "provider.claude",
         "provider.codex",
         "provider.gemini",
+        "graft",
         "postgres-managed",
         "daemon",
         "autostart",
@@ -521,42 +525,78 @@ def test_an_unselected_optional_capability_is_reported_as_a_choice_not_a_gap():
     )
 
 
-@pytest.mark.parametrize("available", [False, True, None])
-def test_graft_advice_uses_only_recorded_absence_and_never_changes_readiness(available, monkeypatch):
-    import shutil
+@pytest.mark.parametrize(
+    ("graft", "npm", "default", "says"),
+    [
+        (GraftCli(path="/usr/bin/graft", version="0.18.0"), False, True, "graft 0.18.0 is installed"),
+        (GraftCli(path=None), True, True, "AQ installs @nanonets/graft@0.18.x with npm"),
+        (GraftCli(path=None), False, False, "npm, which is not on this machine's PATH"),
+        (None, True, False, "optional"),
+    ],
+)
+def test_graft_is_offered_preselected_when_it_is_installed_or_npm_can_install_it(
+    graft, npm, default, says
+):
+    offer = question(question_plan(graft=graft, npm_available=npm), "graft")
 
-    def unexpected_probe(*args, **kwargs):
-        raise AssertionError("summarize must not probe the machine")
+    assert offer.capability == CAPABILITY_GRAFT
+    assert offer.advanced is False
+    assert offer.default is default
+    assert says in offer.detail
+    assert "code graph" in offer.detail
+    if graft is not None and (graft.available or npm):
+        assert "never globally and never in worker worktrees" in offer.detail
 
-    monkeypatch.setattr(shutil, "which", unexpected_probe)
-    machine_steps = first_task_machine_steps()
-    check = machine_steps[0]
-    detail = dict(check.detail)
-    if available is not None:
-        detail["graft_available"] = available
-    run = result(steps=(replace(check, detail=detail),) + machine_steps[1:])
+
+def test_unselected_graft_is_a_choice_to_add_later_and_never_changes_readiness():
+    skipped = tuple(
+        StepResult.skipped(step_id, "capability 'graft' was not selected")
+        for step_id in ("graft.cli", "graft.repos")
+    )
+    plan = tuple(
+        PlannedStep(
+            step_id=step_id,
+            title=step_id,
+            action=PlanAction.SKIP_NOT_SELECTED,
+            reason="capability 'graft' was not selected",
+            mutating=True,
+            capability=CAPABILITY_GRAFT,
+        )
+        for step_id in ("graft.cli", "graft.repos")
+    )
     summary = summarize(
-        run,
+        result(steps=first_task_machine_steps() + skipped, plan=plan),
         probes=(probe("codex", installed=True, authenticated=True),),
         activations=(SimpleNamespace(active=True),),
         pools=POOLS,
     )
 
-    assert run.outcome is InstallOutcome.READY
-    assert run.exit_code == 0
     assert summary.ready is True
     assert summary.readiness is not None and summary.readiness.ready is True
-    assert not any("graft" in line for line in summary.next_steps)
-    assert summary.to_dict()["skipped"] == list(summary.skipped)
-    if available is False:
-        assert len(summary.skipped) == 1
-        advice = summary.skipped[0]
-        assert "optional code index for Claude Code sessions" in advice
-        assert "repo hooks only where graft is installed" in advice
-        assert "npm i -g @nanonets/graft" in advice
-        assert "requires Node/npm on PATH" in advice
-    else:
-        assert summary.skipped == ()
+    # Both graft steps share the capability, so the choice is named once.
+    assert len(summary.skipped) == 1
+    assert "graft" in summary.skipped[0]
+    assert "`aq install --with graft`" in summary.skipped[0]
+
+
+def test_drift_a_step_reported_is_summarised_once_and_never_changes_readiness():
+    drifted = (
+        StepResult.succeeded("graft.cli", "reusing graft", detail={"drift": ["global hooks"]}),
+        StepResult.succeeded(
+            "graft.repos", "set up", detail={"drift": ["global hooks", "stamp global"]}
+        ),
+    )
+    summary = summarize(
+        result(steps=first_task_machine_steps() + drifted),
+        probes=(probe("codex", installed=True, authenticated=True),),
+        activations=(SimpleNamespace(active=True),),
+        pools=POOLS,
+    )
+
+    assert summary.drift == ("global hooks", "stamp global")
+    assert summary.to_dict()["drift"] == ["global hooks", "stamp global"]
+    assert summary.ready is True
+    assert summary.readiness is not None and summary.readiness.ready is True
 
 
 def test_a_skipped_provider_names_the_flag_that_would_add_it():

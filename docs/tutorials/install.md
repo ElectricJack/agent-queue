@@ -267,15 +267,17 @@ You supply the bot token yourself by putting it in `~/.agent-queue/.env` as
 
 ## When it finishes
 
-Graft is an optional code index for Claude Code sessions. If `graft` is missing
-from PATH, the summary's **Not installed (optional)** block recommends
-`npm i -g @nanonets/graft`; you need Node/npm on your shell's PATH to run it.
-AQ's pinned dashboard Node is private and does not put Node/npm on your shell's
-PATH. AQ never installs graft automatically, and its absence does not change
-installation readiness or the exit code. The project-defaults playbook enables
-repo hooks only where graft is installed. When graft is already on PATH, the
-installer prints no graft recommendation and does not suggest upgrading it.
-The same recommendation appears in JSON under `onboarding.skipped`.
+The wizard also offers graft, a per-repo code graph whose MCP tools and hooks
+cut the files your agents read. It is optional and recommended. Say yes (or
+rerun later with `aq install --with graft`) and AQ installs
+`@nanonets/graft@0.18.x` with npm if it is missing — you need Node/npm on your
+shell's PATH; AQ's pinned dashboard Node is private — turns graft's telemetry
+off, and sets graft up in each project's main checkout only: never
+machine-wide and never in the worktrees your workers use. An installed graft is
+never upgraded. A graft step that fails is reported with what to do and never
+changes the outcome or exit code, and anything AQ found but deliberately left
+alone (graft wiring in `~/.claude`, say) is listed under **Drift (reported, not
+changed)**. Details: [graft](../reference/cli/install.md#graft-graftcli-graftrepos).
 
 The closing summary is the same information a script gets from
 `aq install --json` under `onboarding`:

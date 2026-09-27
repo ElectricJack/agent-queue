@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from .command import CommandRunner as ProcessRunner
+from .graft import WorkspaceLister, daemon_workspaces, graft_steps
 from .logins import CommandRunner as ProviderRunner
 from .logins import login_steps
 from .macos import (
@@ -39,7 +40,14 @@ from .macos import (
     macos_steps,
 )
 from .macos import STEP_PACKAGES as STEP_BREW_PACKAGES
-from .onboarding import HttpProbe, IdentityProbe
+from .onboarding import (
+    STEP_DAEMON,
+    HttpProbe,
+    IdentityProbe,
+    _read_config,
+    api_base_url,
+    config_path_for,
+)
 from .onboarding import onboarding_steps as default_onboarding_steps
 from .platform import (
     HOST_MACOS_ARM,
@@ -61,6 +69,7 @@ from .prerequisites import (
     tmux_step,
 )
 from .providers import provider_installers, provider_steps, user_bin_aware_which
+from .state import default_state_dir
 from .steps import StepRegistry, StepSpec
 from .wsl import STEP_PACKAGES as STEP_APT_PACKAGES
 from .wsl import wsl_steps
@@ -104,6 +113,8 @@ def build_registry(
     http_probe: HttpProbe | None = None,
     dashboard_identify: IdentityProbe | None = None,
     dashboard_root: Path | None = None,
+    graft_runner: ProcessRunner | None = None,
+    graft_workspaces: WorkspaceLister | None = None,
     **adapter_kwargs: Any,
 ) -> StepRegistry:
     """Build the full step registry for the host described by *support*.
@@ -117,15 +128,17 @@ def build_registry(
     finds this installer's own); a directory that is not a checkout composes a
     release-shaped install with nothing to build.
 
-    ``provider_runner``, ``daemon_runner``, ``http_probe`` and
-    ``dashboard_identify`` replace something smaller: the seams through which
-    the *default* provider, login and onboarding steps reach the host — a
-    subprocess, ``aq start``, an HTTP probe and the dashboard server's
-    ``/__aq/health`` identity.  Handing those in keeps the composition itself real (the same steps,
-    the same ids, the same cross-adapter dependencies this function computes)
-    while a whole-installer test drives it on a machine that has no provider
-    CLI, no daemon and no network.  Replacing the step groups instead would
-    mean asserting against wiring the test wrote itself.
+    ``provider_runner``, ``daemon_runner``, ``http_probe``,
+    ``dashboard_identify``, ``graft_runner`` and ``graft_workspaces`` replace
+    something smaller: the seams through which the *default* provider, login,
+    onboarding and graft steps reach the host — a subprocess, ``aq start``, an
+    HTTP probe, the dashboard server's ``/__aq/health`` identity, and the
+    daemon's list of project workspaces.  Handing those in keeps the
+    composition itself real (the same steps, the same ids, the same
+    cross-adapter dependencies this function computes) while a whole-installer
+    test drives it on a machine that has no provider CLI, no daemon and no
+    network.  Replacing the step groups instead would mean asserting against
+    wiring the test wrote itself.
     """
     verdict = support or describe_host(environ=environ)
     macos = verdict.host_path in MACOS_HOSTS
@@ -231,6 +244,26 @@ def build_registry(
             identify=dashboard_identify,
             depends_on=onboarding_after,
             dashboard_root=dashboard_root,
+        )
+    )
+    # graft (`--with graft`, offered by the wizard) is optional and advisory:
+    # its steps never change the outcome.  The checkout step asks the daemon
+    # which projects exist, so it runs once the daemon is up.
+    data_dir = state_dir or default_state_dir(environ)
+    registry.extend(
+        graft_steps(
+            which=provider_lookup,
+            **({} if graft_runner is None else {"runner": graft_runner}),
+            list_workspaces=graft_workspaces
+            or (
+                lambda: daemon_workspaces(
+                    api_base_url(_read_config(config_path_for(environ, data_dir)), environ),
+                    environ=environ,
+                )
+            ),
+            vault=data_dir / "vault",
+            environ=environ,
+            repos_after=(STEP_DAEMON,) if STEP_DAEMON in registry else (),
         )
     )
     return registry

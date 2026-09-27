@@ -299,20 +299,26 @@ def test_the_documented_step_states_are_the_ones_the_code_reports():
 
 
 @pytest.fixture
-def graft_probe():
-    """Change the host fact between installs without touching the real PATH."""
-    return {"path": "/usr/bin/graft"}
+def graft_host():
+    """graft and npm as the graft steps see them: never the real PATH or npm.
+
+    ``path`` is where ``graft`` is (``None``: not installed), ``version`` what
+    it reports, ``npm`` where npm is, and ``calls`` every command the steps ran.
+    """
+    return {"path": "/usr/bin/graft", "version": "0.18.0", "npm": None, "calls": []}
 
 
 @pytest.fixture
-def wizard_registry(monkeypatch, tmp_path, graft_probe):
-    """A registry with the onboarding steps but no database or platform adapter.
+def wizard_registry(monkeypatch, tmp_path, graft_host):
+    """A registry with the onboarding and graft steps but no database or platform adapter.
 
     ``aq install`` composes those adapters for the host it runs on; a test
     about the *wizard* must not depend on whether this box has PostgreSQL
     listening or a Homebrew prefix.
     """
     from src.cli import install as install_cli
+    from src.install.command import CommandOutput
+    from src.install.graft import graft_steps
     from src.install.onboarding import onboarding_steps
     from src.install.prerequisites import default_registry
 
@@ -333,9 +339,36 @@ def wizard_registry(monkeypatch, tmp_path, graft_probe):
                 runner=lambda argv, **kwargs: (_ for _ in ()).throw(
                     AssertionError("the daemon must not be started in this test")
                 ),
-                which=lambda name: graft_probe["path"] if name == "graft" else f"/usr/bin/{name}",
+                which=lambda name: f"/usr/bin/{name}",
                 probe=lambda url: None,
                 dashboard_root=home,
+            )
+        )
+
+        def which(name):
+            return {"graft": graft_host["path"], "npm": graft_host["npm"]}.get(
+                name, f"/usr/bin/{name}"
+            )
+
+        def run(argv, **kwargs):
+            argv = tuple(argv)
+            graft_host["calls"].append(argv)
+            if argv[1:] == ("--version",):
+                return CommandOutput(argv, 0, graft_host["version"] + "\n")
+            if argv[1:] == ("telemetry", "disable"):
+                state = home / ".graft" / "telemetry.json"
+                state.parent.mkdir(parents=True, exist_ok=True)
+                state.write_text('{"enabled": false}', encoding="utf-8")
+                return CommandOutput(argv, 0, "telemetry: off.")
+            raise AssertionError(f"unexpected command: {argv}")
+
+        registry.extend(
+            graft_steps(
+                which=which,
+                runner=run,
+                list_workspaces=list,
+                vault=home / "vault",
+                home=home,
             )
         )
         return registry
@@ -488,41 +521,68 @@ def test_skipping_discord_leaves_the_run_ready(install_home, wizard_registry):
 
 
 @pytest.mark.parametrize("as_json", [False, True])
-@pytest.mark.parametrize("available", [False, True])
-def test_graft_is_optional_advice_in_human_and_json_output(
-    install_home, wizard_registry, graft_probe, available, as_json
+def test_graft_not_selected_is_a_choice_to_add_later_in_human_and_json_output(
+    install_home, wizard_registry, graft_host, as_json
 ):
-    graft_probe["path"] = "/usr/bin/graft" if available else None
     args = ("--json",) if as_json else ()
     result = _invoke("--non-interactive", "--yes", *args)
 
     assert result.exit_code == 0
+    assert graft_host["calls"] == []
     if as_json:
         payload = _payload(result)
         assert payload["outcome"] == "ready"
-        check = next(row for row in payload["steps"] if row["step_id"] == "config.check")
-        assert check["detail"]["graft_available"] is available
-        assert check["state"] == "succeeded"
-        assert all("graft" not in row["step_id"] for row in payload["plan"])
-        advice = " ".join(payload["onboarding"]["skipped"])
-    else:
-        advice = " ".join(result.output.split())
-        if not available:
-            assert "Not installed (optional)" in advice
-    assert ("npm i -g @nanonets/graft" in advice) is (not available)
-    if available:
-        assert "graft — optional code index" not in advice
-
-
-def test_graft_advice_refreshes_on_rerun_and_repair(install_home, wizard_registry, graft_probe):
-    for path, mode in ((None, ()), ("/usr/bin/graft", ()), (None, ("--repair",))):
-        graft_probe["path"] = path
-        result = _invoke("--non-interactive", "--yes", "--json", *mode)
-        assert result.exit_code == 0
-        payload = _payload(result)
-        assert payload["outcome"] == "ready"
+        states = {row["step_id"]: row["state"] for row in payload["steps"]}
+        assert states["graft.cli"] == states["graft.repos"] == "skipped"
         advice = [line for line in payload["onboarding"]["skipped"] if "graft" in line]
-        assert len(advice) == (1 if path is None else 0)
+    else:
+        text = " ".join(result.output.split())
+        assert "Not installed (optional)" in text
+        advice = [text]
+    assert len(advice) == 1
+    assert "`aq install --with graft`" in advice[0]
+
+
+def test_with_graft_an_installed_graft_is_reused_and_its_telemetry_turned_off(
+    install_home, wizard_registry, graft_host
+):
+    result = _invoke("--non-interactive", "--yes", "--json", "--with", "graft")
+
+    assert result.exit_code == 0
+    payload = _payload(result)
+    assert payload["outcome"] == "ready"
+    cli_step = next(row for row in payload["steps"] if row["step_id"] == "graft.cli")
+    assert cli_step["state"] == "succeeded"
+    assert cli_step["detail"]["telemetry"] == "disabled"
+    assert cli_step["detail"]["installed"] is False
+    repos = next(row for row in payload["steps"] if row["step_id"] == "graft.repos")
+    assert repos["state"] == "succeeded"
+    assert "no registered project" in repos["summary"]
+    # Reused, never reinstalled or upgraded: no npm call at all.
+    assert all("npm" not in argv[0] for argv in graft_host["calls"])
+    assert payload["onboarding"]["drift"] == []
+
+
+def test_a_graft_that_cannot_be_installed_never_fails_the_install(
+    install_home, wizard_registry, graft_host
+):
+    graft_host["path"] = None
+    result = _invoke("--non-interactive", "--yes", "--with", "graft")
+
+    assert result.exit_code == 0
+    text = " ".join(result.output.split())
+    assert "graft.cli" in text and "npm is not on PATH" in text
+    assert "ready" in text
+
+
+def test_an_uncleared_graft_version_is_shown_as_drift(install_home, wizard_registry, graft_host):
+    graft_host["version"] = "0.20.0"
+    result = _invoke("--non-interactive", "--yes", "--with", "graft")
+
+    assert result.exit_code == 0
+    text = " ".join(result.output.split())
+    assert "Drift (reported, not changed)" in text
+    assert "graft 0.20.0 is outside the 0.18.x series" in text
 
 
 def test_an_ordinary_run_decides_the_advanced_choices_instead_of_asking(
