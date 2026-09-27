@@ -90,7 +90,9 @@ class IntegrationStatusService:
         ids = set(candidates)
         if self.delivery is None or not ids:
             return None
-        return await self.delivery.observe(ids)
+        return await self.delivery.observe(
+            ids, max_age=getattr(self.delivery, "READ_MAX_AGE", 0.0)
+        )
 
     async def _delivery_candidates(
         self, *, project_id: str | None = None, task_id: str | None = None
@@ -115,16 +117,23 @@ class IntegrationStatusService:
                 if row.status in TERMINAL_TASK_STATES:
                     found |= await self._completed_children(conn, [task_id])
                 return found
-            mode = (
+            project = (
                 await conn.execute(
-                    select(projects.c.hierarchical_integration_mode).where(
-                        projects.c.id == project_id
-                    )
+                    select(
+                        projects.c.hierarchical_integration_mode,
+                        projects.c.hierarchical_integration_desired_mode,
+                    ).where(projects.c.id == project_id)
                 )
-            ).scalar_one_or_none()
+            ).one_or_none()
+            if project is None:
+                return set()
+            mode, desired = project
             if mode == "development":
                 ids, _total = await gating_delivery_ids(conn, project_id)
                 return set(ids)
+            if mode == "disabled" and desired == "disabled":
+                # Inactive integration reports no train readiness to prove.
+                return set()
             parent = tasks.alias("delivery_candidate_parent")
             recorded = select(integration_legacy_deliveries.c.task_id).where(
                 integration_legacy_deliveries.c.task_id == tasks.c.id
@@ -165,11 +174,10 @@ class IntegrationStatusService:
         nothing will deliver it on its own.
         """
         from src.integration.delivery_observer import gating_delivery_ids
-        from src.integration.delivery_truth import DeliveryState
 
         ids, total = await gating_delivery_ids(conn, project_id)
         summary: dict[str, Any] = {
-            "available": view is not None, "evaluated": 0, "total": total,
+            "available": self.delivery is not None, "evaluated": 0, "total": total,
             "targets": [], "pending": [], "unknown": [],
         }
         if view is None or not ids:

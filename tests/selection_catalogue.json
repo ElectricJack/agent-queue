@@ -211,6 +211,7 @@
       "modules": [
         "tests/test_branch_discard.py",
         "tests/test_close_unpushed_work.py",
+        "tests/test_delivery_consumers.py",
         "tests/test_delivery_integration.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
@@ -1263,7 +1264,7 @@
       ]
     }
   },
-  "digest": "sha256:fbd1f1bb56ff710b3c93a76cac5013f2ab0f5cebefbf8b924bed56359ebcca63",
+  "digest": "sha256:cd35caf26c55d6a9e9bdfd706352aa4f31989f6e59123cc4988032183868b9ce",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2447,6 +2448,8 @@
         "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.models",
         "src.orchestrator"
       ],
@@ -4411,6 +4414,28 @@
         "parametrize"
       ],
       "summary": "Tests for the deterministic deliverable evaluator (``src/deliverables.py``)."
+    },
+    "tests/test_delivery_consumers.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.git.manager",
+        "src.integration.controls",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
+        "src.integration.development",
+        "src.integration.status",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "Every delivery consumer asks git the same question and gets the same answer."
     },
     "tests/test_delivery_integration.py": {
       "areas": [
@@ -6812,6 +6837,7 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.controls",
+        "src.integration.delivery_observer",
         "src.integration.development",
         "src.integration.legacy_deliveries",
         "src.integration.legacy_repositories",
@@ -6833,6 +6859,8 @@
       "default_arm": true,
       "imports": [
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.integration.legacy_repositories",
         "src.integration.status",
         "src.models"
@@ -7589,6 +7617,8 @@
         "src.database.tables",
         "src.doctor.models",
         "src.doctor.task_checks",
+        "src.git.manager",
+        "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.obsolete_close",
         "src.integration.owner_recovery",

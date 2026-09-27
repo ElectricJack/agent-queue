@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 import weakref
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -53,10 +54,6 @@ from src.integration.delivery_truth import (
 )
 
 logger = logging.getLogger(__name__)
-
-#: Reasons a consumer reports for evidence it could not use at all.
-UNVERIFIED = "unverified"
-
 
 def development_delivery_scope(task):
     """``EXISTS``: *task*'s completed work must reach its project's target.
@@ -251,12 +248,6 @@ class DeliveryView:
         evidence = self.evidence.get(task_id)
         return evidence is not None and evidence.satisfied
 
-    def contained(self) -> set[str]:
-        return {
-            task_id for task_id, evidence in self.evidence.items()
-            if evidence.state is DeliveryState.CONTAINED
-        }
-
     async def fresh(self) -> bool:
         """Every inspected target is still at the OID this view evaluated against.
 
@@ -312,16 +303,22 @@ class DeliveryObserver:
 
     Each repository gets an observer clone beside, never inside, the
     publisher's retained checkout.  Every :meth:`observe` fetches it once per
-    target: there is no cache between requests.
+    target; only a read-only surface may reuse a snapshot fetched within
+    :data:`READ_MAX_AGE`, and no evaluated answer outlives its request.
     """
 
     #: Attempts to take a view whose targets did not move while it was evaluated.
     FRESH_ATTEMPTS = 2
+    #: How old a fetched snapshot a read-only surface (status, explain, doctor)
+    #: may reuse.  The dashboard polls explain every 20s; this keeps that from
+    #: becoming a fetch per poll.  Guarded writers never reuse one.
+    READ_MAX_AGE = 30.0
 
     def __init__(self, db, *, git, data_dir) -> None:
         self.db = db
         self.git = git
         self.data_dir = Path(data_dir) / "development-integration"
+        self._recent: dict[DeliveryTarget, tuple[float, DeliverySnapshot]] = {}
 
     def store_path(self, repository_id: str) -> Path:
         digest = hashlib.sha256(repository_id.encode()).hexdigest()[:20]
@@ -334,17 +331,27 @@ class DeliveryObserver:
             await self.git.acreate_checkout(target.repository_url, str(path), no_checkout=True)
         return path
 
-    async def _snapshot(self, target: DeliveryTarget) -> DeliverySnapshot:
-        """A fetched snapshot, or an unknown one: a failure is never an empty answer."""
+    async def _snapshot(self, target: DeliveryTarget, max_age: float = 0.0) -> DeliverySnapshot:
+        """A fetched snapshot, or an unknown one: a failure is never an empty answer.
+
+        *max_age* lets a read-only caller reuse a successful snapshot of the
+        same target fetched that recently; it still pins one exact target OID.
+        """
         path = self.store_path(target.repository_id)
+        recent = self._recent.get(target)
+        if max_age > 0 and recent is not None and time.monotonic() - recent[0] <= max_age:
+            return recent[1]
         try:
             async with _fetch_lock(path):
                 store = await self._store(target)
-                return await delivery_snapshot(
+                snapshot = await delivery_snapshot(
                     self.git, store, project_id=target.project_id,
                     repository_id=target.repository_id,
                     repository_url=target.repository_url, target_ref=target.target_ref,
                 )
+            if snapshot.error is None:
+                self._recent[target] = (time.monotonic(), snapshot)
+            return snapshot
         except Exception as exc:  # noqa: BLE001 - any failure is an unknown observation
             logger.warning(
                 "delivery observer: %s %s unavailable: %s",
@@ -374,8 +381,8 @@ class DeliveryObserver:
             )
             return [dict(row) for row in rows.mappings()]
 
-    async def _evaluate(self, target: DeliveryTarget, task_ids: set[str]):
-        snapshot = await self._snapshot(target)
+    async def _evaluate(self, target: DeliveryTarget, task_ids: set[str], max_age: float = 0.0):
+        snapshot = await self._snapshot(target, max_age)
         history = await self._legacy_rows(target)
         snapshot = snapshot.with_legacy_rows(history)
         # A resolved repair row proves its sources only through the repair's
@@ -402,12 +409,14 @@ class DeliveryObserver:
             task_id: evaluated[task_id] for task_id in task_ids if task_id in evaluated
         }
 
-    async def observe(self, task_ids: Iterable[str]) -> DeliveryView:
+    async def observe(self, task_ids: Iterable[str], *, max_age: float = 0.0) -> DeliveryView:
         """Evaluate each task's current completion against its project's target.
 
         A view is retaken when a target moved during evaluation; if it keeps
         moving the last view is returned and :meth:`DeliveryView.fresh` stays
-        false for the caller to fail closed on.
+        false for the caller to fail closed on.  Only a read-only surface
+        passes *max_age* (see :data:`READ_MAX_AGE`); every guarded writer
+        fetches.
         """
         ids = set(task_ids)
         view = DeliveryView(self.db)
@@ -422,10 +431,10 @@ class DeliveryObserver:
             evidence: dict[str, DeliveryEvidence] = {}
             snapshots = []
             for target, group in sorted(groups.items(), key=lambda item: item[0].repository_id):
-                snapshot, found = await self._evaluate(target, group)
+                snapshot, found = await self._evaluate(target, group, max_age)
                 snapshots.append(snapshot)
                 evidence.update(found)
             view = DeliveryView(self.db, evidence, targets, tuple(snapshots))
-            if await view.fresh():
+            if max_age > 0 or await view.fresh():
                 return view
         return view

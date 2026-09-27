@@ -71,6 +71,9 @@ async def setup(tmp_path, monkeypatch):
     service = DevelopmentIntegration(db, data_dir=tmp_path / "data", git=GitManager(),
                                      job_client=PublisherJobs(handler))
     service.validation_poll_seconds = 0.05
+    # As the daemon does: archive, status and the legacy readers prove
+    # development delivery in git through the registered observer.
+    db.set_delivery_observer(service.delivery_observer)
     await service.configure(
         "p",
         {"validation": "focused", "commands": ["test -f base.txt"]},
@@ -1237,8 +1240,9 @@ async def test_parent_assembly_does_not_require_parent_verifier(setup):
 async def test_development_delivery_is_a_receipt_observe_readiness_accepts(setup):
     """A child the development publisher delivered never blocks a train cutover.
 
-    Its finished parent has no train collection and never will, so the
-    delivery row itself is the receipt integration status accepts.
+    Its finished parent has no train collection and never will, so git's
+    proof of the child's completion on main is what integration status
+    accepts; no delivery row is consulted.
     """
     from src.integration.status import IntegrationStatusService
 
@@ -2856,7 +2860,9 @@ async def test_adoption_and_reconciled_publish_arm_branch_cleanup(setup):
         "state": "pending", "attempts": 0,
     }
     await service.collect_delivered_branches("p")
-    assert remote_branches(remote) == {"main"}
+    # An equivalence adoption is a row, not git proof: until equivalence is
+    # carried in git, the adopted task's branch is held, never deleted.
+    assert remote_branches(remote) == {"main", "aq/two"}
     assert head
 
 
@@ -3660,9 +3666,7 @@ async def test_snapshot_archived_completion_survives_ref_cleanup(setup):
     ))
     git(source, "push", "origin", f"{head}:main")
     git(source, "push", "origin", "--delete", "archived-source")
-    # Archive still uses the legacy readiness projection until consumers
-    # migrate. Retire that journal after archiving; git is sufficient here.
-    await service.sweep("p")
+    # Archive proves the completion in git; no publication row is needed.
     await db.archive_task("archived-source")
     async with db._engine.begin() as conn:
         await conn.execute(delete(development_deliveries))

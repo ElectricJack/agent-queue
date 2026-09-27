@@ -133,22 +133,25 @@ class ArchiveQueryMixin:
         """Register the :class:`~src.integration.delivery_observer.DeliveryObserver`."""
         self._delivery_observer = observer
 
-    async def _observe_removal_delivery(self, task_id: str):
-        """Git evidence for *task_id*'s subtree, taken before any transaction.
+    async def observe_removal_delivery(self, root_ids):
+        """Git evidence for the subtrees of *root_ids*, taken before any transaction.
 
-        Only the development work that needs proof is fetched and evaluated.
-        A target that keeps moving yields no view: the guard then holds that
-        work as unknown rather than trusting a stale answer.
+        Only the development work that needs proof is fetched and evaluated,
+        once per repository however many roots a sweep archives.  A target
+        that keeps moving yields no view: the guard then holds that work as
+        unknown rather than trusting a stale answer.
         """
         from src.integration.delivery_observer import delivery_sensitive_ids
 
         observer = self._delivery_observer
         if observer is None:
             return None
+        sensitive: set[str] = set()
         async with self._engine.connect() as conn:
-            sensitive = await delivery_sensitive_ids(
-                conn, await self.subtree_ids(task_id, conn=conn)
-            )
+            for root_id in dict.fromkeys(root_ids):
+                sensitive |= await delivery_sensitive_ids(
+                    conn, await self.subtree_ids(root_id, conn=conn)
+                )
         if not sensitive:
             return None
         view = await observer.observe(sensitive)
@@ -185,7 +188,7 @@ class ArchiveQueryMixin:
             raise ValueError("abandon_undelivered requires a reason")
         terminal = TERMINAL_STATUSES
         if delivery is None:
-            delivery = await self._observe_removal_delivery(task_id)
+            delivery = await self.observe_removal_delivery([task_id])
         async with self.immediate() as conn:
             # Archiving moves a task out of the active view; it never destroys
             # work, so the branch always stays on the remote.  Retiring the
@@ -538,9 +541,10 @@ class ArchiveQueryMixin:
             task_ids = [r[0] for r in result.fetchall()]
 
         archived: list[str] = []
+        delivery = await self.observe_removal_delivery(task_ids)
         for tid in task_ids:
             try:
-                await self.archive_task(tid, hold_undelivered=True)
+                await self.archive_task(tid, hold_undelivered=True, delivery=delivery)
                 archived.append(tid)
             except HierarchyError as exc:
                 logger.debug("archive_completed_tasks: skipping %s, %s", tid, exc.code)
@@ -598,9 +602,12 @@ class ArchiveQueryMixin:
         # A whole sweep failing the same way is one fact, not N log lines.
         unexpected: Counter[str] = Counter()
         unexpected_ids: dict[str, list[str]] = {}
+        # One git observation for the whole sweep; each archive rechecks the
+        # identities it covers under its own locks.
+        delivery = await self.observe_removal_delivery(task_ids)
         for tid in task_ids:
             try:
-                await self.archive_task(tid, hold_undelivered=True)
+                await self.archive_task(tid, hold_undelivered=True, delivery=delivery)
             except HierarchyError as exc:
                 await self._note_archive_refusal(tid, exc.code, _one_line(exc.detail or exc.code))
                 logger.debug("archive_old_terminal_tasks: skipping %s, %s", tid, exc.code)
