@@ -402,6 +402,7 @@ class Project:
     # Who decides this project's new document reviews: "user" | "supervisor"
     # (None = "user").  Document-review spec §6.
     review_delegate_to: str | None = None
+    preferred_provider: str | None = None
 
 
 @dataclass
@@ -776,7 +777,7 @@ class WorktreeSentinel:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "WorktreeSentinel":
+    def from_dict(cls, data: dict) -> WorktreeSentinel:
         """Tolerant parse — unknown keys ignored, missing keys defaulted.
 
         Sentinels are read from disk after crashes and across versions, so a
@@ -1068,12 +1069,12 @@ class TaskContext:
     # from this set with deduplication against ``add_dirs`` (spec §7.1).
     # Empty list for tasks dispatched before the orchestrator captures an
     # attachment set (e.g. Supervisor singleton, legacy code paths).
-    workspace_attachments: list["WorkspaceAttachment"] = field(default_factory=list)
+    workspace_attachments: list[WorkspaceAttachment] = field(default_factory=list)
     resume_session_id: str | None = None  # fork from this session on reopen
     # The resolved AgentProfile for this task. Platforms read it for
     # allowed_tools, model overrides, etc.  Singleton platforms (Supervisor)
     # rely on this since they can't carry the profile in their constructor.
-    profile: "AgentProfile | None" = None
+    profile: AgentProfile | None = None
 
 
 @dataclass

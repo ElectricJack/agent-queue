@@ -102,6 +102,19 @@ async def _create(handler, **args):
     return await handler._cmd_create_task({"project_id": "p", "title": "Work", **args})
 
 
+async def test_project_preferred_provider_round_trips_and_clears(setup):
+    _, db = setup
+    assert (await db.get_project("p")).preferred_provider is None
+    await db.update_project("p", preferred_provider="codex")
+    assert (await db.get_project("p")).preferred_provider == "codex"
+    assert (await db.list_projects())[0].preferred_provider == "codex"
+    await db.update_project("p", preferred_provider=None)
+    assert (await db.get_project("p")).preferred_provider is None
+
+    await db.create_project(Project(id="preferred", name="Preferred", preferred_provider="claude"))
+    assert (await db.get_project("preferred")).preferred_provider == "claude"
+
+
 # -- pure helpers ---------------------------------------------------------------
 
 
