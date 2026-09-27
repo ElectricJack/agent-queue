@@ -273,7 +273,11 @@ class ProjectOnboardingCommandsMixin:
         from src.projects.onboarding import ProjectOnboardingService
 
         service = ProjectOnboardingService(
-            self.db, self.config, self.orchestrator.git, gh_client=self._github_client()
+            self.db,
+            self.config,
+            self.orchestrator.git,
+            gh_client=self._github_client(),
+            event_bus=getattr(self.orchestrator, "bus", None),
         )
         return await service.onboard_project(request)
 

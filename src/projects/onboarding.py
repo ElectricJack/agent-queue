@@ -35,6 +35,7 @@ from src.git.manager import GitError, GitManager, _validate_ref
 from src.models import Project, RepoSourceType, Workspace
 from src.profiles.default_selection import select_default_profile_id
 from src.profiles.catalog import active_catalog_profile_ids
+from src.projects.events import emit_project_created, project_created_payload
 from src.projects.github import (
     GhClient,
     GitHubError,
@@ -125,10 +126,13 @@ class ProjectOnboardingService:
         git_manager: GitManager | None = None,
         *,
         gh_client: GhClient | None = None,
+        event_bus: Any | None = None,
     ) -> None:
         self.db = db
         self.config = config
         self.git = git_manager or GitManager()
+        #: Receives ``project.created`` on a request's first success only.
+        self.event_bus = event_bus
         self.gh = gh_client or GhClient(
             access=GitHubAccess.from_config(config.integration.github_app)
         )
@@ -391,6 +395,20 @@ class ProjectOnboardingService:
                         published,
                         git_metadata=request.source_mode == "github_clone",
                     )
+                # Only this first success announces the project: both replay
+                # paths above return the stored result without an event.
+                await emit_project_created(
+                    self.event_bus,
+                    project_created_payload(
+                        project_id=request.project_id,
+                        name=request.project_name,
+                        source="onboarding",
+                        vault_root=self.config.vault_root,
+                        source_type=source_type.value,
+                        workspace_id=workspace_id,
+                        workspace_path=str(published),
+                    ),
+                )
                 return result
         except ProjectOnboardingError as exc:
             if exc.code != ProjectOnboardingErrorCode.REQUEST_CONFLICT.value:

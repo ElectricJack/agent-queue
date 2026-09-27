@@ -162,3 +162,17 @@ GitHub repository created during onboarding is retained even if a later local,
 database, or vault step fails; the error reports its URL and recovery action.
 Do not delete a retained GitHub repository merely to retry unless you have
 independently decided it is unwanted.
+
+## After onboarding: the `project.created` event
+
+A request's first success emits one `project.created` event on the daemon's
+event bus. It carries `project_id`, `name`, `source` (`onboarding`),
+`source_type` (`link`, `init` or `clone`) and the primary workspace's
+`workspace_id` and `workspace_path`. It also carries `workspace_in_vault`, which
+is true when that workspace is the AQ vault or lies beneath it. Replaying a
+finished request returns the stored result and emits nothing.
+`create_project` emits the same event with `source: command` and no workspace
+fields, because it registers no workspace. The event exists so a system
+playbook can apply per-project defaults, for example filing a setup chore. The
+event only states facts; whether a vault-hosted project is skipped is up to the
+playbook. See [Playbooks V2](../concepts/playbooks.md).
