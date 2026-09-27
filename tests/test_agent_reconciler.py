@@ -432,6 +432,47 @@ async def test_busy_agent_with_live_session_on_completed_task_is_untouched(db):
     assert bus.events == []
 
 
+async def test_reconcile_reads_current_tasks_by_id_not_the_table(db, monkeypatch):
+    """Each tick reads the agents' current tasks and, without a caller-supplied
+    ready list, the READY rows -- never every task (wise-ember.16)."""
+    await _seed_project_with_profile(
+        db, project_id="p", profile_id="claude-opus", max_agents=1,
+    )
+    await _seed_busy_agent_on_task(
+        db, agent_id="agent-1", profile_id="claude-opus",
+        task_id="t-running", task_status=TaskStatus.IN_PROGRESS,
+    )
+    await _seed_ready_task(db, task_id="t-ready", project_id="p")
+    for index in range(3):
+        await db.create_task(Task(
+            id=f"t-done-{index}", project_id="p", title="done", description="done",
+            status=TaskStatus.COMPLETED, created_at=_time.time(), updated_at=_time.time(),
+        ))
+    reads = []
+    original = db.list_tasks
+
+    async def spy(*args, **kwargs):
+        rows = await original(*args, **kwargs)
+        reads.append((args, kwargs, sorted(task.id for task in rows)))
+        return rows
+
+    monkeypatch.setattr(db, "list_tasks", spy)
+
+    report = await AgentReconciler(db).reconcile()
+
+    # The busy agent's IN_PROGRESS task still fills the project's only slot.
+    assert report.created == []
+    assert [a.id for a in await db.list_agents()] == ["agent-1"]
+    assert reads == [
+        ((), {"task_ids": {"t-running"}}, ["t-running"]),
+        ((), {"status": TaskStatus.READY}, ["t-ready"]),
+    ]
+
+    reads.clear()
+    await AgentReconciler(db).reconcile(ready_tasks=[])
+    assert reads == [((), {"task_ids": {"t-running"}}, ["t-running"])]
+
+
 async def test_missing_profile_keeps_durable_definition(db):
     """A missing profile never justifies rewriting a saved worker definition."""
     await _seed_project_with_profile(
