@@ -3681,6 +3681,8 @@
           "--interval-seconds",
           "--timeout-seconds",
           "--slot-wait-seconds",
+          "--regenerate",
+          "--regenerate-timeout-seconds",
           "--json",
           "--brief",
           "--api-url"

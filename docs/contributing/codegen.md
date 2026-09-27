@@ -33,6 +33,8 @@ This page is the list, in the order a change is most likely to reach them.
 | [`src/playbook_v2_schema.json`](../../src/playbook_v2_schema.json) | The Playbook V2 Pydantic model | `python scripts/generate-playbook-schema.py` | yes |
 | [`docs/reference/cli-command-inventory.json`](../reference/cli-command-inventory.json) | The live `aq` Click tree | `python scripts/generate-cli-command-inventory.py` | yes |
 | [`docs/reference/playbook-commands/`](../reference/playbook-commands/README.md) (one page per registered command, plus the index) | The command contract registry — the generated block only | `python scripts/gen-command-docs.py` | yes |
+| [`docs/reference/configuration-schema.json`](../reference/configuration-schema.json) | `AppConfig` | `python scripts/generate-config-schema-inventory.py` | yes |
+| [`tests/selection_catalogue.json`](../../tests/selection_catalogue.json) | `tests/selection_areas.yaml` + the test modules on disk | `python scripts/generate-selection-catalogue.py` | yes |
 | [`src/prompts/reviewed_playbooks/`](../../src/prompts/reviewed_playbooks/) | Shipped playbook markdown, through a human review step | `python scripts/rebuild-reviewed-playbook-artifacts.py` | yes |
 | [`module-inventory.json`](../plans/documentation-overhaul/module-inventory.json), [`module-ownership.json`](../plans/documentation-overhaul/module-ownership.json) | `git ls-files` + ownership rules | `python3 docs/plans/documentation-overhaul/refresh_inventory.py` — **owning shard only**, see [below](#the-documentation-coverage-manifest) | yes |
 
@@ -40,6 +42,53 @@ Every one of them has a `--check` (or an equivalent test) that answers "is the
 committed copy current?" without writing anything. The coverage manifest is the
 one exception to "regenerate in the same commit as the input": its freshness
 check is `--check-artefacts` and belongs to the shard that owns the file.
+
+## One command, and never a hand merge
+
+[`scripts/regenerate-generated.sh`](../../scripts/regenerate-generated.sh)
+runs every generator above except the TS client, the reviewed playbooks and the
+coverage manifest, concurrently:
+
+```bash
+scripts/regenerate-generated.sh           # rewrite them all
+scripts/regenerate-generated.sh --check   # exit 1 naming each stale file; writes nothing
+scripts/regenerate-generated.sh --list    # the generated paths
+```
+
+`--check` regenerates inside a scratch copy of your working tree (tracked and
+untracked files, ignored ones excluded) and names every file that changed
+there — including a hand-written page whose generated block is stale — so it
+sees uncommitted edits and leaves the checkout alone. It is the one drift check
+for the whole set; `tests/test_generated_artifacts.py` runs it under the `slow`
+marker.
+
+[`.gitattributes`](../../.gitattributes) marks exactly the `--list` set
+`merge=aq-generated` (`tests/test_generated_artifacts.py` keeps the two in
+step). **Never hand-merge these files.** When a merge or rebase conflicts in
+one, take either side, resolve the source files, then regenerate:
+
+```bash
+git checkout --ours -- tests/selection_catalogue.json   # either side will do
+scripts/regenerate-generated.sh
+git add -A && git commit                                 # or: git rebase --continue
+```
+
+The development publisher does the same when it merges task branches, once
+the project's policy names the command (`--regenerate
+scripts/regenerate-generated.sh`, see
+[development integration](../guides/development-integration.md#conflicts-confined-to-generated-files)),
+so a conflict confined to these files never parks a candidate. To merge the
+way it does locally, define the driver once per clone:
+
+```bash
+git config merge.aq-generated.driver 'git merge-file --quiet --ours %A %O %B'
+```
+
+It keeps your side of every overlapping hunk and never conflicts, so the file
+is stale until you regenerate. Without it Git falls back to its ordinary text
+merge. [`tests/selection_areas.yaml`](../../tests/selection_areas.yaml) is
+hand-written, but branches almost only append to it, so it is `merge=union`:
+both sides' lines are kept.
 
 ## The API surface
 
@@ -319,6 +368,8 @@ now reaches `main` only after CI has tested the combination ([CI](ci.md#concurre
 | `import agent_queue_api_client` resolves into `.aq/worktrees/slot-N/` | A pre-2026-09-20 script ran in that slot and re-pointed the shared venv. | From the main checkout, outside a slot: `python3 -m pip install -e packages/aq-client`. |
 | `test_committed_openapi_json_matches_the_live_app_surface` fails | You changed the API surface without regenerating. | `./scripts/regenerate-api-client.sh --offline`, then the TS client. |
 | `test_generated_client_boilerplate_matches_the_recorded_digests` fails | Something under `packages/aq-client/` was hand-edited. | Regenerate; do not fix the file. |
+| `Generated files are stale:` from `scripts/regenerate-generated.sh --check` | An input changed without its artefact, or a merge combined two regenerations. | `scripts/regenerate-generated.sh`, then commit what it writes. |
+| A merge or rebase conflicts in a generated file | Both sides regenerated it. | Take either side, resolve the sources, `scripts/regenerate-generated.sh` ([above](#one-command-and-never-a-hand-merge)). Never hand-merge it. |
 | `CLI inventory stale` | New, renamed or removed command. | `python scripts/generate-cli-command-inventory.py` |
 | `command documentation is stale` | A command contract changed, or a command was registered or retired. | `python scripts/gen-command-docs.py` — then write the new page's `TODO` sections, or retire the orphaned page. |
 | `stale artefact(s): …module-ownership.json` from `--check-artefacts` | The foundation-owned manifest has fallen behind the tree. | `python3 docs/plans/documentation-overhaul/refresh_inventory.py`, if you own that shard. Plain `--check` does not fail on this. |
@@ -338,6 +389,7 @@ now reaches `main` only after CI has tested the combination ([CI](ci.md#concurre
 ## Source and tests
 
 [`src/api/spec.py`](../../src/api/spec.py),
+[`scripts/regenerate-generated.sh`](../../scripts/regenerate-generated.sh),
 [`scripts/regenerate-api-client.sh`](../../scripts/regenerate-api-client.sh),
 [`scripts/regenerate-ts-client.sh`](../../scripts/regenerate-ts-client.sh),
 [`scripts/generate-playbook-schema.py`](../../scripts/generate-playbook-schema.py),

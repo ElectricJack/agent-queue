@@ -203,6 +203,11 @@ Step by step:
    work stays independently reusable, and the aggregate is then merged into the
    batch. A member whose source is already an ancestor of `main` joins the
    manifest without being merged again. Assembly stops at `max_batch_size` members (default 50).
+   With a `regenerate` policy, files the repository's `.gitattributes` marks
+   `merge=aq-generated` never conflict: when both sides changed one, the
+   policy's command rebuilds them from the merged sources inside the member's
+   merge commit, and only conflicts in other files park the member
+   ([generated files](../guides/development-integration.md#conflicts-confined-to-generated-files)).
 7. **Preservation.** Before validation can reject anything, the candidate head
    is pushed to `refs/heads/aq/development/<project digest>/<head sha>`. No
    worker owns that ref, and it is what lets a failed batch be inspected.
