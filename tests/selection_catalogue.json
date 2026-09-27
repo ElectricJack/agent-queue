@@ -121,6 +121,7 @@
       "description": "Bounded task collaboration: membership, ordered messages, durable waits and delivery.",
       "modules": [
         "tests/test_collaboration.py",
+        "tests/test_collaboration_commands.py",
         "tests/test_collaboration_lifecycle.py",
         "tests/test_collaboration_queries.py",
         "tests/test_collaboration_waits.py"
@@ -1262,7 +1263,7 @@
       ]
     }
   },
-  "digest": "sha256:1dd9b728731bf61d7be9f8be1ed6d26f39e25fded9c3906a9ec4f1a024db7204",
+  "digest": "sha256:3a430ee42ac272ee2784358d47a16e524ad112915966749ae4a2195a527c1091",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3460,6 +3461,31 @@
       ],
       "markers": [],
       "summary": "Pure collaboration limits, identifiers and pointer bodies."
+    },
+    "tests/test_collaboration_commands.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.scope",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.collaboration",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.message_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.parser",
+        "src.sessions.provider"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Scoped collaboration commands, contracts, grants and CLI on disposable PostgreSQL."
     },
     "tests/test_collaboration_lifecycle.py": {
       "areas": [

@@ -93,6 +93,11 @@ its outbox; transport failures never need a new author turn.
   "aq_commands": [
     "add_dependency",
     "agent_message",
+    "collaboration_accept",
+    "collaboration_close",
+    "collaboration_create",
+    "collaboration_get",
+    "collaboration_list",
     "create_task",
     "create_task_graph",
     "doctor",

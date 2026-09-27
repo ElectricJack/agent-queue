@@ -166,6 +166,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
     ),
     "job": CategoryMeta(name="job", description="Finite managed jobs, durable results and logs"),
     "wait": CategoryMeta(name="wait", description="Durable typed agent waits and result history"),
+    "collaboration": CategoryMeta(
+        name="collaboration",
+        description="Bounded ordered threads between 2 to 4 held tasks",
+    ),
     "report": CategoryMeta(
         name="report",
         description="Durable supervisor report requests, paged briefs and submissions",
