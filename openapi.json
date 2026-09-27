@@ -1484,6 +1484,60 @@
         }
       }
     },
+    "/api/providers/allocation/apply": {
+      "post": {
+        "summary": "Post Provider Allocation Apply",
+        "operationId": "post_provider_allocation_apply_api_providers_allocation_apply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderAllocationApplyBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderAllocationApplyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request or busy authorization"
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "409": {
+            "description": "stale or unknown preview, unacknowledged pinned wait, or an apply that failed part-way (rolled back or partial)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderAllocationApplyResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/providers/{provider}/state": {
       "post": {
         "summary": "Post Provider State",
@@ -10800,6 +10854,53 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/allocation-apply": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Apply a reviewed provider allocation preview by its preview_token (no other selector: the request is the one the token was issued for).  Refused with error_code preview_stale and a fresh preview when anything the preview observed has changed, so the applied set is the previewed set.  Profile lifecycle and bounds edits run in profile-id order through the same code as pool_set_lifecycle and pool_scale; a failure compensates every earlier edit and is reported (status rolled_back or partial), never as success.  A prefer preference re-places the project's queued class_only READY tasks onto the provider.  Drains: graceful lets busy work finish, idle-now also stops idle workers now, interrupt-busy (operator only) also interrupts exactly the authorized busy set.  Records one provider.allocation_changed event.",
+        "description": "Apply a reviewed provider allocation preview by its preview_token (no other selector: the request is the one the token was issued for).  Refused with error_code preview_stale and a fresh preview when anything the preview observed has changed, so the applied set is the previewed set.  Profile lifecycle and bounds edits run in profile-id order through the same code as pool_set_lifecycle and pool_scale; a failure compensates every earlier edit and is reported (status rolled_back or partial), never as success.  A prefer preference re-places the project's queued class_only READY tasks onto the provider.  Drains: graceful lets busy work finish, idle-now also stops idle workers now, interrupt-busy (operator only) also interrupts exactly the authorized busy set.  Records one provider.allocation_changed event.",
+        "operationId": "provider_allocation_apply",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderAllocationApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderAllocationApplyResponse"
+                }
               }
             }
           },
@@ -44400,6 +44501,404 @@
         ],
         "title": "ProvideInputResponse"
       },
+      "ProviderAllocationAppliedPreference": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          },
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "applied": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Applied"
+          },
+          "placement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAllocationPlacement"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "mode"
+        ],
+        "title": "ProviderAllocationAppliedPreference",
+        "description": "The project preference apply wrote, and the queued work it re-placed."
+      },
+      "ProviderAllocationAppliedProfile": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "changed_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Changed Fields",
+            "default": []
+          },
+          "before": {
+            "$ref": "#/components/schemas/ProviderAllocationProfileState"
+          },
+          "after": {
+            "$ref": "#/components/schemas/ProviderAllocationProfileState"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "compensated": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compensated"
+          },
+          "compensation_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Compensation Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id",
+          "status",
+          "before",
+          "after"
+        ],
+        "title": "ProviderAllocationAppliedProfile",
+        "description": "One changed profile and what apply did to it.\n\n``status``: ``applied``, ``failed``, ``rolled_back`` (applied, then\ncompensated), ``rollback_failed`` or ``skipped`` (never reached after an\nearlier failure).  ``before`` / ``after`` are the previewed rows."
+      },
+      "ProviderAllocationApplyBody": {
+        "properties": {
+          "preview_token": {
+            "type": "string",
+            "title": "Preview Token"
+          },
+          "authorize_busy_interrupt": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorize Busy Interrupt"
+          },
+          "allow_pinned_wait": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Pinned Wait"
+          }
+        },
+        "type": "object",
+        "required": [
+          "preview_token"
+        ],
+        "title": "ProviderAllocationApplyBody",
+        "description": "``POST /api/providers/allocation/apply``: apply a reviewed preview by its token."
+      },
+      "ProviderAllocationApplyRequest": {
+        "properties": {
+          "preview_token": {
+            "type": "string",
+            "title": "Preview Token",
+            "description": "The token provider_allocation_preview returned."
+          },
+          "authorize_busy_interrupt": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorize Busy Interrupt",
+            "description": "For drain interrupt-busy: exactly the preview's busy set, as session ids or the ids of the tasks they run."
+          },
+          "allow_pinned_wait": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Pinned Wait",
+            "description": "Acknowledge pinned READY tasks left on profiles leaving the pool."
+          }
+        },
+        "type": "object",
+        "required": [
+          "preview_token"
+        ],
+        "title": "ProviderAllocationApplyRequest"
+      },
+      "ProviderAllocationApplyResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAllocationPreviewResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "vendor": {
+            "type": "string",
+            "title": "Vendor",
+            "default": ""
+          },
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "preview_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preview Token"
+          },
+          "request": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAllocationRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationAppliedProfile"
+            },
+            "type": "array",
+            "title": "Profiles",
+            "default": []
+          },
+          "ceiling": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAllocationCeilingChange"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "preference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAllocationAppliedPreference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "session_actions": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationSessionAction"
+            },
+            "type": "array",
+            "title": "Session Actions",
+            "default": []
+          },
+          "pinned": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationPinnedTask"
+            },
+            "type": "array",
+            "title": "Pinned",
+            "default": []
+          },
+          "manual_agents": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationPushChange"
+            },
+            "type": "array",
+            "title": "Manual Agents",
+            "default": []
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationWarning"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ProviderAllocationApplyResponse",
+        "description": "``provider_allocation_apply`` and ``POST /api/providers/allocation/apply``.\n\n``success`` only when ``status`` is ``applied``.  A refusal before any\nchange carries ``error_code`` (``preview_unknown``, ``preview_stale``,\n``pinned_wait_unacknowledged``, ``busy_authorization_required`` /\n``_mismatch`` / ``_unexpected``) and the current ``preview`` when there\nis one; an apply that failed part-way carries ``status`` ``rolled_back``\nor ``partial`` with every row."
+      },
       "ProviderAllocationBoundsBody": {
         "properties": {
           "min": {
@@ -44915,6 +45414,64 @@
         ],
         "title": "ProviderAllocationPinnedTask",
         "description": "An explicit pin on a changed profile; allocation never rewrites it."
+      },
+      "ProviderAllocationPlacement": {
+        "properties": {
+          "applied": {
+            "type": "boolean",
+            "title": "Applied",
+            "default": false
+          },
+          "moved": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Moved",
+            "default": []
+          },
+          "held": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Held",
+            "default": []
+          },
+          "skipped": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Skipped",
+            "default": []
+          },
+          "batch_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Batch Ids",
+            "default": []
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "ProviderAllocationPlacement",
+        "description": "The queued ``class_only`` READY tasks a ``prefer`` moved to the provider.\n\n``moved`` / ``held`` / ``skipped`` are ``provider_reroute`` decisions;\n``batch_ids`` undo with ``provider_reroute_undo``."
       },
       "ProviderAllocationPreference": {
         "properties": {
@@ -46026,6 +46583,69 @@
         ],
         "title": "ProviderAllocationSession",
         "description": "One live session of an ordinary worker profile."
+      },
+      "ProviderAllocationSessionAction": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "action"
+        ],
+        "title": "ProviderAllocationSessionAction",
+        "description": "One thing apply did to a live session (``drain``, ``terminate``, ``interrupt`` ...)."
       },
       "ProviderAllocationStatusRequest": {
         "properties": {

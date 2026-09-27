@@ -348,6 +348,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "provider_reroute_undo": "provider",
     "provider_allocation_status": "provider",
     "provider_allocation_preview": "provider",
+    "provider_allocation_apply": "provider",
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_scale": "pool",
@@ -5868,6 +5869,46 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["provider"],
+        },
+    },
+    {
+        "name": "provider_allocation_apply",
+        "description": (
+            "Apply a reviewed provider allocation preview by its preview_token (no other "
+            "selector: the request is the one the token was issued for).  Refused with "
+            "error_code preview_stale and a fresh preview when anything the preview "
+            "observed has changed, so the applied set is the previewed set.  Profile "
+            "lifecycle and bounds edits run in profile-id order through the same code as "
+            "pool_set_lifecycle and pool_scale; a failure compensates every earlier edit "
+            "and is reported (status rolled_back or partial), never as success.  A "
+            "prefer preference re-places the project's queued class_only READY tasks onto "
+            "the provider.  Drains: graceful lets busy work finish, idle-now also stops "
+            "idle workers now, interrupt-busy (operator only) also interrupts exactly the "
+            "authorized busy set.  Records one provider.allocation_changed event."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "preview_token": {
+                    "type": "string",
+                    "description": "The token provider_allocation_preview returned.",
+                },
+                "authorize_busy_interrupt": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "For drain interrupt-busy: exactly the preview's busy set, as "
+                        "session ids or the ids of the tasks they run."
+                    ),
+                },
+                "allow_pinned_wait": {
+                    "type": "boolean",
+                    "description": (
+                        "Acknowledge pinned READY tasks left on profiles leaving the pool."
+                    ),
+                },
+            },
+            "required": ["preview_token"],
         },
     },
     {

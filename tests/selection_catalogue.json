@@ -1279,7 +1279,7 @@
       ]
     }
   },
-  "digest": "sha256:d84c80cc690d8fdc305b6a5d380dd0e038c9680a46735b9b0b7f821a2386bddf",
+  "digest": "sha256:9e7125f1fe3679ba960cee66ffd4faa1058b8e0e8fd954974e908ea379ba7d67",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10313,10 +10313,15 @@
         "src.api.auth",
         "src.api.providers",
         "src.api.scope",
+        "src.commands",
         "src.commands.contracts",
         "src.commands.contracts.builtin",
         "src.commands.handler",
+        "src.commands.pool_admin",
+        "src.event_schemas",
+        "src.intelligence_classes",
         "src.models",
+        "src.profiles.sync",
         "src.providers.allocation",
         "src.providers.intent",
         "src.sessions.harness_parser"
@@ -10324,7 +10329,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Provider allocation status and preview (provider-worker-allocation-controls, Tasks 6, 8)."
+      "summary": "Provider allocation status, preview and apply (provider-worker-allocation-controls, Tasks 6, 8, 9)."
     },
     "tests/test_provider_availability.py": {
       "areas": [

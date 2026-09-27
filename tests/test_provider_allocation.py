@@ -1,4 +1,4 @@
-"""Provider allocation status and preview (provider-worker-allocation-controls, Tasks 6, 8).
+"""Provider allocation status, preview and apply (provider-worker-allocation-controls, Tasks 6, 8, 9).
 
 ``provider_allocation_status`` is the read half of the provider allocation
 surface: every ordinary worker profile grouped by the *harness* provider key,
@@ -8,6 +8,9 @@ provider-wide configured ceiling.  Non-worker profiles are diagnostics, and
 a project-scoped caller sees other projects' sessions and tasks redacted.
 ``provider_allocation_preview`` is what one allocation request would change,
 with the SHA-256 token apply consumes, and its scope rules.
+``provider_allocation_apply`` carries a reviewed token out: stale tokens are
+refused, drains never touch busy work unasked, edits match the single-profile
+commands and compensate on failure, and one audit event records it.
 
 The fixture is the spec's mixed fleet on real PostgreSQL: Claude and Codex
 worker rungs at two classes, pool and task lifecycles, idle / busy /
@@ -24,6 +27,7 @@ import pytest
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.scope import AGENT_COMMAND_SET, check_command_scope
+from src.intelligence_classes import IntelligenceClass
 from src.models import Agent, AgentProfile, AgentState, SessionRecord, Task, TaskStatus
 from src.providers.allocation import aggregate_ceiling
 from src.providers.intent import CLASS_ONLY, PINNED, PREFERRED
@@ -1182,3 +1186,585 @@ async def test_the_preview_contract_is_a_read(orch):
     assert result.value.request["bounds"] == {"min": 0, "max": None}
     assert len(result.value.preview_token) == 64
     assert refused.outcome == "rejected"
+
+
+# == provider_allocation_apply (plan Task 9) =======================================
+#
+# Apply takes only a token.  It rebuilds the preview the token was issued for
+# and refuses a stale one with the fresh preview; the profile edits go through
+# the pool-admin helpers (so the vault and database land as the single-profile
+# commands write them) with compensation on failure; the drain never touches
+# busy work unless an operator authorizes exactly the busy set; the preference
+# re-places only queued class_only work; one audit event records it all.
+
+STANDARD_HIGH = {
+    "standard-high": IntelligenceClass(
+        "standard-high",
+        "Standard high",
+        "",
+        {"anthropic": {"model": "claude-opus-5"}, "openai": {"model": "gpt-6"}},
+    ),
+}
+
+
+@pytest.fixture
+def stops(swarm_on):
+    """Record pool teardowns instead of stopping processes: the fleet runs none."""
+    orch = swarm_on
+    calls: list[dict] = []
+
+    async def terminate(session, *, reason, correlation=None, **kwargs):
+        calls.append(
+            {"session_id": session.id, "task_id": session.task_id, "reason": reason,
+             "correlation": correlation}
+        )
+        await orch.db.update_session(
+            session.id, state="stopped", desired_state="stopped", end_reason=reason
+        )
+
+    orch._terminate_pool_session = terminate
+    return calls
+
+
+def _collect(orch, *event_types) -> list[dict]:
+    seen: list[dict] = []
+    for event_type in event_types:
+        orch.bus.subscribe(
+            event_type,
+            lambda payload, event_type=event_type: seen.append(
+                {"type": event_type, **payload}
+            ),
+        )
+    return seen
+
+
+async def _apply(orch, token, **args):
+    return await _handler(orch).execute(
+        "provider_allocation_apply", {"preview_token": token, **args}
+    )
+
+
+async def _profile_state(orch, profile_id) -> dict:
+    profile = await orch.db.get_profile(profile_id)
+    return {
+        field: getattr(profile, field, None)
+        for field in ("lifecycle", "enabled", "min_active", "max_active", "min_per_project",
+                      "max_claims_per_session")
+    }
+
+
+async def _allocation_events(orch) -> list[dict]:
+    rows = await orch.db.get_recent_events(event_type="provider.allocation_changed")
+    return [json.loads(row["payload"]) for row in rows]
+
+
+# -- the token --------------------------------------------------------------------
+
+
+async def test_apply_refuses_a_token_it_never_issued(orch):
+    refused = await _apply(orch, "0" * 64)
+    assert refused["success"] is False
+    assert refused["error_code"] == "preview_unknown"
+    missing = await _handler(orch).execute("provider_allocation_apply", {})
+    assert missing["success"] is False and "preview_token is required" in missing["error"]
+
+
+async def test_stale_token_is_refused_with_a_fresh_preview(orch, stops):
+    preview = await _preview(
+        orch, provider="claude", participation="task", allow_pinned_wait=True
+    )
+    assert preview["success"] is True, preview
+    before = await _profile_state(orch, "standard-high-claude")
+    # Anything the preview observed changes: here a bound.
+    await orch.db.update_profile("standard-high-claude", max_active=3)
+
+    stale = await _apply(orch, preview["preview_token"])
+    assert stale["success"] is False
+    assert stale["error_code"] == "preview_stale"
+    fresh = stale["preview"]
+    assert fresh["preview_token"] != preview["preview_token"]
+    assert _rows(fresh)["standard-high-claude"]["before"]["max_active"] == 3
+    # Nothing was written: the lifecycle and the sessions are untouched.
+    assert (await _profile_state(orch, "standard-high-claude")) == {**before, "max_active": 3}
+    assert (await orch.db.get_session("sess-alpha-idle")).desired_state != "stopped"
+    assert await _allocation_events(orch) == []
+    # The stale token is spent; the fresh one is appliable after review.
+    again = await _apply(orch, preview["preview_token"])
+    assert again["error_code"] == "preview_unknown"
+    applied = await _apply(orch, fresh["preview_token"])
+    assert applied["success"] is True, applied
+    assert applied["status"] == "applied"
+    # A token applies once.
+    replay = await _apply(orch, fresh["preview_token"])
+    assert replay["error_code"] == "preview_unknown"
+
+
+async def test_the_applied_set_is_the_previewed_set(orch, stops):
+    untouched = {
+        pid: await _profile_state(orch, pid)
+        for pid in ("deep-high-codex", "astra-high-codex", "standard-high-claude")
+    }
+    preview = await _preview(
+        orch, provider="codex", profile_ids=["fast-low-codex", "standard-high-codex"],
+        bounds={"min": 0, "max": 1},
+    )
+    applied = await _apply(orch, preview["preview_token"])
+    assert applied["success"] is True, applied
+    planned = [row for row in preview["profiles"] if row["changed"]]
+    assert [row["profile_id"] for row in applied["profiles"]] == [
+        row["profile_id"] for row in planned
+    ] == ["fast-low-codex", "standard-high-codex"]
+    for row in planned:
+        state = await _profile_state(orch, row["profile_id"])
+        assert {field: state[field] for field in row["after"]} == row["after"]
+    for pid, state in untouched.items():
+        assert await _profile_state(orch, pid) == state
+    assert all(row["status"] == "applied" for row in applied["profiles"])
+
+
+# -- drains -----------------------------------------------------------------------
+
+
+async def test_graceful_drain_never_interrupts_busy_work_or_admits_a_claim(orch, stops):
+    preview = await _preview(orch, provider="claude", participation="task",
+                             allow_pinned_wait=True)
+    applied = await _apply(orch, preview["preview_token"])
+    assert applied["success"] is True, applied
+    assert stops == []
+    for sid in ("sess-alpha-idle", "sess-alpha-busy", "sess-bravo-start"):
+        session = await orch.db.get_session(sid)
+        assert session.desired_state == "stopped", sid
+        assert session.state != "stopped", sid
+        # A stopped pool admits no further claim.
+        refusal = _handler(orch)._claim_precondition_refusal(
+            session, {"project_id": session.project_id}, None, {"next": True}
+        )
+        assert refusal is not None and refusal["result"] == "drain_requested", sid
+    busy = await orch.db.get_task("task-alpha-busy")
+    assert busy.status == TaskStatus.IN_PROGRESS and busy.assigned_agent_id == "ag-pool-2"
+    drained = {row["session_id"]: row["action"] for row in applied["session_actions"]}
+    assert drained == {"sess-alpha-idle": "drain", "sess-alpha-busy": "drain",
+                       "sess-bravo-start": "drain"}
+
+
+async def test_idle_now_stops_idle_workers_now_and_lets_busy_work_finish(orch, stops):
+    preview = await _preview(orch, provider="claude", participation="task",
+                             drain="idle-now", allow_pinned_wait=True)
+    applied = await _apply(orch, preview["preview_token"])
+    assert applied["success"] is True, applied
+    assert [(call["session_id"], call["reason"]) for call in stops] == [
+        ("sess-alpha-idle", "allocation_idle_now")
+    ]
+    assert stops[0]["correlation"] == {"request_id": applied["request_id"]}
+    busy = await orch.db.get_session("sess-alpha-busy")
+    assert busy.desired_state == "stopped" and busy.state == "running"
+    assert (await orch.db.get_task("task-alpha-busy")).status == TaskStatus.IN_PROGRESS
+
+
+async def test_lowered_bounds_stop_only_idle_excess_and_only_when_asked(orch, stops):
+    graceful = await _preview(orch, provider="claude", profile_ids=["standard-high-claude"],
+                              bounds={"min": 0, "max": 1})
+    assert (await _apply(orch, graceful["preview_token"]))["success"] is True
+    assert stops == []
+    await orch.db.update_profile("standard-high-claude", max_active=2)
+    idle_now = await _preview(orch, provider="claude", profile_ids=["standard-high-claude"],
+                              bounds={"min": 0, "max": 1}, drain="idle-now")
+    applied = await _apply(orch, idle_now["preview_token"])
+    assert applied["success"] is True, applied
+    # ``aq pool scale --now``'s victims, with the allocation request id on them.
+    assert [(call["session_id"], call["reason"]) for call in stops] == [
+        ("sess-alpha-idle", "scaled")
+    ]
+    assert stops[0]["correlation"] == {"request_id": applied["request_id"]}
+
+
+async def test_interrupt_busy_needs_operator_scope_and_exactly_the_busy_set(orch, stops):
+    preview = await _preview(orch, provider="claude", participation="task",
+                             drain="interrupt-busy", allow_pinned_wait=True)
+    token = preview["preview_token"]
+    assert preview["busy"] == {"session_ids": ["sess-alpha-busy"],
+                               "task_ids": ["task-alpha-busy"]}
+    before = await _profile_state(orch, "standard-high-claude")
+
+    # A project admin may not apply an operator's allocation.
+    refused = await _apply(orch, token, authorize_busy_interrupt=["sess-alpha-busy"],
+                           _scope=_alpha_supervisor())
+    assert refused["success"] is False and refused["error"].startswith("out of scope")
+
+    missing = await _apply(orch, token)
+    assert missing["error_code"] == "busy_authorization_required"
+    assert "sess-alpha-busy" in missing["error"]
+    for authorized in (["sess-alpha-idle"], ["sess-alpha-busy", "sess-bravo-busy"], ["nope"]):
+        wrong = await _apply(orch, token, authorize_busy_interrupt=authorized)
+        assert wrong["error_code"] == "busy_authorization_mismatch", authorized
+    # Nothing moved while authorization was refused.
+    assert await _profile_state(orch, "standard-high-claude") == before
+    assert stops == []
+
+    # The task id names the session that runs it; the set is exact.
+    applied = await _apply(orch, token, authorize_busy_interrupt=["task-alpha-busy"])
+    assert applied["success"] is True, applied
+    assert sorted((call["session_id"], call["reason"]) for call in stops) == [
+        ("sess-alpha-busy", "allocation_interrupt"),
+        ("sess-alpha-idle", "allocation_idle_now"),
+    ]
+    actions = {(row["session_id"], row["action"]) for row in applied["session_actions"]}
+    assert ("sess-alpha-busy", "interrupt") in actions
+
+
+async def test_authorizing_an_interrupt_without_interrupt_busy_is_refused(orch, stops):
+    preview = await _preview(orch, provider="claude", participation="task",
+                             allow_pinned_wait=True)
+    refused = await _apply(orch, preview["preview_token"],
+                           authorize_busy_interrupt=["sess-alpha-busy"])
+    assert refused["error_code"] == "busy_authorization_unexpected"
+
+
+async def test_pinned_ready_wait_needs_acknowledgement_at_preview_or_apply(orch, stops):
+    preview = await _preview(orch, provider="claude", participation="task")
+    assert preview["blocked"] is True
+    refused = await _apply(orch, preview["preview_token"])
+    assert refused["error_code"] == "pinned_wait_unacknowledged"
+    assert refused["preview"]["preview_token"] == preview["preview_token"]
+    applied = await _apply(orch, preview["preview_token"], allow_pinned_wait=True)
+    assert applied["success"] is True, applied
+    # The pin is left exactly where it was, and the audit names it.
+    pin = await orch.db.get_task("task-alpha-pin")
+    assert pin.profile_id == "standard-high-claude" and pin.status == TaskStatus.READY
+    assert {row["task_id"] for row in applied["pinned"] if row["waits"]} == {"task-alpha-pin"}
+
+
+# -- parity with the single-profile commands ---------------------------------------
+
+
+async def _twins(orch) -> None:
+    """Two identical Codex pool profiles, vault-backed as the shipped profiles are."""
+    from src.profiles.sync import sync_profile_text_to_db
+
+    for twin in ("twin-a", "twin-b"):
+        path = orch.config.data_dir + f"/vault/agent-types/{twin}/profile.md"
+        markdown = (
+            f"---\nid: {twin}\nname: {twin}\n---\n## Role\nWork.\n## Config\n```json\n"
+            '{"harness": "codex", "default_class": "standard-high", "lifecycle": "pool", '
+            '"min_active": 1, "max_active": 3, "max_claims_per_session": 2}\n```\n'
+        )
+        import pathlib
+
+        pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
+        pathlib.Path(path).write_text(markdown, encoding="utf-8")
+        synced = await sync_profile_text_to_db(markdown, orch.db, source_path=path)
+        assert synced.success, synced.errors
+
+
+def _vault_text(orch, profile_id) -> str:
+    import pathlib
+
+    return pathlib.Path(
+        orch.config.data_dir + f"/vault/agent-types/{profile_id}/profile.md"
+    ).read_text(encoding="utf-8")
+
+
+def _vault_config(orch, profile_id) -> dict:
+    """The ``## Config`` JSON of a vault profile: its meaning, not its formatting."""
+    text = _vault_text(orch, profile_id)
+    block = text.split("## Config", 1)[1].split("```json", 1)[1].split("```", 1)[0]
+    return json.loads(block)
+
+
+def _without_request_id(events: list[dict], profile_id: str) -> list[dict]:
+    return [
+        {key: value for key, value in event.items()
+         if key not in {"request_id", "event_id", "_event_type", "profile_id"}}
+        for event in events
+        if event.get("profile_id") == profile_id
+    ]
+
+
+@pytest.mark.parametrize(
+    ("request_fields", "command", "command_args"),
+    [
+        ({"bounds": {"min": 0, "max": 1}}, "pool_scale", {"min": 0, "max": 1}),
+        ({"bounds": {"max": None}}, "pool_scale", {"max": None}),
+        ({"participation": "task"}, "pool_set_lifecycle", {"lifecycle": "task"}),
+    ],
+)
+async def test_apply_writes_what_the_single_profile_commands_write(orch, stops, request_fields, command, command_args
+):
+    await _twins(orch)
+    events = _collect(orch, "pool.bounds_changed", "pool.lifecycle_changed")
+    preview = await _preview(orch, provider="codex", profile_ids=["twin-a"], **request_fields)
+    applied = await _apply(orch, preview["preview_token"])
+    assert applied["success"] is True, applied
+    single = await _handler(orch).execute(command, {"profile_id": "twin-b", **command_args})
+    assert single["success"] is True, single
+
+    assert await _profile_state(orch, "twin-a") == await _profile_state(orch, "twin-b")
+    assert _vault_text(orch, "twin-a").replace("twin-a", "twin-b") == _vault_text(
+        orch, "twin-b"
+    )
+    assert _without_request_id(events, "twin-a") == _without_request_id(events, "twin-b")
+    # Every underlying pool event carries the allocation request id.
+    assert {event.get("request_id") for event in events if event["profile_id"] == "twin-a"} == {
+        applied["request_id"]
+    }
+
+
+# -- partial failure --------------------------------------------------------------
+
+
+async def test_a_later_failure_is_compensated_and_reported(orch, stops, monkeypatch):
+    from src.commands import pool_admin
+
+    await _twins(orch)
+    original = {pid: await _profile_state(orch, pid) for pid in ("twin-a", "twin-b")}
+    vault = _vault_config(orch, "twin-a")
+    real = pool_admin.set_pool_bounds
+
+    async def flaky(handler, args, *, correlation=None):
+        if args["profile_id"] == "twin-b":
+            return {"success": False, "error": "vault is read-only"}
+        return await real(handler, args, correlation=correlation)
+
+    monkeypatch.setattr(pool_admin, "set_pool_bounds", flaky)
+    preview = await _preview(
+        orch, provider="codex", profile_ids=["twin-a", "twin-b"], bounds={"min": 0, "max": 1},
+    )
+    result = await _apply(orch, preview["preview_token"])
+    assert result["success"] is False
+    assert result["status"] == "rolled_back"
+    assert result["error_code"] == "allocation_rolled_back"
+    assert "twin-b: vault is read-only" in result["error"]
+    rows = {row["profile_id"]: row for row in result["profiles"]}
+    assert rows["twin-a"]["status"] == "rolled_back"
+    assert rows["twin-a"]["compensated"] is True
+    assert rows["twin-b"]["status"] == "failed"
+    for pid, state in original.items():
+        assert await _profile_state(orch, pid) == state, pid
+    assert _vault_config(orch, "twin-a") == vault
+    event = (await _allocation_events(orch))[0]
+    assert event["status"] == "rolled_back"
+    assert {row["profile_id"]: row["status"] for row in event["profiles"]} == {
+        "twin-a": "rolled_back", "twin-b": "failed",
+    }
+
+
+async def test_a_failed_compensation_is_partial_never_success(orch, stops, monkeypatch):
+    from src.commands import pool_admin
+
+    real = pool_admin.set_pool_bounds
+
+    async def flaky(handler, args, *, correlation=None):
+        if args["profile_id"] == "twin-b":
+            raise RuntimeError("database went away")
+        return await real(handler, args, correlation=correlation)
+
+    async def refuse(handler, before, *, correlation=None):
+        return {"success": False, "error": "still read-only"}
+
+    await _twins(orch)
+    monkeypatch.setattr(pool_admin, "set_pool_bounds", flaky)
+    monkeypatch.setattr(pool_admin, "restore_pool_profile", refuse)
+    preview = await _preview(
+        orch, provider="codex", profile_ids=["twin-a", "twin-b"], bounds={"min": 0, "max": 1},
+    )
+    result = await _apply(orch, preview["preview_token"])
+    assert result["success"] is False and result["status"] == "partial"
+    assert result["error_code"] == "allocation_partial"
+    rows = {row["profile_id"]: row for row in result["profiles"]}
+    assert rows["twin-a"]["status"] == "rollback_failed"
+    assert rows["twin-a"]["compensation_error"] == "still read-only"
+    assert "RuntimeError: database went away" in rows["twin-b"]["error"]
+    # What did land is on the profile, and the report says so.
+    assert (await _profile_state(orch, "twin-a"))["max_active"] == 1
+
+
+async def test_a_lifecycle_change_is_restored_with_every_pool_key(orch, stops, monkeypatch):
+    from src.commands import pool_admin
+
+    await _twins(orch)
+    before = await _profile_state(orch, "twin-a")
+    vault = _vault_config(orch, "twin-a")
+    real = pool_admin.set_pool_lifecycle
+
+    async def flaky(handler, args, *, correlation=None):
+        if args["profile_id"] == "twin-b":
+            return {"success": False, "error": "boom"}
+        return await real(handler, args, correlation=correlation)
+
+    monkeypatch.setattr(pool_admin, "set_pool_lifecycle", flaky)
+    preview = await _preview(orch, provider="codex", profile_ids=["twin-a", "twin-b"],
+                             participation="task")
+    result = await _apply(orch, preview["preview_token"])
+    assert result["status"] == "rolled_back", result
+    # min/max, the per-session claim cap: everything ``task`` cleared comes back.
+    assert await _profile_state(orch, "twin-a") == before
+    assert before["max_claims_per_session"] == 2
+    assert {key: _vault_config(orch, "twin-a").get(key) for key in vault} == vault
+
+
+# -- the project preference -------------------------------------------------------
+
+
+async def test_preference_replaces_only_queued_class_only_work(orch, stops):
+    orch.session_spec_builder._intelligence_classes = dict(STANDARD_HIGH)
+    for task_id, project_id, status, intent in (
+        ("task-alpha-free", ALPHA, TaskStatus.READY, CLASS_ONLY),
+        ("task-alpha-free-busy", ALPHA, TaskStatus.IN_PROGRESS, CLASS_ONLY),
+    ):
+        await orch.db.create_task(
+            Task(id=task_id, project_id=project_id, title=task_id, description="d",
+                 status=status, profile_id="standard-high-claude",
+                 intelligence_class="standard-high", provider_intent=intent)
+        )
+    before = {
+        task_id: (await orch.db.get_task(task_id)).profile_id
+        for task_id in ("task-alpha-pin", "task-alpha-pref", "task-alpha-free-busy",
+                        "task-bravo-free", "task-alpha-busy")
+    }
+    preview = await _preview(orch, provider="codex",
+                             receive_new_work={"project_id": ALPHA, "mode": "prefer"})
+    applied = await _apply(orch, preview["preview_token"])
+    assert applied["success"] is True, applied
+    assert (await orch.db.get_project(ALPHA)).preferred_provider == "codex"
+    assert (await orch.db.get_project(BRAVO)).preferred_provider is None
+    placement = applied["preference"]["placement"]
+    assert [row["task_id"] for row in placement["moved"]] == ["task-alpha-free"]
+    assert placement["batch_ids"]
+    assert (await orch.db.get_task("task-alpha-free")).profile_id == "standard-high-codex"
+    # Pins, preferred intent, other projects and running work stay where they were.
+    for task_id, profile_id in before.items():
+        assert (await orch.db.get_task(task_id)).profile_id == profile_id, task_id
+    # No profile and no session changed.
+    assert applied["profiles"] == [] and stops == []
+
+    cleared = await _preview(orch, provider="codex",
+                             receive_new_work={"project_id": ALPHA, "mode": "clear"})
+    applied = await _apply(orch, cleared["preview_token"])
+    assert applied["success"] is True, applied
+    assert (await orch.db.get_project(ALPHA)).preferred_provider is None
+    assert "placement" not in applied["preference"]
+
+
+async def test_preference_holds_a_class_the_provider_cannot_serve(orch, stops):
+    # No ``openai`` slice: codex has no launchable standard-high rung.
+    orch.session_spec_builder._intelligence_classes = {
+        "standard-high": IntelligenceClass(
+            "standard-high", "Standard high", "", {"anthropic": {"model": "claude-opus-5"}}
+        ),
+    }
+    await orch.db.create_task(
+        Task(id="task-alpha-free", project_id=ALPHA, title="t", description="d",
+             status=TaskStatus.READY, profile_id="standard-high-claude",
+             intelligence_class="standard-high", provider_intent=CLASS_ONLY)
+    )
+    preview = await _preview(orch, provider="codex",
+                             receive_new_work={"project_id": ALPHA, "mode": "prefer"})
+    applied = await _apply(orch, preview["preview_token"])
+    assert applied["success"] is True, applied
+    held = applied["preference"]["placement"]["held"]
+    assert [(row["task_id"], row["kind"]) for row in held] == [
+        ("task-alpha-free", "preferred_provider_unavailable")
+    ]
+    assert (await orch.db.get_task("task-alpha-free")).profile_id == "standard-high-claude"
+
+
+async def test_project_admin_applies_its_own_preference(orch):
+    preview = await _preview(
+        orch, provider="codex", receive_new_work={"project_id": ALPHA, "mode": "prefer"},
+        _scope=_alpha_supervisor(),
+    )
+    applied = await _apply(orch, preview["preview_token"], _scope=_alpha_supervisor())
+    assert applied["success"] is True, applied
+    assert applied["actor"] == "session:sup-alpha"
+    assert (await orch.db.get_project(ALPHA)).preferred_provider == "codex"
+
+
+async def test_worker_token_cannot_apply(orch):
+    preview = await _preview(
+        orch, provider="codex", receive_new_work={"project_id": ALPHA, "mode": "prefer"}
+    )
+    refused = await _apply(orch, preview["preview_token"], _scope=_worker_scope())
+    assert refused["success"] is False and refused["error"].startswith("out of scope")
+    assert "preview" not in refused
+    worker = RequestScope(kind="session", session_id="s1", task_id="t1", project_id=ALPHA)
+    assert "provider_allocation_apply" not in AGENT_COMMAND_SET
+    assert check_command_scope("provider_allocation_apply", {}, worker) == (
+        "out of scope: provider_allocation_apply"
+    )
+
+
+# -- audit ------------------------------------------------------------------------
+
+
+async def test_one_audit_event_carries_actor_and_before_and_after(orch, stops):
+    from src.event_schemas import validate_payload
+
+    seen = _collect(orch, "provider.allocation_changed", "pool.lifecycle_changed",
+                    "pool.session_drained")
+    preview = await _preview(orch, provider="claude", profile_ids=["standard-high-claude"],
+                             participation="task", drain="idle-now", allow_pinned_wait=True)
+    applied = await _apply(orch, preview["preview_token"])
+    assert applied["success"] is True, applied
+
+    events = await _allocation_events(orch)
+    assert len(events) == 1
+    event = events[0]
+    assert event["actor"] == "human:local-operator"
+    assert event["request_id"] == applied["request_id"]
+    assert event["preview_token"] == preview["preview_token"]
+    assert event["status"] == "applied"
+    [row] = event["profiles"]
+    assert row["profile_id"] == "standard-high-claude" and row["status"] == "applied"
+    assert row["before"]["lifecycle"] == "pool" and row["after"]["lifecycle"] == "task"
+    assert row["before"]["max_active"] == 2 and row["after"]["max_active"] is None
+    assert {item["task_id"] for item in event["pinned"]} == {"task-alpha-busy", "task-alpha-pin"}
+    assert {item["agent_id"] for item in event["manual_agents"]} == {
+        "ag-manual-override", "ag-manual-plain",
+    }
+    assert {item["session_id"] for item in event["session_actions"]} == {
+        "sess-alpha-idle", "sess-alpha-busy", "sess-bravo-start",
+    }
+    assert validate_payload("provider.allocation_changed", event) == []
+    # The bus saw the same event once, and the underlying ones carry its request id.
+    assert [item["type"] for item in seen].count("provider.allocation_changed") == 1
+    assert {
+        item["request_id"] for item in seen if item["type"] == "pool.lifecycle_changed"
+    } == {applied["request_id"]}
+
+    status = await _handler(orch).execute("provider_allocation_status", {"provider": "claude"})
+    last = _providers(status)["claude"]["last_allocation"]
+    assert last["request_id"] == applied["request_id"]
+    assert last["status"] == "applied" and last["actor"] == "human:local-operator"
+
+
+# -- API --------------------------------------------------------------------------
+
+
+async def test_api_applies_and_returns_refusals_with_their_data(orch, stops):
+    handler = _handler(orch)
+    first = await handler.execute(
+        "provider_allocation_preview",
+        {"provider": "claude", "profile_ids": ["standard-high-claude"],
+         "bounds": {"min": 0, "max": 1}},
+    )
+    await orch.db.update_profile("standard-high-claude", max_active=3)
+    async with _client(orch) as client:
+        # ``_client`` builds its own handler; the registry is the daemon's, so
+        # a token issued through one handler applies through another.
+        stale = await client.post(
+            "/api/providers/allocation/apply", json={"preview_token": first["preview_token"]}
+        )
+        assert stale.status_code == 409, stale.text
+        body = stale.json()
+        assert body["error_code"] == "preview_stale"
+        fresh = body["preview"]["preview_token"]
+        applied = await client.post(
+            "/api/providers/allocation/apply", json={"preview_token": fresh}
+        )
+        replay = await client.post(
+            "/api/providers/allocation/apply", json={"preview_token": fresh}
+        )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["status"] == "applied"
+    assert replay.status_code == 409 and replay.json()["error_code"] == "preview_unknown"
+
