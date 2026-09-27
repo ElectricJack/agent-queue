@@ -40,7 +40,6 @@ scoped_conftests:
 non_behavioral:                 # never forces fallback, adds nothing; no test reads these
   - "LICENSE"
   - ".gitignore"
-  - ".gitattributes"
   - ".ignore"
   - ".mcp.json"
   - ".pre-commit-config.yaml"
@@ -94,6 +93,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/e2e*", "scripts/e2e/**"], areas: ["e2e-kit"] }
   - { paths: ["package-lock.json"], areas: ["api-contract"] }
   - { paths: ["scripts/regenerate-api-client.sh", "scripts/regenerate-ts-client.sh", "scripts/openapi-python-client.yaml", "scripts/aq-client-boilerplate.sha256"], areas: ["api-contract"] }
+  - { paths: ["scripts/regenerate-generated.sh", ".gitattributes"], areas: ["generated-artifacts"] }
   - { paths: ["scripts/gen-command-docs.py", "scripts/check-docs.py"], areas: ["docs-guards"] }
   - { paths: ["scripts/generate-config-schema-inventory.py"], areas: ["config"] }
   - { paths: ["scripts/generate-cli-command-inventory.py"], areas: ["cli-framework"] }

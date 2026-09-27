@@ -381,6 +381,12 @@
         "tests/test_formulas_resolve.py"
       ]
     },
+    "generated-artifacts": {
+      "description": "Generated artifacts: the one regeneration command and its drift check, the .gitattributes merge=aq-generated set kept in step with it, and the merge driver under which those files never conflict.",
+      "modules": [
+        "tests/test_generated_artifacts.py"
+      ]
+    },
     "git-manager": {
       "description": "GitManager and local git: the async API, event emission, mutex serialization, sync-and-merge, rebase before merge, force-with-lease pushes, merge slots, merge-conflict detection and git command handlers.",
       "modules": [
@@ -1266,7 +1272,7 @@
       ]
     }
   },
-  "digest": "sha256:cd1da10ddcb6e9eb3887d1aec63bb657238db2d0fe1e5e7b3e8d5af8dd220aec",
+  "digest": "sha256:ac78d1ff885952be945f26c21457735e7ab1fc29d346e92bf3496ec6ac19b142",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5645,6 +5651,19 @@
       "markers": [],
       "summary": "Work-graph WG-3: gate query layer."
     },
+    "tests/test_generated_artifacts.py": {
+      "areas": [
+        "generated-artifacts"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.development"
+      ],
+      "markers": [
+        "slow"
+      ],
+      "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
+    },
     "tests/test_get_downstream_tasks.py": {
       "areas": [
         "task-dependencies"
@@ -5712,6 +5731,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"
@@ -13488,8 +13508,10 @@
         "src.database.queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.hierarchy",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.vault"
       ],
       "markers": [
         "parametrize",
