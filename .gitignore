@@ -4,7 +4,11 @@ __pycache__/
 *.egg-info/
 .venv/
 *.pyc
-.claude
+# Claude Code per-checkout state stays local; the repo-level hook settings
+# (graft) are shared. Ignore the contents, not the directory, so the
+# negation below can re-include settings.json.
+**/.claude/*
+!/.claude/settings.json
 *.db
 *.db-shm
 *.db-wal
@@ -19,9 +23,7 @@ docs_out/
 eval_results
 .agent-queue-lock
 archived_tasks/
-.claude
 plan.md
-.claude
 
 # Frontend
 node_modules/
