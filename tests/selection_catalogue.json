@@ -1277,7 +1277,7 @@
       ]
     }
   },
-  "digest": "sha256:49ae59fb6ea3552ea34ef53e319d710974d1fcfc9fab0f831dfbdd56f68dd4e7",
+  "digest": "sha256:61a08b295f28ae77ef61115bdcfc9d2b7211ba349426aef13a51aa9e1509f13a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11560,6 +11560,7 @@
         "src.models",
         "src.orchestrator.execution",
         "src.orchestrator.git_ops",
+        "src.orchestrator.pools",
         "src.orchestrator.workspace",
         "src.scheduler",
         "src.sessions",
