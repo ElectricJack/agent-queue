@@ -736,6 +736,13 @@ _CHAT_SCHEMAS: dict[str, EventSchema] = {
         "required": ["message_id", "reply_id", "project_id", "body"],
         "optional": ["via", "thread_id"],
     },
+    # A bounded collaboration thread was created and its invites queued.
+    # Replays of the same idempotency key do not re-emit.
+    "collaboration.created": {
+        "required": ["thread_id", "project_id", "task_ids"],
+        "optional": ["created_by_id", "deadline_at"],
+        "types": {"thread_id": str, "project_id": str, "task_ids": list},
+    },
 }
 
 

@@ -1120,6 +1120,8 @@ class DatabaseBackend(Protocol):
         conn: AsyncConnection | None = None,
     ) -> dict | None: ...
 
+    async def get_collaboration_thread_project(self, thread_id: str) -> str | None: ...
+
     async def list_collaboration_threads(
         self,
         *,
