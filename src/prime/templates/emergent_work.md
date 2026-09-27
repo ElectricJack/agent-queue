@@ -4,7 +4,10 @@ When you discover work while executing the current task that is outside its scop
 example, a bug, missing documentation, follow-up, or spec divergence — file it instead of
 silently expanding your own scope. Then keep moving on the task you hold.
 
-File one task per distinct, confirmed finding; do not create speculative epics. Your
+File one task per distinct, confirmed finding; do not create speculative epics. When
+your task *is* to file an epic, file it with its children in one graph whose `parent:`
+block creates it (`--root` places it at the project root), never as a plain task: a
+plain one is claimable before its children are moved under it. Your
 session token cannot read the project's queue (`list_tasks` is off the agent surface), so
 do not try to deduplicate by listing — a worker-filed task lands DEFINED with a routing
 gate for triage, which is where dedup and routing happen. Write the title so that
@@ -31,3 +34,9 @@ abandon, or move it aside merely to make your close pass. If a filing was simply
 move it with `aq task reparent --task-id <finding-id> --parent-id <container-id>` (or
 `--root`). You may move only unclaimed tasks you filed, to the same parents you could have
 filed under; a move to root receives the routing gate a root filing gets.
+
+Never make work you file wait on the task you hold or on anything above it: membership
+already relates a child to its parent, and whatever it needs from your task (a plan, a
+spec) exists before you file it. A gating `needs:` or `--depends-on` edge onto your own
+task or its ancestors is refused as `dependency_on_ancestor`; order the new tasks among
+themselves instead.

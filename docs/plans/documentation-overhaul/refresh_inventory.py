@@ -512,6 +512,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
     ("src/orphan_workflow_recovery.py", "playbooks", "docs/concepts/playbooks.md",
      PRODUCTION, "Recovers workflows whose owning run disappeared."),
 
+    ("src/collaboration.py", "cli", "docs/reference/cli/README.md", PRODUCTION,
+     "Bounded task-thread collaboration policy: limits, retention and the shared typed refusal."),
     ("src/commands/contracts/**", "cli", "docs/reference/cli/contracts.md",
      PRODUCTION, "Command contract: the declared surface of one command."),
     ("src/docs_urls.py", "cli", "docs/reference/cli/contracts.md", PRODUCTION,

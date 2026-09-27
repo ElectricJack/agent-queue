@@ -154,3 +154,148 @@ class TestStuckComposerCheck:
     async def test_no_orchestrator_is_not_an_error(self, db):
         result = await session_checks.run_check(db, None, CHECK)
         assert result.severity is Severity.OK
+
+
+# ---------------------------------------------------------------------------
+# messages.idle_worker_backlog
+# ---------------------------------------------------------------------------
+
+BACKLOG = "messages.idle_worker_backlog"
+
+
+class _LensHandler:
+    """An orchestrator stand-in carrying the delivery engine's own lens."""
+
+    def __init__(self, db, provider):
+        from src.messages.session_lens import SessionLens
+        from src.sessions.harness_registry import HarnessRegistry
+        from src.sessions.spec import SessionSpecBuilder
+
+        registry = SessionProviderRegistry({"fake": FakeProvider})
+        registry._instances["fake"] = provider
+        config = type("_Cfg", (), {"vault_root": "/tmp/vault", "mcp_server": None})()
+        harnesses = HarnessRegistry()
+
+        async def _profiles(_profile_id):
+            return None
+
+        lens = SessionLens(
+            db=db,
+            providers=registry,
+            spec_builder=SessionSpecBuilder(config, harnesses),
+            harness_registry=harnesses,
+            config=config,
+            profiles_loader=_profiles,
+        )
+        self.orchestrator = type(
+            "_Orch", (), {"session_providers": registry, "config": None, "session_lens": lens}
+        )()
+
+
+async def _worker(db, provider, *, idle: bool):
+    """A live task-lifecycle worker on the fake provider (harness without transcripts)."""
+    await db.create_task(
+        Task(id="t1", project_id=PROJECT_ID, title="t", description="d",
+             status=TaskStatus.IN_PROGRESS)
+    )
+    row = SessionRecord(
+        id="s1", project_id=PROJECT_ID, profile_id="worker", harness="fake",
+        provider="fake", name="s-t1", lifecycle="task", work_dir="/w", epoch="e",
+        instance_token="tok", started_at=time.time(), state="running", task_id="t1",
+    )
+    await db.create_session(row)
+    await provider.start(
+        SessionSpec(session_name=row.name, work_dir=row.work_dir, command=("agent",),
+                    instance_token=row.instance_token)
+    )
+    if idle:
+        provider.sessions[row.name].activity = time.time() - 120
+    return row
+
+
+async def _message(db, *, to_kind, to_id, age_s, body_kind=None):
+    from sqlalchemy import update
+
+    from src.database.tables import messages
+
+    msg = await db.create_message(
+        project_id=PROJECT_ID, from_kind="system", from_id="supervisor",
+        to_kind=to_kind, to_id=to_id, body="guidance", body_kind=body_kind,
+    )
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            update(messages).where(messages.c.id == msg.id)
+            .values(created_at=time.time() - age_s)
+        )
+    return msg
+
+
+def test_the_backlog_check_is_registered():
+    check = session_checks.CHECKS[BACKLOG]
+    assert check.owner == "session-runtime"
+    assert check.fix is None
+    assert BACKLOG in {c.id for c in src.doctor.default_registry().checks()}
+
+
+class TestIdleWorkerBacklog:
+    async def test_old_mail_for_an_idle_task_and_session_is_listed_with_the_reason(self, db):
+        """2026-09-27: idle workers sat 15-30 min on supervisor answers."""
+        from src.sessions.provider import NudgeDeferred
+
+        provider = FakeProvider()
+        row = await _worker(db, provider, idle=True)
+        to_task = await _message(db, to_kind="task", to_id="t1", age_s=400)
+        to_session = await _message(db, to_kind="session", to_id="s1", age_s=360)
+        await _message(db, to_kind="task", to_id="t1", age_s=30)  # too fresh to report
+        handler = _LensHandler(db, provider)
+
+        async def refuse(h, text):
+            raise NudgeDeferred(f"terminal {h.name!r} has a draft or its input is unknown")
+
+        provider.nudge = refuse
+        await handler.orchestrator.session_lens.nudge(
+            kind="task", target_id="t1", project_id=PROJECT_ID, text="x"
+        )
+
+        result = await session_checks.run_check(db, handler, BACKLOG)
+
+        assert result.severity is Severity.WARN
+        listed = {entry["message_id"]: entry for entry in result.data["messages"]}
+        assert set(listed) == {to_task.id, to_session.id}
+        entry = listed[to_task.id]
+        assert (entry["to_kind"], entry["to_id"], entry["session_id"]) == ("task", "t1", "s1")
+        assert entry["task_id"] == "t1"
+        assert entry["age_seconds"] >= 400
+        assert entry["last_nudge_failure"]["reason"].endswith("its input is unknown")
+        assert row.name in result.detail
+
+    async def test_busy_workers_and_delivered_mail_are_not_reported(self, db):
+        provider = FakeProvider()
+        await _worker(db, provider, idle=False)
+        await _message(db, to_kind="task", to_id="t1", age_s=400)
+        delivered = await _message(db, to_kind="session", to_id="s1", age_s=400)
+        await db.mark_delivered(delivered.id, via="nudge")
+
+        result = await session_checks.run_check(db, _LensHandler(db, provider), BACKLOG)
+
+        assert result.severity is Severity.OK
+
+    async def test_mail_for_an_idle_worker_that_is_now_delivered_clears(self, db):
+        provider = FakeProvider()
+        await _worker(db, provider, idle=True)
+        msg = await _message(db, to_kind="task", to_id="t1", age_s=400)
+        await db.mark_delivered(msg.id, via="nudge")
+
+        result = await session_checks.run_check(db, _LensHandler(db, provider), BACKLOG)
+
+        assert result.severity is Severity.OK
+
+    async def test_without_an_orchestrator_the_backlog_is_informational(self, db):
+        provider = FakeProvider()
+        await _worker(db, provider, idle=True)
+        msg = await _message(db, to_kind="task", to_id="t1", age_s=400)
+
+        result = await session_checks.run_check(db, None, BACKLOG)
+
+        assert result.severity is Severity.INFO
+        assert [entry["message_id"] for entry in result.data["messages"]] == [msg.id]

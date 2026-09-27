@@ -393,6 +393,7 @@ BACKEND_ARG_TO_CLI_PARAM = {
     "parent_id": "parent_id",
     "after_review": "after_review",
     "root": "root",
+    "container": "container",
     "reason": "reason",
     "deliverables": "deliverables",
     "requires_kinds": "requires_kinds",

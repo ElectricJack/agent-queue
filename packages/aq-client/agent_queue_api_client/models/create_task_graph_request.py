@@ -27,6 +27,10 @@ class CreateTaskGraphRequest:
             vault root (e.g. 'projects/<pid>/specs/x.md'). Paths that resolve outside the vault are refused.
         dry_run (bool | Unset): Validate and report assigned ids without writing Default: False.
         parent_id (None | str | Unset):
+        root (bool | Unset): For a worker-filed graph that declares a document-level parent: create that new container
+            at the project root instead of under the held task. It carries a discovered-from edge to the held task and the
+            routing gate every worker root filing gets, and its children wait behind it until the gate is resolved. Mutually
+            exclusive with parent_id. Default: False.
         reason (None | str | Unset): Why this graph is being filed. Required for a non-elevated session; recorded on
             every discovered-from provenance edge.
     """
@@ -38,6 +42,7 @@ class CreateTaskGraphRequest:
     spec_path: None | str | Unset = UNSET
     dry_run: bool | Unset = False
     parent_id: None | str | Unset = UNSET
+    root: bool | Unset = False
     reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -84,6 +89,8 @@ class CreateTaskGraphRequest:
         else:
             parent_id = self.parent_id
 
+        root = self.root
+
         reason: None | str | Unset
         if isinstance(self.reason, Unset):
             reason = UNSET
@@ -107,6 +114,8 @@ class CreateTaskGraphRequest:
             field_dict["dry_run"] = dry_run
         if parent_id is not UNSET:
             field_dict["parent_id"] = parent_id
+        if root is not UNSET:
+            field_dict["root"] = root
         if reason is not UNSET:
             field_dict["reason"] = reason
 
@@ -182,6 +191,8 @@ class CreateTaskGraphRequest:
 
         parent_id = _parse_parent_id(d.pop("parent_id", UNSET))
 
+        root = d.pop("root", UNSET)
+
         def _parse_reason(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -199,6 +210,7 @@ class CreateTaskGraphRequest:
             spec_path=spec_path,
             dry_run=dry_run,
             parent_id=parent_id,
+            root=root,
             reason=reason,
         )
 

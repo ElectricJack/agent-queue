@@ -428,6 +428,7 @@ Validation is deterministic — the daemon never "interprets" a graph:
 | `spec_ref` path missing from the vault, or section heading not found | error for `--from-spec`; warning for `--graph` |
 | `spec_ref` path resolving **outside** the vault root — `..`, an absolute path, or a symlink out | error always (`spec_ref_outside_vault`), never a warning. Graphs are authored by an LLM from spec text that may be attacker-influenced, and `src/prime/sections._render_spec_ref` inlines the resolved file into another agent's prompt. Containment is enforced at **both** ends. |
 | `needs.on` resolves to a task in another project without `cross_project: true` | error (explicit cross-project edges only, todo §3b) |
+| `needs.on`, with a gating dep type, names the task the graph is created under, one of its ancestors, or a worker filer's held task | error (`dependency_on_ancestor`; membership is already the `parent-child` edge and a container settles only after its children — work-graph §11) |
 | Any node targeting another project | error — graphs are single-project |
 
 `--dry-run` returns the validation report and the ids that would be assigned.

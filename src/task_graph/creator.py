@@ -175,6 +175,13 @@ class GraphPlan:
     #: True when the container already existed and node ids are provisional
     #: (``<parent>.?``) until ``write_plan`` reserves ordinals.
     provisional: bool = False
+    #: The existing task a *brand-new* container is filed under, or ``None``
+    #: for a container at the project root.  Only a worker graph with a
+    #: ``parent:`` block sets it: the container's own id is then
+    #: ``<anchor>.?`` (and its nodes ``<anchor>.?.N``) until ``write_plan``
+    #: reserves the ordinal and links the container in the same transaction
+    #: as its children (bold-flare-35).
+    container_parent_id: str | None = None
 
     @property
     def task_ids(self) -> list[str]:
@@ -298,7 +305,12 @@ def _compose_description(node: GraphNode) -> str:
 
 
 async def build_plan(
-    db: Any, graph: TaskGraph, *, project_id: str, parent_id: str | None = None
+    db: Any,
+    graph: TaskGraph,
+    *,
+    project_id: str,
+    parent_id: str | None = None,
+    container_parent_id: str | None = None,
 ) -> GraphPlan:
     """Resolve ids and materialise every row the graph will write.
 
@@ -313,7 +325,13 @@ async def build_plan(
     ``None``) and every node id is the provisional placeholder
     ``<parent>.?`` — the real ordinals are reserved atomically inside
     ``write_plan``'s transaction so concurrent graph creations never race.
+
+    *container_parent_id* plans a brand-new container that is itself filed
+    under that existing task: the container is ``<anchor>.?`` and its
+    children ``<anchor>.?.N`` until ``write_plan`` reserves the ordinal.
     """
+    if parent_id is not None and container_parent_id is not None:
+        raise ValueError("a graph goes under an existing container or a new one, not both")
     now = time.time()
     project = await db.get_project(project_id)
     repo_id = (
@@ -324,7 +342,10 @@ async def build_plan(
         else None
     )
     provisional = parent_id is not None
-    container_id = parent_id or await generate_task_id(db)
+    if container_parent_id is not None:
+        container_id = f"{container_parent_id}{PROVISIONAL_SUFFIX}"
+    else:
+        container_id = parent_id or await generate_task_id(db)
     if graph.phases:
         if provisional:
             # The command layer refuses this with ``graph.phases_need_root``;
@@ -367,7 +388,11 @@ async def build_plan(
         }
 
     plan = GraphPlan(
-        parent_id=container_id, parent_row=parent_row, ids=ids, provisional=provisional
+        parent_id=container_id,
+        parent_row=parent_row,
+        ids=ids,
+        provisional=provisional,
+        container_parent_id=container_parent_id,
     )
 
     if parent_row is not None and parent:
@@ -543,6 +568,22 @@ def _rewrite_ids(plan: GraphPlan, real: dict[str, str]) -> None:
             row["task_id"] = real.get(row.get("_key"), row["task_id"])
 
 
+def _rebase_new_container(plan: GraphPlan, container_id: str) -> None:
+    """Give a planned ``<anchor>.?`` container its reserved id, and its nodes theirs.
+
+    A brand-new container's children are numbered ``1..N`` in document order
+    (``assign_child_ids``), so once the container's own ordinal is reserved
+    every id in the plan follows from it.
+    """
+    old = plan.parent_id
+    plan.parent_id = container_id
+    plan.parent_row["id"] = container_id
+    for row in plan.label_rows:
+        if row["task_id"] == old:
+            row["task_id"] = container_id
+    _rewrite_ids(plan, {key: f"{container_id}.{i + 1}" for i, key in enumerate(plan.ids)})
+
+
 def _task_from_plan_row(row: dict):
     """Convert the graph's insert payload to the atomic filing model."""
     from dataclasses import fields
@@ -682,17 +723,38 @@ async def _fence_graph_filing(
     ):
         raise GraphFilingError("stale_claim", "the held task's claim is no longer current")
 
-    if plan.parent_id != filing.held_task_id or plan.parent_row is not None:
+    # Three shapes are in scope: nodes directly under the held task, a new
+    # container under the held task, or a new container at the project root
+    # (a worker's root filing, admitted by the routing gate ``write_plan``
+    # attaches).  Every other placement is someone else's tree.
+    if plan.parent_row is None:
+        if plan.parent_id != filing.held_task_id:
+            raise GraphFilingError(
+                "hierarchy.parent_out_of_scope",
+                "a session graph may be filed only under the task it currently holds",
+            )
+        levels = 1
+    elif plan.container_parent_id is None:
+        levels = 0
+    elif plan.container_parent_id != filing.held_task_id:
         raise GraphFilingError(
             "hierarchy.parent_out_of_scope",
-            "a session graph may be filed only under the task it currently holds",
+            "a session graph's new container may go only under the task it holds, or root",
         )
-    depth = await db.structural_depth(filing.held_task_id, conn=conn)
-    if depth + 1 > MAX_STRUCTURAL_DEPTH or naming_depth(filing.held_task_id) >= MAX_NAMING_DEPTH:
-        raise GraphFilingError(
-            "hierarchy.depth",
-            f"held parent '{filing.held_task_id}' cannot accept graph children at the depth cap",
-        )
+    else:
+        levels = 2
+    if levels:
+        depth = await db.structural_depth(filing.held_task_id, conn=conn)
+        if (
+            depth + levels > MAX_STRUCTURAL_DEPTH
+            or naming_depth(filing.held_task_id) + levels > MAX_NAMING_DEPTH
+        ):
+            raise GraphFilingError(
+                "hierarchy.depth",
+                f"held parent '{filing.held_task_id}' cannot accept "
+                f"{'a new container and its children' if levels == 2 else 'graph children'} "
+                "at the depth cap",
+            )
 
     cost = _filing_cost(plan)
     if cost <= 0:
@@ -762,6 +824,14 @@ async def write_plan(
             for row in plan.node_rows:
                 row["created_by_kind"] = "session"
                 row["created_by_id"] = filing.session_id
+            if plan.parent_row is not None:
+                plan.parent_row["created_by_kind"] = "session"
+                plan.parent_row["created_by_id"] = filing.session_id
+                if plan.container_parent_id is None:
+                    # A worker's root filing waits for triage (§12): born
+                    # DEFINED behind the routing gate written below, so its
+                    # children stay withheld until the gate is resolved.
+                    plan.parent_row["status"] = NODE_STATUS
         if plan.phase_rows and plan.project_id is not None:
             # The same check ``phase_create`` makes, inside the transaction,
             # so a caller that skipped the command layer cannot write a phase
@@ -772,6 +842,13 @@ async def write_plan(
         hierarchical = False
         if hierarchy_service is not None and plan.project_id is not None:
             hierarchical = await _graph_route(hierarchy_service, conn, plan) is not None
+        if hierarchical and plan.container_parent_id is not None:
+            # ``_file_hierarchical_plan`` files a new container as a root; the
+            # command layer refuses this shape first, so never mis-place it.
+            raise HierarchyError(
+                "parent_out_of_scope",
+                "a new container under an existing task is not filed hierarchically",
+            )
         if hierarchical:
             await _file_hierarchical_plan(
                 db, conn, plan, hierarchy_service, routing_manager=routing_manager
@@ -782,6 +859,9 @@ async def write_plan(
             # so fail before even the first task insert or ordinal mutation.
             await db.guard_hierarchy_bulk_write(plan.project_id, conn=conn)
         if plan.parent_row is not None and not hierarchical:
+            if plan.container_parent_id is not None:
+                ordinal = await reserve_child_ordinal(conn, plan.container_parent_id)
+                _rebase_new_container(plan, f"{plan.container_parent_id}.{ordinal}")
             await _insert_task(conn, plan.parent_row)
             # ``_insert_task`` is a direct ``insert(tasks)`` that bypasses
             # ``_insert_task_row``, so the layout mark is owed here.  The
@@ -796,6 +876,16 @@ async def write_plan(
             # and its parent would never become a container at all.
             # Idempotent, so the two paths can both run.
             await db.mark_container(plan.parent_id, conn=conn)
+            if plan.container_parent_id is not None:
+                # Flagged above and linked here, before any node exists: the
+                # container is never a claimable leaf, not even for the
+                # length of this transaction (bold-flare-35).
+                await db.set_parent(
+                    plan.parent_id,
+                    plan.container_parent_id,
+                    conn=conn,
+                    description=filing.reason if filing is not None else None,
+                )
         if plan.phase_rows:
             # Phases go in before the nodes and are linked while they are
             # still childless leaves with no out-edges — exactly what
@@ -858,6 +948,32 @@ async def write_plan(
                 if filing.profile_id:
                     metadata[FILED_BY_PROFILE_META_KEY] = filing.profile_id
                 await db._upsert_meta_many(row["id"], metadata, conn=conn)
+            if plan.parent_row is not None:
+                await db._upsert_meta(
+                    plan.parent_id, GRAPH_FILING_REQUEST_META_KEY, filing.request_id, conn=conn
+                )
+                if plan.container_parent_id is None:
+                    # A root container's only tie to the work that surfaced
+                    # it, and the gate every worker root filing is born with.
+                    await db.add_dependency(
+                        plan.parent_id,
+                        filing.held_task_id,
+                        DepType.DISCOVERED_FROM.value,
+                        description=filing.reason,
+                        conn=conn,
+                    )
+                    await db._create_gate_on(
+                        conn,
+                        plan.parent_row["project_id"],
+                        "routing",
+                        f"Route: {plan.parent_row['title']}",
+                        question="",
+                        await_id=None,
+                        timeout_at=None,
+                        waiter_task_ids=[plan.parent_id],
+                        caller_owns_conn=True,
+                    )
+                    plan.routing_task_ids.append(plan.parent_id)
         for row in plan.phase_rows:
             # Every phase, including one that got no children: ``set_parent_bulk``
             # flags a phase that has work, but an unflagged childless phase is a
@@ -936,7 +1052,11 @@ async def write_plan(
             await conn.execute(label_stmt)
         # The phases are in the projection too, or the inter-phase gate is
         # never computed and phase 2 is claimable the moment it is released.
-        await db.recompute_blocked(set(plan.task_ids) | set(plan.phase_ids), conn=conn)
+        # So is a worker's gated root container, which withholds its nodes.
+        gated = {plan.parent_id} if plan.parent_id in plan.routing_task_ids else set()
+        await db.recompute_blocked(
+            set(plan.task_ids) | set(plan.phase_ids) | gated, conn=conn
+        )
 
 
 def build_report(
@@ -955,7 +1075,7 @@ def build_report(
     report = {
         "parent_id": plan.parent_id,
         "parent_title": plan.parent_row["title"] if plan.parent_row is not None else None,
-        "provisional": plan.provisional,
+        "provisional": plan.provisional or plan.container_parent_id is not None,
         "task_ids": plan.task_ids,
         "phases": [
             {
@@ -1009,6 +1129,7 @@ async def create_graph(
     parent_id: str | None = None,
     provenance: FormulaProvenance | None = None,
     filing: GraphFilingContext | None = None,
+    container_parent_id: str | None = None,
 ) -> dict:
     """Create the graph, or report what creating it would do.
 
@@ -1018,6 +1139,8 @@ async def create_graph(
     an existing container instead of minting a new one.  *provenance*, when
     given, is written inside ``write_plan``'s transaction (spec §13) and
     surfaced in the report — never persisted or reported on a dry run.
+    *container_parent_id* files the graph's new container under that
+    existing task instead of at the project root.
     """
     db = handler.db
     if graph.phases:
@@ -1027,7 +1150,13 @@ async def create_graph(
         refusal = await db.phase_mode_refusal(project_id)
         if refusal is not None:
             raise HierarchyError("phases_unsupported_mode", refusal["error"])
-    plan = await build_plan(db, graph, project_id=project_id, parent_id=parent_id)
+    plan = await build_plan(
+        db,
+        graph,
+        project_id=project_id,
+        parent_id=parent_id,
+        container_parent_id=container_parent_id,
+    )
     hierarchy_service = (
         handler._hierarchy_integration_service()
         if callable(getattr(handler, "_hierarchy_integration_service", None))

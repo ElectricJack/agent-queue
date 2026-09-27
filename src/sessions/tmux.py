@@ -864,12 +864,15 @@ class TmuxProvider(SessionProvider):
             for index in range(1, len(content)):
                 footer = content[index].strip()
                 known = bool(re.fullmatch(r"\d+% context left", footer)) or bool(
-                    re.fullmatch(r"(?:gpt|o\d)[\w. -]* · .+", footer)
+                    _CODEX_MODEL_ROW.fullmatch(footer)
                 )
                 if (
                     known
                     and not content[index - 1].strip()
-                    and all(row == "" for row in content[index + 1 :])
+                    and all(
+                        row == ""
+                        for row in _without_codex_hint_row(content[index + 1 :], erased=True)
+                    )
                 ):
                     content = content[: index - 1]
                     break
@@ -1245,6 +1248,26 @@ class TmuxProvider(SessionProvider):
 
 _SGR = re.compile(r"\x1b\[[0-9;:]*m")
 _CODEX_PLACEHOLDER = "Ask Codex to do anything"
+#: Codex's model/status row under the composer: ``gpt-5.6-sol high · /cwd``
+#: (older builds) or ``GPT-6-Sol xhigh · ~/cwd · title`` (codex-cli 0.157).
+_CODEX_MODEL_ROW = re.compile(r"(?:gpt|o\d)[\w. -]* · .+", re.IGNORECASE)
+#: codex-cli 0.157 adds a hint row below the model row on an idle composer;
+#: right-aligned notices (``⚠ 2 warnings · f2 to view``) share the row.
+_CODEX_HINT_ROW = re.compile(r"\? for shortcuts(?: {2,}\S.*)?")
+
+
+def _without_codex_hint_row(rows: list[str], *, erased: bool = False) -> list[str]:
+    """Drop Codex's ``? for shortcuts`` row when it leads *rows*.
+
+    Once the composer holds input Codex paints that row over with spaces,
+    which ``capture-pane -J`` keeps; *erased* accepts that blank-painted slot.
+    """
+    if rows and (
+        _CODEX_HINT_ROW.fullmatch(rows[0].strip())
+        or (erased and rows[0] and not rows[0].strip())
+    ):
+        return rows[1:]
+    return rows
 
 
 def _composer_is_empty(
@@ -1280,12 +1303,13 @@ def _composer_is_empty(
             and f"\x1b[2m{_CODEX_PLACEHOLDER}" in raw_lines[cursor_y]
         )
         # Codex can leave blank screen rows below its status footer after
-        # resizing. Accept padding only; extra content still fails closed.
+        # resizing. Accept its status row, its known hint row and padding
+        # only; extra content still fails closed.
         return (
             placeholder
             and len(below) >= 2
             and not below[0].strip()
-            and all(not row.strip() for row in below[2:])
+            and all(not row.strip() for row in _without_codex_hint_row(below[2:]))
         )
     # Continuation lines can contain a pasted prompt glyph. An indented
     # one must never be mistaken for the start of an empty composer.

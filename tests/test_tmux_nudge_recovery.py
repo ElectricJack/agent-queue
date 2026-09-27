@@ -65,6 +65,31 @@ async def test_busy_footer_preserves_notification_until_idle_composer_is_observa
     assert composer.submitted == [text]
 
 
+@pytest.mark.parametrize(
+    "below",
+    [
+        ["", "  GPT-6-Sol xhigh · ~/dev/agent-queue2/.aq/worktrees/slot-3", ""],
+        ["", "  GPT-6-Sol xhigh · ~/dev/agent-queue2/.aq/worktrees/slot-3", "  ? for shortcuts"],
+        # Live capture (-J): the hint row is painted over with spaces once
+        # the composer holds text, and the model row keeps trailing cells.
+        ["", "  GPT-6-Sol xhigh · ~/dev/agent-queue2/.aq/worktrees/slot-3  ", " " * 17],
+    ],
+    ids=["model-row", "model-and-hint-rows", "erased-hint-row"],
+)
+async def test_codex_0157_footer_is_observable_for_exact_resubmit(below):
+    # codex-cli 0.157 capitalises its model row ("GPT-6-Sol"); a lowercase-only
+    # footer match read every typed notification as "unobservable".
+    text = "Handle `aq message status msg-example --json`."
+    composer = Composer(draft=text, below=below)
+    provider = provider_for(composer)
+    record = tmux_module._PendingSubmit(
+        instance_token=handle().instance_token, marker=_marker_for(text), text=text,
+    )
+    await provider._remember_pending(handle(), record)
+    assert await provider.resubmit_pending(handle()) is True
+    assert composer.submitted == [text]
+
+
 CLAUDE_LAYOUT = {
     "prefix": "❯ ",
     "row": "❯\N{NO-BREAK SPACE}",
