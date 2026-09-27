@@ -39,8 +39,10 @@ _RUN = uuid.uuid4().hex[:8]
 NBSP = " "
 PROMPT = f"❯{NBSP}"  # "❯ " with a non-breaking space, as Claude paints it
 
-#: Raw-mode REPL stub.  ``--dialog`` shows a trust dialog first and waits
-#: for any key.  Reads bytes (not lines — canonical mode truncates at 4 KB,
+#: Raw-mode REPL stub.  ``--dialog`` shows a trust dialog first, waits for
+#: any key, then clears the screen: a real harness repaints over an answered
+#: dialog, and startup treats one still in the viewport as unresolved.
+#: Reads bytes (not lines — canonical mode truncates at 4 KB,
 #: which is exactly why real TUIs run raw), strips bracketed-paste markers,
 #: appends each submitted line to received.txt, and repaints the prompt.
 #:
@@ -76,6 +78,7 @@ def eating():
 if "--dialog" in sys.argv:
     print("Do you trust the files in this folder?", flush=True)
     os.read(fd, 64)  # any key dismisses
+    print("\x1b[2J\x1b[H", end="", flush=True)
 
 print("❯ ", end="", flush=True)
 buf = b""
@@ -472,9 +475,30 @@ class TestNudge:
         big = "x" * 5000 + "-END"
         handle = await provider.start(_spec(tmp_path, stub_path))
         try:
+            # Enter is pressed only while the whole injection is observable
+            # after the prompt, so the pane must hold all of it: 5004 chars
+            # wrap to 63 rows and scroll the prompt out of an 80x24 viewport.
+            await provider._tmux("resize-window", "-t", f"={handle.name}", "-x", "200", "-y", "50")
             await provider.nudge(handle, big)
             got = await _received(tmp_path)
             assert big in got
+        finally:
+            await provider.stop(handle)
+
+    async def test_large_nudge_past_the_viewport_is_not_submitted(
+        self, provider, tmp_path, stub_path
+    ):
+        from src.sessions.provider import NotSubmitted
+
+        big = "x" * 5000 + "-END"
+        handle = await provider.start(_spec(tmp_path, stub_path))
+        try:
+            # The paste lands but its prompt row scrolls out of the default
+            # viewport: the composer cannot be attributed, so fail closed.
+            with pytest.raises(NotSubmitted) as raised:
+                await provider.nudge(handle, big)
+            assert raised.value.composer_dirty is True
+            assert await _received(tmp_path, tries=5) == ""
         finally:
             await provider.stop(handle)
 

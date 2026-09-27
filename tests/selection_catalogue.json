@@ -1146,6 +1146,7 @@
         "tests/test_terminal_origin_config.py",
         "tests/test_terminal_pty.py",
         "tests/test_terminal_stream.py",
+        "tests/test_tmux_harness_wake.py",
         "tests/test_tmux_integration.py",
         "tests/test_tmux_nudge_confirm.py",
         "tests/test_tmux_nudge_drafts.py",
@@ -1276,7 +1277,7 @@
       ]
     }
   },
-  "digest": "sha256:bfdf94ff2970c09286f4f99efb7b3f13d4e0ca066f713c479bdd78988f4ff39c",
+  "digest": "sha256:61a08b295f28ae77ef61115bdcfc9d2b7211ba349426aef13a51aa9e1509f13a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11591,7 +11592,8 @@
         "src.sessions.fake",
         "src.sessions.harness_registry",
         "src.sessions.provider",
-        "src.sessions.spec"
+        "src.sessions.spec",
+        "src.sessions.tmux"
       ],
       "markers": [],
       "summary": "``sessions.stuck_composer`` — the doctor half of the lost-Enter stall."
@@ -12933,6 +12935,22 @@
         "asyncio"
       ],
       "summary": "Tests for ``cron.HH:MM`` wall-clock triggers in the timer service."
+    },
+    "tests/test_tmux_harness_wake.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.sessions",
+        "src.sessions.harness_parser",
+        "src.sessions.provider",
+        "src.sessions.tmux"
+      ],
+      "markers": [
+        "tmux"
+      ],
+      "summary": "Waking an idle worker: the real Codex and Claude CLIs in real tmux panes."
     },
     "tests/test_tmux_integration.py": {
       "areas": [
