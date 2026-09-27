@@ -451,6 +451,139 @@ def test_client_count_summaries_scope_to_their_own_browser_windows():
     assert empty["whole_repetition"]["daemon"]["samples"] == 1075
 
 
+@pytest.mark.parametrize("ended", [12.0, 12.25])
+def test_series_collection_waits_for_publication_and_keeps_only_the_completion_bucket(
+        monkeypatch, ended):
+    exp = load_script("experiment")
+    clock = [0.0]
+    monkeypatch.setattr(exp.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(exp.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    queries = []
+    # A snapshot at the integer completion second is insufficient: its counters
+    # may have drained before the final probe. Batched persistence then publishes
+    # several buckets together, including later activity we must not retain.
+    replies = iter([[{"ts": 11.0}], [{"ts": 12.0}],
+                    [{"ts": ts} for ts in (14.0, 9.0, 13.0, 12.0, 11.0)]])
+
+    def fetch(base, start=None, end=None):
+        queries.append((base, start, end))
+        return next(replies)
+
+    monkeypatch.setattr(exp, "fetch_series", fetch)
+    samples, bounds = exp.collect_completed_series("http://isolated", 10.0, ended)
+    assert [s["ts"] for s in samples] == [13.0, 12.0, 11.0]
+    assert queries == [("http://isolated", 10.0, None)] * 3
+    assert bounds == {"scope": "repetition_through_completion_boundary", "start_ts": 10.0,
+                      "repetition_end_ts": ended, "boundary_sample_ts": 13.0, "wait_s": 0.5}
+
+
+def test_series_collection_refuses_stale_telemetry_at_the_deadline(monkeypatch):
+    exp = load_script("experiment")
+    clock, sleeps = [0.0], []
+    monkeypatch.setattr(exp.time, "monotonic", lambda: clock[0])
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(exp.time, "sleep", sleep)
+    monkeypatch.setattr(exp, "fetch_series", lambda *args: [{"ts": 12.0}])
+    with pytest.raises(exp.ProtocolError, match="post-completion 1s sample"):
+        exp.collect_completed_series("http://isolated", 10, 12.25, timeout_s=0.6)
+    assert sleeps == pytest.approx([0.25, 0.25, 0.1])
+
+
+@pytest.mark.parametrize("mode", ["idle", "loaded"])
+def test_repetition_retains_terminal_direct_probes_outside_the_browser_verdict(
+        tmp_path, monkeypatch, mode):
+    from types import SimpleNamespace
+    from src.metrics.histogram import merge_hists, new_hist, observe
+
+    exp = load_script("experiment")
+    # Wall time advances only at the measurement boundaries; polling uses a
+    # separate monotonic clock and cannot stretch either browser/workload window.
+    ended = 25.25 if mode == "loaded" else 12.25
+    times = iter([1.0, ended])
+    monkeypatch.setattr(exp.time, "time", lambda: next(times))
+    clock = [0.0]
+    monkeypatch.setattr(exp.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(exp.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    inventory = SimpleNamespace(inventory=lambda: {})
+    monkeypatch.setattr(exp, "kit_module", lambda name: inventory)
+    args = SimpleNamespace(out=tmp_path, mode=mode, clients=[1, 3], warmup_ms=0,
+                           observe_ms=120000, surfaces=["tasks"], project="fixture",
+                           api_url="http://isolated", dashboard_url="http://dashboard")
+    monkeypatch.setattr(exp, "workload_timeout", lambda args: 150)
+    monkeypatch.setattr(exp, "workload_argv", lambda *args: (["fixed-helper"], {}))
+    finished = []
+
+    class Workload:
+        def __init__(self, argv, env, out, timeout):
+            assert argv == ["fixed-helper"] and timeout == 150
+            out.write_text('{"throughput_iter_per_s": 200}')
+            self.started, self.ended = 1.0, ended
+            self.proc = SimpleNamespace(returncode=0)
+            self.timed_out = False
+
+        def finish(self, *, stop):
+            finished.append(stop)
+
+    monkeypatch.setattr(exp, "Workload", Workload)
+
+    def harness(cmd, **kwargs):
+        assert cmd[cmd.index("--observe-ms") + 1] == "120000"
+        clients = int(cmd[cmd.index("--clients") + 1])
+        a, b = (2.0, 7.0) if clients == 1 else (8.0, 12.25)
+        Path(cmd[3]).write_text(json.dumps({
+            "manifest": {"clients": clients}, "start_ts": a, "end_ts": b,
+            "api": {"POST /api/task/get": {"raw_ms": [1.0] * 30}},
+        }))
+
+    monkeypatch.setattr(exp.subprocess, "run", harness)
+
+    def probe_sample(ts, count):
+        sample = drift_samples([ts], 100 if ts <= 12.25 else 1)[0]
+        hist = new_hist()
+        for _ in range(count):
+            observe(hist, 1)
+        sample["perf"]["api"] = {"all": hist, "routes": {"POST /api/task/get": hist}}
+        return sample
+
+    earlier = [probe_sample(6.0, 32), probe_sample(10.0, 2)]
+    terminal = probe_sample(13.0, 30)
+    boundary = 26.0 if mode == "loaded" else 13.0
+    complete = earlier + [terminal]
+    if mode == "loaded":
+        complete += drift_samples(range(14, 27), 1)
+    replies = iter([earlier, complete + [probe_sample(boundary + 1, 99)]])
+    monkeypatch.setattr(exp, "fetch_series", lambda *args: next(replies))
+    runs, load, samples = exp.run_repetition(args, AppConfig(), 1)
+    exported = json.loads((tmp_path / "series-1.json").read_text())
+    assert exported == samples == complete
+    hist = merge_hists(s["perf"]["api"]["routes"]["POST /api/task/get"]
+                       for s in samples if "api" in s["perf"])
+    assert hist["count"] == 64  # 60 direct probes plus four browser reads
+    assert sum(len(r["api"]["POST /api/task/get"]["raw_ms"]) for r in runs) == 60
+    assert finished == ([False] if mode == "loaded" else [])
+    bounds = load["series_collection"]
+    assert bounds["repetition_end_ts"] == ended and bounds["boundary_sample_ts"] == boundary
+    assert bounds["wait_s"] == 0.25
+    assert json.loads((tmp_path / "load-1.json").read_text()) == load
+    summary = exp.summarize(runs, [load], [samples])
+    assert summary["daemon_scope"] == "browser_active"
+    assert summary["daemon"]["samples"] == 2
+    assert summary["daemon"]["loop_drift_p95_ms"] > 50
+    assert summary["whole_repetition"]["daemon"]["samples"] == len(samples)
+    assert summary["activity"][0]["series_collection"] == bounds
+    assert summary["activity"][0]["browser_windows"][-1]["end_ts"] == 12.25
+    assert load.get("helper_only_s") == (13.0 if mode == "loaded" else None)
+    for clients in (1, 3):
+        client_summary = exp.summarize([r for r in runs if r["manifest"]["clients"] == clients],
+                                       [load], [samples])
+        assert client_summary["daemon"]["samples"] == 1
+        assert client_summary["activity"][0]["series_collection"] == bounds
+
+
 def test_workload_coverage_flags_a_helper_that_finished_before_observation():
     exp = load_script("experiment")
     runs = [{"manifest": {"clients": 3}, "start_ts": 10, "end_ts": 40,
@@ -570,7 +703,8 @@ def test_experiment_writes_all_artifacts_and_keeps_client_counts_separate(
     target.write_text("database:\n  url: postgresql://aq:never-record-this@localhost:5533/isolated\n"
                       "mcp_server:\n  port: 8099\nresources:\n  session_nice: 7\n")
     seed = {"ts": 1, "tasks": {"total": 10000}, "agents": {"total": 2}}
-    monkeypatch.setattr(exp, "fetch_series", lambda *args: [seed])
+    monkeypatch.setattr(exp, "fetch_series", lambda base, start=None, end=None:
+                        [seed] if start is None else [{"ts": time.time() + 2}])
     monkeypatch.setattr(exp, "verify_target", lambda *args: None)
     def check_output(cmd, **kwargs):
         return "Chrome/130" if cmd[-1] == "--version" else "abc123"

@@ -64,8 +64,13 @@ per idle surface, 1600×1000 viewport, 30 s warm-up after readiness and 120 s
 observation. Each repetition inventories the host, starts the workload for a
 loaded run, warms up, runs the harness for each client count, waits for the
 workload, then captures the host inventory and the repetition's 1 s fleet
-series. Daemon targets are summarized over the browser-active part of that
-series (see `summary.json` below). Client counts remain separate in
+series. Collection polls until the first persisted sample strictly after
+repetition completion appears (at most 30 s of polling), retaining samples only
+through that boundary. This lets completed direct probes reach the sampler and
+its batched persistence; a missing boundary refuses the experiment. The fixed
+browser/workload durations do not include this wait. Daemon targets are summarized
+over the browser-active part of that series (see `summary.json` below). Client
+counts remain separate in
 `summary.by_clients`. Each concurrent client uses its own Chrome window so
 background tabs cannot suspend animation frames; the harness records each client's
 `window_id` and refuses a surface whose clients share one.
@@ -138,7 +143,10 @@ to run the real suite outside its separately scheduled task.
   workload output, completion/timeout/exit, throughput, observed start/end,
   coverage and `helper_only_s` (time run after the last browser window). Idle
   mode records null throughput/timeout rather than zero work.
-- `series-<n>.json`: raw 1 s samples for the whole repetition window.
+- `series-<n>.json`: raw 1 s samples from repetition start through the first
+  persisted sample after repetition completion. `load-<n>.json.series_collection`
+  declares `start_ts`, `repetition_end_ts`, `boundary_sample_ts`, `wait_s` and
+  `scope` (`repetition_through_completion_boundary`).
 - `summary.json`: medians across repetitions, raw values and `(max-min)/median`
   spread (null for fewer than two values or zero median), separate client-count
   summaries, daemon histogram-derived loop p95/max/stalls >500 ms, API, pool,
@@ -152,16 +160,22 @@ Daemon results have two activity scopes. `daemon`, `daemon_repetitions` and
 timestamp falls inside one of that repetition's harness runs, from its first cold
 load through its direct API reads. `by_clients.<N>.daemon` uses only that client
 count's runs. `whole_repetition` holds the same three fields over every sample.
-That includes the controller warm-up and, in loaded mode, the helper-only tail,
-because a repetition waits for its workload to finish. Idle has no such tail, so
+That includes the controller warm-up, the completion boundary and, in loaded mode,
+the helper-only tail, because a repetition waits for its workload to finish. Idle
+has no such helper-only tail, so
 the whole-repetition scope compares unequal envelopes: a long quiet tail can pull
 its p95 under a target the browsers never met. It is accounting, not a verdict.
 `activity` lists, per repetition, the browser windows (`clients`, `start_ts`,
-`end_ts`), total/browser-active/excluded sample counts and `helper_only_s`: the
-seconds the workload ran after the repetition's last browser window, for every
+`end_ts`), total/browser-active/excluded sample counts, `series_collection` bounds
+and `helper_only_s`: the seconds the workload ran after the repetition's last
+browser window, for every
 client count (null in idle mode). Workload completion, timeout, coverage and that
 tail stay in `load` and `load-<n>.json`. With no browser window the browser-active
 scope is empty and its values are null; it is never widened to the whole repetition.
+The completion boundary retains terminal direct-probe counters in the raw series
+and whole-repetition accounting. It can also contain post-browser loop/API activity;
+it stays outside the browser-active verdict. Sample timestamps cannot attribute
+every observation in that boundary to an individual browser or direct probe.
 
 Compare the browser-active scope against the envelope: task detail visible p95
 ≤200 ms; small task/roster API reads p95 ≤500 ms and ≤2× idle; loop p95 ≤50 ms
