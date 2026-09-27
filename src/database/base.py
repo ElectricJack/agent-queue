@@ -1084,6 +1084,8 @@ class DatabaseBackend(Protocol):
         self, *, now: float, limit: int = 100, wait_id: str | None = None
     ) -> dict: ...
     # Bounded collaboration records, claims and ordered transcripts.
+    async def reconcile_collaborations(self, *, now: float) -> dict: ...
+
     async def create_collaboration_thread(
         self,
         *,

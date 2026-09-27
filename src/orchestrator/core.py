@@ -3439,6 +3439,14 @@ class Orchestrator(
             logger.error("AgentQuestionService tick failed", exc_info=True)
         if self._command_handler is not None:
             try:
+                from src.commands.collaboration_lifecycle import CollaborationReconciler
+
+                result = await CollaborationReconciler(self._command_handler).tick()
+                if not result.get("success"):
+                    logger.error("CollaborationReconciler tick refused: %s", result)
+            except Exception:
+                logger.error("CollaborationReconciler tick failed", exc_info=True)
+            try:
                 from src.agent_waits import AgentWaitReconciler
 
                 result = await AgentWaitReconciler(self._command_handler).tick()
@@ -3450,6 +3458,7 @@ class Orchestrator(
             # main.py installs the handler before the first cycle; without one
             # no durable wait can resolve, so say so rather than skip silently.
             logger.warning("AgentWaitReconciler skipped: no command handler installed")
+            logger.warning("CollaborationReconciler skipped: no command handler installed")
         await self.session_reconciler.tick()
         from src.integration.completion_recovery import schedule_ready_owner_recovery
 

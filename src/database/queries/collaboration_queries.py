@@ -495,6 +495,8 @@ class CollaborationQueriesMixin:
                 .mappings()
                 .first()
             )
+            if replay is not None and replay["message_id"] is None:
+                raise CollaborationError("closed", "Collaboration content retention has ended")
             active = replay is not None or await self._active_collaboration(conn, thread, now)
             if active:
                 member_rows = await self._collaboration_members(conn, thread_id)

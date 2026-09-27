@@ -121,6 +121,7 @@
       "description": "Bounded task collaboration: membership, ordered messages, durable waits and delivery.",
       "modules": [
         "tests/test_collaboration.py",
+        "tests/test_collaboration_lifecycle.py",
         "tests/test_collaboration_queries.py"
       ]
     },
@@ -1259,7 +1260,7 @@
       ]
     }
   },
-  "digest": "sha256:7335fd6569b6099d4f1db370f68d7feb52bd3e166ef4146b93ac02c8c5fbfec1",
+  "digest": "sha256:6f67963f887a920864d547cba4d77b8d5f0dbf8f01ed5ee39a5abe10a8fd96d8",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3457,6 +3458,31 @@
       ],
       "markers": [],
       "summary": "Pure collaboration limits, identifiers and pointer bodies."
+    },
+    "tests/test_collaboration_lifecycle.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.api.codegen",
+        "src.collaboration",
+        "src.commands",
+        "src.commands.collaboration_lifecycle",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.mcp_registration",
+        "src.orchestrator",
+        "src.profiles.capabilities",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize",
+        "skipif"
+      ],
+      "summary": "Bounded expiry, retention and daemon-only collaboration reconciliation."
     },
     "tests/test_collaboration_queries.py": {
       "areas": [
