@@ -406,6 +406,15 @@ def _skipped_lines(result: InstallResult) -> tuple[str, ...]:
         line = f"{label} — not selected; add it with `aq install --with {capability}`"
         if line not in lines:
             lines.append(line)
+    # An absent observation is not proof of absence (e.g. an earlier step
+    # stopped the run). Existing installs may also have an operator-owned shim,
+    # so only confirmed absence warrants an install recommendation.
+    if _detail(result, STEP_CHECK).get("graft_available") is False:
+        lines.append(
+            "graft — optional code index for Claude Code sessions; "
+            "the project-defaults playbook enables repo hooks only where graft is installed. "
+            "Install with `npm i -g @nanonets/graft` (requires Node/npm on PATH)."
+        )
     return tuple(lines)
 
 

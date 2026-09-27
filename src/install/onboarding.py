@@ -616,6 +616,7 @@ def check_step(
     *,
     environ: Mapping[str, str] | None = None,
     home: Path | None = None,
+    which: Callable[[str], str | None] | None = None,
     depends_on: tuple[str, ...] = (STEP_CONFIG,),
 ) -> StepSpec:
     """Load the configuration the daemon will load, and report where data lives.
@@ -626,6 +627,7 @@ def check_step(
     put my things?".
     """
     path = config_path_for(environ, home)
+    lookup = which or shutil.which
 
     def run(context: StepContext) -> StepResult:
         from src.config import ConfigValidationError, load_config
@@ -636,6 +638,9 @@ def check_step(
             "config_path": str(path),
             "locations": [location.to_dict() for location in locations],
             "messaging_platform": str(raw.get("messaging_platform") or "none"),
+            # Optional advice only: never a step or a readiness requirement.
+            # Revalidation refreshes this host fact on repairs and reruns too.
+            "graft_available": lookup("graft") is not None,
         }
         if context.dry_run and not path.exists():
             # The step that writes the configuration is mutating, so a dry run
@@ -1284,7 +1289,7 @@ def onboarding_steps(
         project_root_step(environ=environ, home=home),
         # Checked after the projects folder is recorded, so the check loads the
         # configuration the daemon will actually start with.
-        check_step(environ=environ, home=home, depends_on=(STEP_PROJECT_ROOT,)),
+        check_step(environ=environ, home=home, which=which, depends_on=(STEP_PROJECT_ROOT,)),
         discord_step(environ=environ, home=home),
         daemon_step(environ=environ, home=home, runner=runner, which=which, probe=probe),
         # Opt-in (`--with autostart`): after the daemon step, so the watchdog's

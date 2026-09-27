@@ -267,6 +267,16 @@ You supply the bot token yourself by putting it in `~/.agent-queue/.env` as
 
 ## When it finishes
 
+Graft is an optional code index for Claude Code sessions. If `graft` is missing
+from PATH, the summary's **Not installed (optional)** block recommends
+`npm i -g @nanonets/graft`; you need Node/npm on your shell's PATH to run it.
+AQ's pinned dashboard Node is private and does not put Node/npm on your shell's
+PATH. AQ never installs graft automatically, and its absence does not change
+installation readiness or the exit code. The project-defaults playbook enables
+repo hooks only where graft is installed. When graft is already on PATH, the
+installer prints no graft recommendation and does not suggest upgrading it.
+The same recommendation appears in JSON under `onboarding.skipped`.
+
 The closing summary is the same information a script gets from
 `aq install --json` under `onboarding`:
 

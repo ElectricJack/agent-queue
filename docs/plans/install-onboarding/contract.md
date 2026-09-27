@@ -36,6 +36,16 @@ This makes the release artifact and `aq install` the public installation
 surface. `setup.sh` stays a contributor convenience for a source checkout; it
 is not the user-facing installer, package manager, or upgrade mechanism.
 
+Graft is optional. When `config.check` records that `graft` is absent from PATH,
+the closing summary and JSON `onboarding.skipped` recommend it as a code index
+for Claude Code sessions, with `npm i -g @nanonets/graft` (requires Node/npm on
+PATH). The project-defaults playbook enables repo hooks only where graft is
+installed. AQ never installs graft or adds a step or readiness requirement for
+it; its absence cannot change the outcome or exit code. The summary uses the
+recorded probe rather than probing the machine again. When graft is present or
+has not been probed, no recommendation appears. In particular, an existing
+operator shim must not receive an upgrade recommendation.
+
 ## Supported-platform matrix
 
 The installer must reject an unsupported host before changing it, and report

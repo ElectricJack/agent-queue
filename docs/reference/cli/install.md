@@ -437,8 +437,17 @@ view and a script are told the same things:
   therefore reports `needs_attention` here with the Settings → Project Roots
   remediation, which is also what the closing `next_steps` names.
 * **`onboarding.skipped`** lists the *optional* things this run did not do and
-  the flag that would add each one. A skipped capability is a finished install,
-  not a partial one.
+  how to add each one. A skipped capability is a finished install, not a partial
+  one. When `config.check` records that `graft` is absent from PATH, this list
+  and the human **Not installed (optional)** block include one recommendation:
+  graft is an optional code index for Claude Code sessions, installed with
+  `npm i -g @nanonets/graft` (requires Node/npm on your shell's PATH). AQ's
+  pinned dashboard Node is private; it does not provide Node/npm on that PATH.
+  The project-defaults playbook enables repo hooks only where graft is installed.
+  Graft is never installed automatically or made an install step or readiness
+  requirement, and its absence cannot affect the outcome or exit code. A present
+  or unobserved graft produces no recommendation, including no upgrade advice
+  for an existing operator shim.
 * **`onboarding.dashboard.source`** is `dashboard-server` (the dashboard
   server answers at `url`; `reachable` says whether its page did), `unbuilt` (no
   bundle is installed: a source checkout whose `dashboard.build` has not

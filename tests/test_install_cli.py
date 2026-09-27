@@ -299,7 +299,13 @@ def test_the_documented_step_states_are_the_ones_the_code_reports():
 
 
 @pytest.fixture
-def wizard_registry(monkeypatch, tmp_path):
+def graft_probe():
+    """Change the host fact between installs without touching the real PATH."""
+    return {"path": "/usr/bin/graft"}
+
+
+@pytest.fixture
+def wizard_registry(monkeypatch, tmp_path, graft_probe):
     """A registry with the onboarding steps but no database or platform adapter.
 
     ``aq install`` composes those adapters for the host it runs on; a test
@@ -327,7 +333,7 @@ def wizard_registry(monkeypatch, tmp_path):
                 runner=lambda argv, **kwargs: (_ for _ in ()).throw(
                     AssertionError("the daemon must not be started in this test")
                 ),
-                which=lambda name: f"/usr/bin/{name}",
+                which=lambda name: graft_probe["path"] if name == "graft" else f"/usr/bin/{name}",
                 probe=lambda url: None,
                 dashboard_root=home,
             )
@@ -479,6 +485,44 @@ def test_skipping_discord_leaves_the_run_ready(install_home, wizard_registry):
     discord = next(row for row in payload["steps"] if row["step_id"] == "config.discord")
     assert discord["state"] == "skipped"
     assert any("--with discord" in line for line in payload["onboarding"]["skipped"])
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+@pytest.mark.parametrize("available", [False, True])
+def test_graft_is_optional_advice_in_human_and_json_output(
+    install_home, wizard_registry, graft_probe, available, as_json
+):
+    graft_probe["path"] = "/usr/bin/graft" if available else None
+    args = ("--json",) if as_json else ()
+    result = _invoke("--non-interactive", "--yes", *args)
+
+    assert result.exit_code == 0
+    if as_json:
+        payload = _payload(result)
+        assert payload["outcome"] == "ready"
+        check = next(row for row in payload["steps"] if row["step_id"] == "config.check")
+        assert check["detail"]["graft_available"] is available
+        assert check["state"] == "succeeded"
+        assert all("graft" not in row["step_id"] for row in payload["plan"])
+        advice = " ".join(payload["onboarding"]["skipped"])
+    else:
+        advice = " ".join(result.output.split())
+        if not available:
+            assert "Not installed (optional)" in advice
+    assert ("npm i -g @nanonets/graft" in advice) is (not available)
+    if available:
+        assert "graft — optional code index" not in advice
+
+
+def test_graft_advice_refreshes_on_rerun_and_repair(install_home, wizard_registry, graft_probe):
+    for path, mode in ((None, ()), ("/usr/bin/graft", ()), (None, ("--repair",))):
+        graft_probe["path"] = path
+        result = _invoke("--non-interactive", "--yes", "--json", *mode)
+        assert result.exit_code == 0
+        payload = _payload(result)
+        assert payload["outcome"] == "ready"
+        advice = [line for line in payload["onboarding"]["skipped"] if "graft" in line]
+        assert len(advice) == (1 if path is None else 0)
 
 
 def test_an_ordinary_run_decides_the_advanced_choices_instead_of_asking(

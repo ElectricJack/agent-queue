@@ -8,6 +8,7 @@ would actually feel.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -518,6 +519,44 @@ def test_an_unselected_optional_capability_is_reported_as_a_choice_not_a_gap():
             "add it with `aq install --with discord`"
         ),
     )
+
+
+@pytest.mark.parametrize("available", [False, True, None])
+def test_graft_advice_uses_only_recorded_absence_and_never_changes_readiness(available, monkeypatch):
+    import shutil
+
+    def unexpected_probe(*args, **kwargs):
+        raise AssertionError("summarize must not probe the machine")
+
+    monkeypatch.setattr(shutil, "which", unexpected_probe)
+    machine_steps = first_task_machine_steps()
+    check = machine_steps[0]
+    detail = dict(check.detail)
+    if available is not None:
+        detail["graft_available"] = available
+    run = result(steps=(replace(check, detail=detail),) + machine_steps[1:])
+    summary = summarize(
+        run,
+        probes=(probe("codex", installed=True, authenticated=True),),
+        activations=(SimpleNamespace(active=True),),
+        pools=POOLS,
+    )
+
+    assert run.outcome is InstallOutcome.READY
+    assert run.exit_code == 0
+    assert summary.ready is True
+    assert summary.readiness is not None and summary.readiness.ready is True
+    assert not any("graft" in line for line in summary.next_steps)
+    assert summary.to_dict()["skipped"] == list(summary.skipped)
+    if available is False:
+        assert len(summary.skipped) == 1
+        advice = summary.skipped[0]
+        assert "optional code index for Claude Code sessions" in advice
+        assert "repo hooks only where graft is installed" in advice
+        assert "npm i -g @nanonets/graft" in advice
+        assert "requires Node/npm on PATH" in advice
+    else:
+        assert summary.skipped == ()
 
 
 def test_a_skipped_provider_names_the_flag_that_would_add_it():
