@@ -288,20 +288,21 @@ class DevelopmentIntegration:
             objects = shared / ".git" / "objects"
             if objects.is_dir():
                 (root / ".git" / "objects" / "info" / "alternates").write_text(f"{objects}\n")
-                tips = await self.run_git(
-                    shared, "for-each-ref", "--format=update %(refname) %(objectname)",
-                    "refs/remotes/origin/",
-                )
-                tips = "".join(
-                    line + "\n" for line in tips.splitlines()
-                    if not line.startswith("update refs/remotes/origin/HEAD ")
-                )
-                if tips:
-                    result = await self.git.arun_git_result(
-                        ["update-ref", "--stdin"], cwd=str(root), stdin=tips
+                try:
+                    tips = await self.run_git(
+                        shared, "for-each-ref", "--format=update %(refname) %(objectname)",
+                        "refs/remotes/origin/",
                     )
-                    if result.returncode:
-                        raise GitError(result.stderr or "could not seed the read snapshot")
+                    tips = "".join(
+                        line + "\n" for line in tips.splitlines()
+                        if not line.startswith("update refs/remotes/origin/HEAD ")
+                    )
+                    if tips:
+                        await self.git.arun_git_result(
+                            ["update-ref", "--stdin"], cwd=str(root), stdin=tips
+                        )
+                except GitError:
+                    pass  # Seeding only saves transfer; the fetch below is the truth.
             await self.run_git(root, "remote", "add", "origin", repo.url)
             yield await delivery_snapshot(
                 self.git, root, project_id=repo.project_id, repository_id=repo.id,
