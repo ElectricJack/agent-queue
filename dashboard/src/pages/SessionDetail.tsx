@@ -259,7 +259,7 @@ function SessionDetailContent({ session, attempt, interactive }: { session: Sess
         {!showingPane && error && <p className="px-3 py-1 text-xs text-amber-400">{error}</p>}
         {showingPane ? (
           <div className="h-[60vh] min-h-80">
-            {/* Below 768 px the pane is watched, never attached (AgentTerminal). */}
+            {/* Below 768 px the pane is never attached; typing uses the input-only socket (AgentTerminal). */}
             {compact ? (
               <WatchTerminal key={sessionId} sessionId={sessionId} name={session.name}
                 focusHref={focusSessionHref(sessionId, { started: attempt?.session_started_at ?? session.started_at })} />

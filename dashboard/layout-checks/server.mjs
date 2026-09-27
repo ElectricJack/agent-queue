@@ -59,15 +59,65 @@ export function staticTarget(root, pathname, exists) {
   return STATIC_SUFFIXES.has(extname(relative).toLowerCase()) ? null : join(root, "index.html");
 }
 
+/** A server frame (never masked): FIN + opcode, then the payload. */
+function wsFrame(opcode, payload) {
+  const len = payload.length;
+  const head = len < 126
+    ? Buffer.from([0x80 | opcode, len])
+    : Buffer.from([0x80 | opcode, 126, len >> 8, len & 255]);
+  return Buffer.concat([head, payload]);
+}
+
+/** Client frames (masked) → onFrame(opcode, payload). Unfragmented, as browsers send small messages. */
+function wsReader(onFrame) {
+  let buffer = Buffer.alloc(0);
+  return (chunk) => {
+    buffer = Buffer.concat([buffer, chunk]);
+    for (;;) {
+      if (buffer.length < 2) return;
+      const opcode = buffer[0] & 0x0f;
+      const masked = buffer[1] & 0x80;
+      let len = buffer[1] & 0x7f;
+      let at = 2;
+      if (len === 126) {
+        if (buffer.length < 4) return;
+        len = buffer.readUInt16BE(2);
+        at = 4;
+      } else if (len === 127) {
+        if (buffer.length < 10) return;
+        len = Number(buffer.readBigUInt64BE(2));
+        at = 10;
+      }
+      const maskAt = at;
+      if (masked) at += 4;
+      if (buffer.length < at + len) return;
+      const payload = Buffer.from(buffer.subarray(at, at + len));
+      if (masked) for (let i = 0; i < len; i++) payload[i] ^= buffer[maskAt + (i % 4)];
+      buffer = buffer.subarray(at + len);
+      onFrame(opcode, payload);
+    }
+  };
+}
+
+function acceptUpgrade(req, socket, protocol) {
+  const accept = createHash("sha1").update(req.headers["sec-websocket-key"] + WS_GUID).digest("base64");
+  const offered = (req.headers["sec-websocket-protocol"] ?? "").split(",").map((p) => p.trim());
+  const chosen = protocol && offered.includes(protocol) ? `Sec-WebSocket-Protocol: ${protocol}\r\n` : "";
+  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n${chosen}\r\n`);
+}
+
 export async function startStubServer({ distDir, fixtures }) {
   const root = resolve(distDir);
   const requests = [];
   const unhandled = [];
   const terminalUpgrades = [];
+  // Input-only terminal sockets (phones typing; never an attach): url, frames, open.
+  const terminalInputs = [];
   const overrides = new Map();
   const paneStreams = new Map(); // sessionId -> Set<res>
   const paneFailures = new Map(); // sessionId -> status
   const eventSockets = new Set();
+  const inputSockets = new Set();
 
   function openPane(sessionId, res) {
     const failure = paneFailures.get(sessionId);
@@ -109,15 +159,34 @@ export async function startStubServer({ distDir, fixtures }) {
   server.on("upgrade", (req, socket) => {
     const path = new URL(req.url, "http://stub.invalid").pathname;
     socket.on("error", () => {});
+    const input = path.match(/^\/ws\/terminal\/([^/]+)\/input$/);
+    if (input) {
+      // The phone's input-only socket: accept it like the daemon, and record
+      // what reaches it. It gets a ready frame and never any output.
+      const record = { url: req.url, sessionId: decodeURIComponent(input[1]), frames: [], open: true };
+      terminalInputs.push(record);
+      acceptUpgrade(req, socket, "aq-terminal-v1");
+      socket.write(wsFrame(0x1, Buffer.from(JSON.stringify({ type: "ready", session_id: record.sessionId, mode: "input" }))));
+      socket.on("data", wsReader((opcode, payload) => {
+        if (opcode === 0x2) record.frames.push(payload.toString("utf8"));
+        else if (opcode === 0x1) {
+          const control = JSON.parse(payload.toString("utf8"));
+          record.frames.push({ control });
+          if (control.type === "ping") socket.write(wsFrame(0x1, Buffer.from(JSON.stringify({ type: "pong" }))));
+        } else if (opcode === 0x8) socket.end(wsFrame(0x8, payload.subarray(0, 2)));
+      }));
+      inputSockets.add(socket);
+      socket.on("close", () => { record.open = false; inputSockets.delete(socket); });
+      return;
+    }
     if (path.startsWith("/ws/terminal")) {
-      // A focus route or a compact terminal must never get here (spec §4).
+      // A focus route or a compact terminal must never attach (spec §4).
       terminalUpgrades.push(req.url);
       socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
       return;
     }
     if (path !== "/ws/events") return socket.destroy();
-    const accept = createHash("sha1").update(req.headers["sec-websocket-key"] + WS_GUID).digest("base64");
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    acceptUpgrade(req, socket);
     socket.resume(); // Client frames (subscriptions, pings) are ignored: no events are ever sent.
     eventSockets.add(socket);
     socket.on("close", () => eventSockets.delete(socket));
@@ -126,7 +195,9 @@ export async function startStubServer({ distDir, fixtures }) {
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   return {
     url: `http://127.0.0.1:${server.address().port}`,
-    requests, unhandled, terminalUpgrades,
+    requests, unhandled, terminalUpgrades, terminalInputs,
+    /** Every binary input frame the phone sent to `sessionId`, decoded, in order. */
+    typed: (sessionId) => terminalInputs.filter((r) => r.sessionId === sessionId).flatMap((r) => r.frames.filter((f) => typeof f === "string")),
     statePuts: () => requests.filter((r) => r.path === "/api/dashboard/state-put").map((r) => JSON.parse(r.body)),
     override: (key, handler) => overrides.set(key, handler),
     pushPane(sessionId, frame) {
@@ -144,6 +215,7 @@ export async function startStubServer({ distDir, fixtures }) {
     },
     async close() {
       for (const socket of eventSockets) socket.destroy();
+      for (const socket of inputSockets) socket.destroy();
       for (const open of paneStreams.values()) for (const res of open) res.destroy();
       server.closeAllConnections();
       await new Promise((done) => server.close(done));

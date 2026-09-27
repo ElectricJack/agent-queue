@@ -19,6 +19,7 @@ interchangeable.
 | **Transcript stream** | SSE, `GET /api/sessions/{id}/stream` | the harness's normalized conversation, replayed then tailed | one file tail per connection |
 | **Live pane** | SSE, `GET /api/sessions/{id}/pane` | a full `capture-pane` screen, redrawn on each frame | one poll loop per *watched session*, shared across viewers |
 | **Interactive terminal** | WebSocket, `/ws/terminal/{id}` | raw terminal bytes, and typing | one disposable attach client per connection |
+| **Phone input** | WebSocket, `/ws/terminal/{id}/input` | typing only; the phone watches the live pane | a few tmux commands per write, no client |
 
 Read-only inspection from the command line uses the first two:
 
@@ -108,6 +109,36 @@ auth/identity refusals stop retries. A guarded, uncached `GET /ws/terminal/{id}`
 probe explains opaque handshake failures without attaching a PTY. Watch-only
 pane streams also recover from a CLOSED EventSource and retain the last screen.
 See the [reconnection contract](../specs/terminal-reconnection.md).
+
+### Typing from a phone
+
+A phone never attaches. Agent windows run with `window-size latest`, so any
+attached client, even one flagged `ignore-size` (tmux ignores that flag while it
+is the only client, and agents run detached), sizes the agent's real window to
+the phone and leaves it there. Below 768 px, and on every focus route, the
+dashboard watches the live pane
+([`WatchTerminal.tsx`](../../dashboard/src/components/WatchTerminal.tsx)). It
+opens **Watch only** on every visit. **Type** adds an input bar and a key strip
+(Esc, Tab, Ctrl-C, ↑, ↓, Enter, 1–3) and opens `/ws/terminal/{id}/input`.
+
+That socket is the same handler with `input_only`, behind every gate in the
+table above; the dashboard server's loopback-only rule covers the whole
+`/ws/terminal/` prefix. The differences are:
+
+* The handshake takes no size, and the ready frame carries `mode: "input"`.
+* There is no output and no `ack`, and a `resize` control is refused (`4400`).
+* The client ([`src/sessions/terminal_input.py`](../../src/sessions/terminal_input.py))
+  creates no tmux client. Before every write it re-checks the instance-token
+  fence and leaves copy mode. Keystrokes go through `send-keys -H` (a single
+  arrow key by name, so tmux encodes it for the pane's cursor-key mode). A
+  bracketed paste (`ESC[200~ … ESC[201~`, 64 KiB) goes through a unique buffer
+  and `paste-buffer -p`: tmux brackets it only if the app asked for bracketed
+  paste, and turns LF into CR.
+
+The browser sends a line and its Enter as two writes about 150 ms apart,
+because a TUI reads a burst that ends in CR as a paste. A multi-line entry goes
+as one bracketed paste. Design:
+[mobile interactive terminal](../superpowers/specs/2026-09-26-mobile-interactive-terminal-design.md).
 
 Starting a terminal for an agent that has no live session is a separate,
 explicit act, and requires global admin:
@@ -411,10 +442,12 @@ Implementation: [`src/claim_file.py`](../../src/claim_file.py),
 [`src/panes/registry.py`](../../src/panes/registry.py),
 [`src/sessions/pane_broadcaster.py`](../../src/sessions/pane_broadcaster.py),
 [`src/sessions/terminal_pty.py`](../../src/sessions/terminal_pty.py),
+[`src/sessions/terminal_input.py`](../../src/sessions/terminal_input.py),
 [`src/sessions/state_cache.py`](../../src/sessions/state_cache.py),
 [`src/sessions/proctable.py`](../../src/sessions/proctable.py),
 [`src/sessions/env.py`](../../src/sessions/env.py).
 
 ```bash
 aq test tests/test_terminal_stream.py tests/test_terminal_pty.py tests/test_pane_broadcaster.py tests/test_env_scrub.py tests/test_claim_commands.py
+aq test --aq-all-markers tests/test_terminal_input.py tests/test_terminal_pty.py   # real tmux
 ```

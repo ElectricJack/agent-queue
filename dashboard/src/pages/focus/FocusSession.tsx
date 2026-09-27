@@ -21,11 +21,12 @@ function currentSessionFor(session: SessionSummary, flock: FlockAgent[]): FlockA
 }
 
 /**
- * `/focus/sessions/:sessionId` — the watch-only terminal (mobile dashboard
- * §4, §4.1). The view is pinned to one process: the link's `?started=` or the
+ * `/focus/sessions/:sessionId` — the phone terminal (mobile dashboard §4,
+ * §4.1). The view is pinned to one process: the link's `?started=` or the
  * first one it saw. A restart shows a notice and waits for a tap; a session
  * that is not running shows why and links the agent's current session. It
- * never mounts InteractiveTerminal and never opens a terminal WebSocket.
+ * never mounts InteractiveTerminal and never attaches; only Type opens the
+ * input-only terminal socket (WatchTerminal).
  */
 export default function FocusSession() {
   const { sessionId = "" } = useParams();

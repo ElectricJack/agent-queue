@@ -32,7 +32,7 @@ function inMode(mode: TerminalLinkMode, ui: ReactNode) {
 describe("terminal links follow the link mode", () => {
   it("watch mode links the agent terminal to the focus session", () => {
     inMode("watch", <TaskAgentTerminalButton task={task} />);
-    expect(screen.getByRole("link", { name: "Watch agent terminal" })).toHaveAttribute("href", "/focus/sessions/sess-1");
+    expect(screen.getByRole("link", { name: "Open agent terminal" })).toHaveAttribute("href", "/focus/sessions/sess-1");
   });
 
   it("interactive mode keeps the agents-page button", () => {

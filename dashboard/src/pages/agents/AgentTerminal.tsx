@@ -77,9 +77,10 @@ export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAge
       </div>
     );
   }
-  // Below 768 px, watch and never attach: an attach sizes the agent's real tmux
-  // window to this viewer (`window-size latest`), and a trusted LAN or tailnet
-  // origin may open that socket. Mobile dashboard spec §2.3, plan D1.
+  // Below 768 px, never attach: an attach sizes the agent's real tmux window to
+  // this viewer (`window-size latest`), and a trusted LAN or tailnet origin may
+  // open that socket. Mobile dashboard spec §2.3, plan D1. The phone terminal
+  // watches, and types through the input-only socket once Type is on.
   if (compact) {
     return <WatchTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name}
       focusHref={focusSessionHref(agent.session_id!)} />;
@@ -116,7 +117,7 @@ export function PoolInstanceTerminal({ instance, focusRequest }: { instance: Ses
       </div>
     );
   }
-  // Watch-only below 768 px, as in AgentTerminal; the link pins this process.
+  // Never attached below 768 px, as in AgentTerminal; the link pins this process.
   if (compact) {
     return <WatchTerminal key={instance.id} sessionId={instance.id} name={instance.name}
       focusHref={focusSessionHref(instance.id, { started: instance.started_at })} />;

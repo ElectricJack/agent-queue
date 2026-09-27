@@ -1,7 +1,11 @@
 """Authorized, fixed-generation terminal WebSockets with bounded raw-byte flow.
 
-This route never launches an agent. It owns only a disposable tmux attach client.
-Input is ephemeral: no command dispatch, transcripts, replay, or input logging.
+These routes never launch an agent. ``/ws/terminal/{id}`` owns only a disposable
+tmux attach client. ``/ws/terminal/{id}/input`` (phones) never attaches: it types
+through tmux commands against the fenced session, so it cannot resize the agent's
+window, and it sends no output. Both run the same origin, credential, operator,
+loopback, generation and connection-limit checks. Input is ephemeral: no command
+dispatch, transcripts, replay, or input logging.
 """
 from __future__ import annotations
 
@@ -78,9 +82,15 @@ async def _attach(provider, row, *, cols, rows):
     return await PtyTmuxClient.attach(provider, row, cols=cols, rows=rows)
 
 
+async def _attach_input(provider, row):
+    # Input-only: resolves the fenced session and creates no tmux client.
+    from src.sessions.terminal_input import TmuxInputClient
+    return await TmuxInputClient.attach(provider, row)
+
+
 class TerminalStreamService:
     def __init__(
-        self, orchestrator, config, *, token_store=None, attach=None,
+        self, orchestrator, config, *, token_store=None, attach=None, attach_input=None,
         recheck_seconds: float = 2.0, output_limit: int = 128 * 1024,
         ack_timeout: float = 30.0, connection_limit: int = 16,
     ):
@@ -88,6 +98,7 @@ class TerminalStreamService:
         self.config = config
         self.token_store = token_store
         self.attach = attach or _attach
+        self.attach_input = attach_input or _attach_input
         self.recheck_seconds = recheck_seconds
         self.output_limit = output_limit
         self.ack_timeout = ack_timeout
@@ -206,7 +217,7 @@ class TerminalStreamService:
                     })
                 await ws.close(code=code, reason=message)
 
-    async def handle(self, ws, session_id: str):
+    async def handle(self, ws, session_id: str, *, input_only: bool = False):
         client = None
         accepted = False
         children = []
@@ -220,25 +231,29 @@ class TerminalStreamService:
                 raise TerminalStreamError("Too many terminal connections", 4429)
             self._handlers.add(current)
             registered = True
-            try:
-                cols, rows = _dimensions(
-                    int(ws.query_params.get("cols", "80")),
-                    int(ws.query_params.get("rows", "24")),
-                )
-            except (TypeError, ValueError):
-                raise TerminalStreamError("Invalid terminal dimensions", 4400) from None
+            if not input_only:
+                try:
+                    cols, rows = _dimensions(
+                        int(ws.query_params.get("cols", "80")),
+                        int(ws.query_params.get("rows", "24")),
+                    )
+                except (TypeError, ValueError):
+                    raise TerminalStreamError("Invalid terminal dimensions", 4400) from None
             row, generation = await self._session(session_id)
             await ws.accept(subprotocol=_PROTOCOL if _PROTOCOL in ws.scope.get("subprotocols", []) else None)
             accepted = True
             provider = self.orchestrator.session_providers.create(row.provider)
-            client = await self.attach(provider, row, cols=cols, rows=rows)
+            if input_only:
+                client = await self.attach_input(provider, row)
+                ready = {"type": "ready", "session_id": session_id, "mode": "input"}
+            else:
+                client = await self.attach(provider, row, cols=cols, rows=rows)
+                ready = {"type": "ready", "session_id": session_id, "cols": cols, "rows": rows}
             await self._session(session_id, generation)
             await self._authorize(ws, token)
             if not await client.verify():
                 raise TerminalStreamError("Terminal session instance has changed")
-            await asyncio.wait_for(ws.send_json({
-                "type": "ready", "session_id": session_id, "cols": cols, "rows": rows,
-            }), self.ack_timeout)
+            await asyncio.wait_for(ws.send_json(ready), self.ack_timeout)
 
             outstanding = 0
             queued_input = 0
@@ -280,7 +295,10 @@ class TerminalStreamService:
                             raise TerminalStreamError("Invalid terminal acknowledgement", 4400)
                         outstanding -= count
                         credit.set()
-                    elif control.get("type") == "resize" and set(control) == {"type", "cols", "rows"}:
+                    elif (
+                        not input_only and control.get("type") == "resize"
+                        and set(control) == {"type", "cols", "rows"}
+                    ):
                         await client.resize(*_dimensions(control["cols"], control["rows"]))
                     elif control == {"type": "ping"}:
                         await asyncio.wait_for(ws.send_json({"type": "pong"}), self.ack_timeout)
@@ -391,6 +409,11 @@ def build_terminal_router(orchestrator, config, *, token_store=None, **kwargs) -
     @router.websocket("/ws/terminal/{session_id}")
     async def terminal(websocket: WebSocket, session_id: str):
         await service.handle(websocket, session_id)
+
+    @router.websocket("/ws/terminal/{session_id}/input")
+    async def terminal_input(websocket: WebSocket, session_id: str):
+        # Phones type here and watch the pane stream: never an attach at phone size.
+        await service.handle(websocket, session_id, input_only=True)
 
     router.add_event_handler("shutdown", service.shutdown)
     return router
