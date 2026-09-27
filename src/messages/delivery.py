@@ -42,6 +42,9 @@ __all__ = ["MessageDeliveryEngine", "PARK_AFTER_SECONDS"]
 #: also never parked.
 PARK_AFTER_SECONDS: float = 86_400.0
 
+COLLABORATION_BODY_KINDS = {"collaboration", "collaboration_invite", "collaboration_closed"}
+_TASK_NOTIFICATION_KINDS = {"wait_result", "job_result"} | COLLABORATION_BODY_KINDS
+
 
 class MessageDeliveryEngine:
     """Delivery cascade step for the ``messages`` substrate.
@@ -91,7 +94,7 @@ class MessageDeliveryEngine:
             if not pending:
                 continue
 
-            if to_kind == "task" and pending[0].body_kind in {"wait_result", "job_result"}:
+            if to_kind == "task" and pending[0].body_kind in _TASK_NOTIFICATION_KINDS:
                 task = await self._db.get_task(to_id)
                 if task and task.status == TaskStatus.PAUSED:
                     # Terminal output does not authorize resuming a manual pause.
@@ -127,7 +130,7 @@ class MessageDeliveryEngine:
                 continue
 
             if activity == "sleeping":
-                if to_kind == "task" and pending[0].body_kind in {"wait_result", "job_result"}:
+                if to_kind == "task" and pending[0].body_kind in _TASK_NOTIFICATION_KINDS:
                     continue
                 started = await self._sessions.ensure_started(
                     kind=kind, target_id=target_id, project_id=resolved_project
@@ -203,7 +206,10 @@ class MessageDeliveryEngine:
         for msg in candidates:
             # Internal question handoffs use explicit question commands;
             # never fabricate a user reply from the supervisor's transcript.
-            if msg.body_kind in {"agent_question", "task_recovery", "wait_result", "job_result"}:
+            if msg.body_kind in (
+                {"agent_question", "task_recovery", "wait_result", "job_result"}
+                | COLLABORATION_BODY_KINDS
+            ):
                 continue
             if msg.delivered_at is None or msg.delivered_at > cutoff:
                 continue
@@ -407,4 +413,6 @@ def _render_nudge(batch: list[Message]) -> str:
     if batch[0].body_kind == "job_result":
         job_id = batch[0].id.removeprefix("job:").removesuffix(":terminal")
         return f"Handle `aq job result {shlex.quote(job_id)} --json`."
+    if batch[0].body_kind in COLLABORATION_BODY_KINDS:
+        return f"Handle `aq collaboration show {shlex.quote(batch[0].thread_id)} --json`."
     return f"Handle `aq message status {shlex.quote(batch[0].id)} --json`."

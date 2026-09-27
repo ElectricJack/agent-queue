@@ -608,6 +608,7 @@ class TestNoDuplicateAutoCommands:
 
         assert {
             "message_send",
+            "message_wait",
             "message_reply",
             "message_inbox",
             "message_list",
@@ -616,13 +617,13 @@ class TestNoDuplicateAutoCommands:
 
     def test_message_group_exposes_the_handcrafted_message_commands(self, runner):
         group = cli.commands["message"]
-        assert set(group.commands) == {"send", "reply", "inbox", "list", "status"}
+        assert set(group.commands) == {"send", "reply", "inbox", "list", "status", "wait"}
 
     def test_message_tools_are_registered_for_mcp_and_api(self):
         from src.tools import _ALL_TOOL_DEFINITIONS, _TOOL_CATEGORIES
 
         names = {t["name"] for t in _ALL_TOOL_DEFINITIONS}
-        for tool in ("message_send", "message_reply", "message_inbox", "message_list"):
+        for tool in ("message_send", "message_wait", "message_reply", "message_inbox", "message_list"):
             assert tool in names
             assert _TOOL_CATEGORIES[tool] == "message"
         assert "create_task_graph" in names

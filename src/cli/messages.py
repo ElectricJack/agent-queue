@@ -28,6 +28,7 @@ import click
 
 from .app import cli, console, _run, _get_client, _handle_errors
 from .envelope import emit
+from .claim_epoch import claim_epoch_option, resolve_claim_epoch
 
 #: Poll interval for `aq chat` while waiting on a reply.
 _POLL_INTERVAL = 1.0
@@ -147,6 +148,8 @@ def message() -> None:
     help="Sender kind (default: user)",
 )
 @click.option("--thread-id", default=None, help="Conversation grouping key")
+@click.option("--client-key", default=None, help="Collaboration send retry key (up to 128 characters)")
+@claim_epoch_option
 @click.option("--priority", default=100, type=int, help="Delivery ordering, lower first")
 @click.option(
     "--archive-after-inject",
@@ -176,23 +179,33 @@ def message_send(
     from_id: str,
     from_kind: str,
     thread_id: str | None,
+    client_key: str | None,
+    claim_epoch: int | None,
     priority: int,
     archive_after_inject: bool,
     pane_open_json: str | None,
 ) -> None:
     """Queue a message to a session, task, profile, or user."""
-    kind, ident = _split_recipient(to, to_kind, to_id)
+    from src.collaboration import is_collaboration_thread
+
+    fanout = is_collaboration_thread(thread_id) and not (to or to_kind or to_id)
+    kind, ident = (None, None) if fanout else _split_recipient(to, to_kind, to_id)
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     params: dict[str, Any] = {
-        "to_kind": kind,
-        "to_id": ident,
         "body": body,
         "from_kind": from_kind,
         "from_id": from_id,
         "priority": priority,
         "archive_after_inject": archive_after_inject,
     }
+    if not fanout:
+        params.update(to_kind=kind, to_id=ident)
+    epoch = resolve_claim_epoch(claim_epoch)
+    if epoch is not None:
+        params["claim_epoch"] = epoch
+    if client_key is not None:
+        params["client_key"] = client_key
     if project_id:
         params["project_id"] = project_id
     if subject:
@@ -217,7 +230,7 @@ def message_send(
     def _render(data: dict) -> None:
         console.print(
             f"[bold green]Message queued:[/] [bold bright_cyan]{data.get('message_id')}[/] "
-            f"→ {kind}:{ident}"
+            f"→ {thread_id if fanout else f'{kind}:{ident}'}"
         )
 
     emit(ctx, result, render=_render)
@@ -228,11 +241,23 @@ def message_send(
 # ---------------------------------------------------------------------------
 
 
-def _do_reply(ctx: click.Context, message_id: str, body: str, via: str | None) -> None:
+def _do_reply(
+    ctx: click.Context,
+    message_id: str,
+    body: str,
+    via: str | None,
+    claim_epoch: int | None = None,
+    client_key: str | None = None,
+) -> None:
     api_url = ctx.obj.get("api_url") if ctx.obj else None
     params: dict[str, Any] = {"message_id": message_id, "body": body}
     if via:
         params["via"] = via
+    epoch = resolve_claim_epoch(claim_epoch)
+    if epoch is not None:
+        params["claim_epoch"] = epoch
+    if client_key is not None:
+        params["client_key"] = client_key
 
     async def _reply():
         async with _get_client(api_url) as client:
@@ -253,25 +278,43 @@ def _do_reply(ctx: click.Context, message_id: str, body: str, via: str | None) -
 @click.argument("message_id")
 @click.argument("body")
 @click.option("--via", default=None, help="Delivery marker, e.g. transcript_tail")
+@click.option("--client-key", default=None, help="Collaboration reply retry key")
+@claim_epoch_option
 @click.pass_context
 @_handle_errors
-def message_reply(ctx: click.Context, message_id: str, body: str, via: str | None) -> None:
+def message_reply(
+    ctx: click.Context,
+    message_id: str,
+    body: str,
+    via: str | None,
+    client_key: str | None,
+    claim_epoch: int | None,
+) -> None:
     """Reply to a message by id."""
-    _do_reply(ctx, message_id, body, via)
+    _do_reply(ctx, message_id, body, via, claim_epoch, client_key)
 
 
 @cli.command("reply")
 @click.argument("message_id")
 @click.argument("body")
 @click.option("--via", default=None, help="Delivery marker, e.g. transcript_tail")
+@click.option("--client-key", default=None, help="Collaboration reply retry key")
+@claim_epoch_option
 @click.pass_context
 @_handle_errors
-def reply(ctx: click.Context, message_id: str, body: str, via: str | None) -> None:
+def reply(
+    ctx: click.Context,
+    message_id: str,
+    body: str,
+    via: str | None,
+    client_key: str | None,
+    claim_epoch: int | None,
+) -> None:
     """Reply to a message (alias for `aq message reply`).
 
     This is the reply protocol agents are taught: `aq reply <msg-id> "…"`.
     """
-    _do_reply(ctx, message_id, body, via)
+    _do_reply(ctx, message_id, body, via, claim_epoch, client_key)
 
 
 # ---------------------------------------------------------------------------

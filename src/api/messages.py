@@ -31,13 +31,17 @@ class MessageSendRequest(BaseModel):
     """Body of POST /api/messages/send for non-session recipients."""
 
     project_id: str | None = Field(default=None, description="Owning project id")
-    to_kind: str = Field(description="Recipient kind: session | task | profile | user")
-    to_id: str = Field(description="Recipient id")
+    to_kind: str | None = Field(
+        default=None, description="Recipient kind; omit for collaboration fanout"
+    )
+    to_id: str | None = Field(default=None, description="Recipient id")
     body: str = Field(description="Markdown message body")
     from_id: str = Field(default="cli", description="Sender id")
     from_kind: str = Field(default="user", description="Sender kind")
     subject: str | None = Field(default=None)
     thread_id: str | None = Field(default=None)
+    client_key: str | None = Field(default=None, min_length=1, max_length=128)
+    claim_epoch: int | None = Field(default=None, ge=0, strict=True)
     priority: int = Field(default=100)
     archive_after_inject: bool = Field(default=False)
     pane_open: dict | None = Field(default=None)
@@ -95,7 +99,7 @@ async def post_message(
     }
     result = await ch.execute("message_send", args)
     if "error" in result:
-        return JSONResponse({"error": result["error"]}, status_code=422)
+        return JSONResponse(result, status_code=422)
     return {"success": True, **result}
 
 
