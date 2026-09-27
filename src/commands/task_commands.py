@@ -2239,6 +2239,34 @@ class TaskCommandsMixin:
         after_create_on = args.pop("_after_create_on", None)
         if after_create_on is not None and not callable(after_create_on):
             return {"success": False, "error": "_after_create_on is internal-only"}
+        if args.get("container"):
+            scope = self._current_scope or {}
+            if scope.get("kind") == "session" and not scope.get("elevated"):
+                # A declared container stays open until work arrives, with no
+                # sweep or timeout.  A worker whose children never follow
+                # would leave it open for good, blocking its own close when
+                # it sits under the held task.  The graph path writes the
+                # container and its children together instead.
+                return {
+                    "success": False,
+                    "code": "hierarchy.container_not_for_sessions",
+                    "error": (
+                        "a worker files an epic together with its children: aq task create "
+                        "--graph/--from-spec with a document-level 'parent:' block (add "
+                        "--root to place it at the project root)"
+                    ),
+                }
+            # A declared container (an epic filed before its children) is
+            # flagged in the transaction that inserts it.  Flagged later, it
+            # would sit on the claim frontier until its first child linked,
+            # and a pool worker leases it in that window (bold-flare-35).
+            inner_after_create_on = after_create_on
+
+            async def after_create_on(conn, task_id, parent_id):
+                await self.db.declare_container(task_id, conn=conn)
+                if inner_after_create_on is not None:
+                    await inner_after_create_on(conn, task_id, parent_id)
+
         parent_was_supplied = "parent_id" in args
         # An explicit API null is semantically the same deliberate root
         # choice as CLI ``--root``.  Presence, rather than truthiness, is
@@ -3424,19 +3452,16 @@ class TaskCommandsMixin:
                 "error": "the graph filing session's held task no longer exists",
             }, None
 
-        parent_was_supplied = "parent_id" in args
+        # Root is decided by the caller once the graph is parsed: only a graph
+        # that declares its own container (``parent:``) may go there.
         requested_parent = args.get("parent_id")
-        if (
-            args.get("root")
-            or (parent_was_supplied and requested_parent is None)
-            or (requested_parent is not None and requested_parent != held.id)
-        ):
+        if requested_parent is not None and requested_parent != held.id:
             return None, {
                 "success": False,
                 "code": "hierarchy.parent_out_of_scope",
                 "error": (
-                    "a worker-filed graph may omit parent_id or repeat the task it holds; "
-                    "root and every other parent are out of scope"
+                    "a worker-filed graph may omit parent_id, repeat the task it holds, or "
+                    "ask for root; every other parent is out of scope"
                 ),
             }, None
         reason = str(args.get("reason") or "").strip()
@@ -3519,6 +3544,12 @@ class TaskCommandsMixin:
 
         parent_id = args.get("parent_id")
         parent = None
+        if args.get("root") and parent_id is not None:
+            return {
+                "success": False,
+                "code": "hierarchy.parent_conflict",
+                "error": "root and parent_id are mutually exclusive; pass one of them",
+            }
         # A non-elevated session normalises to its held task after parsing so
         # the pin refusal below retains its established precedence.  Its
         # parent check cannot use the general supervisor helper: a held task
@@ -3571,23 +3602,53 @@ class TaskCommandsMixin:
                 return refusal
 
         filing = None
+        container_parent_id = None
         if scoped_session:
             filing, filing_error, held_parent = await self._scoped_graph_filing(args, project_id)
             if filing_error is not None:
                 return filing_error
-            # The document-level ``parent:`` describes a new graph container
-            # on the supervisor path.  Under a held parent it would be
-            # ignored, which is unsafe and misleading, so fail before plan
-            # construction or any write.
-            if graph.parent is not None:
-                return {
-                    "success": False,
-                    "code": "hierarchy.parent_out_of_scope",
-                    "error": "a worker-filed graph cannot declare a document-level parent",
-                }
-            parent_id = held_parent.id
-            parent = held_parent
-            phases_refusal = self._phases_need_root_refusal(graph, parent_id)
+            root_requested = bool(args.get("root")) or (
+                "parent_id" in args and args.get("parent_id") is None
+            )
+            if graph.parent is None:
+                if root_requested:
+                    return {
+                        "success": False,
+                        "code": "graph.root_needs_parent",
+                        "error": (
+                            "a worker graph filed at the project root must declare its "
+                            "container with a document-level 'parent:' block"
+                        ),
+                    }
+                parent_id = held_parent.id
+                parent = held_parent
+            else:
+                # The document-level ``parent:`` is the graph's new container,
+                # written and flagged in the graph's own transaction: under
+                # the held task, or at the root when asked.  Filing the epic
+                # separately and reparenting its children under it left a
+                # window in which pool workers leased the empty epic
+                # (bold-flare-35).
+                from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+                mode = ProjectIntegrationMode.of(project)
+                if mode is not None and mode.hierarchical:
+                    return {
+                        "success": False,
+                        "code": "hierarchy.parent_out_of_scope",
+                        "error": (
+                            f"project '{project_id}' delivers hierarchically, where a new "
+                            "container owns its children's delivery; a worker graph there "
+                            "files under the task it holds and cannot declare a "
+                            "document-level parent"
+                        ),
+                    }
+                parent_id = None
+                if not root_requested:
+                    container_parent_id = held_parent.id
+            phases_refusal = self._phases_need_root_refusal(
+                graph, parent_id or container_parent_id
+            )
             if phases_refusal is not None:
                 return phases_refusal
 
@@ -3668,6 +3729,7 @@ class TaskCommandsMixin:
                 dry_run=dry_run,
                 parent_id=parent_id,
                 filing=filing,
+                container_parent_id=container_parent_id,
             )
         except GraphFilingError as exc:
             return {

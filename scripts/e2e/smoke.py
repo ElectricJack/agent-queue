@@ -2682,10 +2682,12 @@ def s19_scoped_planner_graph(state: dict) -> str:
         cross_project is not None and "project_id mismatch" in f"{cross_project.error} {cross_project.details}",
         f"cross-project graph was not refused by token scope: {cross_project}",
     )
-    cli_root = run_aq(*graph_args, "--root", token=planner.token, session_id=planner.session_id)
+    # A worker graph may go to the root only as a new container it declares
+    # with a ``parent:`` block (bold-flare-35); this graph declares none.
+    cli_root = planner.aq(*graph_args, "--root", check_ok=False).get("_error")
     check(
-        cli_root.returncode == 2
-        and "--root only applies to single-task creation" in f"{cli_root.stdout} {cli_root.stderr}",
+        cli_root is not None
+        and "graph.root_needs_parent" in f"{cli_root.error} {cli_root.details}",
         f"CLI root graph refusal: {cli_root}",
     )
     server_root = api(
@@ -2694,12 +2696,12 @@ def s19_scoped_planner_graph(state: dict) -> str:
             "project_id": PROJECT,
             "graph": graph,
             "root": True,
-            "reason": "S19 must not request root filing",
+            "reason": "S19 must not request a root filing without a container",
         },
         token=planner.token,
     )
     check(
-        server_root.get("code") == "hierarchy.parent_out_of_scope",
+        server_root.get("code") == "graph.root_needs_parent",
         f"server root graph refusal: {server_root}",
     )
     after_denials = api("task_children", {"task_id": held_task}, token=planner.token)

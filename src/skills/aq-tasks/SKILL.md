@@ -227,8 +227,18 @@ a task parked in `WAITING_INPUT` with no question row behind it.
 `create_task` is on the agent surface: a worker or reviewer session may
 file emergent work it discovers. A worker-filed task starts DEFINED with a
 `discovered-from` edge back to the filing task; a root filing also opens a
-routing gate, so triage — not the filer — dedupes and routes it. `--from-spec`,
-`--graph` and `create_task_graph` stay elevated/supervisor-only.
+routing gate, so triage — not the filer — dedupes and routes it.
+
+A session whose profile grants `create_task_graph` (a planner) may file a whole
+graph with `--graph` / `--from-spec` and a `--reason`. Its nodes land under the
+task it holds. A document-level `parent:` block creates the graph's own container
+in the same transaction: under the held task by default, or at the project root
+with `--root`, where the container carries the routing gate a root filing gets
+and its children wait behind it. A root graph must declare that `parent:` block.
+Never file an epic as a plain task: a pool worker can claim it before its
+children arrive. The supervisor or an operator can file a single epic with
+`aq task create --container` and add its children afterwards; a worker session
+is refused (`hierarchy.container_not_for_sessions`) and uses the graph instead.
 
 By default a worker-filed task is a **child of the task you hold**: it stays
 visible and, while open, blocks that task's successful close. `--parent <id>`
@@ -484,7 +494,7 @@ archived id can never be recreated in a different project.
   summary should tell the reader what you did and why; link to relevant findings and comments.
 - File emergent work rather than widening your own scope: `aq task create`
   from a worker session is expected, and lands behind a routing gate for
-  triage. Don't build task *graphs* from a worker session — `--graph`,
-  `--from-spec` and `formula cook` are supervisor-only.
+  triage. Don't build task *graphs* from a worker session unless your profile
+  grants `create_task_graph` (planners); `formula cook` is supervisor-only.
 - Don't retry an `out of scope: <command>` error. It is a property of your
   token, not a transient failure; say so in a comment and close or ask instead.

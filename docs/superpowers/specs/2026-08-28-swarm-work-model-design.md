@@ -198,7 +198,9 @@ emits after commit. Nothing in this spec writes `tasks.status` with raw SQL.
 
 **Containers are marked, not inferred.** `task_metadata.container = true` is written in the
 same transaction that gives a task its first child — by `set_parent` (any path),
-`create_task_graph`, `formula_cook`, `approve_plan`. It is never cleared: a container
+`create_task_graph`, `formula_cook`, `approve_plan` — or, for a container declared before
+its children exist (`create_task` with `container: true`), in the transaction that
+creates it (work-graph §13a). It is never cleared: a container
 whose children were all moved away is still a container, which is what lets settlement
 handle the empty case without guessing whether an `IN_PROGRESS` leaf is mid-launch.
 
