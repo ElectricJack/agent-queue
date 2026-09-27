@@ -1204,6 +1204,7 @@
       "description": "Worker pools: global per-profile sizing, per-project placement, the pool reconciler and session carve-outs, pool doctor checks, pool API endpoints, default install pools and the swarm config and surface.",
       "modules": [
         "tests/test_install_pools.py",
+        "tests/test_pool_admin.py",
         "tests/test_pool_agent_routing.py",
         "tests/test_pool_api_postgres.py",
         "tests/test_pool_doctor.py",
@@ -1260,7 +1261,7 @@
       ]
     }
   },
-  "digest": "sha256:6f67963f887a920864d547cba4d77b8d5f0dbf8f01ed5ee39a5abe10a8fd96d8",
+  "digest": "sha256:ab8f5a30b23134e87bbdfb1814252aa502fb141593c529d73bd65f159a7ce8de",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6019,7 +6020,9 @@
         "src.orchestrator",
         "src.tools"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Container-close semantics and the hierarchy command surface — spec §7, §14."
     },
     "tests/test_hierarchy_doctor.py": {
@@ -9331,6 +9334,28 @@
         "asyncio"
       ],
       "summary": "Tests for the plugin system: base classes, loader, registry, and DB queries."
+    },
+    "tests/test_pool_admin.py": {
+      "areas": [
+        "worker-pools"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.pool_admin",
+        "src.config",
+        "src.database",
+        "src.event_bus",
+        "src.event_schemas",
+        "src.models",
+        "src.orchestrator",
+        "src.profiles.parser",
+        "src.profiles.sync"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reusable pool edits preserve single-profile command semantics and audit data."
     },
     "tests/test_pool_agent_routing.py": {
       "areas": [
