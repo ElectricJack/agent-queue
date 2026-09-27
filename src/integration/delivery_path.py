@@ -13,9 +13,11 @@ The rules here are shared by the completion pipeline
 ``integration.delivery_path`` doctor check and ``task_deliver``:
 
 * a ``pull_request`` mode that only the system default chose resolves to
-  ``direct`` on a repository with no pull-request host
-  (:func:`src.models.resolve_integration_mode_with_source`);
-* an explicit ``pull_request`` there is kept, and doctor names the project as
+  ``direct`` on a repository on disk
+  (:func:`src.models.resolve_integration_mode_with_source`).  Only there: a
+  hosted remote that is not github.com (GitLab, GitHub Enterprise) keeps the
+  default rather than have its work land unreviewed, and doctor reports it;
+* an explicit ``pull_request`` is kept, and doctor names the project as
   having no working delivery path.
 """
 
@@ -86,7 +88,7 @@ async def effective_integration_mode(
         parent_task_mode=parent_mode,
         project_mode=project.integration_mode if project else None,
         default_mode=default_mode,
-        pull_requests_available=not lacks_pull_request_host(repository_url),
+        pull_requests_available=local_repository_path(repository_url) is None,
     )
 
 
@@ -118,7 +120,7 @@ async def delivery_path_problems(db: Any, project: Any, *, default_mode: str) ->
             None,
             project_mode=getattr(project, "integration_mode", None),
             default_mode=default_mode,
-            pull_requests_available=not lacks_pull_request_host(url),
+            pull_requests_available=local_repository_path(url) is None,
         )
         if effective == INTEGRATION_MODE_PULL_REQUEST and lacks_pull_request_host(url):
             problems.append(

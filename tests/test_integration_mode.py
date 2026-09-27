@@ -1161,6 +1161,17 @@ class TestResolveIntegrationMode:
         await orch.db.create_task(task)
         assert await orch._effective_integration_mode(task) == "direct"
 
+    async def test_a_hosted_remote_off_github_keeps_the_default(self, orch):
+        """No PR host is not permission to land work unreviewed: only a
+        repository on disk inherits direct."""
+        await orch.db.update_project("p-1", repo_url="https://gitlab.com/org/repo.git")
+        task = Task(
+            id="t-gitlab", project_id="p-1", title="gitlab", description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+        assert await orch._effective_integration_mode(task) == "pull_request"
+
     async def test_explicit_pull_request_on_a_local_remote_is_kept(self, orch):
         await orch.db.update_project(
             "p-1",

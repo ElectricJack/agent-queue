@@ -1515,14 +1515,15 @@ class GitOpsMixin:
 
                         message = f"Could not authorize PR repository: {exc}"
                         if lacks_pull_request_host(repository_url):
-                            # Only an explicit pull_request policy gets here:
-                            # an inherited default resolves to direct.
+                            # An inherited default resolves to direct on a
+                            # repository on disk; an explicit pull_request, or
+                            # a hosted remote other than github.com, gets here.
                             message += (
                                 f". {repository_url} cannot host a pull request, but this "
-                                "task's integration mode is pull_request. Clear the task's "
-                                "override or enable the development publisher "
-                                "(`aq integration develop`), then deliver the pushed "
-                                f"branch with `aq task deliver --task-id {task.id} --reason ...`."
+                                "task's integration mode is pull_request. Enable the "
+                                "development publisher for the project (`aq integration "
+                                "develop`), then deliver the pushed branch with "
+                                f"`aq task deliver --task-id {task.id} --reason ...`."
                             )
                         failures.append((message, False))
                         repository = None
@@ -2064,7 +2065,9 @@ class GitOpsMixin:
         4. ``direct`` mode: push the merged slot tip to default as a
            fast-forward; without a remote, merge the task branch into
            default in the base instead.  The base is never reset while a
-           remote exists — it may be the operator's own working tree.
+           remote exists — it may be the operator's own working tree.  A
+           default that someone outside AQ moved after step 2's fetch is
+           refused (``push_failed``), not merged again.
            Skipped in ``pull_request`` mode — the agent opens a PR on the
            pushed branch.
         5. Emit ``merge.succeeded``, record ``merged_at`` metadata,

@@ -13178,6 +13178,7 @@
         ],
         "optional": [
           "--dry-run",
+          "--expected-head",
           "--json",
           "--brief",
           "--api-url"

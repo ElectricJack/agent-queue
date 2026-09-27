@@ -125,10 +125,9 @@ TASK_TYPE_VALUES = frozenset(t.value for t in TaskType)
 # The value is resolved through a policy chain — task override → project
 # policy → config ``integration.default_mode`` — via
 # :func:`resolve_integration_mode`.  ``None`` at any level means "inherit".
-# A ``pull_request`` default only reaches repositories that can host a pull
-# request: a project whose origin is a bare repository on disk (or any host
-# other than github.com) inherits ``direct`` instead
-# (:mod:`src.integration.delivery_path`).
+# A ``pull_request`` default does not reach a repository on disk, where no
+# pull request can exist: a project whose origin is a bare repository there
+# inherits ``direct`` instead (:mod:`src.integration.delivery_path`).
 INTEGRATION_MODE_DIRECT = "direct"
 INTEGRATION_MODE_PULL_REQUEST = "pull_request"
 INTEGRATION_MODES = frozenset({INTEGRATION_MODE_DIRECT, INTEGRATION_MODE_PULL_REQUEST})
@@ -150,7 +149,7 @@ def resolve_integration_mode_with_source(
     corrupted row degrades to policy rather than crashing the pipeline.
 
     ``pull_requests_available=False`` says the task's repository cannot host
-    a pull request (a bare repository on disk, another host).  A
+    a pull request (callers pass it for a bare repository on disk).  A
     ``pull_request`` mode that only the system default chose then resolves to
     ``direct`` with source ``"repository"``: the default must not route work
     to a PR that can never exist.  An explicit ``pull_request`` at any level

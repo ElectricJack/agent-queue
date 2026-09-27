@@ -227,6 +227,8 @@ class GitCommandsMixin:
             task_id: The BLOCKED task whose recorded branch is delivered.
             reason: Audit reason, recorded on the task and in the merge commit.
             dry_run: Report what would be delivered without pushing.
+            expected_head: The branch head the caller inspected (a dry run
+                reports it); a branch that moved since is refused.
         """
         from src.commands.supervisor_authority import integration_operator
         from src.integration.manual_delivery import ManualDelivery
@@ -241,13 +243,15 @@ class GitCommandsMixin:
         if refusal is not None:
             return {"success": False, "outcome": "unauthorized", "error": refusal}
         result = await ManualDelivery(
-            self.db, self.orchestrator.git, data_dir=self.config.data_dir
+            self.db, self.orchestrator.git, data_dir=self.config.data_dir,
+            event_bus=getattr(self.orchestrator, "bus", None),
         ).deliver(
             task_id,
             reason=str(args.get("reason") or ""),
             operator_id=operator_id,
             default_mode=self.config.integration.default_mode,
             dry_run=bool(args.get("dry_run") or False),
+            expected_head=args.get("expected_head") or None,
         )
         if result.get("outcome") == "delivered":
             # Best-effort, exactly like session close: a subscriber failing

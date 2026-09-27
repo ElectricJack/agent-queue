@@ -84,7 +84,7 @@ Could not authorize PR repository: GitHub repository reference was invalid
 
 The task's integration mode was `pull_request`, and its repository cannot host
 a pull request: a bare repository on disk (`~/.agent-queue/local-remotes/<name>.git`)
-or a host other than github.com. Since 2026-09-27 a project like that no longer
+or a host other than github.com. Since 2026-09-27 a repository on disk no longer
 *inherits* `pull_request` from `integration.default_mode`; its tasks integrate
 `direct` (`aq task show` reports `effective_integration_mode: direct` from the
 `repository` policy), and the completion pipeline pushes the merged task branch
@@ -92,7 +92,9 @@ to the default branch as a fast-forward without touching the base checkout.
 
 Two things are left for a human:
 
-1. **Projects that still have no path.** An explicit `pull_request`, a
+1. **Projects that still have no path.** A hosted remote other than
+   github.com (it keeps the `pull_request` default so its work never lands
+   unreviewed), an explicit `pull_request` on a repository on disk, a
    hierarchy/train project off github.com, a managed mode without an
    integration repository, or a repository on disk that is gone:
 
@@ -109,17 +111,22 @@ Two things are left for a human:
 
    ```bash
    aq task deliver --task-id <task> --reason "passed; no PR possible" --dry-run
-   aq task deliver --task-id <task> --reason "passed; no PR possible"
+   aq task deliver --task-id <task> --reason "passed; no PR possible" \
+       --expected-head <head_sha from the dry run>
    ```
 
    It fetches into a private repository under the daemon's data directory,
    fast-forwards or merges the branch into the default branch, pushes with a
    lease on the default branch as fetched, and completes the task (context
-   `operator_delivery`, metadata `manual_delivery`). It refuses a task that is
-   not `BLOCKED`, has open children, belongs to a development/hierarchy/train
+   `operator_delivery`, metadata `manual_delivery`) only if it is still
+   `BLOCKED`. It refuses a task that is not `BLOCKED`, whose last close was not
+   a pass or that was blocked for another reason (a timeout, an operator stop,
+   spent retries), has open children, belongs to a development/hierarchy/train
    project, integrates by pull request on a repository that can host one
-   (merge the PR instead), was never pushed, or conflicts (`conflict_files`
-   names the files; resolve on the branch, push, and deliver again).
+   (merge the PR instead), was never pushed, moved from `--expected-head`,
+   carries daemon bookkeeping such as `.aq/claim.json`, or conflicts
+   (`conflict_files` names the files; resolve on the branch, push, and deliver
+   again).
 
 ## Nothing is wrong yet
 

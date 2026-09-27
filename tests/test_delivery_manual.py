@@ -64,6 +64,8 @@ async def db(tmp_path, remote):
         id="t-1", project_id="site", title="t-1", description="",
         status=TaskStatus.BLOCKED, branch_name="aq/t-1",
     ))
+    # What a pass close whose pipeline stopped leaves behind.
+    await d.set_task_meta("t-1", "outcome", "pass")
     yield d
     await d.close()
 
@@ -201,6 +203,84 @@ async def test_managed_projects_are_refused(db, tmp_path):
     assert result["outcome"] == "integration_managed"
 
 
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("outcome", "fail"), ("blocked_terminal", "timeout"), ("blocked_terminal", "stop_task")],
+)
+async def test_only_passed_work_is_delivered(db, tmp_path, remote, key, value):
+    await db.set_task_meta("t-1", key, value)
+    main_before = _git(remote.origin, "rev-parse", "main")
+
+    result = await _deliver(db, tmp_path)
+
+    assert result["outcome"] == "not_passed", result
+    assert _git(remote.origin, "rev-parse", "main") == main_before
+
+
+async def test_a_pipeline_stop_block_is_passed_work(db, tmp_path, remote):
+    await db.set_task_meta("t-1", "blocked_terminal", "session_close_pipeline_stop")
+
+    result = await _deliver(db, tmp_path)
+
+    assert result["outcome"] == "delivered", result
+
+
+async def test_expected_head_pins_what_was_inspected(db, tmp_path, remote):
+    plan = await _deliver(db, tmp_path, dry_run=True)
+
+    moved = await _deliver(db, tmp_path, expected_head="0" * 40)
+    assert moved["outcome"] == "head_moved"
+    assert (await db.get_task("t-1")).status == TaskStatus.BLOCKED
+
+    result = await _deliver(db, tmp_path, expected_head=plan["head_sha"][:12])
+    assert result["outcome"] == "delivered", result
+
+
+async def test_a_default_moved_after_the_fetch_is_refused_not_overwritten(
+    db, tmp_path, remote
+):
+    """The lease is the default branch as fetched."""
+    git = GitManager()
+    fetch = git.afetch_origin
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", str(remote.origin), str(other))
+
+    async def fetch_then_race(*args, **kwargs):
+        await fetch(*args, **kwargs)
+        (other / "late.txt").write_text("late\n")
+        _git(other, "add", "-A")
+        _git(other, "commit", "-m", "late push")
+        _git(other, "push", "origin", "main")
+
+    git.afetch_origin = fetch_then_race
+
+    result = await ManualDelivery(db, git, data_dir=tmp_path / "data").deliver(
+        "t-1", reason="race", operator_id="human:local-operator",
+        default_mode="pull_request",
+    )
+
+    assert result["outcome"] == "push_failed", result
+    assert _git(remote.origin, "log", "-1", "--format=%s", "main") == "late push"
+    assert (await db.get_task("t-1")).status == TaskStatus.BLOCKED
+    assert await db.get_task_meta("t-1", "manual_delivery") is None
+
+
+async def test_daemon_bookkeeping_on_the_branch_is_refused(db, tmp_path, remote):
+    _git(remote.checkout, "stash", "--include-untracked")
+    _git(remote.checkout, "switch", "aq/t-1")
+    (remote.checkout / ".aq").mkdir()
+    (remote.checkout / ".aq" / "claim.json").write_text("{}\n")
+    _git(remote.checkout, "add", "-f", ".aq/claim.json")
+    _git(remote.checkout, "commit", "-m", "leaked claim")
+    _git(remote.checkout, "push", "origin", "aq/t-1")
+    main_before = _git(remote.origin, "rev-parse", "main")
+
+    result = await _deliver(db, tmp_path)
+
+    assert result["outcome"] == "reserved_paths", result
+    assert _git(remote.origin, "rev-parse", "main") == main_before
+
+
 async def test_a_reason_is_required(db, tmp_path):
     result = await _deliver(db, tmp_path, reason="  ")
 
@@ -246,8 +326,12 @@ async def test_command_refuses_a_worker_session(db, tmp_path, monkeypatch):
 
 
 def test_task_deliver_is_an_operator_control():
-    from src.api.scope import OPERATOR_INTEGRATION_CONTROLS
+    from src.api.auth import RequestScope
+    from src.api.scope import OPERATOR_INTEGRATION_CONTROLS, check_command_scope
 
     assert "task_deliver" in OPERATOR_INTEGRATION_CONTROLS
+    worker = RequestScope(kind="session", session_id="s-1", task_id="t-1", project_id="site")
+    refusal = check_command_scope("task_deliver", {"task_id": "t-1"}, worker)
+    assert refusal is not None and refusal.startswith("out of scope")
     profile = Path("src/profiles/defaults/supervisor/profile.md").read_text()
     assert '"task_deliver"' in profile

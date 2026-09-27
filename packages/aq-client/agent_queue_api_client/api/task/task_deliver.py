@@ -66,22 +66,22 @@ def sync_detailed(
     body: TaskDeliverRequest,
 ) -> Response[TaskDeliverResponse | TaskDeliverResponse422]:
     """Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete
-    the task.  For work whose worker passed and pushed but whose close stopped at delivery, e.g. a
+    the task.  For work whose worker closed pass and pushed but whose close stopped at delivery, e.g. a
     project that pushes to a bare repository on disk, where no pull request can exist.  Merges (or fast-
     forwards) in a private repository, never in a worker slot or operator checkout, and pushes with a
-    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, has open children,
-    belongs to a development/hierarchy/train project, integrates by pull request on a repository that
-    can host one (merge the PR instead), was never pushed, or conflicts.  Local operator or the
-    project's live supervisor only.
+    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, whose last close was
+    not a pass, has open children, belongs to a development/hierarchy/train project, integrates by pull
+    request on a repository that can host one (merge the PR instead), was never pushed, or conflicts.
+    Local operator or the project's live supervisor only.
 
      Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete
-    the task.  For work whose worker passed and pushed but whose close stopped at delivery, e.g. a
+    the task.  For work whose worker closed pass and pushed but whose close stopped at delivery, e.g. a
     project that pushes to a bare repository on disk, where no pull request can exist.  Merges (or fast-
     forwards) in a private repository, never in a worker slot or operator checkout, and pushes with a
-    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, has open children,
-    belongs to a development/hierarchy/train project, integrates by pull request on a repository that
-    can host one (merge the PR instead), was never pushed, or conflicts.  Local operator or the
-    project's live supervisor only.
+    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, whose last close was
+    not a pass, has open children, belongs to a development/hierarchy/train project, integrates by pull
+    request on a repository that can host one (merge the PR instead), was never pushed, or conflicts.
+    Local operator or the project's live supervisor only.
 
     Args:
         body (TaskDeliverRequest):
@@ -111,22 +111,22 @@ def sync(
     body: TaskDeliverRequest,
 ) -> TaskDeliverResponse | TaskDeliverResponse422 | None:
     """Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete
-    the task.  For work whose worker passed and pushed but whose close stopped at delivery, e.g. a
+    the task.  For work whose worker closed pass and pushed but whose close stopped at delivery, e.g. a
     project that pushes to a bare repository on disk, where no pull request can exist.  Merges (or fast-
     forwards) in a private repository, never in a worker slot or operator checkout, and pushes with a
-    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, has open children,
-    belongs to a development/hierarchy/train project, integrates by pull request on a repository that
-    can host one (merge the PR instead), was never pushed, or conflicts.  Local operator or the
-    project's live supervisor only.
+    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, whose last close was
+    not a pass, has open children, belongs to a development/hierarchy/train project, integrates by pull
+    request on a repository that can host one (merge the PR instead), was never pushed, or conflicts.
+    Local operator or the project's live supervisor only.
 
      Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete
-    the task.  For work whose worker passed and pushed but whose close stopped at delivery, e.g. a
+    the task.  For work whose worker closed pass and pushed but whose close stopped at delivery, e.g. a
     project that pushes to a bare repository on disk, where no pull request can exist.  Merges (or fast-
     forwards) in a private repository, never in a worker slot or operator checkout, and pushes with a
-    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, has open children,
-    belongs to a development/hierarchy/train project, integrates by pull request on a repository that
-    can host one (merge the PR instead), was never pushed, or conflicts.  Local operator or the
-    project's live supervisor only.
+    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, whose last close was
+    not a pass, has open children, belongs to a development/hierarchy/train project, integrates by pull
+    request on a repository that can host one (merge the PR instead), was never pushed, or conflicts.
+    Local operator or the project's live supervisor only.
 
     Args:
         body (TaskDeliverRequest):
@@ -151,22 +151,22 @@ async def asyncio_detailed(
     body: TaskDeliverRequest,
 ) -> Response[TaskDeliverResponse | TaskDeliverResponse422]:
     """Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete
-    the task.  For work whose worker passed and pushed but whose close stopped at delivery, e.g. a
+    the task.  For work whose worker closed pass and pushed but whose close stopped at delivery, e.g. a
     project that pushes to a bare repository on disk, where no pull request can exist.  Merges (or fast-
     forwards) in a private repository, never in a worker slot or operator checkout, and pushes with a
-    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, has open children,
-    belongs to a development/hierarchy/train project, integrates by pull request on a repository that
-    can host one (merge the PR instead), was never pushed, or conflicts.  Local operator or the
-    project's live supervisor only.
+    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, whose last close was
+    not a pass, has open children, belongs to a development/hierarchy/train project, integrates by pull
+    request on a repository that can host one (merge the PR instead), was never pushed, or conflicts.
+    Local operator or the project's live supervisor only.
 
      Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete
-    the task.  For work whose worker passed and pushed but whose close stopped at delivery, e.g. a
+    the task.  For work whose worker closed pass and pushed but whose close stopped at delivery, e.g. a
     project that pushes to a bare repository on disk, where no pull request can exist.  Merges (or fast-
     forwards) in a private repository, never in a worker slot or operator checkout, and pushes with a
-    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, has open children,
-    belongs to a development/hierarchy/train project, integrates by pull request on a repository that
-    can host one (merge the PR instead), was never pushed, or conflicts.  Local operator or the
-    project's live supervisor only.
+    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, whose last close was
+    not a pass, has open children, belongs to a development/hierarchy/train project, integrates by pull
+    request on a repository that can host one (merge the PR instead), was never pushed, or conflicts.
+    Local operator or the project's live supervisor only.
 
     Args:
         body (TaskDeliverRequest):
@@ -194,22 +194,22 @@ async def asyncio(
     body: TaskDeliverRequest,
 ) -> TaskDeliverResponse | TaskDeliverResponse422 | None:
     """Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete
-    the task.  For work whose worker passed and pushed but whose close stopped at delivery, e.g. a
+    the task.  For work whose worker closed pass and pushed but whose close stopped at delivery, e.g. a
     project that pushes to a bare repository on disk, where no pull request can exist.  Merges (or fast-
     forwards) in a private repository, never in a worker slot or operator checkout, and pushes with a
-    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, has open children,
-    belongs to a development/hierarchy/train project, integrates by pull request on a repository that
-    can host one (merge the PR instead), was never pushed, or conflicts.  Local operator or the
-    project's live supervisor only.
+    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, whose last close was
+    not a pass, has open children, belongs to a development/hierarchy/train project, integrates by pull
+    request on a repository that can host one (merge the PR instead), was never pushed, or conflicts.
+    Local operator or the project's live supervisor only.
 
      Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete
-    the task.  For work whose worker passed and pushed but whose close stopped at delivery, e.g. a
+    the task.  For work whose worker closed pass and pushed but whose close stopped at delivery, e.g. a
     project that pushes to a bare repository on disk, where no pull request can exist.  Merges (or fast-
     forwards) in a private repository, never in a worker slot or operator checkout, and pushes with a
-    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, has open children,
-    belongs to a development/hierarchy/train project, integrates by pull request on a repository that
-    can host one (merge the PR instead), was never pushed, or conflicts.  Local operator or the
-    project's live supervisor only.
+    lease on the default branch as fetched.  Refuses a task that is not BLOCKED, whose last close was
+    not a pass, has open children, belongs to a development/hierarchy/train project, integrates by pull
+    request on a repository that can host one (merge the PR instead), was never pushed, or conflicts.
+    Local operator or the project's live supervisor only.
 
     Args:
         body (TaskDeliverRequest):

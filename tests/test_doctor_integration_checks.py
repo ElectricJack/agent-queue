@@ -1259,6 +1259,19 @@ async def test_delivery_path_flags_explicit_pull_request_on_a_local_remote(db, t
     assert "aq task deliver" in result.detail
 
 
+async def test_delivery_path_flags_a_hosted_remote_off_github(db):
+    await db.create_project(Project(
+        id="lab", name="lab", repo_url="https://gitlab.com/org/lab.git",
+    ))
+
+    result = await run_check(db, "integration.delivery_path", config=_delivery_config())
+
+    assert result.severity == Severity.ERROR
+    [finding] = result.data["projects"]
+    assert finding["project_id"] == "lab"
+    assert "(from default)" in finding["problems"][0]
+
+
 async def test_delivery_path_flags_a_missing_repository_on_disk(db, tmp_path):
     await db.create_project(Project(
         id="gone", name="gone", repo_url=str(tmp_path / "gone.git"),
