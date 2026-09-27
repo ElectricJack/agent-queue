@@ -44,7 +44,6 @@ from typing import Any
 
 from sqlalchemy import func, or_, select
 
-from src.database.queries.blocked_state import _development_delivery_pending
 from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
 from src.database.tables import (
     archived_tasks,
@@ -124,7 +123,33 @@ def _manifest(value: Any) -> list[dict]:
     return [m for m in value if isinstance(m, dict) and m.get("task_id")]
 
 
-async def live_branch_references(conn: Any) -> dict[str, str]:
+async def completed_branch_tasks(conn: Any, branches: Iterable[str]) -> set[str]:
+    """COMPLETED tasks in development delivery scope that own one of *branches*.
+
+    These are the tasks :func:`live_branch_references` asks git about; a
+    cleanup observes exactly them, for exactly the branches it may delete.
+    A ``-wip`` sibling belongs to its task's branch.
+    """
+    from src.integration.delivery_observer import development_delivery_scope
+
+    names = {branch_of(branch) for branch in branches} - {None}
+    names |= {name.removesuffix("-wip") for name in names}
+    if not names:
+        return set()
+    return set(
+        (
+            await conn.execute(
+                select(tasks.c.id).where(
+                    tasks.c.status == TaskStatus.COMPLETED.value,
+                    tasks.c.branch_name.in_(sorted(names | {"refs/heads/" + n for n in names})),
+                    development_delivery_scope(tasks),
+                )
+            )
+        ).scalars()
+    )
+
+
+async def live_branch_references(conn: Any, *, delivery: Any = None) -> dict[str, str]:
     """Every branch something still needs, mapped to the first reason found.
 
     Deliberately fleet-wide and by *name*: task ids are unique, so
@@ -136,8 +161,11 @@ async def live_branch_references(conn: Any) -> dict[str, str]:
 
     * a task that can still run (``LIVE_TASK_STATUSES``), or any task with a
       live session — its branch and ``-wip`` sibling;
-    * a COMPLETED task whose development delivery is still pending, including
-      one on a foreign repository id — the publisher collects from that branch;
+    * a COMPLETED task in development delivery scope, including one on a
+      foreign repository id, unless *delivery* (a
+      :class:`~src.integration.delivery_observer.DeliveryView` taken before
+      this read) proves in git that its current work is on the target — the
+      publisher collects from that branch, and unknown is never "delivered";
     * every member branch of an unsettled journal row (prepared, publishing,
       parked), the row's own target, and every assembly ref carrying one of
       its members — a parked batch's candidate is what its repair inspects;
@@ -177,13 +205,30 @@ async def live_branch_references(conn: Any) -> dict[str, str]:
     ):
         hold(row["branch_name"], f"task {row['id']} has a live session", wip=True)
 
-    for row in await rows(
+    from src.integration.delivery_observer import development_delivery_scope
+    from src.integration.delivery_truth import DeliveryState
+
+    completed = await rows(
         select(tasks.c.id, tasks.c.branch_name).where(
             tasks.c.status == TaskStatus.COMPLETED.value,
-            _development_delivery_pending(tasks, include_foreign_repos=True),
+            tasks.c.branch_name.is_not(None),
+            development_delivery_scope(tasks),
         )
-    ):
-        hold(row["branch_name"], f"task {row['id']} is not delivered yet", wip=True)
+    )
+    verified = (
+        await delivery.verified_on(conn, {row["id"] for row in completed})
+        if delivery is not None and completed else {}
+    )
+    for row in completed:
+        evidence = verified.get(row["id"])
+        if evidence is not None and evidence.satisfied:
+            continue
+        if evidence is not None and evidence.state is DeliveryState.PENDING:
+            reason = f"task {row['id']} is not delivered yet"
+        else:
+            why = evidence.reason if evidence is not None else "not verified in git"
+            reason = f"task {row['id']} delivery is unknown ({why})"
+        hold(row["branch_name"], reason, wip=True)
 
     # Unsettled journal rows: their members, their targets and the assemblies
     # that carry their members.
@@ -826,6 +871,7 @@ __all__ = [
     "PROTECTED_BRANCHES",
     "TASK_BRANCH_PREFIX",
     "branch_of",
+    "completed_branch_tasks",
     "deletable",
     "delete_branches",
     "expired_task_branches",

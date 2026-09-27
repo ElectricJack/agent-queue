@@ -725,22 +725,23 @@ will be; neither will a finished parent whose collection was cancelled when the
 project switched to development. Its terminal children therefore stay flagged
 unless their delivery is proven another way.
 
-Status already accepts a child that the development publisher delivered to the
-default branch. That `delivered` or `adopted` development delivery, bound to
-the child's latest completion, is its receipt. Run the control for the rest,
-as a local operator or the project's supervisor:
+Status already accepts a child whose latest completion git finds on the
+default branch (the shared delivery evaluator, fetched outside the status
+snapshot); no delivery row is consulted. Run the control for the rest, as a
+local operator or the project's supervisor:
 
 ```bash
 aq integration adopt-legacy-deliveries --project-id <project> --dry-run
 aq integration adopt-legacy-deliveries --project-id <project>
 ```
 
-It fetches the designated repository once. It adopts a child when a
-development delivery lists it and the child's source commit or the delivery's
-published commit is on the default branch (`development_delivery`), when the
-child's branch tip is (`branch_tip`), or when merging a delivery commit, the
-branch tip or the latest completion commit into the default branch changes
-nothing, because the work landed under other commits (`content_equivalent`).
+It fetches the designated repository once. It adopts a child when git proves
+its latest completion on the default branch (`development_delivery`), when the
+child's branch tip is (`branch_tip`), or when merging the branch tip, the
+latest completion commit or a source a historical manifest names into the
+default branch changes nothing, because the work landed under other commits
+(`content_equivalent`). A manifest only locates a source; its state, and an
+assembly's published commit, prove nothing.
 It writes one `integration_legacy_deliveries` row per adopted child, and it is
 safe to repeat.
 
@@ -930,7 +931,9 @@ An `aq/` branch is stale by exactly one rule:
 | `expired` | The branch of a FAILED or abandoned (`work_outcome: abandoned`) task, 14 days after it went terminal (the later of its last update and its last close). |
 
 A stale branch stays when anything still references it: a task that can still
-run or has a live session, COMPLETED work not delivered yet, an unsettled batch
+run or has a live session, COMPLETED development work git does not prove on
+the target (not delivered yet, or unknown: a missing ref, another project's
+repository, a git failure), an unsettled batch
 (and every assembly carrying one of its members), an open repair's sources, an
 `integration_branch_owners` row that is not `released`, a live legacy
 operation, batch or promotion intent, a live hierarchy branch origin, or a

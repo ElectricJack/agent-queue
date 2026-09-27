@@ -1,6 +1,7 @@
 """Evidence and dry-run behavior for terminal legacy repository binding."""
 
 import json
+import subprocess
 import time
 
 import pytest
@@ -13,23 +14,59 @@ from src.database.tables import (
     task_comments,
     task_completion_records,
 )
+from src.git.manager import GitManager
+from src.integration.delivery_observer import DeliveryObserver
 from src.integration.legacy_repositories import LegacyRepositoryBinding
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 
 
+def git(path, *args):
+    return subprocess.check_output(
+        ["git", "-C", str(path), *args], text=True, stderr=subprocess.PIPE
+    ).strip()
+
+
 @pytest.fixture
-async def db(reuse_database):
+def origin(tmp_path):
+    """A bare origin whose ``main`` the designated repository delivers to."""
+    url = tmp_path / "origin.git"
+    git(tmp_path, "init", "--bare", "--initial-branch=main", str(url))
+    clone = tmp_path / "clone"
+    git(tmp_path, "clone", str(url), str(clone))
+    git(clone, "config", "user.name", "Tester")
+    git(clone, "config", "user.email", "tester@example.test")
+    (clone / "base.txt").write_text("base\n")
+    git(clone, "add", ".")
+    git(clone, "commit", "-q", "-m", "base")
+    git(clone, "push", "-q", "origin", "main")
+    return clone
+
+
+def landed(clone, name):
+    """A commit on origin's ``main``: the git fact that proves a delivery."""
+    (clone / f"{name}.txt").write_text(name + "\n")
+    git(clone, "add", ".")
+    git(clone, "commit", "-q", "-m", name)
+    git(clone, "push", "-q", "origin", "main")
+    return git(clone, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+async def db(reuse_database, origin, tmp_path):
     database = await reuse_database("legacy-repositories.db")
     await database.create_project(Project(id="p", name="project"))
     await database.create_repo(RepoConfig(
         id="repo", project_id="p", source_type=RepoSourceType.CLONE,
-        url="https://github.com/acme/widgets.git",
+        url=str(tmp_path / "origin.git"),
     ))
+    database.set_delivery_observer(
+        DeliveryObserver(database, git=GitManager(), data_dir=tmp_path / "observer")
+    )
     yield database
 
 
-async def test_dry_run_then_bind_only_proven_terminal_hierarchy(db):
+async def test_dry_run_then_bind_only_proven_terminal_hierarchy(db, origin):
     for task_id, parent, status in (
         ("parent", None, TaskStatus.COMPLETED),
         ("child", "parent", TaskStatus.COMPLETED),
@@ -47,15 +84,10 @@ async def test_dry_run_then_bind_only_proven_terminal_hierarchy(db):
             integration_repository_id="repo", hierarchical_integration_mode="observe",
             hierarchical_integration_desired_mode="train",
         ))
+        # Git proves the child's latest completion on main; no receipt row.
         await conn.execute(insert(task_completion_records).values(
             id="completion-child", task_id="child", outcome="pass",
-            commits=json.dumps(["a" * 40]), completed_at=now,
-        ))
-        await conn.execute(insert(development_deliveries).values(
-            id="delivery-child", project_id="p", repository_id="repo",
-            target_ref="refs/heads/main", expected_sha=None, prepared_sha="a" * 40,
-            state="delivered", manifest=[{"task_id": "child", "source_sha": "a" * 40}],
-            evidence={}, reason="published", created_at=now, updated_at=now,
+            commits=json.dumps([landed(origin, "child")]), completed_at=now,
         ))
 
     service = LegacyRepositoryBinding(db)
@@ -128,7 +160,7 @@ async def _legacy_delivery(conn, task_id, parent, proof, *, repository_id="repo"
     ))
 
 
-async def test_recorded_legacy_deliveries_prove_children_and_their_parent(db):
+async def test_recorded_legacy_deliveries_prove_children_and_their_parent(db, origin):
     """Supersede, retire and accept decisions are proof; a parent needs every child proven."""
     for task_id, parent, status in (
         ("parent", None, TaskStatus.COMPLETED),
@@ -156,13 +188,7 @@ async def test_recorded_legacy_deliveries_prove_children_and_their_parent(db):
         ))
         await conn.execute(insert(task_completion_records).values(
             id="completion-receipt", task_id="parent.receipt", outcome="pass",
-            commits=json.dumps(["a" * 40]), completed_at=now,
-        ))
-        await conn.execute(insert(development_deliveries).values(
-            id="delivery-receipt", project_id="p", repository_id="repo",
-            target_ref="refs/heads/main", prepared_sha="a" * 40, state="delivered",
-            manifest=[{"task_id": "parent.receipt", "source_sha": "a" * 40}],
-            evidence={}, reason="published", created_at=now, updated_at=now,
+            commits=json.dumps([landed(origin, "parent-receipt")]), completed_at=now,
         ))
         await _legacy_delivery(conn, "parent.superseded", "parent", "superseded")
         await _legacy_delivery(conn, "parent.retired", "parent", "abandoned")

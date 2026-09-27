@@ -211,6 +211,7 @@
       "modules": [
         "tests/test_branch_discard.py",
         "tests/test_close_unpushed_work.py",
+        "tests/test_delivery_consumers.py",
         "tests/test_delivery_integration.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
@@ -379,6 +380,12 @@
         "tests/test_formulas_parse.py",
         "tests/test_formulas_provenance.py",
         "tests/test_formulas_resolve.py"
+      ]
+    },
+    "generated-artifacts": {
+      "description": "Generated artifacts: the one regeneration command and its drift check, the .gitattributes merge=aq-generated set kept in step with it, and the merge driver under which those files never conflict.",
+      "modules": [
+        "tests/test_generated_artifacts.py"
       ]
     },
     "git-manager": {
@@ -1266,7 +1273,7 @@
       ]
     }
   },
-  "digest": "sha256:b838b674c3a5c3c0585f079e63ca7218c0d59eee7332db005043dcc49bda3269",
+  "digest": "sha256:10cb0a51ee48857b0f3a567eef3a9e14fa0b030d4fc48d771f271ac52d08d439",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2450,6 +2457,8 @@
         "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.models",
         "src.orchestrator"
       ],
@@ -4415,6 +4424,28 @@
       ],
       "summary": "Tests for the deterministic deliverable evaluator (``src/deliverables.py``)."
     },
+    "tests/test_delivery_consumers.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.git.manager",
+        "src.integration.controls",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
+        "src.integration.development",
+        "src.integration.status",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "Every delivery consumer asks git the same question and gets the same answer."
+    },
     "tests/test_delivery_integration.py": {
       "areas": [
         "development-delivery"
@@ -5645,6 +5676,19 @@
       "markers": [],
       "summary": "Work-graph WG-3: gate query layer."
     },
+    "tests/test_generated_artifacts.py": {
+      "areas": [
+        "generated-artifacts"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.development"
+      ],
+      "markers": [
+        "slow"
+      ],
+      "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
+    },
     "tests/test_get_downstream_tasks.py": {
       "areas": [
         "task-dependencies"
@@ -6817,6 +6861,7 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.controls",
+        "src.integration.delivery_observer",
         "src.integration.development",
         "src.integration.legacy_deliveries",
         "src.integration.legacy_repositories",
@@ -6838,6 +6883,8 @@
       "default_arm": true,
       "imports": [
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.integration.legacy_repositories",
         "src.integration.status",
         "src.models"
@@ -7594,6 +7641,8 @@
         "src.database.tables",
         "src.doctor.models",
         "src.doctor.task_checks",
+        "src.git.manager",
+        "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.obsolete_close",
         "src.integration.owner_recovery",
