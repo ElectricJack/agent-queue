@@ -19,7 +19,11 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, insert, select, text, update
 
-from src.database.queries.blocked_state import _development_delivery_pending, blocked_predicate
+from src.database.queries.blocked_state import (
+    _development_delivery_pending,
+    blocked_predicate,
+    obsolete_marker,
+)
 from src.database.tables import (
     projects, sessions, task_completion_records,
     task_metadata, tasks,
@@ -334,6 +338,7 @@ class DevelopmentIntegration:
                         task_completion_records.c.task_id == tasks.c.id,
                         task_completion_records.c.commits != "[]",
                     ).exists(),
+                    ~obsolete_marker(tasks),
                 ).limit(1)
             )
             return candidate is not None
