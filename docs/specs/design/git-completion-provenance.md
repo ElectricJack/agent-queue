@@ -74,7 +74,8 @@ postdates the completion (the generation fence), and the source is an ancestor
 of the repair (the pre-provenance check). A different reported source, a newer
 generation or a source the repair lacks still requires migration. An empty
 legacy commit list without that filing-delivery fence (for example, only a
-delivery-row source binding) is not bound automatically either.
+delivery-row source binding) is not bound automatically either; an operator can
+attest it explicitly (see [Legacy migration primitive](#legacy-migration-primitive)).
 
 An invalid repair contract, a missing passing immutable source completion, or
 an unlabelled source the bridge cannot bind refuses close as an operator blocker
@@ -109,10 +110,29 @@ retired journal — the immutable `development.legacy_provenance` events revisio
 without its state — is read in keyset chunks, and a page retains only the rows
 that name its own tasks, so a long history never refuses a page; those rows are
 bounded (5000), with a smaller `--limit` or `--task-id` as the remedy.
+A page binds its generations in batches (`BIND_BATCH`, 50): an apply stages each
+batch's completion records locally, then reads, pushes (every ref leased to
+absence, not atomic) and reads back all of the batch's refs in one round trip
+each, so each generation settles alone and a failed write is reported in
+`ambiguous` with its generation. A page starts no batch after `PAGE_TIME_BUDGET`
+(45 s) and then reports `budget_exhausted` with `next_offset` at its first
+unexamined generation (its missing-generation report is cut to the same span);
+the CLI waits 300 s, so a page never outlives its client. `counts` gives the
+page's totals.
 `--task-id <id>` migrates only what that (held) task's close needs: the current
 completion of each `development_repair_sources` member, bound from the contract
 under the same fence the close applies, or the task's own passing generations
-when it has no contract; `next_offset` is then `null`. Apply never modifies or
+when it has no contract; `next_offset` is then `null`. A COMPLETED task with a
+branch (or the retirement marker) but no passing generation is reported as a
+missing generation, exactly as the paged inventory reports it, never as
+`zero_fallback`. `--task-id <id> --source <oid>` is the explicit operator
+evidence for a legacy close that recorded no source Git can verify (no reported
+commit, no `completion_sources`, only a delivery manifest): it binds the exact
+OID to that COMPLETED task's current passing generation, marked
+`authority: operator` in the inventory. It refuses a task with a repair
+contract, never overrides a source the generation's own evidence names, never
+rebinds a retained generation, and an object the repository lacks stays
+ambiguous. Apply never modifies or
 deletes retained history. It expands only unique Git OID prefixes, binds explicit legacy
 `completion_sources` to their exact completion ID, and verifies all objects.
 A generation already retained in Git is reported `present`. Receipt state is

@@ -358,6 +358,9 @@ class IntegrationMigrateProvenanceArgs(CommandArgs):
     offset: int = Field(default=0, ge=0)
     # Only the source generations this (held) task's close needs.
     task_id: str | None = Field(default=None, min_length=1)
+    # Operator attestation of task_id's current completion source, for a
+    # legacy close that retained no source Git can verify.
+    source: str | None = Field(default=None, pattern=r"^[0-9a-f]{40}$")
 
 
 class IntegrationMigrateProvenanceValue(CommandValue):
@@ -371,6 +374,9 @@ class IntegrationMigrateProvenanceValue(CommandValue):
     zero_fallback: bool = False
     operations: list[dict[str, Any]] = Field(default_factory=list)
     legacy_heads: list[dict[str, Any]] = Field(default_factory=list)
+    # Per-page totals, and whether the page stopped at its time budget.
+    counts: dict[str, int] = Field(default_factory=dict)
+    budget_exhausted: bool = False
     next_offset: int | None = None
 
 

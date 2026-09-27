@@ -83,6 +83,14 @@ def _json(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+def _completion_record(completed: CompletedSource, claim_epoch: int, artifact: bool) -> dict:
+    if type(claim_epoch) is not int or claim_epoch < 0 or type(artifact) is not bool:
+        raise ValueError("invalid completion claim/artifact")
+    return {"version": 1, "kind": "completion", "identity": asdict(completed.identity),
+            "source_oid": completed.source_oid, "claim_epoch": claim_epoch,
+            "artifact": artifact}
+
+
 class GitProvenance:
     def __init__(self, git, checkout: str, *, repository_url: str):
         self.git, self.checkout, self.repository_url = git, checkout, repository_url
@@ -177,7 +185,8 @@ class GitProvenance:
                 return record
         return None
 
-    async def _write(self, branch: str, record: dict) -> str:
+    async def _stage(self, record: dict) -> str:
+        """The validated local metadata commit for *record*; nothing is published."""
         body = _json(record)
         if len(body.encode()) > MAX_RECORD_BYTES:
             raise ValueError("provenance record exceeds bounded size")
@@ -191,6 +200,10 @@ class GitProvenance:
             "GIT_AUTHOR_DATE": "@0 +0000", "GIT_COMMITTER_DATE": "@0 +0000",
         })
         await self._validate(record, oid)
+        return oid
+
+    async def _write(self, branch: str, record: dict) -> str:
+        oid = await self._stage(record)
         remote = await self.git.als_remote_ref(
             self.checkout, branch, repository_url=self.repository_url
         )
@@ -215,12 +228,65 @@ class GitProvenance:
     async def write_completion(
         self, completed: CompletedSource, *, claim_epoch: int = 0, artifact: bool = True
     ) -> str:
-        if type(claim_epoch) is not int or claim_epoch < 0 or type(artifact) is not bool:
-            raise ValueError("invalid completion claim/artifact")
-        record = {"version": 1, "kind": "completion", "identity": asdict(completed.identity),
-                  "source_oid": completed.source_oid, "claim_epoch": claim_epoch,
-                  "artifact": artifact}
-        return await self._write(completed.identity.branch, record)
+        return await self._write(completed.identity.branch,
+                                 _completion_record(completed, claim_epoch, artifact))
+
+    async def write_completions(
+        self, completions: list[CompletedSource], *, claim_epoch: int = 0, artifact: bool = True
+    ) -> dict[CompletionIdentity, str | Exception]:
+        """:meth:`write_completion` for many generations in one remote transfer.
+
+        Each record is staged and validated exactly as a single write stages
+        it; one read, one push leased to absence and one read-back settle every
+        ref. A ref already holding the same deterministic object is kept, and
+        each generation reports its own oid or its own failure, never a peer's.
+        """
+        results: dict[CompletionIdentity, str | Exception] = {}
+        staged: dict[str, tuple[CompletionIdentity, str]] = {}
+        for completed in completions:
+            try:
+                oid = await self._stage(_completion_record(completed, claim_epoch, artifact))
+            except (ValueError, KeyError, TypeError, GitError) as exc:
+                results[completed.identity] = exc
+                continue
+            # An identical repeat shares its generation's one ref and result.
+            if staged.setdefault(completed.identity.branch, (completed.identity, oid))[1] != oid:
+                results[completed.identity] = ValueError(
+                    "one completion generation is bound to two sources in this batch")
+        staged = {branch: item for branch, item in staged.items() if item[0] not in results}
+        if not staged:
+            return results
+        before = await self.git.als_remote_refs(
+            self.checkout, list(staged), repository_url=self.repository_url
+        )
+        absent = {}
+        for branch, (identity, oid) in staged.items():
+            remote = before[branch]
+            if remote.state is RemoteRefState.ERROR:
+                results[identity] = GitError(remote.error or "cannot inspect published provenance")
+            elif remote.state is RemoteRefState.PRESENT and remote.oid != oid:
+                results[identity] = ValueError(
+                    "immutable completion generation already binds different evidence")
+            elif remote.state is RemoteRefState.ABSENT:
+                absent[branch] = oid
+        after = await self.git.apush_new_refs(
+            self.checkout, absent, repository_url=self.repository_url
+        ) if absent else {}
+        for branch, (identity, oid) in staged.items():
+            if identity in results:
+                continue
+            verified = after.get(branch, before[branch])
+            if verified.state is not RemoteRefState.PRESENT or verified.oid != oid:
+                results[identity] = GitError(
+                    verified.error or "complete provenance is not verified on the authorized remote")
+                continue
+            try:
+                await self.run("update-ref", "refs/remotes/origin/" + branch, oid)
+            except GitError as exc:
+                results[identity] = exc
+                continue
+            results[identity] = oid
+        return results
 
     async def write_replacement(
         self, *, source_oid: str, base_oid: str, replaces: list[CompletedSource],

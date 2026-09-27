@@ -35,7 +35,7 @@ class GitCommandsMixin:
             return await ProvenanceMigration(self.db, self.orchestrator.git).run(
                 args["project_id"], apply=args.get("apply", False),
                 limit=args.get("limit", 500), offset=args.get("offset", 0),
-                task_id=args.get("task_id") or None,
+                task_id=args.get("task_id") or None, source=args.get("source") or None,
             )
         except (ValueError, RuntimeError, GitError) as exc:
             return {"success": False, "outcome": "blocked", "error": str(exc)}
