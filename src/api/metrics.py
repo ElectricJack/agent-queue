@@ -13,7 +13,7 @@ import time
 
 from fastapi import APIRouter, HTTPException, Query
 
-from src.api.models.metrics import MetricsSample, MetricsSeriesResponse
+from src.api.models.metrics import MetricsSeriesResponse
 from src.metrics.sampler import RESOLUTIONS
 
 __all__ = ["build_metrics_router", "choose_step", "router"]
@@ -61,12 +61,16 @@ async def _series(db, from_ts: float | None, to_ts: float | None, step: str):
     rows = await db.read_metrics_samples(
         resolution, from_value, to_value, limit=MAX_POINTS
     )
-    return MetricsSeriesResponse(
-        step=resolution,
-        from_ts=from_value,
-        to_ts=to_value,
-        truncated=truncated or len(rows) >= MAX_POINTS,
-        samples=[MetricsSample.model_validate(row) for row in rows],
+    # Validate the nested list in one pass. Entering Pydantic separately for
+    # every second of an hour's history was the dominant cold-page CPU span.
+    return MetricsSeriesResponse.model_validate(
+        {
+            "step": resolution,
+            "from_ts": from_value,
+            "to_ts": to_value,
+            "truncated": truncated or len(rows) >= MAX_POINTS,
+            "samples": rows,
+        }
     )
 
 

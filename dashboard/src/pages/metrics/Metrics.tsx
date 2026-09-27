@@ -50,6 +50,7 @@ export default function Metrics() {
           <h1 className="text-lg font-semibold text-gray-100">Metrics</h1>
           <p className="text-xs text-gray-500">
             {STEP_LABEL[feed.step] ?? feed.step} ·{" "}
+            {feed.isRefining && "loading 1-second detail · "}
             {status === "connected"
               ? "live"
               : status === "connecting"
@@ -93,6 +94,12 @@ export default function Metrics() {
       {feed.isError && (
         <p className="rounded-lg border border-red-900/60 bg-red-950/40 p-3 text-sm text-red-200">
           Could not load metrics history: {String((feed.error as Error)?.message ?? feed.error)}
+        </p>
+      )}
+      {feed.refinementError != null && (
+        <p className="text-sm text-amber-200">
+          Could not load 1-second detail. Showing minute history and live 1-second samples;
+          reload history to retry.
         </p>
       )}
 
