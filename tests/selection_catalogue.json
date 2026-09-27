@@ -677,6 +677,7 @@
         "tests/test_migration_boolean_defaults.py",
         "tests/test_migration_candidate_authority.py",
         "tests/test_migration_candidate_mutation_claims.py",
+        "tests/test_migration_capacity_spill.py",
         "tests/test_migration_collaboration_threads.py",
         "tests/test_migration_conflict_resolution.py",
         "tests/test_migration_epic_pull_requests.py",
@@ -1273,7 +1274,7 @@
       ]
     }
   },
-  "digest": "sha256:10cb0a51ee48857b0f3a567eef3a9e14fa0b030d4fc48d771f271ac52d08d439",
+  "digest": "sha256:fda90aed089e44b9849aa0e5a2ddda151111dc95ba374becd7d6a1a62e18e9d7",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8247,6 +8248,21 @@
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
     },
+    "tests/test_migration_capacity_spill.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine",
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Capacity-spill schema upgrades and rollback on owned disposable PostgreSQL."
+    },
     "tests/test_migration_collaboration_threads.py": {
       "areas": [
         "migrations"
@@ -10393,6 +10409,8 @@
         "src.config",
         "src.database.queries",
         "src.database.queries.claim_queries",
+        "src.database.queries.task_reroute_queries",
+        "src.database.tables",
         "src.intelligence_classes",
         "src.llm.client",
         "src.llm.fake",

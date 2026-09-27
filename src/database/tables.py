@@ -20,8 +20,8 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     ForeignKeyConstraint,
-    Index,
     Identity,
+    Index,
     Integer,
     MetaData,
     PrimaryKeyConstraint,
@@ -51,6 +51,7 @@ projects = Table(
     Column("repo_url", Text, nullable=True, server_default=""),
     Column("repo_default_branch", Text, nullable=True, server_default="main"),
     Column("default_profile_id", Text, ForeignKey("agent_profiles.id"), nullable=True),
+    Column("preferred_provider", Text, nullable=True),
     Column("assignment_playbook_id", Text, nullable=True),
     # Project-level integration policy: 'direct' | 'pull_request' | NULL
     # (NULL = inherit config ``integration.default_mode``).
@@ -2659,7 +2660,7 @@ task_reroutes = Table(
     Column("at", Float, nullable=False),
     Column("undone_at", Float, nullable=True),
     CheckConstraint(
-        "reason_code IN ('provider_unavailable','operator_forced','operator_undo')",
+        "reason_code IN ('provider_unavailable','capacity_spill','operator_forced','operator_undo')",
         name="ck_task_reroutes_reason_code",
     ),
     Index("idx_task_reroutes_task_at", "task_id", "at"),
