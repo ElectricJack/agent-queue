@@ -870,9 +870,10 @@
       ]
     },
     "provider-failover": {
-      "description": "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine, in-flight failure handling, escalation pages and availability API and doctor checks.",
+      "description": "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine, in-flight failure handling, escalation pages, availability API and doctor checks, and the provider allocation status read.",
       "modules": [
         "tests/test_fake_session_script.py",
+        "tests/test_provider_allocation.py",
         "tests/test_provider_availability.py",
         "tests/test_provider_availability_api.py",
         "tests/test_provider_availability_doctor.py",
@@ -1260,7 +1261,7 @@
       ]
     }
   },
-  "digest": "sha256:6f67963f887a920864d547cba4d77b8d5f0dbf8f01ed5ee39a5abe10a8fd96d8",
+  "digest": "sha256:3128be0e7b30899863f84aa4a49ab14e64cec73e6d686728de37ce3b082a90b3",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6019,7 +6020,9 @@
         "src.orchestrator",
         "src.tools"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Container-close semantics and the hierarchy command surface — spec §7, §14."
     },
     "tests/test_hierarchy_doctor.py": {
@@ -10060,6 +10063,26 @@
       ],
       "markers": [],
       "summary": "``proposal.status_changed`` bus event — schema + emission."
+    },
+    "tests/test_provider_allocation.py": {
+      "areas": [
+        "provider-failover"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.providers",
+        "src.api.scope",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.models",
+        "src.providers.allocation",
+        "src.providers.intent",
+        "src.sessions.harness_parser"
+      ],
+      "markers": [],
+      "summary": "Provider allocation status (provider-worker-allocation-controls, plan Task 6)."
     },
     "tests/test_provider_availability.py": {
       "areas": [

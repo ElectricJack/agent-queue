@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 430,
+    "leaf_commands": 432,
     "registration": {
-      "generated": 283,
+      "generated": 285,
       "handwritten": 147
     },
     "ownership": {
-      "core": 391,
+      "core": 393,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 429
+      "supported": 431
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 283,
+      "dispatch": 285,
       "registration": 133
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 370
+      "untested": 372
     }
   },
   "commands": [
@@ -7707,6 +7707,39 @@
       }
     },
     {
+      "path": "aq provider allocation-status",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_allocation_status",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
+          "--provider",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq provider held-tasks",
       "registration": "generated",
       "owner_kind": "core",
@@ -11833,6 +11866,40 @@
       }
     },
     {
+      "path": "aq system reconcile-collaborations",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "reconcile_collaborations",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--now",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--now"
+        ]
+      }
+    },
+    {
       "path": "aq system reload-config",
       "registration": "generated",
       "owner_kind": "core",
@@ -12478,11 +12545,12 @@
         "disposable-daemon:S2/S4"
       ],
       "parameters": {
-        "required": [
-          "--outcome"
-        ],
+        "required": [],
         "optional": [
           "task_id",
+          "--outcome",
+          "--obsolete",
+          "--reason",
           "--summary",
           "--failure-class",
           "--work-outcome",

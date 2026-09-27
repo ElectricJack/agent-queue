@@ -340,6 +340,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "provider_set_state": "provider",
     "provider_reroute": "provider",
     "provider_reroute_undo": "provider",
+    "provider_allocation_status": "provider",
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_scale": "pool",
@@ -5707,6 +5708,40 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": "Only this project's tasks. Default: every project.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "provider_allocation_status",
+        "description": (
+            "Show every ordinary worker profile grouped by provider (the harness "
+            "login: claude, codex): lifecycle, per-profile bounds, class and "
+            "enabled flag; fleet and per-project pool supply (ready, idle, busy, "
+            "starting, draining, unresponsive); live sessions with their task and "
+            "idle age; READY/ASSIGNED/IN_PROGRESS tasks pinned or preferred to "
+            "each profile; manual agent definitions and their overrides; each "
+            "project's preferred provider; and the provider-wide configured pool "
+            "ceiling.  Control, named, template, malformed and unknown-provider "
+            "profiles are listed as diagnostics.  Read-only; a project-scoped "
+            "caller sees other projects' sessions and tasks redacted."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Narrow the per-project detail (project rows, sessions, "
+                        "task ids) to one project; fleet-wide counts are unchanged."
+                    ),
+                },
+                "provider": {
+                    "type": "string",
+                    "description": (
+                        "Only this provider: a key (codex) or vendor (openai)."
+                    ),
                 },
             },
             "required": [],
