@@ -870,7 +870,7 @@
       ]
     },
     "provider-failover": {
-      "description": "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine, in-flight failure handling, escalation pages and availability API and doctor checks.",
+      "description": "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and its capacity-spill planner, in-flight failure handling, escalation pages and availability API and doctor checks.",
       "modules": [
         "tests/test_fake_session_script.py",
         "tests/test_provider_availability.py",
@@ -882,6 +882,7 @@
         "tests/test_provider_inflight.py",
         "tests/test_provider_intent.py",
         "tests/test_provider_reroute.py",
+        "tests/test_provider_spill.py",
         "tests/test_provider_suppression.py"
       ]
     },
@@ -1260,7 +1261,7 @@
       ]
     }
   },
-  "digest": "sha256:6f67963f887a920864d547cba4d77b8d5f0dbf8f01ed5ee39a5abe10a8fd96d8",
+  "digest": "sha256:87f9e83a8fa10c7dfdcfeaab24ca4e25adaf8f6ba0832700674528584273930b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6019,7 +6020,9 @@
         "src.orchestrator",
         "src.tools"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Container-close semantics and the hierarchy command surface — spec §7, §14."
     },
     "tests/test_hierarchy_doctor.py": {
@@ -10261,6 +10264,26 @@
       ],
       "markers": [],
       "summary": "The re-route engine (provider-failover D11-D17)."
+    },
+    "tests/test_provider_spill.py": {
+      "areas": [
+        "provider-failover"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.models",
+        "src.orchestrator.pools",
+        "src.providers.availability",
+        "src.providers.intent",
+        "src.providers.reroute",
+        "src.providers.spill",
+        "src.scheduler"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Capacity spill (provider-failover D24): the pure planner, its view and its config."
     },
     "tests/test_provider_suppression.py": {
       "areas": [
