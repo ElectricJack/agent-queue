@@ -323,7 +323,7 @@ class ArchiveQueryMixin:
 
         Development mode keeps its claim on a source task in two places, and
         neither is a foreign key onto ``tasks``: an unfinished
-        ``development_deliveries`` manifest, and the source manifest an open
+        publisher operation manifest, and the source manifest an open
         repair task carries in its metadata.  Archiving a task named by either
         leaves the publisher holding an id that no longer resolves — the batch
         can no longer explain what it is publishing, and the repair can no
@@ -356,6 +356,16 @@ class ArchiveQueryMixin:
             .mappings()
             .all()
         )
+        from src.integration.development import operation_rows_on
+
+        # Pending actions still own their inputs after runtime receipt writes
+        # have retired. Keep the legacy holds until the migration/retire step.
+        operations = await operation_rows_on(conn, [project_id])
+        migrated = {row["id"].removeprefix("legacy-operation:") for row in operations
+                    if row["id"].startswith("legacy-operation:")}
+        batches = [*(row for row in batches if row["id"] not in migrated),
+                   *(row for row in operations
+                     if row["state"] in {"prepared", "publishing", "parked"})]
         for row in batches:
             named = self._named_task_ids(row["manifest"], wanted)
             if named:

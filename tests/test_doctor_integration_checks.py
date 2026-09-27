@@ -915,9 +915,7 @@ async def _batch(
     branch_cleanup=None,
     project_id="p",
 ):
-    import sqlalchemy as sa
-
-    from src.database.tables import development_deliveries
+    from src.integration.development import DevelopmentIntegration
 
     now = time.time()
     evidence = {"kind": "validation"}
@@ -925,9 +923,10 @@ async def _batch(
         evidence["publisher_diagnostic"] = diagnostic
     if branch_cleanup is not None:
         evidence["branch_cleanup"] = branch_cleanup
+    # The publisher records its operations in the event log, not a receipt table.
     async with db._engine.begin() as conn:
         await conn.execute(
-            sa.insert(development_deliveries).values(
+            DevelopmentIntegration._operation_insert(
                 id=batch_id,
                 project_id=project_id,
                 repository_id="r",
@@ -1114,14 +1113,12 @@ async def test_publisher_stalled_flags_a_pushed_but_uncollected_repair(db):
 
 
 async def _deferral_streak(db, identity, *, consecutive, open_=True):
-    import sqlalchemy as sa
-
-    from src.database.tables import development_deliveries
+    from src.integration.development import DevelopmentIntegration
 
     now = time.time()
     async with db._engine.begin() as conn:
         await conn.execute(
-            sa.insert(development_deliveries).values(
+            DevelopmentIntegration._operation_insert(
                 id=identity,
                 project_id="p",
                 repository_id="r",

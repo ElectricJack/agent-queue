@@ -799,9 +799,14 @@ recorded, undoable re-route bounded by the D15 per-task limits.
   the automatic call (no `provider`, no `task_ids`). The `provider-failover` playbook
   already calls `provider_reroute` with no arguments on `timer.5m`, so no playbook,
   contract argument or result field changes and the reviewed bundle's fingerprint is
-  untouched. Spill decisions ride in the existing `moved` / `held` / `skipped` lists with
-  a `reason_code` key. The failover pass runs first; a task it moved or held is not
-  planned again by spill.
+  untouched. Spill decisions ride in the existing `moved` / `held` / `skipped` lists; every
+  decision carries a `reason_code` key naming its pass (`provider_unavailable`,
+  `operator_forced`, `capacity_spill`). The failover pass runs first; a task it decided is
+  not planned again by spill. Both passes are planned before either writes, and the
+  failover pass's planned moves count as READY on their targets in the spill view, so a
+  `dry_run` plan is the live one and a target never offers the same capacity twice.
+  The pool is measured only when some task has waited `after_seconds`; a failed
+  measurement plans no spill and never fails the failover pass.
 * **S2 — config.** `provider_failover.spill`: `enabled` (default `true`),
   `after_seconds` (default `300`, `>= 0`), `max_per_sweep` (default `5`, `>= 1`),
   hot-reloadable like its siblings (D22). Spill applies only when failover would —
@@ -869,7 +874,8 @@ recorded, undoable re-route bounded by the D15 per-task limits.
   `spill-<UTC yyyymmddThhmm>` (one per sweep), a task comment naming the saturation — for
   example "standard-high-opencode had no free capacity for 9 min: 1/1 live, 0 idle" —
   and the undo command, one `task.rerouted` event per task and one `pool.spilled` summary
-  event per applying sweep. No supervisor message: a sweep every five minutes would spam.
+  event (batch id, moved count, `routes` per source and target, projects, holds by kind)
+  per sweep that spilled work. No supervisor message: a sweep every five minutes would spam.
   `aq provider reroute-undo --batch` and `--task-id` work unchanged. A spill move does
   not add its source to `left_providers`; that set is for providers a task fled because
   they were down.

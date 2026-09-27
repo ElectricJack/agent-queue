@@ -366,6 +366,10 @@ class IntegrationMigrateProvenanceValue(CommandValue):
     inventory: list[dict[str, Any]] = Field(default_factory=list)
     repairs: list[dict[str, Any]] = Field(default_factory=list)
     ambiguous: list[dict[str, Any]] = Field(default_factory=list)
+    fallback_generations: list[dict[str, Any]] = Field(default_factory=list)
+    fallback_count: int = Field(default=0, ge=0)
+    zero_fallback: bool = False
+    operations: list[dict[str, Any]] = Field(default_factory=list)
     legacy_heads: list[dict[str, Any]] = Field(default_factory=list)
     next_offset: int | None = None
 

@@ -10,7 +10,7 @@ import re
 import tempfile
 from dataclasses import asdict
 
-from sqlalchemy import select, tuple_, union
+from sqlalchemy import select, text, tuple_, union
 
 from src.database.queries.task_identity import resolve_task_identity_on
 from src.database.tables import (
@@ -68,6 +68,21 @@ class ProvenanceMigration:
                 ).order_by(task_completion_records.c.completed_at, task_completion_records.c.id)
                   .offset(offset).limit(limit + 1))).mappings().all()
                 more, rows, held, unheld = len(rows) > limit, rows[:limit], {}, []
+                unlabelled = union(*[
+                    select(table.c.id).where(
+                        table.c.project_id == project_id, table.c.status == "COMPLETED",
+                        table.c.branch_name.is_not(None),
+                        ~select(task_completion_records.c.id).where(
+                            task_completion_records.c.task_id == table.c.id,
+                        ).exists(),
+                    ) for table in (tasks, archived_tasks)
+                ]).subquery()
+                missing = (await conn.execute(select(unlabelled.c.id).order_by(unlabelled.c.id)
+                    .offset(offset).limit(limit + 1))).scalars().all()
+                more = more or len(missing) > limit
+                unheld = [{"task_id": identity, "generation": None,
+                           "reason": "missing immutable completion generation"}
+                          for identity in missing[:limit]]
             else:
                 more = False
                 rows, held, unheld = await self._held_task_rows(conn, project_id, task_id)
@@ -81,7 +96,7 @@ class ProvenanceMigration:
             await self.git.acreate_checkout(repo.url, path, no_checkout=True)
             store = GitProvenance(self.git, path, repository_url=repo.url)
             target = await store.run("rev-parse", "refs/remotes/origin/" + repo.default_branch)
-            inventory, ambiguous, bindings = [], list(unheld), {}
+            inventory, ambiguous, bindings, fallback = [], list(unheld), {}, list(unheld)
             for row in rows:
                 source_task = row["task_id"]
                 entry = {"task_id": source_task, "generation": row["id"]}
@@ -112,13 +127,17 @@ class ProvenanceMigration:
                     entry.update(source_oid=source, archived=task.archived,
                                  action="present" if existing else "written" if apply else "would_write")
                     inventory.append(entry)
+                    if existing is None and not apply:
+                        fallback.append({**entry, "reason": "missing_git_completion"})
                 except (ValueError, KeyError, TypeError, GitError) as exc:
                     ambiguous.append({**entry, "reason": str(exc)})
+                    fallback.append({**entry, "reason": str(exc)})
             # A held task's close retains its own replacement; its sources'
             # older repair groups belong to the paged inventory.
             repairs = ([], []) if task_id is not None else await self._repairs(
                 store, history, rows, bindings, target, apply, page)
             ambiguous.extend(repairs[1])
+            operations = await self._operations(history, apply)
             # Old operator equivalence rows name neither the immutable original
             # generation nor a replacement base. Do not silently convert an
             # operator's acceptance into a broader, unprovable Git claim.
@@ -132,9 +151,60 @@ class ProvenanceMigration:
             return {"success": True, "outcome": "migrated" if apply else "inventory",
                     "project_id": project_id, "repository_id": repo.id,
                     "inventory": inventory, "repairs": repairs[0], "ambiguous": ambiguous,
+                    "fallback_generations": fallback,
+                    "fallback_count": len(fallback),
+                    "zero_fallback": not fallback and not ambiguous and not more,
+                    "operations": operations,
                     "legacy_heads": [{"id": r["id"], "target_ref": r["target_ref"],
                         "prepared_sha": r["prepared_sha"], "manifest": r["manifest"]} for r in history],
                     "next_offset": offset + limit if more else None}
+
+    async def _operations(self, history, apply):
+        """Retain outstanding actions and test evidence, never delivery receipts.
+
+        Only a pending push, unresolved test/merge attempt, infrastructure
+        streak or pending cleanup has recovery work. Terminal receipt mappings
+        belong in git and are deliberately not copied to another model.
+        """
+        from sqlalchemy import cast
+        from sqlalchemy.dialects.postgresql import JSONB
+
+        from src.database.tables import events
+        from src.integration.development import BRANCH_CLEANUP_KEY, DevelopmentIntegration
+        from src.integration.development_validation import DEFERRAL_KIND
+
+        inventory = []
+        for old in history:
+            evidence = old["evidence"] or {}
+            cleanup = evidence.get(BRANCH_CLEANUP_KEY) or {}
+            if not (old["state"] in {"prepared", "publishing", "parked"}
+                    or evidence.get("kind") == DEFERRAL_KIND
+                    or cleanup.get("state") == "pending"):
+                continue
+            identity = "legacy-operation:" + old["id"]
+            # These keys are obsolete receipt bindings, not operation facts.
+            retained = {key: value for key, value in evidence.items() if key not in {
+                "completion_sources", "resolved_by_delivered_repair", "resolved_by_main_ancestry",
+            }}
+            row = {key: old[key] for key in (
+                "project_id", "repository_id", "target_ref", "expected_sha", "prepared_sha",
+                "manifest", "reason", "created_at", "updated_at",
+            )}
+            row.update(id=identity, state=old["state"], evidence=retained)
+            if apply:
+                async with self.db._engine.begin() as conn:
+                    await conn.execute(text(
+                        "SELECT pg_advisory_xact_lock(hashtextextended(:id, 0))"
+                    ), {"id": "development-operation:" + identity})
+                    present = await conn.scalar(select(events.c.id).where(
+                        events.c.event_type == "development.operation",
+                        cast(events.c.payload, JSONB)["id"].as_string() == identity,
+                    ).limit(1))
+                    if present is None:
+                        await conn.execute(DevelopmentIntegration._operation_insert(**row))
+            inventory.append({"legacy_id": old["id"], "operation_id": identity,
+                              "action": "retained" if apply else "would_retain"})
+        return inventory
 
     async def _held_task_rows(self, conn, project_id, task_id):
         """Current source generations a held task's close needs, keyed by contract.
@@ -241,6 +311,9 @@ class ProvenanceMigration:
         for delivery in history:
             members = delivery["manifest"] or []
             groups = {}
+            proof = (delivery["evidence"] or {}).get("resolved_by_delivered_repair") or {}
+            if proof.get("task_id"):
+                groups[proof["task_id"]] = members
             for member in members:
                 if member.get("superseded_by"):
                     groups.setdefault(member["superseded_by"], []).append(member)
@@ -253,7 +326,9 @@ class ProvenanceMigration:
                     exact = {(m["task_id"], m.get("source_sha")) for m in sources}
                     if not contract or exact != {(m["task_id"], m.get("source_sha")) for m in contract}:
                         raise ValueError("legacy replacement does not name the complete exact repair contract")
-                    repairs = [bindings[r["id"]] for r in rows if r["task_id"] == repair_id and r["id"] in bindings]
+                    generation = proof.get("completion_id") if proof.get("task_id") == repair_id else None
+                    repairs = [bindings[r["id"]] for r in rows if r["task_id"] == repair_id
+                               and r["id"] in bindings and (generation is None or r["id"] == generation)]
                     if len(repairs) != 1:
                         raise ValueError("repair generation is missing or ambiguous in this inventory page")
                     repair = repairs[0]

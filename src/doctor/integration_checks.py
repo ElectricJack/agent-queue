@@ -717,7 +717,6 @@ async def _find_stranded_dependents(
     from sqlalchemy import select
 
     from src.database.tables import (
-        development_deliveries,
         projects,
         task_completion_records,
         task_dependencies,
@@ -802,23 +801,9 @@ async def _find_stranded_dependents(
             .all()
         ):
             completions.setdefault(row["task_id"], row)
-        rows = (
-            (
-                await conn.execute(
-                    select(development_deliveries)
-                    .where(
-                        development_deliveries.c.project_id.in_(development),
-                        development_deliveries.c.state.in_(("delivered", "adopted")),
-                    )
-                    .order_by(
-                        development_deliveries.c.created_at.desc(),
-                        development_deliveries.c.id.desc(),
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
+        from src.integration.development import operation_rows_on
+        rows = await operation_rows_on(conn, development)
+
 
     stranded = {}
     for row in rows:
@@ -916,7 +901,6 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
 
     from src.database.tables import (
         archived_tasks,
-        development_deliveries,
         projects,
         task_completion_records,
         task_metadata,
@@ -941,21 +925,8 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
         )
         if not development:
             return []
-        rows = (
-            (
-                await conn.execute(
-                    select(
-                        development_deliveries.c.id,
-                        development_deliveries.c.project_id,
-                        development_deliveries.c.state,
-                        development_deliveries.c.manifest,
-                        development_deliveries.c.evidence,
-                    ).where(development_deliveries.c.project_id.in_(development))
-                )
-            )
-            .mappings()
-            .all()
-        )
+        from src.integration.development import operation_rows_on
+        rows = await operation_rows_on(conn, development)
         owners = dict(
             (
                 await conn.execute(
@@ -1317,7 +1288,7 @@ async def _find_unrepaired_conflicts(ctx: DoctorContext) -> list[dict]:
     """
     from sqlalchemy import select
 
-    from src.database.tables import development_deliveries, projects, tasks
+    from src.database.tables import projects, tasks
     from src.integration.development import (
         _manifest_members,
         describe_repair_chain,
@@ -1331,11 +1302,8 @@ async def _find_unrepaired_conflicts(ctx: DoctorContext) -> list[dict]:
         )).scalars())
         if not development:
             return []
-        rows = [dict(row) for row in (await conn.execute(
-            select(development_deliveries).where(
-                development_deliveries.c.project_id.in_(development)
-            )
-        )).mappings()]
+        from src.integration.development import operation_rows_on
+        rows = await operation_rows_on(conn, development)
         conflicts = [
             row for row in rows
             if row["state"] == "parked"

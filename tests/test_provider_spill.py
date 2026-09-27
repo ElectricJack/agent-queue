@@ -34,6 +34,7 @@ from src.providers.spill import (
     SpillCandidate,
     capacity_view_from_measurement,
     plan_capacity_spill,
+    with_incoming_moves,
 )
 from src.scheduler import PlacementCandidate, PoolKey, PoolProjectSupply, PoolSupply
 
@@ -528,6 +529,29 @@ def test_capacity_view_from_measurement_folds_supply_candidates_and_bounds():
     assert view.global_headroom == 10 - 4
     assert capacity_view_from_measurement(m, None).global_headroom is None
     assert capacity_view_from_measurement(m, 2).global_headroom == 0
+
+
+def test_work_failover_is_moving_in_consumes_target_headroom():
+    """The sweep plans both passes before it writes, so the one measurement does
+    not yet see failover's moves; folded in, a target they fill is no target (S5)."""
+    from src.providers.reroute import Decision
+
+    claude = _pool("std-high-claude", max_active=2, p=_proj(busy=1))
+    view = _view(_saturated_opencode(), claude, headroom=10)
+    assert _plan([_cand("t1")], view)[0].action == "move"
+
+    def incoming(action):
+        return Decision("f1", "p", "std-high-codex", "codex", UNAUTHENTICATED, action,
+                        to_profile_id="std-high-claude", to_provider="claude")
+
+    folded = with_incoming_moves(view, [incoming("move")])
+    assert folded.pools["std-high-claude"].ready == 1
+    assert folded.pools["std-high-claude"].project("p").ready == 1
+    assert folded.pools["std-high-opencode"] == view.pools["std-high-opencode"]
+    [d] = _plan([_cand("t1")], folded)
+    assert (d.action, d.kind) == ("hold", "spill_no_target")
+    # A hold (even one naming its would-be target) moves nothing in.
+    assert with_incoming_moves(view, [incoming("hold")]) is view
 
 
 def test_an_empty_measurement_is_an_empty_view():

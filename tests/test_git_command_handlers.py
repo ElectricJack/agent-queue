@@ -325,7 +325,8 @@ class TestLegacyGitProvenanceMigration:
         source = await _provenance_commit(provenance_repo, "one")
         await git.apush_branch(store.checkout, "aq/task")
         await self._seed(db, remote, source[:12])
-        await db.archive_task("task")
+        await db.archive_task("task", abandon_undelivered=True,
+                              abandon_reason="Archive legacy fixture before provenance migration")
         await db.create_task(Task(id="ambiguous", project_id="p", repo_id="r", title="T", description="d"))
         await db.save_task_completion(TaskCompletion(id="missing", task_id="ambiguous", outcome="pass",
                                                       commits=[], completed_at=2))
@@ -367,12 +368,18 @@ class TestLegacyGitProvenanceMigration:
             factory.return_value.execute = AsyncMock(return_value={
                 "success": True, "outcome": "inventory", "inventory": [{"task_id": "task"}],
                 "ambiguous": [{"task_id": "old", "reason": "missing"}],
+                "fallback_generations": [{"task_id": "old", "generation": "g"}],
+                "fallback_count": 1, "zero_fallback": False,
+                "operations": [{"operation_id": "pending-action"}],
             })
             result = await registration.invoke(IntegrationMigrateProvenanceArgs(project_id="p"), None)
             factory.return_value.execute.assert_awaited_once_with("integration_migrate_provenance",
                 {"project_id": "p", "apply": False, "limit": 500, "offset": 0, "task_id": None})
             assert result.value.inventory == [{"task_id": "task"}]
             assert result.value.ambiguous[0]["task_id"] == "old"
+            assert result.value.fallback_generations[0]["generation"] == "g"
+            assert result.value.fallback_count == 1 and not result.value.zero_fallback
+            assert result.value.operations == [{"operation_id": "pending-action"}]
         handler.orchestrator.git = git
         result = await handler.execute("integration_migrate_provenance", {"project_id": "p"})
         assert result["success"] and result["outcome"] == "inventory"
@@ -383,7 +390,10 @@ class TestLegacyGitProvenanceMigration:
                                         {"project_id": "p", "task_id": "absent"})
         assert missing["outcome"] == "blocked" and "does not belong" in missing["error"]
 
-    async def test_complete_legacy_repair_is_retained_and_incomplete_evidence_reported(self, provenance_repo, db):
+    @pytest.mark.parametrize("binding_style", ["superseded", "adopted"])
+    async def test_complete_legacy_repair_is_retained_and_incomplete_evidence_reported(
+        self, provenance_repo, db, binding_style
+    ):
         from sqlalchemy import insert
         from src.database.tables import development_deliveries
         from src.integration.provenance import CompletedSource, CompletionIdentity
@@ -411,6 +421,13 @@ class TestLegacyGitProvenanceMigration:
                "manifest": [{"task_id": "repair", "source_sha": repair},
                             {"task_id": "task", "source_sha": original, "superseded_by": "repair"}],
                "evidence": {}, "reason": "repair", "created_at": 3, "updated_at": 3}
+        if binding_style == "adopted":
+            await db.save_task_completion(TaskCompletion(
+                id="older-rg", task_id="repair", outcome="pass", commits=[base], completed_at=1.5,
+            ))
+            row.update(state="adopted", manifest=contract, evidence={
+                "resolved_by_delivered_repair": {"task_id": "repair", "completion_id": "rg"},
+            })
         async with db._engine.begin() as conn:
             await conn.execute(insert(development_deliveries).values(**row))
             await conn.execute(insert(development_deliveries).values(**{
@@ -426,6 +443,7 @@ class TestLegacyGitProvenanceMigration:
         assert await store.run("ls-remote", "origin") == refs
         result = await migration.run("p", apply=True)
         assert result["repairs"][0]["action"] == "written"
+        assert not result["zero_fallback"], "ambiguous operator equivalence is still named"
         await git.afetch_origin(store.checkout, repository_url=str(remote))
         assert await store.contained(CompletedSource(CompletionIdentity("p", "r", "task", "g"), original), repair)
         after = await store.run("ls-remote", "origin")

@@ -1278,7 +1278,7 @@
       ]
     }
   },
-  "digest": "sha256:1417e30d1163edeed1539ecadd65b6b09bfe6980e0c362858e80a598fb387213",
+  "digest": "sha256:863c8d8fe623e571103c1c820fe3507d11b14871f2cd8fdbebdaa8f280501cde",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4554,7 +4554,6 @@
         "src.commands.principal",
         "src.config",
         "src.database",
-        "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.doctor.git_checks",
@@ -4572,6 +4571,8 @@
         "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
+        "src.integration.provenance",
+        "src.integration.provenance_migration",
         "src.integration.status",
         "src.jobs.adapters",
         "src.jobs.policy",
@@ -4963,6 +4964,7 @@
         "src.doctor.models",
         "src.doctor.runner",
         "src.git.github_contracts",
+        "src.integration.development",
         "src.models"
       ],
       "markers": [
@@ -5501,12 +5503,15 @@
         "src.commands.handler",
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.explain",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.pools",
         "src.playbooks.artifact_ref",
-        "src.scheduler"
+        "src.scheduler",
+        "src.sessions.harness_parser"
       ],
       "markers": [
         "parametrize"
@@ -5816,7 +5821,9 @@
         "src.integration.provenance_migration",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Unit tests for git-related command handler methods."
     },
     "tests/test_git_events.py": {
@@ -10473,10 +10480,12 @@
         "src.llm.fake",
         "src.llm.providers.errors",
         "src.models",
+        "src.orchestrator.pools",
         "src.providers.availability",
         "src.providers.availability_service",
         "src.providers.intent",
         "src.providers.reroute",
+        "src.scheduler",
         "src.sessions.harness_parser"
       ],
       "markers": [
@@ -11561,6 +11570,7 @@
         "src.models",
         "src.orchestrator.execution",
         "src.orchestrator.git_ops",
+        "src.orchestrator.pools",
         "src.orchestrator.workspace",
         "src.scheduler",
         "src.sessions",

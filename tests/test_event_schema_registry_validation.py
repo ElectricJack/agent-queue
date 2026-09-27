@@ -934,6 +934,10 @@ _CANONICAL_PAYLOADS["pool.bounds_rescoped"] = {
     "previous_effective_max_active": 20,
     "previous_effective_min_active": 0,
 }
+_CANONICAL_PAYLOADS["pool.spilled"] = {
+    "batch_id": "spill-20260927T1405",
+    "moved": 1,
+}
 _CANONICAL_PAYLOADS["provider.state_changed"] = {
     "provider": "codex",
     "from_state": "available",
