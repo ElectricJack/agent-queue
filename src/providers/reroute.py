@@ -832,7 +832,13 @@ class ProviderRerouteService:
             "notices": notices,
         }
 
-    async def _plan_spill(self, ctx: PlanContext, failover: Sequence[Decision]) -> list[Decision]:
+    async def _plan_spill(
+        self,
+        ctx: PlanContext,
+        failover: Sequence[Decision],
+        *,
+        explaining_task_id: str | None = None,
+    ) -> list[Decision]:
         """The capacity spill pass (D24 S3-S6) over one pool measurement.
 
         Candidates are READY frontier tasks on a pool rung whose provider is
@@ -841,6 +847,9 @@ class ProviderRerouteService:
         pool is measured only when there is a candidate, and failover's
         planned moves are counted on their targets first.  A failure here is
         logged and plans nothing: spill never breaks a failover sweep.
+        Explain also includes its requested task before the age threshold,
+        so the planner can name its remaining wait without admitting other
+        young tasks into the sweep's queue.
         """
         from src.providers.spill import (
             SpillCandidate,
@@ -862,9 +871,13 @@ class ProviderRerouteService:
             rows = [
                 row
                 for row in await self.db.list_spill_candidates(
-                    sources, updated_before=ctx.now - after
+                    sources, updated_before=None if explaining_task_id else ctx.now - after
                 )
                 if row["id"] not in decided
+                and (
+                    row["id"] == explaining_task_id
+                    or float(row.get("updated_at") or 0.0) <= ctx.now - after
+                )
             ]
             if not rows:
                 return []
@@ -1334,6 +1347,48 @@ class ProviderRerouteService:
         }
 
     # -- derived answers ----------------------------------------------------------
+
+    async def spill_state(self, task: Any) -> dict[str, Any] | None:
+        """Read-only spill state for a READY frontier task waiting on a pool (D24 S8).
+
+        Plan the same queues as an automatic sweep, including its failover
+        reservations, so ordering, target headroom and sweep limits agree.
+        ``None`` means this task is not spill's to move or its pool can serve it.
+        """
+        if (
+            not getattr(task, "profile_id", None)
+            or getattr(task, "assigned_agent_id", None) is not None
+            or str(getattr(getattr(task, "status", None), "value", "")) != "READY"
+            or self._pool_measure is None
+        ):
+            return None
+        ctx = await self.context()
+        rung = ctx.rungs.get(task.profile_id)
+        if rung is None or rung.lifecycle != "pool" or ctx.unavailable(rung.provider):
+            return None
+        candidates = await self._candidates(ctx, providers=None, task_ids=None)
+        if candidates:
+            ctx.stats = await self.db.task_reroute_stats([c.task_id for c in candidates])
+        failover = plan_sweep(candidates, ctx)
+        decisions = await self._plan_spill(ctx, failover, explaining_task_id=task.id)
+        mine = next((d for d in decisions if d.task_id == task.id), None)
+        if mine is None or mine.action == "skip":
+            return None
+        inactive = await self.failover_inactive_reason()
+        if inactive is None and not ctx.config.spill.enabled:
+            inactive = "provider_failover.spill.enabled is false"
+        if inactive is None and not getattr(self._config_getter().swarm, "enabled", True):
+            inactive = "swarm.enabled is false"
+        if inactive is not None:
+            return {"kind": "spill_inactive", "detail": inactive, "to_profile_id": None}
+        return {
+            "kind": "spill_next_sweep" if mine.action == "move" else mine.kind,
+            "detail": (
+                f"the next sweep moves it to {mine.to_profile_id}"
+                if mine.action == "move" else mine.detail
+            ),
+            "to_profile_id": mine.to_profile_id,
+        }
 
     async def hold_kind(self, task: Any) -> dict[str, Any] | None:
         """``{"kind", "ahead", "detail", "to_profile_id"}`` for a held task (D18).

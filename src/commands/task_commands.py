@@ -5624,6 +5624,13 @@ class TaskCommandsMixin:
         # question this task never asks. Say what it is actually waiting on.
         pool_reason = await self._pool_wait_reason(task)
         if pool_reason is not None:
+            reroute = getattr(self.orchestrator, "provider_reroute", None)
+            if pool_reason["code"] == "awaiting_pool_session" and reroute is not None:
+                spill = await reroute.spill_state(task)
+                if spill is not None:
+                    pool_reason["detail"] += (
+                        f"; capacity spill: {spill['kind']} — {spill['detail']}"
+                    )
             reasons.append(pool_reason)
 
         # 6. Capacity reasons — only relevant when a scheduler snapshot exists.
