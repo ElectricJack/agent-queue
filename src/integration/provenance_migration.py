@@ -10,23 +10,48 @@ import re
 import tempfile
 from dataclasses import asdict
 
-from sqlalchemy import select, union
+from sqlalchemy import select, tuple_, union
 
 from src.database.queries.task_identity import resolve_task_identity_on
-from src.database.tables import archived_tasks, development_deliveries, task_completion_records, tasks
+from src.database.tables import (
+    archived_tasks,
+    development_deliveries,
+    task_completion_records,
+    tasks,
+)
 from src.git.manager import GitError
-from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+from src.integration.provenance import (
+    CompletedSource,
+    CompletionIdentity,
+    GitProvenance,
+    legacy_repair_source,
+)
+
+# The delivery journal is read in keyset chunks; only the rows naming a page's
+# tasks are retained, and those alone are bounded.
+HISTORY_CHUNK = 500
+MAX_PAGE_HISTORY = 5000
 
 
 class ProvenanceMigration:
     def __init__(self, db, git):
         self.db, self.git = db, git
 
-    async def run(self, project_id: str, *, apply: bool = False, limit: int = 500, offset: int = 0):
+    async def run(self, project_id: str, *, apply: bool = False, limit: int = 500, offset: int = 0,
+                  task_id: str | None = None):
+        """Inventory one page of completion generations, or only a held task's sources.
+
+        *task_id* scopes the run to the generations that task's close needs: the
+        current completion of every repair-contract source (or the task's own
+        passing generations when it has no contract). *limit*/*offset* then
+        do not apply and ``next_offset`` is ``None``.
+        """
         if type(apply) is not bool:
             raise ValueError("apply must be an explicit boolean")
         if type(limit) is not int or type(offset) is not int or not 1 <= limit <= 1000 or offset < 0:
             raise ValueError("migration requires limit 1..1000 and nonnegative offset")
+        if task_id is not None and (not isinstance(task_id, str) or not task_id.strip()):
+            raise ValueError("task_id must name one task")
         project = await self.db.get_project(project_id)
         if project is None or project.hierarchical_integration_mode != "development":
             raise ValueError("migration requires a development project")
@@ -36,36 +61,46 @@ class ProvenanceMigration:
         project_tasks = union(select(tasks.c.id).where(tasks.c.project_id == project_id),
             select(archived_tasks.c.id).where(archived_tasks.c.project_id == project_id))
         async with self.db._engine.connect() as conn:
-            rows = (await conn.execute(select(task_completion_records).where(
-                task_completion_records.c.task_id.in_(project_tasks),
-                task_completion_records.c.outcome == "pass",
-            ).order_by(task_completion_records.c.completed_at, task_completion_records.c.id)
-              .offset(offset).limit(limit + 1))).mappings().all()
-            history = (await conn.execute(select(development_deliveries).where(
-                development_deliveries.c.project_id == project_id,
-                development_deliveries.c.repository_id == repo.id,
-            ).order_by(development_deliveries.c.created_at).limit(1001))).mappings().all()
+            if task_id is None:
+                rows = (await conn.execute(select(task_completion_records).where(
+                    task_completion_records.c.task_id.in_(project_tasks),
+                    task_completion_records.c.outcome == "pass",
+                ).order_by(task_completion_records.c.completed_at, task_completion_records.c.id)
+                  .offset(offset).limit(limit + 1))).mappings().all()
+                more, rows, held, unheld = len(rows) > limit, rows[:limit], {}, []
+            else:
+                more = False
+                rows, held, unheld = await self._held_task_rows(conn, project_id, task_id)
+            page = {row["task_id"] for row in rows}
+            history = await self._history(conn, project_id, repo.id, page)
             identities = {row["task_id"]: await resolve_task_identity_on(conn, row["task_id"])
-                          for row in rows[:limit]}
-        if len(history) > 1000:
-            raise ValueError("legacy history exceeds bounded inventory; partition before migration")
+                          for row in rows}
         # An isolated read clone prevents even a dry-run fetch from changing
         # refs/index/config in the operator or another worker's repository.
         with tempfile.TemporaryDirectory(prefix="aq-provenance-migrate-") as path:
             await self.git.acreate_checkout(repo.url, path, no_checkout=True)
             store = GitProvenance(self.git, path, repository_url=repo.url)
             target = await store.run("rev-parse", "refs/remotes/origin/" + repo.default_branch)
-            inventory, ambiguous, bindings = [], [], {}
-            for row in rows[:limit]:
-                task_id = row["task_id"]
-                entry = {"task_id": task_id, "generation": row["id"]}
+            inventory, ambiguous, bindings = [], list(unheld), {}
+            for row in rows:
+                source_task = row["task_id"]
+                entry = {"task_id": source_task, "generation": row["id"]}
                 try:
-                    task = identities[task_id]
-                    if task is None or task.repo_id not in (None, repo.id):
+                    task = identities[source_task]
+                    if (task is None or task.project_id != project_id
+                            or task.repo_id not in (None, repo.id)):
                         raise ValueError("legacy task belongs to a different or missing repository")
-                    source = await self._source(store, row, history)
-                    identity = CompletionIdentity(project_id, repo.id, task_id, row["id"])
+                    identity = CompletionIdentity(project_id, repo.id, source_task, row["id"])
                     existing = await store.read_completion(identity)
+                    try:
+                        source = await self._source(
+                            store, row, history, project_id, held.get(source_task))
+                    except (ValueError, KeyError, TypeError, GitError):
+                        if existing is None:
+                            raise
+                        # Retained already (a held-task run or a close); Git
+                        # is the authority once the legacy locator is spent.
+                        source = existing["source_oid"]
                     if existing and existing["source_oid"] != source:
                         raise ValueError("git provenance conflicts with the legacy binding")
                     binding = CompletedSource(identity, source)
@@ -79,14 +114,18 @@ class ProvenanceMigration:
                     inventory.append(entry)
                 except (ValueError, KeyError, TypeError, GitError) as exc:
                     ambiguous.append({**entry, "reason": str(exc)})
-            repairs = await self._repairs(store, history, rows[:limit], bindings, target, apply)
+            # A held task's close retains its own replacement; its sources'
+            # older repair groups belong to the paged inventory.
+            repairs = ([], []) if task_id is not None else await self._repairs(
+                store, history, rows, bindings, target, apply, page)
             ambiguous.extend(repairs[1])
             # Old operator equivalence rows name neither the immutable original
             # generation nor a replacement base. Do not silently convert an
             # operator's acceptance into a broader, unprovable Git claim.
             for delivery in history:
                 for member in delivery["manifest"] or []:
-                    if member.get("acceptance") == "operator_equivalent":
+                    if (member.get("acceptance") == "operator_equivalent"
+                            and member.get("task_id") in page):
                         ambiguous.append({"task_id": member["task_id"], "legacy_id": delivery["id"],
                             "reason": "operator equivalence requires exact original generation/source "
                                       "and nonempty replacement base/source evidence"})
@@ -95,9 +134,67 @@ class ProvenanceMigration:
                     "inventory": inventory, "repairs": repairs[0], "ambiguous": ambiguous,
                     "legacy_heads": [{"id": r["id"], "target_ref": r["target_ref"],
                         "prepared_sha": r["prepared_sha"], "manifest": r["manifest"]} for r in history],
-                    "next_offset": offset + limit if len(rows) > limit else None}
+                    "next_offset": offset + limit if more else None}
 
-    async def _source(self, store, row, history):
+    async def _held_task_rows(self, conn, project_id, task_id):
+        """Current source generations a held task's close needs, keyed by contract.
+
+        Mirrors the close: each repair-contract source uses its latest
+        completion, which must pass. Without a contract, the task's own passing
+        generations are the scope.
+        """
+        identity = await resolve_task_identity_on(conn, task_id)
+        if identity is None or identity.project_id != project_id:
+            raise ValueError("task does not belong to this project")
+        contract = await self.db.get_task_meta(task_id, "development_repair_sources")
+        if not contract:
+            rows = (await conn.execute(select(task_completion_records).where(
+                task_completion_records.c.task_id == task_id,
+                task_completion_records.c.outcome == "pass",
+            ).order_by(task_completion_records.c.completed_at, task_completion_records.c.id)
+              .limit(1000))).mappings().all()
+            return rows, {}, []
+        if not isinstance(contract, list) or len(contract) > 100:
+            raise ValueError("invalid exact development repair contract")
+        rows, held, unheld = [], {}, []
+        for member in contract:
+            latest = (await conn.execute(select(task_completion_records).where(
+                task_completion_records.c.task_id == member["task_id"],
+            ).order_by(task_completion_records.c.completed_at.desc()).limit(1))).mappings().first()
+            if latest is None or latest["outcome"] != "pass":
+                unheld.append({"task_id": member["task_id"], "generation": latest and latest["id"],
+                               "reason": "repair source has no passing immutable completion"})
+                continue
+            rows.append(latest)
+            held[member["task_id"]] = (task_id, member)
+        return rows, held, unheld
+
+    async def _history(self, conn, project_id, repository_id, task_ids):
+        """Keyset-page the whole delivery journal, retaining rows naming *task_ids*.
+
+        No single read holds a project's full history and a long history never
+        refuses a page; only the page's own relevant rows are bounded.
+        """
+        history, after = [], None
+        column = development_deliveries.c
+        while task_ids:
+            query = select(development_deliveries).where(
+                column.project_id == project_id, column.repository_id == repository_id,
+            )
+            if after is not None:
+                query = query.where(tuple_(column.created_at, column.id) > tuple_(*after))
+            chunk = (await conn.execute(query.order_by(column.created_at, column.id)
+                                        .limit(HISTORY_CHUNK))).mappings().all()
+            history.extend(row for row in chunk if _names(row, task_ids))
+            if len(history) > MAX_PAGE_HISTORY:
+                raise ValueError("legacy history for this page exceeds bounded inventory; "
+                                 "use a smaller --limit or --task-id")
+            if len(chunk) < HISTORY_CHUNK:
+                break
+            after = chunk[-1]["created_at"], chunk[-1]["id"]
+        return history
+
+    async def _source(self, store, row, history, project_id, held=None):
         commits = json.loads(row["commits"] or "[]")
         if not isinstance(commits, list):
             raise ValueError("legacy completion commits are malformed")
@@ -121,11 +218,25 @@ class ProvenanceMigration:
                             raise ValueError("legacy mapping conflicts with final completion source")
                         candidates.discard(prepared)
                     candidates.add(source)
+        if held is not None:
+            # A held repair's daemon-authored contract, fenced by the delivery
+            # that filed it, binds a source the legacy close never reported.
+            repair_id, member = held
+            located = await legacy_repair_source(
+                self.db, store, project_id, repair_id, member, self.db._row_to_task_completion(row)
+            )
+            if located is not None:
+                candidates.add(located)
         if len(candidates) != 1:
             raise ValueError("legacy generation has missing or ambiguous exact source bindings")
-        return await store.exact(candidates.pop())
+        source = await store.exact(candidates.pop())
+        if held is not None and source != held[1].get("source_sha"):
+            # Binding another source would make the held repair's exact
+            # replacement impossible; leave that to an operator decision.
+            raise ValueError("legacy completion source conflicts with the held repair contract")
+        return source
 
-    async def _repairs(self, store, history, rows, bindings, target, apply):
+    async def _repairs(self, store, history, rows, bindings, target, apply, page):
         inventory, ambiguous, seen = [], [], set()
         for delivery in history:
             members = delivery["manifest"] or []
@@ -134,6 +245,8 @@ class ProvenanceMigration:
                 if member.get("superseded_by"):
                     groups.setdefault(member["superseded_by"], []).append(member)
             for repair_id, sources in groups.items():
+                if repair_id not in page and not any(m["task_id"] in page for m in sources):
+                    continue  # another page reports this group
                 entry = {"task_id": repair_id, "legacy_id": delivery["id"]}
                 try:
                     contract = await self.db.get_task_meta(repair_id, "development_repair_sources")
@@ -172,3 +285,12 @@ class ProvenanceMigration:
 
 def _binding_key(binding):
     return binding.identity.task_id, binding.identity.generation, binding.source_oid
+
+
+def _names(row, task_ids):
+    """Whether a legacy delivery row locates or supersedes any of *task_ids*."""
+    members = [m for m in row["manifest"] or [] if isinstance(m, dict)]
+    proofs = (row["evidence"] or {}).get("completion_sources", [])
+    return any(
+        m.get("task_id") in task_ids or m.get("superseded_by") in task_ids for m in members
+    ) or any(isinstance(p, dict) and p.get("task_id") in task_ids for p in proofs)

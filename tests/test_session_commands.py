@@ -45,6 +45,7 @@ from src.models import (
     RepoSourceType,
     SessionRecord,
     Task,
+    TaskCompletion,
     TaskStatus,
     Workspace,
 )
@@ -1170,6 +1171,130 @@ class TestEndToEndOnFakeProvider:
         record = await GitProvenance(git, wd, repository_url=repo.url).read_completion(
             CompletionIdentity("p1", "repo", "t1", completion.id))
         assert record["source_oid"] == base and record["artifact"] is False
+
+    async def _setup_development_repair(self, db, real_orch, tmp_path, source_id, *,
+                                        parent=None, failure=None):
+        """A development repair (t1) of a legacy, commits-less source close.
+
+        The repair merges the parked source onto main; main then advances
+        again before the repair closes, as it does in production.
+        """
+        from pathlib import Path
+
+        from sqlalchemy import insert
+
+        from src.database.tables import development_deliveries
+
+        wd, git, base = await self._setup_development_git(db, real_orch, tmp_path, artifact=False)
+        await git._arun(["checkout", "-b", "aq/" + source_id, base], cwd=wd)
+        (Path(wd) / "source").write_text("source")
+        await git.acommit_all(wd, "source work")
+        source = await git.arev_parse(wd, "HEAD")
+        await git.apush_branch(wd, "aq/" + source_id)
+        if parent:
+            await db.create_task(Task(id=parent, project_id="p1", title="parent", description="d",
+                                      repo_id="repo", status=TaskStatus.COMPLETED))
+        await db.create_task(Task(id=source_id, project_id="p1", title="source", description="d",
+                                  repo_id="repo", branch_name="aq/" + source_id,
+                                  parent_task_id=parent, status=TaskStatus.COMPLETED))
+        closed = time.time()
+        reported = {"reported_elsewhere": [base]}.get(failure, [])
+        await db.save_task_completion(TaskCompletion(
+            id="source-close", task_id=source_id, outcome="pass", commits=reported,
+            completed_at=closed,
+        ))
+        await git._arun(["checkout", "main"], cwd=wd)
+        (Path(wd) / "main-work").write_text("main")
+        await git.acommit_all(wd, "main work")
+        repair_base = await git.arev_parse(wd, "HEAD")
+        await git.apush_branch(wd, "main")
+        # The publisher parks the source; a source closed again later is a
+        # newer generation that parked delivery never named.
+        parked_at = closed - 1 if failure == "reclosed_after_park" else closed + 1
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(development_deliveries).values(
+                id="parked", project_id="p1", repository_id="repo", target_ref="refs/heads/main",
+                expected_sha=repair_base, prepared_sha=None, state="parked",
+                manifest=[{"task_id": source_id, "source_sha": source, "parent_task_id": parent}],
+                evidence={"kind": "merge_conflict"}, reason="source conflict",
+                created_at=parked_at, updated_at=parked_at,
+            ))
+        await db.set_task_meta("t1", "development_repair_sources",
+                               [{"task_id": source_id, "source_sha": source, "parent_task_id": parent}])
+        await db.set_task_meta("t1", "development_repair_evidence",
+                               {"delivery_id": "parked", "kind": "merge_conflict"})
+        await git._arun(["checkout", "aq/t1"], cwd=wd)
+        await git._arun(["merge", "--ff-only", repair_base], cwd=wd)
+        if failure == "source_not_in_repair":
+            # Content copied without the source commit is not the ancestry check.
+            (Path(wd) / "source").write_text("source")
+            await git.acommit_all(wd, "copied source content")
+        else:
+            await git._arun(["merge", "--no-ff", "--no-edit", source], cwd=wd)
+        repair = await git.arev_parse(wd, "HEAD")
+        await git.apush_branch(wd, "aq/t1")
+        await git._arun(["checkout", "main"], cwd=wd)
+        (Path(wd) / "later").write_text("later")
+        await git.acommit_all(wd, "main advances before the repair closes")
+        await git.apush_branch(wd, "main")
+        await git._arun(["checkout", "aq/t1"], cwd=wd)
+        return wd, git, source, repair_base, repair
+
+    @pytest.mark.parametrize("source_id,parent", [
+        ("nimble-bridge.3", "nimble-bridge.2"),
+        ("development-repair-24d1d5e707519a49c3fc", "fresh-ember.2"),
+        ("prime-glacier.6", "prime-glacier.1"),
+    ])
+    async def test_development_repair_of_unlabelled_source_closes_by_ancestry(
+        self, db, real_orch, real_handler, tmp_path, source_id, parent
+    ):
+        """keen-quest: the three repairs refused as 'unlabelled repair source'."""
+        from src.integration.provenance import (
+            PREFIX,
+            CompletedSource,
+            CompletionIdentity,
+            GitProvenance,
+        )
+
+
+        wd, git, source, repair_base, repair = await self._setup_development_repair(
+            db, real_orch, tmp_path, source_id, parent=parent
+        )
+        close = await real_handler.execute(
+            "task_close", {"task_id": "t1", "outcome": "pass", "summary": "resolved"}
+        )
+        assert close["success"] and close["status"] == "COMPLETED", close
+        assert (await db.get_task_completion("t1")).commits == [repair]
+        repo = await db.get_repo("repo")
+        store = GitProvenance(git, wd, repository_url=repo.url)
+        original = CompletedSource(CompletionIdentity("p1", "repo", source_id, "source-close"), source)
+        assert (await store.read_completion(original.identity))["source_oid"] == source
+        refs = (await store.run("for-each-ref", "--format=%(refname)",
+                                "refs/remotes/origin/" + PREFIX + "replacements/")).split()
+        assert len(refs) == 1
+        record = await store._read(refs[0])
+        # The replacement names the main commit the repair built on, not the
+        # tip main reached afterwards.
+        assert record["base_oid"] == repair_base and record["source_oid"] == repair
+        assert record["replaces"] == [{"identity": {"project_id": "p1", "repository_id": "repo",
+                                                    "task_id": source_id, "generation": "source-close"},
+                                       "source_oid": source}]
+        assert await store.contained(original, repair)
+
+    @pytest.mark.parametrize("failure", ["reclosed_after_park", "source_not_in_repair",
+                                         "reported_elsewhere"])
+    async def test_development_repair_unprovable_legacy_source_still_needs_migration(
+        self, db, real_orch, real_handler, tmp_path, failure
+    ):
+        await self._setup_development_repair(db, real_orch, tmp_path, "origin-task", failure=failure)
+        close = await real_handler.execute(
+            "task_close", {"task_id": "t1", "outcome": "pass", "summary": "resolved"}
+        )
+        assert close["result"] == "verification_failed"
+        assert "requires exact provenance migration" in str(close)
+        assert "--task-id t1" in str(close)
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert await db.get_task_completion("t1") is None
 
     async def _setup(self, db, tmp_path, *, ready=False):
         """Profile + agent + task + a locked workspace row.

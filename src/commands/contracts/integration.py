@@ -356,6 +356,8 @@ class IntegrationMigrateProvenanceArgs(CommandArgs):
     apply: bool = False
     limit: int = Field(default=500, ge=1, le=1000)
     offset: int = Field(default=0, ge=0)
+    # Only the source generations this (held) task's close needs.
+    task_id: str | None = Field(default=None, min_length=1)
 
 
 class IntegrationMigrateProvenanceValue(CommandValue):

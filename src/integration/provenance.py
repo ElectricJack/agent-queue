@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
@@ -277,16 +278,91 @@ async def record_worker_completion(
                 raise ValueError("repair source has no passing immutable completion")
             original = CompletionIdentity(project.id, repo.id, member["task_id"], completion.id)
             if await store.read_completion(original) is None:
-                # Upgrade bridge: only a full, matching final completion
-                # source can be retained automatically. Ambiguous old closes
-                # still require the explicit migration inventory.
-                if not completion.commits or completion.commits[-1] != member["source_sha"]:
-                    raise ValueError("unlabelled repair source requires exact provenance migration")
-                await store.write_completion(CompletedSource(original, member["source_sha"]))
+                # Upgrade bridge for an original closed before provenance.
+                # Ambiguous old closes still require the explicit migration.
+                exact = await legacy_repair_source(
+                    db, store, project.id, task.id, member, completion, repair_head=source
+                )
+                if exact is None:
+                    raise ValueError(
+                        f"unlabelled repair source {member['task_id']} requires exact provenance "
+                        f"migration: aq integration migrate-provenance {project.id} "
+                        f"--task-id {task.id}"
+                    )
+                await store.write_completion(CompletedSource(original, exact))
             replaces.append(CompletedSource(original, member["source_sha"]))
-        await store.write_replacement(source_oid=source, base_oid=base, replaces=replaces,
-            authority="repair_contract", reason=f"Exact development repair contract: {task.id}")
+        # The replacement base is the default-branch commit this repair
+        # builds on. Main advancing after the repair merged it does not make
+        # the repair incomplete, so never require the live tip as its base.
+        repair_base = await store.run("merge-base", source, base)
+        if await store.run("rev-parse", repair_base + "^{tree}") != await store.run(
+            "rev-parse", source + "^{tree}"
+        ):
+            await store.write_replacement(
+                source_oid=source, base_oid=repair_base, replaces=replaces,
+                authority="repair_contract", reason=f"Exact development repair contract: {task.id}",
+            )
+        else:
+            # A repair that changes nothing cannot prove a replacement; it may
+            # close only when ancestry alone carries every original source.
+            for item in replaces:
+                if not await store.ancestor(item.source_oid, source):
+                    raise ValueError("an empty repair cannot replace a source it does not contain")
     # A concurrent local commit or source push must not close an older snapshot.
     if await resolve_workspace_checkpoint(db, git, subject, repo) != source:
         raise ValueError("final source changed while recording completion provenance")
+    return source
+
+
+async def legacy_repair_source(db, store, project_id, repair_id, member, completion, *,
+                               repair_head=None):
+    """Exact source of a repair-contract original closed before provenance existed.
+
+    Returns the full source OID to bind to *completion*, or ``None`` when only
+    the explicit migration can decide. A final completion source that names the
+    contract source (in full, or as its unique abbreviation) is exact. A
+    commits-less legacy close reports nothing to contradict: the daemon-authored
+    contract source stands when the delivery that filed the repair names it and
+    postdates this completion (the generation fence) and, given *repair_head*,
+    the repair still contains it by ancestry (the pre-provenance check). A
+    different reported source is never overridden.
+    """
+    source = member.get("source_sha")
+    if not is_valid_git_oid(source):
+        return None
+    reported = completion.commits[-1] if completion.commits else None
+    if reported is not None:
+        if reported != source and not (
+            isinstance(reported, str) and re.fullmatch(r"[0-9a-f]{7,39}", reported)
+            and source.startswith(reported)
+        ):
+            return None
+        try:
+            resolved = await store.run("rev-parse", "--verify", "--end-of-options",
+                                       reported + "^{commit}")
+        except GitError:
+            return None  # an ambiguous abbreviation is not an exact source
+        return await store.exact(source) if resolved == source else None
+    evidence = await db.get_task_meta(repair_id, "development_repair_evidence")
+    delivery_id = evidence.get("delivery_id") if isinstance(evidence, dict) else None
+    if not delivery_id:
+        return None
+    from sqlalchemy import select
+
+    from src.database.tables import development_deliveries
+
+    async with db._engine.connect() as conn:
+        row = (await conn.execute(select(development_deliveries).where(
+            development_deliveries.c.id == delivery_id,
+        ))).mappings().first()
+    if (
+        row is None or row["project_id"] != project_id
+        or float(row["created_at"]) < completion.completed_at
+        or not any(item.get("task_id") == member["task_id"] and item.get("source_sha") == source
+                   for item in row["manifest"] or [])
+    ):
+        return None
+    await store.exact(source)
+    if repair_head is not None and not await store.ancestor(source, repair_head):
+        return None
     return source
