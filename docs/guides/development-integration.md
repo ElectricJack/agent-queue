@@ -236,13 +236,31 @@ aq integration migrate-provenance demo --apply
 The result names `fallback_generations` (generations that would evaluate
 unknown for lack of retained provenance), `fallback_count`, `zero_fallback`, the
 outstanding legacy actions retained as events in `operations`, and unresolved
-identities in `ambiguous`. Follow `next_offset` through all pages; a zero count
-on one page does not prove the entire project migrated. Exact completion and
+identities in `ambiguous`, with the page's totals in `counts` (generations
+examined, `present`, `written`, `would_write`, `missing_generation`, `ambiguous`,
+`repairs`, `fallback`). Follow `next_offset` through all pages; a zero count
+on one page does not prove the entire project migrated. Each page is bounded in
+time: generations are bound in batches whose new refs are published in one
+transfer, and a page starts no batch after 45 seconds. A page that stops early
+reports `budget_exhausted: true` and a `next_offset` at its first unexamined
+generation, so continue from there (a `--task-id` run is simply repeated).
+Exact completion and
 repair mappings are retained in git. Missing generations, ambiguous sources,
 branchless tasks a retired manifest named without a generation, and incomplete
 equivalence evidence are reported with task ids rather than guessed; an
 operator resolves each (for example by reopening and closing the task again,
-or by an explicit `adopt`). Until then those tasks stay unknown.
+or by an explicit `adopt`). Until then those tasks stay unknown. A legacy close
+that recorded no commit and that only a delivery manifest located can instead
+be bound by attesting its exact final source:
+
+```bash
+aq integration migrate-provenance demo --task-id demo.7 --source <40-hex-oid>          # preview
+aq integration migrate-provenance demo --task-id demo.7 --source <40-hex-oid> --apply
+```
+
+The attestation binds only that COMPLETED task's current generation, and is
+refused when the generation's own evidence names another source or a repair
+contract names the task's sources.
 
 ## What a worker sees
 

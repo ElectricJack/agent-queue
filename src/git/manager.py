@@ -73,7 +73,7 @@ import signal
 import subprocess
 import tempfile
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -3144,6 +3144,116 @@ class GitManager:
             return RemoteRefResult(RemoteRefState.ERROR, error="remote returned duplicate refs")
         return RemoteRefResult(RemoteRefState.PRESENT, oid=matches[0])
 
+    async def als_remote_refs(
+        self, checkout_path: str, branches: Sequence[str], *, remote: str = "origin",
+        repository_url: str | None = None,
+    ) -> dict[str, RemoteRefResult]:
+        """Read several exact remote heads in one round trip.
+
+        The same authority and per-head outcomes as :meth:`als_remote_ref`; a
+        failed read reports every head as an error, never as absent.
+        """
+        branches = [_validate_ref(branch) for branch in branches]
+        if not branches:
+            return {}
+        refs = [f"refs/heads/{branch}" for branch in branches]
+        try:
+            destination_url, token = await self._apush_destination(
+                checkout_path, remote, repository_url=repository_url
+            )
+            if destination_url is not None:
+                with tempfile.TemporaryDirectory(prefix="aq-app-ref-") as temporary:
+                    home = Path(temporary)
+                    home.chmod(0o700)
+                    output = (await self._arun_authenticated_git(
+                        ["ls-remote", "--heads", destination_url, *refs],
+                        home=home, repository_url=destination_url, token=token,
+                        deadline=asyncio.get_running_loop().time() + self._GIT_TIMEOUT,
+                        budget_seconds=self._GIT_TIMEOUT,
+                    )).decode("ascii", errors="replace")
+            else:
+                result = await self.arun_git_result(
+                    ["ls-remote", "--heads", remote, *refs], cwd=checkout_path,
+                    env={"LC_ALL": "C"},
+                )
+                if result.returncode != 0:
+                    raise GitError(
+                        (result.stderr or result.stdout or "git ls-remote failed").strip()
+                    )
+                output = result.stdout
+        except (GitError, GitHubAccessError, TimeoutError) as exc:
+            failed = RemoteRefResult(RemoteRefState.ERROR, error=str(exc))
+            return {branch: failed for branch in branches}
+        # Patterns match ref tails, so only an exact name is an observation.
+        observed: dict[str, list[str]] = {ref: [] for ref in refs}
+        for line in output.splitlines():
+            sha, separator, ref = line.partition("\t")
+            candidate = sha.strip().lower()
+            if separator and ref.strip() in observed and _OID_RE.fullmatch(candidate):
+                observed[ref.strip()].append(candidate)
+        results = {}
+        for branch, ref in zip(branches, refs):
+            matches = observed[ref]
+            if len(matches) > 1:
+                results[branch] = RemoteRefResult(
+                    RemoteRefState.ERROR, error="remote returned duplicate refs"
+                )
+            elif matches:
+                results[branch] = RemoteRefResult(RemoteRefState.PRESENT, oid=matches[0])
+            else:
+                results[branch] = RemoteRefResult(RemoteRefState.ABSENT)
+        return results
+
+    async def apush_new_refs(
+        self, checkout_path: str, tips: Mapping[str, str], *, remote: str = "origin",
+        repository_url: str | None = None,
+    ) -> dict[str, RemoteRefResult]:
+        """Create absent heads at exact commits in one transfer; read each back.
+
+        Every head is leased to absence, so no existing head ever moves. The
+        push is not atomic, so the returned post-transfer read settles each
+        head, not the exit status: a head the transfer failed to create
+        reports that failure as an error. Callers compare heads with *tips*.
+        """
+        updates = []
+        for branch, tip in tips.items():
+            if not isinstance(tip, str) or _OID_RE.fullmatch(tip) is None:
+                raise GitError("invalid immutable push tip")
+            updates.append((tip, _validate_ref(branch), _ZERO_OID))
+        if not updates:
+            return {}
+        failure = None
+        try:
+            destination_url, token = await self._apush_destination(
+                checkout_path, remote, repository_url=repository_url
+            )
+            if destination_url is None:
+                result = await self.arun_git_result(
+                    ["push", remote,
+                     *(f"--force-with-lease=refs/heads/{branch}:{old}" for _t, branch, old in updates),
+                     *(f"{tip}:refs/heads/{branch}" for tip, branch, _old in updates)],
+                    cwd=checkout_path,
+                )
+                if result.returncode != 0:
+                    failure = (result.stderr or result.stdout or "git push failed").strip()
+            else:
+                await self._apush_refs_with_app_auth_to_url(
+                    checkout_path, destination_url=destination_url, token=token,
+                    updates=updates,
+                    _deadline=asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS,
+                )
+        except (GitError, GitHubAccessError, TimeoutError) as exc:
+            failure = str(exc) or "git push failed"
+        observed = await self.als_remote_refs(
+            checkout_path, [branch for _tip, branch, _old in updates], remote=remote,
+            repository_url=repository_url,
+        )
+        if failure is not None:
+            for branch, result in observed.items():
+                if result.state is RemoteRefState.ABSENT:
+                    observed[branch] = RemoteRefResult(RemoteRefState.ERROR, error=failure)
+        return observed
+
     async def afetch_repository_oid(
         self, destination_git_dir: str, *, repository: GitHubRepositoryBinding,
         oid: str, destination_ref: str,
@@ -4329,18 +4439,53 @@ class GitManager:
         containment tests; :meth:`apush_oid_with_app_auth` always constructs a
         literal validated GitHub.com URL from the frozen repository binding.
         """
+        await self._apush_refs_with_app_auth_to_url(
+            checkout_path, destination_url=destination_url, token=token,
+            updates=((tip_oid, branch, expected_old_oid),), _deadline=_deadline,
+        )
+        return tip_oid or expected_old_oid
+
+    async def _apush_refs_with_app_auth_to_url(
+        self,
+        checkout_path: str,
+        *,
+        destination_url: str,
+        token: str | None,
+        updates: Sequence[tuple[str | None, str, str]],
+        _deadline: float | None = None,
+    ) -> None:
+        """One isolated transfer of several ``(tip, branch, expected_old)`` updates.
+
+        Every head carries its own exact lease. The push is not atomic: a head
+        whose lease fails leaves the others transferred, so callers settle each
+        head by reading the remote afterwards. A nonzero exit still raises.
+        """
         if _deadline is None:
             _deadline = asyncio.get_running_loop().time() + APP_AUTH_PUSH_TIMEOUT_SECONDS
         if token is not None and (not isinstance(token, str) or not token):
             raise GitError("invalid GitHub App credential")
-        branch = _validate_ref(branch)
-        for label, oid in (("expected target", expected_old_oid),):
-            if not isinstance(oid, str) or _OID_RE.fullmatch(oid) is None:
-                raise GitError(f"invalid {label} OID")
-        if tip_oid is not None and (
-            not isinstance(tip_oid, str) or _OID_RE.fullmatch(tip_oid) is None
-        ):
-            raise GitError("invalid tip OID")
+        if not updates:
+            raise GitError("authenticated Git push has no updates")
+        validated: list[tuple[str | None, str, str]] = []
+        for tip_oid, branch, expected_old_oid in updates:
+            branch = _validate_ref(branch)
+            for label, oid in (("expected target", expected_old_oid),):
+                if not isinstance(oid, str) or _OID_RE.fullmatch(oid) is None:
+                    raise GitError(f"invalid {label} OID")
+            if tip_oid is not None and (
+                not isinstance(tip_oid, str) or _OID_RE.fullmatch(tip_oid) is None
+            ):
+                raise GitError("invalid tip OID")
+            validated.append((tip_oid, branch, expected_old_oid))
+        if len({branch for _tip, branch, _old in validated}) != len(validated):
+            raise GitError("authenticated Git push names a head twice")
+        # The first import keeps the single-head ref name; a D/F-safe suffix
+        # names the rest.
+        imports = [
+            (tip_oid, "refs/aq/imported" + (f"-{index}" if index else ""))
+            for index, (tip_oid, _branch, _old) in enumerate(validated)
+            if tip_oid is not None
+        ]
         if (
             not (
                 destination_url.startswith("https://github.com/")
@@ -4369,7 +4514,9 @@ class GitManager:
                 home=home,
                 deadline=_deadline,
             )
-            if tip_oid is not None:
+            if imports:
+                # One import carries every tip's graph; shared history is
+                # copied once rather than once per head.
                 await self._run_isolated_import_git(
                     [
                         "-c",
@@ -4381,18 +4528,19 @@ class GitManager:
                         "--no-tags",
                         "--force",
                         str(checkout),
-                        f"{tip_oid}:refs/aq/imported",
+                        *(f"{tip_oid}:{ref}" for tip_oid, ref in imports),
                     ],
                     home=home,
                     deadline=_deadline,
                 )
-                imported = await self._run_isolated_import_git(
-                    [f"--git-dir={repository}", "rev-parse", "refs/aq/imported^{commit}"],
-                    home=home,
-                    deadline=_deadline,
-                )
-                if imported.decode("ascii", errors="replace") != tip_oid:
-                    raise GitError("authenticated Git push preparation failed")
+                for tip_oid, ref in imports:
+                    imported = await self._run_isolated_import_git(
+                        [f"--git-dir={repository}", "rev-parse", ref + "^{commit}"],
+                        home=home,
+                        deadline=_deadline,
+                    )
+                    if imported.decode("ascii", errors="replace") != tip_oid:
+                        raise GitError("authenticated Git push preparation failed")
 
             topology = (
                 None
@@ -4460,11 +4608,15 @@ class GitManager:
                     "push",
                     "--no-verify",
                     destination_url,
-                    f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}",
-                    (
+                    *(
+                        f"--force-with-lease=refs/heads/{branch}:{expected_old_oid}"
+                        for _tip, branch, expected_old_oid in validated
+                    ),
+                    *(
                         f"{tip_oid}:refs/heads/{branch}"
                         if tip_oid is not None
                         else f":refs/heads/{branch}"
+                        for tip_oid, branch, _old in validated
                     ),
                 ]
             )
@@ -4531,7 +4683,6 @@ class GitManager:
             # broker did not authenticate was not made as the App.
             if destination_url.startswith("https://") and not broker_served:
                 raise GitError("authenticated Git push failed")
-        return tip_oid or expected_old_oid
 
     async def alist_prs(
         self,
