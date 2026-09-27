@@ -1265,7 +1265,7 @@
       ]
     }
   },
-  "digest": "sha256:3e1f791922f13b40106dabc2d51bfefe4423f2b0cbabbab607d87e0c59bcc02f",
+  "digest": "sha256:d1c87bb0bd800af9b13919c8b9166e31f1492e7f153da56a0ac21731989950b2",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4484,6 +4484,7 @@
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
         "src.integration.status",
@@ -11434,12 +11435,16 @@
       "default_arm": true,
       "imports": [
         "src.database",
+        "src.database.tables",
         "src.doctor",
         "src.doctor.models",
+        "src.messages.session_lens",
         "src.models",
         "src.sessions",
         "src.sessions.fake",
-        "src.sessions.provider"
+        "src.sessions.harness_registry",
+        "src.sessions.provider",
+        "src.sessions.spec"
       ],
       "markers": [],
       "summary": "``sessions.stuck_composer`` — the doctor half of the lost-Enter stall."

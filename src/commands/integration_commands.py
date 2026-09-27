@@ -2313,8 +2313,11 @@ class IntegrationCommandsMixin:
         if service is not None:
             service.job_client = PublisherJobs(self)
             return service
-        return DevelopmentIntegration(self.db, data_dir=self.config.data_dir,
-                                      git=self.orchestrator.git, job_client=PublisherJobs(self))
+        return DevelopmentIntegration(
+            self.db, data_dir=self.config.data_dir, git=self.orchestrator.git,
+            job_client=PublisherJobs(self),
+            stall_after=self.config.integration.publisher_stall_after,
+        )
 
     async def _cmd_integration_develop(self, args: dict) -> dict:
         operator_id, refusal = await integration_operator(
