@@ -26,6 +26,7 @@ Three fields answer most questions:
 Then, for the fleet-wide view:
 
 ```bash
+aq doctor --check integration.delivery_path
 aq doctor --check integration.operational
 aq doctor --check integration.stranded_fences
 aq doctor --check integration.stranded_delegates
@@ -44,6 +45,7 @@ aq doctor --check git.stale_branches
 | Symptom | Cause | Go to |
 |---|---|---|
 | Task is `COMPLETED`, work is not on `main` | Normal: delivery is batched | [Nothing is wrong yet](#nothing-is-wrong-yet) |
+| A task closed `pass`, pushed, and is `BLOCKED` with "Could not authorize PR repository" | Its project has no working delivery path | [A passed task blocked at delivery](#a-passed-task-blocked-at-delivery) |
 | `blockers: [{"code": "publication_pending"}]` | A push is unconfirmed | [Publication pending](#publication-pending) |
 | Journal row `parked`, evidence `kind: merge_conflict` | A source would not merge | [A member conflicted](#a-member-conflicted) |
 | `integration.development_conflicts_unrepaired` reports ERROR | A parked conflict's repair chain ended | [A member conflicted](#a-member-conflicted) |
@@ -70,6 +72,54 @@ aq doctor --check git.stale_branches
 | Parked batches never progress; `daemon.log` grows fast | The publisher is stalled on one batch | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
 | A repair closed `pass` but its branch is in no batch | The publisher is not collecting | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
 | Supervisor message "Development publisher stalled on N candidate(s)"; doctor ERROR `candidate_stalled` | The same skip repeated `integration.publisher_stall_after` times | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
+
+## A passed task blocked at delivery
+
+The worker pushed `aq/<task>` and closed `pass`; git verification then blocked
+the task (context `session_close_pipeline_stop`) with:
+
+```text
+Could not authorize PR repository: GitHub repository reference was invalid
+```
+
+The task's integration mode was `pull_request`, and its repository cannot host
+a pull request: a bare repository on disk (`~/.agent-queue/local-remotes/<name>.git`)
+or a host other than github.com. Since 2026-09-27 a project like that no longer
+*inherits* `pull_request` from `integration.default_mode`; its tasks integrate
+`direct` (`aq task show` reports `effective_integration_mode: direct` from the
+`repository` policy), and the completion pipeline pushes the merged task branch
+to the default branch as a fast-forward without touching the base checkout.
+
+Two things are left for a human:
+
+1. **Projects that still have no path.** An explicit `pull_request`, a
+   hierarchy/train project off github.com, a managed mode without an
+   integration repository, or a repository on disk that is gone:
+
+   ```bash
+   aq doctor --check integration.delivery_path
+   ```
+
+   Enable the development publisher for the project
+   (`aq integration develop <project> --validation ... --reason ...`), which
+   delivers to any repository, or point it at a repository that exists.
+
+2. **Tasks already blocked.** Deliver the pushed branch by hand — the local
+   operator or the project's live supervisor:
+
+   ```bash
+   aq task deliver --task-id <task> --reason "passed; no PR possible" --dry-run
+   aq task deliver --task-id <task> --reason "passed; no PR possible"
+   ```
+
+   It fetches into a private repository under the daemon's data directory,
+   fast-forwards or merges the branch into the default branch, pushes with a
+   lease on the default branch as fetched, and completes the task (context
+   `operator_delivery`, metadata `manual_delivery`). It refuses a task that is
+   not `BLOCKED`, has open children, belongs to a development/hierarchy/train
+   project, integrates by pull request on a repository that can host one
+   (merge the PR instead), was never pushed, or conflicts (`conflict_files`
+   names the files; resolve on the branch, push, and deliver again).
 
 ## Nothing is wrong yet
 
@@ -279,6 +329,9 @@ worker session's token. A worker calling them gets:
 ```text
 unauthorized: manual sweep requires LOCAL operator authority
 ```
+
+`aq task deliver` takes the local operator or the project's live named
+supervisor, like the other integration controls.
 
 `aq integration status` is readable by a worker session for its own project,
 which is why a worker can diagnose but not act.
@@ -1119,8 +1172,11 @@ refused.
 [`src/integration/delivery_branches.py`](../../src/integration/delivery_branches.py),
 [`src/doctor/integration_checks.py`](../../src/doctor/integration_checks.py),
 [`src/doctor/git_checks.py`](../../src/doctor/git_checks.py),
-[`src/commands/claim_commands.py`](../../src/commands/claim_commands.py).
+[`src/commands/claim_commands.py`](../../src/commands/claim_commands.py),
+[`src/integration/delivery_path.py`](../../src/integration/delivery_path.py),
+[`src/integration/manual_delivery.py`](../../src/integration/manual_delivery.py).
 
 ```bash
 aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_branch_discard.py tests/test_archive.py
+aq test tests/test_delivery_manual.py tests/test_integration_mode.py tests/test_merge_slot.py
 ```

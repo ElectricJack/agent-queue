@@ -16410,6 +16410,53 @@
         }
       }
     },
+    "/api/task/deliver": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete the task.  For work whose worker passed and pushed but whose close stopped at delivery, e.g. a project that pushes to a bare repository on disk, where no pull request can exist.  Merges (or fast-forwards) in a private repository, never in a worker slot or operator checkout, and pushes with a lease on the default branch as fetched.  Refuses a task that is not BLOCKED, has open children, belongs to a development/hierarchy/train project, integrates by pull request on a repository that can host one (merge the PR instead), was never pushed, or conflicts.  Local operator or the project's live supervisor only.",
+        "description": "Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete the task.  For work whose worker passed and pushed but whose close stopped at delivery, e.g. a project that pushes to a bare repository on disk, where no pull request can exist.  Merges (or fast-forwards) in a private repository, never in a worker slot or operator checkout, and pushes with a lease on the default branch as fetched.  Refuses a task that is not BLOCKED, has open children, belongs to a development/hierarchy/train project, integrates by pull request on a repository that can host one (merge the PR instead), was never pushed, or conflicts.  Local operator or the project's live supervisor only.",
+        "operationId": "task_deliver",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskDeliverRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskDeliverResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/deps": {
       "post": {
         "tags": [
@@ -57240,6 +57287,166 @@
           "status"
         ],
         "title": "TaskControlResponse"
+      },
+      "TaskDeliverRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "The BLOCKED task whose recorded branch is delivered."
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Audit reason; recorded on the task and in the merge commit."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "Report the delivery plan without pushing or completing.",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "reason"
+        ],
+        "title": "TaskDeliverRequest"
+      },
+      "TaskDeliverResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "outcome": {
+            "type": "string",
+            "title": "Outcome",
+            "default": ""
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "repository_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repository Url"
+          },
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "default_branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Branch"
+          },
+          "base_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Sha"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Method"
+          },
+          "delivered_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivered Sha"
+          },
+          "conflict_files": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Conflict Files",
+            "default": []
+          },
+          "open_children": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Open Children",
+            "default": []
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success"
+        ],
+        "title": "TaskDeliverResponse",
+        "description": "``task_deliver``: a BLOCKED task's pushed branch merged into default by hand.\n\n``method`` is ``fast_forward``, ``merge`` or ``already_delivered``;\n``outcome`` is ``delivered`` / ``would_deliver`` on success, otherwise the\nrefusal (``not_blocked``, ``pull_request_mode``, ``conflict``, ...)."
       },
       "TaskDepsRequest": {
         "properties": {

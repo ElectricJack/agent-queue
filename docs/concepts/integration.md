@@ -57,7 +57,9 @@ front, because they explain most of the behaviour on this page:
 > (`direct` / `pull_request`, defaulting from `integration.default_mode` in
 > [`src/config.py`](../../src/config.py)) belongs to the older
 > review-and-merge path, and a development-mode project suppresses that path
-> entirely — see [Modes](#modes).
+> entirely — see [Modes](#modes). A project whose repository cannot host a
+> pull request (a bare repository on disk, any host but github.com) does not
+> inherit `pull_request`: its tasks integrate `direct`.
 
 ## GitHub access during delivery
 

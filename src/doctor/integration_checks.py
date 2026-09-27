@@ -1900,8 +1900,66 @@ async def _check_reused_task_identity(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_delivery_path(ctx: DoctorContext) -> CheckResult:
+    """Name every project whose finished work has nowhere to go.
+
+    agile-flare and stark-vault passed, pushed and then blocked at close:
+    their projects push to bare repositories on disk and inherited
+    ``pull_request``, and no pull request can exist there.  The inherited
+    default now resolves to ``direct``; what is left to report is a policy
+    that still cannot deliver -- an explicit ``pull_request`` on such a
+    repository, a hierarchy/train project off github.com, a managed mode with
+    no integration repository, or a repository on disk that is gone.
+    """
+    from src.integration.delivery_path import delivery_path_problems
+    from src.models import ProjectStatus
+
+    check_id = "integration.delivery_path"
+    if ctx.db is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="database not initialised — project delivery paths unknown",
+        )
+    integration = getattr(ctx.config, "integration", None)
+    default_mode = getattr(integration, "default_mode", None) or "pull_request"
+    findings = []
+    for project in await ctx.db.list_projects():
+        if project.status == ProjectStatus.ARCHIVED:
+            continue
+        problems = await delivery_path_problems(ctx.db, project, default_mode=default_mode)
+        if problems:
+            findings.append({"project_id": project.id, "problems": problems})
+    if not findings:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.OK,
+            detail="every project has a working delivery path",
+        )
+    names = "; ".join(f"{f['project_id']}: {', '.join(f['problems'])}" for f in findings)
+    return CheckResult(
+        id=check_id,
+        severity=Severity.ERROR,
+        detail=(
+            f"{len(findings)} project(s) have no working delivery path — {names}. "
+            "Point the project at a repository that exists, or enable the development "
+            "publisher (`aq integration develop <id> --validation ... --reason ...`), which "
+            "delivers to any repository; a passed task already blocked on this can be "
+            "delivered with `aq task deliver --task-id <id> --reason ...`."
+        ),
+        data={"projects": findings},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
+        # Report-only: which delivery path a project should use is the
+        # operator's policy decision, not doctor's.
+        DoctorCheck(
+            id="integration.delivery_path",
+            run=_check_delivery_path,
+            owner=OWNER,
+        ),
         DoctorCheck(
             id="integration.operational",
             run=_check_operational,

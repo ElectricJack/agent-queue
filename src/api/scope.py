@@ -175,6 +175,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_flush",
         "integration_eject",
         "integration_transfer_owner",
+        "task_deliver",
     }
 )
 LOCAL_TEST_SELECTION_CONTROLS = frozenset({"test_selection_promote", "test_selection_revoke"})

@@ -323,6 +323,27 @@ class TestPhaseVerifyByMode:
             strict=True,
         )
 
+    async def test_explicit_pr_mode_on_a_local_remote_names_the_way_out(self, orch):
+        """The block that stranded agile-flare now says how to deliver."""
+        await orch.db.update_project(
+            "p-1", repo_url="/home/op/.agent-queue/local-remotes/site.git"
+        )
+        task = _pr_task("t-pr-local")
+        await orch.db.create_task(task)
+        orch.git.bind_github_repository = AsyncMock(
+            side_effect=GitError("GitHub repository reference was invalid")
+        )
+        orch._emit_text_notify = AsyncMock()
+        ws = await orch.db.get_workspace("ws-1")
+        ctx = _ctx(orch, task, ws.workspace_path)
+
+        result = await orch._phase_verify(ctx)
+
+        assert result == PhaseResult.STOP
+        message = orch._emit_text_notify.await_args.args[0]
+        assert "cannot host a pull request" in message
+        assert "aq task deliver --task-id t-pr-local" in message
+
     async def test_pr_mode_requires_a_pr_for_task_branch_when_checkout_is_default(
         self, orch
     ):
@@ -827,17 +848,31 @@ class TestPhaseIntegrateByMode:
             for call in orch.git.apush_validated_delivery.await_args_list
         )
 
-    async def test_direct_mode_merges_into_default(self, orch, monkeypatch):
+    async def test_direct_mode_pushes_the_merged_slot_tip_to_default(self, orch, monkeypatch):
+        """With a remote, the base checkout is never merged into or reset."""
         task = _direct_task("t-int-direct")
         await orch.db.create_task(task)
+        ws = await orch.db.get_workspace("ws-1")
+        result = await self._run_integrate(orch, task, monkeypatch)
+        assert result == PhaseResult.CONTINUE
+        orch.git.amerge_branch.assert_not_awaited()
+        pushes = [call.args for call in orch.git.apush_validated_delivery.await_args_list]
+        assert pushes == [
+            (ws.workspace_path, "refs/remotes/origin/main", "HEAD", "feature-1"),
+            (ws.workspace_path, "refs/remotes/origin/main", "HEAD", "main"),
+        ]
+        assert "force_with_lease" not in (
+            orch.git.apush_validated_delivery.await_args_list[1].kwargs
+        )
+
+    async def test_direct_mode_without_a_remote_merges_in_the_base(self, orch, monkeypatch):
+        task = _direct_task("t-int-local")
+        await orch.db.create_task(task)
+        orch.git.ahas_remote = AsyncMock(return_value=False)
         result = await self._run_integrate(orch, task, monkeypatch)
         assert result == PhaseResult.CONTINUE
         orch.git.amerge_branch.assert_awaited_once()
-        assert orch.git.apush_validated_delivery.await_count == 2
-        assert all(
-            call.args[1] == "refs/remotes/origin/main"
-            for call in orch.git.apush_validated_delivery.await_args_list
-        )
+        orch.git.apush_validated_delivery.assert_not_awaited()
 
     async def test_integrate_merges_default_into_the_branch_and_pushes_plainly(
         self, orch, monkeypatch
@@ -963,7 +998,8 @@ class TestEmptyBranchSkipsIntegration:
 
         assert result == PhaseResult.CONTINUE
         acquire.assert_awaited_once()
-        orch.git.amerge_branch.assert_awaited_once()
+        # Delivered: the merged tip was pushed to the default branch.
+        assert orch.git.apush_validated_delivery.await_args_list[-1].args[3] == "main"
 
     async def test_an_unanswerable_count_fails_closed(self, orch, monkeypatch):
         """Unknown is not empty and cannot safely identify a delivery ref."""
@@ -1073,6 +1109,83 @@ class TestResolveIntegrationMode:
         )
         await orch.db.create_task(task)
         assert await orch._effective_integration_mode(task) == "pull_request"
+
+    def test_inherited_pull_request_needs_a_pull_request_host(self):
+        """agile-flare / stark-vault: a bare local remote has nowhere to open
+        a PR, so the system default cannot send its tasks down the PR path."""
+        from src.models import resolve_integration_mode_with_source
+
+        assert resolve_integration_mode_with_source(
+            None, pull_requests_available=False
+        ) == ("direct", "repository")
+        # Explicit policy is the operator's word; doctor flags it instead.
+        assert resolve_integration_mode_with_source(
+            None, project_mode="pull_request", pull_requests_available=False
+        ) == ("pull_request", "project")
+        assert resolve_integration_mode_with_source(
+            "pull_request", pull_requests_available=False
+        ) == ("pull_request", "task")
+        assert resolve_integration_mode_with_source(
+            None, default_mode="direct", pull_requests_available=False
+        ) == ("direct", "default")
+
+    @pytest.mark.parametrize(
+        ("url", "has_host"),
+        [
+            ("https://github.com/org/repo.git", True),
+            ("git@github.com:org/repo.git", True),
+            ("/home/op/.agent-queue/local-remotes/site.git", False),
+            ("file:///srv/git/site.git", False),
+            ("https://gitlab.com/org/repo.git", False),
+        ],
+    )
+    def test_pull_request_host_detection(self, url, has_host):
+        from src.integration.delivery_path import lacks_pull_request_host
+
+        assert lacks_pull_request_host(url) is not has_host
+
+    def test_an_unset_repository_is_not_a_verdict(self):
+        from src.integration.delivery_path import lacks_pull_request_host
+
+        assert lacks_pull_request_host("") is False
+        assert lacks_pull_request_host(None) is False
+
+    async def test_effective_mode_is_direct_for_a_local_remote_project(self, orch):
+        await orch.db.update_project(
+            "p-1", repo_url="/home/op/.agent-queue/local-remotes/site.git"
+        )
+        task = Task(
+            id="t-local", project_id="p-1", title="local", description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+        assert await orch._effective_integration_mode(task) == "direct"
+
+    async def test_explicit_pull_request_on_a_local_remote_is_kept(self, orch):
+        await orch.db.update_project(
+            "p-1",
+            repo_url="/home/op/.agent-queue/local-remotes/site.git",
+            integration_mode="pull_request",
+        )
+        task = Task(
+            id="t-local-pr", project_id="p-1", title="local", description="",
+            status=TaskStatus.IN_PROGRESS,
+        )
+        await orch.db.create_task(task)
+        assert await orch._effective_integration_mode(task) == "pull_request"
+
+    async def test_task_repository_row_decides_the_host(self, orch):
+        """A task bound to a repository row is judged by that row's URL."""
+        await orch.db.create_repo(RepoConfig(
+            id="r-local", project_id="p-1", source_type=RepoSourceType.CLONE,
+            url="/srv/git/site.git", default_branch="main",
+        ))
+        task = Task(
+            id="t-row", project_id="p-1", title="row", description="",
+            status=TaskStatus.IN_PROGRESS, repo_id="r-local",
+        )
+        await orch.db.create_task(task)
+        assert await orch._effective_integration_mode(task) == "direct"
 
 
 class TestVerificationRetryKeepsTheSessionAlive:

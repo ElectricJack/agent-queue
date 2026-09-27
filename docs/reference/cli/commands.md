@@ -736,6 +736,7 @@ proposal flow a spec ingest produces.
 | `aq task comments` | `task_comments` | hand | Read a task's comments, newest first. |
 | `aq task create` | `—` | hand | Create a new task (interactive wizard or via flags). |
 | `aq task delete` | `delete_task` | gen | Delete a task. |
+| `aq task deliver` | `task_deliver` | gen | Deliver a BLOCKED task's pushed branch into its repository's default branch by hand, then complete the task. |
 | `aq task deps` | `task_deps` | gen | Return upstream dependencies and downstream dependents for a task. |
 | `aq task details` | `—` | hand | Alias of `aq task show` (kept for backward compatibility). |
 | `aq task edit` | `edit_task` | gen | Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries, verification_type, profile_id, integration_mode… |
