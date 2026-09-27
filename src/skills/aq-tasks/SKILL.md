@@ -235,10 +235,10 @@ task it holds. A document-level `parent:` block creates the graph's own containe
 in the same transaction: under the held task by default, or at the project root
 with `--root`, where the container carries the routing gate a root filing gets
 and its children wait behind it. A root graph must declare that `parent:` block.
-To file one epic by hand, use `aq task create --container`, then file or reparent
-its children under it. Never file an epic as a plain task: a pool worker can
-claim it before its children arrive. Such a claim is released on the next pool
-tick.
+Never file an epic as a plain task: a pool worker can claim it before its
+children arrive. The supervisor or an operator can file a single epic with
+`aq task create --container` and add its children afterwards; a worker session
+is refused (`hierarchy.container_not_for_sessions`) and uses the graph instead.
 
 By default a worker-filed task is a **child of the task you hold**: it stays
 visible and, while open, blocks that task's successful close. `--parent <id>`

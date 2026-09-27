@@ -1317,6 +1317,12 @@ class TestContainerClaims:
     (prime-glacier.1, nimble-bridge.1).
     """
 
+    async def _plain_epic(self, db, tid="epic", filed_by="planner-session"):
+        """An epic filed the old way: a plain, claimable task from a planner."""
+        await mktask(
+            db, tid, profile_id="worker", created_by_kind="session", created_by_id=filed_by
+        )
+
     async def _child_of(self, db, parent, child, *, filed_by=None, status=TaskStatus.DEFINED):
         await mktask(
             db, child, status=status, profile_id="worker",
@@ -1381,9 +1387,9 @@ class TestContainerClaims:
         assert claimed["task"]["id"] in {"work-1", "work-2"}
         assert (await db.get_task(epic)).assigned_agent_id is None
 
-    async def test_a_worker_files_a_declared_container_under_its_held_task(
-        self, handler, db, tmp_path
-    ):
+    async def test_a_worker_session_cannot_declare_a_container(self, handler, db, tmp_path):
+        # An empty declared container is held open with no timeout; a worker
+        # files an epic with its children through a graph ``parent:`` block.
         handler.orchestrator.bus.emit = AsyncMock()
         await mktask(db, "plan", profile_id="worker")
         sid, _ = await pool_session(db, tmp_path)
@@ -1393,21 +1399,14 @@ class TestContainerClaims:
             "project_id": PROJECT_ID, "title": "Epic", "description": "epic",
             "reason": "the plan's epic", "container": True,
         })
-        assert "task_id" in res, res
-        epic = res["task_id"]
-        assert (await db.get_task(epic)).parent_task_id == "plan"
-        async with db._engine.connect() as conn:
-            assert await db.is_container(epic, conn=conn)
-        # Even promoted straight to READY, the frontier never offers it.
-        await db.transition_task(epic, TaskStatus.READY, context="promotion")
-        codes = {r["code"] for r in await db.claim_frontier_exclusions(epic)}
-        assert "frontier_container_settles_without_worker" in codes
+        assert res["code"] == "hierarchy.container_not_for_sessions"
+        assert {t.id for t in await db.list_tasks(PROJECT_ID)} == {"plan"}
 
     async def test_a_container_claimed_in_the_filing_window_is_released(
         self, handler, db, tmp_path
     ):
         handler.orchestrator.bus.emit = AsyncMock()
-        await mktask(db, "epic", profile_id="worker")  # filed the old way: a plain task
+        await self._plain_epic(db)
         sid, _ = await pool_session(db, tmp_path)
         claimed = await scoped(handler, sid)._cmd_task_claim({"next": True})
         assert claimed["task"]["id"] == "epic"
@@ -1433,7 +1432,7 @@ class TestContainerClaims:
 
     async def test_the_pool_reconcile_tick_releases_it(self, handler, db, tmp_path):
         handler.orchestrator.bus.emit = AsyncMock()
-        await mktask(db, "epic", profile_id="worker")
+        await self._plain_epic(db)
         sid, _ = await pool_session(db, tmp_path)
         await scoped(handler, sid)._cmd_task_claim({"next": True})
         await self._child_of(db, "epic", "epic.1", filed_by="planner-session")
@@ -1443,6 +1442,41 @@ class TestContainerClaims:
 
         assert (await db.get_session(sid)).task_id is None
         assert (await db.get_task("epic")).assigned_agent_id is None
+
+    async def test_a_released_parent_without_the_flag_is_flagged(self, handler, db, tmp_path):
+        # Otherwise it would sit IN_PROGRESS with no agent, off the frontier
+        # (``has_children``) and out of settlement (which needs the flag).
+        from sqlalchemy import delete
+
+        handler.orchestrator.bus.emit = AsyncMock()
+        await self._plain_epic(db)
+        sid, _ = await pool_session(db, tmp_path)
+        await scoped(handler, sid)._cmd_task_claim({"next": True})
+        await self._child_of(db, "epic", "epic.1", filed_by="planner-session")
+        async with db.immediate() as conn:
+            await conn.execute(
+                delete(task_metadata).where(
+                    task_metadata.c.task_id == "epic", task_metadata.c.key == "container"
+                )
+            )
+        assert await handler.orchestrator._release_container_claims() == ["epic"]
+        async with db._engine.connect() as conn:
+            assert await db.is_container("epic", conn=conn)
+
+    async def test_a_follow_up_filed_by_someone_else_keeps_the_claim(
+        self, handler, db, tmp_path
+    ):
+        # Real work that picks up a supervisor's follow-up child is not an epic:
+        # only children from the task's own filer mark it as one.
+        handler.orchestrator.bus.emit = AsyncMock()
+        await self._plain_epic(db)
+        sid, _ = await pool_session(db, tmp_path)
+        await scoped(handler, sid)._cmd_task_claim({"next": True})
+        await self._child_of(db, "epic", "epic.1", filed_by="supervisor-session")
+
+        assert await db.list_container_claims() == []
+        assert await handler.orchestrator._release_container_claims() == []
+        assert (await db.get_session(sid)).task_id == "epic"
 
     async def test_emergent_work_the_holder_filed_keeps_its_claim(self, handler, db, tmp_path):
         handler.orchestrator.bus.emit = AsyncMock()
@@ -1462,7 +1496,7 @@ class TestContainerClaims:
         self, handler, db, tmp_path
     ):
         handler.orchestrator.bus.emit = AsyncMock()
-        await mktask(db, "epic", profile_id="worker")
+        await self._plain_epic(db)
         sid, _ = await pool_session(db, tmp_path)
         await scoped(handler, sid)._cmd_task_claim({"next": True})
         await self._child_of(

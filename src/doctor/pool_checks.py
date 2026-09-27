@@ -1438,14 +1438,32 @@ async def _check_claims_container_held(ctx: DoctorContext) -> CheckResult:
 async def _fix_claims_container_held(ctx: DoctorContext) -> CheckResult:
     if ctx.db is None:
         return _no_db_result("claims.container_held")
-    released = 0
-    for claim in await ctx.db.list_container_claims():
+    held = await ctx.db.list_container_claims()
+    kept = []
+    for claim in held:
         out = await ctx.db.release_container_claim(claim, now=time.time())
-        released += int(out.released)
+        if not out.released:
+            kept.append(claim)
+    if kept:
+        # ``release_claim`` leaves a holder with an attached integration
+        # owner (hierarchy/train) alone, and a claim may have moved on.
+        return CheckResult(
+            id="claims.container_held",
+            severity=Severity.WARN,
+            detail=(
+                f"released {len(held) - len(kept)} of {len(held)} container claim(s); "
+                "the rest moved on or are protected by an attached integration owner"
+            ),
+            data={"kept": [
+                {"agent_id": c["agent_id"], "task_id": c["task_id"],
+                 "session_id": c["session_id"]}
+                for c in kept[:50]
+            ]},
+        )
     return CheckResult(
         id="claims.container_held",
         severity=Severity.OK,
-        detail=f"released {released} container claim(s)",
+        detail=f"released {len(held)} container claim(s)",
     )
 
 

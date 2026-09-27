@@ -73,7 +73,8 @@ class CreateTaskRequest:
             to the key, title-cased.
         container (bool | Unset): Create the task as a container (an epic whose children are filed or reparented under
             it afterwards). It is flagged in the creation transaction, so no worker ever claims it, and it stays open until
-            its children finish. Default: False.
+            its children finish. Refused for worker sessions, which file an epic with its children through create_task_graph
+            and a document-level parent block. Default: False.
         depends_on (list[Any] | None | Unset): Task IDs or described dependency edges (optional).
         discovered_from (None | str | Unset): Task ID this work was discovered from (provenance, swarm-work-model §9; a
             worker-filed caller is restricted to the held task's subtree).

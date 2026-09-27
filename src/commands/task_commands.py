@@ -2237,6 +2237,22 @@ class TaskCommandsMixin:
         if after_create_on is not None and not callable(after_create_on):
             return {"success": False, "error": "_after_create_on is internal-only"}
         if args.get("container"):
+            scope = self._current_scope or {}
+            if scope.get("kind") == "session" and not scope.get("elevated"):
+                # A declared container stays open until work arrives, with no
+                # sweep or timeout.  A worker whose children never follow
+                # would leave it open for good, blocking its own close when
+                # it sits under the held task.  The graph path writes the
+                # container and its children together instead.
+                return {
+                    "success": False,
+                    "code": "hierarchy.container_not_for_sessions",
+                    "error": (
+                        "a worker files an epic together with its children: aq task create "
+                        "--graph/--from-spec with a document-level 'parent:' block (add "
+                        "--root to place it at the project root)"
+                    ),
+                }
             # A declared container (an epic filed before its children) is
             # flagged in the transaction that inserts it.  Flagged later, it
             # would sit on the claim frontier until its first child linked,

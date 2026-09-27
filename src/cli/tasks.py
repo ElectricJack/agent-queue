@@ -286,7 +286,8 @@ def _create_task_graph(
     default=False,
     help=(
         "Create the task as an epic container for children filed or reparented under "
-        "it later; it is never claimed by a worker and settles when its children finish"
+        "it later; it is never claimed by a worker and settles when its children finish. "
+        "Not for worker sessions, which use a graph with a 'parent:' block"
     ),
 )
 @click.option(

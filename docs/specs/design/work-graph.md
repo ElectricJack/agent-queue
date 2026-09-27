@@ -350,6 +350,8 @@ children afterwards used to sit on the frontier in between, and pool workers lea
   transaction that inserts the task, through the internal `_after_create_on` hook. The
   task is never on the frontier, and it does not settle while it has no children. A
   READY one is released to IN_PROGRESS without an agent like any other flagged task.
+  An empty declared container has no sweep or timeout, so a worker session is refused
+  (`hierarchy.container_not_for_sessions`) and files its epic through a graph instead.
 - **Created with its children.** A worker graph (`create_task_graph` from a non-elevated
   session) may declare a document-level `parent:`. Its new container is written, flagged
   and linked in the graph's transaction. It goes under the held task by default. That
@@ -362,13 +364,18 @@ children afterwards used to sit on the frontier in between, and pool workers lea
   `parent:` block in a hierarchy/train project (`hierarchy.parent_out_of_scope`).
 - **Released when it happens anyway.** `list_container_claims` finds every agent whose
   current task has children *none of which the holding session filed*
-  (`created_by_kind = 'session'`, `created_by_id` = the holder). A worker's own emergent
-  filings under its held task therefore never count. The pool reconcile step releases
-  pool holders every tick (`release_container_claim`): the task goes back to IN_PROGRESS
-  with no agent and settles if its children are done, and the session is released and
-  drained so the pool relaunches a fresh worker. `aq doctor --check claims.container_held`
-  reports every holder, including a push-launched session or an agent row BUSY with no
-  session, and `--fix` releases them.
+  (`created_by_kind = 'session'`, `created_by_id` = the holder) and *at least one of
+  which the task's own filer filed* — the planner that created the epic and then gave it
+  its children. A worker's own emergent filings, and a follow-up someone else files
+  under a task a worker is working on, therefore never count. The holder is the session
+  pointing at the task in any state but `stopped`; a session-less agent row counts only
+  for an IN_PROGRESS task. The pool reconcile step releases pool holders on every tick
+  where a pool session holds a task (`release_container_claim`): the task is flagged,
+  goes back to IN_PROGRESS with no agent and settles if its children are done, and the
+  session is released and drained so the pool relaunches a fresh worker. A holder with
+  an attached integration owner (hierarchy/train) is left alone and logged once.
+  `aq doctor --check claims.container_held` reports every holder, including a
+  push-launched session or an agent row BUSY with no session, and `--fix` releases them.
 
 ## 13b. Phases
 

@@ -1382,7 +1382,9 @@ _ALL_TOOL_DEFINITIONS = [
                         "Create the task as a container (an epic whose children are "
                         "filed or reparented under it afterwards). It is flagged in the "
                         "creation transaction, so no worker ever claims it, and it stays "
-                        "open until its children finish."
+                        "open until its children finish. Refused for worker sessions, "
+                        "which file an epic with its children through create_task_graph "
+                        "and a document-level parent block."
                     ),
                 },
                 "depends_on": {

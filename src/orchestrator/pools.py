@@ -505,6 +505,20 @@ class PoolsMixin:
                 )
                 continue
             if not out.released:
+                # An attached integration owner (hierarchy/train) or a claim
+                # that moved on refuses the release; say so once, not per tick.
+                refused = getattr(self, "_container_release_refused", None)
+                if refused is None:
+                    refused = self._container_release_refused = set()
+                key = (claim["session_id"], claim["task_id"])
+                if key not in refused:
+                    refused.add(key)
+                    logger.warning(
+                        "Could not release container %s from pool session %s; "
+                        "see aq doctor --check claims.container_held",
+                        claim["task_id"],
+                        claim["session_id"],
+                    )
                 continue
             released.append(claim["task_id"])
             logger.warning(

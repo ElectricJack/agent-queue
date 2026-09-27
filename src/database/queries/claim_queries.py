@@ -17,7 +17,6 @@ from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, lit
 
 from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.hierarchy_queries import (
-    LIVE_SESSION_STATES,
     ProjectIntegrationMode,
     container_flag_exists,
     delivered_same_parent_prerequisites_when_hierarchical,
@@ -1019,19 +1018,31 @@ class ClaimQueryMixin:
         are open.
 
         A task gains children legitimately while held, too: a worker files
-        emergent work under the task it holds (swarm-work-model §12).  What
-        separates the two is who filed the children, so a claim is reported
-        only when the task has children and **none** of them was filed by
-        the session holding it (``created_by_kind='session'``,
-        ``created_by_id`` = that session).  An agent row with no live
-        session behind it is reported on the same rule (it filed nothing).
+        emergent work under the task it holds (swarm-work-model §12), and a
+        supervisor may file a follow-up under a task someone is working on.
+        What separates those from an epic is who filed what, so a claim is
+        reported only when both hold:
+
+        * **none** of the task's children was filed by the session holding
+          it (``created_by_kind='session'``, ``created_by_id`` = that
+          session), and
+        * at least one child was filed by the **same session that filed the
+          task itself** — the planner that created the epic and then gave it
+          its children.  A follow-up filed by anyone else leaves the holder
+          alone.
+
+        The holder is the session pointing at the task through this agent in
+        any state but ``stopped`` (a ``sleeping`` session on a rate-limit
+        cooldown still holds its claim).  An agent row with no such session
+        is reported on the same rule when its task is ``IN_PROGRESS``; an
+        ``ASSIGNED`` one may simply be waiting for its session to start.
 
         Returns one dict per agent: ``agent_id``, ``agent_state``,
         ``task_id``, ``project_id``, ``task_status``, ``task_claim_epoch``,
         and — ``None`` for an orphaned agent row — ``session_id``,
         ``lifecycle`` and ``claim_epoch`` (the session's last claim epoch).
         """
-        any_child = tasks.alias("container_claim_child")
+        filer_child = tasks.alias("container_claim_filer_child")
         own_child = tasks.alias("container_claim_own_child")
         holder = sessions.alias("container_claim_holder")
         stmt = (
@@ -1052,7 +1063,7 @@ class ClaimQueryMixin:
                     and_(
                         holder.c.task_id == tasks.c.id,
                         holder.c.agent_id == agents.c.id,
-                        holder.c.state.in_(LIVE_SESSION_STATES),
+                        holder.c.state != "stopped",
                     ),
                 )
             )
@@ -1060,7 +1071,15 @@ class ClaimQueryMixin:
                 tasks.c.status.in_(
                     (TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value)
                 ),
-                exists(select(literal(1)).where(any_child.c.parent_task_id == tasks.c.id)),
+                holder.c.id.is_not(None) | (tasks.c.status == TaskStatus.IN_PROGRESS.value),
+                tasks.c.created_by_kind == "session",
+                exists(
+                    select(literal(1)).where(
+                        filer_child.c.parent_task_id == tasks.c.id,
+                        filer_child.c.created_by_kind == "session",
+                        filer_child.c.created_by_id == tasks.c.created_by_id,
+                    )
+                ),
                 ~exists(
                     select(literal(1)).where(
                         own_child.c.parent_task_id == tasks.c.id,
@@ -1140,6 +1159,9 @@ class ClaimQueryMixin:
             await self._after_release(out)
         if out.released:
             async with self._engine.begin() as conn:
+                # A parent caught by ``has_children`` alone may lack the flag,
+                # and settlement acts only on flagged containers.
+                await self.mark_container(task_id, conn=conn)
                 settled = await self.settle_containers({task_id}, conn=conn)
             await self._after_release(settled)
         return out

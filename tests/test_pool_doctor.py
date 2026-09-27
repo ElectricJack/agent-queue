@@ -1126,12 +1126,16 @@ def test_dangling_current_task_is_fixable():
 # ---------------------------------------------------------------------------
 
 
-async def _epic_held_by(db, *, session: bool, filed_by: str = "planner-session"):
+async def _epic_held_by(
+    db, *, session: bool, filed_by: str = "planner-session",
+    status: TaskStatus = TaskStatus.IN_PROGRESS, session_state: str = "running",
+):
     """An epic claimed as a plain task, whose children arrived afterwards."""
     await _stale_agent(db, "a1", state=AgentState.BUSY)
     await db.create_task(Task(
         id="epic", project_id=PROJECT_ID, title="Epic", description="",
-        status=TaskStatus.IN_PROGRESS, assigned_agent_id="a1",
+        status=status, assigned_agent_id="a1",
+        created_by_kind="session", created_by_id="planner-session",
     ))
     await db.create_task(Task(
         id="epic.1", project_id=PROJECT_ID, title="child", description="",
@@ -1144,7 +1148,7 @@ async def _epic_held_by(db, *, session: bool, filed_by: str = "planner-session")
         await db.create_session(SessionRecord(
             id="s1", project_id=PROJECT_ID, profile_id="worker", harness="claude",
             provider="fake", name="s1", lifecycle="pool", work_dir="/w", epoch="e",
-            instance_token="t", started_at=time.time(), state="running", agent_id="a1",
+            instance_token="t", started_at=time.time(), state=session_state, agent_id="a1",
             task_id="epic", claim_phase="active", last_claim_epoch=0,
         ))
 
@@ -1193,6 +1197,20 @@ async def test_container_held_fix_resets_an_orphaned_busy_agent(db):
 
 async def test_container_held_ignores_the_holders_own_emergent_work(db):
     await _epic_held_by(db, session=True, filed_by="s1")
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.severity is Severity.OK
+
+
+async def test_container_held_sees_a_sleeping_holder_that_filed_the_children(db):
+    # A rate-limit cooldown leaves the session ``sleeping`` with its claim; it
+    # is the holder, not an orphan, and its own filings keep the claim.
+    await _epic_held_by(db, session=True, filed_by="s1", session_state="sleeping")
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.severity is Severity.OK
+
+
+async def test_container_held_skips_an_assigned_task_awaiting_its_session(db):
+    await _epic_held_by(db, session=False, status=TaskStatus.ASSIGNED)
     finding = await pool_checks.run_check(db, "claims.container_held", config=None)
     assert finding.severity is Severity.OK
 
