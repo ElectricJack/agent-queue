@@ -110,6 +110,12 @@ presses Enter, gated on that same marker still being on the input line, so it
 can only ever submit text the daemon typed. A human's draft never carries the
 marker and is never touched.
 
+The check also lists sessions whose composer holds text the daemon recorded
+typing but cannot read back at all — a harness layout the guard does not know.
+Those are reported as `unreadable` and `--fix` never presses Enter on them:
+attach, look, and submit or clear the line by hand. That is the state every idle
+Codex 0.157 pane sat in on 2026-09-27, when the check still reported OK.
+
 Attaching a dashboard terminal and resizing the pane is the reliable way to
 *cause* this, because the resize repaints the composer under the Enter.
 
@@ -123,12 +129,25 @@ into the pane by hand.
 terminal guard only types into a composer it recognises as empty. Anything it
 cannot recognise — a draft, an unknown footer, ghost text — defers every pass.
 On 2026-09-27 two such layouts stalled workers for 15-30 minutes: Codex 0.157's
-idle footer (a model row plus a `? for shortcuts` row, now recognised) and
-Claude Code's prompt suggestion, which renders as uncoloured ghost text under
+idle footer (a model row plus a hint row whose wording varies) and Claude
+Code's prompt suggestion, which renders as uncoloured ghost text under
 `NO_COLOR` and is indistinguishable from a draft. AQ's Claude settings file
 (`src/prime/templates/hooks/claude.json`) now sets
 `promptSuggestionEnabled: false`; sessions started before that change keep
 their suggestions until they restart.
+
+A third failure followed the first fix: the stall reminder is ~430 characters,
+and Codex and Claude wrap it onto several rows of their own. The row-by-row
+marker check could not see it, so the reminder was typed and never submitted,
+and every later nudge — a supervisor message, a resolved wait — deferred
+behind it. Marker checks now ignore whitespace, the Codex footer is recognised
+by shape rather than wording, and a leftover AQ reminder is submitted before
+the next wake is typed. `tests/test_tmux_harness_wake.py` drives the real
+Codex and Claude CLIs through that path against a local fake model API:
+
+```bash
+aq test tests/test_tmux_harness_wake.py -m tmux -p no:xdist
+```
 
 **Diagnose.**
 

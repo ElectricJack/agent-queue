@@ -16,6 +16,7 @@ tmux server.
 from __future__ import annotations
 
 import os
+import textwrap
 
 import pytest
 
@@ -25,7 +26,7 @@ if os.name != "posix":
 from src.sessions import tmux as tmux_module
 from src.sessions.provider import NotSubmitted, NudgeDeferred, SessionHandle
 from src.sessions.tmux import _marker_for, _marker_on_input_line, _submit_pending
-from tests.test_tmux_nudge_drafts import Composer, handle, provider_for
+from tests.test_tmux_nudge_drafts import CODEX_PLACEHOLDER, Composer, handle, provider_for
 
 REMINDER = (
     "No progress for 8 min on task stark-journey-63. Close or continue: "
@@ -408,3 +409,155 @@ async def test_recovery_refuses_human_text_surrounding_injection(fast_polls, edi
     assert await restarted.resubmit_pending(handle()) is False
     assert composer.submitted == []
     assert not any(command[0] == "send-keys" for command in composer.mutations)
+
+
+# ---------------------------------------------------------------------------
+# Input the harness wraps itself (steady-cascade reopen, 2026-09-27)
+# ---------------------------------------------------------------------------
+
+#: The stall reminder as the reconciler words it; ~430 characters, so every
+#: pane narrower than that shows it on several rows.
+LONG_REMINDER = (
+    "No progress for 12 min on task wise-ember.17. Close or continue: if the work is "
+    'done run `aq task close wise-ember.17 --outcome pass|fail --summary "..."` then '
+    "`aq session drain-ack`; if it is not done, keep working and run `aq task heartbeat "
+    "wise-ember.17`; if you are blocked, say so with `aq message send --to user:dashboard "
+    '--project "$AQ_PROJECT_ID" --body "Blocked: <question>"`.'
+)
+MESSAGE = "Handle `aq message status msg-9208c3d7479a4c188b8fea330ead76f0 --json`."
+
+#: An idle codex-cli 0.157.1 pane (captured 2026-09-27): model row, then a
+#: hint row whose wording differs from the ``? for shortcuts`` of other panes.
+CODEX_IDLE_FOOTER = ["", "  GPT-6-Sol xhigh · /tmp/codexprobe/wd", "  ← for agents · ? for shortcuts"]
+#: The footer once the composer holds text.  Codex paints the hint over with
+#: spaces; the live wise-ember.17 pane kept its right-aligned notice.
+CODEX_TYPED_FOOTERS = {
+    "erased-hint": ["", "  GPT-6-Sol xhigh · /tmp/codexprobe/wd", " " * 32],
+    "kept-notice": [
+        "",
+        "  GPT-6-Sol xhigh · ~/dev/agent-queue2/.aq/worktrees/slot-3 · Process agent-queue tasks",
+        " " * 100 + "⚠ 2 warnings · f2 to view",
+    ],
+}
+CLAUDE_BORDER = "─" * 80
+CLAUDE_FOOTER = [CLAUDE_BORDER, "  ⏵⏵ bypass permissions on (shift+tab to cycle)"]
+
+
+class WrappingComposer(Composer):
+    """Paints input the way Codex and Claude do: word-wrapped onto rows of its
+    own with a two-space continuation indent -- explicit rows, which
+    ``capture-pane -J`` cannot join -- then the harness footer."""
+
+    def __init__(self, *, width=80, idle_footer, typed_footer, above=None, **kw):
+        above = above if above is not None else ["prior output"] * 3
+        super().__init__(
+            above=above,
+            cursor_y=len(above),
+            height=len(above) + 1 + len(idle_footer),
+            below=idle_footer,
+            **kw,
+        )
+        self.width = width
+        self.typed_footer = typed_footer
+        self.idle_row = self.row
+
+    async def tmux(self, *args, stdin=None, **kwargs):
+        if args[0] == "capture-pane" and self.draft:
+            rows = textwrap.wrap(self.prefix + self.draft, self.width, subsequent_indent="  ")
+            return "\n".join(self.above + rows + self.typed_footer) + "\n"
+        result = await super().tmux(*args, stdin=stdin, **kwargs)
+        if not self.draft:
+            self.row = self.idle_row  # an emptied composer repaints its idle row
+        return result
+
+
+def codex_composer(width=80, typed="erased-hint"):
+    return WrappingComposer(
+        row=CODEX_PLACEHOLDER,
+        width=width,
+        idle_footer=CODEX_IDLE_FOOTER,
+        typed_footer=CODEX_TYPED_FOOTERS[typed],
+    )
+
+
+def claude_composer(width=80):
+    return WrappingComposer(
+        prefix="❯ ",
+        row="❯\N{NO-BREAK SPACE}",
+        width=width,
+        above=["older output", CLAUDE_BORDER],
+        idle_footer=CLAUDE_FOOTER,
+        typed_footer=CLAUDE_FOOTER,
+    )
+
+
+def stuck_record(text):
+    return tmux_module._PendingSubmit(
+        instance_token=handle().instance_token, marker=_marker_for(text), text=text,
+    )
+
+
+class TestHarnessWrappedInput:
+    """Live failure: every idle Codex worker's stall reminder sat typed but
+    never submitted -- row-by-row matching could not see text the composer
+    had wrapped -- and every later message nudge deferred behind it."""
+
+    @pytest.mark.parametrize("width", [60, 80, 190])
+    @pytest.mark.parametrize("typed", sorted(CODEX_TYPED_FOOTERS))
+    async def test_a_wrapped_reminder_is_typed_and_submitted_in_codex(
+        self, fast_polls, width, typed
+    ):
+        composer = codex_composer(width, typed)
+        await provider_for(composer).nudge(handle(), LONG_REMINDER)
+        assert composer.submitted == [LONG_REMINDER]
+
+    @pytest.mark.parametrize("width", [60, 80])
+    async def test_a_wrapped_reminder_is_typed_and_submitted_in_claude(self, fast_polls, width):
+        composer = claude_composer(width)
+        await provider_for(composer).nudge(handle(), LONG_REMINDER)
+        assert composer.submitted == [LONG_REMINDER]
+
+    @pytest.mark.parametrize("make", [codex_composer, claude_composer], ids=["codex", "claude"])
+    async def test_a_stale_injection_is_submitted_then_the_new_wake_typed(self, fast_polls, make):
+        """The reminder names its idle minutes, so no later nudge ever matched
+        the text left behind; deferring on "a different AQ injection" was a
+        permanent stall.  AQ's own text is submitted, then the new wake."""
+        composer = make()
+        composer.draft = LONG_REMINDER  # typed by a daemon that never saw Enter land
+        await provider_for(composer)._remember_pending(handle(), stuck_record(LONG_REMINDER))
+        restarted = provider_for(composer)  # only the durable tmux record survives
+
+        assert await restarted.pending_submit(handle()) == _marker_for(LONG_REMINDER)
+        await restarted.nudge(handle(), MESSAGE)
+        assert composer.submitted == [LONG_REMINDER, MESSAGE]
+        assert await restarted.pending_submit(handle()) is None
+
+    async def test_an_edited_stale_injection_still_defers_the_new_wake(self, fast_polls):
+        composer = codex_composer()
+        composer.draft = LONG_REMINDER + " and a human note"
+        await provider_for(composer)._remember_pending(handle(), stuck_record(LONG_REMINDER))
+        composer.mutations.clear()
+        with pytest.raises(NudgeDeferred):
+            await provider_for(composer).nudge(handle(), MESSAGE)
+        assert composer.submitted == []
+        assert composer.mutations == []
+
+    async def test_an_unreadable_injection_is_reported_but_never_submitted(self, fast_polls):
+        composer = WrappingComposer(
+            row=CODEX_PLACEHOLDER,
+            idle_footer=CODEX_IDLE_FOOTER,
+            typed_footer=["", "  tab to queue message    91% context left"],
+        )
+        composer.draft = MESSAGE
+        provider = provider_for(composer)
+        await provider._remember_pending(handle(), stuck_record(MESSAGE))
+        composer.mutations.clear()
+
+        assert await provider.pending_submit(handle()) is None
+        assert await provider.pending_submit_detail(handle()) == {
+            "marker": _marker_for(MESSAGE),
+            "observable": False,
+        }
+        assert await provider.resubmit_pending(handle()) is False
+        assert composer.submitted == []
+        assert composer.mutations == []
