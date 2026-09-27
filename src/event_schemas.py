@@ -1299,6 +1299,14 @@ _PROVIDER_SCHEMAS: dict[str, EventSchema] = {
         "required": ["batch_id", "provider", "moved"],
         "optional": ["generation", "held", "targets", "projects"],
     },
+    # provider-failover D24 S7: once per sweep whose capacity spill pass moved
+    # work (``batch_id`` ``spill-<UTC yyyymmddThhmm>``).  ``routes`` lists
+    # ``{from_profile_id, to_profile_id, count}``; ``held`` counts the pass's
+    # holds by kind.  Never a supervisor message: a sweep runs every 5 min.
+    "pool.spilled": {
+        "required": ["batch_id", "moved"],
+        "optional": ["routes", "projects", "held"],
+    },
 }
 
 _SWARM_SCHEMAS: dict[str, EventSchema] = {

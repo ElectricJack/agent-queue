@@ -1277,7 +1277,7 @@
       ]
     }
   },
-  "digest": "sha256:463bdfd490e53f7db5794f8aea03f6337b3c3e06068e171a9945ea3a742f3f28",
+  "digest": "sha256:01fe49aafa1658300231a81c61e4f82ece0cf7514e709c843dd7e83e212fbd2f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10476,10 +10476,12 @@
         "src.llm.fake",
         "src.llm.providers.errors",
         "src.models",
+        "src.orchestrator.pools",
         "src.providers.availability",
         "src.providers.availability_service",
         "src.providers.intent",
         "src.providers.reroute",
+        "src.scheduler",
         "src.sessions.harness_parser"
       ],
       "markers": [
