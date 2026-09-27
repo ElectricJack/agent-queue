@@ -19,7 +19,11 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, insert, select, text, update
 
-from src.database.queries.blocked_state import _development_delivery_pending, blocked_predicate
+from src.database.queries.blocked_state import (
+    _development_delivery_pending,
+    blocked_predicate,
+    obsolete_marker,
+)
 from src.database.tables import (
     projects, sessions, task_completion_records,
     tasks,
@@ -78,6 +82,8 @@ BRANCH_CLEANUP_ROWS_PER_TICK = 10
 DEFERRAL_RUNS_KEPT = 5
 #: Task metadata key holding what a repair's parked batch recorded.
 REPAIR_EVIDENCE_KEY = "development_repair_evidence"
+#: Chained repairs of one parked batch before the rest is left to an operator.
+REPAIR_GENERATIONS = 3
 #: How much of a failure a repair description quotes.
 REPAIR_TESTS_LISTED = 20
 REPAIR_OUTPUT_TAIL_CHARS = 3000
@@ -125,6 +131,112 @@ def _dependency_cycles(dependencies, task_ids):
         if task_id not in indices:
             visit(task_id)
     return cycles
+
+
+#: A repair in one of these is still being worked on (or will be).
+OPEN_REPAIR_STATUSES = frozenset({
+    TaskStatus.DEFINED.value, TaskStatus.READY.value, TaskStatus.ASSIGNED.value,
+    TaskStatus.IN_PROGRESS.value, TaskStatus.WAITING_INPUT.value, TaskStatus.PAUSED.value,
+})
+#: Links followed through repairs of repairs.  The generation budget keeps a
+#: real chain at three; a longer one is a loop in the journal.
+REPAIR_CHAIN_LIMIT = 8
+
+
+def repair_chain(manifest, history, statuses, *, repository_id, target_ref, identity=None):
+    """Follow a parked batch through its repairs to the one still carrying it.
+
+    A parked batch's repair is ``development-repair-<digest of its manifest>``.
+    When that repair closes and its own publication parks too (the target
+    moved again), the batch is carried by the repair of *that* row, and so on.
+    That chain is what the source's dependents are waiting on.  Reading only
+    the first repair made a live chain look like no repair at all
+    (``wise-bridge``: fresh-ember.2, nimble-bridge.8).
+
+    *statuses* maps repair task ids to their status, the live table first and
+    then the archive; *identity* names a manifest's repair
+    (:meth:`DevelopmentIntegration._repair_identity` by default).  The result's ``open_repair`` names the repair that
+    carries the batch, or is ``None`` when nothing will resolve it by itself:
+
+    * ``open``: a repair in the chain is still being worked on;
+    * ``awaiting_publication``: the last repair closed and the publisher has
+      neither parked nor delivered it yet;
+    * ``delivered``: the last repair reached the target, so the next sweep
+      adopts the batch;
+    * ``missing``: no repair exists for the last parked row (not yet filed, or
+      refused, e.g. past the generation budget);
+    * ``finished``: the last repair ended without completing;
+    * ``loop``: the journal's chain repeats or passes :data:`REPAIR_CHAIN_LIMIT`.
+    """
+    rows = sorted(
+        (row for row in history if row.get("repository_id") == repository_id),
+        key=lambda row: (row.get("created_at") or 0, str(row.get("id"))),
+        reverse=True,
+    )
+    parked_in = {}
+    delivered = set()
+    for row in rows:
+        members = _manifest_members(row.get("manifest"))
+        if row.get("state") == "parked":
+            for member in members:
+                parked_in.setdefault(member["task_id"], []).append(row)
+        elif row.get("state") in {"delivered", "adopted"} and row.get("target_ref") == target_ref:
+            delivered.update(member["task_id"] for member in members)
+    identity = identity or DevelopmentIntegration._repair_identity
+    seen = set()
+
+    def outcome(open_repair, state, chain, detail):
+        return {"open_repair": open_repair, "state": state, "chain": chain, "detail": detail}
+
+    def follow(repair, chain):
+        status = statuses.get(repair)
+        chain = [*chain, {"task_id": repair, "status": status}]
+        if repair in seen or len(chain) > REPAIR_CHAIN_LIMIT:
+            return outcome(None, "loop", chain, f"repair chain repeats at {repair}")
+        seen.add(repair)
+        if status is None:
+            return outcome(None, "missing", chain, f"no repair {repair} exists")
+        if status in OPEN_REPAIR_STATUSES:
+            return outcome(repair, "open", chain, f"repair {repair} is {status}")
+        if status != TaskStatus.COMPLETED.value:
+            return outcome(None, "finished", chain, f"repair {repair} ended {status}")
+        if repair in delivered:
+            return outcome(repair, "delivered", chain, f"repair {repair} was delivered")
+        # Duplicate rows of one manifest share one repair: follow each once.
+        successors = list(dict.fromkeys(
+            identity(row["manifest"]) for row in parked_in.get(repair, [])
+        ))
+        if not successors:
+            return outcome(
+                repair, "awaiting_publication", chain,
+                f"repair {repair} closed and awaits publication",
+            )
+        results = [follow(successor, chain) for successor in successors]
+        return next((result for result in results if result["open_repair"]), results[0])
+
+    return follow(identity(manifest), [])
+
+
+def describe_repair_chain(result):
+    """One line naming each repair in *result*'s chain and its status."""
+    return " -> ".join(
+        f"{link['task_id']} ({link['status'] or 'not filed'})" for link in result["chain"]
+    )
+
+
+async def repair_statuses(conn, project_ids):
+    """Every development repair's status in *project_ids*, live table over archive."""
+    from src.database.tables import archived_tasks
+
+    statuses = {}
+    for table in (archived_tasks, tasks):
+        statuses.update((await conn.execute(
+            select(table.c.id, table.c.status).where(
+                table.c.id.like("development-repair-%"),
+                table.c.project_id.in_(list(project_ids)),
+            )
+        )).all())
+    return statuses
 
 
 @dataclass(frozen=True)
@@ -368,6 +480,7 @@ class DevelopmentIntegration:
                         task_completion_records.c.task_id == tasks.c.id,
                         task_completion_records.c.commits != "[]",
                     ).exists(),
+                    ~obsolete_marker(tasks),
                 ).limit(1)
             )
             return candidate is not None
@@ -1371,25 +1484,43 @@ class DevelopmentIntegration:
                     await self.run_git(store, "merge", "--abort")
                     await self.run_git(store, "checkout", "--detach", "--force", head)
                     now = time.time()
-                    await self.save(
-                        {
-                            "id": str(uuid4()),
-                            "project_id": project_id,
-                            "repository_id": repo.id,
-                            "target_ref": target,
-                            "expected_sha": base,
-                            "prepared_sha": None,
-                            "state": "parked",
-                            "manifest": [member],
-                            "evidence": {
-                                "kind": "merge_conflict", "detail": result.stdout[-4000:],
-                                "conflicting_files": conflicting_files,
-                            },
-                            "reason": "source conflict; independent work may continue",
-                            "created_at": now,
-                            "updated_at": now,
-                        }
-                    )
+                    conflict = {
+                        "kind": "merge_conflict", "detail": result.stdout[-4000:],
+                        "conflicting_files": conflicting_files,
+                    }
+                    # ``--retry`` and ``--recover-child`` merge parked content
+                    # again.  A repeat conflict refreshes the row that already
+                    # names this exact source, whose repair (or its chain) is
+                    # still the one working on it; a second row would only
+                    # look like a new park that nobody was repairing.
+                    reparked = next((
+                        row for row in reversed(history)
+                        if row["state"] == "parked" and row["repository_id"] == repo.id
+                        and row["target_ref"] == target and row["manifest"] == [member]
+                    ), None)
+                    if reparked is not None:
+                        await self.change(
+                            reparked["id"], expected_sha=base,
+                            evidence={**(reparked["evidence"] or {}), **conflict,
+                                      "reconflicted_at": now},
+                        )
+                    else:
+                        await self.save(
+                            {
+                                "id": str(uuid4()),
+                                "project_id": project_id,
+                                "repository_id": repo.id,
+                                "target_ref": target,
+                                "expected_sha": base,
+                                "prepared_sha": None,
+                                "state": "parked",
+                                "manifest": [member],
+                                "evidence": conflict,
+                                "reason": "source conflict; independent work may continue",
+                                "created_at": now,
+                                "updated_at": now,
+                            }
+                        )
                     conflicts.append(member)
                     if parent_id:
                         blocked_parents.add(parent_id)
@@ -1543,6 +1674,7 @@ class DevelopmentIntegration:
             raise ValueError(
                 f"{child_id} remains unpublished after sweep: "
                 f"{skip or 'no receipt for the current source'}"
+                + await self._parked_repair_note(repo, target, history, child_id)
             )
         sibling_conflicts = []
         if task.parent_task_id:
@@ -1560,6 +1692,40 @@ class DevelopmentIntegration:
             **result, "recovered_task_id": child_id, "source_sha": source,
             "sibling_conflicts": sorted(set(sibling_conflicts)),
         }
+
+    async def _parked_repair_note(self, repo, target, history, task_id):
+        """Say which repair carries *task_id*'s parked source, or that none does.
+
+        Without it a recovery that re-conflicts answers only ``merge_conflict``,
+        which reads as "nothing is repairing this" even while a repair of the
+        source's first repair is being worked on.
+        """
+        parked = [
+            row for row in reversed(history)
+            if row["state"] == "parked" and row["repository_id"] == repo.id
+            and any(m["task_id"] == task_id for m in _manifest_members(row["manifest"]))
+        ]
+        if not parked:
+            return ""
+        async with self.db._engine.connect() as conn:
+            statuses = await repair_statuses(conn, [repo.project_id])
+        results = [
+            repair_chain(row["manifest"], history, statuses,
+                         repository_id=repo.id, target_ref=target)
+            for row in parked
+        ]
+        found = next((result for result in results if result["open_repair"]), results[0])
+        kind = (parked[results.index(found)]["evidence"] or {}).get("kind") or "parked"
+        if found["open_repair"]:
+            return (
+                f"; its {kind} park is carried by repair {found['open_repair']} "
+                f"({found['state']}; chain: {describe_repair_chain(found)})"
+            )
+        return (
+            f"; its {kind} park has no open repair ({found['detail']}; chain: "
+            f"{describe_repair_chain(found)}): see `aq doctor --check "
+            "integration.development_conflicts_unrepaired`"
+        )
 
     async def reconcile_parked(self, repo, store, accepted_head):
         """Dispatch only failures still unresolved after the whole batch was assembled.
@@ -3078,8 +3244,21 @@ class DevelopmentIntegration:
             if source.task_id.startswith("development-repair-"):
                 match = re.search(r"Development repair generation: (\d+)", source.description)
                 generation = max(generation, (int(match.group(1)) if match else 1) + 1)
-        if generation > 3:
-            return None  # Keep the candidate parked for operator inspection; no unbounded repair chain.
+        if generation > REPAIR_GENERATIONS:
+            # Keep the candidate parked for operator inspection; no unbounded
+            # repair chain.  Say so: a silent refusal leaves the sources
+            # parked with no open repair and nothing that names why.
+            self._name_diagnostic(
+                diagnostics,
+                kind="repair_generation_exhausted",
+                task_ids=[member["task_id"] for member in manifest],
+                detail=(
+                    f"{REPAIR_GENERATIONS} repair generations did not deliver "
+                    f"{', '.join(sorted(m['task_id'] for m in manifest))}; no further "
+                    "repair is filed and the batch stays parked for an operator"
+                ),
+            )
+            return None
         sources = "\n".join(f"- {m['task_id']}: {m.get('source_sha')}" for m in manifest)
         repo = await self.db.get_repo(repository_id)
         target_branch = repo.default_branch
@@ -3089,9 +3268,13 @@ class DevelopmentIntegration:
         )
         conflict = parked is not None and parked.get("evidence", {}).get("kind") == "merge_conflict"
         recovery = (
-            f"Fetch origin and rebase the listed source changes onto origin/{target_branch} "
-            "in your own task branch. Resolve the named conflicting files and preserve "
-            "the intended source changes. "
+            f"Fetch origin and, in your own task branch (it starts from origin/{target_branch}), "
+            "merge each listed source revision by its exact SHA (`git merge <sha>`). Resolve "
+            "the named conflicting files and preserve the intended source changes; where a "
+            "conflicting file is generated, regenerate it from the merged sources instead of "
+            "hand-merging it. Do not rebase, squash or cherry-pick: every listed source "
+            "revision must stay an ancestor of your branch, so delivering the repair delivers "
+            f"the source too. If origin/{target_branch} moves before you push, merge it again. "
             if conflict else
             f"Preserve their intended changes and resolve against current origin/{target_branch}. "
         )

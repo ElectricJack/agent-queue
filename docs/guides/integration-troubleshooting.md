@@ -35,6 +35,7 @@ aq doctor --check integration.reused_task_identity
 aq doctor --check integration.branch_discards
 aq doctor --check integration.unreviewed_prs
 aq doctor --check integration.development_publisher_stalled
+aq doctor --check integration.development_conflicts_unrepaired
 aq doctor --check git.stale_branches
 ```
 
@@ -45,6 +46,7 @@ aq doctor --check git.stale_branches
 | Task is `COMPLETED`, work is not on `main` | Normal: delivery is batched | [Nothing is wrong yet](#nothing-is-wrong-yet) |
 | `blockers: [{"code": "publication_pending"}]` | A push is unconfirmed | [Publication pending](#publication-pending) |
 | Journal row `parked`, evidence `kind: merge_conflict` | A source would not merge | [A member conflicted](#a-member-conflicted) |
+| `integration.development_conflicts_unrepaired` reports ERROR | A parked conflict's repair chain ended | [A member conflicted](#a-member-conflicted) |
 | Journal row `parked`, evidence `conclusion: failed` | Validation failed | [Validation failed](#validation-failed) |
 | `blocked: validation modified the candidate; refusing publication` | A check wrote to the tree | [Validation modified the candidate](#validation-modified-the-candidate) |
 | `blocked: repository publisher is already running` | Another sweep holds the lock | [The publisher is busy](#the-publisher-is-busy) |
@@ -111,7 +113,22 @@ What happens next, automatically:
 
 * If a later batch delivers the same content by another route, the parked row
   becomes `adopted` on the next sweep and nothing else happens.
-* Otherwise AQ files one repair task — see [Repair tasks](#repair-tasks).
+* Otherwise AQ files one repair task — see [Repair tasks](#repair-tasks). If
+  `main` moves again before that repair is published, the repair's own row
+  parks and gets the next repair; the source is carried by that chain.
+
+To see what is carrying a parked source, or that nothing is:
+
+```bash
+aq doctor --check integration.development_conflicts_unrepaired
+```
+
+It lists each completed source parked on a conflict whose repair chain has no
+open repair (none filed, one ended FAILED or BLOCKED, or the generation budget
+ran out), with the conflicting files and the chain. `aq integration sweep
+<project> --recover-child <task>` also names the repair carrying the child when
+the child stays unpublished. Do not file a hand-made rebase task for a source
+the check does not list: the repair chain is already on it.
 
 What you can do:
 
@@ -983,10 +1000,14 @@ A parked content set that the batch did not resolve produces one ordinary task:
 * it is a normal queue task — waiting for a worker or a provider does not
   expire it, unlike the strict modes' wall-clock repair stages;
 * at most **three** generations of repair are chained. Past that, the content
-  stays parked for a human rather than starting an unbounded chain.
+  stays parked for a human rather than starting an unbounded chain, and the
+  batch records the `repair_generation_exhausted` diagnostic.
 
-A repair may merge, cherry-pick or rewrite the parked changes. Its source
-manifest identifies the exact revisions it is responsible for. A passing close
+A merge-conflict repair is asked to merge each parked source revision by its
+exact SHA, so the source stays an ancestor of the repair and its delivery
+lands the source itself. A repair that cherry-picked or rewrote the parked
+changes is still accepted. Its source manifest identifies the exact revisions
+it is responsible for. A passing close
 alone does not release their successors: the repair must also have an accepted
 delivery to the project's default branch. AQ then records the repair task,
 completion and delivery IDs as resolution evidence for the parked sources.
