@@ -176,6 +176,19 @@ promotion, or came back from `PAUSED` — and releases it the same way, and the 
 frontier excludes the flag. A released container whose children are already all
 `COMPLETED` settles immediately rather than at the next sweep.
 
+**Reparenting onto a live holder.** `reparent_task` must not turn another
+worker's claimed leaf into a container: its worker would retain a claim whose
+passing close is refused while the newly attached children are open. The
+command locks the destination task before checking its assigned agent and
+live session holders, and refuses with `hierarchy.live_parent` before changing
+edges, flags, or provenance. Existing placement and ownership remain intact.
+An idempotent move to the current parent remains allowed, as does a worker
+deliberately reparenting its own filing back under the task it holds. Creating
+subtasks under one's held task still preserves ownership as described below;
+there is no automatic displacement or abandonment of that worker's work.
+The final pool claim CAS also excludes flagged containers, even when a
+candidate was selected before its container flag was written.
+
 **Transition machinery refactor (prerequisite).** `transition_task` today opens its own
 transaction and has no `conn` parameter. It is split into `_apply_transition(conn, task_id,
 new_status, *, context, event, force, **cols) -> TransitionResult` (read, validate, apply,
