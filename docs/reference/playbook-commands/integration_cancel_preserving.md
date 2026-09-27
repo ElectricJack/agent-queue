@@ -173,7 +173,7 @@ cancelled, precisely so a human can resume the investigation.
    - The operation becomes `cancelled`, every stage that had not passed or been
      cancelled becomes `cancelled`, and a batch-targeted operation flips its batch
      to `aborted` with `human_abort_reason`.
-   - One `development_deliveries` row is written in state `cancelled`, with
+   - One `development.operation` event is appended in state `cancelled`, with
      evidence naming the operation and every preserved owner ref.
 
 ## Side effects and persistence
@@ -183,8 +183,8 @@ cancelled, precisely so a human can resume the investigation.
 line 3106); a batch operation's `integration_batches` row becomes `aborted` with
 its reason; delegate tasks become `PAUSED` with `manual_pause` task metadata;
 bare reservations in `integration_branch_owners` (line 2207) become `released`
-while attached fences are kept; and one audit row lands in
-`development_deliveries` (line 3839) listing the preserved owners.
+while attached fences are kept; and one `development.operation` audit event
+(state `cancelled`) lands in `events` listing the preserved owners.
 
 The result's `preserved_owners` lists only the refs whose fence still holds a
 session — that is the quarantine list an operator has to deal with before the

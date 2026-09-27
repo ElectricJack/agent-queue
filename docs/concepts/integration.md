@@ -42,8 +42,9 @@ front, because they explain most of the behaviour on this page:
   builds, validates and publishes as one unit.
 * **Manifest** — the list of `(task_id, source_sha)` pairs a batch contains.
   It is what makes a delivery auditable.
-* **Delivery journal** — the durable record of every batch, its manifest, its
-  evidence and its outcome (`development_deliveries`).
+* **Delivery journal** — the durable record of every publisher action, its
+  manifest, its evidence and its outcome (`development.operation` events). It
+  is history: whether work is delivered is always git's answer.
 * **Parked** — an assembled thing that could not be delivered (a conflict, a
   failed validation) and is retained for a later pass or a human.
 * **Integration mode** — the per-project choice of *which* delivery machinery
@@ -201,8 +202,8 @@ Step by step:
    with an ordinary merge commit (author `Agent Queue <aq@localhost>`).
    Parent membership is recorded in the manifest but does not create a separate
    aggregate ref. Work already proven to be on the default branch is recognized
-   before dependency ordering and assembly; it needs no merge, and newly
-   observed deliveries are recorded in the journal. Assembly stops at
+   before dependency ordering and assembly; it needs no merge and nothing is
+   recorded for it, because git will answer the same way next time. Assembly stops at
    `max_batch_size` members (default 50).
    With a `regenerate` policy, files the repository's `.gitattributes` marks
    `merge=aq-generated` never conflict: when both sides changed one, the
@@ -316,7 +317,7 @@ sweep and one re-scan.
 | State | Where | Written by |
 |---|---|---|
 | Mode, desired mode, drain flag, generation, policy | `projects.hierarchical_integration_*` | [`controls.py`](../../src/integration/controls.py), [`development.py`](../../src/integration/development.py) |
-| Delivery journal (batches, parks, adoptions, cancellations, preservations) | `development_deliveries` | [`development.py`](../../src/integration/development.py) |
+| Delivery journal (batches, parks, adoptions, cancellations, preservations) | `development.operation` events (retired `development_deliveries` rows: `development.legacy_provenance` events) | [`development.py`](../../src/integration/development.py) |
 | Branch writer fences | `integration_branch_owners` | [`ownership.py`](../../src/integration/ownership.py) |
 | Reserved / materialized task branch origins | `task_branch_origins` | [`hierarchy.py`](../../src/integration/hierarchy.py), [`branch_materialization.py`](../../src/integration/branch_materialization.py) |
 | Strict-mode batches, candidate revisions, members, repair operations and stages | `integration_batches`, `integration_candidate_*`, `integration_repair_*` | [`candidates.py`](../../src/integration/candidates.py), [`repair.py`](../../src/integration/repair.py) |

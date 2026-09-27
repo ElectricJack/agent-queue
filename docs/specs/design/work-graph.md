@@ -410,23 +410,17 @@ A phase may sit at the project root or nest one level under an epic (the existin
 
 **Refused in `hierarchy`/`train`.** One check (`phase_mode_refusal`, `src/database/queries/hierarchy_queries.py`) and one code, `hierarchy.phases_unsupported_mode`, behind both doors — `phase_create` and a graph declaring `phases:`. In those modes a phase container owns a branch and its children deliver *to it*, so phase *N+1* can open on a base that lacks phase *N*'s work and one FAILED child strands the whole stage's delivery: the hazard `hierarchy.parent_key_unsupported_mode` (§13d) already bars for standing parents. `disabled`, `observe` and `development` are unaffected — a container there is a plain task row with no branch, and in `development` an inter-phase graph gate releases on COMPLETED. Dynamic admission treats a branchless organizational container as having no own artifact.
 
-**Empty missing sources in development (2026-09-26).** Historical completed containers
-and ordinary tasks can retain a branch name that was never published to origin. After
-a successful pruned origin fetch, the development publisher retires that branch requirement
-when the source ref is absent, every completion record has no commits (including tasks
-with no completion record), and no delivery journal manifest names the task. Branch
-identities, including canonical integration checkpoints, remain intact. The observation
-is kept in `task_metadata.development_empty_source`, bound to the repository, branch,
-task update timestamp and latest completion id; reopening, editing the task or recording
-another completion invalidates it. Legacy candidate collection treats the observed revision as branchless. Fresh
-admission uses `delivery_truth` and does not infer no artifact from an absent
-worker ref or a stored observation. The stale `development_publisher_skip` is removed.
-Retirement and dependent blocked-state recomputation commit together, before the batch
-orders dependencies.
-The task stays COMPLETED, requires no synthetic delivery receipt, and no longer keeps an
-otherwise idle project opening Git transport on every tick. Any reported commits or
-journal artifacts, including parked sources, still require delivery or recovery. A
-failed origin fetch cannot prove an absent source and never retires a branch.
+**Empty missing sources in development (2026-09-26, superseded 2026-09-27).** The
+publisher once retired the branch requirement of a completed task whose source ref was
+absent and whose completions listed no commits, recording `task_metadata.development_empty_source`.
+Git delivery truth replaced that inference: an absent ref is never an empty artifact, and
+the observation is no longer written or read. A task's artifact is decided by its current
+completion generation's retained git provenance (`artifact: false` for a proven code-free
+close). A branch or recorded commits without that record is unknown
+(`missing_git_provenance`) until an operator retains or resolves the generation, and a
+branchless task with no recorded artifact is organizational. The stale
+`development_publisher_skip` still clears once git proves the work, and a failed origin
+fetch is unknown, never an empty source.
 
 **Delivered commits-less work after branch cleanup.** A completed task whose close lists
 no commits, such as a plan or docs task whose branch is its base, is released by its

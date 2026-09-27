@@ -170,7 +170,7 @@ no operator authority.
 6. The project is switched to `development` with the validated policy, legacy
    suppression and branch-owner state are reconciled for the new publisher, the
    next sweep is scheduled at `now + interval_seconds`, and a
-   `development_deliveries` row is written in state `adopted` whose evidence
+   `development.operation` event is appended in state `finished` whose evidence
    records the operator and the policy — so the configuration change is itself
    part of the delivery journal.
 
@@ -178,10 +178,10 @@ no operator authority.
 
 The project row's integration mode, policy and designated repository
 ([`src/database/tables.py:37`](../../../src/database/tables.py)); possibly one new
-row in `repos` when an origin had to be discovered; one journal row in
-`development_deliveries` (line 3839) with `state: adopted` and
-`evidence.kind: configuration`; and the in-memory next-due time for the project's
-sweep.
+row in `repos` when an origin had to be discovered; one `development.operation`
+event in `events` with `state: finished` and `evidence.kind: configuration`
+(the `development_deliveries` table was retired by revision `a00000000038`);
+and the in-memory next-due time for the project's sweep.
 
 Switching modes does not rewrite history. Rows left by a previous publisher stay
 as audit history, and a batch that was mid-flight under the old mode is what the

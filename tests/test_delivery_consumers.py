@@ -302,3 +302,44 @@ async def test_every_surface_follows_git_once_the_work_lands(world):
     async with db._engine.begin() as conn:
         result = await db.settle_containers({"epic"}, conn=conn, delivery=view)
     assert result.settled == ["epic"]
+
+
+async def test_a_retired_manifest_source_keeps_a_branchless_close_unknown(world):
+    """The retirement marker keeps a branchless legacy artifact unknown, fenced to its generation.
+
+    Without it a branchless task a retired manifest delivered code for would
+    read as an organizational container: "no artifact", i.e. satisfied.
+    """
+    from src.integration.delivery_observer import delivery_sensitive_ids
+    from src.integration.publishable_artifact import LEGACY_ARTIFACT_KEY
+
+    db, _origin, observer, _service = world
+    for tid in ("legacy-artifact", "organizational"):
+        await db.create_task(Task(id=tid, project_id="p", repo_id="r", title=tid,
+                                  description="", status=TaskStatus.COMPLETED))
+    await db.set_task_meta("legacy-artifact", LEGACY_ARTIFACT_KEY, {
+        "legacy_id": "old", "source_sha": "a" * 40, "completion_id": None,
+        "reason": "retired manifest named an unrecorded source",
+    })
+    async with db._engine.connect() as conn:
+        assert await delivery_sensitive_ids(
+            conn, ["legacy-artifact", "organizational"]
+        ) == {"legacy-artifact"}
+    view = await observer.observe(["legacy-artifact", "organizational"])
+    evidence = view.get("legacy-artifact")
+    assert (evidence.state, evidence.reason) == (DeliveryState.UNKNOWN, "missing_git_provenance")
+    assert view.get("organizational").state is DeliveryState.NO_ARTIFACT
+    blockers = (await IntegrationStatusService(db).task_blockers("legacy-artifact"))["blockers"]
+    assert ("delivery_unknown", "missing_git_provenance") in {
+        (item["code"], item.get("cause")) for item in blockers
+    }
+
+    # A later (code-free, branchless) generation replaces the fenced marker.
+    await db.save_task_completion(TaskCompletion(
+        id="code-free", task_id="legacy-artifact", outcome="pass", commits=[],
+        completed_at=time.time(),
+    ))
+    async with db._engine.connect() as conn:
+        assert await delivery_sensitive_ids(conn, ["legacy-artifact"]) == set()
+    view = await observer.observe(["legacy-artifact"])
+    assert view.get("legacy-artifact").state is DeliveryState.NO_ARTIFACT
