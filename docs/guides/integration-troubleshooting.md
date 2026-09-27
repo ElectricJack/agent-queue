@@ -220,8 +220,17 @@ blocked: remote write <id> needs reconciliation: target changed
 ```
 
 A row was left `publishing`, and the ref is now at neither the SHA that was
-being published nor the SHA it was published from. Something outside AQ wrote
-to that branch. The sweep stops rather than guessing.
+being published nor the SHA it was published from, and git cannot tell whether
+the publication is in its history. The sweep stops rather than guessing.
+
+Movement git *can* explain settles on its own. When the target moved before a
+publication applied — during validation, or under the expected-old-SHA lease
+of the push — the row becomes `cancelled` with `evidence.reason: base_moved`
+and the observed SHA, and the sweep re-assembles once from a fresh fetch; a
+second move waits for the next tick. A `publishing` row left by a crash whose
+prepared head is not in the moved target becomes `cancelled` with
+`evidence.reconciled: target_moved`. Neither parks the batch or files a repair,
+and the moved target is never overwritten.
 
 Establish what happened before you do anything else: `git log` the target
 branch, and compare against the row's `expected_sha` and `prepared_sha`. If the
@@ -867,8 +876,9 @@ another attempt.
 ## Delivered branches are still on the remote
 
 Delivery pushes a branch per task (`aq/<task-id>`), a candidate per batch
-(`aq/development/<project>/<head>`), parent assemblies
-(`aq/development/parent/…`) and a branch per repair. Once a batch is confirmed
+(`aq/development/<project>/<head>`), a branch per repair and, before
+publication stopped assembling parents, parent assemblies
+(`aq/development/parent/…`). Once a batch is confirmed
 on the default branch, the publisher deletes what it made obsolete on the next
 tick: each member's branch (still at the delivered revision, or on `main`), a
 `-wip` sibling that is on `main`, every assembly whose members have all landed,
