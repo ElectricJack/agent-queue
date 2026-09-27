@@ -114,6 +114,8 @@ class GitOpsMixin:
                 f"close --outcome fail to get past it — report the blocker with "
                 f"`aq message send --to user:dashboard`."
             )
+            if context.get("remedy"):
+                message = f"{message}\nOperator remedy: {context['remedy']}"
         elif context.get("remedy"):
             message = f"{message}\nRun: {context['remedy']}"
         self._aggregate_verifier_retry(ctx, message)
