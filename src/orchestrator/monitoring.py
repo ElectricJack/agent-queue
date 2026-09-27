@@ -456,37 +456,72 @@ class MonitoringMixin:
                 logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
         await self.reconcile_stale_containers()
 
+    @property
+    def delivery_observer(self):
+        """Git delivery truth for settlement and the readers outside the publisher."""
+        from src.integration.delivery_observer import DeliveryObserver
+
+        observer = getattr(self, "_delivery_observer", None)
+        if observer is None or observer.db is not self.db or observer.git is not self.git:
+            observer = DeliveryObserver(self.db, git=self.git, data_dir=self.config.data_dir)
+            self._delivery_observer = observer
+        return observer
+
     async def reconcile_stale_containers(self) -> list[str]:
         """Complete BLOCKED/PAUSED containers whose children are all delivered.
 
         The stale-status leg of settlement (``stale_container_clauses``).  A
         child's completion settles its stranded container on the event path
-        only when every sibling is already delivered; a delivery that lands
-        later has no event, so the backstop sweep runs this every interval,
-        and :meth:`initialize` runs it once on start, because restarts and
-        updates are what strand these containers.  Returns the settled ids.
+        only when no child needs delivery proof; a delivery that lands later
+        has no event, so the backstop sweep runs this every interval, and
+        :meth:`initialize` runs it once on start, because restarts and updates
+        are what strand these containers.
+
+        Git proves delivery here, outside any transaction, and settlement
+        rechecks each child's identity and the target under its own locks.
+        A settled container can make its own stale parent a candidate, so the
+        pass repeats (bounded by the structural depth) while it makes
+        progress.  Returns the settled ids.
         """
-        candidates = await self.db.stale_container_candidates()
-        if not candidates:
-            return []
-        settled = await self._settle_seeds(set(candidates))
-        for cid in settled:
-            logger.info(
-                "Completed stale container %s: every child is COMPLETED and delivered", cid
-            )
+        from src.database.queries.hierarchy_queries import MAX_STRUCTURAL_DEPTH
+
+        settled: list[str] = []
+        for _level in range(MAX_STRUCTURAL_DEPTH + 1):
+            candidates = await self.db.stale_container_candidates()
+            if not candidates:
+                break
+            required = await self.db.stale_container_delivery_children(candidates)
+            children = set().union(*required.values()) if required else set()
+            delivery = await self.delivery_observer.observe(children) if children else None
+            if delivery is not None and not await delivery.fresh():
+                # The target kept moving: settle only what needs no proof.
+                delivery = None
+            now_settled = [
+                cid for cid in await self._settle_seeds(set(candidates), delivery=delivery)
+                if cid not in settled
+            ]
+            for cid in now_settled:
+                logger.info(
+                    "Completed stale container %s: every child is COMPLETED and delivered", cid
+                )
+            settled.extend(now_settled)
+            if not now_settled:
+                break
         return settled
 
-    async def _settle_seeds(self, seeds: set[str]) -> list[str]:
+    async def _settle_seeds(self, seeds: set[str], *, delivery=None) -> list[str]:
         """Run the §7 settlement predicate over *seeds* now, with post-commit fan-out.
 
         The same commit-then-notify shape as ``transition_task``: blocked-state
         flips are logged, settled containers reach the settlement listener, and
         waiters the settlement released are announced to the ready listener.
+        *delivery* is the git view the stale leg verifies inside the
+        transaction.
         """
         if not seeds:
             return []
         async with self.db._engine.begin() as conn:
-            result = await self.db.settle_containers(set(seeds), conn=conn)
+            result = await self.db.settle_containers(set(seeds), conn=conn, delivery=delivery)
         await self.db.log_blocked_flips(result.flipped)
         await self.db._notify_settled(result.settled)
         await self.db._notify_ready(result.ready)

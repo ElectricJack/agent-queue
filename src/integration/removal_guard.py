@@ -12,7 +12,6 @@ from collections.abc import Sequence
 
 from sqlalchemy import exists, func, literal, or_, select
 
-from src.database.queries.blocked_state import _development_delivery_pending
 from src.database.queries.task_references import (
     describe_integration_references,
     find_integration_task_references,
@@ -142,18 +141,23 @@ async def _cleanup_blockers_on(db, conn, ids: Sequence[str]) -> list[dict]:
     return blockers
 
 
-async def _development_undelivered_on(conn, ids: Sequence[str]) -> list[dict]:
-    rows = (
-        await conn.execute(
-            select(tasks.c.id)
-            .where(
-                tasks.c.id.in_(list(ids)),
-                tasks.c.status == TaskStatus.COMPLETED.value,
-                _development_delivery_pending(tasks, include_foreign_repos=True),
-            )
-            .order_by(tasks.c.id)
-        )
-    ).scalars().all()
+async def _development_undelivered_on(conn, ids: Sequence[str], delivery=None) -> list[dict]:
+    """The COMPLETED tasks in *ids* whose work git has not proven on the target.
+
+    *delivery* is the :class:`~src.integration.delivery_observer.DeliveryView`
+    the caller took before this transaction; each identity is rechecked here.
+    Evidence that is missing, stale or unknown holds the task exactly as
+    pending work does, so an archive never trusts a row or a guess.
+    """
+    from src.integration.delivery_observer import delivery_sensitive_ids
+    from src.integration.delivery_truth import DeliveryState
+
+    sensitive = await delivery_sensitive_ids(conn, ids)
+    verified = await delivery.verified_on(conn, sensitive) if delivery is not None else {}
+    rows = sorted(
+        task_id for task_id in sensitive
+        if task_id not in verified or not verified[task_id].satisfied
+    )
     if not rows:
         return []
     result: list[dict] = []
@@ -177,13 +181,18 @@ async def _development_undelivered_on(conn, ids: Sequence[str]) -> list[dict]:
                 .limit(1)
             )
         ).scalar_one_or_none()
-        result.append(
-            {
-                "task_id": task_id,
-                "holder": "open_gate" if open_gate else "awaiting_publication",
-                "detail": str(open_gate) if open_gate else "not yet published",
-            }
-        )
+        if open_gate:
+            result.append({"task_id": task_id, "holder": "open_gate", "detail": str(open_gate)})
+            continue
+        evidence = verified.get(task_id)
+        if evidence is not None and evidence.state is DeliveryState.PENDING:
+            result.append(
+                {"task_id": task_id, "holder": "awaiting_publication",
+                 "detail": "not yet published"}
+            )
+            continue
+        reason = evidence.reason if evidence is not None else "delivery not verified in git"
+        result.append({"task_id": task_id, "holder": "delivery_unknown", "detail": reason})
     return result
 
 
@@ -274,12 +283,15 @@ async def _hierarchy_undelivered_on(
 
 
 async def undelivered_removal_holders(
-    conn, *, root_id: str, ids: Sequence[str], project_id: str, mode: str | None
+    conn, *, root_id: str, ids: Sequence[str], project_id: str, mode: str | None,
+    delivery=None,
 ) -> tuple[str, list[dict]]:
     """Return the delivery holders an archive would otherwise refuse.
 
     The explicit abandon path records these same holders in its durable
     comment, so it cannot silently bypass a different delivery predicate.
+    Development delivery is git's answer (*delivery*, see
+    :func:`_development_undelivered_on`).
     """
     if mode == "development":
         branch = (
@@ -289,7 +301,7 @@ async def undelivered_removal_holders(
                 .where(projects.c.id == project_id)
             )
         ).scalar_one_or_none() or "default branch"
-        return str(branch), await _development_undelivered_on(conn, ids)
+        return str(branch), await _development_undelivered_on(conn, ids, delivery)
     return await _hierarchy_undelivered_on(conn, root_id, ids, project_id)
 
 
@@ -303,11 +315,14 @@ async def assert_integration_permits_removal(
     project_id: str,
     mode: str | None,
     abandon_undelivered: bool = False,
+    delivery=None,
 ) -> None:
     """Raise the first ordered integration refusal for a removal.
 
     The caller owns the project's hierarchy advisory lock. This module makes
     no writes so a refusal leaves the archive/delete transaction untouched.
+    *delivery* is the git view taken before the transaction; without one,
+    development work that needs proof is held as unknown.
     """
     sealed = await _sealed_member_on(conn, root_id, ids)
     if sealed:
@@ -378,7 +393,7 @@ async def assert_integration_permits_removal(
     if abandon_undelivered:
         return
     branch, undelivered = await undelivered_removal_holders(
-        conn, root_id=root_id, ids=ids, project_id=project_id, mode=mode
+        conn, root_id=root_id, ids=ids, project_id=project_id, mode=mode, delivery=delivery
     )
     if undelivered:
         raise _error(

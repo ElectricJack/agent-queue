@@ -5036,11 +5036,15 @@ class TaskCommandsMixin:
         # back ``False`` (skip it too — no second event, no double count).
         archived: list[dict] = []
         skipped: list[dict] = []
+        # Git proves development delivery once for the whole selection.
+        delivery = await self.db.observe_removal_delivery([task.id for task, _r, _d in task_data])
         for task, result, deps in task_data:
             try:
-                # Every archive, including bulk, refuses work the development
-                # publisher has not delivered yet (integration_undelivered).
-                success = await self.db.archive_task(task.id, hold_undelivered=True)
+                # Every archive, including bulk, refuses work git does not
+                # prove delivered (integration_undelivered).
+                success = await self.db.archive_task(
+                    task.id, hold_undelivered=True, delivery=delivery
+                )
             except HierarchyError as exc:
                 skipped.append(
                     {
