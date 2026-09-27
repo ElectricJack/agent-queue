@@ -1362,7 +1362,7 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
     },
     "pool.session_drained": {
         "required": ["project_id", "profile_id", "session_id", "name", "reason"],
-        "optional": [],
+        "optional": ["request_id"],
     },
     "pool.session_quarantined": {
         "required": ["project_id", "profile_id", "session_id", "name", "reason"],
@@ -1377,15 +1377,15 @@ _SWARM_SCHEMAS: dict[str, EventSchema] = {
             "project_cap",
             "effective_max_active",
         ],
-        "optional": [],
+        "optional": ["request_id"],
     },
     "pool.lifecycle_changed": {
         "required": ["project_id", "profile_id", "lifecycle"],
-        "optional": [],
+        "optional": ["request_id"],
     },
     "pool.enabled_changed": {
         "required": ["project_id", "profile_id", "enabled"],
-        "optional": [],
+        "optional": ["request_id"],
     },
 }
 
