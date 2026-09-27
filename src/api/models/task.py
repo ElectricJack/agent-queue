@@ -126,11 +126,17 @@ class TaskDetail(BaseModel):
     intelligence_class: str | None = None
     skip_verification: bool = False
     pr_url: str | None = None
-    attachments: list[str] = []
-    deliverables: list[dict[str, str]] = []
-    depends_on: list[TaskRef] = []
-    blocks: list[TaskRef] = []
-    subtasks: list[TaskRef] = []
+    # A literal ``[]`` default is deep-copied for every row that omits the
+    # field; ``task_list`` rows omit all five, so a 10k-task list ran 50k
+    # ``copy.deepcopy`` calls in one event-loop span (wise-ember.16). The
+    # schema keeps its documented ``[]`` default.
+    attachments: list[str] = Field(default_factory=list, json_schema_extra={"default": []})
+    deliverables: list[dict[str, str]] = Field(
+        default_factory=list, json_schema_extra={"default": []}
+    )
+    depends_on: list[TaskRef] = Field(default_factory=list, json_schema_extra={"default": []})
+    blocks: list[TaskRef] = Field(default_factory=list, json_schema_extra={"default": []})
+    subtasks: list[TaskRef] = Field(default_factory=list, json_schema_extra={"default": []})
     created_at: float = 0.0
     updated_at: float = 0.0
     parent: dict | None = None

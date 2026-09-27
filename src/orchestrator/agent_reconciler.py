@@ -104,8 +104,14 @@ class AgentReconciler:
         suppressed_profiles = suppressed_profile_ids or frozenset()
         suppressed_agents = suppressed_agent_ids or frozenset()
         projects = await self._db.list_projects()
-        tasks = await self._db.list_tasks()
         agents = await self._db.list_agents()
+        # Only the agents' current tasks are looked up (stale-BUSY check and
+        # per-project busy count); the scheduler passes ``ready_tasks``.
+        # Reading the whole table here was one of the scheduler cycle's two
+        # longest event-loop stalls on a 10k-task install (wise-ember.16).
+        tasks = await self._db.list_tasks(
+            task_ids={agent.current_task_id for agent in agents if agent.current_task_id}
+        )
         profiles = {p.id: p for p in await self._db.list_profiles()}
         from src.profiles.catalog import active_catalog_profile_ids, shipped_profile_catalog
 
@@ -149,13 +155,14 @@ class AgentReconciler:
             and agent.id not in live_agents
             and agent.profile_id in profiles
         ]
+        if ready_tasks is None and any(p.status == ProjectStatus.ACTIVE for p in projects):
+            ready_tasks = await self._db.list_tasks(status=TaskStatus.READY)
         for project in projects:
             if project.status != ProjectStatus.ACTIVE:
                 continue
-            ready_source = ready_tasks if ready_tasks is not None else tasks
             ready = [
                 task
-                for task in ready_source
+                for task in ready_tasks
                 if task.project_id == project.id and task.status == TaskStatus.READY
                 and not task.is_blocked
             ]

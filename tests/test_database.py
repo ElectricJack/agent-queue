@@ -83,6 +83,67 @@ class TestTaskCRUD:
         assert len(tasks) == 1
         assert tasks[0].id == "t-1"
 
+    async def test_list_tasks_by_status_set_and_ids(self, db):
+        await db.create_project(Project(id="p-1", name="alpha"))
+        for task_id, status in (
+            ("t-1", TaskStatus.READY),
+            ("t-2", TaskStatus.IN_PROGRESS),
+            ("t-3", TaskStatus.ASSIGNED),
+            ("t-4", TaskStatus.COMPLETED),
+        ):
+            await db.create_task(
+                Task(id=task_id, project_id="p-1", title=task_id, description="D", status=status)
+            )
+        active = await db.list_tasks(statuses={TaskStatus.IN_PROGRESS, TaskStatus.ASSIGNED})
+        assert sorted(t.id for t in active) == ["t-2", "t-3"]
+        picked = await db.list_tasks(task_ids={"t-1", "t-4", "missing"})
+        assert sorted(t.id for t in picked) == ["t-1", "t-4"]
+        both = await db.list_tasks(statuses={TaskStatus.READY}, task_ids={"t-1", "t-2"})
+        assert [t.id for t in both] == ["t-1"]
+        # An empty filter matches nothing rather than everything.
+        assert await db.list_tasks(task_ids=set()) == []
+        assert await db.list_tasks(statuses=()) == []
+
+    async def test_whole_list_hydration_yields_between_slices(self, db, monkeypatch):
+        """A large list must not hold the event loop for the whole hydration."""
+        import asyncio
+
+        from src.database.queries import task_queries
+
+        await db.create_project(Project(id="p-1", name="alpha"))
+        for index in range(7):
+            await db.create_task(Task(
+                id=f"t-{index}", project_id="p-1", title=f"T{index}", description="D",
+                status=TaskStatus.READY, priority=index,
+            ))
+        monkeypatch.setattr(task_queries, "_HYDRATE_SLICE", 2)
+        hydrated: list[int] = []
+        original = type(db)._row_to_task
+
+        def counting(row):
+            hydrated.append(1)
+            return original(row)
+
+        monkeypatch.setattr(db, "_row_to_task", counting)
+        seen_mid_hydration: list[int] = []
+
+        async def observer():
+            while True:
+                seen_mid_hydration.append(len(hydrated))
+                await asyncio.sleep(0)
+
+        watcher = asyncio.create_task(observer())
+        try:
+            listed = await db.list_tasks(project_id="p-1")
+            active = await db.list_active_tasks(project_id="p-1")
+        finally:
+            watcher.cancel()
+        assert [t.id for t in listed] == [f"t-{index}" for index in range(7)]
+        assert [t.id for t in active] == [f"t-{index}" for index in range(7)]
+        # The observer ran while rows were still being converted.
+        assert any(0 < count < 7 for count in seen_mid_hydration)
+        assert any(7 < count < 14 for count in seen_mid_hydration)
+
     async def test_get_subtasks(self, db):
         await db.create_project(Project(id="p-1", name="alpha"))
         await db.create_task(Task(id="t-1", project_id="p-1", title="Parent", description="D"))

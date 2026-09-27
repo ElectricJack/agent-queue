@@ -16,7 +16,7 @@ every method in this protocol.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
 from typing import Any, Protocol, runtime_checkable
 
@@ -225,6 +225,8 @@ class DatabaseBackend(Protocol):
         *,
         labels: list[str] | None = None,
         any_label: list[str] | None = None,
+        statuses: Collection[TaskStatus] | None = None,
+        task_ids: Collection[str] | None = None,
     ) -> list[Task]: ...
     async def list_graph_task_rows(self, project_id: str) -> list[dict]: ...
     async def get_task_statuses(self, task_ids: list[str]) -> dict[str, str]: ...

@@ -294,6 +294,52 @@ async def test_readiness_race_tasks_are_awaited_after_cancellation(monkeypatch, 
     assert adapter.ready_cleanup_finished is True
 
 
+@pytest.mark.parametrize("freeze", [True, False])
+async def test_startup_heap_freezes_once_before_the_first_cycle_only_on_opt_in(
+    monkeypatch, tmp_path, freeze
+):
+    """The freeze runs after startup, before scheduling -- and never for a
+    caller (like this test) that did not ask, since it would outlive it."""
+    config = _postgres_config(tmp_path)
+    adapter = _FakeAdapter([])
+    events_ref, state = _install_run_env(monkeypatch, config, adapter)
+    adapter.events = events_ref
+    monkeypatch.setattr(main_mod, "_freeze_startup_heap", lambda: events_ref.append("freeze"))
+    state["on_first_cycle"] = lambda: os.kill(os.getpid(), signal.SIGTERM)
+
+    async with asyncio.timeout(30):
+        await main_mod.run(str(tmp_path / "config.yaml"), freeze_startup_heap=freeze)
+
+    if freeze:
+        assert events_ref.count("freeze") == 1
+        assert events_ref.index("orch.initialize") < events_ref.index("freeze")
+        assert events_ref.index("freeze") < events_ref.index("first_cycle")
+    else:
+        assert "freeze" not in events_ref
+        assert "first_cycle" in events_ref
+
+
+def test_daemon_entry_point_opts_into_the_startup_heap_freeze(monkeypatch):
+    seen = {}
+
+    async def fake_run(config_path, profile=None, **kwargs):
+        seen.update(kwargs, config_path=config_path, profile=profile)
+        return False
+
+    monkeypatch.setattr(main_mod, "run", fake_run)
+    monkeypatch.setattr(main_mod.sys, "argv", ["agent-queue", "cfg.yaml"])
+    main_mod.main()
+    assert seen == {"config_path": "cfg.yaml", "profile": None, "freeze_startup_heap": True}
+
+
+def test_freeze_startup_heap_collects_garbage_before_freezing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(main_mod.gc, "collect", lambda *a: calls.append("collect"))
+    monkeypatch.setattr(main_mod.gc, "freeze", lambda: calls.append("freeze"))
+    main_mod._freeze_startup_heap()
+    assert calls == ["collect", "freeze"]
+
+
 @pytest.mark.asyncio
 async def test_scheduler_cycle_failure_is_logged_and_next_cycle_runs(monkeypatch, caplog):
     from unittest.mock import AsyncMock
