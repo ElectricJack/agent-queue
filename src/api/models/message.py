@@ -12,6 +12,15 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from src.commands.contracts.message_wait import MessageWaitArgs, MessageWaitValue
+
+
+class MessageWaitResponse(MessageWaitValue):
+    success: bool = True
+
+
+REQUEST_MODELS = {"message_wait": MessageWaitArgs}
+
 
 class MessageModel(BaseModel):
     """Rendered message dict (see ``src/commands/message_commands.py::message_to_dict``)."""
@@ -52,6 +61,10 @@ class MessageReplyResponse(BaseModel):
     message_id: str
     reply_id: str
     reply: MessageModel
+    message_ids: list[str] | None = None
+    seq: int | None = None
+    replayed: bool | None = None
+    state: str | None = None
 
 
 class MessageInboxResponse(BaseModel):
@@ -79,6 +92,7 @@ class MessageStatusResponse(BaseModel):
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "message_wait": MessageWaitResponse,
     # message_send is API_EXCLUDED — see module docstring.
     "message_reply": MessageReplyResponse,
     "message_inbox": MessageInboxResponse,

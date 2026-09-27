@@ -5060,6 +5060,8 @@
         ],
         "optional": [
           "--via",
+          "--client-key",
+          "--claim-epoch",
           "--json",
           "--brief",
           "--api-url"
@@ -5101,6 +5103,8 @@
           "--from-id",
           "--from-kind",
           "--thread-id",
+          "--client-key",
+          "--claim-epoch",
           "--priority",
           "--archive-after-inject",
           "--pane-open",
@@ -5137,6 +5141,41 @@
           "message_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq message wait",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "message_wait",
+      "callback": "src.cli.message_wait.message_wait",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--thread",
+          "--after"
+        ],
+        "optional": [
+          "--timeout",
+          "--idempotency-key",
+          "--claim-epoch",
           "--json",
           "--brief",
           "--api-url"
@@ -8265,6 +8304,8 @@
         ],
         "optional": [
           "--via",
+          "--client-key",
+          "--claim-epoch",
           "--json",
           "--brief",
           "--api-url"

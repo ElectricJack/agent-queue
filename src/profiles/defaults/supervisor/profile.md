@@ -154,6 +154,7 @@ its outbox; transport failures never need a new author turn.
     "message_inbox",
     "message_reply",
     "message_send",
+    "message_wait",
     "message_status",
     "phase_create",
     "phase_list",

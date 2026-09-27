@@ -1762,6 +1762,9 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.wait import register_wait_contracts
 
     register_wait_contracts(registry)
+    from src.commands.contracts.message_wait import register_message_wait_contract
+
+    register_message_wait_contract(registry)
     from src.commands.contracts.collaboration import register_collaboration_contracts
 
     register_collaboration_contracts(registry)
