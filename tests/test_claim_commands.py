@@ -1431,6 +1431,19 @@ class TestContainerClaims:
         # Nothing else was disturbed: the child is still waiting for work.
         assert (await db.get_task("epic.1")).status is TaskStatus.DEFINED
 
+    async def test_the_pool_reconcile_tick_releases_it(self, handler, db, tmp_path):
+        handler.orchestrator.bus.emit = AsyncMock()
+        await mktask(db, "epic", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        await scoped(handler, sid)._cmd_task_claim({"next": True})
+        await self._child_of(db, "epic", "epic.1", filed_by="planner-session")
+
+        await handler.orchestrator._reconcile_pools()
+        await handler.orchestrator.wait_for_pool_launches(cancel=True)
+
+        assert (await db.get_session(sid)).task_id is None
+        assert (await db.get_task("epic")).assigned_agent_id is None
+
     async def test_emergent_work_the_holder_filed_keeps_its_claim(self, handler, db, tmp_path):
         handler.orchestrator.bus.emit = AsyncMock()
         await mktask(db, "t1", profile_id="worker")

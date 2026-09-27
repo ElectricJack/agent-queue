@@ -423,9 +423,9 @@ class PoolsMixin:
         if not (self.config.swarm.enabled and self.config.sessions.enabled):
             return
 
-        # Before measuring, so a seat freed here is counted this tick.
-        await self._release_container_claims()
         measurement = await self._measure_pools()
+        # A drained holder's seat is counted from the next tick on.
+        await self._release_container_claims(measurement.pool_sessions)
         now = time.time()
         await self._announce_bounds_rescoped(measurement)
         actions, self._pool_surplus_since = size_pools(
@@ -465,7 +465,9 @@ class PoolsMixin:
                 executed += 1
             await self._emit_pool_scaled(drain.key, drain.project_id, "drain", executed)
 
-    async def _release_container_claims(self) -> list[str]:
+    async def _release_container_claims(
+        self, pool_sessions: list[SessionRecord] | None = None
+    ) -> list[str]:
         """Take back every pool claim on a container its holder did not fill.
 
         The frontier never offers a container, but a plain task claimed a
@@ -477,8 +479,14 @@ class PoolsMixin:
         Only pool sessions are released here; ``aq doctor --check
         claims.container_held`` reports any other holder and repairs on
         request.  Returns the released task ids.
+
+        *pool_sessions* is this tick's already-read pool session list; when
+        no pool session holds a task there is nothing to find, and an idle
+        fleet pays no extra statement for the check.
         """
         released: list[str] = []
+        if pool_sessions is not None and not any(s.task_id for s in pool_sessions):
+            return released
         try:
             claims = await self.db.list_container_claims()
         except Exception:
