@@ -2248,6 +2248,12 @@ class IntegrationConfig:
     #: Starts disabled so the operator can observe the first backlog releases.
     owner_recovery_sweep: bool = False
 
+    #: Consecutive identical unsuccessful evaluations after which the
+    #: development publisher ends a skipped candidate's attempt as stalled:
+    #: doctor reports ERROR and the project supervisor gets one message.
+    #: Idle ticks and downtime do not count; changed evidence starts over.
+    publisher_stall_after: int = 5
+
     def validate(self) -> list[ConfigError]:
         from src.git.ci_gate import MERGE_CI_POLICIES
         from src.models import INTEGRATION_MODES
@@ -2277,6 +2283,18 @@ class IntegrationConfig:
                     "integration",
                     "merge_required_checks",
                     "must be a list of non-empty check names",
+                )
+            )
+        if (
+            isinstance(self.publisher_stall_after, bool)
+            or not isinstance(self.publisher_stall_after, int)
+            or self.publisher_stall_after < 1
+        ):
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "publisher_stall_after",
+                    "must be a positive integer",
                 )
             )
         if self.github_app is not None:
@@ -4726,6 +4744,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             scratch_probe=scratch_probe,
             merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
             owner_recovery_sweep=bool(integ.get("owner_recovery_sweep", False)),
+            # Passed through as written so ``validate()`` names a bad value.
+            publisher_stall_after=integ.get("publisher_stall_after", 5),
         )
 
     if "swarm" in raw and isinstance(raw["swarm"], dict):
