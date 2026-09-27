@@ -682,6 +682,8 @@ class TestDriftDetection:
             # orchestrator supplies its clock, so it carries a codegen-only
             # fallback schema rather than an LLM-facing definition.
             "reconcile_agent_waits",
+            # Daemon-only collaboration expiry/retention uses a fallback schema.
+            "reconcile_collaborations",
             # Phase 2 managed-job substrate (src/commands/job_commands.py).
             # Excluded from MCP, the CLI and HTTP until the phase 3 adapters
             # land, so each carries a codegen-only fallback schema rather

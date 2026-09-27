@@ -45,6 +45,7 @@ from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.wait_commands import WaitCommandsMixin
 from src.commands.collaboration_commands import CollaborationCommandsMixin
+from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
@@ -379,6 +380,7 @@ class CommandHandler(
     ReportCommandsMixin,
     WaitCommandsMixin,
     CollaborationCommandsMixin,
+    CollaborationLifecycleMixin,
     EscalationCommandsMixin,
     ConversationCommandsMixin,
     ReviewCommandsMixin,

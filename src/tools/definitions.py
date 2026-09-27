@@ -7235,6 +7235,12 @@ _FALLBACK_INPUT_SCHEMAS["reconcile_agent_waits"] = {
     "additionalProperties": False,
 }
 
+_FALLBACK_INPUT_SCHEMAS["reconcile_collaborations"] = {
+    "type": "object",
+    "properties": {"now": {"type": ["number", "null"]}},
+    "additionalProperties": False,
+}
+
 
 _JOB_INPUT_SCHEMAS: dict[str, dict] = {
     # Managed jobs: typed public contracts and finite preset commands.

@@ -122,7 +122,9 @@
       "modules": [
         "tests/test_collaboration.py",
         "tests/test_collaboration_commands.py",
-        "tests/test_collaboration_queries.py"
+        "tests/test_collaboration_lifecycle.py",
+        "tests/test_collaboration_queries.py",
+        "tests/test_collaboration_waits.py"
       ]
     },
     "command-dispatch": {
@@ -1260,7 +1262,7 @@
       ]
     }
   },
-  "digest": "sha256:56e9bbdecfd89786104a273d6e147c3c92e5d9c0dfbc4bf96b3fc93e3bad3e32",
+  "digest": "sha256:3564fa9cf83d723b0bcc174a8b5c5d58e4bd9b0e0a0f595f58085cf1ac3b65ed",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3484,6 +3486,31 @@
       ],
       "summary": "Scoped collaboration commands, contracts, grants and CLI on disposable PostgreSQL."
     },
+    "tests/test_collaboration_lifecycle.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.api.codegen",
+        "src.collaboration",
+        "src.commands",
+        "src.commands.collaboration_lifecycle",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.mcp_registration",
+        "src.orchestrator",
+        "src.profiles.capabilities",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize",
+        "skipif"
+      ],
+      "summary": "Bounded expiry, retention and daemon-only collaboration reconciliation."
+    },
     "tests/test_collaboration_queries.py": {
       "areas": [
         "collaboration"
@@ -3499,6 +3526,23 @@
         "parametrize"
       ],
       "summary": "Collaboration ordering and claim fencing on disposable PostgreSQL."
+    },
+    "tests/test_collaboration_waits.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.collaboration",
+        "src.database",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Collaboration thread semantics inside the durable message wait, on PostgreSQL."
     },
     "tests/test_command_capability_authorization.py": {
       "areas": [
@@ -6019,7 +6063,9 @@
         "src.orchestrator",
         "src.tools"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Container-close semantics and the hierarchy command surface — spec §7, §14."
     },
     "tests/test_hierarchy_doctor.py": {
