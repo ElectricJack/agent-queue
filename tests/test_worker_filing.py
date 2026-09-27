@@ -174,9 +174,16 @@ class TestFiling:
         handler._caller_profile_id = "worker"
         ensure_default_intelligence_classes(handler.config.data_dir)
         handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+        # A worker's held task is never a valid gating need (work-graph §11;
+        # test_a_single_filing_that_depends_on_the_held_task_is_refused), so
+        # gate the routed filing on an unrelated prerequisite instead — the
+        # routing-release behaviour this test pins does not need the held task.
+        await db.create_task(Task(
+            id="prereq", project_id=PROJECT_ID, title="prereq", description="p",
+        ))
         result = await scoped(handler, sid)._cmd_create_task({
             "title": "Follow-up", "description": "d", "root": True,
-            "reason": "held exposed it", "depends_on": "held",
+            "reason": "held exposed it", "depends_on": "prereq",
             "profile_id": "worker", "intelligence_class": "standard-high",
         })
         assert result.get("success") is True, result
@@ -185,7 +192,7 @@ class TestFiling:
         assert (await db.get_task(task_id)).status == TaskStatus.DEFINED
 
         handler._current_scope = None
-        removed = await handler._cmd_remove_dependency({"task_id": task_id, "depends_on": "held"})
+        removed = await handler._cmd_remove_dependency({"task_id": task_id, "depends_on": "prereq"})
         assert removed.get("ok") is True, removed
         await handler.orchestrator._check_defined_tasks()
 
