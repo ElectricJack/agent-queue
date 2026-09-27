@@ -6931,6 +6931,53 @@
         }
       }
     },
+    "/api/message/wait": {
+      "post": {
+        "tags": [
+          "message"
+        ],
+        "summary": "Wait up to 60 seconds for ordered collaboration messages on the existing durable message wait. On timeout end this turn; the wait retains the claim and seat.",
+        "description": "Wait up to 60 seconds for ordered collaboration messages on the existing durable message wait. On timeout end this turn; the wait retains the claim and seat.",
+        "operationId": "message_wait",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageWaitArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageWaitResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/message/question-answer": {
       "post": {
         "tags": [
@@ -36852,6 +36899,30 @@
             "title": "Message Id",
             "description": "Message being replied to"
           },
+          "client_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Key",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
           "body": {
             "type": "string",
             "title": "Body",
@@ -36925,6 +36996,53 @@
           },
           "reply": {
             "$ref": "#/components/schemas/MessageModel"
+          },
+          "message_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Ids"
+          },
+          "seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seq"
+          },
+          "replayed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replayed"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
           }
         },
         "additionalProperties": true,
@@ -36951,12 +37069,26 @@
             "description": "Owning project id"
           },
           "to_kind": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "To Kind",
-            "description": "Recipient kind: session | task | profile | user"
+            "description": "Recipient kind; omit for collaboration fanout"
           },
           "to_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "To Id",
             "description": "Recipient id"
           },
@@ -36999,6 +37131,31 @@
             ],
             "title": "Thread Id"
           },
+          "client_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Key"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
           "priority": {
             "type": "integer",
             "title": "Priority",
@@ -37030,8 +37187,6 @@
         },
         "type": "object",
         "required": [
-          "to_kind",
-          "to_id",
           "body"
         ],
         "title": "MessageSendRequest",
@@ -37105,6 +37260,184 @@
           "message"
         ],
         "title": "MessageStatusResponse"
+      },
+      "MessageWaitArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "thread_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Thread Id"
+          },
+          "after_seq": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "After Seq"
+          },
+          "timeout": {
+            "type": "integer",
+            "maximum": 60.0,
+            "minimum": 1.0,
+            "title": "Timeout",
+            "default": 60
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "thread_id",
+          "after_seq"
+        ],
+        "title": "MessageWaitArgs"
+      },
+      "MessageWaitResponse": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "satisfied",
+              "waiting",
+              "expired",
+              "cancelled",
+              "thread_closed",
+              "peer_failed",
+              "peer_gone",
+              "partner_not_running"
+            ],
+            "title": "State"
+          },
+          "wait": {
+            "$ref": "#/components/schemas/AgentWaitRecord"
+          },
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CollaborationMessageRecord"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messages"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "has_more": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Has More"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "state",
+          "wait"
+        ],
+        "title": "MessageWaitResponse"
       },
       "MetricsSample": {
         "properties": {
