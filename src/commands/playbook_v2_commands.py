@@ -742,6 +742,35 @@ class PlaybookV2CommandsMixin:
                 "error": "source_sha256 does not match source.md bytes",
             }
 
+        return await self._v2_store_artifact(
+            definition, artifact_bytes, provenance={"validated_bundle": True}
+        )
+
+    async def _v2_store_artifact(
+        self,
+        definition: PlaybookDefinition,
+        artifact_bytes: bytes,
+        *,
+        provenance: dict[str, Any] | None = None,
+    ) -> dict:
+        """Revalidate one canonical artifact and store it, never activating it.
+
+        The persistence half of ``playbook_v2_import``, shared with a playbook
+        review's approval: *artifact_bytes* must already be the canonical
+        bytes of *definition*.  The artifact is revalidated against the
+        daemon's live command, profile and event registries, then the
+        content-addressed file and the artifact row are written under one
+        per-hash critical section.  If the write transaction fails, including
+        while its context manager exits, a file created by this attempt is
+        removed.  *provenance* is recorded in the row's ``validation`` JSON.
+        """
+        if not self._v2_storage_ready(
+            "artifact_hash_lock",
+            "get_playbook_artifact_row",
+            "upsert_playbook_artifact",
+        ):
+            return {"success": False, **self._v2_storage_unavailable()}
+        sha = "sha256:" + hashlib.sha256(artifact_bytes).hexdigest()
         contracts, profiles, events = await self._v2_lookups()
         diagnostics = validate_definition(
             definition,
@@ -766,19 +795,15 @@ class PlaybookV2CommandsMixin:
         scope, scope_identifier = self._v2_scope(definition)
         store = self._v2_engine().services.artifact_store
         validation = json.dumps(
-            {
-                "errors": [],
-                "diagnostics": diagnostic_rows,
-                "validated_bundle": True,
-            },
+            {"errors": [], "diagnostics": diagnostic_rows, **(provenance or {})},
             sort_keys=True,
             separators=(",", ":"),
         )
         remove_file_on_failure = False
         try:
-            async with self.db.artifact_hash_lock([actual_sha]) as conn:
-                existing_row = await self.db.get_playbook_artifact_row(actual_sha, conn=conn)
-                file_existed = store.exists(actual_sha)
+            async with self.db.artifact_hash_lock([sha]) as conn:
+                existing_row = await self.db.get_playbook_artifact_row(sha, conn=conn)
+                file_existed = store.exists(sha)
                 # Set this before put(): it may publish the destination and then
                 # fail while making the containing directory durable.  An
                 # existing row or file belongs to an earlier attempt and must
@@ -808,10 +833,10 @@ class PlaybookV2CommandsMixin:
             # and cancellation there must receive the same compensation as a
             # failed upsert without converting CancelledError into a result.
             if remove_file_on_failure:
-                store.delete(actual_sha)
+                store.delete(sha)
             if not isinstance(exc, Exception):
                 raise
-            logger.warning("could not import reviewed V2 artifact %s", actual_sha, exc_info=True)
+            logger.warning("could not import reviewed V2 artifact %s", sha, exc_info=True)
             return {"success": False, "error": f"artifact import failed: {exc}"}
 
         return {

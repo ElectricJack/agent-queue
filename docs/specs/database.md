@@ -1054,6 +1054,9 @@ document. Added by Alembic `a00000000014`.
 | `submitted_task_id` | TEXT | nullable, no FK | The submitting task |
 | `changes_note` | TEXT | nullable | What changed since the previous revision |
 | `submitted_at` | REAL | NOT NULL | Unix timestamp |
+| `responder_class` / `responder_profile` / `responder_profile_source` | TEXT | nullable | Who revises after a feedback decision on this revision |
+| `playbook` | JSON | nullable | A playbook review's pin: `playbook_id`, `artifact_sha256`, `source_sha256`, `source_path`, `contract_fingerprint`, `scope`, `scope_identifier`, `activate_on_approval`, diagnostic `counts`. Added by Alembic `a00000000036` |
+| `playbook_artifact` | TEXT | nullable | The pinned artifact's exact canonical bytes; approval stores them in the artifact store. Added by Alembic `a00000000036` |
 
 ### Table: `doc_review_comments`
 

@@ -298,6 +298,7 @@
         "tests/test_review_gating.py",
         "tests/test_review_keys.py",
         "tests/test_review_notifier.py",
+        "tests/test_review_playbooks.py",
         "tests/test_review_profile_rules.py",
         "tests/test_review_queries.py",
         "tests/test_review_reopen_cascade.py",
@@ -689,6 +690,7 @@
         "tests/test_migration_postgres_upgrade_head.py",
         "tests/test_migration_repair_stages.py",
         "tests/test_migration_retired_intelligence_classes.py",
+        "tests/test_migration_review_playbook_pin.py",
         "tests/test_migration_root_main_promotion.py",
         "tests/test_migration_session_hooks_provisioned.py",
         "tests/test_migration_single_head.py",
@@ -1262,7 +1264,7 @@
       ]
     }
   },
-  "digest": "sha256:3564fa9cf83d723b0bcc174a8b5c5d58e4bd9b0e0a0f595f58085cf1ac3b65ed",
+  "digest": "sha256:6a6bd0a7a69a77e07b87db3125dc7c4bb0e0d1c5cbaa5182b9264f3259290525",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8454,6 +8456,20 @@
       ],
       "summary": "The retired-class revision repoints live pins and spares the evidence rows."
     },
+    "tests/test_migration_review_playbook_pin.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The review-playbook-pin revision adds its columns once and keeps them on rollback."
+    },
     "tests/test_migration_root_main_promotion.py": {
       "areas": [
         "migrations"
@@ -9225,6 +9241,9 @@
         "src.api.auth",
         "src.api.models",
         "src.api.scope",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.playbook",
         "src.commands.handler",
         "src.commands.playbook_v2_commands",
         "src.commands.principal",
@@ -10854,6 +10873,29 @@
         "parametrize"
       ],
       "summary": "Discord delivery behavior for the durable document-review outbox."
+    },
+    "tests/test_review_playbooks.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli",
+        "src.cli.app",
+        "src.cli.reviews",
+        "src.database.tables",
+        "src.doctor",
+        "src.doctor.models",
+        "src.doctor.review_checks",
+        "src.event_bus",
+        "src.models",
+        "src.playbooks.definition",
+        "src.reviews.vault"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Playbook reviews: submission pins a compiled artifact, approval stores it."
     },
     "tests/test_review_profile_rules.py": {
       "areas": [

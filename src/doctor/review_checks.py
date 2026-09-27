@@ -22,21 +22,41 @@ Everything else is report-only (surfaced in ``data``, never touched):
 ``--fix`` therefore only ever (a) resolves gates for approved reviews whose
 gate is still open, and (b) rewrites vault files whose body is missing — both
 idempotent.  Diverged files are left byte-identical on purpose.
+
+``reviews.playbook_artifacts`` covers what approving a *playbook* review is
+for.  Its revision pins a compiled Playbook V2 artifact, and approval stores
+that artifact (and activates it when the review asked).  For the most recently
+approved review of each playbook the check reports
+
+* ``not_stored`` — no artifact row holds the pinned hash (storing failed at
+  approval, or the pinned artifact no longer validates) — **fixed** by storing
+  exactly the pinned bytes, through the same validation an import runs;
+* ``not_activated`` — the artifact is stored, but no activation of the
+  playbook points at it.  Report-only: activating changes running policy, so
+  it stays a deliberate ``aq playbook activate``.
+
+A review approved before revisions could pin an artifact names none, so it is
+invisible here.
 """
 
 from __future__ import annotations
 
 import logging
-import time
-from datetime import date
 from pathlib import Path
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
-from src.reviews.vault import body_sha256, render, split_frontmatter, write_atomic
+from src.reviews.vault import (
+    body_sha256,
+    frontmatter_for,
+    render,
+    split_frontmatter,
+    write_atomic,
+)
 
 logger = logging.getLogger(__name__)
 
 CHECK_ID = "reviews.consistency"
+PLAYBOOK_CHECK_ID = "reviews.playbook_artifacts"
 OWNER = "reviews"
 
 #: States whose gate is *meant* to stay open — a human is still to decide.
@@ -54,19 +74,9 @@ def _vault_root(ctx: DoctorContext) -> Path:
     return Path(root)
 
 
-def _frontmatter_for(review: dict) -> dict:
+def _frontmatter_for(review: dict, playbook: dict | None = None) -> dict:
     """The frontmatter the service would write if it were to rewrite the file."""
-    created = date.fromisoformat(time.strftime("%Y-%m-%d", time.localtime(review["created_at"])))
-    return {
-        "title": review["title"],
-        "status": review["state"],
-        "kind": review["kind"],
-        "review": review["id"],
-        "revision": review["current_revision"],
-        "project": review["project_id"],
-        "author_task": review["author_task_id"] or "",
-        "date": created,
-    }
+    return frontmatter_for(review, playbook)
 
 
 def _vault_file_state(root: Path, review: dict, current_sha256: str) -> str:
@@ -198,7 +208,10 @@ async def _fix(ctx: DoctorContext) -> CheckResult:
         if current is None:
             continue
         try:
-            write_atomic(root / review["vault_path"], render(_frontmatter_for(review), current["content"]))
+            write_atomic(
+                root / review["vault_path"],
+                render(_frontmatter_for(review, current.get("playbook")), current["content"]),
+            )
             rewritten.append(rid)
         except OSError:
             logger.exception("doctor: rewriting review %s vault file failed", rid)
@@ -212,6 +225,107 @@ async def _fix(ctx: DoctorContext) -> CheckResult:
     return result
 
 
+async def _approved_playbook_pins(ctx: DoctorContext) -> list[tuple[dict, dict]]:
+    """``(review, revision)`` for the latest approved review of each playbook."""
+    latest: dict[str, tuple[dict, dict]] = {}
+    for review in await ctx.db.list_reviews(state="approved"):
+        revision = await ctx.db.get_review_revision(review["id"], review["current_revision"])
+        pin = (revision or {}).get("playbook")
+        if not pin or not revision.get("playbook_artifact"):
+            continue
+        key = f"{pin.get('scope')}:{pin.get('scope_identifier') or ''}:{pin['playbook_id']}"
+        seen = latest.get(key)
+        if seen is None or (review.get("decided_at") or 0) > (seen[0].get("decided_at") or 0):
+            latest[key] = (review, revision)
+    return [latest[key] for key in sorted(latest)]
+
+
+async def _playbook_findings(ctx: DoctorContext) -> tuple[int, list[dict]]:
+    pins = await _approved_playbook_pins(ctx)
+    activations = await ctx.db.list_playbook_activations()
+    findings: list[dict] = []
+    for review, revision in pins:
+        pin = revision["playbook"]
+        sha = pin["artifact_sha256"]
+        finding = {
+            "review_id": review["id"],
+            "revision": revision["revision"],
+            "playbook_id": pin["playbook_id"],
+            "artifact_sha256": sha,
+        }
+        if await ctx.db.get_playbook_artifact_row(sha) is None:
+            findings.append({**finding, "problem": "not_stored"})
+            continue
+        mine = [row for row in activations if row["playbook_id"] == pin["playbook_id"]]
+        if not any(row.get("active_artifact_sha256") == sha for row in mine):
+            findings.append(
+                {
+                    **finding,
+                    "problem": "not_activated",
+                    "active_artifact_sha256": [row.get("active_artifact_sha256") for row in mine],
+                    "next_step": (
+                        f"aq playbook activate --playbook-id {pin['playbook_id']} "
+                        f"--artifact-sha256 {sha}"
+                    ),
+                }
+            )
+    return len(pins), findings
+
+
+async def _check_playbooks(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None or not hasattr(ctx.db, "list_playbook_activations"):
+        return CheckResult(
+            id=PLAYBOOK_CHECK_ID, severity=Severity.INFO, detail="database not configured"
+        )
+    checked, findings = await _playbook_findings(ctx)
+    if not findings:
+        return CheckResult(
+            id=PLAYBOOK_CHECK_ID,
+            severity=Severity.OK,
+            detail=f"{checked} approved playbook review(s) stored and activated",
+            data={"checked": checked},
+        )
+    not_stored = [f for f in findings if f["problem"] == "not_stored"]
+    return CheckResult(
+        id=PLAYBOOK_CHECK_ID,
+        severity=Severity.WARN,
+        detail=(
+            f"{len(findings)} approved playbook review(s) are not live: "
+            f"{len(not_stored)} with no stored artifact (--fix stores it), "
+            f"{len(findings) - len(not_stored)} stored but not activated"
+        ),
+        fixable=bool(not_stored),
+        data={"checked": checked, "findings": findings},
+    )
+
+
+async def _fix_playbooks(ctx: DoctorContext) -> CheckResult:
+    """Store each approved, unstored pinned artifact; never activate."""
+    from src.reviews.service import PlaybookPin
+
+    handler = getattr(ctx, "handler", None)
+    store = getattr(handler, "_review_store_playbook", None)
+    stored: list[str] = []
+    failed: dict[str, str] = {}
+    if ctx.db is not None and store is not None:
+        for review, revision in await _approved_playbook_pins(ctx):
+            pin = PlaybookPin.from_revision(revision)
+            if await ctx.db.get_playbook_artifact_row(pin.meta["artifact_sha256"]) is not None:
+                continue
+            result = await store(review, revision["revision"], pin)
+            if result.get("success"):
+                stored.append(review["id"])
+            else:
+                failed[review["id"]] = str(result.get("error"))
+    result = await _check_playbooks(ctx)
+    result.fix_applied = bool(stored)
+    if stored:
+        result.data["stored"] = stored
+    if failed:
+        result.data["store_failed"] = failed
+    return result
+
+
 def review_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -219,7 +333,13 @@ def review_checks() -> list[DoctorCheck]:
             run=_check,
             fix=_fix,
             owner=OWNER,
-        )
+        ),
+        DoctorCheck(
+            id=PLAYBOOK_CHECK_ID,
+            run=_check_playbooks,
+            fix=_fix_playbooks,
+            owner=OWNER,
+        ),
     ]
 
 

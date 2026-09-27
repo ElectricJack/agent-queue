@@ -97,9 +97,11 @@ For a normal reviewed workflow, the sequence is:
 
 1. Read the authoritative source with `aq playbook get-source` and preserve its hash.
 2. Prepare a semantic JSON file containing only `rules` and `steps`; run `aq playbook v2-propose --playbook-id <id> --semantic-body-path <vault-path>` to obtain a reviewable proposal. This read path does not persist or activate anything.
-3. Review the exact bundle, then use `aq playbook v2-import --path <bundle-dir>`. Import validates source and canonical artifact bytes, contracts, profiles, and event schemas, but it still does not activate.
+3. Review the exact bundle, then use `aq playbook import --path <bundle-dir>` (for example `reviewed-playbooks/<id>`; the generated `aq playbook v2-import` is the same daemon command). Import validates source and canonical artifact bytes, contracts, profiles, and event schemas, but it does not activate unless you pass `--activate`; otherwise it prints the activate command for the exact hash it stored.
 4. Check `aq playbook activation-health --playbook-id <id>` and deliberately run `aq playbook activate --playbook-id <id> --artifact-sha256 sha256:<64-hex>`. Activation refuses invalid or incompatible artifacts.
 5. Use `aq playbook dry-run --playbook-id <id> --event '{...}'` for a no-side-effect trace, then inspect real executions with `list-runs`, `inspect-run`, and `run-overlay`.
+
+**Through a document review.** Instead of steps 2–3, an author can submit the review document with the playbook attached (`aq review submit --task-id <task> --file <draft.md> --kind other --title "…" --playbook-id <id> --playbook-body <body.json>`). Submission compiles the vault source and refuses anything that is not activatable, the revision pins the exact artifact hash, and approval stores that artifact — and activates it when the review asked for it — then tells the supervisor. `aq doctor --check reviews.playbook_artifacts` lists approved playbook reviews whose artifact is not stored or not activated. See [Playbook reviews](../guides/reviews.md#playbook-reviews).
 
 `update-source` is a separate convenience path: it atomically writes full Markdown and compiles synchronously. If compilation fails, the previous compiled version stays live. It is not a shortcut around deliberate activation. The exact flags are documented by the [CLI command reference](../reference/cli/commands.md#aq-playbook), and the command implementation is [PlaybookV2Commands](../../src/commands/playbook_v2_commands.py).
 
