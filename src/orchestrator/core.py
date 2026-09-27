@@ -1912,6 +1912,7 @@ class Orchestrator(
             self.db, data_dir=self.config.data_dir, git=self.git,
             confirm_stopped=development_confirm_stopped,
             job_client=PublisherJobs(lambda: self._command_handler),
+            stall_after=self.config.integration.publisher_stall_after,
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery

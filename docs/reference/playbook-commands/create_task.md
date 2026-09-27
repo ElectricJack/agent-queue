@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:d7858b8ab6ff344efe5de33ec3c618bf10f7fa6afdc923315460463da7d2ee3c` |
+| Contract fingerprint | `sha256:6b42134bd02d6111e6dde186aa5ffebfb2aae8ba6842a9c4024a465086359ca2` |
 
 ## Parameters
 
@@ -36,6 +36,7 @@
 | `root` | `boolean \| null` | no | `null` | Create at project root |
 | `parent_key` | `string \| null` | no | `null` | — |
 | `parent_title` | `string \| null` | no | `null` | — |
+| `container` | `boolean \| null` | no | `null` | — |
 | `labels` | `string[] \| null` | no | `null` | Labels |
 | `reason` | `string \| null` | no | `null` | Reason |
 | `discovered_from` | `string \| null` | no | `null` | Discovered from |
