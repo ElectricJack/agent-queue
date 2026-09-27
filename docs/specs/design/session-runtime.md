@@ -363,6 +363,11 @@ ladder frozen on its current rung. Three things prevent that, in order: the wide
 Enter backoff; the resubmit check, which recognises the daemon's own marker on the
 input line and presses Enter instead of deferring (this is also what recovers a
 composer left dirty by a *previous* daemon process); and the per-harness clear keys.
+The resubmit check fires for *any* AQ injection still in the composer exactly as
+typed, not only one identical to the nudge at hand: the stall reminder names its idle
+minutes, so a retry never matched the text a previous pass left, and deferring on "a
+different AQ injection" froze the worker until someone typed Enter by hand. The old
+injection is submitted, then the new nudge is typed into the emptied composer.
 When the text still cannot be moved, `NotSubmitted` carries `composer_dirty=True`,
 the reconciler logs it at **WARNING** with the session name and task id, and emits
 `session.nudge_unsubmitted` — the event behind the dashboard's "message stuck" and
@@ -371,13 +376,28 @@ operator would send by hand.
 
 **Recognising an empty composer.** The guard accepts only layouts it knows: a bare
 prompt with nothing after it, Claude's prompt between its two borders, or Codex's
-dim `Ask Codex to do anything` placeholder with its status row (and, from
-codex-cli 0.157, a `? for shortcuts` hint row that may carry right-aligned notices)
-followed by padding. Everything else defers — which also means an unrecognised
-*idle* layout silently blocks delivery to that worker, so every refusal's reason is
-logged and surfaced by `messages.idle_worker_backlog`. Claude's prompt suggestions
-are disabled in AQ's `--settings` file (`promptSuggestionEnabled: false`): a
-suggestion is ghost text that, with `NO_COLOR`, cannot be told apart from a draft.
+dim `Ask Codex to do anything` placeholder above its footer. The Codex footer is
+recognised by shape, not wording: a blank separator, the model row
+(`GPT-6-Sol xhigh · <cwd>`, or `NN% context left` on older builds), then at most one
+hint or notice row and padding. That row's text changed twice on 2026-09-27
+(`? for shortcuts`, `← for agents · ? for shortcuts`, right-aligned
+`⚠ 2 warnings · f2 to view`) and each wording the guard did not list left every idle
+Codex worker unwakeable; the dim placeholder under the cursor is what proves the input
+empty. A hidden terminal cursor defers everywhere except between Claude's borders:
+Claude Code 2.1 can keep the cursor hidden for a pane's whole life, painting its own
+inverse-video cursor cell at the input instead. Everything else defers — which also
+means an unrecognised *idle* layout silently blocks delivery to that worker, so every
+refusal's reason is logged and surfaced by `messages.idle_worker_backlog`. Claude's
+prompt suggestions are disabled in AQ's `--settings` file
+(`promptSuggestionEnabled: false`): a suggestion is ghost text that, with `NO_COLOR`,
+cannot be told apart from a draft.
+
+**Recognising typed text.** Codex and Claude wrap long input themselves, onto
+explicit rows with a two-space continuation indent that `capture-pane -J` cannot
+join, breaking at word boundaries. Marker and identity checks therefore compare text
+with all whitespace removed: every visible character, in order, must match. A
+row-by-row match read an 80-column stall reminder as never typed (so it sat in the
+composer, unsubmitted) and, after Enter, a wrapped one as submitted.
 
 **Kill:** pane pid → descendants (`pgrep -P` + process group) → SIGTERM, 2 s grace
 (100 ms orphans Claude), SIGKILL survivors → `kill-session`. Every kill checks

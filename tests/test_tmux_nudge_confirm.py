@@ -78,6 +78,23 @@ class TestSubmitPending:
         tail = f"  {MARKER}\n  more wrapped paste"
         assert _submit_pending(tail, MARKER, "❯ ") is True
 
+    def test_a_marker_split_by_the_composers_own_wrap_is_pending(self):
+        """Codex and Claude wrap long input onto rows of their own, breaking
+        at a space and indenting the continuation.  Row-by-row matching read
+        such a nudge as never typed (the stall reminder sat unsubmitted in
+        every 80-column Codex pane, 2026-09-27) and, after Enter, as sent."""
+        rows = [
+            "› No progress for 12 min. if you are blocked, say so with `aq message send --to",
+            '  user:dashboard --body "Blocked: <question>"`.',
+            "",
+            "  GPT-6-Sol xhigh · ~/dev/agent-queue2/.aq/worktrees/slot-3",
+        ]
+        marker = 'message send --to user:dashboard --body "Blocked: <question>"`.'[-48:]
+        assert all(marker not in row for row in rows)
+        assert _submit_pending("\n".join(rows), marker, "› ") is True
+        rows += ["• Working (1s • esc to interrupt)", "", "› Ask Codex to do anything"]
+        assert _submit_pending("\n".join(rows), marker, "› ") is False
+
 
 class TestCaptureTailTrims:
     async def test_capture_tail_returns_only_the_last_n_lines(self, tmp_path):

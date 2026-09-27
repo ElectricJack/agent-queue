@@ -155,6 +155,40 @@ class TestStuckComposerCheck:
         result = await session_checks.run_check(db, None, CHECK)
         assert result.severity is Severity.OK
 
+    async def test_aq_text_the_guard_cannot_read_is_reported_and_never_submitted(self, db):
+        """2026-09-27: Codex 0.157 layouts left reminders typed but never
+        submitted, and this check reported OK because it only listed text it
+        could attribute exactly.  An unreadable record blocks every later
+        wake just the same; it is reported, and --fix never presses Enter."""
+        from src.sessions import tmux as tmux_module
+        from tests.test_tmux_nudge_drafts import Composer, provider_for
+
+        row = await _running_session(db, FakeProvider())
+        text = "Handle `aq message status msg-1 --json`."
+        composer = Composer(draft=text, below=["", "  tab to queue message    91% context left"])
+        composer.typed = True
+        tmux = provider_for(composer)
+        await tmux._remember_pending(
+            _handle(row),
+            tmux_module._PendingSubmit(
+                instance_token=row.instance_token,
+                marker=tmux_module._marker_for(text),
+                text=text,
+            ),
+        )
+        composer.mutations.clear()
+
+        result = await session_checks.run_check(db, _Handler(tmux), CHECK)
+        assert result.severity is Severity.WARN
+        assert result.data["unreadable"] == 1
+        assert result.data["sessions"][0]["observable"] is False
+        assert "cannot read" in result.detail and row.name in result.detail
+
+        repaired = await session_checks.run_check(db, _Handler(tmux), CHECK, repair=True)
+        assert repaired.severity is Severity.WARN
+        assert composer.submitted == []
+        assert not any(args[0] == "send-keys" for args in composer.mutations)
+
 
 # ---------------------------------------------------------------------------
 # messages.idle_worker_backlog

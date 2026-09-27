@@ -2084,8 +2084,10 @@ class SessionReconciler:
         try:
             await provider.nudge(self._handle(row), text)
             return True
-        except NudgeDeferred:
-            logger.debug("Nudge to session %s deferred; terminal input untouched", row.id)
+        except NudgeDeferred as exc:
+            logger.debug(
+                "Nudge to session %s deferred (%s); terminal input untouched", row.id, exc
+            )
             return None
         except NotSubmitted as exc:
             # WARNING, not info: text left in a composer blocks every later

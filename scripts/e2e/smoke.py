@@ -1667,11 +1667,18 @@ def s15_development_delivery(state: dict) -> str:
     successor_id = successor.get("task_id") or successor.get("created")
     check(bool(successor_id), str(successor))
     api("add_dependency", {"task_id": successor_id, "depends_on": task_id})
-    check(task_show(successor_id)["is_blocked"], "undelivered code released its successor")
+    check(not task_show(successor_id)["is_blocked"], "delivery leaked into graph projection")
+    waiting = api("explain_task", {"task_id": successor_id})
+    check(any(reason["code"] == "development_dependency_delivery"
+              for reason in waiting.get("reasons", [])),
+          f"undelivered code released its successor: {waiting}")
     result = aq("integration", "sweep", "e2e-development")
     check(result.get("outcome") == "delivered", str(result))
     check(_git_text(str(remote), "rev-parse", "main") == head, "AQ did not promote exact checked commit")
-    check(not task_show(successor_id)["is_blocked"], "publication did not release the successor")
+    released = api("explain_task", {"task_id": successor_id})
+    check(not any(reason["code"].startswith("development_")
+                  for reason in released.get("reasons", [])),
+          f"publication did not release the successor: {released}")
     status = aq("integration", "status", "e2e-development")
     delivery = next((row for row in status.get("deliveries", []) if row["id"] == result["id"]), None)
     check(delivery is not None, f"missing delivery receipt: {status}")

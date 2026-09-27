@@ -22,12 +22,15 @@ confirm, so this check is a read of provider state plus one screen capture
 per suspect session — never a scan of every pane.  A session is reported
 only while the composer *still* shows that marker on its input line; an
 agent that submitted or deleted the text in the meantime clears the record
-and reports OK.
+and reports OK.  A record whose composer cannot be read at all (a harness
+layout the guard does not recognise) is reported too, as ``unreadable``:
+that text blocks every later wake exactly the same way, and it is the state
+Codex 0.157 panes sat in, invisibly, on 2026-09-27.
 
 ``--fix`` presses Enter, gated on the same marker match.  That is the same
 key the operator would send by hand, and it can only ever submit text this
 daemon typed: a human draft never carries the marker, so it is never
-touched.
+touched.  An unreadable record is never submitted by ``--fix``.
 """
 
 from __future__ import annotations
@@ -121,27 +124,38 @@ async def _find_stuck(ctx: DoctorContext, *, resubmit: bool = False) -> list[dic
         except Exception:
             logger.debug("could not construct session provider %s", row.provider, exc_info=True)
             continue
+        detail_probe = getattr(provider, "pending_submit_detail", None)
         probe = getattr(provider, "pending_submit", None)
-        if probe is None:
+        if detail_probe is None and probe is None:
             continue
         try:
-            marker = await probe(_handle(row))
+            if detail_probe is not None:
+                detail = await detail_probe(_handle(row))
+            else:
+                marker = await probe(_handle(row))
+                detail = {"marker": marker, "observable": True} if marker else None
         except Exception:
             logger.debug("could not inspect composer for session %s", row.id, exc_info=True)
             continue
-        if not marker:
+        if not detail or not detail.get("marker"):
             continue
+        observable = bool(detail.get("observable", True))
         entry = {
             "session_id": row.id,
             "name": row.name,
             "task_id": row.task_id,
             "project_id": row.project_id,
-            "marker": marker,
+            "marker": detail["marker"],
+            # False: the durable record says AQ typed this text, but no screen
+            # parse can attribute the composer, so Enter is never pressed.
+            "observable": observable,
             # Providers can expose durable provenance without publishing the
             # injected text itself. Legacy/third-party hooks remain honest.
             "evidence": getattr(provider, "pending_submit_evidence", "provider_pending_submit"),
         }
-        if resubmit:
+        if resubmit and not observable:
+            entry["recovered"] = False
+        elif resubmit:
             fix = getattr(provider, "resubmit_pending", None)
             recovered = False
             if fix is not None:
@@ -171,15 +185,26 @@ async def _check_stuck_composer(ctx: DoctorContext) -> CheckResult:
             detail="no session is holding an unsubmitted nudge",
             fixable=True,
         )
+    readable = [e for e in stuck if e["observable"]]
+    unreadable = [e for e in stuck if not e["observable"]]
+    parts = []
+    if readable:
+        parts.append(
+            f"{len(readable)} session(s) have a nudge stuck in the composer "
+            f"(Enter was never confirmed): {_describe(readable)}"
+        )
+    if unreadable:
+        # --fix cannot help these: attaching and looking is the next step.
+        parts.append(
+            f"{len(unreadable)} session(s) hold AQ-typed text the composer guard "
+            f"cannot read, so every later wake defers on it: {_describe(unreadable)}"
+        )
     return CheckResult(
         id=STUCK_CHECK_ID,
         severity=Severity.WARN,
-        detail=(
-            f"{len(stuck)} session(s) have a nudge stuck in the composer "
-            f"(Enter was never confirmed): {_describe(stuck)}"
-        ),
+        detail="; ".join(parts),
         fixable=True,
-        data={"count": len(stuck), "sessions": stuck},
+        data={"count": len(stuck), "unreadable": len(unreadable), "sessions": stuck},
     )
 
 

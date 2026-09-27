@@ -1146,6 +1146,7 @@
         "tests/test_terminal_origin_config.py",
         "tests/test_terminal_pty.py",
         "tests/test_terminal_stream.py",
+        "tests/test_tmux_harness_wake.py",
         "tests/test_tmux_integration.py",
         "tests/test_tmux_nudge_confirm.py",
         "tests/test_tmux_nudge_drafts.py",
@@ -1276,7 +1277,7 @@
       ]
     }
   },
-  "digest": "sha256:9b9411335060cbe0364d6e3920fab055cdcbe85fe5d9efa1df9d8be28d4b2060",
+  "digest": "sha256:49ae59fb6ea3552ea34ef53e319d710974d1fcfc9fab0f831dfbdd56f68dd4e7",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2871,6 +2872,8 @@
         "src.doctor.pool_checks",
         "src.event_bus",
         "src.git.manager",
+        "src.integration.admission",
+        "src.integration.development",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
@@ -4560,6 +4563,7 @@
         "src.event_bus",
         "src.git.manager",
         "src.integration",
+        "src.integration.admission",
         "src.integration.controls",
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
@@ -5503,7 +5507,9 @@
         "src.playbooks.artifact_ref",
         "src.scheduler"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Work-graph WG-4: explain + ready frontier."
     },
     "tests/test_factory_policy_instructions.py": {
@@ -9667,9 +9673,12 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.models",
         "src.scheduler"
       ],
-      "markers": [],
+      "markers": [
+        "asyncio"
+      ],
       "summary": "size_pools — desired-state sizing over the global (profile-only) pool key."
     },
     "tests/test_portable_config.py": {
@@ -10469,7 +10478,9 @@
         "src.providers.reroute",
         "src.sessions.harness_parser"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The re-route engine (provider-failover D11-D17)."
     },
     "tests/test_provider_spill.py": {
@@ -11580,7 +11591,8 @@
         "src.sessions.fake",
         "src.sessions.harness_registry",
         "src.sessions.provider",
-        "src.sessions.spec"
+        "src.sessions.spec",
+        "src.sessions.tmux"
       ],
       "markers": [],
       "summary": "``sessions.stuck_composer`` — the doctor half of the lost-Enter stall."
@@ -12366,7 +12378,9 @@
         "src.orchestrator",
         "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "An explicit intelligence class picks its own lane at creation time."
     },
     "tests/test_task_close_summary_enforcement.py": {
@@ -12920,6 +12934,22 @@
         "asyncio"
       ],
       "summary": "Tests for ``cron.HH:MM`` wall-clock triggers in the timer service."
+    },
+    "tests/test_tmux_harness_wake.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.sessions",
+        "src.sessions.harness_parser",
+        "src.sessions.provider",
+        "src.sessions.tmux"
+      ],
+      "markers": [
+        "tmux"
+      ],
+      "summary": "Waking an idle worker: the real Codex and Claude CLIs in real tmux panes."
     },
     "tests/test_tmux_integration.py": {
       "areas": [
