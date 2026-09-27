@@ -1151,6 +1151,7 @@
         "tests/test_tmux_nudge_confirm.py",
         "tests/test_tmux_nudge_drafts.py",
         "tests/test_tmux_nudge_recovery.py",
+        "tests/test_tmux_opencode_composer.py",
         "tests/test_tmux_path.py",
         "tests/test_tmux_startup_dialogs.py",
         "tests/test_usage_limit_screen.py"
@@ -1277,7 +1278,7 @@
       ]
     }
   },
-  "digest": "sha256:49ae59fb6ea3552ea34ef53e319d710974d1fcfc9fab0f831dfbdd56f68dd4e7",
+  "digest": "sha256:1417e30d1163edeed1539ecadd65b6b09bfe6980e0c362858e80a598fb387213",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11594,7 +11595,9 @@
         "src.sessions.spec",
         "src.sessions.tmux"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``sessions.stuck_composer`` — the doctor half of the lost-Enter stall."
     },
     "tests/test_session_executable.py": {
@@ -13007,6 +13010,21 @@
         "parametrize"
       ],
       "summary": "Recovering a nudge whose Enter was lost to the composer's repaint."
+    },
+    "tests/test_tmux_opencode_composer.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.sessions",
+        "src.sessions.provider",
+        "src.sessions.tmux"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Nudging an OpenCode worker: its box composer, and plugin output painted over it."
     },
     "tests/test_tmux_path.py": {
       "areas": [
