@@ -302,10 +302,9 @@ class CollaborationCommandsMixin:
             )
             thread_id, cursor = view["id"], page["next_cursor"]
             if not active:
-                next_step = (
-                    f"Thread {thread_id} is {view['state']}"
-                    f" ({view['close_reason'] or 'deadline passed'}). Continue your own task."
-                )
+                # A thread past its deadline reads as ended before the tick expires it.
+                ended = view["close_reason"] if view["state"] != "active" else "deadline passed"
+                next_step = f"Thread {thread_id} has ended ({ended}). Continue your own task."
             elif own is not None and own["needs_accept"]:
                 next_step = (
                     f"Run `aq collaboration accept {thread_id}` before sending or waiting."

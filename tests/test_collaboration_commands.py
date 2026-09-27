@@ -449,7 +449,7 @@ async def test_member_close_never_changes_member_tasks(env):
     assert again["thread"]["version"] == result["thread"]["version"]
     assert await body_kind_count(env, "collaboration_closed") == 2
     shown = await run(env, "collaboration_get", {"thread_id": thread["id"]}, worker())
-    assert shown["capacity_hold"] is False and "is closed" in shown["next_step"]
+    assert shown["capacity_hold"] is False and "has ended (closed)" in shown["next_step"]
 
 
 async def test_remove_and_all_active_are_elevated_only(env):
