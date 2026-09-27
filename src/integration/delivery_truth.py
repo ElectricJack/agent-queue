@@ -309,24 +309,31 @@ async def _run(git, store, *args):
     return result.stdout.strip()
 
 
-async def load_delivery_requests(db, task_ids, *, repository_id, target_ref):
+async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, conn=None):
     """Batch read current completions and live/archive identities without locks.
 
     Absent tasks are omitted so consumers explicitly withhold them. PostgreSQL
     DISTINCT ON gives a deterministic latest generation even at equal times.
+    A guarded consumer passes its own *conn* to recheck, under its locks, that
+    the identities it evaluated before the transaction are still current.
     """
+    from contextlib import nullcontext
+
     from sqlalchemy import select
 
     from src.database.tables import archived_tasks, task_completion_records, tasks
 
     task_ids = set(task_ids)
-    async with db._engine.connect() as conn:
-        live = (await conn.execute(select(tasks).where(tasks.c.id.in_(task_ids)))).mappings().all()
+    opened = nullcontext(conn) if conn is not None else db._engine.connect()
+    async with opened as reader:
+        live = (
+            await reader.execute(select(tasks).where(tasks.c.id.in_(task_ids)))
+        ).mappings().all()
         missing = task_ids - {row["id"] for row in live}
-        archived = (await conn.execute(
+        archived = (await reader.execute(
             select(archived_tasks).where(archived_tasks.c.id.in_(missing))
         )).mappings().all() if missing else []
-        completions = (await conn.execute(
+        completions = (await reader.execute(
             select(task_completion_records)
             .where(task_completion_records.c.task_id.in_(task_ids))
             .distinct(task_completion_records.c.task_id)
@@ -334,7 +341,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref):
                       task_completion_records.c.completed_at.desc(),
                       task_completion_records.c.id.desc())
         )).mappings().all()
-        recorded_ids = set((await conn.execute(
+        recorded_ids = set((await reader.execute(
             select(task_completion_records.c.task_id).where(
                 task_completion_records.c.task_id.in_(task_ids),
                 task_completion_records.c.commits != "[]",

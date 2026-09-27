@@ -124,6 +124,36 @@ class ArchiveBlockedRoots:
 class ArchiveQueryMixin:
     """Query mixin for archived task operations.  Expects ``self._engine``."""
 
+    #: Git delivery truth for the archive guard, registered by the daemon
+    #: (:meth:`set_delivery_observer`).  Without one, development work that
+    #: needs proof is unverified and every archive of it is refused.
+    _delivery_observer = None
+
+    def set_delivery_observer(self, observer) -> None:
+        """Register the :class:`~src.integration.delivery_observer.DeliveryObserver`."""
+        self._delivery_observer = observer
+
+    async def _observe_removal_delivery(self, task_id: str):
+        """Git evidence for *task_id*'s subtree, taken before any transaction.
+
+        Only the development work that needs proof is fetched and evaluated.
+        A target that keeps moving yields no view: the guard then holds that
+        work as unknown rather than trusting a stale answer.
+        """
+        from src.integration.delivery_observer import delivery_sensitive_ids
+
+        observer = self._delivery_observer
+        if observer is None:
+            return None
+        async with self._engine.connect() as conn:
+            sensitive = await delivery_sensitive_ids(
+                conn, await self.subtree_ids(task_id, conn=conn)
+            )
+        if not sensitive:
+            return None
+        view = await observer.observe(sensitive)
+        return view if await view.fresh() else None
+
     async def archive_task(
         self,
         task_id: str,
@@ -132,6 +162,7 @@ class ArchiveQueryMixin:
         abandon_undelivered: bool = False,
         abandon_reason: str | None = None,
         abandoned_by: str = "operator",
+        delivery=None,
     ) -> bool:
         """Archive *task_id* and its whole subtree atomically (spec §7).
 
@@ -139,6 +170,11 @@ class ArchiveQueryMixin:
         remains accepted for old sweep callers but is now redundant. A human or
         elevated supervisor can intentionally bypass only that delivery rule
         with ``abandon_undelivered`` and a durable reason.
+
+        Delivery is proven in git before the transaction (*delivery*, or the
+        registered observer's view of the subtree) and each identity is
+        rechecked inside it, so a task reopened or re-completed meanwhile is
+        held rather than archived on an old answer.
 
         Refuses live sessions or non-terminal tasks anywhere in the subtree.
         Deepest first, root last, so the subtree moves together.
@@ -148,6 +184,8 @@ class ArchiveQueryMixin:
         if abandon_undelivered and not (abandon_reason or "").strip():
             raise ValueError("abandon_undelivered requires a reason")
         terminal = TERMINAL_STATUSES
+        if delivery is None:
+            delivery = await self._observe_removal_delivery(task_id)
         async with self.immediate() as conn:
             # Archiving moves a task out of the active view; it never destroys
             # work, so the branch always stays on the remote.  Retiring the
@@ -160,6 +198,7 @@ class ArchiveQueryMixin:
                 retire_pending=True,
                 branch_policy="keep",
                 abandon_undelivered=abandon_undelivered,
+                delivery=delivery,
             )
             ids = await self.subtree_ids(task_id, conn=conn)
             if not ids:
@@ -186,6 +225,7 @@ class ArchiveQueryMixin:
                     ids=ids,
                     project_id=project_id,
                     mode=mode,
+                    delivery=delivery,
                 )
                 named_holders = ", ".join(
                     f"{row['task_id']} ({row['holder']})" for row in abandoned

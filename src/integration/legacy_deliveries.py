@@ -10,16 +10,14 @@ reported each of its terminal children as ``missing_receipt`` and observe
 readiness could never pass.
 
 Status accepts such a child (terminal child, terminal parent, no current
-collection) on either of two durable facts, read by
+collection) on either of two facts, read by
 :func:`legacy_delivered_children_on`:
 
-* the development publisher's own receipt: a ``delivered`` or ``adopted``
-  development delivery to the designated repository's default branch that
-  lists the child's latest completion
-  (:func:`~src.database.queries.blocked_state.development_delivery_receipt`,
-  the same binding blocked-state readiness uses).  Every development-mode
-  delivery therefore already writes a receipt train readiness accepts; no
-  second copy is kept that could drift from it;
+* git: the child's current completion is contained in the designated
+  repository's default branch, as
+  :mod:`src.integration.delivery_truth` evaluates it (the same answer
+  admission, settlement and archive use).  No delivery row is consulted, so
+  nothing is kept that could drift from git;
 * an ``integration_legacy_deliveries`` row.
 
 ``aq integration adopt-legacy-deliveries`` (:class:`LegacyDeliveryAdoption`)
@@ -27,11 +25,9 @@ writes those rows for the children status still flags.  After one fetch of
 the designated repository it proves each against the current default-branch
 tip:
 
-* ``development_delivery`` -- a ``delivered`` or ``adopted`` development
-  delivery to any ref lists the child, and the child's source commit or the
-  delivery's published commit is an ancestor of the tip (a child delivered
-  into a development parent collection that later reached the default
-  branch);
+* ``development_delivery`` -- git proves the child's current completion on
+  the tip (:mod:`src.integration.delivery_truth`); a historical development
+  manifest may only *locate* a source, which is then tested like any other;
 * ``branch_tip`` -- the child's branch tip on origin is an ancestor of the
   tip;
 * ``content_equivalent`` -- the work reached the default branch under other
@@ -70,16 +66,14 @@ from typing import Any, NamedTuple
 from sqlalchemy import and_, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.queries.blocked_state import development_delivery_receipt
 from src.database.tables import (
     development_deliveries,
     integration_legacy_deliveries,
-    projects,
-    repos,
     task_completion_records,
     tasks,
 )
 from src.git.manager import GitError, is_valid_git_oid
+from src.integration.delivery_truth import DeliveryState
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +117,7 @@ class _Target(NamedTuple):
 
 
 async def legacy_delivered_children_on(
-    conn, parent: Mapping[str, Any], child_ids: Iterable[str]
+    conn, parent: Mapping[str, Any], child_ids: Iterable[str], *, delivered: Iterable[str] = ()
 ) -> set[str]:
     """The terminal children of a terminal *parent* status accepts as delivered.
 
@@ -131,27 +125,17 @@ async def legacy_delivered_children_on(
     parent's readiness belongs to
     :class:`~src.integration.parent_completion.ParentCompletion` and needs
     bound train receipts.  An open parent accepts nothing here either -- its
-    completion will still need them.
+    completion will still need them.  *delivered* names the COMPLETED
+    children git proved contained, verified by the caller on this *conn*.
     """
     ids = sorted(set(child_ids))
     if parent["status"] not in TERMINAL_TASK_STATES or not ids:
         return set()
+    proven = set(delivered)
     child = tasks.alias("legacy_child")
-    project = projects.alias("legacy_project")
-    repo = repos.alias("legacy_repo")
     recorded = (
         select(literal(1))
         .where(integration_legacy_deliveries.c.task_id == child.c.id)
-        .correlate(child)
-        .exists()
-    )
-    published = (
-        select(literal(1))
-        .select_from(project.join(repo, repo.c.id == project.c.integration_repository_id))
-        .where(
-            project.c.id == child.c.project_id,
-            development_delivery_receipt(child, project, repo),
-        )
         .correlate(child)
         .exists()
     )
@@ -159,7 +143,7 @@ async def legacy_delivered_children_on(
         select(child.c.id).where(
             child.c.id.in_(ids),
             child.c.status.in_(TERMINAL_TASK_STATES),
-            or_(recorded, and_(child.c.status == "COMPLETED", published)),
+            or_(recorded, and_(child.c.status == "COMPLETED", child.c.id.in_(sorted(proven)))),
         )
     )
     return set(rows.scalars().all())
@@ -180,7 +164,10 @@ class LegacyDeliveryAdoption:
         self.db = db
         self.development = development
         self.git = development.git
-        self.status = IntegrationStatusService(db, clock=clock)
+        # Status and the proofs below read the same git delivery truth, so a
+        # child git already proves is never flagged for adoption at all.
+        self.delivery = getattr(development, "delivery_observer", None)
+        self.status = IntegrationStatusService(db, clock=clock, delivery=self.delivery)
         self.clock = clock
 
     async def run(
@@ -260,6 +247,9 @@ class LegacyDeliveryAdoption:
         from src.integration.development import DevelopmentBusy
 
         target_ref = "refs/heads/" + repo.default_branch.removeprefix("refs/heads/")
+        # Git truth for each flagged child's current completion, taken before
+        # the publisher lock; every proof below is rechecked on its own tip.
+        view = await self.delivery.observe(set(flagged)) if self.delivery is not None else None
         try:
             async with self.development.exclusion(repo.id):
                 store = await self.development.store(repo)
@@ -293,6 +283,7 @@ class LegacyDeliveryAdoption:
                         flagged[task_id],
                         deliveries.get(task_id, []),
                         completions.get(task_id),
+                        view.get(task_id) if view is not None else None,
                     )
                     for task_id in sorted(flagged)
                 ]
@@ -454,8 +445,14 @@ class LegacyDeliveryAdoption:
         child: dict[str, Any],
         deliveries: list[dict[str, Any]],
         completion_sha: str | None = None,
+        evidence: Any = None,
     ) -> dict[str, Any]:
-        """Adopt *child* on the first proof that reaches *target*; else say why not."""
+        """Adopt *child* on the first proof that reaches *target*; else say why not.
+
+        ``development_delivery`` is git's answer for the child's current
+        completion (*evidence*), re-proved against *target*.  A historical
+        manifest only locates a source to test; its state proves nothing.
+        """
         item = {"task_id": child["task_id"], "parent_task_id": child["parent_task_id"]}
         if child["parent_status"] not in TERMINAL_TASK_STATES:
             return {
@@ -474,22 +471,24 @@ class LegacyDeliveryAdoption:
                 "cause": CHILD_NOT_COMPLETED,
                 "detail": f"child is {child['status']}: no delivered commit to prove",
             }
+        # Manifests locate the child's own sources; an assembly's prepared
+        # commit reaching the tip says nothing about which work it carried.
         delivered: dict[str, str] = {}
         for delivery in deliveries:
-            if delivery["repository_id"] != repository_id:
-                continue
-            for sha in (delivery["source_sha"], delivery["prepared_sha"]):
-                if not sha:
-                    continue
-                delivered.setdefault(sha, delivery["id"])
-                if await self._on_target(store, sha, target.sha):
-                    return {
-                        **item,
-                        "outcome": ADOPTED,
-                        "proof": DEVELOPMENT_DELIVERY,
-                        "delivered_sha": sha,
-                        "development_delivery_id": delivery["id"],
-                    }
+            if delivery["repository_id"] == repository_id and delivery["source_sha"]:
+                delivered.setdefault(delivery["source_sha"], delivery["id"])
+        if (
+            evidence is not None
+            and evidence.state is DeliveryState.CONTAINED
+            and await self._on_target(store, evidence.source_oid, target.sha)
+        ):
+            return {
+                **item,
+                "outcome": ADOPTED,
+                "proof": DEVELOPMENT_DELIVERY,
+                "delivered_sha": evidence.source_oid,
+                "development_delivery_id": delivered.get(evidence.source_oid),
+            }
         tip = None
         branch = (child["branch_name"] or "").removeprefix("refs/heads/")
         if branch:

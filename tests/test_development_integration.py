@@ -2868,12 +2868,14 @@ async def test_live_branch_references_names_every_hold(setup):
     )
     from src.integration.delivery_branches import live_branch_references
 
-    db, _service, _source, _remote, _repo = setup
+    db, service, _source, _remote, _repo = setup
     await db.create_task(Task(
         id="running", project_id="p", title="t", description="", branch_name="aq/running",
         status=TaskStatus.IN_PROGRESS,
     ))
     await aq_feature(setup, "undelivered")
+    # Git, observed before the read, is the only delivery answer.
+    delivery = await service.delivery_observer.observe({"undelivered"})
     await db.create_task(Task(
         id="development-repair-x", project_id="p", title="t", description="",
         branch_name="aq/development-repair-x", status=TaskStatus.READY,
@@ -2907,11 +2909,16 @@ async def test_live_branch_references_names_every_hold(setup):
             creation_generation=0, reserved=True, materialized=True, retired_at=now,
             created_at=now, discard_state="pending",
         ))
-        holds = await live_branch_references(conn)
+        holds = await live_branch_references(conn, delivery=delivery)
+        unverified = await live_branch_references(conn)
 
     assert holds["aq/running"] == "task running is IN_PROGRESS"
     assert holds["aq/running-wip"] == "task running is IN_PROGRESS"
     assert holds["aq/undelivered"] == "task undelivered is not delivered yet"
+    # Without git proof a completed branch is unknown, and unknown holds.
+    assert unverified["aq/undelivered"] == (
+        "task undelivered delivery is unknown (not verified in git)"
+    )
     # A member no table resolves still holds its conventional branch.
     assert holds["aq/gone-src"] == "development batch parked is parked"
     assert holds["aq/development/abc/" + "a" * 40] == (

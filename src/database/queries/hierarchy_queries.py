@@ -224,40 +224,57 @@ def _settlement_clauses() -> list:
 
 
 def stale_container_clauses() -> list:
-    """The stale-status leg: a BLOCKED/PAUSED container whose work is delivered.
+    """The stale-status leg's graph half: a BLOCKED/PAUSED container that may settle.
 
     On top of :func:`_settlement_clauses` it needs at least one child (a
     childless container's stale status is not "left over from its children
-    finishing") and every child's work delivered.  Delivery is the development
-    publisher's receipt (``_development_delivery_pending``, foreign repos
-    included, as the archive sweep asks it): a delivered or adopted batch that
-    reached the default branch lists the child's latest completion source.  A
-    branchless child, and any child outside development mode, has nothing to
-    deliver.  A child that is itself a container proves delivery through its
-    own children when it settled, so it is not asked again.
+    finishing").  Whether every child's work is *delivered* is not SQL's
+    answer: :meth:`HierarchyQueryMixin.settle_containers` also needs git to
+    prove each child :func:`stale_delivery_children` names, through a verified
+    :class:`~src.integration.delivery_observer.DeliveryView`.
     """
-    from src.database.queries.blocked_state import _development_delivery_pending
-
     child = tasks.alias("stale_child")
-    child_flag = task_metadata.alias("stale_child_flag")
     return [
         tasks.c.status.in_(STALE_CONTAINER_STATUSES),
         *_settlement_clauses(),
         exists(select(literal(1)).where(child.c.parent_task_id == tasks.c.id)),
-        ~exists(
-            select(literal(1)).where(
-                child.c.parent_task_id == tasks.c.id,
-                ~exists(
-                    select(literal(1)).where(
-                        child_flag.c.task_id == child.c.id,
-                        child_flag.c.key == CONTAINER_KEY,
-                        child_flag.c.value == CONTAINER_VALUE,
-                    )
-                ),
-                _development_delivery_pending(child, include_foreign_repos=True),
-            )
-        ),
     ]
+
+
+async def stale_delivery_children(conn, container_ids) -> dict[str, set[str]]:
+    """The children whose delivery git must prove before their stale container settles.
+
+    A child in development delivery scope
+    (:func:`~src.integration.delivery_observer.development_delivery_scope`,
+    foreign repositories included, as the archive guard asks it).  Anything
+    outside development mode and any branchless organizational child has
+    nothing to deliver.  A child that is itself a container proved delivery
+    through its own children when it settled, so it is not asked again.
+    """
+    from src.integration.delivery_observer import development_delivery_scope
+
+    ids = sorted(set(container_ids))
+    if not ids:
+        return {}
+    child = tasks.alias("stale_child")
+    child_flag = task_metadata.alias("stale_child_flag")
+    rows = await conn.execute(
+        select(child.c.parent_task_id, child.c.id).where(
+            child.c.parent_task_id.in_(ids),
+            ~exists(
+                select(literal(1)).where(
+                    child_flag.c.task_id == child.c.id,
+                    child_flag.c.key == CONTAINER_KEY,
+                    child_flag.c.value == CONTAINER_VALUE,
+                )
+            ),
+            development_delivery_scope(child),
+        )
+    )
+    required: dict[str, set[str]] = {}
+    for parent_id, child_id in rows.all():
+        required.setdefault(parent_id, set()).add(child_id)
+    return required
 
 
 #: Project ``hierarchical_integration_mode`` values that gate the two claim
@@ -1037,6 +1054,7 @@ class HierarchyQueryMixin:
         retire_pending: bool = False,
         branch_policy: str | None = None,
         abandon_undelivered: bool = False,
+        delivery=None,
     ) -> bool:
         """Fence canonical hierarchy/lifecycle writers for enabled projects.
 
@@ -1062,6 +1080,10 @@ class HierarchyQueryMixin:
             materialized origin, naming the branches in the error context so a
             surface can ask.  A caller that says nothing can never destroy a
             branch by omission.
+        
+        ``delivery`` is the git view a removal took before this transaction
+        (see :mod:`src.integration.removal_guard`); development work it does
+        not verify as delivered refuses an archive.
         """
         if branch_policy not in (None, "keep", "discard"):
             raise ValueError(f"unknown branch_policy: {branch_policy!r}")
@@ -1101,6 +1123,7 @@ class HierarchyQueryMixin:
                 project_id=task_row.project_id,
                 mode=mode,
                 abandon_undelivered=abandon_undelivered,
+                delivery=delivery,
             )
         if mode not in {"hierarchy", "train"}:
             return False
@@ -1672,7 +1695,9 @@ class HierarchyQueryMixin:
 
     # -- settlement -------------------------------------------------------
 
-    async def settle_containers(self, seeds: set[str], *, conn, depth: int = 0) -> TransitionResult:
+    async def settle_containers(
+        self, seeds: set[str], *, conn, depth: int = 0, delivery=None
+    ) -> TransitionResult:
         """Complete every seeded container whose children are all done (spec §7).
 
         Predicate: container flag ∧ status = IN_PROGRESS ∧ no live session holds
@@ -1692,7 +1717,14 @@ class HierarchyQueryMixin:
         A second, stricter leg settles a seeded container stranded BLOCKED or
         PAUSED (:func:`stale_container_clauses`): it needs every child's work
         delivered, not merely COMPLETED, and it supersedes the stale status and
-        any operator hold (:meth:`_settle_stale_container`).
+        any operator hold (:meth:`_settle_stale_container`).  Delivery is git's
+        answer, prepared before this transaction: *delivery* is a
+        :class:`~src.integration.delivery_observer.DeliveryView`, and each
+        child :func:`stale_delivery_children` names must still carry the
+        identity it evaluated and be satisfied.  Without a view (the event
+        path, inside some other write) only a container with no such child
+        settles here; the backstop and startup sweeps bring the view for the
+        rest.
         """
         result = TransitionResult()
         pending = {s for s in seeds if s}
@@ -1747,7 +1779,18 @@ class HierarchyQueryMixin:
             .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
             .where(tasks.c.id.in_(sorted(pending)), *stale_container_clauses())
         )
-        for cid in [r[0] for r in (await conn.execute(stale)).fetchall()]:
+        stale_ids = [r[0] for r in (await conn.execute(stale)).fetchall()]
+        required = await stale_delivery_children(conn, stale_ids)
+        wanted = set().union(*required.values()) if required else set()
+        verified = (
+            await delivery.verified_on(conn, wanted) if delivery is not None and wanted else {}
+        )
+        for cid in stale_ids:
+            if any(
+                child_id not in verified or not verified[child_id].satisfied
+                for child_id in required.get(cid, ())
+            ):
+                continue
             res = await self._settle_stale_container(conn, cid, depth=depth)
             if res is not None:
                 await self._merge_settlement(conn, cid, res, result)
@@ -1846,12 +1889,14 @@ class HierarchyQueryMixin:
             return [r[0] for r in (await conn.execute(stmt)).fetchall()]
 
     async def stale_container_candidates(self) -> list[str]:
-        """BLOCKED/PAUSED containers whose children are all COMPLETED and delivered.
+        """BLOCKED/PAUSED containers whose children are all COMPLETED.
 
         The stale-status leg's backstop and startup read (see
         :func:`stale_container_clauses`).  The event path settles these when a
         child's completion seeds the container; a delivery that lands later
-        has no such event, so the container sweep asks this every interval.
+        has no such event, so the container sweep asks this every interval,
+        then proves delivery of :meth:`stale_container_delivery_children` in
+        git before it settles any of them.
         """
         stmt = (
             select(tasks.c.id)
@@ -1861,6 +1906,13 @@ class HierarchyQueryMixin:
         )
         async with self._engine.begin() as conn:
             return [r[0] for r in (await conn.execute(stmt)).fetchall()]
+
+    async def stale_container_delivery_children(
+        self, container_ids: list[str]
+    ) -> dict[str, set[str]]:
+        """Per stale candidate, the children git must prove delivered (no locks)."""
+        async with self._engine.connect() as conn:
+            return await stale_delivery_children(conn, container_ids)
 
     # -- creation -------------------------------------------------------
 
