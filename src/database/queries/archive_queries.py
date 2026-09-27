@@ -15,7 +15,6 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.database.tables import (
     agents,
     archived_tasks,
-    development_deliveries,
     projects,
     sessions,
     task_comments,
@@ -34,13 +33,6 @@ TERMINAL_STATUSES = (
     TaskStatus.FAILED.value,
     TaskStatus.BLOCKED.value,
 )
-
-#: Development delivery states that are finished with the tasks their manifest
-#: names.  ``delivered``/``adopted`` published or absorbed those revisions and
-#: ``cancelled`` abandoned the attempt; every other state still owes work to
-#: each member, so archiving one out from under the publisher would leave the
-#: batch naming a task that no longer exists.
-SETTLED_DEVELOPMENT_DELIVERY_STATES = ("delivered", "adopted", "cancelled")
 
 #: Metadata key holding a development repair's source manifest, written by
 #: :meth:`src.integration.development.DevelopmentIntegration.ensure_repair`.
@@ -335,37 +327,12 @@ class ArchiveQueryMixin:
         consult its sources again, and if the batch that spawned it is still
         unresolved the manifest check above already holds those sources.
         """
-        wanted = set(ids)
-        batches = (
-            (
-                await conn.execute(
-                    select(
-                        development_deliveries.c.id,
-                        development_deliveries.c.state,
-                        development_deliveries.c.manifest,
-                    )
-                    .where(development_deliveries.c.project_id == project_id)
-                    .where(
-                        development_deliveries.c.state.notin_(
-                            SETTLED_DEVELOPMENT_DELIVERY_STATES
-                        )
-                    )
-                    .order_by(development_deliveries.c.created_at, development_deliveries.c.id)
-                )
-            )
-            .mappings()
-            .all()
-        )
-        from src.integration.development import operation_rows_on
+        from src.integration.development import OPEN_OPERATION_STATES, operation_rows_on
 
-        # Pending actions still own their inputs after runtime receipt writes
-        # have retired. Keep the legacy holds until the migration/retire step.
-        operations = await operation_rows_on(conn, [project_id])
-        migrated = {row["id"].removeprefix("legacy-operation:") for row in operations
-                    if row["id"].startswith("legacy-operation:")}
-        batches = [*(row for row in batches if row["id"] not in migrated),
-                   *(row for row in operations
-                     if row["state"] in {"prepared", "publishing", "parked"})]
+        wanted = set(ids)
+        # Outstanding legacy journal rows were retained as ``legacy-operation:``
+        # events by the development_deliveries retirement revision.
+        batches = await operation_rows_on(conn, [project_id], states=OPEN_OPERATION_STATES)
         for row in batches:
             named = self._named_task_ids(row["manifest"], wanted)
             if named:

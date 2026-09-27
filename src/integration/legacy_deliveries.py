@@ -26,14 +26,13 @@ the designated repository it proves each against the current default-branch
 tip:
 
 * ``development_delivery`` -- git proves the child's current completion on
-  the tip (:mod:`src.integration.delivery_truth`); a historical development
-  manifest may only *locate* a source, which is then tested like any other;
+  the tip (:mod:`src.integration.delivery_truth`);
 * ``branch_tip`` -- the child's branch tip on origin is an ancestor of the
   tip;
 * ``content_equivalent`` -- the work reached the default branch under other
-  commits (cherry-picked, squashed or re-delivered): merging a development
-  delivery's commit, the branch tip or the latest completion commit into the
-  tip changes nothing (``git merge-tree --write-tree``).
+  commits (cherry-picked, squashed or re-delivered): merging the current
+  completion's retained source, the branch tip or the latest completion commit
+  into the tip changes nothing (``git merge-tree --write-tree``).
 
 Anything it cannot prove is listed with its cause and left alone: a child of
 a parent that is still open (its completion still needs bound train receipts),
@@ -48,6 +47,10 @@ bulk:
 * ``--retire TASK_ID`` -- the work was abandoned; nothing is deleted
   (``abandoned``);
 * ``--accept TASK_ID`` -- accepted without proof (``operator_accepted``).
+
+A result's ``development_delivery_id`` is always ``null``: it named the
+retired ``development_deliveries`` row a proof located its source through.
+Historical ``integration_legacy_deliveries`` rows keep the id they recorded.
 
 A dry run fetches but writes nothing.  Rows are keyed by task id and inserted
 with ``ON CONFLICT DO NOTHING``, and an adopted child is no longer flagged, so
@@ -67,7 +70,6 @@ from sqlalchemy import and_, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
-    development_deliveries,
     integration_legacy_deliveries,
     task_completion_records,
     tasks,
@@ -272,7 +274,6 @@ class LegacyDeliveryAdoption:
                             ),
                         )
                     replacements[task_id] = commit
-                deliveries = await self._deliveries_by_task(project_id, set(flagged))
                 completions = await self._completion_commits(set(flagged))
                 target = _Target(target_sha, await self._tree(store, target_sha))
                 results = [
@@ -281,7 +282,6 @@ class LegacyDeliveryAdoption:
                         target,
                         repo.id,
                         flagged[task_id],
-                        deliveries.get(task_id, []),
                         completions.get(task_id),
                         view.get(task_id) if view is not None else None,
                     )
@@ -378,38 +378,6 @@ class LegacyDeliveryAdoption:
             item["parent_status"] = state[item["parent_task_id"]]["status"]
         return flagged
 
-    async def _deliveries_by_task(
-        self, project_id: str, task_ids: set[str]
-    ) -> dict[str, list[dict[str, Any]]]:
-        """Delivered or adopted development deliveries of the project, by listed task."""
-        async with self.db._engine.connect() as conn:
-            rows = (
-                await conn.execute(
-                    select(development_deliveries)
-                    .where(
-                        development_deliveries.c.project_id == project_id,
-                        development_deliveries.c.state.in_(("delivered", "adopted")),
-                    )
-                    .order_by(
-                        development_deliveries.c.created_at, development_deliveries.c.id
-                    )
-                )
-            ).mappings().all()
-        by_task: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            for member in row["manifest"] or ():
-                task_id = member.get("task_id") if isinstance(member, dict) else None
-                if task_id in task_ids:
-                    by_task.setdefault(task_id, []).append(
-                        {
-                            "id": row["id"],
-                            "repository_id": row["repository_id"],
-                            "prepared_sha": row["prepared_sha"],
-                            "source_sha": member.get("source_sha"),
-                        }
-                    )
-        return by_task
-
     async def _completion_commits(self, task_ids: set[str]) -> dict[str, str]:
         """The last commit each task's latest completion reported, by task."""
         latest = (
@@ -443,15 +411,13 @@ class LegacyDeliveryAdoption:
         target: _Target,
         repository_id: str,
         child: dict[str, Any],
-        deliveries: list[dict[str, Any]],
         completion_sha: str | None = None,
         evidence: Any = None,
     ) -> dict[str, Any]:
         """Adopt *child* on the first proof that reaches *target*; else say why not.
 
         ``development_delivery`` is git's answer for the child's current
-        completion (*evidence*), re-proved against *target*.  A historical
-        manifest only locates a source to test; its state proves nothing.
+        completion (*evidence*), re-proved against *target*.
         """
         item = {"task_id": child["task_id"], "parent_task_id": child["parent_task_id"]}
         if child["parent_status"] not in TERMINAL_TASK_STATES:
@@ -471,12 +437,7 @@ class LegacyDeliveryAdoption:
                 "cause": CHILD_NOT_COMPLETED,
                 "detail": f"child is {child['status']}: no delivered commit to prove",
             }
-        # Manifests locate the child's own sources; an assembly's prepared
-        # commit reaching the tip says nothing about which work it carried.
-        delivered: dict[str, str] = {}
-        for delivery in deliveries:
-            if delivery["repository_id"] == repository_id and delivery["source_sha"]:
-                delivered.setdefault(delivery["source_sha"], delivery["id"])
+        retained = evidence.source_oid if evidence is not None else None
         if (
             evidence is not None
             and evidence.state is DeliveryState.CONTAINED
@@ -487,7 +448,7 @@ class LegacyDeliveryAdoption:
                 "outcome": ADOPTED,
                 "proof": DEVELOPMENT_DELIVERY,
                 "delivered_sha": evidence.source_oid,
-                "development_delivery_id": delivered.get(evidence.source_oid),
+                "development_delivery_id": None,
             }
         tip = None
         branch = (child["branch_name"] or "").removeprefix("refs/heads/")
@@ -507,7 +468,7 @@ class LegacyDeliveryAdoption:
         # The work may have reached the default branch under other commits
         # (cherry-picked, squashed, re-delivered): then merging it changes
         # nothing.  The first examinable candidate also shows what is left.
-        candidates = list(dict.fromkeys(c for c in (tip, completion_sha, *delivered) if c))
+        candidates = list(dict.fromkeys(c for c in (tip, completion_sha, retained) if c))
         undelivered = None
         for sha in candidates:
             merge = await self._merge(store, target, sha)
@@ -519,15 +480,16 @@ class LegacyDeliveryAdoption:
                     "outcome": ADOPTED,
                     "proof": CONTENT_EQUIVALENT,
                     "delivered_sha": merge["sha"],
-                    "development_delivery_id": delivered.get(sha),
+                    "development_delivery_id": None,
                 }
             if undelivered is None:
                 undelivered = await self._undelivered(store, target, merge)
-        examined = [f"{len(deliveries)} development deliveries"]
-        examined.append(f"branch {branch} at {tip}" if tip else f"branch {branch or '-'} absent")
+        examined = [f"branch {branch} at {tip}" if tip else f"branch {branch or '-'} absent"]
         examined.append(
             f"completion commit {completion_sha}" if completion_sha else "no completion commit"
         )
+        if retained:
+            examined.append(f"retained completion source {retained}")
         return {
             **item,
             "outcome": UNPROVEN,

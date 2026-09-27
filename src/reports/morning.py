@@ -8,9 +8,9 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.reports.authoring import surface_map
 from src.reports.git import read_git_evidence
 from src.reports.hourly import MAX_BRIEF_BYTES, hash_brief
-from src.reports.authoring import surface_map
 
 REPLAY_SECONDS = 72 * 3600
 
@@ -224,12 +224,8 @@ async def collect_morning_evidence(
             str(observed.get("ref") or "").removeprefix("refs/heads/"),
             "refs/heads/" + str(observed.get("ref") or "").removeprefix("refs/remotes/origin/"),
         )
-        landed = (
-            row["state"] in ("delivered", "adopted")
-            and proof == "landed"
-            and repo_matches
-            and target_matches
-        )
+        # Git alone decides landing; the operation state is the action's outcome.
+        landed = proof == "landed" and repo_matches and target_matches
         add(
             "delivery",
             row,

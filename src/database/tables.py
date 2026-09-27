@@ -4519,34 +4519,6 @@ integration_outbox_artifact_pins = Table(
 )
 
 
-# Development integration keeps executed Git facts separate from task episodes.
-development_deliveries = Table(
-    "development_deliveries",
-    metadata,
-    Column("id", Text, primary_key=True),
-    Column("project_id", Text, nullable=False),
-    Column("repository_id", Text, nullable=False),
-    Column("target_ref", Text, nullable=False),
-    Column("expected_sha", Text, nullable=True),
-    Column("prepared_sha", Text, nullable=True),
-    Column("state", Text, nullable=False),
-    Column("manifest", JSON, nullable=False),
-    Column("evidence", JSON, nullable=False),
-    Column("reason", Text, nullable=False),
-    Column("created_at", Float, nullable=False),
-    Column("updated_at", Float, nullable=False),
-    CheckConstraint(
-        "state IN ('prepared', 'publishing', 'delivered', 'parked', 'adopted', 'cancelled')",
-        name="ck_development_delivery_state",
-    ),
-)
-Index(
-    "idx_development_delivery_project",
-    development_deliveries.c.project_id,
-    development_deliveries.c.state,
-)
-
-
 # A terminal child of a terminal parent delivered outside the train (by the
 # development publisher or before trains existed) can never get a train
 # receipt: its parent is never collected.  ``aq integration
@@ -4571,6 +4543,8 @@ integration_legacy_deliveries = Table(
     # operator acceptance or a retired (``abandoned``) child.
     Column("delivered_sha", Text, nullable=True),
     Column("proof", Text, nullable=False),
+    # Historical: the retired ``development_deliveries`` row a proof located its
+    # source through.  New rows record null; git is the only delivery answer.
     Column("development_delivery_id", Text, nullable=True),
     Column("operator_id", Text, nullable=False),
     Column("reason", Text, nullable=False),

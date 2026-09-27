@@ -23,23 +23,17 @@ from __future__ import annotations
 import logging
 import time
 
-from sqlalchemy import and_, case, cast, false, func, insert, literal, not_, or_, select, update
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import and_, case, false, insert, literal, not_, or_, select, update
 
 from src.database.tables import (
-    development_deliveries,
     events,
     gates,
-    projects,
-    repos,
-    task_completion_records,
     task_dependencies,
     task_gates,
     task_labels,
     task_metadata,
     tasks,
 )
-from src.integration.publishable_artifact import development_empty_source, has_publishable_artifact
 from src.models import BLOCKING_DEP_TYPES, HOLD_LABEL_PREFIX, DepType, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -84,64 +78,6 @@ _WITHHOLDING_PARENT_STATUSES = (
 # every edge as ``status != COMPLETED``.
 
 
-def development_delivery_receipt(task, project, repo):
-    """Whether the development publisher delivered *task*'s latest completion.
-
-    True when a ``delivered`` or ``adopted`` development delivery of *project*
-    to *repo*'s default branch lists *task* with the source of its latest
-    completion (or binds that exact close through ``completion_sources``).
-    Transitional helper for consumers awaiting migration. Admission and the
-    graph projection never use receipt state as authority.  *task*,
-    *project* and *repo* are tables or aliases correlated by the caller.
-    """
-    delivery = development_deliveries.alias()
-    completion = task_completion_records.alias()
-    source_sha = (
-        select(cast(completion.c.commits, JSONB).op("->>")(-1))
-        .where(completion.c.task_id == task.c.id)
-        .order_by(completion.c.completed_at.desc(), completion.c.id.desc())
-        .limit(1)
-        .correlate(task)
-        .scalar_subquery()
-    )
-    completion_id = (
-        select(completion.c.id)
-        .where(completion.c.task_id == task.c.id)
-        .order_by(completion.c.completed_at.desc(), completion.c.id.desc())
-        .limit(1)
-        .correlate(task)
-        .scalar_subquery()
-    )
-    delivered = (
-        select(literal(1))
-        .where(
-            delivery.c.project_id == project.c.id,
-            delivery.c.repository_id == repo.c.id,
-            delivery.c.target_ref == literal("refs/heads/") + repo.c.default_branch,
-            delivery.c.state.in_(("delivered", "adopted")),
-            delivery.c.created_at >= task.c.created_at,
-            or_(
-                cast(delivery.c.manifest, JSONB).contains(
-                    func.jsonb_build_array(func.jsonb_strip_nulls(func.jsonb_build_object(
-                        "task_id", task.c.id, "source_sha", source_sha,
-                    )))
-                ),
-                # The publisher resolves abbreviated SHAs with Git, rejecting
-                # ambiguous names, and binds the result to this exact close.
-                cast(delivery.c.evidence, JSONB)["completion_sources"].contains(
-                    func.jsonb_build_array(func.jsonb_build_object(
-                        "task_id", task.c.id, "completion_id", completion_id,
-                        "reported_sha", source_sha,
-                    ))
-                ),
-            ),
-        )
-        .correlate(task, project, repo)
-        .exists()
-    )
-    return delivered
-
-
 #: ``task_metadata`` key an obsolete close writes (``aq task close --obsolete``):
 #: the task's work was superseded, so there is nothing of it to publish.  JSON:
 #: ``reason``, ``closed_by``, ``closed_at``, ``previous_status`` and the
@@ -160,54 +96,7 @@ def obsolete_marker(task):
     )
 
 
-def _development_delivery_pending(task, *, include_foreign_repos=False):
-    """Completed code is usable only after publication to the configured default ref.
-
-    Candidate preservation and parent aggregates are not worker checkout bases.
-    A delivery of an older revision cannot release a new completion revision.
-    Branchless tasks and observed empty revisions have no artifact to publish,
-    and an obsolete one (:data:`OBSOLETE_META_KEY`) has none worth publishing.
-
-    *include_foreign_repos* also counts a task whose ``repo_id`` names a
-    repository that is not one of its project's own.  The publisher never
-    collects such a task, so readiness leaves it out, but its work has not
-    reached the default branch either: the archive sweep asks with this set,
-    because ``fleet-meadow`` carried another project's repository id and was
-    archived undelivered.
-    """
-    project = projects.alias()
-    repo = repos.alias()
-    repo_scope = or_(task.c.repo_id.is_(None), task.c.repo_id == repo.c.id)
-    if include_foreign_repos:
-        own = repos.alias()
-        repo_scope = or_(
-            repo_scope,
-            ~select(literal(1))
-            .where(own.c.id == task.c.repo_id, own.c.project_id == task.c.project_id)
-            .correlate(task)
-            .exists(),
-        )
-    delivered = development_delivery_receipt(task, project, repo)
-    return (
-        select(literal(1))
-        .select_from(project.join(repo, repo.c.id == project.c.integration_repository_id))
-        .where(
-            project.c.id == task.c.project_id,
-            project.c.hierarchical_integration_mode == "development",
-            has_publishable_artifact(task.c.branch_name),
-            ~development_empty_source(task, repo.c.id),
-            repo_scope,
-            ~delivered,
-            ~obsolete_marker(task),
-        )
-        .correlate(task)
-        .exists()
-    )
-
-
-def unmet_dependency_predicate(
-    dependency, depends_on, *, dep_types=None, include_development_delivery=False,
-):
+def unmet_dependency_predicate(dependency, depends_on, *, dep_types=None):
     """Return whether one typed dependency edge is currently unsatisfied.
 
     ``dependency`` is a ``task_dependencies`` table or alias and
@@ -223,11 +112,7 @@ def unmet_dependency_predicate(
         clauses.append(
             and_(
                 dependency.c.dep_type == DepType.BLOCKS.value,
-                or_(
-                    depends_on.c.status != TaskStatus.COMPLETED.value,
-                    _development_delivery_pending(depends_on)
-                    if include_development_delivery else false(),
-                ),
+                depends_on.c.status != TaskStatus.COMPLETED.value,
             )
         )
 
@@ -295,8 +180,8 @@ def unmet_dependency_predicate(
     return or_(*clauses) if clauses else false()
 
 
-def _blocks_unsat(*, include_development_delivery=False):
-    """``blocks`` — graph completion; optional legacy delivery for unmigrated readers."""
+def _blocks_unsat():
+    """``blocks`` — satisfied once the dependency is COMPLETED (graph completion only)."""
     bd = task_dependencies.alias()
     bt = tasks.alias()
     return (
@@ -305,10 +190,7 @@ def _blocks_unsat(*, include_development_delivery=False):
         .where(
             and_(
                 bd.c.task_id == tasks.c.id,
-                unmet_dependency_predicate(
-                    bd, bt, dep_types={DepType.BLOCKS.value},
-                    include_development_delivery=include_development_delivery,
-                ),
+                unmet_dependency_predicate(bd, bt, dep_types={DepType.BLOCKS.value}),
             )
         )
         .exists()
@@ -388,7 +270,7 @@ def _gate_open():
     )
 
 
-def blocked_predicate(*, include_development_delivery=False):
+def blocked_predicate():
     """Return the SQL boolean expression for "this ``tasks`` row is blocked".
 
     Correlates against the ``tasks`` table itself, so it can be dropped into
@@ -397,11 +279,10 @@ def blocked_predicate(*, include_development_delivery=False):
 
     One clause per blocking rule, in the order of design §3.1.
     The projection is graph/gate-only. Development delivery is observed
-    asynchronously by integration.admission outside SQL transactions. The
-    explicit compatibility option is only for consumers awaiting migration.
+    asynchronously by integration.admission outside SQL transactions.
     """
     return or_(
-        _blocks_unsat(include_development_delivery=include_development_delivery),
+        _blocks_unsat(),
         _parent_child_unsat(),
         _waits_for_unsat(),
         _conditional_unsat(),

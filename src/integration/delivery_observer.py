@@ -33,12 +33,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
-from sqlalchemy import cast, func, literal, or_, select
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import literal, or_, select
 
 from src.database.tables import (
     archived_tasks,
-    development_deliveries,
     projects,
     repos,
     task_completion_records,
@@ -66,32 +64,23 @@ def development_delivery_scope(task):
     binding outside the publisher and needs no proof.
 
     A branchless task needs proof only when it recorded an artifact: a
-    completion that listed commits, or (TEMPORARY LEGACY BRIDGE, retired with
-    ``development_deliveries``) a historical manifest that names it.  Anything
-    else is an organizational container with no artifact of its own, exactly
-    as :class:`~src.integration.delivery_truth.DeliverySnapshot` rules.
+    completion that listed commits, or a current generation the
+    ``development_deliveries`` retirement marked as naming a historical source
+    it never recorded (:func:`~src.integration.publishable_artifact.legacy_artifact`,
+    unknown until migrated).  Anything else is an organizational container with
+    no artifact of its own, exactly as
+    :class:`~src.integration.delivery_truth.DeliverySnapshot` rules.
     """
     from src.database.queries.blocked_state import obsolete_marker
+    from src.integration.publishable_artifact import legacy_artifact
 
     project = projects.alias()
     repo = repos.alias()
     own = repos.alias()
     completion = task_completion_records.alias()
-    journal = development_deliveries.alias()
     recorded = (
         select(literal(1))
         .where(completion.c.task_id == task.c.id, completion.c.commits != "[]")
-        .correlate(task)
-        .exists()
-    )
-    listed = (
-        select(literal(1))
-        .where(
-            journal.c.project_id == task.c.project_id,
-            cast(journal.c.manifest, JSONB).contains(
-                func.jsonb_build_array(func.jsonb_build_object("task_id", task.c.id))
-            ),
-        )
         .correlate(task)
         .exists()
     )
@@ -109,7 +98,7 @@ def development_delivery_scope(task):
                 .correlate(task)
                 .exists(),
             ),
-            or_(task.c.branch_name.is_not(None), recorded, listed),
+            or_(task.c.branch_name.is_not(None), recorded, legacy_artifact(task)),
             ~obsolete_marker(task),
         )
         .correlate(task)
@@ -363,38 +352,10 @@ class DeliveryObserver:
                 f"observer_error: {type(exc).__name__}",
             )
 
-    async def _legacy_rows(self, target: DeliveryTarget) -> list[dict]:
-        """TEMPORARY LEGACY BRIDGE: historical manifests as source locators only.
-
-        The publisher attaches the same rows, so a reader and the publisher
-        locate the same source.  Row state never proves delivery; retire
-        removes this reader together with the table.
-        """
-        async with self.db._engine.connect() as conn:
-            rows = await conn.execute(
-                select(development_deliveries)
-                .where(
-                    development_deliveries.c.project_id == target.project_id,
-                    development_deliveries.c.repository_id == target.repository_id,
-                )
-                .order_by(development_deliveries.c.created_at, development_deliveries.c.id)
-            )
-            return [dict(row) for row in rows.mappings()]
-
     async def _evaluate(self, target: DeliveryTarget, task_ids: set[str], max_age: float = 0.0):
-        snapshot = await self._snapshot(target, max_age)
-        history = await self._legacy_rows(target)
-        snapshot = snapshot.with_legacy_rows(history)
-        # A resolved repair row proves its sources only through the repair's
-        # own current identity, so evaluate that identity in the same batch.
-        repairs = {
-            proof["task_id"] for row in history
-            if (proof := (row.get("evidence") or {}).get("resolved_by_delivered_repair"))
-            and proof.get("task_id")
-            and any(member.get("task_id") in task_ids for member in row.get("manifest") or [])
-        }
+        snapshot = (await self._snapshot(target, max_age)).for_request()
         requests = await load_delivery_requests(
-            self.db, task_ids | repairs, repository_id=target.repository_id,
+            self.db, task_ids, repository_id=target.repository_id,
             target_ref=target.target_ref,
         )
         try:

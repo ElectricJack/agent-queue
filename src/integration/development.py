@@ -54,7 +54,7 @@ from src.integration.development_stalls import (
 )
 from src.integration.development_validation import run_check as run_validation_check
 from src.integration.delivery_truth import (
-    DeliveryState, delivery_snapshot, load_delivery_requests,
+    MISSING_PROVENANCE, DeliveryState, delivery_snapshot, load_delivery_requests,
 )
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.publishable_artifact import (
@@ -111,17 +111,58 @@ def armed_for_branch_cleanup(evidence):
     return {**evidence, BRANCH_CLEANUP_KEY: {"state": "pending", "attempts": 0}}
 
 
-async def operation_rows_on(conn, project_ids):
-    """Latest event revisions of real publisher actions, independent of git truth."""
+#: Operation states whose action is still in flight and owns its manifest.
+#: ``finished`` and ``cancelled`` actions are over; neither answers delivery.
+OPEN_OPERATION_STATES = ("prepared", "publishing", "parked")
+
+
+async def operation_rows_on(conn, project_ids=None, *, states=None):
+    """Latest event revisions of real publisher actions, independent of git truth.
+
+    ``None`` *project_ids* reads every project (fleet-wide diagnostics). *states*
+    narrows to operations whose latest revision is in one of them.
+    """
     from sqlalchemy import cast
     from sqlalchemy.dialects.postgresql import JSONB
 
     identity = cast(events.c.payload, JSONB)["id"].as_string()
-    payloads = (await conn.execute(select(events.c.payload).where(
-        events.c.event_type == "development.operation", events.c.project_id.in_(project_ids),
-    ).distinct(identity).order_by(identity, events.c.id.desc()))).scalars()
-    return sorted((json.loads(payload) for payload in payloads),
+    query = select(events.c.payload).where(events.c.event_type == "development.operation")
+    if project_ids is not None:
+        query = query.where(events.c.project_id.in_(project_ids))
+    payloads = (await conn.execute(
+        query.distinct(identity).order_by(identity, events.c.id.desc())
+    )).scalars()
+    rows = (json.loads(payload) for payload in payloads)
+    return sorted((row for row in rows if states is None or row["state"] in states),
                   key=lambda row: (row["created_at"], row["id"]))
+
+
+async def revise_operation_on(conn, identity, revise):
+    """Append a revision of operation *identity* on the caller's transaction.
+
+    Serializes revisions of one operation, including lock-free adoption and
+    cleanup, so evidence never overwrites a concurrent revision. *revise* maps
+    the latest revision to the values to change, or ``None`` to leave it as is.
+    Returns that latest revision, or ``None`` for an unknown operation.
+    """
+    from sqlalchemy import cast
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:id, 0))"),
+                       {"id": "development-operation:" + identity})
+    payload = await conn.scalar(select(events.c.payload).where(
+        events.c.event_type == "development.operation",
+        cast(events.c.payload, JSONB)["id"].as_string() == identity,
+    ).order_by(events.c.id.desc()).limit(1))
+    if payload is None:
+        return None
+    current = json.loads(payload)
+    values = revise(current)
+    if values is not None:
+        await conn.execute(DevelopmentIntegration._operation_insert(
+            **{**current, **values, "updated_at": time.time()}
+        ))
+    return current
 
 
 def _manifest_members(manifest):
@@ -668,7 +709,7 @@ class DevelopmentIntegration:
         return observed.oid
 
     @asynccontextmanager
-    async def read_snapshot(self, repo, target_ref, *, legacy_rows=()):
+    async def read_snapshot(self, repo, target_ref):
         """Yield a freshly fetched snapshot taken in a private repository.
 
         Reads that only confirm ancestry must neither wait for a sweep holding
@@ -703,7 +744,7 @@ class DevelopmentIntegration:
             await self.run_git(root, "remote", "add", "origin", repo.url)
             yield await delivery_snapshot(
                 self.git, root, project_id=repo.project_id, repository_id=repo.id,
-                repository_url=repo.url, target_ref=target_ref, legacy_rows=legacy_rows,
+                repository_url=repo.url, target_ref=target_ref,
             )
         finally:
             await asyncio.to_thread(shutil.rmtree, root, True)
@@ -729,23 +770,9 @@ class DevelopmentIntegration:
             await conn.execute(self._operation_insert(**row))
 
     async def change(self, identity, **values):
-        from sqlalchemy import cast
-        from sqlalchemy.dialects.postgresql import JSONB
-
         async with self.db._engine.begin() as conn:
-            # Serialize patches of this operation, including lock-free adoption
-            # and cleanup, so evidence never overwrites a concurrent revision.
-            await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:id, 0))"),
-                               {"id": "development-operation:" + identity})
-            payload = await conn.scalar(select(events.c.payload).where(
-                events.c.event_type == "development.operation",
-                cast(events.c.payload, JSONB)["id"].as_string() == identity,
-            ).order_by(events.c.id.desc()).limit(1))
-            if payload is None:
+            if await revise_operation_on(conn, identity, lambda _current: values) is None:
                 raise ValueError(f"unknown development operation {identity}")
-            await conn.execute(self._operation_insert(
-                **{**json.loads(payload), **values, "updated_at": time.time()}
-            ))
 
     async def rows(self, project_id):
         """Latest operation revisions; no delivery receipts are read."""
@@ -1545,7 +1572,7 @@ class DevelopmentIntegration:
                 eligible_ids = set((await conn.execute(
                     select(tasks.c.id).where(
                         tasks.c.id.in_(requests),
-                        ~blocked_predicate(include_development_delivery=False),
+                        ~blocked_predicate(),
                     )
                 )).scalars())
             obsolete_ids = set(await self.db.obsolete_task_ids(requests))
@@ -1731,13 +1758,14 @@ class DevelopmentIntegration:
                     for dependency_id in held:
                         dependency_reason = skipped.get(dependency_id, (None, None))[0]
                         dependency_kind = (
-                            "dependency_cycle" if dependency_reason == "dependency_cycle" else
-                            "missing_ref" if dependency_reason == "missing_ref" else
-                            "undelivered_dependency"
+                            dependency_reason if dependency_reason in {
+                                "dependency_cycle", "missing_ref", "missing_provenance",
+                            } else "undelivered_dependency"
                         )
                         detail = {
                             "dependency_cycle": "dependency cycle with",
                             "missing_ref": "missing ref for dependency",
+                            "missing_provenance": "missing git provenance for dependency",
                             "undelivered_dependency": "undelivered dependency",
                         }[dependency_kind]
                         logger.warning(
@@ -1751,9 +1779,9 @@ class DevelopmentIntegration:
                         )
                     first_reason = skipped.get(held[0], (None, None))[0]
                     skipped[task["id"]] = (
-                        "dependency_cycle" if first_reason == "dependency_cycle" else
-                        "missing_ref" if first_reason == "missing_ref" else
-                        "undelivered_dependency", held[0],
+                        first_reason if first_reason in {
+                            "dependency_cycle", "missing_ref", "missing_provenance",
+                        } else "undelivered_dependency", held[0],
                     )
                     continue
                 evidence = own_truth[task["id"]]
@@ -1764,7 +1792,9 @@ class DevelopmentIntegration:
                 if not source:
                     skipped[task["id"]] = (
                         "source_parked" if task["id"] in parked_ids else (
-                            "git_error" if evidence.reason == "git_error" else "missing_ref"
+                            "git_error" if evidence.reason == "git_error" else
+                            "missing_provenance" if evidence.reason == MISSING_PROVENANCE else
+                            "missing_ref"
                         ),
                         task["id"],
                     )
