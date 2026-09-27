@@ -549,6 +549,144 @@ Publisher operation events are deliberately retained: they are history, not
 runtime state. See [switching integration modes](integration-migration.md) for
 what does and does not carry over.
 
+## Operator acceptance: reading delivery truth without changing anything
+
+Everything below is read-only. None of these commands claims, settles,
+repairs, rebinds or restarts anything; they only inspect what git answers.
+The `aq` commands run against the live daemon on its real database — which
+makes them read-only, unlike the `integration adopt` / `develop` / `resume`
+controls elsewhere in this guide; the `git` commands run inside a clone of the
+project's target repository, limited to read-only subcommands. **Never run
+`alembic upgrade`, `aq start` or any migration against the operator database
+from a worker slot** — a worker's `AQ_DB_SCOPE=worker` sentinel refuses local
+upgrades, and that refusal is correct.
+
+Keep the two facts separate in every answer:
+
+* **Source checkpoint** — the exact commit the current completion generation
+  finished at, on the task's source branch. A *closed* task and a *pushed*
+  source branch both prove only this. Checkpoint existence is necessary,
+  never sufficient.
+* **Target containment** — the target ref (usually `refs/heads/main`)
+  actually contains that exact source commit *for the current completion
+  generation*. Only `merge-base --is-ancestor` on the target repository
+  proves it. A stale close, a deleted source ref, or a journal row pointing
+  the wrong way changes nothing here.
+
+### Read-only command checklist
+
+For a completed task `<task>` in project `<project>` with source branch
+`<branch>`:
+
+```bash
+# 1. What the scheduler and settlement wait for, as git answers it now.
+#    Read-only; lists targets, pending work and unknown work with reasons.
+aq integration status <project>
+
+# 2. Why a specific task is (or is not) running right now.
+aq task explain --task-id <task>
+
+# 3. Project-wide publisher health: conflicts still parked without repair,
+#    and any stalled publisher (WARN below the stall bound, ERROR at it).
+aq doctor --check integration.development_conflicts_unrepaired
+aq doctor --check integration.development_publisher_stalled
+
+# 4. Provenance inventory: how many completed generations still lack an
+#    exact git source label. Default is a dry-run — no write.
+aq integration migrate-provenance <project>
+```
+
+In the target repository, for the exact source checkpoint `<sha>`:
+
+```bash
+git log -1 <branch>                                    # source checkpoint, if the ref still exists
+git merge-base --is-ancestor <sha> refs/heads/main && echo contained || echo not-contained
+git rev-parse refs/heads/main                          # current target head, to compare against the status targets
+```
+
+Expected outcomes, by shape:
+
+* **Contained (delivered).** `integration status <project>` lists the task
+  under neither `pending` nor `unknown`; `merge-base --is-ancestor` on the
+  target succeeds; `task explain` shows no `development_dependency_delivery`
+  reason. A deleted source branch changes none of this — ancestry is the
+  proof, not the ref.
+* **Depth-two / depth-three completed source conflicts with advanced main
+  (`agile-torrent.9`, `wise-ember.12` shapes).** The publisher parks the
+  conflicting source, names the source(s), the target and the paths in its
+  conflict evidence, and files exactly one bounded repair child — it does
+  not invent a conflicting sibling pair when the conflict is against
+  `main`. The clean sibling still publishes. Until the repair delivers,
+  the source is not released: `task explain` on a dependent shows
+  `development_dependency_delivery`. `doctor --check
+  integration.development_conflicts_unrepaired` stays WARN/ERROR listing
+  the parked source(s); after the repair delivers, the check goes OK and
+  the stale skip diagnostic clears.
+* **Adopted repair diagnostics.** An adopted repair cycle drops out of
+  candidate evaluation entirely — no skip record, no further repair, no
+  supervisor message. `doctor --check
+  integration.development_publisher_stalled` reports it only if a *fresh*
+  identical failure keeps recurring at the configured threshold (default
+  five consecutive ticks; positive), at which point exactly one supervisor
+  message exists and repeated ticks or a daemon restart do not duplicate it.
+  New source, target or evidence — or an explicit recovery — starts a
+  fresh attempt.
+* **Missing refs and archived tasks.** A missing source ref, an archived
+  task or a source on the wrong repository is *unknown*, never *empty* and
+  never *delivered*: the dependent stays withheld
+  (`missing_git_provenance`), the container stays open, and no repair or
+  cleanup fires. `integration status` shows the task under `unknown` with
+  its reason.
+* **Completed epics (branchless containers).** An epic has no artifact of
+  its own; it settles once *every* child that recorded work has its current
+  generation contained — through the existing settlement transitions, once
+  per container, with an audit event. A live session, an explicit non-stale
+  blocker or train ownership keeps the guard in place even when git
+  otherwise agrees. `claims.container_held` names whatever still holds it:
+  `aq doctor --check claims.container_held`.
+* **Reopened or multi-commit tasks.** An older generation's close — or a
+  cherry-picked copy of its commit — cannot satisfy the current
+  completion generation. `task explain` keeps the dependent withheld until
+  the *current* generation's exact source proves containment.
+* **Misleading legacy rows.** Journal rows are history. Even a row that
+  says `delivered` for the wrong source cannot release a dependent:
+  readiness, pool demand, claim and explanation all agree with the fresh
+  git answer, and an external ancestry-preserving merge releases work on
+  the next snapshot without any adoption.
+* **Zero fallback inventory.** After the provenance migration applies to a
+  fully migrated fixture, `aq integration migrate-provenance <project>`
+  reports `fallback_count == 0` (`zero_fallback: true`). An unlabelled
+  generation is still unknown and is named with its task id rather than
+  guessed; that is the bridge working, not a failure.
+
+### Recorded acceptance evidence (2026-09-27, commit `de5e2a7ee`)
+
+The plan's scenario matrix is covered by the deterministic regressions
+named in [Source and tests](#source-and-tests), run in a disposable
+environment — none of the live tasks above were touched, and the running
+daemon was not restarted or migrated:
+
+* Focused: `aq test tests/test_development_integration.py tests/test_lifecycle_cleanup.py`
+  — 259/259 passed (eleven-way stall; depth-two/depth-three conflict
+  dispatch; adopted repair cycles; missing refs and archived tasks;
+  reopened/partial provenance; fifth-tick escalation with one supervisor
+  message; concurrent adopt/publish under the publisher lock;
+  receipt-free admission; stale container settlement; the
+  `development_deliveries` SQL ratchet).
+* Combined area: `aq test tests/test_development_integration.py tests/test_development_validation.py
+  tests/test_doctor_integration_checks.py tests/test_integration_controls.py
+  tests/test_blocked_state.py tests/test_claim_commands.py tests/test_lifecycle_cleanup.py
+  tests/test_hierarchy_settlement.py` — 607/607 passed, zero failures, no
+  baseline-failure comparison needed.
+* Disposable swarm smoke (side-by-side kit, `AQ_E2E_HOME`/`AQ_E2E_PORT`/
+  `E2E_DB_NAME` overridden; the default kit's home was already owned by
+  another checkout): `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh`
+  — 19/19 scenarios passed, including S15 development delivery with an
+  unlabelled generation withheld until an exact one exists.
+
+No new test module or unowned source path was introduced, so no selection
+catalogue or rule regeneration was required.
+
 ## Related pages
 
 * [Integration](../concepts/integration.md) — the mechanism and its guarantees.

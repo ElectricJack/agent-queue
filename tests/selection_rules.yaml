@@ -228,6 +228,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/commands/message_commands.py"], areas: ["messages"] }
   - { paths: ["src/commands/notes_commands.py"], areas: ["plugins", "vault"] }
   - { paths: ["src/commands/ops_commands.py"], areas: ["provider-usage", "metrics"] }
+  - { paths: ["src/commands/pool_admin.py"], areas: ["worker-pools", "profiles"] }
   - { paths: ["src/commands/phase_commands.py"], areas: ["task-hierarchy"] }
   - { paths: ["src/commands/playbook_commands.py", "src/commands/playbook_v2_commands.py"], areas: ["playbook-authoring", "playbook-engine"] }
   - { paths: ["src/commands/plugin_commands.py"], areas: ["plugins"] }
