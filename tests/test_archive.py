@@ -1941,7 +1941,9 @@ class TestDevelopmentIntegrationArchiveGuard:
 # ---------------------------------------------------------------------------
 
 
-async def _seed_development_project(db: Database, pid: str = "p-dev") -> None:
+async def _seed_development_project(
+    db: Database, pid: str = "p-dev", url: str = "https://example.test/dev.git"
+) -> None:
     """A development-mode project delivering to ``dev-repo``, plus a second project.
 
     ``p-web`` owns ``web-repo``: the repository ``fleet-meadow`` named even
@@ -1956,7 +1958,7 @@ async def _seed_development_project(db: Database, pid: str = "p-dev") -> None:
     await db.create_repo(
         RepoConfig(
             id="dev-repo", project_id=pid, source_type=RepoSourceType.CLONE,
-            url="https://example.test/dev.git",
+            url=url,
         )
     )
     await db.create_repo(
@@ -2014,6 +2016,56 @@ async def _journal(
         )
 
 
+def _git(path, *args: str) -> str:
+    import subprocess
+
+    return subprocess.check_output(
+        ["git", "-C", str(path), *args], text=True, stderr=subprocess.PIPE
+    ).strip()
+
+
+class _DevOrigin:
+    """A disposable ``origin`` the development project delivers to."""
+
+    def __init__(self, tmp_path):
+        self.url = str(tmp_path / "origin.git")
+        _git(tmp_path, "init", "--bare", "--initial-branch=main", self.url)
+        self.clone = tmp_path / "clone"
+        _git(tmp_path, "clone", self.url, str(self.clone))
+        _git(self.clone, "config", "user.name", "Tester")
+        _git(self.clone, "config", "user.email", "tester@example.test")
+        (self.clone / "base.txt").write_text("base\n")
+        _git(self.clone, "add", ".")
+        _git(self.clone, "commit", "-q", "-m", "base")
+        _git(self.clone, "push", "-q", "origin", "main")
+
+    def work(self, tid: str) -> str:
+        _git(self.clone, "checkout", "-q", "-B", f"aq/{tid}", "origin/main")
+        (self.clone / f"{tid}.txt").write_text(tid + "\n")
+        _git(self.clone, "add", ".")
+        _git(self.clone, "commit", "-q", "-m", tid)
+        _git(self.clone, "push", "-q", "origin", f"aq/{tid}")
+        return _git(self.clone, "rev-parse", "HEAD")
+
+    def land(self, tid: str) -> None:
+        _git(self.clone, "fetch", "-q", "origin")
+        _git(self.clone, "checkout", "-q", "-B", "main", "origin/main")
+        _git(self.clone, "merge", "-q", "--no-ff", "-m", f"deliver {tid}", f"origin/aq/{tid}")
+        _git(self.clone, "push", "-q", "origin", "main")
+
+
+@pytest.fixture
+def dev_origin(db, tmp_path):
+    """A real origin plus the git observer the daemon registers on its database."""
+    from src.git.manager import GitManager
+    from src.integration.delivery_observer import DeliveryObserver
+
+    db.set_delivery_observer(
+        DeliveryObserver(db, git=GitManager(), data_dir=tmp_path / "data")
+    )
+    return _DevOrigin(tmp_path)
+
+
 class TestUndeliveredDevelopmentWorkIsNotSwept:
     """quick-ridge: an archive sweep never takes COMPLETED work that has not landed."""
 
@@ -2063,15 +2115,33 @@ class TestUndeliveredDevelopmentWorkIsNotSwept:
             ("fleet-meadow", "integration_undelivered")
         ]
 
-    async def test_fleet_meadow_is_swept_once_its_revision_is_on_main(self, db):
-        await self._seed_fleet_meadow(db)
+    async def test_fleet_meadow_is_swept_once_rebound_and_its_revision_is_on_main(
+        self, db, dev_origin
+    ):
+        from sqlalchemy import update
+
+        from src.database.tables import tasks as tasks_table
+
+        await _seed_development_project(db, url=dev_origin.url)
+        sha = dev_origin.work("fleet-meadow")
+        await _completed_with_close(
+            db, "fleet-meadow", repo_id="web-repo", commit=sha,
+        )
+        await _backdate(db, "fleet-meadow")
         assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
 
-        # An operator adoption (``aq integration adopt``) names the revision.
-        await _journal(
-            db, "adopt-fleet", state="adopted", target_ref="refs/heads/main",
-            members=[("fleet-meadow", self.FLEET)],
-        )
+        # Its revision on main is not enough: git cannot prove work for a
+        # task that names another project's repository.
+        dev_origin.land("fleet-meadow")
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+
+        # The publisher's rebind heals the repository id; git then proves it.
+        async with db._engine.begin() as conn:
+            await conn.execute(
+                update(tasks_table).where(tasks_table.c.id == "fleet-meadow")
+                .values(repo_id="dev-repo")
+            )
+        await _backdate(db, "fleet-meadow")
 
         assert await db.archive_old_terminal_tasks(
             ["COMPLETED"], older_than_seconds=3600
@@ -2128,10 +2198,33 @@ class TestUndeliveredDevelopmentWorkIsNotSwept:
             ("nimble-nexus", "integration_undelivered")
         ]
 
-    async def test_nimble_nexus_is_swept_once_both_revisions_are_on_main(self, db):
-        repair = await self._seed_nimble_nexus(db)
-        await _set_delivery_state(db, "nexus-main", "adopted")
-        await _set_delivery_state(db, "repair-main", "delivered")
+    async def test_nimble_nexus_is_swept_once_both_revisions_are_on_main_in_git(
+        self, db, dev_origin
+    ):
+        await _seed_development_project(db, url=dev_origin.url)
+        repair = "development-repair-2bfd84c0ad9f434c18e3"
+        await _completed_with_close(
+            db, "nimble-nexus", repo_id="dev-repo", commit=dev_origin.work("nimble-nexus"),
+        )
+        await _completed_with_close(
+            db, repair, repo_id="dev-repo", commit=dev_origin.work(repair),
+            parent_task_id="nimble-nexus",
+        )
+        # Rows that claim delivery prove nothing: the work is not on main.
+        await _journal(
+            db, "nexus-main", state="adopted", target_ref="refs/heads/main",
+            members=[("nimble-nexus", "0" * 40)],
+        )
+        await _backdate(db, "nimble-nexus", repair)
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+        blocked = await db.list_archive_blocked_roots(["COMPLETED"], older_than_seconds=3600)
+        assert [(b["task_id"], b["reason"]) for b in blocked.roots] == [
+            ("nimble-nexus", "integration_undelivered")
+        ]
+
+        dev_origin.land("nimble-nexus")
+        assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
+        dev_origin.land(repair)
 
         assert await db.archive_old_terminal_tasks(
             ["COMPLETED"], older_than_seconds=3600

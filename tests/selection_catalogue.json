@@ -211,6 +211,7 @@
       "modules": [
         "tests/test_branch_discard.py",
         "tests/test_close_unpushed_work.py",
+        "tests/test_delivery_consumers.py",
         "tests/test_delivery_integration.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
@@ -1266,7 +1267,7 @@
       ]
     }
   },
-  "digest": "sha256:cd1da10ddcb6e9eb3887d1aec63bb657238db2d0fe1e5e7b3e8d5af8dd220aec",
+  "digest": "sha256:97316bfcff8cd949882e285f45c4a8195709a4d62d9a774b4f9ed1fb3a637c2e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2450,6 +2451,8 @@
         "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.models",
         "src.orchestrator"
       ],
@@ -4415,6 +4418,28 @@
       ],
       "summary": "Tests for the deterministic deliverable evaluator (``src/deliverables.py``)."
     },
+    "tests/test_delivery_consumers.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.git.manager",
+        "src.integration.controls",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
+        "src.integration.development",
+        "src.integration.status",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "Every delivery consumer asks git the same question and gets the same answer."
+    },
     "tests/test_delivery_integration.py": {
       "areas": [
         "development-delivery"
@@ -5712,6 +5737,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"
@@ -6816,6 +6842,7 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.controls",
+        "src.integration.delivery_observer",
         "src.integration.development",
         "src.integration.legacy_deliveries",
         "src.integration.legacy_repositories",
@@ -6837,6 +6864,8 @@
       "default_arm": true,
       "imports": [
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.integration.legacy_repositories",
         "src.integration.status",
         "src.models"
@@ -7593,6 +7622,8 @@
         "src.database.tables",
         "src.doctor.models",
         "src.doctor.task_checks",
+        "src.git.manager",
+        "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.obsolete_close",
         "src.integration.owner_recovery",
@@ -13488,8 +13519,10 @@
         "src.database.queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.hierarchy",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.vault"
       ],
       "markers": [
         "parametrize",

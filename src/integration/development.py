@@ -32,6 +32,7 @@ from src.integration.delivery_branches import (
     ASSEMBLY_PREFIX,
     TASK_BRANCH_PREFIX,
     branch_of,
+    completed_branch_tasks,
     delete_branches,
     expired_task_branches,
     find_stale_branches,
@@ -236,6 +237,32 @@ class DevelopmentIntegration:
 
     def exclusion(self, repository_id):
         return publisher_exclusion(self.db, repository_id)
+
+    @property
+    def delivery_observer(self):
+        """Git delivery truth for this service's readers, in its own isolated store."""
+        from src.integration.delivery_observer import DeliveryObserver
+
+        observer = getattr(self, "_delivery_observer", None)
+        if observer is None or observer.git is not self.git:
+            observer = DeliveryObserver(self.db, git=self.git, data_dir=self.data_dir.parent)
+            self._delivery_observer = observer
+        return observer
+
+    async def branch_holds(self, branches):
+        """:func:`live_branch_references` with git proof for the tasks owning *branches*.
+
+        Only the completed development tasks whose branch may be deleted are
+        observed.  A view whose target moved meanwhile proves nothing, so their
+        branches stay held.
+        """
+        async with self.db._engine.connect() as conn:
+            owners = await completed_branch_tasks(conn, branches)
+        delivery = await self.delivery_observer.observe(owners) if owners else None
+        if delivery is not None and not await delivery.fresh():
+            delivery = None
+        async with self.db._engine.connect() as conn:
+            return await live_branch_references(conn, delivery=delivery)
 
     async def run_git(self, store, *args):
         result = await self.git.arun_git_result(list(args), cwd=str(store))
@@ -2034,8 +2061,7 @@ class DevelopmentIntegration:
             try:
                 store = await self.store(repo)
                 heads = await remote_heads(self.run_git, store)
-                async with self.db._engine.connect() as conn:
-                    holds = await live_branch_references(conn)
+                holds = await self.branch_holds(heads)
                 plans = {
                     row["id"]: await self._plan_branch_cleanup(
                         repo, store, row, history, heads, holds
@@ -2279,8 +2305,8 @@ class DevelopmentIntegration:
             raise ValueError("project repository needs a remote URL")
         async with self.exclusion(repo.id):
             store = await self.store(repo)
+            holds = await self.branch_holds(await remote_heads(self.run_git, store))
             async with self.db._engine.connect() as conn:
-                holds = await live_branch_references(conn)
                 released = await released_integration_refs(conn)
                 expired = await expired_task_branches(conn, now=now)
             report = await find_stale_branches(

@@ -709,9 +709,10 @@ async def _find_stranded_dependents(
 
     A delivered manifest normally makes its source durable enough to survive
     branch cleanup. Older publisher builds consulted an empty completion first,
-    however, and silently marked that blocker unavailable. The cleanup receipt
-    is the durable proof that this is that specific failure mode; a merely
-    completed task with no commits is not enough to warrant an alarm.
+    however, and silently marked that blocker unavailable. The cleanup record
+    is the durable evidence that this is that specific failure mode; a merely
+    completed task with no commits is not enough to warrant an alarm.  Whether
+    the dependent itself is already delivered is git's answer.
     """
     from sqlalchemy import select
 
@@ -819,12 +820,6 @@ async def _find_stranded_dependents(
             .all()
         )
 
-    delivered_task_ids = {
-        member.get("task_id")
-        for row in rows
-        for member in row["manifest"] or []
-        if isinstance(member, dict) and member.get("task_id")
-    }
     stranded = {}
     for row in rows:
         cleanup = (row["evidence"] or {}).get("branch_cleanup") or {}
@@ -849,10 +844,7 @@ async def _find_stranded_dependents(
                 if link["depends_on_task_id"] != blocker_id:
                     continue
                 dependent_id = link["task_id"]
-                if (
-                    candidate_projects.get(dependent_id) != row["project_id"]
-                    or dependent_id in delivered_task_ids
-                ):
+                if candidate_projects.get(dependent_id) != row["project_id"]:
                     continue
                 key = (dependent_id, blocker_id)
                 stranded.setdefault(
@@ -865,6 +857,22 @@ async def _find_stranded_dependents(
                         "source_sha": source_sha,
                     },
                 )
+    # A dependent whose own work git already finds on its target is not
+    # stranded, whatever its blocker's history.  Git answers that, not a
+    # delivery row; without an observer nothing is proven and all are listed.
+    observer = getattr(ctx.db, "_delivery_observer", None)
+    dependents = {item["dependent_task_id"] for item in stranded.values()}
+    if observer is not None and dependents:
+        from src.integration.delivery_truth import DeliveryState
+
+        view = await observer.observe(dependents)
+        stranded = {
+            key: item for key, item in stranded.items()
+            if not (
+                (evidence := view.get(item["dependent_task_id"])) is not None
+                and evidence.state is DeliveryState.CONTAINED
+            )
+        }
     return sorted(stranded.values(), key=lambda item: (item["project_id"], item["dependent_task_id"]))
 
 

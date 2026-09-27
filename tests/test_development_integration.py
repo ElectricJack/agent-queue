@@ -77,6 +77,9 @@ async def setup(tmp_path, monkeypatch):
     service = DevelopmentIntegration(db, data_dir=tmp_path / "data", git=GitManager(),
                                      job_client=PublisherJobs(handler))
     service.validation_poll_seconds = 0.05
+    # As the daemon does: archive, status and the legacy readers prove
+    # development delivery in git through the registered observer.
+    db.set_delivery_observer(service.delivery_observer)
     await service.configure(
         "p",
         {"validation": "focused", "commands": ["test -f base.txt"]},
@@ -1599,8 +1602,9 @@ async def test_parent_assembly_does_not_require_parent_verifier(setup):
 async def test_development_delivery_is_a_receipt_observe_readiness_accepts(setup):
     """A child the development publisher delivered never blocks a train cutover.
 
-    Its finished parent has no train collection and never will, so the
-    delivery row itself is the receipt integration status accepts.
+    Its finished parent has no train collection and never will, so git's
+    proof of the child's completion on main is what integration status
+    accepts; no delivery row is consulted.
     """
     from src.integration.status import IntegrationStatusService
 
@@ -3218,7 +3222,9 @@ async def test_adoption_and_reconciled_publish_arm_branch_cleanup(setup):
         "state": "pending", "attempts": 0,
     }
     await service.collect_delivered_branches("p")
-    assert remote_branches(remote) == {"main"}
+    # An equivalence adoption is a row, not git proof: until equivalence is
+    # carried in git, the adopted task's branch is held, never deleted.
+    assert remote_branches(remote) == {"main", "aq/two"}
     assert head
 
 
@@ -3230,12 +3236,14 @@ async def test_live_branch_references_names_every_hold(setup):
     )
     from src.integration.delivery_branches import live_branch_references
 
-    db, _service, _source, _remote, _repo = setup
+    db, service, _source, _remote, _repo = setup
     await db.create_task(Task(
         id="running", project_id="p", title="t", description="", branch_name="aq/running",
         status=TaskStatus.IN_PROGRESS,
     ))
     await aq_feature(setup, "undelivered")
+    # Git, observed before the read, is the only delivery answer.
+    delivery = await service.delivery_observer.observe({"undelivered"})
     await db.create_task(Task(
         id="development-repair-x", project_id="p", title="t", description="",
         branch_name="aq/development-repair-x", status=TaskStatus.READY,
@@ -3269,11 +3277,16 @@ async def test_live_branch_references_names_every_hold(setup):
             creation_generation=0, reserved=True, materialized=True, retired_at=now,
             created_at=now, discard_state="pending",
         ))
-        holds = await live_branch_references(conn)
+        holds = await live_branch_references(conn, delivery=delivery)
+        unverified = await live_branch_references(conn)
 
     assert holds["aq/running"] == "task running is IN_PROGRESS"
     assert holds["aq/running-wip"] == "task running is IN_PROGRESS"
     assert holds["aq/undelivered"] == "task undelivered is not delivered yet"
+    # Without git proof a completed branch is unknown, and unknown holds.
+    assert unverified["aq/undelivered"] == (
+        "task undelivered delivery is unknown (not verified in git)"
+    )
     # A member no table resolves still holds its conventional branch.
     assert holds["aq/gone-src"] == "development batch parked is parked"
     assert holds["aq/development/abc/" + "a" * 40] == (
@@ -4007,7 +4020,7 @@ async def test_snapshot_scopes_generation_and_fences_target_movement(setup):
 async def test_snapshot_archived_completion_survives_ref_cleanup(setup):
     from src.integration.delivery_truth import DeliveryState, load_delivery_requests
 
-    db, service, source, _remote, _repo = setup
+    db, _service, source, _remote, _repo = setup
     head = await feature(setup, "archived-source")
     await db.save_task_completion(TaskCompletion(
         id="archived-close", task_id="archived-source", outcome="pass", commits=[head],
@@ -4015,9 +4028,7 @@ async def test_snapshot_archived_completion_survives_ref_cleanup(setup):
     ))
     git(source, "push", "origin", f"{head}:main")
     git(source, "push", "origin", "--delete", "archived-source")
-    # Archive still uses the legacy readiness projection until consumers
-    # migrate. Retire that journal after archiving; git is sufficient here.
-    await service.sweep("p")
+    # Archive proves the completion in git; no publication row is needed.
     await db.archive_task("archived-source")
     async with db._engine.begin() as conn:
         await conn.execute(delete(development_deliveries))

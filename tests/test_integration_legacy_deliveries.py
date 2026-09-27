@@ -3,9 +3,9 @@
 Real PostgreSQL and real Git: a bare ``origin.git`` and a clone the tests push
 from.  A parent that finished before the train has no parent collection and
 never will, so its terminal children can never get train receipts.  Status
-accepts a child the development publisher delivered to the default branch;
-``LegacyDeliveryAdoption`` proves the rest against the default-branch tip and
-lists what it cannot prove.
+accepts a child whose current completion git finds on the default branch (no
+delivery row is consulted); ``LegacyDeliveryAdoption`` proves the rest against
+the default-branch tip and lists what it cannot prove.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitManager
 from src.integration.controls import IntegrationControlService
+from src.integration.delivery_observer import DeliveryObserver
 from src.integration.development import DevelopmentIntegration
 from src.integration.legacy_deliveries import (
     ABANDONED,
@@ -101,6 +102,33 @@ class Env:
             )
         git(self.clone, "push", "-q", "origin", "main")
         return git(self.clone, "rev-parse", "HEAD")
+
+    def amended(self, name: str) -> tuple[str, str]:
+        """Push *name*, amend and force-push it, and land only the amendment.
+
+        The close recorded the first commit; the branch tip that reached main
+        is the amended one.  Returns ``(recorded, landed)``.
+        """
+        recorded = self.branch(name, landed=False)
+        git(self.clone, "checkout", "-q", name)
+        git(self.clone, "commit", "-q", "--amend", "-m", f"{name} (amended)")
+        git(self.clone, "push", "-q", "-f", "origin", name)
+        landed = git(self.clone, "rev-parse", "HEAD")
+        git(self.clone, "checkout", "-q", "main")
+        git(self.clone, "merge", "-q", "--ff-only", name)
+        git(self.clone, "push", "-q", "origin", "main")
+        return recorded, landed
+
+    def collect(self, collection: str, source: str) -> str:
+        """Merge *source* into a parent *collection* branch and land that on main."""
+        git(self.clone, "checkout", "-q", "-b", collection, "main")
+        git(self.clone, "merge", "-q", "--no-ff", "-m", f"collect {source}", source)
+        git(self.clone, "push", "-q", "origin", collection)
+        tip = git(self.clone, "rev-parse", "HEAD")
+        git(self.clone, "checkout", "-q", "main")
+        git(self.clone, "merge", "-q", "--ff-only", collection)
+        git(self.clone, "push", "-q", "origin", "main")
+        return tip
 
     def delete_branch(self, name: str) -> None:
         git(self.clone, "push", "-q", "origin", "--delete", name)
@@ -257,41 +285,44 @@ async def env(tmp_path, reuse_database):
         await conn.execute(
             update(projects).where(projects.c.id == "p").values(integration_repository_id="r")
         )
+    # The daemon registers its git delivery observer on the database; status
+    # and the legacy readers answer delivery from git through it.
+    db.set_delivery_observer(
+        DeliveryObserver(db, git=GitManager(), data_dir=tmp_path / "observer")
+    )
     yield Env(db=db, clone=clone, tmp_path=tmp_path)
 
 
 async def delivered_legacy_graph(env: Env) -> dict[str, str]:
     """A parent the development publisher finished before the train existed."""
     await env.task("done", TaskStatus.DEFINED)
-    # Delivered by the development publisher straight to main.
+    # Delivered straight to main: git proves it, no row needed.
     dev_sha = env.branch("aq/done.dev", landed=True)
     await env.task("done.dev", TaskStatus.COMPLETED, parent="done", branch="aq/done.dev")
-    # Landed before the development publisher existed: only its branch tip proves it.
-    tip_sha = env.branch("aq/done.tip", landed=True)
-    await env.task("done.tip", TaskStatus.COMPLETED, parent="done", branch="aq/done.tip")
-    # Delivered into a development parent collection that later reached main;
-    # the child's own branch head was rewritten and never landed.
-    rewritten = env.branch("aq/done.collected", landed=False)
-    collection = env.branch("aq/development/parent/done", landed=True)
+    # Delivered into a development parent collection that later reached main,
+    # its own branch cleaned up since: a historical manifest only locates the
+    # source, and git proves that source on main.
+    collected = env.branch("aq/done.collected", landed=False)
+    collection = env.collect("aq/development/parent/done", "aq/done.collected")
+    env.delete_branch("aq/done.collected")
     await env.task(
         "done.collected", TaskStatus.COMPLETED, parent="done", branch="aq/done.collected"
     )
+    # Closed on a commit that was then amended: only the amended tip landed,
+    # so git cannot prove the recorded completion and only the tip proves it.
+    recorded, tip_sha = env.amended("aq/done.tip")
+    await env.task("done.tip", TaskStatus.COMPLETED, parent="done", branch="aq/done.tip")
+    await env.completion("done.tip", recorded)
     await env.db.update_task("done", status=TaskStatus.COMPLETED)
-    await env.delivery(
-        "delivery-main",
-        target_ref="refs/heads/main",
-        prepared_sha=dev_sha,
-        manifest=[{"task_id": "done.dev", "source_sha": dev_sha, "parent_task_id": "done"}],
-    )
     await env.delivery(
         "delivery-parent",
         target_ref="refs/heads/aq/development/parent/done",
         prepared_sha=collection,
         manifest=[
-            {"task_id": "done.collected", "source_sha": rewritten, "parent_task_id": "done"}
+            {"task_id": "done.collected", "source_sha": collected, "parent_task_id": "done"}
         ],
     )
-    return {"dev": dev_sha, "tip": tip_sha, "collection": collection}
+    return {"dev": dev_sha, "tip": tip_sha, "recorded": recorded, "collected": collected}
 
 
 async def unprovable_children(env: Env) -> None:
@@ -311,15 +342,12 @@ async def test_observe_status_is_clean_after_adopting_delivered_legacy_children(
     shas = await delivered_legacy_graph(env)
     await env.observe()
 
-    # The development publisher's receipt already satisfies readiness.
-    assert await env.missing_receipts() == {
-        "done.collected": NO_PARENT_COLLECTION,
-        "done.tip": NO_PARENT_COLLECTION,
-    }
+    # Git already proves the delivered and the collected child; no row does.
+    assert await env.missing_receipts() == {"done.tip": NO_PARENT_COLLECTION}
 
     result = await env.adoption().run("p", principal=PRINCIPAL)
 
-    assert (result["outcome"], result["count"], result["dry_run"]) == ("adopted", 2, False)
+    assert (result["outcome"], result["count"], result["dry_run"]) == ("adopted", 1, False)
     assert result["head_sha"] == git(env.clone, "rev-parse", "origin/main")
     by_task = {item["task_id"]: item for item in result["outcomes"]}
     assert by_task["done.tip"] == {
@@ -330,13 +358,8 @@ async def test_observe_status_is_clean_after_adopting_delivered_legacy_children(
         "delivered_sha": shas["tip"],
         "development_delivery_id": None,
     }
-    assert (
-        by_task["done.collected"]["proof"],
-        by_task["done.collected"]["delivered_sha"],
-        by_task["done.collected"]["development_delivery_id"],
-    ) == (DEVELOPMENT_DELIVERY, shas["collection"], "delivery-parent")
     recorded = await env.recorded()
-    assert set(recorded) == {"done.tip", "done.collected"}
+    assert set(recorded) == {"done.tip"}
     assert recorded["done.tip"]["operator_id"] == PRINCIPAL
     assert recorded["done.tip"]["target_sha"] == result["head_sha"]
     assert recorded["done.tip"]["target_ref"] == "refs/heads/main"
@@ -349,6 +372,49 @@ async def test_observe_status_is_clean_after_adopting_delivered_legacy_children(
     assert await env.recorded() == recorded
 
 
+async def test_a_misleading_delivery_row_proves_nothing(env):
+    """A ``delivered`` row whose source is not on main is not a delivery."""
+    await env.task("claimed", TaskStatus.DEFINED)
+    lost = env.branch("aq/claimed.1", landed=False)
+    await env.task("claimed.1", TaskStatus.COMPLETED, parent="claimed", branch="aq/claimed.1")
+    await env.completion("claimed.1", lost)
+    await env.db.update_task("claimed", status=TaskStatus.COMPLETED)
+    await env.delivery(
+        "delivery-lie",
+        target_ref="refs/heads/main",
+        prepared_sha=git(env.clone, "rev-parse", "main"),
+        manifest=[{"task_id": "claimed.1", "source_sha": lost, "parent_task_id": "claimed"}],
+    )
+    await env.observe()
+
+    assert await env.missing_receipts() == {"claimed.1": NO_PARENT_COLLECTION}
+    result = await env.adoption().run("p", principal=PRINCIPAL, dry_run=True)
+    assert [(i["task_id"], i["outcome"], i["cause"]) for i in result["outcomes"]] == [
+        ("claimed.1", UNPROVEN, NOT_ON_DEFAULT_BRANCH)
+    ]
+
+
+async def test_git_proof_of_the_current_completion_is_a_development_delivery(env):
+    """Adoption's ``development_delivery`` proof is git's answer, re-proved on the tip."""
+    shas = await delivered_legacy_graph(env)
+    await env.observe()
+    adoption = env.adoption()
+    view = await adoption.delivery.observe({"done.dev"})
+    child = {
+        "task_id": "done.dev", "parent_task_id": "done", "status": "COMPLETED",
+        "parent_status": "COMPLETED", "branch_name": "aq/done.dev",
+    }
+    store = await adoption.development.store(await env.db.get_repo("r"))
+    head = git(env.clone, "rev-parse", "origin/main")
+    target = type("Target", (), {"sha": head, "tree": None})()
+
+    item = await adoption._prove(store, target, "r", child, [], None, view.get("done.dev"))
+
+    assert (item["outcome"], item["proof"], item["delivered_sha"]) == (
+        ADOPTED, DEVELOPMENT_DELIVERY, shas["dev"],
+    )
+
+
 async def test_dry_run_reports_every_flagged_child_and_writes_nothing(env):
     await delivered_legacy_graph(env)
     await unprovable_children(env)
@@ -356,12 +422,11 @@ async def test_dry_run_reports_every_flagged_child_and_writes_nothing(env):
 
     result = await env.adoption().run("p", principal=PRINCIPAL, dry_run=True)
 
-    assert (result["outcome"], result["count"], result["dry_run"]) == ("adopted", 2, True)
+    assert (result["outcome"], result["count"], result["dry_run"]) == ("adopted", 1, True)
     assert {
         item["task_id"]: (item["outcome"], item.get("proof") or item.get("cause"))
         for item in result["outcomes"]
     } == {
-        "done.collected": (ADOPTED, DEVELOPMENT_DELIVERY),
         "done.tip": (ADOPTED, BRANCH_TIP),
         "gone.failed": (UNPROVEN, CHILD_NOT_COMPLETED),
         "gone.lost": (UNPROVEN, NOT_ON_DEFAULT_BRANCH),
@@ -371,7 +436,7 @@ async def test_dry_run_reports_every_flagged_child_and_writes_nothing(env):
     assert "branch aq/gone.lost at" in lost["detail"]
     assert await env.recorded() == {}
     assert set(await env.missing_receipts()) == {
-        "done.collected", "done.tip", "gone.failed", "gone.lost", "open.1",
+        "done.tip", "gone.failed", "gone.lost", "open.1",
     }
 
 
@@ -445,7 +510,7 @@ async def test_a_child_reopened_before_the_write_is_not_adopted(env):
     by_task = {item["task_id"]: item for item in result["outcomes"]}
     assert by_task["done.tip"]["outcome"] == UNPROVEN
     assert by_task["done.tip"]["cause"] == STATE_CHANGED
-    assert set(await env.recorded()) == {"done.collected"}
+    assert set(await env.recorded()) == set()
 
 
 async def test_an_undesignated_or_unknown_project_is_refused(env):
@@ -635,6 +700,7 @@ async def test_retire_records_abandoned_work_and_deletes_nothing(env):
 
 
 async def test_a_deleted_branch_is_proven_by_its_completion_commit(env):
+    """Git proves the recorded completion on main: status is clean, nothing to adopt."""
     await env.task("pruned", TaskStatus.DEFINED)
     tip = env.branch("aq/pruned.1", landed=True)
     env.delete_branch("aq/pruned.1")
@@ -644,12 +710,9 @@ async def test_a_deleted_branch_is_proven_by_its_completion_commit(env):
     await env.db.update_task("pruned", status=TaskStatus.COMPLETED)
     await env.observe()
 
-    result = await env.adoption().run("p", principal=PRINCIPAL)
-
-    assert [(i["task_id"], i["proof"], i["delivered_sha"]) for i in result["outcomes"]] == [
-        ("pruned.1", CONTENT_EQUIVALENT, tip)
-    ]
     assert await env.missing_receipts() == {}
+    result = await env.adoption().run("p", principal=PRINCIPAL)
+    assert (result["outcome"], result["outcomes"]) == ("nothing_to_adopt", [])
 
 
 async def test_a_task_takes_one_decision(env):
@@ -678,17 +741,12 @@ async def test_a_terminal_parent_whose_collection_was_cancelled_is_settled_witho
     instead of reporting ``receipt_missing`` against the dead collection.
     """
     await env.task("drained", TaskStatus.DEFINED)
-    dev_sha = env.branch("aq/drained.1", landed=True)
+    env.branch("aq/drained.1", landed=True)
     await env.task("drained.1", TaskStatus.COMPLETED, parent="drained", branch="aq/drained.1")
-    env.branch("aq/drained.2", landed=True)
+    recorded, _tip = env.amended("aq/drained.2")
     await env.task("drained.2", TaskStatus.COMPLETED, parent="drained", branch="aq/drained.2")
+    await env.completion("drained.2", recorded)
     await env.db.update_task("drained", status=TaskStatus.COMPLETED)
-    await env.delivery(
-        "delivery-drained",
-        target_ref="refs/heads/main",
-        prepared_sha=dev_sha,
-        manifest=[{"task_id": "drained.1", "source_sha": dev_sha, "parent_task_id": "drained"}],
-    )
     await env.collection("drained", state="cancelled")
     await env.observe()
 
