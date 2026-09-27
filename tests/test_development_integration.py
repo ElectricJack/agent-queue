@@ -2545,7 +2545,7 @@ async def test_parked_conflict_keeps_one_repair_through_source_parked_sweeps(set
     [row] = await _parked(service)
     assert row["id"] == parked["id"] and "reconflicted_at" in row["evidence"]
     assert [task.id for task in await _repairs(db)] == [identity]
-    assert (await db.get_task("next")).is_blocked
+    assert (await _admission_blocked(setup, "next"))
 
     # A repair that ended without completing leaves the source with none.
     await db.update_task(identity, status=TaskStatus.FAILED.value)
@@ -2600,7 +2600,7 @@ async def test_reconflicted_repair_chain_carries_the_source_to_delivery(setup):
     assert (await service.sweep("p"))["outcome"] == "delivered"
     await service.sweep("p")
     assert not await _parked(service)
-    assert not (await db.get_task("next")).is_blocked
+    assert not (await _admission_blocked(setup, "next"))
     git(remote, "merge-base", "--is-ancestor", original, "main")
     assert git(remote, "show", "main:base.txt") == "main again, and child"
     assert {task.id for task in await _repairs(db)} == {first, second}
