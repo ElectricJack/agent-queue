@@ -162,6 +162,54 @@ on each `message nudge to <session> (<id>) was not submitted (<reason>)`
 warning. A reason such as `has a draft or its input is unknown` on an empty
 composer means a harness layout the guard does not know yet.
 
+## A stalled worker the ladder cannot reach
+
+**Symptom.** A worker holding a task ended its turn and sits idle well past the
+lease, yet no stall nudge arrives, no `task.stalled` event appears, and the
+task carries no `stall_nudges` metadata. On 2026-09-26/27 three OpenCode
+workers (agile-willow, agile-torrent.12, prime-glacier.8) sat like this for
+20+ minutes, each right after an auto-compaction, with a plugin log line such
+as `[fast-jev:opencode …] session ses_…: 64 msgs, calls=85 kept=0 dropped=56`
+sitting in the composer, until the supervisor typed a prompt.
+
+**Cause.** A nudge the composer guard defers is silent: the ladder spends no
+rung and records nothing, so it never climbs. Two things made OpenCode defer
+on every tick:
+
+- OpenCode has no prompt line. Its composer is a box — blank padding, the
+  input rows, blank padding, an agent row (`Build · <model>`), then a `╹▀▀▀`
+  border — and its transcript uses the same `┃` bar. The guard did not know
+  that layout, and the submit checks anchored on the last `┃` row, which is the
+  agent row below the input. The guard now recognises the idle box as measured
+  on OpenCode 1.18.32, reads typed text from inside the box, and never types
+  into shell mode (a bare `Shell` in the agent row).
+- OpenCode runs plugins inside the TUI process, so a plugin that writes to
+  stderr paints straight over the composer, and OpenCode never redraws those
+  cells. When a detached OpenCode pane shows text in its box, the guard now
+  forces one full repaint (the window shrinks by one row and is restored, then
+  `window-size latest` is put back), at most once a minute per session, and
+  reads the box again. A real draft survives the repaint and still defers.
+
+OpenCode also renders typed text keystroke by keystroke (about two seconds for
+the ~430-character stall reminder), so the check that the typed text landed
+now keeps waiting while the screen is still changing, up to six seconds.
+
+**Diagnose.**
+
+```bash
+aq doctor --check sessions.stall_unreachable
+```
+
+The check lists every live task holder idle past the lease whose composer
+would refuse the nudge right now, with the refusal and the text the composer
+shows, so a human draft, a painted-over box and an unrecognised layout can be
+told apart. It is read-only: no repaint, no key. Sessions in a durable wait
+are skipped, as the ladder skips them.
+
+**Fix at the source.** A plugin that logs to stderr will keep painting over
+OpenCode's screen. Make it log to a file only, or add `--pure` to the OpenCode
+harness `args` (that disables every external plugin, including ones you want).
+
 ## A session that quarantines at startup
 
 **Symptom.** A session dies within seconds of `starting`, over and over, each
@@ -575,8 +623,10 @@ reason above is resolved by the subsystem that owns it.
 Implementation: [`src/sessions/reconciler.py`](../../src/sessions/reconciler.py),
 [`src/sessions/exit_classifier.py`](../../src/sessions/exit_classifier.py),
 [`src/doctor/session_checks.py`](../../src/doctor/session_checks.py),
-[`src/orchestrator/task_checkpoint.py`](../../src/orchestrator/task_checkpoint.py).
+[`src/orchestrator/task_checkpoint.py`](../../src/orchestrator/task_checkpoint.py);
+the composer guard is in [`src/sessions/tmux.py`](../../src/sessions/tmux.py).
 
 ```bash
 aq test tests/test_session_reconciler.py tests/test_session_doctor.py tests/test_session_commands.py
+aq test tests/test_tmux_nudge_drafts.py tests/test_tmux_nudge_recovery.py tests/test_tmux_opencode_composer.py
 ```
