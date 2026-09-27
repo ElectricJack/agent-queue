@@ -1062,7 +1062,31 @@ class TaskRecoveryResponse(BaseModel):
     status: str
 
 
+class TaskDeliverResponse(BaseModel):
+    """``task_deliver``: a BLOCKED task's pushed branch merged into default by hand.
+
+    ``method`` is ``fast_forward``, ``merge`` or ``already_delivered``;
+    ``outcome`` is ``delivered`` / ``would_deliver`` on success, otherwise the
+    refusal (``not_blocked``, ``pull_request_mode``, ``conflict``, ...).
+    """
+
+    success: bool
+    outcome: str = ""
+    task_id: str | None = None
+    repository_url: str | None = None
+    branch: str | None = None
+    default_branch: str | None = None
+    base_sha: str | None = None
+    head_sha: str | None = None
+    method: str | None = None
+    delivered_sha: str | None = None
+    conflict_files: list[str] = []
+    open_children: list[str] = []
+    error: str | None = None
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "task_deliver": TaskDeliverResponse,
     "list_tasks": ListTasksResponse,
     "create_task": CreateTaskResponse,
     "get_task": GetTaskResponse,

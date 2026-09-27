@@ -3891,18 +3891,11 @@ class TaskCommandsMixin:
 
         # Effective integration policy + its source, so surfaces can show
         # where the mode comes from instead of another ambiguous flag.
-        from src.models import resolve_integration_mode_with_source
+        from src.integration.delivery_path import effective_integration_mode
 
-        parent_mode = None
-        if task.is_plan_subtask and task.parent_task_id:
-            parent = await self.db.get_task(task.parent_task_id)
-            parent_mode = parent.integration_mode if parent else None
         project = await self.db.get_project(task.project_id)
-        effective_mode, mode_source = resolve_integration_mode_with_source(
-            task.integration_mode,
-            parent_task_mode=parent_mode,
-            project_mode=project.integration_mode if project else None,
-            default_mode=self.orchestrator.config.integration.default_mode,
+        effective_mode, mode_source = await effective_integration_mode(
+            self.db, task, default_mode=self.orchestrator.config.integration.default_mode
         )
         info["effective_integration_mode"] = effective_mode
         info["integration_mode_source"] = mode_source

@@ -405,7 +405,7 @@ areas:
       - tests/test_root_integration_playbook.py
       - tests/test_hierarchical_delivery_playbook.py
   - id: development-delivery
-    description: "Development delivery: the development integration path on real git, validation outcomes, delivery preconditions and end-to-end delivery, branch discard and the push-before-close rule for unpushed work."
+    description: "Development delivery: the development integration path on real git, validation outcomes, delivery preconditions and end-to-end delivery, delivering a blocked task's pushed branch by hand, branch discard and the push-before-close rule for unpushed work."
     match:
       - tests/test_development_*.py
       - tests/test_delivery_*.py
