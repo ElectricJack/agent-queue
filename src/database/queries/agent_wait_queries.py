@@ -438,6 +438,14 @@ class AgentWaitQueriesMixin:
                     deadline_at is not None
                     and abs((old["deadline_at"] - old["created_at"]) - (deadline_at - now))
                     > 0.00001
+                    # Collaboration attachments are bounded by the thread's
+                    # fixed deadline. Reconnects preserve that deadline instead
+                    # of requesting the same relative duration from a later now.
+                    and not (
+                        kind == "message"
+                        and is_collaboration_thread(match["thread_id"])
+                        and old["deadline_at"] == deadline_at
+                    )
                 )
             ):
                 raise WaitError(

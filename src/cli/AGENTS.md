@@ -44,6 +44,7 @@ jobs.py            `aq job {submit,show,list,cancel,result,logs,attach}` and `aq
 logs.py            `aq logs` — tail/filter JSONL log file directly (no daemon needed)
 menus.py           Interactive prompts (task wizard, fuzzy select, confirm)
 messages.py        `aq message *`, `aq inbox`, `aq reply`, `aq chat`
+message_wait.py    `aq message wait` — bounded attachment to a durable collaboration wait
 playbook.py        `aq playbook` — compile, run, HITL, health
 plugins.py         `aq plugin {list,info,install,remove,enable,disable,update,config,logs,...}`
 projects.py        Hand-crafted `aq project` commands needing composite logic or UX sugar

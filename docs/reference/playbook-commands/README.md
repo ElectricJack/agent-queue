@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-127 commands are registered.
+128 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -153,6 +153,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`job_result`](job_result.md) | Job Result | Read a job's immutable result and bounded excerpt. |
 | [`job_submit`](job_submit.md) | Job Submit | Submit a finite preset, optionally with an atomic durable wait. |
 | [`list_projects`](list_projects.md) | List projects | Read the configured projects without changing them. |
+| [`message_wait`](message_wait.md) | Message Wait | Wait up to 60 seconds for collaboration messages on a durable wait. |
 | [`morning_report_preview`](morning_report_preview.md) | Morning Report Preview | Read bounded overnight evidence without writes or model calls. |
 | [`morning_report_tick`](morning_report_tick.md) | Morning Report Tick | Reserve and recover the zoned daily report and deadline fallback. |
 | [`provider_allocation_status`](provider_allocation_status.md) | Read provider worker allocation | Group every ordinary worker profile by provider with its pool supply, live sessions, pinned tasks, manual agents, project preferences and the provider-wide configured ceiling, without changing anything. |

@@ -123,6 +123,8 @@
         "tests/test_collaboration.py",
         "tests/test_collaboration_commands.py",
         "tests/test_collaboration_lifecycle.py",
+        "tests/test_collaboration_message_wait.py",
+        "tests/test_collaboration_messages.py",
         "tests/test_collaboration_queries.py",
         "tests/test_collaboration_waits.py"
       ]
@@ -677,6 +679,7 @@
         "tests/test_migration_boolean_defaults.py",
         "tests/test_migration_candidate_authority.py",
         "tests/test_migration_candidate_mutation_claims.py",
+        "tests/test_migration_capacity_spill.py",
         "tests/test_migration_collaboration_threads.py",
         "tests/test_migration_conflict_resolution.py",
         "tests/test_migration_epic_pull_requests.py",
@@ -1273,7 +1276,7 @@
       ]
     }
   },
-  "digest": "sha256:10cb0a51ee48857b0f3a567eef3a9e14fa0b030d4fc48d771f271ac52d08d439",
+  "digest": "sha256:9b9411335060cbe0364d6e3920fab055cdcbe85fe5d9efa1df9d8be28d4b2060",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3523,6 +3526,51 @@
         "skipif"
       ],
       "summary": "Bounded expiry, retention and daemon-only collaboration reconciliation."
+    },
+    "tests/test_collaboration_message_wait.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.scope",
+        "src.cli.app",
+        "src.cli.client",
+        "src.commands.contracts",
+        "src.database.tables",
+        "src.profiles.parser",
+        "src.tools.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Bounded message long-poll on the same durable wait, with lossless cursors."
+    },
+    "tests/test_collaboration_messages.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.messages",
+        "src.cli.app",
+        "src.database.tables",
+        "src.event_bus",
+        "src.messages.delivery",
+        "src.models",
+        "src.prime.sections",
+        "src.sessions.provider"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Collaboration sends and replies, safe delivery, and rollover prime context."
     },
     "tests/test_collaboration_queries.py": {
       "areas": [
@@ -8247,6 +8295,21 @@
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
     },
+    "tests/test_migration_capacity_spill.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine",
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Capacity-spill schema upgrades and rollback on owned disposable PostgreSQL."
+    },
     "tests/test_migration_collaboration_threads.py": {
       "areas": [
         "migrations"
@@ -10393,6 +10456,8 @@
         "src.config",
         "src.database.queries",
         "src.database.queries.claim_queries",
+        "src.database.queries.task_reroute_queries",
+        "src.database.tables",
         "src.intelligence_classes",
         "src.llm.client",
         "src.llm.fake",
