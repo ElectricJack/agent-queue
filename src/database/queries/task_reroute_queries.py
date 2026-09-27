@@ -294,6 +294,45 @@ class TaskRerouteQueryMixin:
             rows = (await conn.execute(stmt)).all()
         return {profile_id: int(count) for profile_id, count in rows}
 
+    async def list_provider_intent_tasks(
+        self,
+        *,
+        intents: Sequence[str] = ("pinned", "preferred"),
+        statuses: Sequence[str] = (
+            TaskStatus.READY.value,
+            TaskStatus.ASSIGNED.value,
+            TaskStatus.IN_PROGRESS.value,
+        ),
+    ) -> list[dict[str, Any]]:
+        """Routed tasks carrying an explicit provider intent, ordered by profile then id.
+
+        The provider allocation snapshot's pin read: which queued and running
+        tasks a bulk provider change must leave where they are.  Only the
+        routing columns are read, never the task body.
+        """
+        wanted_intents = sorted(set(intents))
+        wanted_statuses = sorted(set(statuses))
+        if not wanted_intents or not wanted_statuses:
+            return []
+        stmt = (
+            select(
+                tasks.c.id,
+                tasks.c.project_id,
+                tasks.c.profile_id,
+                tasks.c.status,
+                tasks.c.provider_intent,
+            )
+            .where(
+                tasks.c.profile_id.is_not(None),
+                tasks.c.provider_intent.in_(wanted_intents),
+                tasks.c.status.in_(wanted_statuses),
+            )
+            .order_by(tasks.c.profile_id, tasks.c.id)
+        )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().all()
+        return [dict(row) for row in rows]
+
     async def list_reroute_candidates(
         self,
         profile_ids: Sequence[str],

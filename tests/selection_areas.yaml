@@ -467,7 +467,7 @@ areas:
 
   # ------------------------------------------------------------ providers
   - id: provider-failover
-    description: "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and its capacity-spill planner, in-flight failure handling, escalation pages and availability API and doctor checks."
+    description: "Provider availability and failover: the reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and capacity-spill planner, in-flight failures, escalations, availability API and doctor checks, and the provider allocation status read."
     match:
       - tests/test_provider_availability*.py
       - tests/test_provider_commands.py
@@ -478,6 +478,7 @@ areas:
       - tests/test_provider_reroute.py
       - tests/test_provider_spill.py
       - tests/test_provider_suppression.py
+      - tests/test_provider_allocation.py
       - tests/test_fake_session_script.py
   - id: provider-usage
     description: "Provider usage and cost: usage probes and queries, Claude /usage parsing, provider usage API and doctor checks, token budgets, cost accounting and direct-path LLM token usage."

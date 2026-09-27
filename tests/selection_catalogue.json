@@ -874,9 +874,10 @@
       ]
     },
     "provider-failover": {
-      "description": "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and its capacity-spill planner, in-flight failure handling, escalation pages and availability API and doctor checks.",
+      "description": "Provider availability and failover: the reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and capacity-spill planner, in-flight failures, escalations, availability API and doctor checks, and the provider allocation status read.",
       "modules": [
         "tests/test_fake_session_script.py",
+        "tests/test_provider_allocation.py",
         "tests/test_provider_availability.py",
         "tests/test_provider_availability_api.py",
         "tests/test_provider_availability_doctor.py",
@@ -1265,7 +1266,7 @@
       ]
     }
   },
-  "digest": "sha256:3e1f791922f13b40106dabc2d51bfefe4423f2b0cbabbab607d87e0c59bcc02f",
+  "digest": "sha256:d332cf706320b9b4669202cf25d3930a91813fbba0756cca30e6b27c17cdba5b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10134,6 +10135,26 @@
       "markers": [],
       "summary": "``proposal.status_changed`` bus event — schema + emission."
     },
+    "tests/test_provider_allocation.py": {
+      "areas": [
+        "provider-failover"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.providers",
+        "src.api.scope",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.models",
+        "src.providers.allocation",
+        "src.providers.intent",
+        "src.sessions.harness_parser"
+      ],
+      "markers": [],
+      "summary": "Provider allocation status (provider-worker-allocation-controls, plan Task 6)."
+    },
     "tests/test_provider_availability.py": {
       "areas": [
         "provider-failover"
@@ -11434,12 +11455,16 @@
       "default_arm": true,
       "imports": [
         "src.database",
+        "src.database.tables",
         "src.doctor",
         "src.doctor.models",
+        "src.messages.session_lens",
         "src.models",
         "src.sessions",
         "src.sessions.fake",
-        "src.sessions.provider"
+        "src.sessions.harness_registry",
+        "src.sessions.provider",
+        "src.sessions.spec"
       ],
       "markers": [],
       "summary": "``sessions.stuck_composer`` — the doctor half of the lost-Enter stall."

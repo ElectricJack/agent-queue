@@ -617,6 +617,27 @@ class ProviderRerouteValue(CommandValue):
     notices: list[str] = Field(default_factory=list)
 
 
+class ProviderAllocationStatusArgs(CommandArgs):
+    """``provider_allocation_status``: the provider allocation read.
+
+    Read-only.  ``project_id`` narrows the per-project detail; a
+    project-scoped caller is always narrowed to its own project.
+    """
+
+    project_id: str | None = None
+    provider: str | None = None
+
+
+class ProviderAllocationStatusValue(CommandValue):
+    now: float
+    project_id: str | None = None
+    redacted: bool = False
+    global_max_active: int | None = None
+    providers: list[dict[str, Any]] = Field(default_factory=list)
+    projects: list[dict[str, Any]] = Field(default_factory=list)
+    diagnostics: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ProviderAvailabilityNotifyValue(CommandValue):
     outcome: str
     provider: str
@@ -748,6 +769,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         "task_route": "routed",
         "stop_task": "stopped",
         "message_send": "queued",
+        "provider_allocation_status": "read",
     }[name]
 
 
@@ -1350,6 +1372,24 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         subject_labels={"message": "the provider state-change notice"},
     ),
+    "provider_allocation_status": CommandPresentation(
+        title="Read provider worker allocation",
+        summary=(
+            "Group every ordinary worker profile by provider with its pool supply, live "
+            "sessions, pinned tasks, manual agents, project preferences and the "
+            "provider-wide configured ceiling, without changing anything."
+        ),
+        arg_labels={"project_id": "Project", "provider": "Provider"},
+        outcome_labels={"read": "Read", "rejected": "Rejected"},
+        result_labels={
+            "providers": "Providers",
+            "projects": "Project routing preferences",
+            "diagnostics": "Profiles bulk control never selects",
+            "redacted": "Other projects redacted",
+            "global_max_active": "Global pool ceiling",
+        },
+        subject_labels={},
+    ),
     "task_route_options": CommandPresentation(
         title="Read a task's routing options",
         summary=(
@@ -1717,6 +1757,16 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
                 UpdateClause(subject=EffectSubject.TASK_ROUTING),
                 CreateClause(subject=EffectSubject.MESSAGE),
             ),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "provider_allocation_status",
+            ProviderAllocationStatusArgs,
+            ProviderAllocationStatusValue,
+            _outcomes("read"),
+            SideEffectClass.READ,
+            (),
             IdempotencySpec(mode="natural"),
             True,
         ),
