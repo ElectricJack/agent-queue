@@ -860,6 +860,93 @@ def reparent_when_filing_starts(monkeypatch, db, task_id, new_parent):
     return fired
 
 
+class TestFilingNeverGatesOnItsOwnContainer:
+    """Filed work never waits on the task that files it or on its own ancestors.
+
+    nimble-bridge, a plan task, filed every child with a ``blocks`` edge onto
+    itself. Membership already is the parent-child edge, and the plan is written
+    before filing, so the edge only ever stalled or confused the graph.
+    """
+
+    async def test_a_graph_need_on_the_held_task_is_refused_before_writes(self, handler, db):
+        sid = await holding_session(db)
+        graph = worker_graph("one", "two")
+        graph["nodes"][1]["needs"] = ["held"]
+
+        result = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": graph, "reason": "The plan names two implementation steps",
+        })
+
+        assert "nothing was created" in result["error"]
+        assert [(e["rule"], e["node"]) for e in result["errors"]] == [
+            ("dependency_on_ancestor", "two")
+        ]
+        assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"held"}
+        assert (await db.get_task("held")).filed_count == 0
+
+    async def test_a_graph_need_on_the_held_tasks_container_is_refused(self, handler, db):
+        sid = await holding_child_session(db)
+        graph = worker_graph("one")
+        graph["nodes"][0]["needs"] = [{"on": "epic", "dep_type": "waits-for"}]
+
+        result = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": graph, "reason": "epic.1 found follow-up work",
+        })
+
+        assert [e["rule"] for e in result["errors"]] == ["dependency_on_ancestor"]
+        assert await db.get_children("epic.1") == []
+
+    async def test_provenance_and_sibling_edges_still_file(self, handler, db):
+        sid = await holding_child_session(db)
+        await db.create_task(Task(id="elsewhere", project_id=PROJECT_ID, title="e", description="e"))
+        graph = worker_graph("one", "two")
+        graph["nodes"][0]["needs"] = [{"on": "epic.1", "dep_type": "related"}]
+        graph["nodes"][1]["needs"] = ["one", "elsewhere"]
+
+        result = await scoped_graph(handler, sid)._cmd_create_task_graph({
+            "graph": graph, "reason": "epic.1 found two ordered fixes",
+        })
+
+        assert result.get("created") is True, result
+        assert ("elsewhere", "blocks") in await db.get_typed_dependencies("epic.1.2")
+
+    @pytest.mark.parametrize("root", [False, True])
+    async def test_a_single_filing_that_depends_on_the_held_task_is_refused(
+        self, handler, db, root
+    ):
+        sid = await holding_session(db)
+
+        result = await scoped(handler, sid)._cmd_create_task({
+            "title": "implement step one", "description": "d",
+            "reason": "the plan names this step", "root": root,
+            "depends_on": [{"task_id": "held", "dep_type": "blocks"}],
+        })
+
+        assert result["success"] is False
+        assert result["code"] == "dependency_on_ancestor"
+        assert {task.id for task in await db.list_tasks(PROJECT_ID)} == {"held"}
+        assert (await db.get_task("held")).filed_count == 0
+
+    async def test_a_supervisor_child_that_depends_on_its_parent_is_refused(self, handler, db):
+        await db.create_task(Task(id="epic", project_id=PROJECT_ID, title="epic", description="e"))
+        await db.create_task(Task(id="epic.1", project_id=PROJECT_ID, title="c", description="c"))
+        async with db._engine.begin() as conn:
+            await db.set_parent("epic.1", "epic", conn=conn)
+        handler._current_scope = {"kind": "local"}
+
+        refused = await handler._cmd_create_task({
+            "title": "t", "description": "d", "project_id": PROJECT_ID,
+            "parent_id": "epic.1", "depends_on": "epic",
+        })
+        related = await handler._cmd_create_task({
+            "title": "t", "description": "d", "project_id": PROJECT_ID,
+            "parent_id": "epic.1", "depends_on": [{"task_id": "epic.1", "dep_type": "related"}],
+        })
+
+        assert refused["success"] is False and refused["code"] == "dependency_on_ancestor"
+        assert related["success"] is True, related
+
+
 class TestFilingScopeRace:
     """A reparent that commits after the scope pre-check must not let a
     filing land outside the scope the held task actually authorises (§12)."""
