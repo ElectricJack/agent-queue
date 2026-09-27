@@ -234,7 +234,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/commands/profile_commands.py"], areas: ["profiles", "intelligence-classes"] }
   - { paths: ["src/commands/project_commands.py", "src/commands/project_onboarding_commands.py"], areas: ["projects"] }
   - { paths: ["src/commands/proposal_commands.py", "src/commands/review_commands.py", "src/commands/spec_commands.py"], areas: ["document-reviews"] }
-  - { paths: ["src/commands/provider_commands.py"], areas: ["provider-failover"] }
+  - { paths: ["src/commands/provider_commands.py", "src/commands/provider_allocation_commands.py"], areas: ["provider-failover"] }
   - { paths: ["src/commands/question_commands.py"], areas: ["agent-questions"] }
   - { paths: ["src/commands/report_commands.py"], areas: ["digest"] }
   - { paths: ["src/commands/routing_commands.py"], areas: ["task-routing"] }
