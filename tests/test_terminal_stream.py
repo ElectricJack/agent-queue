@@ -67,6 +67,7 @@ class Client:
         self.valid = True
         self.reads = 0
         self.pending = b""
+        self.input_attaches = []
 
     async def read(self, limit):
         self.reads += 1
@@ -112,6 +113,9 @@ def setup():
     async def attach(provider, row, *, cols, rows):
         client.sizes.append((cols, rows))
         return client
+    async def attach_input(provider, row):
+        client.input_attaches.append(row.name)
+        return client
     config = SimpleNamespace(api_auth=SimpleNamespace(require_session_token=False, trusted_dashboard_origins=[]))
     store = SimpleNamespace(value=RequestScope(kind="session", session_id="admin", elevated=True), calls=0)
     async def validate(token, **kwargs):
@@ -119,13 +123,16 @@ def setup():
         return store.value if token == "aqs_valid" else None
     store.validate = validate
     orch = SimpleNamespace(db=db, session_providers=SimpleNamespace(create=lambda name: object()))
-    return SimpleNamespace(db=db, client=client, attach=attach, config=config, store=store, orch=orch)
+    return SimpleNamespace(
+        db=db, client=client, attach=attach, attach_input=attach_input,
+        config=config, store=store, orch=orch,
+    )
 
 
 def service(setup, **kwargs):
     return module().TerminalStreamService(
         setup.orch, setup.config, token_store=setup.store, attach=setup.attach,
-        recheck_seconds=0.02, **kwargs,
+        attach_input=setup.attach_input, recheck_seconds=0.02, **kwargs,
     )
 
 
@@ -623,3 +630,291 @@ async def test_terminal_probe_and_keepalive_through_real_proxy(setup):
                     assert setup.db.touches == []
         finally:
             await proxy.close()
+
+
+# -- Input-only terminal socket (/ws/terminal/{id}/input): phones type, never attach.
+
+
+def _no_pty_attach(setup):
+    async def attach(*args, **kwargs):
+        raise AssertionError("the input-only socket must never create a tmux attach client")
+    setup.attach = attach
+
+
+@pytest.mark.parametrize("headers,required,host", [
+    ({"authorization": "Basic wrong"}, False, "127.0.0.1"),
+    ({"authorization": "Bearer invalid"}, False, "127.0.0.1"),
+    ({}, True, "127.0.0.1"),
+    ({"authorization": "Bearer aqs_valid"}, False, "192.0.2.1"),
+    ({"origin": "http://evil.example"}, False, "127.0.0.1"),
+    ({"origin": "null"}, False, "127.0.0.1"),
+])
+async def test_input_route_auth_and_origin_refusals_never_create_a_client(setup, headers, required, host):
+    setup.config.api_auth.require_session_token = required
+    _no_pty_attach(setup)
+    ws = Socket(headers={"host": "localhost:5173", "origin": "http://localhost:5173", **headers}, host=host)
+    await service(setup).handle(ws, "s", input_only=True)
+    assert not ws.accepted
+    assert ws.closed in {4401, 4403}
+    assert setup.client.input_attaches == [] and setup.client.sizes == []
+
+
+@pytest.mark.parametrize("unavailable", ["deleted", "stopped", "missing", "scope"])
+async def test_input_route_session_and_operator_refusals_never_create_a_client(setup, unavailable):
+    _no_pty_attach(setup)
+    headers = None
+    if unavailable == "deleted":
+        setup.db.agent.deleted_at = time.time()
+    elif unavailable == "stopped":
+        setup.db.row = replace(setup.db.row, state="stopped")
+    elif unavailable == "missing":
+        setup.db.row = None
+    else:
+        setup.store.value = RequestScope(kind="session", session_id="worker", project_id="p")
+        headers = {"host": "localhost:5173", "authorization": "Bearer aqs_valid"}
+    ws = Socket(headers=headers)
+    await service(setup).handle(ws, "s", input_only=True)
+    assert not ws.accepted and setup.client.input_attaches == []
+
+
+async def test_input_mode_ready_frame_has_no_dimensions_and_input_reaches_client(setup):
+    _no_pty_attach(setup)
+    # Dimensions are neither required nor parsed: an input socket has no size.
+    ws = Socket(query={"cols": "nope"})
+    running = asyncio.create_task(service(setup).handle(ws, "s", input_only=True))
+    assert await ws.next() == {"type": "ready", "session_id": "s", "mode": "input"}
+    assert setup.client.input_attaches == ["n-agent"]
+    await ws.incoming.put({"type": "websocket.receive", "bytes": b"yes\r"})
+    await ws.incoming.put({"type": "websocket.receive", "bytes": b"\x1b"})
+    await ws.control({"type": "ping"})
+    assert await ws.next() == {"type": "pong"}
+    assert setup.client.inputs == [b"yes\r", b"\x1b"]
+    assert setup.client.sizes == []
+    await ws.disconnect()
+    await asyncio.wait_for(running, 2)
+    assert setup.client.closed and ws.outgoing.empty()
+
+
+@pytest.mark.parametrize("frame", [
+    {"type": "resize", "cols": 45, "rows": 30},
+    {"type": "ack", "bytes": 1},
+])
+async def test_input_mode_refuses_resize_and_ack_with_4400(setup, frame):
+    _no_pty_attach(setup)
+    ws = Socket()
+    running = asyncio.create_task(service(setup).handle(ws, "s", input_only=True))
+    assert (await ws.next())["mode"] == "input"
+    await ws.control(frame)
+    error = await ws.next()
+    assert error["type"] == "error" and error["code"] == 4400
+    await asyncio.wait_for(running, 2)
+    assert ws.closed == 4400
+    assert setup.client.sizes == [] and setup.client.closed
+
+
+@pytest.mark.parametrize("change", ["stopped", "deleted", "instance", "client"])
+async def test_input_mode_generation_change_disconnects(setup, change):
+    ws = Socket()
+    running = asyncio.create_task(service(setup).handle(ws, "s", input_only=True))
+    assert (await ws.next())["type"] == "ready"
+    if change == "stopped":
+        setup.db.row = replace(setup.db.row, state="stopped")
+    elif change == "deleted":
+        setup.db.agent.deleted_at = time.time()
+    elif change == "instance":
+        setup.db.row = replace(setup.db.row, instance_token="successor-token")
+    else:
+        setup.client.valid = False
+    error = await ws.next()
+    assert error["type"] == "error" and error["code"] == 4409
+    await asyncio.wait_for(running, 2)
+    assert setup.client.closed and setup.client.inputs == []
+
+
+async def test_input_mode_refused_input_closes_4400_without_echo(setup):
+    from src.sessions.terminal_input import TerminalInputError
+
+    async def refuse(data):
+        raise TerminalInputError("Terminal paste is too large.")
+    setup.client.write = refuse
+    ws = Socket()
+    running = asyncio.create_task(service(setup).handle(ws, "s", input_only=True))
+    assert (await ws.next())["type"] == "ready"
+    await ws.incoming.put({"type": "websocket.receive", "bytes": b"\x1b[200~secret"})
+    error = await ws.next()
+    assert error == {
+        "type": "error", "message": "Terminal paste is too large.", "code": 4400, "retryable": False,
+    }
+    await asyncio.wait_for(running, 2)
+    assert ws.closed == 4400
+
+
+async def test_fastapi_input_route_negotiates_and_transports_raw_bytes(setup):
+    from fastapi import FastAPI
+    _no_pty_attach(setup)
+    app = FastAPI()
+    app.include_router(module().build_terminal_router(
+        setup.orch, setup.config, token_store=setup.store, attach=setup.attach,
+        attach_input=setup.attach_input,
+    ))
+    incoming, outgoing = asyncio.Queue(), asyncio.Queue()
+    await incoming.put({"type": "websocket.connect"})
+    scope = {
+        "type": "websocket", "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1", "scheme": "ws", "path": "/ws/terminal/s/input",
+        "raw_path": b"/ws/terminal/s/input", "query_string": b"", "root_path": "",
+        "headers": [(b"host", b"localhost:5173"), (b"origin", b"http://localhost:5173")],
+        "client": ("127.0.0.1", 1234), "server": ("localhost", 5173),
+        "subprotocols": ["aq-terminal-v1"], "state": {},
+    }
+    running = asyncio.create_task(app(scope, incoming.get, outgoing.put))
+    accepted = await asyncio.wait_for(outgoing.get(), 2)
+    assert accepted == {"type": "websocket.accept", "subprotocol": "aq-terminal-v1", "headers": []}
+    ready = json.loads((await asyncio.wait_for(outgoing.get(), 2))["text"])
+    assert ready == {"type": "ready", "session_id": "s", "mode": "input"}
+    await incoming.put({"type": "websocket.receive", "bytes": b"\x03"})
+    await asyncio.sleep(0.01)
+    assert setup.client.inputs == [b"\x03"]
+    assert setup.client.input_attaches == ["n-agent"] and setup.client.sizes == []
+    await incoming.put({"type": "websocket.disconnect", "code": 1000})
+    await asyncio.wait_for(running, 2)
+    assert setup.client.closed and outgoing.empty()
+
+
+# -- TmuxInputClient against a recording fake tmux (the real one: test_terminal_input.py).
+
+
+class FakeTmux:
+    def __init__(self):
+        self.session_id = "$7"
+        self.token = "instance-a"
+        self.calls = []
+        self.fail = None
+        self.in_mode = "0"
+
+    async def _tmux(self, *args, timeout=30.0, stdin=None):
+        if args[0] == "display-message":
+            return (self.in_mode if args[-1] == "#{pane_in_mode}" else self.session_id) + "\n"
+        if args[0] == "show-environment":
+            return f"AQ_INSTANCE_TOKEN={self.token}\n"
+        self.calls.append((args, stdin))
+        if args[0] == self.fail:
+            raise RuntimeError(f"tmux {' '.join(args)} -> 1: typed secret")
+        return ""
+
+
+async def _input_client(tmux=None):
+    from src.sessions.terminal_input import TmuxInputClient
+    tmux = tmux or FakeTmux()
+    row = SimpleNamespace(name="n-agent", instance_token="instance-a")
+    return tmux, await TmuxInputClient.attach(tmux, row)
+
+
+async def test_input_client_sends_raw_keys_as_hex_and_single_arrows_by_name():
+    tmux, client = await _input_client()
+    await client.write(b"hi\xe2\x82\xac\x03\x1b\r")
+    await client.write(b"\x1b[A")
+    await client.write(b"\x1bOD")
+    await client.write(b"x\x1b[B")  # not exactly one arrow: raw bytes
+    assert [args for args, _ in tmux.calls] == [
+        ("send-keys", "-t", "$7", "-H", "68", "69", "e2", "82", "ac", "03", "1b", "0d"),
+        ("send-keys", "-t", "$7", "Up"),
+        ("send-keys", "-t", "$7", "Left"),
+        ("send-keys", "-t", "$7", "-H", "78", "1b", "5b", "42"),
+    ]
+    tmux.calls.clear()
+    await client.write(b"a" * 2500)
+    assert [len(args) - 4 for args, _ in tmux.calls] == [1024, 1024, 452]
+
+
+async def test_input_client_leaves_copy_mode_before_typing():
+    tmux, client = await _input_client()
+    tmux.in_mode = "1"
+    await client.write(b"y")
+    assert [args for args, _ in tmux.calls] == [
+        ("send-keys", "-t", "$7", "-X", "cancel"),
+        ("send-keys", "-t", "$7", "-H", "79"),
+    ]
+
+
+async def test_input_client_bracketed_paste_uses_a_unique_buffer_even_across_frames():
+    tmux, client = await _input_client()
+    await client.write(b"ab\x1b[200~line1\nli")
+    await client.write(b"ne2\x1b[20")  # the end marker is split across frames
+    assert [args[0] for args, _ in tmux.calls] == ["send-keys"]
+    await client.write(b"1~\x1b[B")
+    (keys, _), (load, payload), (paste, _), (arrow, _) = tmux.calls
+    assert keys == ("send-keys", "-t", "$7", "-H", "61", "62")
+    assert load[:3] == ("load-buffer", "-b", load[2]) and load[2].startswith("aq-input-")
+    assert load[3:] == ("-",) and payload == b"line1\nline2"
+    assert paste == ("paste-buffer", "-p", "-d", "-b", load[2], "-t", "$7")
+    assert arrow == ("send-keys", "-t", "$7", "Down")
+    tmux.calls.clear()
+    await client.write(b"\x1b[200~\x1b[201~")
+    assert tmux.calls == []  # an empty paste sends nothing
+    await client.write(b"\x1b[200~one\x1b[201~\x1b[200~two\x1b[201~")
+    buffers = [args[2] for args, _ in tmux.calls if args[0] == "load-buffer"]
+    assert len(set(buffers)) == 2
+
+
+async def test_input_client_refuses_oversized_paste_with_4400_without_echo():
+    from src.sessions.terminal_input import TerminalInputError
+    tmux, client = await _input_client()
+    await client.write(b"\x1b[200~" + b"s" * 60000)
+    with pytest.raises(TerminalInputError) as caught:
+        await client.write(b"s" * 6000 + b"\x1b[201~")
+    assert caught.value.code == 4400 and str(caught.value) == "Terminal paste is too large."
+    assert tmux.calls == []
+    with pytest.raises(TerminalInputError):
+        await client.write(b"x" * (64 * 1024 + 1))
+
+
+async def test_input_client_fences_every_write_and_hides_tmux_diagnostics():
+    from src.sessions.terminal_pty import TerminalAttachError
+    tmux, client = await _input_client()
+    tmux.fail = "send-keys"
+    with pytest.raises(TerminalAttachError) as caught:
+        await client.write(b"secret")
+    assert str(caught.value) == "Terminal connection failed."
+    assert caught.value.__cause__ is None and caught.value.__suppress_context__
+    tmux.fail, tmux.calls = "paste-buffer", []
+    with pytest.raises(TerminalAttachError, match="^Terminal connection failed.$"):
+        await client.write(b"\x1b[200~secret\x1b[201~")
+    load, _, delete = (args for args, _ in tmux.calls)
+    assert delete == ("delete-buffer", "-b", load[2])  # a failed paste never leaks a buffer
+    tmux.fail, tmux.calls = None, []
+    tmux.token = "successor"
+    assert not await client.verify()
+    with pytest.raises(TerminalAttachError, match="^Terminal session is unavailable.$"):
+        await client.write(b"x")
+    tmux.token, tmux.session_id = "instance-a", "$8"  # same name and token, new session
+    assert not await client.verify()
+    with pytest.raises(TerminalAttachError, match="^Terminal session is unavailable.$"):
+        await client.write(b"x")
+    assert tmux.calls == []
+
+
+async def test_input_client_attach_refuses_unfenced_sessions_and_close_ends_reads():
+    from src.sessions.terminal_input import TerminalInputError, TmuxInputClient
+    from src.sessions.terminal_pty import TerminalAttachError
+    tmux = FakeTmux()
+    tmux.token = "successor"
+    with pytest.raises(TerminalAttachError, match="^Terminal session is unavailable.$"):
+        await TmuxInputClient.attach(tmux, SimpleNamespace(name="n", instance_token="instance-a"))
+    tmux, client = await _input_client()
+    assert await client.verify()
+    with pytest.raises(TerminalInputError) as caught:
+        await client.resize(45, 30)
+    assert caught.value.code == 4400
+    await client.write(b"\x1b[200~partial")
+    pending = asyncio.create_task(client.read(16384))
+    await asyncio.sleep(0.01)
+    assert not pending.done()
+    await client.close()
+    await client.close()
+    assert await asyncio.wait_for(pending, 1) == b""
+    assert await client.read(16384) == b""
+    assert not await client.verify()
+    with pytest.raises(TerminalAttachError, match="^Terminal session is unavailable.$"):
+        await client.write(b"\x1b[201~")
+    assert tmux.calls == []  # the partial paste was dropped, never pasted

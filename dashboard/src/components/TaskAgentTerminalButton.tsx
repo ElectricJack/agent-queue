@@ -22,7 +22,7 @@ export default function TaskAgentTerminalButton({ task, onOpen }: {
   );
   if (!agent || isError) return null;
 
-  // Focus routes never attach: the link opens the watch-only session view.
+  // Focus routes never attach: the link opens the phone terminal, watch only until Type.
   if (mode === "watch") {
     return (
       <Link
@@ -31,7 +31,7 @@ export default function TaskAgentTerminalButton({ task, onOpen }: {
         className="inline-flex items-center gap-1.5 rounded-md border border-gray-600 bg-gray-800 px-3 py-1.5 text-sm font-medium text-gray-200 hover:bg-gray-700"
       >
         <CommandLineIcon className="h-3.5 w-3.5" />
-        Watch agent terminal
+        Open agent terminal
       </Link>
     );
   }

@@ -132,5 +132,158 @@ describe("WatchTerminal", () => {
   it("with focusHref, Full screen is a link to the focus session", () => {
     renderWatch("/focus/sessions/s1");
     expect(screen.getByRole("link", { name: "Full screen" })).toHaveAttribute("href", "/focus/sessions/s1");
+  });});
+
+type Options = { sessionId: string; mode?: string; onState: (state: { status: string; attempt?: number; message?: string }) => void };
+
+describe("WatchTerminal typing (mobile interactive terminal)", () => {
+  const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+  let conn: { sendInput: ReturnType<typeof vi.fn>; resize: ReturnType<typeof vi.fn>; setVisible: ReturnType<typeof vi.fn>; reconnect: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
+  let options: Options | undefined;
+  const sent = () => conn.sendInput.mock.calls.map(([bytes]) => decode(bytes as Uint8Array));
+  const setState = (state: Parameters<Options["onState"]>[0]) => act(() => options!.onState(state));
+  const input = () => screen.getByRole("textbox", { name: "worker-a terminal input" });
+
+  beforeEach(() => {
+    options = undefined;
+    conn = { sendInput: vi.fn(), resize: vi.fn(), setVisible: vi.fn(), reconnect: vi.fn(), close: vi.fn() };
+    terminal.connect.mockImplementation((opts: Options) => { options = opts; return conn; });
+  });
+
+  function startTyping() {
+    renderWatch();
+    frame("❯ waiting for you");
+    fireEvent.click(screen.getByRole("button", { name: "Type" }));
+    expect(terminal.connect).toHaveBeenCalledOnce();
+    setState({ status: "connected" });
+  }
+
+  it("opens watch only: no input bar, no keys, no socket, and a tap types nothing", () => {
+    renderWatch();
+    frame("screen");
+    expect(screen.getByRole("button", { name: "Watch only" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Type" })).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByText("screen"));
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("toolbar")).toBeNull();
+    expect(terminal.connect).not.toHaveBeenCalled();
+  });
+
+  it("Type opens only the input-only socket — no dimensions, never an attach — and Watch only closes it", () => {
+    renderWatch();
+    fireEvent.click(screen.getByRole("button", { name: "Type" }));
+    expect(terminal.connect).toHaveBeenCalledOnce();
+    expect(options).toMatchObject({ sessionId: "s1", mode: "input" });
+    expect(options).not.toHaveProperty("cols");
+    expect(screen.getByRole("button", { name: "Type" })).toHaveAttribute("aria-pressed", "true");
+    // Until the socket is ready nothing can be sent.
+    expect(screen.getByRole("status", { name: "worker-a keyboard status" })).toHaveTextContent("Connecting the keyboard…");
+    expect(screen.getByRole("button", { name: "Send Escape" })).toBeDisabled();
+    setState({ status: "connected" });
+    expect(screen.getByRole("status", { name: "worker-a keyboard status" })).toBeEmptyDOMElement();
+    expect(screen.getByRole("button", { name: "Send Escape" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Watch only" }));
+    expect(conn.close).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(MockEventSource.all).toHaveLength(1); // the pane stream is untouched
+    expect(conn.resize).not.toHaveBeenCalled();
+  });
+
+  it("a line goes as typed, then Enter as its own write; the key strip sends its bytes in order", () => {
+    startTyping();
+    fireEvent.change(input(), { target: { value: "please continue" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(sent()).toEqual(["please continue"]);
+    // A key tapped before Enter went out waits behind it.
+    fireEvent.click(screen.getByRole("button", { name: "Send 2" }));
+    expect(sent()).toEqual(["please continue"]);
+    tick(150);
+    expect(sent()).toEqual(["please continue", "\r", "2"]);
+    for (const name of ["Send Escape", "Send Tab", "Send Ctrl-C", "Send Up arrow", "Send Down arrow", "Send Enter", "Send 1", "Send 3"]) {
+      fireEvent.click(screen.getByRole("button", { name }));
+    }
+    expect(sent().slice(3)).toEqual(["\x1b", "\t", "\x03", "\x1b[A", "\x1b[B", "\r", "1", "3"]);
+  });
+
+  it("a pasted multi-line entry is one bracketed paste followed by Enter", () => {
+    startTyping();
+    fireEvent.change(input(), { target: { value: "line one\r\nline two" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send to worker-a" }));
+    tick(150);
+    expect(sent()).toEqual(["\x1b[200~line one\nline two\x1b[201~", "\r"]);
+  });
+
+  it("a drop discards the pending Enter instead of replaying it, and offers Reconnect now", () => {
+    startTyping();
+    fireEvent.change(input(), { target: { value: "half" } });
+    fireEvent.keyDown(input(), { key: "Enter" });
+    setState({ status: "reconnecting", attempt: 2, message: "Terminal disconnected. Unsent input was discarded." });
+    tick(500);
+    expect(sent()).toEqual(["half"]);
+    expect(screen.getByRole("status", { name: "worker-a keyboard status" })).toHaveTextContent("Keyboard reconnecting… (attempt 2)");
+    expect(screen.getByRole("button", { name: "Send to worker-a" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect now" }));
+    expect(conn.reconnect).toHaveBeenCalledOnce();
+    setState({ status: "error", message: "Terminal access refused. Check credentials, origin and loopback access." });
+    expect(screen.getByRole("status", { name: "worker-a keyboard status" })).toHaveTextContent(/access refused/);
+  });
+
+  it("a tap on the screen focuses the input bar, not a terminal, and not over a selection", () => {
+    startTyping();
+    fireEvent.click(screen.getByText("❯ waiting for you"));
+    expect(input()).toHaveFocus();
+    input().blur();
+    const selection = vi.spyOn(window, "getSelection").mockReturnValue({ toString: () => "copied" } as Selection);
+    fireEvent.click(screen.getByText("❯ waiting for you"));
+    expect(input()).not.toHaveFocus();
+    selection.mockRestore();
+  });
+
+  it("stays scrolled to the prompt while typing, until the viewer scrolls up", () => {
+    startTyping();
+    const box = screen.getByText("❯ waiting for you").closest("[data-allow-overflow-x]") as HTMLDivElement;
+    Object.defineProperty(box, "scrollHeight", { configurable: true, value: 900 });
+    Object.defineProperty(box, "clientHeight", { configurable: true, value: 300 });
+    frame("next screen");
+    expect(box.scrollTop).toBe(900);
+    box.scrollTop = 100;
+    fireEvent.scroll(box);
+    frame("another screen");
+    expect(box.scrollTop).toBe(100);
+    box.scrollTop = 600;
+    fireEvent.scroll(box);
+    frame("back at the bottom");
+    expect(box.scrollTop).toBe(900);
+  });
+
+  it("with the keyboard up, fills exactly the visual viewport above it", () => {
+    const listeners = new Map<string, () => void>();
+    const vv = {
+      offsetTop: 120, offsetLeft: 0, width: 390, height: 420, scale: 1,
+      addEventListener: (type: string, fn: () => void) => listeners.set(type, fn),
+      removeEventListener: (type: string) => listeners.delete(type),
+    };
+    Object.defineProperty(window, "visualViewport", { configurable: true, writable: true, value: vv });
+    Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: 844 });
+    try {
+      startTyping();
+      const root = () => screen.getByRole("group", { name: "worker-a terminal input" }).closest("[tabindex='-1']") as HTMLElement;
+      expect(root()).not.toHaveAttribute("data-keyboard-open");
+      fireEvent.focus(input());
+      tick(20);
+      expect(root()).toHaveAttribute("data-keyboard-open");
+      expect(root()).toHaveClass("fixed");
+      expect(root()).toHaveStyle({ top: "120px", left: "0px", width: "390px", height: "420px" });
+      // The keyboard closes: back in the page.
+      vv.height = 844; vv.offsetTop = 0;
+      act(() => listeners.get("resize")?.());
+      tick(20);
+      expect(root()).not.toHaveAttribute("data-keyboard-open");
+      fireEvent.blur(input());
+      expect(listeners.size).toBe(0);
+    } finally {
+      Object.defineProperty(window, "visualViewport", { configurable: true, writable: true, value: undefined });
+      Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: 768 });
+    }
   });
 });

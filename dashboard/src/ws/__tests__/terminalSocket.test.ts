@@ -409,3 +409,77 @@ it("does not reconnect an invisible terminal view until its layout returns", () 
   vi.advanceTimersByTime(0);
   expect(TerminalSocketMock.instances).toHaveLength(2);
 });
+
+describe("Input-only terminal transport (phones)", () => {
+  function connectInput(sessionId = "session-b") {
+    const states: TerminalConnectionState[] = [];
+    const writes: Uint8Array[] = [];
+    const connection = connectTerminal({
+      sessionId, mode: "input", onState: (state) => states.push(state),
+      write: (bytes) => writes.push(bytes),
+    });
+    vi.advanceTimersByTime(0);
+    connections.push(connection);
+    const socket = TerminalSocketMock.instances.slice(-1)[0]!;
+    const ready = (frame: object = { type: "ready", session_id: sessionId, mode: "input" }) => {
+      socket.open();
+      socket.message(JSON.stringify(frame));
+    };
+    return { connection, socket, states, writes, ready };
+  }
+
+  it("opens the /input route with no dimensions, so nothing can size the agent's window", () => {
+    vi.stubEnv("VITE_TERMINAL_WS_URL", "wss://daemon.example/base");
+    const { socket } = connectInput("session/one");
+    expect(socket.url).toBe("wss://daemon.example/base/ws/terminal/session%2Fone/input");
+    expect(socket.protocols).toEqual(["aq-terminal-v1"]);
+  });
+
+  it("sends input after an input-mode ready and never a resize", () => {
+    const { connection, socket, states, ready } = connectInput();
+    connection.sendInput(encoder.encode("before ready"));
+    ready();
+    expect(states.slice(-1)[0]).toEqual({ status: "connected" });
+    connection.resize(40, 20);
+    connection.sendInput(encoder.encode("1"));
+    expect(socket.inputs().map((data) => new TextDecoder().decode(data))).toEqual(["1"]);
+    expect(socket.controls()).toEqual([]);
+  });
+
+  it("refuses a ready that is not input-only: that server would have attached at phone size", () => {
+    const { socket, states, ready } = connectInput();
+    ready({ type: "ready", session_id: "session-b", cols: 80, rows: 24 });
+    expect(states.slice(-1)[0]).toMatchObject({ status: "error", message: expect.stringMatching(/terminal mode/) });
+    expect(socket.closed).toBe(true);
+  });
+
+  it("an attach never accepts an input-only ready", () => {
+    const { socket, states } = connect();
+    socket.open();
+    socket.message(JSON.stringify({ type: "ready", session_id: "session-b", mode: "input" }));
+    expect(states.slice(-1)[0]).toMatchObject({ status: "error" });
+  });
+
+  it("treats output on an input-only socket as a protocol error, never renders it", () => {
+    const { socket, states, writes, ready } = connectInput();
+    ready();
+    socket.message(encoder.encode("unexpected"));
+    expect(writes).toEqual([]);
+    expect(states.slice(-1)[0]).toMatchObject({ status: "error", message: expect.stringMatching(/invalid output/) });
+  });
+
+  it("keeps the keepalive and the shared reconnect loop, without a screen reset", () => {
+    const { socket, writes, ready } = connectInput();
+    ready();
+    vi.advanceTimersByTime(15_000);
+    expect(socket.controls()).toEqual([{ type: "ping" }]);
+    socket.serverClose(1001);
+    vi.advanceTimersByTime(5_000);
+    const next = TerminalSocketMock.instances.slice(-1)[0]!;
+    expect(next).not.toBe(socket);
+    expect(next.url).toMatch(/\/ws\/terminal\/session-b\/input$/);
+    next.open();
+    next.message(JSON.stringify({ type: "ready", session_id: "session-b", mode: "input" }));
+    expect(writes).toEqual([]); // no RIS: there is no screen on an input-only socket
+  });
+});

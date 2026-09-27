@@ -1117,6 +1117,7 @@
     "tmux-terminals": {
       "description": "tmux and terminals: the tmux provider, nudge submit confirmation, draft protection and lost-Enter recovery, startup dialog detection, PATH propagation, usage-limit screens, PTY terminals and the terminal WebSocket.",
       "modules": [
+        "tests/test_terminal_input.py",
         "tests/test_terminal_origin_config.py",
         "tests/test_terminal_pty.py",
         "tests/test_terminal_stream.py",
@@ -1250,7 +1251,7 @@
       ]
     }
   },
-  "digest": "sha256:adf8b01cd4debb474fa6163b50621f47a20b380882083fbe7c980ca0c635ef12",
+  "digest": "sha256:224c0a9870de24027eb5ce8840d71b98e2cacafa7acc29a363fdcf8508952fb8",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2299,9 +2300,12 @@
       "imports": [
         "src.api",
         "src.api.perf_middleware",
+        "src.metrics",
         "src.metrics.perf"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Route labels are templates, streams are handshakes, failures are re-raised."
     },
     "tests/test_api_playbook_v2_commands.py": {
@@ -12424,6 +12428,23 @@
       ],
       "summary": "``task_subtasks`` — durable, non-schedulable checklist rows (Task C1)."
     },
+    "tests/test_terminal_input.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.models",
+        "src.sessions.terminal_input",
+        "src.sessions.terminal_pty",
+        "src.sessions.tmux"
+      ],
+      "markers": [
+        "parametrize",
+        "tmux"
+      ],
+      "summary": "Input-only terminal against a real isolated tmux; a tiny raw-mode stub app, never an LLM."
+    },
     "tests/test_terminal_origin_config.py": {
       "areas": [
         "config",
@@ -12467,6 +12488,7 @@
         "src.dashboard_server.proxy",
         "src.database",
         "src.models",
+        "src.sessions.terminal_input",
         "src.sessions.terminal_pty"
       ],
       "markers": [
@@ -13019,6 +13041,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.playbooks.required",
         "src.profiles.capabilities",
         "src.profiles.parser",
         "src.vault"

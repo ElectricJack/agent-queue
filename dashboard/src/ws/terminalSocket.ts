@@ -26,15 +26,25 @@ export function terminalDimensions(cols: number, rows: number) {
   };
 }
 
+/**
+ * "attach" is a tmux client sized to this viewer. "input" never attaches: it
+ * types into the session through `/ws/terminal/{id}/input`, behind the same
+ * gates, and receives no output and sends no size, so a phone can type without
+ * resizing the agent's window (docs/superpowers/specs/2026-09-26-mobile-interactive-terminal-design.md).
+ */
+export type TerminalMode = "attach" | "input";
+
 /** A viewer owns one connection; closing it detaches without stopping the agent. */
-export function connectTerminal({ sessionId, cols, rows, write, onState, visible = true }: {
+export function connectTerminal({ sessionId, cols = 80, rows = 24, write, onState, visible = true, mode = "attach" }: {
   sessionId: string;
-  cols: number;
-  rows: number;
+  cols?: number;
+  rows?: number;
   write: (bytes: Uint8Array, processed: () => void) => void;
   onState: (state: TerminalConnectionState) => void;
   visible?: boolean;
+  mode?: TerminalMode;
 }): TerminalConnection {
+  const input = mode === "input";
   let socket: WebSocket | undefined;
   let ended = false;
   let ready = false;
@@ -49,7 +59,7 @@ export function connectTerminal({ sessionId, cols, rows, write, onState, visible
   const base = import.meta.env.VITE_TERMINAL_WS_URL || window.location.origin;
   const url = new URL(base, window.location.href);
   url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
-  url.pathname = url.pathname.replace(/\/$/, "") + "/ws/terminal/" + encodeURIComponent(sessionId);
+  url.pathname = url.pathname.replace(/\/$/, "") + "/ws/terminal/" + encodeURIComponent(sessionId) + (input ? "/input" : "");
   url.hash = "";
 
   const retry = reconnectLoop(open, (attempt) => onState({ status: "reconnecting", attempt, message: retryMessage }));
@@ -91,7 +101,7 @@ export function connectTerminal({ sessionId, cols, rows, write, onState, visible
     catch { dropped("The terminal connection failed. Unsent input was discarded."); }
   };
   const sendSize = () => {
-    if (!writable() || (size.cols === sentSize.cols && size.rows === sentSize.rows)) return;
+    if (input || !writable() || (size.cols === sentSize.cols && size.rows === sentSize.rows)) return;
     sendControl({ type: "resize", ...size });
     sentSize = size;
   };
@@ -134,7 +144,7 @@ export function connectTerminal({ sessionId, cols, rows, write, onState, visible
     if (ended) return;
     closeSocket();
     try {
-      url.search = new URLSearchParams({ cols: String(size.cols), rows: String(size.rows) }).toString();
+      url.search = input ? "" : new URLSearchParams({ cols: String(size.cols), rows: String(size.rows) }).toString();
       const current = new WebSocket(url.toString(), ["aq-terminal-v1"]);
       socket = current;
       current.binaryType = "arraybuffer";
@@ -155,12 +165,17 @@ export function connectTerminal({ sessionId, cols, rows, write, onState, visible
                 fail("The terminal server announced an invalid session.");
                 return;
               }
+              // Anything but an input-only ready would be an attach sized to this phone.
+              if (input !== (frame.mode === "input")) {
+                fail("The terminal server did not open the requested terminal mode.");
+                return;
+              }
               // Queue RIS after old writes and before the fresh tmux attach's
               // redraw. It clears stale parser/screen state, without input.
-              if (hadReady) write(Uint8Array.of(27, 99), () => {});
+              if (hadReady && !input) write(Uint8Array.of(27, 99), () => {});
               hadReady = true;
               ready = true;
-              sentSize = { cols: frame.cols, rows: frame.rows };
+              if (!input) sentSize = { cols: frame.cols, rows: frame.rows };
               sendSize();
               if (!live() || !ready) return;
               clearTimeout(deadline);
@@ -188,7 +203,7 @@ export function connectTerminal({ sessionId, cols, rows, write, onState, visible
           } catch { fail("The terminal server sent an invalid control message."); }
           return;
         }
-        if (!ready || !(data instanceof ArrayBuffer)) {
+        if (!ready || input || !(data instanceof ArrayBuffer)) {
           fail("The terminal server sent invalid output.");
           return;
         }
