@@ -2387,7 +2387,8 @@ async def test_completed_child_conflict_repair_delivery_releases_dependents(
         assert (identity, "blocks") in await db.get_typed_dependencies("conflicted-child")
     assert "base.txt" in repair.description
     assert "conflicted-child: conflicted-child" in repair.description
-    assert f"rebase the listed source changes onto origin/{target_branch}" in repair.description
+    assert f"starts from origin/{target_branch}" in repair.description
+    assert "must stay an ancestor of your branch" in repair.description
     assert f"Publication target: refs/heads/{target_branch}" in repair.description
     assert parked["evidence"]["conflicting_files"] == ["base.txt"]
     dossier = await db.get_task_meta(identity, "development_repair_evidence")
@@ -2400,8 +2401,9 @@ async def test_completed_child_conflict_repair_delivery_releases_dependents(
             tasks.c.id.like("development-repair-%")
         ))).scalars().all() == [identity]
 
-    # Rebase the child's changes on the target in the repair's own branch.
-    # A new source SHA is expected; the journal must prove the replacement.
+    # The description asks for a merge.  A repair that rebased anyway still
+    # releases the source: a new source SHA is expected, and the journal must
+    # prove the replacement.
     git(source, "fetch", "origin")
     git(source, "checkout", "-b", repair.branch_name, "conflicted-child")
     with pytest.raises(subprocess.CalledProcessError):
@@ -2425,6 +2427,236 @@ async def test_completed_child_conflict_repair_delivery_releases_dependents(
     assert git(remote, "show", f"{target_branch}:base.txt") == "main and child resolved"
     with pytest.raises(subprocess.CalledProcessError):
         git(remote, "merge-base", "--is-ancestor", original, target_branch)
+
+
+UNREPAIRED = "integration.development_conflicts_unrepaired"
+
+
+async def _conflicted_source(setup, task_id="conflicted"):
+    """A completed source whose change to base.txt conflicts with main, and a successor."""
+    db, _service, source, _remote, _repo = setup
+    original = await feature(setup, task_id, filename="base.txt", content="child\n")
+    await db.save_task_completion(TaskCompletion(
+        id=f"{task_id}-close", task_id=task_id, outcome="pass",
+        commits=[original], completed_at=time.time(),
+    ))
+    await db.create_task(Task(id="next", project_id="p", title="next", description=""))
+    await db.add_dependency("next", task_id)
+    await _advance_main(source, "main\n")
+    return original
+
+
+async def _advance_main(source, content):
+    git(source, "checkout", "main")
+    (source / "base.txt").write_text(content)
+    git(source, "commit", "-am", "advance main with a conflicting change")
+    git(source, "push", "origin", "main")
+
+
+async def _age_parked_rows(db):
+    """Move parked rows past the doctor's dispatch grace."""
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(development_deliveries)
+            .where(development_deliveries.c.state == "parked")
+            .values(created_at=development_deliveries.c.created_at - 3600)
+        )
+
+
+async def _parked(service):
+    return [row for row in await service.rows("p") if row["state"] == "parked"]
+
+
+async def _merge_repair(setup, identity, sources, resolution):
+    """Close *identity* the way its description asks: merge each exact source SHA."""
+    db, _service, source, _remote, _repo = setup
+    git(source, "fetch", "origin")
+    git(source, "checkout", "-B", "aq/" + identity, "origin/main")
+    for sha in sources:
+        try:
+            git(source, "merge", "--no-edit", sha)
+        except subprocess.CalledProcessError:
+            (source / "base.txt").write_text(resolution)
+            git(source, "add", "base.txt")
+            git(source, "-c", "core.editor=true", "commit", "--no-edit")
+    head = git(source, "rev-parse", "HEAD")
+    git(source, "push", "--force", "origin", "aq/" + identity)
+    await db.transition_task(identity, TaskStatus.COMPLETED, context="test", force=True)
+    await db.save_task_completion(TaskCompletion(
+        id=identity + "-close", task_id=identity, outcome="pass",
+        commits=[head], completed_at=time.time(),
+    ))
+    return head
+
+
+async def test_parked_conflict_keeps_one_repair_through_source_parked_sweeps(setup):
+    """A conflict source skipped as ``source_parked`` keeps exactly one repair.
+
+    ``wise-bridge``: repeated sweeps and an explicit recovery must neither
+    duplicate the repair nor the parked row, and must say which repair is
+    carrying the source instead of answering only ``merge_conflict``.
+    """
+    db, service, _source, _remote, _repo = setup
+    await _conflicted_source(setup)
+
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    [parked] = await _parked(service)
+    assert parked["evidence"]["kind"] == "merge_conflict"
+    identity = service._repair_identity(parked["manifest"])
+    repair = await db.get_task(identity)
+    assert repair.status == TaskStatus.READY
+    assert "merge each listed source revision by its exact SHA" in repair.description
+    assert "Do not rebase, squash or cherry-pick" in repair.description
+    for _ in range(2):
+        await service.sweep("p")
+        skip = await db.get_task_meta("conflicted", PUBLISHER_SKIP_KEY)
+        assert (skip["reason"], skip["state"], skip["waiting_on"]) == (
+            "source_parked", "waiting", identity
+        )
+    assert [task.id for task in await _repairs(db)] == [identity]
+    assert [row["id"] for row in await _parked(service)] == [parked["id"]]
+    await _age_parked_rows(db)
+    result = await run_doctor_check(db, UNREPAIRED)
+    assert result.severity == Severity.OK, result.detail
+
+    # An explicit recovery merges the parked source again.  It conflicts
+    # again, refreshes the same row and names the repair carrying it.
+    with pytest.raises(ValueError, match=f"carried by repair {identity} \\(open"):
+        await service.recover_child("p", "conflicted")
+    [row] = await _parked(service)
+    assert row["id"] == parked["id"] and "reconflicted_at" in row["evidence"]
+    assert [task.id for task in await _repairs(db)] == [identity]
+    assert (await db.get_task("next")).is_blocked
+
+    # A repair that ended without completing leaves the source with none.
+    await db.update_task(identity, status=TaskStatus.FAILED.value)
+    await service.sweep("p")
+    assert [task.id for task in await _repairs(db)] == [identity], "never a second repair"
+    assert "waiting_on" not in await db.get_task_meta("conflicted", PUBLISHER_SKIP_KEY)
+    result = await run_doctor_check(db, UNREPAIRED)
+    assert result.severity == Severity.ERROR
+    [finding] = result.data["conflicts"]
+    assert finding["task_ids"] == ["conflicted"]
+    assert finding["state"] == "finished"
+    assert finding["conflicting_files"] == ["base.txt"]
+    assert f"{identity} (FAILED)" in result.detail
+    with pytest.raises(ValueError, match="has no open repair"):
+        await service.recover_child("p", "conflicted")
+
+
+async def test_reconflicted_repair_chain_carries_the_source_to_delivery(setup):
+    """A repair whose own publication conflicts is carried by the next one.
+
+    The first repair of fresh-ember.2 closed pass and then conflicted again
+    because main moved; its generation-2 repair was the live work, but the
+    source's view named neither.  Merged repairs keep every source an
+    ancestor, so the final delivery lands the original revision itself.
+    """
+    db, service, source, remote, _repo = setup
+    original = await _conflicted_source(setup)
+    await service.sweep("p")
+    [parked] = await _parked(service)
+    first = service._repair_identity(parked["manifest"])
+    first_head = await _merge_repair(setup, first, [original], "main and child\n")
+    await _advance_main(source, "main again\n")
+
+    await service.sweep("p")
+    [second_row] = [row for row in await _parked(service) if row["id"] != parked["id"]]
+    assert [m["task_id"] for m in second_row["manifest"]] == [first]
+    assert second_row["evidence"]["kind"] == "merge_conflict"
+    second = service._repair_identity(second_row["manifest"])
+    assert "Development repair generation: 2" in (await db.get_task(second)).description
+    # The source waits on the repair actually carrying it, not the closed one.
+    await service.sweep("p")
+    assert (await db.get_task_meta("conflicted", PUBLISHER_SKIP_KEY))["waiting_on"] == second
+    await _age_parked_rows(db)
+    result = await run_doctor_check(db, UNREPAIRED)
+    assert result.severity == Severity.OK, result.detail
+    with pytest.raises(
+        ValueError, match=f"{first} \\(COMPLETED\\) -> {second} \\(READY\\)"
+    ):
+        await service.recover_child("p", "conflicted")
+
+    await _merge_repair(setup, second, [first_head], "main again, and child\n")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    await service.sweep("p")
+    assert not await _parked(service)
+    assert not (await db.get_task("next")).is_blocked
+    git(remote, "merge-base", "--is-ancestor", original, "main")
+    assert git(remote, "show", "main:base.txt") == "main again, and child"
+    assert {task.id for task in await _repairs(db)} == {first, second}
+
+
+async def test_exhausted_repair_generations_are_named_and_reported(setup):
+    """Past the generation budget the batch stays parked, named, and listed."""
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "original")
+    last = await _repair_chain(db, service, 3)
+    await db.update_task(last, status=TaskStatus.COMPLETED.value)
+    diagnostics = []
+    assert await service.ensure_repair(
+        "p", "r", [{"task_id": last, "source_sha": "a" * 40}], "b" * 40,
+        reason="source conflict", diagnostics=diagnostics,
+    ) is None
+    assert [(d["kind"], d["task_ids"]) for d in diagnostics] == [
+        ("repair_generation_exhausted", [last])
+    ]
+
+    now = time.time()
+    await service.save({
+        "id": "exhausted", "project_id": "p", "repository_id": "r",
+        "target_ref": "refs/heads/main", "expected_sha": None, "prepared_sha": None,
+        "state": "parked", "manifest": [{"task_id": last, "source_sha": "a" * 40}],
+        "evidence": {"kind": "merge_conflict", "detail": "CONFLICT",
+                     "conflicting_files": ["base.txt"]},
+        "reason": "source conflict; independent work may continue",
+        "created_at": now, "updated_at": now,
+    })
+    await service.sweep("p")
+    row = next(r for r in await service.rows("p") if r["id"] == "exhausted")
+    assert row["evidence"]["publisher_diagnostic"]["kind"] == "repair_generation_exhausted"
+    await _age_parked_rows(db)
+    result = await run_doctor_check(db, UNREPAIRED)
+    assert result.severity == Severity.ERROR
+    [finding] = result.data["conflicts"]
+    assert (finding["task_ids"], finding["state"], finding["diagnostic"]) == (
+        [last], "missing", "repair_generation_exhausted"
+    )
+
+
+def test_repair_chain_states_follow_the_journal():
+    from src.integration.development import repair_chain
+
+    identity = DevelopmentIntegration._repair_identity
+    source = [{"task_id": "s", "source_sha": "a" * 40}]
+    first = identity(source)
+    carried = [{"task_id": first, "source_sha": "b" * 40}]
+    second = identity(carried)
+
+    def row(state, manifest, target="refs/heads/main", created=1.0):
+        return {"id": state + str(created), "repository_id": "r", "target_ref": target,
+                "state": state, "manifest": manifest, "created_at": created}
+
+    def chain(history, statuses):
+        return repair_chain(source, history, statuses, repository_id="r",
+                            target_ref="refs/heads/main")
+
+    parked = [row("parked", source)]
+    assert chain(parked, {})["state"] == "missing"
+    assert chain(parked, {first: "READY"})["open_repair"] == first
+    assert chain(parked, {first: "COMPLETED"})["state"] == "awaiting_publication"
+    assert chain(parked + [row("delivered", carried, created=2.0)],
+                 {first: "COMPLETED"})["state"] == "delivered"
+    # A parent assembly ref is not the target.
+    assembly = row("delivered", carried, target="refs/heads/aq/development/parent/x", created=2.0)
+    assert chain(parked + [assembly], {first: "COMPLETED"})["state"] == "awaiting_publication"
+    reparked = parked + [row("parked", carried, created=2.0)]
+    result = chain(reparked, {first: "COMPLETED", second: "IN_PROGRESS"})
+    assert (result["open_repair"], [link["task_id"] for link in result["chain"]]) == (
+        second, [first, second]
+    )
+    assert chain(reparked, {first: "COMPLETED", second: "BLOCKED"})["state"] == "finished"
+    assert chain(reparked, {first: "COMPLETED"})["state"] == "missing"
 
 
 def test_development_prime_omits_strict_review_protocol():
