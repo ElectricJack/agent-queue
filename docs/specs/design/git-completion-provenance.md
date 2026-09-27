@@ -58,20 +58,31 @@ Every original binding must exist and match. The replacement must descend from
 its declared base and change its tree. Its *source*, rather than its metadata
 marker, must be an ancestor of the inspected target. A development repair close
 uses the daemon-authored `development_repair_sources` contract, naming every
-original current completion/source. A legacy original with a full matching
-completion OID can be retained during that close; ambiguous ones require migration.
+original current completion/source. Its replacement base is the merge base of
+the repair source and the default branch: main advancing after the repair merged
+it does not make the repair incomplete. A repair whose tree equals that base
+writes no replacement and closes only if every original source is its ancestor.
+
+A legacy original without a completion ref is retained during that close
+(`legacy_repair_source`) when its final completion names the contract source, in
+full or as its unique abbreviation, or when it reported no source at all and
+both of these hold: the delivery that filed the repair
+(`development_repair_evidence.delivery_id`) names that task and source and
+postdates the completion (the generation fence), and the source is an ancestor
+of the repair (the pre-provenance check). A different reported source, a newer
+generation or a source the repair lacks still requires migration. An empty
+legacy commit list without that filing-delivery fence (for example, only a
+delivery-row source binding) is not bound automatically either.
 
 An invalid repair contract, a missing passing immutable source completion, or
-an unlabelled source without that matching final OID refuses close as an
-operator blocker (`precondition:provenance_migration`). Completion recording
-uses the same delivery-refusal path as pipeline verification: it retains the
-live task, claim, session and workspace, sets
-`needs_attention:delivery_provenance_migration`, and emits `task.needs_attention`.
-The refusal names the operator remedy
-`aq integration migrate-provenance <project-id> --apply`; inventory can report
-ambiguous evidence that still needs operator resolution. Empty legacy commit
-lists, including those with delivery-row source bindings, require that migration
-instead of expanding the automatic bridge's authority.
+an unlabelled source the bridge cannot bind refuses close as an operator blocker
+(`precondition:provenance_migration`). Completion recording uses the same
+delivery-refusal path as pipeline verification: it retains the live task, claim,
+session and workspace, sets `needs_attention:delivery_provenance_migration`, and
+emits `task.needs_attention`. The refusal names the operator remedy
+`aq integration migrate-provenance <project-id> --apply`, scoped with
+`--task-id <repair>` for an unlabelled source; inventory can report ambiguous
+evidence that still needs operator resolution.
 
 `authority:operator` additionally requires an authorized operator/equivalence
 operation and a reason. Git cannot establish semantic equivalence of arbitrary
@@ -90,13 +101,20 @@ records. The operator/live-supervisor check and typed dispatch run through
 CommandHandler. The command clones into a temporary isolated read repository;
 dry-run changes no durable local/remote refs, indexes, configuration or DB rows.
 
-Pages use `--limit` (1–1000, default 500), `--offset` and `next_offset`. The legacy
-delivery inventory is bounded at 1000 rows. Apply never modifies or deletes old
-rows. It expands only unique Git OID prefixes, binds explicit legacy
+Pages use `--limit` (1–1000, default 500), `--offset` and `next_offset`. The
+delivery journal is read in keyset chunks, and a page retains only the rows that
+name its own tasks, so a long history never refuses a page; those rows are
+bounded (5000), with a smaller `--limit` or `--task-id` as the remedy.
+`--task-id <id>` migrates only what that (held) task's close needs: the current
+completion of each `development_repair_sources` member, bound from the contract
+under the same fence the close applies, or the task's own passing generations
+when it has no contract; `next_offset` is then `null`. Apply never modifies or
+deletes old rows. It expands only unique Git OID prefixes, binds explicit legacy
 `completion_sources` to their exact completion ID, and verifies all objects.
-Receipt state is never containment authority. Missing sources, conflicting
-bindings, multiple matching generations and incomplete repair contracts are
-reported in `ambiguous` with task IDs, generations and reasons.
+A generation already retained in Git is reported `present`. Receipt state is
+never containment authority. Missing sources, conflicting bindings, multiple
+matching generations and incomplete repair contracts are reported in `ambiguous`
+with task IDs, generations and reasons.
 
 Repair migration requires the full explicit source contract, unique original
 and repair generations, a nonempty base/source pair, and current target ancestry

@@ -205,6 +205,8 @@ class DeliverySnapshot:
                 return result(DeliveryState.CONTAINED, locator, source)
             if await self._legacy_replacement(request, source):
                 return result(DeliveryState.CONTAINED, "legacy_repair_replacement", source)
+            if await self._legacy_adoption(request, source):
+                return result(DeliveryState.CONTAINED, "legacy_operator_adoption", source)
             return result(DeliveryState.PENDING, locator, source)
         except (GitError, OSError):
             return result(DeliveryState.UNKNOWN, "missing_or_ambiguous_source")
@@ -245,6 +247,43 @@ class DeliverySnapshot:
             if await self.git.ais_ancestor(
                 self.store, repair.reported_source, head, strict=True
             ) is True and await self.git.ais_ancestor(
+                self.store, head, self.target_oid, strict=True
+            ) is True:
+                return True
+        return False
+
+    async def _legacy_adoption(self, request, source):
+        """TEMPORARY operations/retire bridge for an explicit operator adoption.
+
+        ``integration adopt`` records an operator's decision that this exact
+        source is delivered as the adopted head: by ancestry, or by explicit
+        equivalence when the content landed rebased. Only that operator record
+        counts (a bare adopted state does not), only for this completion
+        generation, and only while git still contains the adopted head.
+        """
+        for row in self.legacy_rows:
+            evidence = row.get("evidence") or {}
+            if row.get("state") != "adopted" or evidence.get("kind") != "operator_accepted":
+                continue
+            if (row.get("project_id"), row.get("repository_id"), row.get("target_ref")) != (
+                request.project_id, request.repository_id, request.target_ref
+            ):
+                continue
+            boundary = request.completed_at if request.completed_at is not None else (
+                request.task_version
+            )
+            if float(row.get("created_at", 0)) < boundary or not any(
+                member.get("task_id") == request.task_id and member.get("source_sha") == source
+                for member in row.get("manifest") or []
+            ):
+                continue
+            proofs = evidence.get("completion_sources") or []
+            bound = {proof.get("completion_id") for proof in proofs
+                     if proof.get("task_id") == request.task_id}
+            if bound and request.completion_id not in bound:
+                continue
+            head = row.get("prepared_sha")
+            if is_valid_git_oid(head) and await self.git.ais_ancestor(
                 self.store, head, self.target_oid, strict=True
             ) is True:
                 return True

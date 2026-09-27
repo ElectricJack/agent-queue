@@ -914,6 +914,12 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
         task_metadata,
         tasks,
     )
+    from src.integration.development_stalls import (
+        DEFAULT_STALL_AFTER,
+        PUBLISHER_SKIP_KEY,
+        is_stalled,
+    )
+    from src.integration.development_stalls import WAITING as SKIP_WAITING
 
     async with ctx.db._engine.connect() as conn:
         development = set(
@@ -977,7 +983,7 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
                 select(tasks.c.id, tasks.c.project_id, task_metadata.c.value)
                 .select_from(task_metadata.join(tasks, task_metadata.c.task_id == tasks.c.id))
                 .where(
-                    task_metadata.c.key == "development_publisher_skip",
+                    task_metadata.c.key == PUBLISHER_SKIP_KEY,
                     tasks.c.project_id.in_(development),
                     tasks.c.status == TaskStatus.COMPLETED.value,
                 )
@@ -1035,29 +1041,41 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
                 "first_failed_at": completed_at,
             }
         )
+    stall_after = getattr(
+        getattr(ctx.config, "integration", None), "publisher_stall_after", DEFAULT_STALL_AFTER
+    )
     for task_id, project_id, raw in skips:
         try:
             skip = json.loads(raw)
         except (TypeError, ValueError):
             continue
-        ticks = skip.get("consecutive_ticks", 0)
-        if ticks < _SKIP_STALL_TICKS:
+        if not isinstance(skip, dict) or skip.get("state") == SKIP_WAITING:
+            # Waiting on a live repair is delegated work, not a stall.
+            continue
+        ticks = skip.get("consecutive_ticks", 0) or 0
+        stalled = is_stalled(skip, stall_after=stall_after)
+        if not stalled and ticks < _SKIP_STALL_TICKS:
             continue
         dependency_id = skip.get("dependency_id")
         reason = skip.get("reason", "unknown")
+        detail = (
+            f"child {task_id} skipped because dependency {dependency_id} is {reason}"
+            if dependency_id else f"child {task_id} skipped: {reason}"
+        )
+        if stalled:
+            detail += f"; stalled after {ticks} identical evaluations"
         findings.append({
             "project_id": project_id,
             "batch_id": None,
-            "cause": "candidate_skipped",
-            "detail": (
-                f"child {task_id} skipped because dependency {dependency_id} is {reason}"
-                if dependency_id else f"child {task_id} skipped: {reason}"
-            ),
+            "cause": "candidate_stalled" if stalled else "candidate_skipped",
+            "detail": detail,
             "consecutive_ticks": ticks,
             "task_ids": [task_id],
             "dependency_id": dependency_id,
             "reason": reason,
             "first_failed_at": skip.get("first_skipped_at"),
+            "evidence": skip.get("evidence"),
+            "notified_message_id": skip.get("notified_message_id"),
         })
     findings.sort(key=lambda f: (f["first_failed_at"] or 0))
     return findings
@@ -1113,14 +1131,23 @@ async def _check_publisher_stalled(ctx: DoctorContext) -> CheckResult:
             severity=Severity.OK,
             detail="every development publisher is making progress",
         )
-    first = stalls[0]
+    # A skip below the stall bound is a progress observation (WARN); every
+    # other finding, a stalled candidate included, is an ERROR and leads.
+    serious = [stall for stall in stalls if stall["cause"] != "candidate_skipped"]
+    first = (serious or stalls)[0]
     where = f"batch {first['batch_id']}" if first["batch_id"] else f"project {first['project_id']}"
-    skipped_only = all(stall["cause"] == "candidate_skipped" for stall in stalls)
-    if skipped_only:
+    skipped_only = not serious
+    if first["cause"] in {"candidate_skipped", "candidate_stalled"}:
         advice = (
             f"Run `aq integration sweep {first['project_id']} --recover-child "
             f"{first['task_ids'][0]}` to retry and verify publication"
         )
+        if first["cause"] == "candidate_stalled":
+            advice = (
+                "The publisher stopped retrying this attempt and messaged the project "
+                "supervisor; changed source, completion or target evidence starts a new "
+                "one. " + advice
+            )
     elif first["cause"] == "validation_infrastructure":
         advice = (
             "Fix the validation environment (test database, test slots, "

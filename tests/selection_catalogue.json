@@ -1266,7 +1266,7 @@
       ]
     }
   },
-  "digest": "sha256:a7084efd34778de8682043339e6ebee85d154dea015dbf73431433eb6f78de6a",
+  "digest": "sha256:a4a98e60d15e647b0b17be6b28606a6d6f1d127f20d48e849549ed5a6bd6050d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4485,6 +4485,7 @@
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
         "src.integration.status",
@@ -5711,6 +5712,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"
@@ -13489,8 +13491,10 @@
         "src.database.queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.hierarchy",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.vault"
       ],
       "markers": [
         "parametrize",
