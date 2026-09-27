@@ -884,7 +884,11 @@ the filing path's own scope, decided under the same `lock_filing_scope` locks:
 - the new parent is constrained exactly as a filing's: `T`, a descendant of `T`, `T`'s
   own immediate parent, or root (`hierarchy.parent_out_of_scope` otherwise);
 - a move **to root attaches the routing gate** a root filing is born with (deduplicated
-  against an open one), so the finding still waits for triage rather than running;
+  against an open one), so the finding still waits for triage rather than running. A
+  task that already carries a profile gets no gate: `task.route_needed` never fires for
+  a routed task, so nothing would resolve it, and on an epic it would withhold every
+  child after the epic's last blocker cleared (clear-orbit). This is the `unrouted_only`
+  rule `gate_create` applies. A gate the move does attach is announced with `gate.created`;
 - a filing whose only provenance was the parent-child edge to `T` (a filing under `T`
   writes no separate `discovered-from`, above) gets a `discovered-from` edge to that
   former parent written in the same transaction as the move, so placement and provenance
