@@ -333,3 +333,128 @@ class TestIdleWorkerBacklog:
 
         assert result.severity is Severity.INFO
         assert [entry["message_id"] for entry in result.data["messages"]] == [msg.id]
+
+
+# ---------------------------------------------------------------------------
+# sessions.stall_unreachable
+# ---------------------------------------------------------------------------
+
+UNREACHABLE = "sessions.stall_unreachable"
+PAINTED = (
+    "[fast-jev:opencode 2026-09-27T10:14:22.594Z] session ses_f1dc: 64 msgs, calls=85 "
+    "kept=0 dropped=56"
+)
+
+
+async def _stalled(db, provider, *, idle_s=20 * 60, claim_phase="active"):
+    row = await _running_session(db, provider)
+    await db.update_session(row.id, last_activity=time.time() - idle_s, claim_phase=claim_phase)
+    return row
+
+
+def test_the_unreachable_check_is_registered_read_only():
+    check = session_checks.CHECKS[UNREACHABLE]
+    assert check.owner == "session-runtime"
+    assert check.fix is None
+    assert UNREACHABLE in {c.id for c in src.doctor.default_registry().checks()}
+
+
+class TestStallUnreachable:
+    """2026-09-26/27: OpenCode workers idle 20+ minutes, the stall nudge
+    deferred on every tick without a trace.  The check names each stalled
+    task holder whose composer refuses the nudge, and what it shows."""
+
+    async def test_a_stalled_holder_whose_composer_refuses_is_reported(self, db):
+        provider = FakeProvider()
+        row = await _stalled(db, provider)
+        provider.script_composer_refusal(row.name, "has a draft or its input is unknown", PAINTED)
+
+        result = await session_checks.run_check(db, _Handler(provider), UNREACHABLE)
+
+        assert result.severity is Severity.WARN
+        [entry] = result.data["sessions"]
+        assert (entry["name"], entry["task_id"]) == (row.name, "t1")
+        assert entry["idle_seconds"] >= 20 * 60 - 5
+        assert entry["reason"] == "has a draft or its input is unknown"
+        assert row.name in result.detail and "[fast-jev:opencode" in result.detail
+        assert provider.sent_nudges == []
+
+    async def test_the_refusal_is_named_when_the_composer_shows_nothing(self, db):
+        provider = FakeProvider()
+        row = await _stalled(db, provider)
+        provider.script_composer_refusal(row.name, "is busy or its input is unknown")
+
+        result = await session_checks.run_check(db, _Handler(provider), UNREACHABLE)
+
+        assert result.severity is Severity.WARN
+        assert "is busy or its input is unknown" in result.detail
+
+    async def test_a_stalled_holder_that_can_be_nudged_is_ok(self, db):
+        provider = FakeProvider()
+        await _stalled(db, provider)
+
+        result = await session_checks.run_check(db, _Handler(provider), UNREACHABLE)
+
+        assert result.severity is Severity.OK
+
+    @pytest.mark.parametrize(
+        ("idle_s", "claim_phase"),
+        [(60, "active"), (20 * 60, None)],
+        ids=["inside-the-lease", "pool-worker-between-claims"],
+    )
+    async def test_sessions_the_ladder_would_not_nudge_are_skipped(self, db, idle_s, claim_phase):
+        provider = FakeProvider()
+        row = await _stalled(db, provider, idle_s=idle_s, claim_phase=claim_phase)
+        provider.script_composer_refusal(row.name, "has a draft or its input is unknown")
+
+        result = await session_checks.run_check(db, _Handler(provider), UNREACHABLE)
+
+        assert result.severity is Severity.OK
+
+    async def test_a_holder_in_a_durable_wait_is_skipped(self, db, monkeypatch):
+        provider = FakeProvider()
+        row = await _stalled(db, provider)
+        provider.script_composer_refusal(row.name, "has a draft or its input is unknown")
+
+        async def blocking(session, claim_epoch, now):
+            return {"id": "wait-1"}
+
+        monkeypatch.setattr(db, "blocking_wait_for", blocking)
+        result = await session_checks.run_check(db, _Handler(provider), UNREACHABLE)
+
+        assert result.severity is Severity.OK
+
+    async def test_a_disabled_ladder_is_informational(self, db):
+        from types import SimpleNamespace
+
+        provider = FakeProvider()
+        row = await _stalled(db, provider)
+        provider.script_composer_refusal(row.name, "has a draft or its input is unknown")
+        config = SimpleNamespace(sessions=SimpleNamespace(lease_ttl_seconds=0))
+
+        result = await session_checks.run_check(
+            db, _Handler(provider), UNREACHABLE, config=config
+        )
+
+        assert result.severity is Severity.INFO
+
+    async def test_no_orchestrator_is_informational(self, db):
+        result = await session_checks.run_check(db, None, UNREACHABLE)
+        assert result.severity is Severity.INFO
+
+    async def test_an_opencode_box_painted_over_is_named_without_touching_the_pane(self, db):
+        from tests.test_tmux_opencode_composer import FAST_JEV, OpenCodePane
+        from tests.test_tmux_opencode_composer import provider_for as opencode_provider
+
+        row = await _stalled(db, FakeProvider())
+        pane = OpenCodePane(stray=FAST_JEV)
+
+        result = await session_checks.run_check(
+            db, _Handler(opencode_provider(pane)), UNREACHABLE
+        )
+
+        assert result.severity is Severity.WARN
+        [entry] = result.data["sessions"]
+        assert entry["name"] == row.name
+        assert entry["input"].startswith("[fast-jev:opencode")
+        assert pane.mutations == []

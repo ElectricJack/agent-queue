@@ -99,6 +99,21 @@ task. An answer only satisfies it when it lands on the thread: answer with
 without `--reply-to` has no thread; it still wakes an idle worker through the
 ordinary message nudge, but the wait stays active until its deadline.
 
+The same cursor rule applies to collaboration threads. A message wait whose
+`--ref` is a `collab-*` thread id resolves on the first later collaboration
+message. Unlike an ordinary task thread, a collaboration wait can also end in
+one of four typed reasons (first match wins; the result is final):
+
+| reason                | meaning                                                             |
+|-----------------------|---------------------------------------------------------------------|
+| `peer_failed`         | at least one peer task is **FAILED** or **BLOCKED**                  |
+| `peer_gone`           | all peer tasks are terminal, archived or missing                     |
+| `thread_closed`       | thread state is `closed` (e.g. `budget_exhausted`, `members_below_two`, manual close) or `expired`, or the deadline has passed |
+| `partner_not_running` | no peer is running after a 120-second grace period                  |
+
+In each case the daemon records the terminal result; the thread is not a live
+conversation to nudge. Continue with your own task rather than re-registering.
+
 For mail that has waited more than five minutes for an idle live worker, run
 `aq doctor --check messages.idle_worker_backlog`. It uses the delivery engine's
 session lens and reports each message with the last refused-nudge reason for

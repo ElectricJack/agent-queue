@@ -31,6 +31,20 @@ Codex 0.157 panes sat in, invisibly, on 2026-09-27.
 key the operator would send by hand, and it can only ever submit text this
 daemon typed: a human draft never carries the marker, so it is never
 touched.  An unreadable record is never submitted by ``--fix``.
+
+sessions.stall_unreachable — the rule
+-------------------------------------
+
+The stall ladder nudges a task holder idle past the session lease, and a
+nudge the composer guard defers is silent: no rung is spent, no
+``task.stalled`` is emitted, and the worker waits for a human.  That is how
+OpenCode workers sat idle for 20+ minutes on 2026-09-26/27 — the guard did
+not recognise OpenCode's box composer, and the fast-jev plugin had painted
+its log line over it.  This check lists every live task holder idle past
+the lease whose composer would refuse the nudge right now, with the refusal
+and the text the composer shows, so a human draft, a painted-over box and an
+unrecognised layout can be told apart.  Read-only: it neither repaints nor
+presses a key.  Sessions in a durable wait are not stalled and are skipped.
 """
 
 from __future__ import annotations
@@ -54,6 +68,8 @@ _LIVE_STATES = ("starting", "running", "draining")
 ENV_CHECK_ID = "sessions.env_markers"
 
 BACKLOG_CHECK_ID = "messages.idle_worker_backlog"
+
+UNREACHABLE_CHECK_ID = "sessions.stall_unreachable"
 
 #: The delivery cascade nudges an idle recipient on every pass, so mail this
 #: old for an idle live worker is a failed wake, not a queue that is draining.
@@ -220,6 +236,104 @@ async def _fix_stuck_composer(ctx: DoctorContext) -> CheckResult:
     )
 
 
+def _lease_ttl(config) -> float:
+    from src.config import SessionsConfig
+
+    sessions = getattr(config, "sessions", None)
+    ttl = getattr(sessions, "lease_ttl_seconds", None)
+    return float(SessionsConfig.lease_ttl_seconds if ttl is None else ttl)
+
+
+async def _stalled_holders(ctx: DoctorContext, ttl: float, now: float) -> list:
+    """Live sessions the stall ladder would try to nudge on its next tick."""
+    rows = await ctx.db.list_sessions(state="running")
+    stalled = []
+    for row in rows:
+        if row.lifecycle not in ("task", "pool") or not row.task_id:
+            continue
+        if row.lifecycle == "pool" and row.claim_phase != "active":
+            continue
+        if now - (row.last_activity or row.started_at or now) <= ttl:
+            continue
+        task = await ctx.db.get_task(row.task_id)
+        if task is None or task.status is not TaskStatus.IN_PROGRESS:
+            continue
+        try:
+            if await ctx.db.blocking_wait_for(row, task.claim_epoch, now):
+                continue
+        except Exception:
+            logger.debug("could not read the wait for session %s", row.id, exc_info=True)
+        stalled.append(row)
+    return stalled
+
+
+async def _find_unreachable(ctx: DoctorContext, registry, config, ttl: float) -> list[dict]:
+    """Stalled task holders whose composer would defer the ladder's nudge."""
+    now = time.time()
+    unreachable: list[dict] = []
+    for row in await _stalled_holders(ctx, ttl, now):
+        try:
+            provider = registry.create(row.provider, config)
+            probe = getattr(provider, "composer_probe", None)
+            # A provider without a composer (subprocess) has no nudge rung.
+            result = await probe(_handle(row)) if probe is not None else None
+        except Exception:
+            logger.debug("could not probe the composer of session %s", row.id, exc_info=True)
+            continue
+        if result is None or result.get("ready"):
+            continue
+        unreachable.append({
+            "session_id": row.id,
+            "name": row.name,
+            "harness": row.harness,
+            "task_id": row.task_id,
+            "project_id": row.project_id,
+            "idle_seconds": int(now - (row.last_activity or row.started_at or now)),
+            "reason": result.get("reason"),
+            "input": result.get("input") or "",
+        })
+    return unreachable
+
+
+async def _check_stall_unreachable(ctx: DoctorContext) -> CheckResult:
+    resolved = _providers(ctx)
+    if resolved is None or ctx.db is None:
+        return CheckResult(
+            id=UNREACHABLE_CHECK_ID,
+            severity=Severity.INFO,
+            detail="session providers are unavailable outside the daemon",
+        )
+    registry, config = resolved
+    ttl = _lease_ttl(config or ctx.config)
+    if ttl <= 0:
+        return CheckResult(
+            id=UNREACHABLE_CHECK_ID,
+            severity=Severity.INFO,
+            detail="the stall ladder is disabled (sessions.lease_ttl_seconds <= 0)",
+        )
+    unreachable = await _find_unreachable(ctx, registry, config, ttl)
+    if not unreachable:
+        return CheckResult(
+            id=UNREACHABLE_CHECK_ID,
+            severity=Severity.OK,
+            detail="every task holder idle past the session lease can be nudged",
+        )
+    shown = "; ".join(
+        f"{e['name']} (task {e['task_id']}, idle {e['idle_seconds'] // 60}m)"
+        + (f" shows: {e['input'][:120]}" if e["input"] else f": {e['reason']}")
+        for e in unreachable[:5]
+    )
+    return CheckResult(
+        id=UNREACHABLE_CHECK_ID,
+        severity=Severity.WARN,
+        detail=(
+            f"{len(unreachable)} task holder(s) idle past the {int(ttl) // 60} min lease "
+            f"cannot be nudged, so the stall ladder cannot climb: {shown}"
+        ),
+        data={"count": len(unreachable), "sessions": unreachable},
+    )
+
+
 async def _old_pending_mail(ctx: DoctorContext) -> tuple[list[dict], bool]:
     """Undelivered task/session mail older than the backlog age, oldest first."""
     from sqlalchemy import select
@@ -360,6 +474,12 @@ def session_checks() -> list[DoctorCheck]:
             id=STUCK_CHECK_ID,
             run=_check_stuck_composer,
             fix=_fix_stuck_composer,
+            owner=OWNER,
+            timeout_s=15.0,
+        ),
+        DoctorCheck(
+            id=UNREACHABLE_CHECK_ID,
+            run=_check_stall_unreachable,
             owner=OWNER,
             timeout_s=15.0,
         ),

@@ -1151,6 +1151,7 @@
         "tests/test_tmux_nudge_confirm.py",
         "tests/test_tmux_nudge_drafts.py",
         "tests/test_tmux_nudge_recovery.py",
+        "tests/test_tmux_opencode_composer.py",
         "tests/test_tmux_path.py",
         "tests/test_tmux_startup_dialogs.py",
         "tests/test_usage_limit_screen.py"
@@ -1277,7 +1278,7 @@
       ]
     }
   },
-  "digest": "sha256:11ae85b203edadac5f5187ea5e58bdbd68db979f5291cdcedf0cd4b97dce9a88",
+  "digest": "sha256:5f6f8737959a171309dc8f43e51027b5569d9fc91a8dbb6fd85222cddcfcc18b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4576,6 +4577,7 @@
         "src.integration.owner_recovery",
         "src.integration.provenance",
         "src.integration.provenance_migration",
+        "src.integration.publishable_artifact",
         "src.integration.status",
         "src.jobs.adapters",
         "src.jobs.policy",
@@ -5506,12 +5508,15 @@
         "src.commands.handler",
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.explain",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.pools",
         "src.playbooks.artifact_ref",
-        "src.scheduler"
+        "src.scheduler",
+        "src.sessions.harness_parser"
       ],
       "markers": [
         "parametrize"
@@ -11616,7 +11621,9 @@
         "src.sessions.spec",
         "src.sessions.tmux"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``sessions.stuck_composer`` — the doctor half of the lost-Enter stall."
     },
     "tests/test_session_executable.py": {
@@ -13029,6 +13036,21 @@
         "parametrize"
       ],
       "summary": "Recovering a nudge whose Enter was lost to the composer's repaint."
+    },
+    "tests/test_tmux_opencode_composer.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.sessions",
+        "src.sessions.provider",
+        "src.sessions.tmux"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Nudging an OpenCode worker: its box composer, and plugin output painted over it."
     },
     "tests/test_tmux_path.py": {
       "areas": [
