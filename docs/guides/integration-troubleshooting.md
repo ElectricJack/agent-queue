@@ -67,6 +67,7 @@ aq doctor --check git.stale_branches
 | `development-repair-…` tasks appearing | Parked content needs a human-shaped fix | [Repair tasks](#repair-tasks) |
 | Parked batches never progress; `daemon.log` grows fast | The publisher is stalled on one batch | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
 | A repair closed `pass` but its branch is in no batch | The publisher is not collecting | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
+| Supervisor message "Development publisher stalled on N candidate(s)"; doctor ERROR `candidate_stalled` | The same skip repeated `integration.publisher_stall_after` times | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
 
 ## Nothing is wrong yet
 
@@ -828,6 +829,21 @@ aq doctor --check integration.development_publisher_stalled
   `aq/<repair-id>` and the next sweep should pick the branch up. An hour later
   — twelve sweeps at the default interval — with the branch in no batch
   manifest at all, the publisher is not collecting.
+* **A candidate's skip stalled.** A completed task the sweep skips (an
+  undelivered dependency, a missing source ref, a cycle, a parked source with
+  no live repair) is counted per identical evaluation. At
+  `integration.publisher_stall_after` (default 5) the attempt ends as
+  `candidate_stalled`: doctor reports ERROR and `supervisor-<project>` gets one
+  message with the task, repository, target and source OIDs, completion,
+  reason and a recovery command. Below the bound the check warns from the third
+  evaluation (`candidate_skipped`). A skip waiting on a live repair does not
+  count. The stalled attempt is not reported again, even after a restart; the
+  sweep still checks it and clears the record the moment git shows the work
+  delivered. Fix the named cause, then `aq integration sweep <project>
+  --recover-child <task>` starts a fresh attempt; so does a new completion, a
+  moved source or a changed target. The skip record, in the task's
+  `development_publisher_skip` metadata, is observation only — never delivery
+  proof.
 
 The check is report-only. Clearing the diagnostic by hand would only hide the
 stall, because the next tick rewrites it.

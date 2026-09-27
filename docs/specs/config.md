@@ -677,12 +677,15 @@ override → project policy `projects.integration_mode` → this).
 | `merge_ci_policy` | `str` | `"warn"` | What `pr_merge` does when the PR's status-check rollup is not green. `"off"`: never asks (pre-2026-09-03 behaviour). `"warn"`: asks, merges regardless, and returns the verdict in the result's `ci` block and the daemon log. `"required"`: refuses to merge anything that is not green, including a rollup that cannot be read (fail closed). |
 | `merge_required_checks` | `list[str]` | `[]` | Check names that must be green, e.g. `["Tests (default)"]`. Empty means every check in the rollup — the strict reading. A required name the rollup never mentions is treated as not-yet-reported, which blocks under `required`. A bare string is accepted as a one-element list. |
 | `merge_require_up_to_date` | `bool` | `true` | Whether a PR head that is *behind* its base counts as not green — GitHub's "Require branches to be up to date before merging", applied on the fleet's own merge path. A green rollup only proves the head passed against the base as it was when the run started; PRs #390 and #391 were each green on their own base and their back-to-back merge put a `main` together that no run had tested. Under `warn` this only adds a `base` block (`ref`, `behind_by`, `state`: `current` / `stale` / `unknown`) to the result; under `required` a stale or unreadable base refuses the merge until the branch is updated and its checks re-run. The trade-off is more CI re-runs on a busy queue. |
+| `owner_recovery_sweep` | `bool` | `false` | Whether the daemon periodically releases branch owners whose writers are proven gone. Ships off so the first releases of an existing backlog are deliberate. |
+| `publisher_stall_after` | `int` | `5` | Consecutive identical unsuccessful evaluations after which the development publisher ends a skipped candidate's attempt as `stalled`: one error log, one `supervisor-<project>` message and doctor ERROR (`integration.development_publisher_stalled`). An evaluation is identical when task, latest completion, reason, related task, target repository/ref and the relevant git evidence are unchanged. Idle ticks, daemon downtime and waits on a live repair do not count; new evidence or an explicit `aq integration sweep --retry` / `--recover-child` starts a new attempt. |
 
 Validation (`IntegrationConfig.validate`): `default_mode` must be one of
 `INTEGRATION_MODES` (`direct`, `pull_request`); `merge_ci_policy` must be
 one of `MERGE_CI_POLICIES` (`off`, `warn`, `required`, defined in
 `src/git/ci_gate.py`); `merge_required_checks` must be a list of non-empty
-strings; `merge_require_up_to_date` is coerced to a boolean.
+strings; `merge_require_up_to_date` is coerced to a boolean;
+`publisher_stall_after` must be a positive integer.
 
 `merge_ci_policy` exists because GitHub was never asked the question: `main`
 carries no required status check, so `gh pr merge` merged 29 of the last 30
