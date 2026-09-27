@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-120 commands are registered.
+128 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -97,6 +97,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_enable`](integration_enable.md) | Integration Enable | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_flush`](integration_flush.md) | Integration Flush | Authenticated hierarchical integration operational control. |
+| [`integration_migrate_provenance`](integration_migrate_provenance.md) | Integration Migrate Provenance | Inventory exact legacy completions; optionally retain verified Git provenance. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |
 | [`integration_promote_main`](integration_promote_main.md) | Promote exact root candidate | Reconcile and fast-forward main to the exact trusted green candidate. |
@@ -136,6 +137,11 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 |---|---|---|
 | [`ci_baseline_status`](ci_baseline_status.md) | Read the default branch's CI verdict | Judge the head commit's check runs, name the failing checks and tests, and derive the repair task keyed by their failure signature. |
 | [`ci_repair_adopt`](ci_repair_adopt.md) | Adopt a task as the CI repair | Key a live task as the repair for a red branch and record the failing tests it owns, so the CI sentinel reuses it instead of filing another. |
+| [`collaboration_accept`](collaboration_accept.md) | Collaboration Accept | Join a collaboration thread for the held task's live claim. |
+| [`collaboration_close`](collaboration_close.md) | Collaboration Close | Close a thread without changing any member task. |
+| [`collaboration_create`](collaboration_create.md) | Collaboration Create | Create a bounded thread between 2 to 4 tasks and invite each once. |
+| [`collaboration_get`](collaboration_get.md) | Collaboration Get | Read a thread, its members, capacity hold and ordered messages. |
+| [`collaboration_list`](collaboration_list.md) | Collaboration List | List collaboration threads for the held task or a project. |
 | [`git_diff`](git_diff.md) | Read a Git diff | Read a project's working-tree or branch diff. |
 | [`github_issue_fix_approved`](github_issue_fix_approved.md) | File an approved issue fix | Create or reuse the fix task for an approved investigation. |
 | [`github_issue_rejection`](github_issue_rejection.md) | Apply an explicit issue closure request | Close an issue only when Jack explicitly asks in a rejected review. |
@@ -147,8 +153,10 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`job_result`](job_result.md) | Job Result | Read a job's immutable result and bounded excerpt. |
 | [`job_submit`](job_submit.md) | Job Submit | Submit a finite preset, optionally with an atomic durable wait. |
 | [`list_projects`](list_projects.md) | List projects | Read the configured projects without changing them. |
+| [`message_wait`](message_wait.md) | Message Wait | Wait up to 60 seconds for collaboration messages on a durable wait. |
 | [`morning_report_preview`](morning_report_preview.md) | Morning Report Preview | Read bounded overnight evidence without writes or model calls. |
 | [`morning_report_tick`](morning_report_tick.md) | Morning Report Tick | Reserve and recover the zoned daily report and deadline fallback. |
+| [`provider_allocation_status`](provider_allocation_status.md) | Read provider worker allocation | Group every ordinary worker profile by provider with its pool supply, live sessions, pinned tasks, manual agents, project preferences and the provider-wide configured ceiling, without changing anything. |
 | [`provider_availability_notify`](provider_availability_notify.md) | Announce a provider's availability change | Message the global supervisor and the human once when a provider moves between launchable and unavailable; a repeat for the same change sends nothing. |
 | [`provider_reroute`](provider_reroute.md) | Re-route work off an unavailable provider | Move queued work whose provider is unavailable to the same intelligence class on an available provider, a few tasks at a time; pinned tasks and single-provider classes hold. |
 | [`provider_usage_probe`](provider_usage_probe.md) | Probe a provider's remaining quota | Ask a provider's own CLI what is left of the account's limit windows and record the reading. Free to run and never billed against the quota it reports. |

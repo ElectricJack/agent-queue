@@ -44,6 +44,8 @@ from src.commands.job_commands import JobCommandsMixin
 from src.commands.claim_commands import ClaimCommandsMixin
 from src.commands.question_commands import QuestionCommandsMixin
 from src.commands.wait_commands import WaitCommandsMixin
+from src.commands.collaboration_commands import CollaborationCommandsMixin
+from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
 from src.commands.system_commands import SystemCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
@@ -78,6 +80,7 @@ from src.commands.integration_commands import IntegrationCommandsMixin
 # touching this file.  See docs/analysis/execution-plan.md §1.1.
 from src.commands.gate_commands import GateCommandsMixin
 from src.commands.message_commands import MessageCommandsMixin
+from src.commands.message_wait_commands import MessageWaitCommandsMixin
 from src.commands.session_commands import SessionCommandsMixin
 from src.commands.surface_commands import SurfaceCommandsMixin
 from src.commands.ops_commands import OpsCommandsMixin
@@ -85,6 +88,7 @@ from src.commands.worktree_commands import WorktreeCommandsMixin
 from src.commands.git_commands import GitCommandsMixin
 from src.commands.ci_commands import CiCommandsMixin
 from src.commands.provider_commands import ProviderCommandsMixin
+from src.commands.provider_allocation_commands import ProviderAllocationCommandsMixin
 from src.commands.test_selection_commands import TestSelectionCommandsMixin
 from src.commands.digest_commands import DigestCommandsMixin
 from src.commands.report_commands import ReportCommandsMixin
@@ -364,6 +368,7 @@ class CommandHandler(
     # -- Framework-overhaul substrate mixins (empty until their lane) ----
     GateCommandsMixin,
     MessageCommandsMixin,
+    MessageWaitCommandsMixin,
     SessionCommandsMixin,
     SurfaceCommandsMixin,
     OpsCommandsMixin,
@@ -372,11 +377,14 @@ class CommandHandler(
     GitCommandsMixin,
     CiCommandsMixin,
     ProviderCommandsMixin,
+    ProviderAllocationCommandsMixin,
     DashboardStateCommandsMixin,
     DigestCommandsMixin,
     TestSelectionCommandsMixin,
     ReportCommandsMixin,
     WaitCommandsMixin,
+    CollaborationCommandsMixin,
+    CollaborationLifecycleMixin,
     EscalationCommandsMixin,
     ConversationCommandsMixin,
     ReviewCommandsMixin,

@@ -51,6 +51,15 @@ aq agent message --all-running "Never run a bare pytest" --profile worker
 aq message status <message-id>
 ```
 
+When the guidance answers a worker's message, pass that message's id with
+`--reply-to <message-id>`. The guidance then joins the message's thread, which
+is what a worker's durable message wait (`aq wait register --kind message
+--ref <thread>`) waits for; guidance sent without it never satisfies that wait:
+
+```bash
+aq agent message <task-id> "Filed: fresh-ember and .1-.9." --reply-to <message-id>
+```
+
 Use `aq session nudge` only for low-level diagnostics; it is not a reliable
 supervisor-to-worker delivery surface.
 
@@ -138,3 +147,54 @@ See `docs/guides/escalations.md` for the full model.
 - Chat messages between the dashboard and a supervisor session use the
   thread id `dashboard:<project_id>` — filter by that thread id when
   you want to see the current live chat.
+
+## Collaboration threads (agent-to-agent, same goal)
+
+A collaboration thread is a bounded ordered conversation between 2-4 held
+tasks, each on its own branch and worktree. It exists to let agents that are
+working on the same goal coordinate without one of them needing to hand off
+the task. Threads are operator- or supervisor-created and invite a fixed set
+of member tasks when created.
+
+Workers use:
+
+```bash
+aq collaboration show <thread-id>                       # goal, state, cursor,
+                                                        # up to 20 messages
+aq collaboration show <thread-id> --after 42            # resume after seq 42
+aq collaboration accept <thread-id>                     # join under your live claim
+aq collaboration list --task-id <your-task-id>          # threads you belong to
+aq collaboration close <thread-id> --note "Goal met."   # record final result
+```
+
+To send a message on a thread, use the ordinary send with the thread's id as
+the `--thread-id` and the target peer as `--to-kind task --to-id <peer-task>`:
+
+```bash
+aq message send --thread-id <thread-id> --to-kind task --to-id <peer> \
+  --body "I'm about to commit X; will need a rebase from you after that." \
+  --client-key turn-1
+```
+
+Re-send the same `--client-key` with the same body if you need to retry: the
+daemon de-duplicates it and does not double-count against the thread's budget.
+The `--client-key` is the only send-side flag collaboration-specific; everything
+else is the ordinary message send you already know.
+
+To wait on a reply from a peer, use the ordinary durable message wait with the
+thread id as the referral:
+
+```bash
+aq wait register --kind message --ref <thread-id> --after-seq <cursor> \
+  --idempotency-key turn-1-retry --timeout 3600
+```
+
+The wait resolves on the first collaboration message after your cursor. It
+also resolves in terminal in four ways that never require a re-register:
+`peer_failed` (a peer went FAILED or BLOCKED), `peer_gone` (all peers are
+terminal, archived, or missing), `thread_closed` (the thread reached a
+terminal state, or the deadline passed), and `partner_not_running` (no peer is
+running after a 120-second grace). See [agent-waits.md](/docs/guides/agent-waits.md)
+for the full wait contract and doctor checks.
+
+Full worker guide: [agent-collaboration.md](/docs/guides/agent-collaboration.md).

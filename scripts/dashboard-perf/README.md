@@ -22,16 +22,11 @@ database on the same PostgreSQL instance isolates data but shares buffers, IO
 and connections; a separate instance on the same disk still shares disk IO.
 `pg_identity.py` records endpoint identity without printing credentials.
 
-Node needs `puppeteer-core@24` (24.33 or later, for window pages and
-`page.windowId()`) and Chrome (`CHROME`, default `/usr/bin/google-chrome`).
-Install Puppeteer in a temporary tools directory, then expose its
-`node_modules` to these scripts with a local, untracked symlink:
-
-```bash
-perf_tools=$(mktemp -d)
-npm install --prefix "$perf_tools" puppeteer-core@24
-ln -s "$perf_tools/node_modules" scripts/dashboard-perf/node_modules
-```
+Node needs `puppeteer-core` and Chrome (`CHROME`, default
+`/usr/bin/google-chrome`). `puppeteer-core` is pinned as a `dashboard`
+development dependency and hoisted to the repository's root `node_modules`,
+so `npm install` at the repository root is all these scripts need — the same
+pin the layout checks (`dashboard/layout-checks/`) use.
 
 Build and stage the verified bundle in this checkout, with API URL overrides
 cleared by the release builder. This does not install it or restart anything:
@@ -69,11 +64,22 @@ per idle surface, 1600×1000 viewport, 30 s warm-up after readiness and 120 s
 observation. Each repetition inventories the host, starts the workload for a
 loaded run, warms up, runs the harness for each client count, waits for the
 workload, then captures the host inventory and the repetition's 1 s fleet
-series. Daemon targets are summarized over the browser-active part of that
-series (see `summary.json` below). Client counts remain separate in
+series. Collection polls until the first persisted sample strictly after
+repetition completion appears (at most 30 s of polling), retaining samples only
+through that boundary. This lets completed direct probes reach the sampler and
+its batched persistence; a missing boundary refuses the experiment. The fixed
+browser/workload durations do not include this wait. Daemon targets are summarized
+over the browser-active part of that series (see `summary.json` below). Client
+counts remain separate in
 `summary.by_clients`. Each concurrent client uses its own Chrome window so
 background tabs cannot suspend animation frames; the harness records each client's
 `window_id` and refuses a surface whose clients share one.
+
+The mobile dashboard's surface is `focus` (`/focus`). Measure it at a phone
+viewport with the same one- and three-client protocol, through `harness.mjs`
+(`experiment.py` measures the desktop surfaces at 1600×1000):
+`--only focus --viewport 390x844 --clients 1` and `--clients 3`. Browser
+numbers are reported beside, never instead of, the desktop surfaces.
 
 ```bash
 python scripts/dashboard-perf/experiment.py --mode idle \
@@ -137,7 +143,10 @@ to run the real suite outside its separately scheduled task.
   workload output, completion/timeout/exit, throughput, observed start/end,
   coverage and `helper_only_s` (time run after the last browser window). Idle
   mode records null throughput/timeout rather than zero work.
-- `series-<n>.json`: raw 1 s samples for the whole repetition window.
+- `series-<n>.json`: raw 1 s samples from repetition start through the first
+  persisted sample after repetition completion. `load-<n>.json.series_collection`
+  declares `start_ts`, `repetition_end_ts`, `boundary_sample_ts`, `wait_s` and
+  `scope` (`repetition_through_completion_boundary`).
 - `summary.json`: medians across repetitions, raw values and `(max-min)/median`
   spread (null for fewer than two values or zero median), separate client-count
   summaries, daemon histogram-derived loop p95/max/stalls >500 ms, API, pool,
@@ -151,16 +160,22 @@ Daemon results have two activity scopes. `daemon`, `daemon_repetitions` and
 timestamp falls inside one of that repetition's harness runs, from its first cold
 load through its direct API reads. `by_clients.<N>.daemon` uses only that client
 count's runs. `whole_repetition` holds the same three fields over every sample.
-That includes the controller warm-up and, in loaded mode, the helper-only tail,
-because a repetition waits for its workload to finish. Idle has no such tail, so
+That includes the controller warm-up, the completion boundary and, in loaded mode,
+the helper-only tail, because a repetition waits for its workload to finish. Idle
+has no such helper-only tail, so
 the whole-repetition scope compares unequal envelopes: a long quiet tail can pull
 its p95 under a target the browsers never met. It is accounting, not a verdict.
 `activity` lists, per repetition, the browser windows (`clients`, `start_ts`,
-`end_ts`), total/browser-active/excluded sample counts and `helper_only_s`: the
-seconds the workload ran after the repetition's last browser window, for every
+`end_ts`), total/browser-active/excluded sample counts, `series_collection` bounds
+and `helper_only_s`: the seconds the workload ran after the repetition's last
+browser window, for every
 client count (null in idle mode). Workload completion, timeout, coverage and that
 tail stay in `load` and `load-<n>.json`. With no browser window the browser-active
 scope is empty and its values are null; it is never widened to the whole repetition.
+The completion boundary retains terminal direct-probe counters in the raw series
+and whole-repetition accounting. It can also contain post-browser loop/API activity;
+it stays outside the browser-active verdict. Sample timestamps cannot attribute
+every observation in that boundary to an individual browser or direct probe.
 
 Compare the browser-active scope against the envelope: task detail visible p95
 ≤200 ms; small task/roster API reads p95 ≤500 ms and ≤2× idle; loop p95 ≤50 ms
@@ -178,7 +193,9 @@ node scripts/dashboard-perf/harness.mjs http://127.0.0.1:8092 result.json \
 node scripts/dashboard-perf/api.mjs "$AQ_E2E_API_URL" perf-fixture
 ```
 
-`--observe-ms` aliases `--idle-ms` (the new flag wins). `--no-interactions`
+`--observe-ms` aliases `--idle-ms` (the new flag wins). `--viewport WxH`
+sets every page's viewport and the manifest's `viewport` (default
+`1600x1000`). `--no-interactions`
 skips interactions; `--task-detail-only` measures only the two task-row pane
 opens used by the experiment. The full interaction mode also measures search,
 graph tabs/nodes, reviews filters and metrics range. Cold loads use fresh pages;
@@ -192,12 +209,14 @@ including full response delivery and bounded request timeouts. A missing task
 id is reported explicitly rather than silently dropped.
 
 `node scripts/dashboard-perf/smoke.mjs` checks three concurrent clients in
-separate windows on two consecutive surfaces, duration-alias precedence,
+separate windows on three consecutive surfaces (`tasks`, `agents`, `focus`) at
+a 390×844 viewport, duration-alias precedence,
 manifests and raw browser/API samples against an ephemeral local HTTP fixture
 with real Chrome. It touches no daemon or database
 and bounds/cleans its browser process group. This is a harness regression check,
 not a latency benchmark.
 
-`focus.mjs` profiles one surface; `chunks.mjs` reports static chunk sizes. Prior
+`focus.mjs` profiles the requests a tab fires when it regains visibility (not
+the `focus` surface); `chunks.mjs` reports static chunk sizes. Prior
 observations live in
 [`2026-09-23-dashboard-performance.md`](../../docs/superpowers/specs/2026-09-23-dashboard-performance.md).

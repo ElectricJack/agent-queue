@@ -736,6 +736,13 @@ _CHAT_SCHEMAS: dict[str, EventSchema] = {
         "required": ["message_id", "reply_id", "project_id", "body"],
         "optional": ["via", "thread_id"],
     },
+    # A bounded collaboration thread was created and its invites queued.
+    # Replays of the same idempotency key do not re-emit.
+    "collaboration.created": {
+        "required": ["thread_id", "project_id", "task_ids"],
+        "optional": ["created_by_id", "deadline_at"],
+        "types": {"thread_id": str, "project_id": str, "task_ids": list},
+    },
 }
 
 
@@ -1291,6 +1298,14 @@ _PROVIDER_SCHEMAS: dict[str, EventSchema] = {
     "provider.reroute_batch": {
         "required": ["batch_id", "provider", "moved"],
         "optional": ["generation", "held", "targets", "projects"],
+    },
+    # provider-failover D24 S7: once per sweep whose capacity spill pass moved
+    # work (``batch_id`` ``spill-<UTC yyyymmddThhmm>``).  ``routes`` lists
+    # ``{from_profile_id, to_profile_id, count}``; ``held`` counts the pass's
+    # holds by kind.  Never a supervisor message: a sweep runs every 5 min.
+    "pool.spilled": {
+        "required": ["batch_id", "moved"],
+        "optional": ["routes", "projects", "held"],
     },
 }
 

@@ -13,8 +13,9 @@ version: 1
 areas:
   # ---------------------------------------------------------------- tasks
   - id: task-lifecycle
-    description: "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events and destructive-command authorization."
+    description: "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events, destructive-command authorization, and lifecycle cleanup (stale BLOCKED/PAUSED containers and tasks, obsolete closes, dangling-state doctor)."
     match:
+      - tests/test_lifecycle_cleanup.py
       - tests/test_state_machine.py
       - tests/test_ensure_task.py
       - tests/test_task_context.py
@@ -112,6 +113,9 @@ areas:
       - tests/test_stranded_feature_branches.py
 
   # ------------------------------------------------------------ agents
+  - id: collaboration
+    description: "Bounded task collaboration: membership, ordered messages, durable waits and delivery."
+    match: [tests/test_collaboration*.py]
   - id: agent-waits
     description: "Durable typed agent waits: ownership and claim fencing, producer snapshots, deadlines, CAS results, outbox retries and wait commands."
     match: [tests/test_agent_waits.py, tests/test_agent_wait_queries.py, tests/test_agent_wait_commands.py]
@@ -463,7 +467,7 @@ areas:
 
   # ------------------------------------------------------------ providers
   - id: provider-failover
-    description: "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine, in-flight failure handling, escalation pages and availability API and doctor checks."
+    description: "Provider availability and failover: the reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and capacity-spill planner, in-flight failures, escalations, availability API and doctor checks, and the provider allocation status read."
     match:
       - tests/test_provider_availability*.py
       - tests/test_provider_commands.py
@@ -472,7 +476,9 @@ areas:
       - tests/test_provider_inflight.py
       - tests/test_provider_intent.py
       - tests/test_provider_reroute.py
+      - tests/test_provider_spill.py
       - tests/test_provider_suppression.py
+      - tests/test_provider_allocation.py
       - tests/test_fake_session_script.py
   - id: provider-usage
     description: "Provider usage and cost: usage probes and queries, Claude /usage parsing, provider usage API and doctor checks, token budgets, cost accounting and direct-path LLM token usage."
@@ -768,6 +774,11 @@ areas:
   - id: daemon-cli
     description: "Daemon control from the CLI: start failure reporting, stop ending agent sessions versus restart keeping them, and the daemon start/stop contract."
     match: [tests/test_cli_daemon.py, tests/test_cli_stop_sessions.py, tests/test_main_lifecycle.py]
+
+  # ------------------------------------------------------------ generated artifacts
+  - id: generated-artifacts
+    description: "Generated artifacts: the one regeneration command and its drift check, the .gitattributes merge=aq-generated set kept in step with it, and the merge driver under which those files never conflict."
+    match: [tests/test_generated_artifacts.py]
 
   # ------------------------------------------------------------ documentation guards
   - id: docs-guards

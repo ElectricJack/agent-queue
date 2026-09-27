@@ -38,6 +38,8 @@ class ReviewSubmitResponse(BaseModel):
     review_id: str
     revision: int
     vault_path: str
+    #: A playbook review's pin: the artifact hash approval will store.
+    playbook: dict[str, Any] | None = None
 
 
 class ReviewResponseRoute(BaseModel):
@@ -81,6 +83,8 @@ class ReviewDecideResponse(BaseModel):
     review_id: str
     state: str
     unblocked_task_ids: list[str] = []
+    #: What approving a playbook review did with its pinned artifact.
+    playbook: dict[str, Any] | None = None
 
 
 class ReviewCommentResponse(BaseModel):

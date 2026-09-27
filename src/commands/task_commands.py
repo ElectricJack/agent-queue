@@ -1322,6 +1322,7 @@ class TaskCommandsMixin:
         new_parent = None if args.get("root") else args["parent_id"]
         old_parent = task.parent_task_id
         gate_id: str | None = None
+        gate_created = False
         scope = self._current_scope or {}
         worker = scope.get("kind") == "session" and not scope.get("elevated")
         held_id: str | None = None
@@ -1351,7 +1352,10 @@ class TaskCommandsMixin:
                     )
                     if refusal is not None:
                         return refusal
-                result = await self.db.set_parent(task_id, new_parent, conn=conn)
+                result = await self.db.set_parent(
+                    task_id, new_parent, conn=conn,
+                    reject_live_parent=new_parent != held_id,
+                )
                 if provenance is not None and provenance != new_parent:
                     # The filing's only provenance was the parent-child edge
                     # it just lost (a filing under the held task writes no
@@ -1372,17 +1376,23 @@ class TaskCommandsMixin:
                 if worker and new_parent is None:
                     # A root filing is born with a routing gate (§12) so it
                     # never runs before triage; a filing moved to root gets
-                    # the same, unless it already carries an open one.
-                    gate_id, _created, gate_flipped = await self.db._create_gate_on(
+                    # the same, unless it already carries an open one or is
+                    # already routed. Routing resolves the gate only for a
+                    # task that lacks a profile, so on a routed task it would
+                    # hold the task, and a container's children, for good
+                    # (clear-orbit).
+                    (
+                        gate_id,
+                        gate_created,
+                        gate_flipped,
+                    ) = await self.db._create_unrouted_routing_gate_on(
                         conn,
                         task.project_id,
-                        "routing",
                         f"Route: {task.title}",
                         question="",
                         await_id=None,
                         timeout_at=None,
                         waiter_task_ids=[task_id],
-                        caller_owns_conn=True,
                     )
                     result.flipped |= gate_flipped
         except HierarchyError as exc:
@@ -1390,6 +1400,12 @@ class TaskCommandsMixin:
         await self.db.log_blocked_flips(result.flipped)
         await self.db._notify_settled(result.settled)
         await self.db._notify_ready(result.ready)
+        if gate_created:
+            await self._emit_gate_created({
+                "gate_id": gate_id, "gate_type": "routing", "project_id": task.project_id,
+                "title": f"Route: {task.title}", "question": "", "await_id": None,
+                "timeout_at": None, "waiter_task_ids": [task_id],
+            })
         try:
             await self.orchestrator._emit_task_event(
                 "task.reparented", task, old_parent=old_parent or "", new_parent=new_parent or ""
@@ -1499,7 +1515,7 @@ class TaskCommandsMixin:
         read that writes nothing — then ``reserve_filing`` (``False`` raises
         :class:`_FilingQuota` with nothing written), then the task row, then
         the parent-child edge (if any) and the ``discovered-from`` edge,
-        then (root filings only) the routing gate, then the ``depends_on``
+        then (unrouted root filings only) the routing gate, then the ``depends_on``
         edges. Any exception rolls the whole transaction back untouched.
 
         ``parent_id`` arrives already defaulted by ``_cmd_create_task``: a
@@ -1519,7 +1535,7 @@ class TaskCommandsMixin:
         depth_cap_fallback, parent_id)`` — the last being the parent
         actually written, which the caller reports instead of the one it
         passed in.
-        ``gate_id`` is set for root filings and policy-gated parented
+        ``gate_id`` is set for unrouted root filings and policy-gated parented
         filings. ``discovered_from_origin`` is the provenance origin for
         every worker filing: ``discovered_from`` or the held task, except
         for a depth-cap-fallback filing, where it is the would-be container.
@@ -1660,16 +1676,14 @@ class TaskCommandsMixin:
                         edges=integration_edges,
                         labels=labels,
                     )
-                    gate_id, _created, gate_flipped = await self.db._create_gate_on(
+                    gate_id, _created, gate_flipped = await self.db._create_unrouted_routing_gate_on(
                         conn,
                         task.project_id,
-                        "routing",
                         f"Route: {task.title}",
                         question="",
                         await_id=None,
                         timeout_at=None,
                         waiter_task_ids=[task.id],
-                        caller_owns_conn=True,
                     )
                     flipped |= gate_flipped
                 gate_id = created.get("gate_id") or gate_id
@@ -1738,21 +1752,17 @@ class TaskCommandsMixin:
                     )
                     or set()
                 )
-                # ``create_gate``'s own conn-path deliberately does not log
-                # blocked flips (the caller's transaction hasn't committed
-                # yet) — call the same underlying writer directly so we get
-                # the flip set back to fold into our own post-commit log,
-                # instead of discarding it.
-                gate_id, _created, gate_flipped = await self.db._create_gate_on(
+                # Use gate_create/reparent's unrouted-only writer: a task
+                # with a profile has no assignment resolver to release a
+                # routing gate. Fold its flips into our post-commit log.
+                gate_id, _created, gate_flipped = await self.db._create_unrouted_routing_gate_on(
                     conn,
                     task.project_id,
-                    "routing",
                     f"Route: {task.title}",
                     question="",
                     await_id=None,
                     timeout_at=None,
                     waiter_task_ids=[task.id],
-                    caller_owns_conn=True,
                 )
                 flipped |= gate_flipped
             if not hierarchy_enabled:
@@ -1931,7 +1941,9 @@ class TaskCommandsMixin:
             and self._task_execution_profile_error(profile) is None
         ]
 
-    async def _resolve_class_route(self, class_id, implicit):
+    async def _resolve_class_route(
+        self, class_id, implicit, *, preferred_provider=None, project_id=None,
+    ):
         """Pick the worker for an explicit class the implicit route does not run.
 
         *implicit* is the profile creation would otherwise use without being
@@ -1946,15 +1958,34 @@ class TaskCommandsMixin:
         storing the class on the implicit route would hand the task to a
         worker of another tier or provider.
         """
-        if not class_id or implicit is None or self._profile_runs_class(implicit, class_id):
+        if not class_id:
             return None, None
-        preferred = _harness_provider(implicit.harness)
+        if not preferred_provider and (
+            implicit is None or self._profile_runs_class(implicit, class_id)
+        ):
+            return None, None
+        preferred = _harness_provider(implicit.harness) if implicit is not None else ""
         workers = await self._eligible_worker_profiles()
         matches = [
             profile for profile in workers
             if str(profile.default_class or "").strip() == class_id
             and self._validate_routing_class(class_id, profile) is None
         ]
+        if preferred_provider:
+            from src.commands.routing_commands import profile_provider_key
+
+            availability = getattr(self.orchestrator, "provider_availability", None)
+            matches = [
+                profile for profile in matches
+                if profile_provider_key(
+                    profile, getattr(self.orchestrator, "harness_registry", None), project_id,
+                ) == preferred_provider
+                and (availability is None or not availability.suppresses(preferred_provider))
+            ]
+            # No substitute provider: leave the row unrouted so routing and
+            # explain can report the unavailable project preference.
+            if not matches:
+                return None, None
         if matches:
             def rank(profile):
                 provider = _harness_provider(profile.harness)
@@ -2236,6 +2267,34 @@ class TaskCommandsMixin:
         after_create_on = args.pop("_after_create_on", None)
         if after_create_on is not None and not callable(after_create_on):
             return {"success": False, "error": "_after_create_on is internal-only"}
+        if args.get("container"):
+            scope = self._current_scope or {}
+            if scope.get("kind") == "session" and not scope.get("elevated"):
+                # A declared container stays open until work arrives, with no
+                # sweep or timeout.  A worker whose children never follow
+                # would leave it open for good, blocking its own close when
+                # it sits under the held task.  The graph path writes the
+                # container and its children together instead.
+                return {
+                    "success": False,
+                    "code": "hierarchy.container_not_for_sessions",
+                    "error": (
+                        "a worker files an epic together with its children: aq task create "
+                        "--graph/--from-spec with a document-level 'parent:' block (add "
+                        "--root to place it at the project root)"
+                    ),
+                }
+            # A declared container (an epic filed before its children) is
+            # flagged in the transaction that inserts it.  Flagged later, it
+            # would sit on the claim frontier until its first child linked,
+            # and a pool worker leases it in that window (bold-flare-35).
+            inner_after_create_on = after_create_on
+
+            async def after_create_on(conn, task_id, parent_id):
+                await self.db.declare_container(task_id, conn=conn)
+                if inner_after_create_on is not None:
+                    await inner_after_create_on(conn, task_id, parent_id)
+
         parent_was_supplied = "parent_id" in args
         # An explicit API null is semantically the same deliberate root
         # choice as CLI ``--root``.  Presence, rather than truthiness, is
@@ -2582,6 +2641,24 @@ class TaskCommandsMixin:
                         )
                     }
             profile_source = "explicit"
+        elif getattr(project, "preferred_provider", None) and class_id and filing_session is None:
+            implicit = profile or await self.db.get_profile(project.default_profile_id)
+            routed, error = await self._resolve_class_route(
+                class_id, implicit, preferred_provider=project.preferred_provider,
+                project_id=project.id,
+            )
+            if error:
+                return {"success": False, "error": error}
+            if routed is not None and caller_profile is not None and not caller_is_control_plane:
+                escalation = _check_capability_escalation(caller_profile, routed)
+                if escalation:
+                    return {"error": (
+                        f"Capability escalation rejected: child profile '{routed.id}' "
+                        f"is not a subset of caller profile '{caller_profile.id}'. {escalation}"
+                    )}
+            profile = routed
+            profile_id = routed.id if routed is not None else None
+            profile_source = "class_match"
         elif caller_is_control_plane:
             profile, error = await self._supervisor_default_worker_profile(project)
             if error:
@@ -2827,6 +2904,31 @@ class TaskCommandsMixin:
             parent = await self.db.get_task(parent_id)
             if parent is None:
                 return {"error": f"Parent task '{parent_id}' not found"}
+        if edges:
+            # Membership is already the parent-child edge, and a container
+            # settles only after its children: a gating edge onto the new
+            # task's own ancestor chain, or onto the task a worker holds,
+            # never helps (noble-quest; graph rule ``dependency_on_ancestor``).
+            from src.task_graph.validator import task_and_ancestors
+
+            forbidden = set(await task_and_ancestors(self.db, parent_id))
+            if held_id:
+                forbidden.add(held_id)
+            gated = sorted({
+                dep_id for dep_id, dep_type, _reason in edges
+                if dep_type in BLOCKING_DEP_TYPES and dep_id in forbidden
+            })
+            if gated:
+                return {
+                    "success": False,
+                    "code": "dependency_on_ancestor",
+                    "error": (
+                        f"depends_on names {', '.join(gated)}: the task filing this one "
+                        "or its own parent chain. Membership already orders a child under "
+                        "its parent, and a container settles only after its children — "
+                        "drop that dependency."
+                    ),
+                }
         if (
             filing_session is not None
             and hierarchy_enabled
@@ -3421,19 +3523,16 @@ class TaskCommandsMixin:
                 "error": "the graph filing session's held task no longer exists",
             }, None
 
-        parent_was_supplied = "parent_id" in args
+        # Root is decided by the caller once the graph is parsed: only a graph
+        # that declares its own container (``parent:``) may go there.
         requested_parent = args.get("parent_id")
-        if (
-            args.get("root")
-            or (parent_was_supplied and requested_parent is None)
-            or (requested_parent is not None and requested_parent != held.id)
-        ):
+        if requested_parent is not None and requested_parent != held.id:
             return None, {
                 "success": False,
                 "code": "hierarchy.parent_out_of_scope",
                 "error": (
-                    "a worker-filed graph may omit parent_id or repeat the task it holds; "
-                    "root and every other parent are out of scope"
+                    "a worker-filed graph may omit parent_id, repeat the task it holds, or "
+                    "ask for root; every other parent is out of scope"
                 ),
             }, None
         reason = str(args.get("reason") or "").strip()
@@ -3516,6 +3615,12 @@ class TaskCommandsMixin:
 
         parent_id = args.get("parent_id")
         parent = None
+        if args.get("root") and parent_id is not None:
+            return {
+                "success": False,
+                "code": "hierarchy.parent_conflict",
+                "error": "root and parent_id are mutually exclusive; pass one of them",
+            }
         # A non-elevated session normalises to its held task after parsing so
         # the pin refusal below retains its established precedence.  Its
         # parent check cannot use the general supervisor helper: a held task
@@ -3568,23 +3673,53 @@ class TaskCommandsMixin:
                 return refusal
 
         filing = None
+        container_parent_id = None
         if scoped_session:
             filing, filing_error, held_parent = await self._scoped_graph_filing(args, project_id)
             if filing_error is not None:
                 return filing_error
-            # The document-level ``parent:`` describes a new graph container
-            # on the supervisor path.  Under a held parent it would be
-            # ignored, which is unsafe and misleading, so fail before plan
-            # construction or any write.
-            if graph.parent is not None:
-                return {
-                    "success": False,
-                    "code": "hierarchy.parent_out_of_scope",
-                    "error": "a worker-filed graph cannot declare a document-level parent",
-                }
-            parent_id = held_parent.id
-            parent = held_parent
-            phases_refusal = self._phases_need_root_refusal(graph, parent_id)
+            root_requested = bool(args.get("root")) or (
+                "parent_id" in args and args.get("parent_id") is None
+            )
+            if graph.parent is None:
+                if root_requested:
+                    return {
+                        "success": False,
+                        "code": "graph.root_needs_parent",
+                        "error": (
+                            "a worker graph filed at the project root must declare its "
+                            "container with a document-level 'parent:' block"
+                        ),
+                    }
+                parent_id = held_parent.id
+                parent = held_parent
+            else:
+                # The document-level ``parent:`` is the graph's new container,
+                # written and flagged in the graph's own transaction: under
+                # the held task, or at the root when asked.  Filing the epic
+                # separately and reparenting its children under it left a
+                # window in which pool workers leased the empty epic
+                # (bold-flare-35).
+                from src.database.queries.hierarchy_queries import ProjectIntegrationMode
+
+                mode = ProjectIntegrationMode.of(project)
+                if mode is not None and mode.hierarchical:
+                    return {
+                        "success": False,
+                        "code": "hierarchy.parent_out_of_scope",
+                        "error": (
+                            f"project '{project_id}' delivers hierarchically, where a new "
+                            "container owns its children's delivery; a worker graph there "
+                            "files under the task it holds and cannot declare a "
+                            "document-level parent"
+                        ),
+                    }
+                parent_id = None
+                if not root_requested:
+                    container_parent_id = held_parent.id
+            phases_refusal = self._phases_need_root_refusal(
+                graph, parent_id or container_parent_id
+            )
             if phases_refusal is not None:
                 return phases_refusal
 
@@ -3618,7 +3753,11 @@ class TaskCommandsMixin:
                     # An unknown class is reported by the class check below.
                     routes[class_id] = (
                         (None, None) if self._validate_routing_class(class_id)
-                        else await self._resolve_class_route(class_id, implicit)
+                        else await self._resolve_class_route(
+                            class_id, implicit,
+                            preferred_provider=getattr(project, "preferred_provider", None),
+                            project_id=project.id,
+                        )
                     )
                 routed, error = routes[class_id]
                 if error:
@@ -3631,7 +3770,8 @@ class TaskCommandsMixin:
                     class_matched[node.key] = routed.id
 
         findings = await validate_graph(
-            graph, project_id=project_id, db=self.db, vault_root=vault_root
+            graph, project_id=project_id, db=self.db, vault_root=vault_root,
+            parent_id=parent_id, filed_by=filing.held_task_id if filing else None,
         )
         findings.extend(route_findings)
         class_errors: dict[tuple[str | None, str], str | None] = {}
@@ -3665,6 +3805,7 @@ class TaskCommandsMixin:
                 dry_run=dry_run,
                 parent_id=parent_id,
                 filing=filing,
+                container_parent_id=container_parent_id,
             )
         except GraphFilingError as exc:
             return {
@@ -4938,11 +5079,15 @@ class TaskCommandsMixin:
         # back ``False`` (skip it too — no second event, no double count).
         archived: list[dict] = []
         skipped: list[dict] = []
+        # Git proves development delivery once for the whole selection.
+        delivery = await self.db.observe_removal_delivery([task.id for task, _r, _d in task_data])
         for task, result, deps in task_data:
             try:
-                # Every archive, including bulk, refuses work the development
-                # publisher has not delivered yet (integration_undelivered).
-                success = await self.db.archive_task(task.id, hold_undelivered=True)
+                # Every archive, including bulk, refuses work git does not
+                # prove delivered (integration_undelivered).
+                success = await self.db.archive_task(
+                    task.id, hold_undelivered=True, delivery=delivery
+                )
             except HierarchyError as exc:
                 skipped.append(
                     {
@@ -5344,6 +5489,18 @@ class TaskCommandsMixin:
         # snapshots do not include hierarchy receipt/origin fences.
         reasons.extend(await self.db.claim_frontier_exclusions(str(task_id)))
 
+        from src.integration.admission import observe_admission
+        admission = await observe_admission(
+            self.db, [str(task_id)], self._development_integration()
+        )
+        reasons.extend(admission.reasons.get(str(task_id), []))
+        if str(task_id) not in admission.allowed and not admission.reasons.get(str(task_id)):
+            reasons.append(Reason(
+                code="development_snapshot_changed",
+                detail="Development git/graph snapshot changed; admission will retry",
+                ref=str(task_id),
+            ))
+
         # A phase is deliberately stricter than a normal container: a failed
         # direct child never settles it, and every later phase stays closed.
         # Keep this computed from the same child/status data settlement reads;
@@ -5467,6 +5624,13 @@ class TaskCommandsMixin:
         # question this task never asks. Say what it is actually waiting on.
         pool_reason = await self._pool_wait_reason(task)
         if pool_reason is not None:
+            reroute = getattr(self.orchestrator, "provider_reroute", None)
+            if pool_reason["code"] == "awaiting_pool_session" and reroute is not None:
+                spill = await reroute.spill_state(task)
+                if spill is not None:
+                    pool_reason["detail"] += (
+                        f"; capacity spill: {spill['kind']} — {spill['detail']}"
+                    )
             reasons.append(pool_reason)
 
         # 6. Capacity reasons — only relevant when a scheduler snapshot exists.
@@ -5577,6 +5741,24 @@ class TaskCommandsMixin:
             TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.DEFINED
         ):
             return detail, None
+        from src.providers.intent import narrows_catalog
+
+        if not narrows_catalog(task):
+            project = await self.db.get_project(task.project_id)
+            preferred_provider = getattr(project, "preferred_provider", None)
+            if preferred_provider:
+                routing = await self._cmd_task_route_options({"task_id": task.id})
+                if routing.get("outcome") in {"held", "no_options"}:
+                    return detail, Reason(
+                        code="preferred_provider_unavailable",
+                        detail=(
+                            f"project prefers provider '{preferred_provider}', which has no "
+                            "enabled, launchable worker option for "
+                            + (f"intelligence class '{explicit}'" if explicit else "any class")
+                            + "; waiting for that provider or a change to the project preference"
+                        ),
+                        ref=preferred_provider,
+                    )
         if not explicit:
             return None, Reason(
                 code="awaiting_intelligence_route",
@@ -5760,6 +5942,13 @@ class TaskCommandsMixin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
+        from src.integration.admission import observe_admission
+        admission = await observe_admission(
+            self.db, [task.id for task in frontier], self._development_integration()
+        )
+        delivery_withheld = {task.id for task in frontier if task.id not in admission.allowed}
+        frontier = [task for task in frontier if task.id in admission.allowed]
+
         if profile_id:
             project = await self.db.get_project(str(project_id))
             default_profile_id = getattr(project, "default_profile_id", None) if project else None
@@ -5798,7 +5987,10 @@ class TaskCommandsMixin:
         withheld: list[dict] = []
         for status in (TaskStatus.DEFINED, TaskStatus.BLOCKED, TaskStatus.READY):
             for task in await self.db.list_tasks(project_id=str(project_id), status=status):
-                if status == TaskStatus.READY and not task.is_blocked:
+                if (
+                    status == TaskStatus.READY and not task.is_blocked
+                    and task.id not in delivery_withheld
+                ):
                     # Might still be withheld by a hold:* label.
                     lbls = await self.db.get_task_labels(task.id)
                     if not any(x.startswith("hold:") for x in lbls):

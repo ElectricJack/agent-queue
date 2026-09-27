@@ -39,6 +39,7 @@ from src.sessions import fake_script
 from src.sessions.provider import (
     Cap,
     NotSubmitted,
+    NudgeDeferred,
     PartialListError,
     SessionDiedDuringStartup,
     SessionHandle,
@@ -92,8 +93,15 @@ class FakeProvider(SessionProvider):
         #: Harness command -> (dialog name, signal): every start of that CLI
         #: dies on the quarantine dialog until cleared (provider-failover D23).
         self._startup_dialogs: dict[str, tuple[str, str | None]] = {}
+        #: name -> (refusal, visible input) for a composer that would defer
+        #: every nudge; see :meth:`script_composer_refusal`.
+        self._composer_refusals: dict[str, tuple[str, str]] = {}
 
     # -- test knobs --------------------------------------------------------
+
+    def script_composer_refusal(self, name: str, reason: str, text: str = "") -> None:
+        """Make *name*'s composer refuse nudges, showing *text* (a draft, say)."""
+        self._composer_refusals[name] = (reason, text)
 
     def script_death(self, name: str, after_s: float = 0.0) -> None:
         s = self.sessions.get(name)
@@ -289,6 +297,8 @@ class FakeProvider(SessionProvider):
         s = self._get(h)
         if s is None:
             raise NotSubmitted(f"session {h.name!r} is gone")
+        if h.name in self._composer_refusals:
+            raise NudgeDeferred(self._composer_refusals[h.name][0], session_name=h.name)
         if h.name in self._swallow:
             self._swallow.discard(h.name)
             self._unsubmitted[h.name] = text
@@ -302,6 +312,13 @@ class FakeProvider(SessionProvider):
         s.output.append(text)
         # Deliberately does *not* bump ``activity``: our own poke must not
         # look like agent progress (poke discounting, design §4.5).
+
+    async def composer_probe(self, h: SessionHandle) -> dict | None:
+        """Whether a nudge would be typed now (the tmux provider's read-only probe)."""
+        if self._get(h) is None:
+            return None
+        reason, text = self._composer_refusals.get(h.name, (None, ""))
+        return {"ready": reason is None, "reason": reason, "input": text}
 
     async def pending_submit(self, h: SessionHandle) -> str | None:
         """The text of a nudge left unsubmitted in this session's composer."""

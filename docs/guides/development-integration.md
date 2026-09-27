@@ -9,12 +9,15 @@ daemon collects finished branches, merges them, validates the result once, and
 publishes it. There is no pull request, no hosted-CI receipt chain, no
 per-parent verifier and no squash in this path.
 
-A `blocks` dependency on a completed code task stays blocked until the delivery
-journal confirms its completion revision on the configured default branch.
-Preserving a candidate or publishing a parent aggregate does not release the
-successor. Publication updates dependency state automatically; a later completion
-at a different revision needs its own delivery. Branchless tasks have no code
-artifact to publish.
+A `blocks` dependency on a completed code task requires fresh git proof of its
+current completion revision on the configured default branch.
+Preserving a batch candidate does not release the successor. Each clean source
+merges directly into the batch, and a conflicting member holds only its own
+dependents; independent siblings can still publish. The shared evaluator uses
+exact source ancestry or explicit git replacement evidence bound to the
+immutable completion generation. A later completion at a different revision
+needs its own proof. Branchless organizational tasks have no artifact of their
+own; recorded code remains an artifact after branch cleanup.
 
 The publisher can assemble an already-completed dependency chain in one batch,
 in dependency order. It does not spend a separate batch interval on each link.
@@ -52,7 +55,7 @@ with `aq integration status agent-queue`:
 
 ```text
 {
-  "state": "adopted",
+  "state": "finished",
   "target_ref": "refs/heads/main",
   "manifest": [],
   "evidence": {
@@ -67,7 +70,7 @@ with `aq integration status agent-queue`:
 ```
 
 (A configuration row carries an empty manifest and is journaled in state
-`adopted`: it records a decision, not a publication.)
+`finished`: it records a configuration action, not delivery.)
 
 What that did, all in one transaction
 ([`DevelopmentIntegration.configure`](../../src/integration/development.py)):
@@ -87,6 +90,8 @@ Options:
 | `--interval-seconds` | Periodic recovery sweep interval. Default 300. Task completion also requests a sweep on the next integration cycle (normally within 5 seconds, once an active batch finishes). |
 | `--timeout-seconds` | Seconds each command may *run*. Default 300, maximum 3600. Time queued for a test slot is not counted. |
 | `--slot-wait-seconds` | Seconds a command may queue for a test slot (via `aq test`) before the batch is deferred to the next tick — never parked, never repaired. Default 600, maximum 3600. |
+| `--regenerate` | Command that rebuilds the repository's generated files — the paths its `.gitattributes` marks `merge=aq-generated` — for example `scripts/regenerate-generated.sh`. Run without a shell in AQ's clone after a merge in which both sides changed a generated file; see [Conflicts confined to generated files](#conflicts-confined-to-generated-files). Unset by default. |
+| `--regenerate-timeout-seconds` | Seconds one regeneration may run before that merge counts as failed. Default 600, maximum 3600. |
 | `--reason` | Required, and kept in the journal. |
 
 > **Note.** Validation commands do not run in a worker's worktree. They run in
@@ -104,8 +109,8 @@ Policy changes take effect on the next batch. There is no drain to wait for.
 
 ## Watch a batch happen
 
-`aq integration status <project>` reports development publication receipts and
-pending writes. It does not require GitHub App bindings or strict train rollout
+`aq integration status <project>` reports git delivery evidence and publisher
+operations, including pending writes. It does not require GitHub App bindings or strict train rollout
 configuration: development mode uses ordinary Git, including local origins.
 
 Let the interval fire, or ask for a sweep now:
@@ -123,7 +128,7 @@ to `main`:
 {
   "id": "fb0f1204-41c2-45e8-8489-7c0c860b28db",
   "target_ref": "refs/heads/main",
-  "state": "delivered",
+  "state": "finished",
   "expected_sha": "a62833d5819ca10179a0ea8f9b793dc6e7bcd7c1",
   "prepared_sha": "a9a10b3183d13f0b0fdec44ab6bbe3b6c4fbdd37",
   "manifest": [{"task_id": "solid-grove.12", "source_sha": "0e9f949f…", "parent_task_id": "solid-grove"}, …],
@@ -164,10 +169,29 @@ The interesting fields:
   blocker and clears itself on the next sweep.
 * `parked` — deliveries waiting for a retry, a repair or a human.
 
-Journal row states are `prepared`, `publishing`, `delivered`, `parked`,
-`adopted` and `cancelled` (`development_deliveries` in
-[`src/database/tables.py`](../../src/database/tables.py)). Rows are never
-deleted: the journal is the audit trail for what reached your default branch.
+Publisher operation states are `prepared`, `publishing`, `finished`, `parked`
+and `cancelled`. Their revisions are stored as `development.operation` events
+in the existing event log. `finished` says an action ended; it never establishes
+that a task is delivered. Validation checks and infrastructure streaks remain
+actual execution evidence. After a restart or an uncertain push, the publisher
+fetches and inspects git before its next action. Status retains the compatibility
+field `deliveries` for this operation history until the legacy adapters retire.
+
+Before retiring legacy source locators, inventory and migrate completion
+provenance through the authorized command:
+
+```bash
+aq integration migrate-provenance demo
+aq integration migrate-provenance demo --apply
+```
+
+The result names `fallback_generations`, `fallback_count`, `zero_fallback`, and
+unresolved identities in `ambiguous`. Follow `next_offset` through all pages;
+a zero count on one page does not prove the entire project migrated. Exact
+completion and repair mappings are retained in git. Missing generations,
+ambiguous sources and incomplete equivalence evidence are reported rather than
+guessed. Only outstanding push, validation, repair or cleanup actions are
+retained in the event log; terminal delivery receipts are not copied.
 
 ## What a worker sees
 
@@ -180,6 +204,10 @@ in the strict modes ([`src/prime/sections.py`](../../src/prime/sections.py)):
 > source branches and publishes validated batches to main. Do not push main
 > yourself.
 
+With a `regenerate` policy the section adds one more paragraph: never
+hand-merge generated files; take either side, resolve the sources, run the
+policy's command and commit what it writes.
+
 Two consequences worth knowing as an operator:
 
 * **A closed task is not a delivered task.** Delivery happens on the next
@@ -190,9 +218,12 @@ Two consequences worth knowing as an operator:
 
 ## When something conflicts
 
-A member that will not merge is parked with its conflict output as evidence,
-and the rest of the batch continues. A real parked row — two documentation
-tickets editing the same generated manifest:
+Every clean member merges straight into the batch; there is no per-parent
+assembly. A member that will not merge is parked with its conflict output as
+evidence, and the rest of the batch continues: its siblings, its parent and
+unrelated work are never held by it. Only a dependent that declared an edge on
+it waits. A real parked row — two documentation tickets editing the same
+generated manifest:
 
 ```text
 {
@@ -208,15 +239,54 @@ tickets editing the same generated manifest:
 }
 ```
 
+Newer rows also name `source_sha`, `target_ref`, `target_sha` and the batch
+`aggregate_sha`, and say what the source conflicts with, each claim proven by a
+separate merge: `conflict_with` is `target` when it conflicts with the target
+alone (no sibling is blamed), `members` when a pair merged onto the target
+conflicts on its own (`conflicting_members` names each partner, its source and
+the paths), `batch` when only the combined batch conflicts, or `unproven`. The
+repair description repeats it.
+
 After the batch is assembled AQ looks at each parked row again:
 
 * if a later member already brought the same content to `main`, the row is
   marked `adopted` and nothing else happens;
 * otherwise AQ files one ordinary repair task, `development-repair-<digest>`,
-  on its own branch, describing the parked sources and the base to resolve
-  against. It is a normal queue task with three retries; waiting for a worker
-  does not expire it. At most three generations of repair are chained before
-  the content is left parked for you.
+  on its own branch, naming the source branches, conflicting files and target.
+  In its branch, which starts from that target, the worker merges each listed
+  source revision by its exact SHA. It never rebases, squashes or
+  cherry-picks, so the source stays an ancestor and delivering the repair
+  delivers the source. A conflicting generated file is regenerated, not
+  hand-merged. A single-source repair is placed under its completed source when
+  depth permits; at the hierarchy depth cap it is rooted with provenance and a
+  delivery hold on the source. It is a normal queue task with three retries;
+  waiting for a worker does not expire it.
+
+Closing the repair does not release the source's dependents. Publication of
+the passing repair to the configured default branch adopts the parked source
+git replacement evidence, which releases them after fresh evaluation. That holds even for a repair that rewrote the
+source commits anyway.
+
+If `main` moves before the closed repair is published, the repair's own
+publication can park on a new conflict. That row gets the next repair, rooted
+and discovered-from the previous one, and the source is carried by the whole
+chain. At most three generations are chained; past that nothing more is filed,
+the batch records the `repair_generation_exhausted` diagnostic and the content
+is left parked for you. `aq integration sweep demo --retry` or `--recover-child
+<task>` on a parked source that conflicts again refreshes its existing row
+rather than parking it twice. A recovery that leaves the child unpublished
+names the repair carrying it, and the chain, or says that none does.
+
+```bash
+aq doctor --check integration.development_conflicts_unrepaired
+```
+
+lists every completed source parked on a merge conflict whose chain has no open
+repair: none was filed, one ended FAILED or BLOCKED, or the generation budget
+ran out. It names the batch, the conflicting files and the chain. Nothing will
+release those dependents by itself. Reopen the ended repair; or merge the
+source revision onto `main` on a branch that keeps it as an ancestor and record
+it with `aq integration adopt`; or cancel the batch.
 
 Parked content is not re-tried while its sources are unchanged — a worker
 pushing new commits makes it eligible again by itself. To retry unchanged
@@ -225,6 +295,90 @@ parked content under the current policy:
 ```bash
 aq integration sweep demo --retry
 ```
+
+### Conflicts confined to generated files
+
+Most conflicts between parallel branches used to be in generated files: two
+branches that each add a command both rewrite the CLI inventory, the command
+pages index, `openapi.json` and the client models; two that each add a test
+module both rewrite the selection catalogue. Every such conflict parked its
+source and filed a repair whose commit read "regenerate catalogue/inventory".
+
+Declare those files in the repository and give the policy the command that
+rebuilds them:
+
+```text
+# .gitattributes
+tests/selection_catalogue.json merge=aq-generated
+openapi.json merge=aq-generated
+packages/aq-client/** merge=aq-generated
+```
+
+```bash
+aq integration develop demo … --regenerate scripts/regenerate-generated.sh --reason '…'
+```
+
+Then each member merges with the `aq-generated` driver defined as a text merge
+that keeps the candidate's side of every overlapping hunk, so a generated file
+never conflicts. When both sides changed one — or a modify/delete left one
+unmerged — AQ runs the command in its clone, stages what it rewrote and folds
+it into that member's merge commit; the batch evidence lists the files under
+`regenerated`, by task. A conflict in any other file still parks the member,
+and its `conflicting_files` then names only the files a person must resolve.
+The repair task's description tells its worker to regenerate rather than
+hand-merge.
+
+The regeneration is checked, never trusted:
+
+* it runs with this interpreter's `bin` first on `PATH`, a minimal
+  environment and the worker database sentinels, bounded by
+  `regenerate_timeout_seconds`;
+* if it exits non-zero or times out, or writes a file its `.gitattributes`
+  does not mark `merge=aq-generated`, the merge is undone, the clone is
+  cleaned, and the member parks with `evidence.regeneration` holding the
+  command, exit code and output tail.
+
+Rows parked before you set `--regenerate` stay parked until their sources
+change or you retry them with `aq integration sweep demo --retry`.
+
+## When a candidate keeps being skipped
+
+A completed task the sweep cannot publish yet is *skipped*, with the reason
+recorded in its `development_publisher_skip` task metadata: an undelivered
+dependency, a source ref that is gone before its work reached `main`, a
+dependency cycle, a parked source. A skip is an observation, not a failure —
+but one that repeats forever is a stall, so it has a bounded life
+([`src/integration/development_stalls.py`](../../src/integration/development_stalls.py)):
+
+* Each evaluation is fingerprinted: task, latest completion, reason, related
+  task, the configured target (repository and ref) and the git evidence that
+  matters — the candidate's observed source OID, plus the target OID for a
+  reason decided by merging into it (a conflict). A target that moved without
+  containing the work is not new evidence: unrelated deliveries do not reset
+  the count.
+* After `integration.publisher_stall_after` (default 5) consecutive identical
+  unsuccessful evaluations the attempt ends as `stalled`. The publisher logs
+  one error, sends `supervisor-<project>` one message naming each stalled task
+  with its repository, target and source OIDs, completion, reason and a
+  recovery command, and `aq doctor --check
+  integration.development_publisher_stalled` reports ERROR. Earlier
+  evaluations are progress observations (WARN from the third).
+* A stalled attempt is not retried blindly and not reported again, across
+  sweeps and daemon restarts alike. The sweep still checks it every time: as
+  soon as git shows the work delivered, the candidate publishes and its record
+  is removed. A new completion, a moved source, a changed target or reason, or
+  an explicit `aq integration sweep demo --retry` / `--recover-child <task>`
+  starts a new attempt, which can stall and notify again.
+* A skip waiting on a live repair (its own parked source, or a parked
+  dependency's) records `state: waiting` and does not count: the repair is the
+  work in progress. `waiting_on` names the repair actually carrying the source,
+  followed through repairs of repairs. When the chain ends without releasing the
+  source (a repair fails, or the generation budget runs out), counting starts.
+* Idle ticks evaluate nothing and daemon downtime is not counted.
+
+The record holds observations and notification deduplication only. It is
+never proof that work did or did not reach `main`; git answers that on every
+sweep.
 
 ## Record work you delivered by hand
 
@@ -242,12 +396,16 @@ Rules ([`DevelopmentIntegration.adopt`](../../src/integration/development.py)):
 
 * `--head-sha` must be **exactly** where the ref is right now, or the command
   refuses. `--target-ref` defaults to `refs/heads/main`.
-* Each task's branch must be an ancestor of that SHA. For a squashed or
-  hand-rewritten equivalent, add `--accept-equivalent` after reviewing the
-  content; the manifest then records `"acceptance": "operator_equivalent"`
-  instead of `"ancestry"`.
+* Each task's branch must be an ancestor of that SHA. This is observed in a
+  private read snapshot, so an ancestry-only adoption succeeds while a sweep is
+  running and never moves the publisher's checkout.
+* For a squashed or hand-rewritten equivalent, add `--accept-equivalent` after
+  reviewing the content; the manifest then records
+  `"acceptance": "operator_equivalent"` instead of `"ancestry"`. That decision
+  takes the publisher lock, so it is refused while a sweep runs; run it again.
 * No selected task may still have a worker or a live session, and no child of a
-  selected task may still be open.
+  selected task may still be open. A task whose status, branch, claim or
+  completions changed after its branch was observed is refused; adopt again.
 * Tasks are closed leaf-first, with a completion record whose verification
   reads *"Operator adoption; not CI attested"*. The evidence is recorded as
   `operator_accepted` — never as a CI result.
@@ -256,6 +414,12 @@ Rules ([`DevelopmentIntegration.adopt`](../../src/integration/development.py)):
   `evidence.completion_sources`. The adopted tasks therefore count as
   delivered at once, and their `blocks` dependents are released. An adoption
   journaled before this binding existed gets it on the next sweep.
+* The publisher's git check honours the adoption as well. An
+  `operator_accepted` row that names the task's exact current source, and was
+  written after that completion, counts as delivered while its adopted head
+  stays on the target — including content that landed rebased, so a chain of
+  adopted repairs is never re-held as a dependency cycle. A bare `adopted`
+  state without that operator evidence never counts.
 
 ## Cancel repair scheduling you no longer want
 
@@ -331,6 +495,8 @@ does and does not carry over.
 ## Source and tests
 
 [`src/integration/development.py`](../../src/integration/development.py),
+skip stalls in
+[`src/integration/development_stalls.py`](../../src/integration/development_stalls.py),
 commands in
 [`src/commands/integration_commands.py`](../../src/commands/integration_commands.py),
 CLI in [`src/cli/integration.py`](../../src/cli/integration.py).

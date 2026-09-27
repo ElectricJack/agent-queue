@@ -35,6 +35,7 @@ aq doctor --check integration.reused_task_identity
 aq doctor --check integration.branch_discards
 aq doctor --check integration.unreviewed_prs
 aq doctor --check integration.development_publisher_stalled
+aq doctor --check integration.development_conflicts_unrepaired
 aq doctor --check git.stale_branches
 ```
 
@@ -45,6 +46,7 @@ aq doctor --check git.stale_branches
 | Task is `COMPLETED`, work is not on `main` | Normal: delivery is batched | [Nothing is wrong yet](#nothing-is-wrong-yet) |
 | `blockers: [{"code": "publication_pending"}]` | A push is unconfirmed | [Publication pending](#publication-pending) |
 | Journal row `parked`, evidence `kind: merge_conflict` | A source would not merge | [A member conflicted](#a-member-conflicted) |
+| `integration.development_conflicts_unrepaired` reports ERROR | A parked conflict's repair chain ended | [A member conflicted](#a-member-conflicted) |
 | Journal row `parked`, evidence `conclusion: failed` | Validation failed | [Validation failed](#validation-failed) |
 | `blocked: validation modified the candidate; refusing publication` | A check wrote to the tree | [Validation modified the candidate](#validation-modified-the-candidate) |
 | `blocked: repository publisher is already running` | Another sweep holds the lock | [The publisher is busy](#the-publisher-is-busy) |
@@ -67,6 +69,7 @@ aq doctor --check git.stale_branches
 | `development-repair-…` tasks appearing | Parked content needs a human-shaped fix | [Repair tasks](#repair-tasks) |
 | Parked batches never progress; `daemon.log` grows fast | The publisher is stalled on one batch | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
 | A repair closed `pass` but its branch is in no batch | The publisher is not collecting | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
+| Supervisor message "Development publisher stalled on N candidate(s)"; doctor ERROR `candidate_stalled` | The same skip repeated `integration.publisher_stall_after` times | [The development publisher has stopped making progress](#the-development-publisher-has-stopped-making-progress) |
 
 ## Nothing is wrong yet
 
@@ -110,7 +113,22 @@ What happens next, automatically:
 
 * If a later batch delivers the same content by another route, the parked row
   becomes `adopted` on the next sweep and nothing else happens.
-* Otherwise AQ files one repair task — see [Repair tasks](#repair-tasks).
+* Otherwise AQ files one repair task — see [Repair tasks](#repair-tasks). If
+  `main` moves again before that repair is published, the repair's own row
+  parks and gets the next repair; the source is carried by that chain.
+
+To see what is carrying a parked source, or that nothing is:
+
+```bash
+aq doctor --check integration.development_conflicts_unrepaired
+```
+
+It lists each completed source parked on a conflict whose repair chain has no
+open repair (none filed, one ended FAILED or BLOCKED, or the generation budget
+ran out), with the conflicting files and the chain. `aq integration sweep
+<project> --recover-child <task>` also names the repair carrying the child when
+the child stays unpublished. Do not file a hand-made rebase task for a source
+the check does not list: the repair chain is already on it.
 
 What you can do:
 
@@ -220,8 +238,17 @@ blocked: remote write <id> needs reconciliation: target changed
 ```
 
 A row was left `publishing`, and the ref is now at neither the SHA that was
-being published nor the SHA it was published from. Something outside AQ wrote
-to that branch. The sweep stops rather than guessing.
+being published nor the SHA it was published from, and git cannot tell whether
+the publication is in its history. The sweep stops rather than guessing.
+
+Movement git *can* explain settles on its own. When the target moved before a
+publication applied — during validation, or under the expected-old-SHA lease
+of the push — the row becomes `cancelled` with `evidence.reason: base_moved`
+and the observed SHA, and the sweep re-assembles once from a fresh fetch; a
+second move waits for the next tick. A `publishing` row left by a crash whose
+prepared head is not in the moved target becomes `cancelled` with
+`evidence.reconciled: target_moved`. Neither parks the batch or files a repair,
+and the moved target is never overwritten.
 
 Establish what happened before you do anything else: `git log` the target
 branch, and compare against the row's `expected_sha` and `prepared_sha`. If the
@@ -707,22 +734,23 @@ will be; neither will a finished parent whose collection was cancelled when the
 project switched to development. Its terminal children therefore stay flagged
 unless their delivery is proven another way.
 
-Status already accepts a child that the development publisher delivered to the
-default branch. That `delivered` or `adopted` development delivery, bound to
-the child's latest completion, is its receipt. Run the control for the rest,
-as a local operator or the project's supervisor:
+Status already accepts a child whose latest completion git finds on the
+default branch (the shared delivery evaluator, fetched outside the status
+snapshot); no delivery row is consulted. Run the control for the rest, as a
+local operator or the project's supervisor:
 
 ```bash
 aq integration adopt-legacy-deliveries --project-id <project> --dry-run
 aq integration adopt-legacy-deliveries --project-id <project>
 ```
 
-It fetches the designated repository once. It adopts a child when a
-development delivery lists it and the child's source commit or the delivery's
-published commit is on the default branch (`development_delivery`), when the
-child's branch tip is (`branch_tip`), or when merging a delivery commit, the
-branch tip or the latest completion commit into the default branch changes
-nothing, because the work landed under other commits (`content_equivalent`).
+It fetches the designated repository once. It adopts a child when git proves
+its latest completion on the default branch (`development_delivery`), when the
+child's branch tip is (`branch_tip`), or when merging the branch tip, the
+latest completion commit or a source a historical manifest names into the
+default branch changes nothing, because the work landed under other commits
+(`content_equivalent`). A manifest only locates a source; its state, and an
+assembly's published commit, prove nothing.
 It writes one `integration_legacy_deliveries` row per adopted child, and it is
 safe to repeat.
 
@@ -828,6 +856,21 @@ aq doctor --check integration.development_publisher_stalled
   `aq/<repair-id>` and the next sweep should pick the branch up. An hour later
   — twelve sweeps at the default interval — with the branch in no batch
   manifest at all, the publisher is not collecting.
+* **A candidate's skip stalled.** A completed task the sweep skips (an
+  undelivered dependency, a missing source ref, a cycle, a parked source with
+  no live repair) is counted per identical evaluation. At
+  `integration.publisher_stall_after` (default 5) the attempt ends as
+  `candidate_stalled`: doctor reports ERROR and `supervisor-<project>` gets one
+  message with the task, repository, target and source OIDs, completion,
+  reason and a recovery command. Below the bound the check warns from the third
+  evaluation (`candidate_skipped`). A skip waiting on a live repair does not
+  count. The stalled attempt is not reported again, even after a restart; the
+  sweep still checks it and clears the record the moment git shows the work
+  delivered. Fix the named cause, then `aq integration sweep <project>
+  --recover-child <task>` starts a fresh attempt; so does a new completion, a
+  moved source or a changed target. The skip record, in the task's
+  `development_publisher_skip` metadata, is observation only — never delivery
+  proof.
 
 The check is report-only. Clearing the diagnostic by hand would only hide the
 stall, because the next tick rewrites it.
@@ -867,8 +910,9 @@ another attempt.
 ## Delivered branches are still on the remote
 
 Delivery pushes a branch per task (`aq/<task-id>`), a candidate per batch
-(`aq/development/<project>/<head>`), parent assemblies
-(`aq/development/parent/…`) and a branch per repair. Once a batch is confirmed
+(`aq/development/<project>/<head>`), a branch per repair and, before
+publication stopped assembling parents, parent assemblies
+(`aq/development/parent/…`). Once a batch is confirmed
 on the default branch, the publisher deletes what it made obsolete on the next
 tick: each member's branch (still at the delivered revision, or on `main`), a
 `-wip` sibling that is on `main`, every assembly whose members have all landed,
@@ -897,7 +941,9 @@ An `aq/` branch is stale by exactly one rule:
 | `expired` | The branch of a FAILED or abandoned (`work_outcome: abandoned`) task, 14 days after it went terminal (the later of its last update and its last close). |
 
 A stale branch stays when anything still references it: a task that can still
-run or has a live session, COMPLETED work not delivered yet, an unsettled batch
+run or has a live session, COMPLETED development work git does not prove on
+the target (not delivered yet, or unknown: a missing ref, another project's
+repository, a git failure), an unsettled batch
 (and every assembly carrying one of its members), an open repair's sources, an
 `integration_branch_owners` row that is not `released`, a live legacy
 operation, batch or promotion intent, a live hierarchy branch origin, or a
@@ -964,10 +1010,14 @@ A parked content set that the batch did not resolve produces one ordinary task:
 * it is a normal queue task — waiting for a worker or a provider does not
   expire it, unlike the strict modes' wall-clock repair stages;
 * at most **three** generations of repair are chained. Past that, the content
-  stays parked for a human rather than starting an unbounded chain.
+  stays parked for a human rather than starting an unbounded chain, and the
+  batch records the `repair_generation_exhausted` diagnostic.
 
-A repair may merge, cherry-pick or rewrite the parked changes. Its source
-manifest identifies the exact revisions it is responsible for. A passing close
+A merge-conflict repair is asked to merge each parked source revision by its
+exact SHA, so the source stays an ancestor of the repair and its delivery
+lands the source itself. A repair that cherry-picked or rewrote the parked
+changes is still accepted. Its source manifest identifies the exact revisions
+it is responsible for. A passing close
 alone does not release their successors: the repair must also have an accepted
 delivery to the project's default branch. AQ then records the repair task,
 completion and delivery IDs as resolution evidence for the parked sources.

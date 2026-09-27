@@ -45,3 +45,29 @@ describe("Real xterm rendering of the terminal byte stream", () => {
     expect(socket.controls()).toHaveLength(4);
   });
 });
+
+it("resets stale parser and screen state before a reconnect's pane redraw", async () => {
+  const { Terminal } = await import("@xterm/xterm");
+  terminal = new Terminal({ cols: 80, rows: 24, logLevel: "off" });
+  const renders: Promise<void>[] = [];
+  connection = connectTerminal({
+    sessionId: "redraw", cols: 80, rows: 24, onState: () => {},
+    write: (bytes, processed) => {
+      renders.push(new Promise((resolve) => terminal.write(bytes, () => { processed(); resolve(); })));
+    },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const old = TerminalSocketMock.instances[0]!;
+  old.ready();
+  old.message(new TextEncoder().encode("old stale screen\x1b[31"));
+  old.serverClose();
+  connection.reconnect();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const next = TerminalSocketMock.instances[1]!;
+  next.ready();
+  next.message(new TextEncoder().encode("\x1b[Hfresh pane\x1b[0m"));
+  await Promise.all(renders);
+  expect(terminal.buffer.active.getLine(0)!.translateToString(true)).toBe("fresh pane");
+  expect(old.controls()).toEqual([]);
+  expect(next.controls()).toEqual([{ type: "ack", bytes: 17 }]);
+});

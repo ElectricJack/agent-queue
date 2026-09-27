@@ -547,6 +547,21 @@ policy == "same_class":
 | **Playbook `agent_task` steps** | The created task follows every rule above — a step that names a profile creates a `preferred` task (D9), so it fails over like any other. The run's wait is untouched: it ends when the step's `timeout_seconds` does (see §9 for why that is the only way it ends today), and the run overlay shows the child's `provider_hold` as the reason it is waiting. | `pin_provider: true` on the step. The child holds; the run waits out the outage or times out, which is the author's choice to make. |
 | **Headless `llm` steps and other direct-path callers** | See D13a. | n/a |
 
+**Project allocation preference (provider-worker-allocation-controls, Task 7).**
+When `projects.preferred_provider` is set (a harness provider key, such as
+`codex`), automatic routing for unrouted and `class_only` work filters the
+existing catalog to that provider. `preferred` and `pinned` task profiles keep
+their explicit routes. Class-match selection during task creation uses the
+same restriction; an unsupported class remains unrouted for the routing
+playbook. No enabled, launchable compatible option means waiting with
+`preferred_provider_unavailable`, using the existing `held` / `no_options`
+routing outcomes. There is no fallback to another provider. The project
+default is derived as its enabled, launchable same-class worker rung on the
+preferred provider, or no route when none exists. Pool demand, dispatch and
+claim default widening share that derived value; it is never persisted over
+`projects.default_profile_id`. Clearing the preference restores D13's normal
+availability fallback. The reviewed assignment-routing contract is unchanged.
+
 **As built (`bold-rapids.4`).** The decision is one pure function,
 `decide(availability, failure)` in `src/providers/inflight.py`, read *after*
 the failure's evidence is recorded: `tripped` when the provider is now in the
@@ -757,6 +772,127 @@ a worker retires after one task anyway, so a drained idle worker is one session
 start per rung on recovery. The all-down case keeps its own treatment where a
 human needs it — the `critical` escalation above (D19) and `providers.availability`
 reporting `ERROR` (D21) — not on the claim path.
+
+## 4a. Capacity spill (D24)
+
+*Added 2026-09-27 by the `nimble-bridge` epic (provider worker allocation controls,
+slice 1), spec first. Decisions S1–S8 below are the plan's; the planner is
+`src/providers/spill.py`.*
+
+### D24 — queued work leaves a pool that cannot serve it
+
+**Problem.** On 2026-09-26 READY tasks waited 20+ minutes on pools with no free
+worker — `standard-high-opencode` runs `max_active: 1`, the Codex seats were full —
+while `standard-high-claude` had room, and the supervisor re-routed them by hand every
+patrol. A pool session claims only tasks whose `profile_id` names its own profile
+(`select_ready_for_profile`), pool demand counts only those tasks (`_measure_pools`),
+and D12 moves work only off a provider that is *unavailable*. Nothing moved queued work
+off a rung that was merely *full*.
+
+**Decision.** A second, policy pass of the automatic sweep — *capacity spill* — moves a
+READY task from a pool that cannot serve it to a pool of the same intelligence class that
+has free capacity in the same project. It is not a provider scheduler: no admission,
+fairness, aggregate-cap or claim-query change (D14 holds), and every move is an ordinary,
+recorded, undoable re-route bounded by the D15 per-task limits.
+
+* **S1 — mechanism.** A second pass inside `ProviderRerouteService.sweep`, run only on
+  the automatic call (no `provider`, no `task_ids`). The `provider-failover` playbook
+  already calls `provider_reroute` with no arguments on `timer.5m`, so no playbook,
+  contract argument or result field changes and the reviewed bundle's fingerprint is
+  untouched. Spill decisions ride in the existing `moved` / `held` / `skipped` lists; every
+  decision carries a `reason_code` key naming its pass (`provider_unavailable`,
+  `operator_forced`, `capacity_spill`). The failover pass runs first; a task it decided is
+  not planned again by spill. Both passes are planned before either writes, and the
+  failover pass's planned moves count as READY on their targets in the spill view, so a
+  `dry_run` plan is the live one and a target never offers the same capacity twice.
+  The pool is measured only when some task has waited `after_seconds`; a failed
+  measurement plans no spill and never fails the failover pass.
+* **S2 — config.** `provider_failover.spill`: `enabled` (default `true`),
+  `after_seconds` (default `300`, `>= 0`), `max_per_sweep` (default `5`, `>= 1`),
+  hot-reloadable like its siblings (D22). Spill applies only when failover would —
+  `mode: enforce` and `reroute.enabled: true`; otherwise the sweep's existing `disabled`
+  outcome covers both passes.
+* **S3 — candidates.** READY, unblocked, unassigned tasks on the claim frontier (the same
+  frontier and hold-label filter the claim path and `count_ready_by_profile` use) whose
+  `profile_id` is an ordinary worker pool rung and whose age `now - tasks.updated_at` is
+  at least `after_seconds`; a younger one holds `spill_waiting` ("eligible in N s"). The
+  source provider must be launchable: work on an unavailable provider is failover's
+  (reported `skip`), so no task is planned by both passes. Intent `preferred` and
+  `class_only` spill; `pinned` holds `spill_pinned` (a human chose that provider, D9).
+  Class policy `hold` (`provider_failover.classes`) holds `class_policy_hold`.
+  `reroute.max_auto_per_task` and `reroute.task_cooldown_seconds` apply and a spill move
+  counts as an automatic move for both (`reroute_limit_reached`).
+* **S4 — the source cannot serve it.** For source rung A in project X, from one pool
+  measurement:
+
+  ```text
+  unserved(A, X) = ready(A, X) - idle(A, X) - starting(A, X)
+  ```
+
+  A is *blocked* in X when A is a disabled pool, or when `unserved(A, X) > 0` and A cannot
+  start another worker for X: fleet `live(A) >= max_active(A)`, or the global headroom
+  (`swarm.global_max_active`, else `resources.max_concurrent_agents`, less every live
+  pool session) is zero, or `(X, A)` is quarantined, or X has no project room (at
+  `max_concurrent_agents`, or no free workspace). `live` is idle + busy + starting and
+  `ready` is the sizer's demand — the arithmetic of `size_pools` and
+  `place_pool_actions`, so spill never disagrees with the sizer about whether a pool
+  will grow. Only the first `unserved(A, X)` candidates in claim order are planned (every
+  candidate of a disabled pool, whose idle workers drain); the rest are what A's idle and
+  booting workers in X take, reported `skip`. A source that can serve its work is `skip`.
+  The source test reads the view as measured: a start this sweep plans for a target never
+  makes a source look blocked.
+* **S5 — the target has free capacity.** Target rung B: the same intelligence class,
+  `enabled`, `lifecycle: pool`, provider state `available` — never `degraded`, whatever
+  `reroute.allow_degraded_target` says — not A, and not quarantined in X. Its headroom in
+  X is `free_now + free_starts`:
+
+  ```text
+  free_now    = max(0, idle(B, X) - ready(B, X))
+  free_starts = max(0, min(max_active(B) - live(B), global headroom)
+                        - max(0, ready(B) - idle(B) - starting(B)))   if X has project room
+              = 0                                                    otherwise
+  ```
+
+  (`max_active` unset: only the global headroom bounds it; both unset: only project room.)
+  A target's own unserved demand is subtracted first, so spill never plans work onto
+  capacity its own queue is about to use. Each planned move consumes headroom — an idle
+  surplus first, else a start, which also consumes global headroom and the project's
+  room. Targets are tried in `provider_order(X)` (D12) order, then the rung rank failover
+  uses. With zero global headroom a move still lands on an idle surplus in X; an idle
+  worker in another project cannot claim X's work and counts for nothing. No target with
+  headroom holds `spill_no_target`. At most `spill.max_per_sweep` tasks move per sweep;
+  the rest hold `spill_sweep_limit` naming the target the next sweep would use and how many
+  are `ahead`.
+* **S6 — a project's preferred provider.** When `projects.preferred_provider` is set,
+  only rungs on that provider are targets. Spill never moves a task off it: a task whose
+  source is on the preferred provider with no other same-class pool on that provider
+  with room holds `spill_preferred_provider`. (The allocation spec's non-goal "no
+  automatic failover from an operator-selected provider" holds.)
+* **S7 — record.** A spill move is written through the same guarded
+  `apply_task_reroute` as a failover move: `task_reroutes.reason_code = capacity_spill`,
+  `provider_state` = the source provider's state, batch id
+  `spill-<UTC yyyymmddThhmm>` (one per sweep), a task comment naming the saturation — for
+  example "standard-high-opencode had no free capacity for 9 min: 1/1 live, 0 idle" —
+  and the undo command, one `task.rerouted` event per task and one `pool.spilled` summary
+  event (batch id, moved count, `routes` per source and target, projects, holds by kind)
+  per sweep that spilled work. No supervisor message: a sweep every five minutes would spam.
+  `aq provider reroute-undo --batch` and `--task-id` work unchanged. A spill move does
+  not add its source to `left_providers`; that set is for providers a task fled because
+  they were down.
+* **S8 — visibility.** `aq task explain` on a READY task waiting on a pool names its spill
+  state: eligible in N s, the next sweep moves it to B, or the hold reason. The hold
+  kinds are `spill_waiting`, `spill_pinned`, `class_policy_hold`,
+  `reroute_limit_reached`, `spill_preferred_provider`, `spill_no_target` and
+  `spill_sweep_limit`; every one is derived per sweep, like D18's, so nothing clears it.
+
+**Rejected: a provider-level scheduler.** Letting a pool claim a sibling rung's queue
+(or counting sibling demand in its sizing) would change the claim query and the sizer —
+exactly what D14 and the allocation spec's invariant 3 forbid — and would make every
+move invisible. Spill moves the task instead: one recorded row, one comment, one undo.
+
+**Rejected: spilling immediately.** A task that has waited seconds is usually about to
+be claimed; `after_seconds` (5 min, one sweep period) keeps spill for work that is
+actually stuck.
 
 ## 5. Return path
 
@@ -1014,6 +1150,10 @@ provider_failover:
     max_priority_value: null     # null = every priority may move
     task_cooldown_seconds: 1800
     max_auto_per_task: 2
+  spill:                         # capacity spill (D24), added 2026-09-27
+    enabled: true
+    after_seconds: 300           # a task spills only after waiting this long
+    max_per_sweep: 5
   notify:
     supervisor: true
     digest: true
@@ -1184,6 +1324,7 @@ assertion takes `perf_strict`.
 | `bold-rapids.8` | The stall ladder's usage-limit screen: a live CLI parked on its limit is taken out as a `RATE_LIMIT` exit instead of being nudged. | D13 (parked-session row) |
 | `azure-ridge` | The same screen on an idle pool worker that never reached its claim loop: its recycle records `exit_rate_limit` and ends with `usage_limit_screen`. | D2 (`exit_rate_limit` row), D13 (idle pool worker row) |
 | `bold-rapids.5` | Dashboard, operator runbook, concept and reference pages, supervisor guidance on when to pin, end-to-end scenario and transcript. | D20, D23 (end to end) |
+| `nimble-bridge.3`–`.6` | Capacity spill: the `capacity_spill` re-route reason, the pure planner and `provider_failover.spill`, the spill pass in the sweep, and its `aq task explain` line. | D24 |
 
 ### The epic's acceptance criteria, mapped
 

@@ -17,6 +17,7 @@ agent_surface.py   Agent-facing surface: `aq schema`, `aq prime`, `aq handoff`
 claim_epoch.py     Shared --claim-epoch resolution for pool-session mutators
                    (reads <work_dir>/.aq/claim.json, falls back to $AQ_CLAIM_EPOCH)
 client.py          CLIClient — async REST client for CLI operations (see Transport below)
+collaboration.py   `aq collaboration {create,accept,show,list,close}` — bounded task threads
 daemon.py          `aq start` / `stop` / `restart` — the daemon, plus the dashboard server when a
                    bundle is installed (`--no-dashboard` only skips the Vite prompt;
                    `--no-dashboard-server` leaves the server alone)
@@ -43,12 +44,16 @@ jobs.py            `aq job {submit,show,list,cancel,result,logs,attach}` and `aq
 logs.py            `aq logs` — tail/filter JSONL log file directly (no daemon needed)
 menus.py           Interactive prompts (task wizard, fuzzy select, confirm)
 messages.py        `aq message *`, `aq inbox`, `aq reply`, `aq chat`
+message_wait.py    `aq message wait` — bounded attachment to a durable collaboration wait
 playbook.py        `aq playbook` — compile, run, HITL, health
 plugins.py         `aq plugin {list,info,install,remove,enable,disable,update,config,logs,...}`
 projects.py        Hand-crafted `aq project` commands needing composite logic or UX sugar
 questions.py       `aq question {list,answer,escalate}` — identity-based worker questions
 reports.py         `aq report {morning,request,brief,submit}` — evidence preview, durable reads and file submission
 reviews.py         `aq review` — document-review queue, decisions, revisions, and comments
+service.py         `aq service {install,uninstall,status,check,run}` — the auto-restart
+                   watchdog (systemd user unit, launchd agent or cron); policy in
+                   src/install/watchdog.py, mechanisms in src/install/service.py
 sessions.py        `aq session` — the session-runtime CLI group
 streams.py         `aq stream start|tail|kill`
 styles.py          Theme, status icons, color maps

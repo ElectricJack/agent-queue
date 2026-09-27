@@ -1913,22 +1913,35 @@ class WorkGraphConfig:
         exist where someone explicitly created one, so this is inert on a
         graph that uses none.
     ``container_sweep_interval_seconds``
-        Backstop cadence for container settlement (swarm-work-model §7);
-        ``0`` disables.
+        Backstop cadence for container settlement (swarm-work-model §7),
+        including the stale-status leg that completes a BLOCKED/PAUSED
+        container whose children are all delivered; ``0`` disables.
+    ``lifecycle_sweep_interval_seconds``
+        Cadence of the lifecycle sweep: the stale-open re-evaluation and the
+        retry of obsolete-close cleanup left pending behind a publishing batch
+        or a refused owner release; ``0`` disables both.
+    ``stale_open_after_seconds``
+        A BLOCKED or PAUSED task unchanged this long is re-evaluated: unblocked
+        when its recorded blocker is gone, else flagged
+        ``needs_attention=stale_open`` for the supervisor; ``0`` disables.
     """
 
     gate_sweep_interval_seconds: int = 30
     conditional_autoclose: bool = True
     container_sweep_interval_seconds: int = 60
+    lifecycle_sweep_interval_seconds: int = 300
+    stale_open_after_seconds: int = 6 * 3600
 
     def validate(self) -> list[ConfigError]:
         errors: list[ConfigError] = []
-        if self.gate_sweep_interval_seconds < 0:
-            errors.append(ConfigError("work_graph", "gate_sweep_interval_seconds", "must be >= 0"))
-        if self.container_sweep_interval_seconds < 0:
-            errors.append(
-                ConfigError("work_graph", "container_sweep_interval_seconds", "must be >= 0")
-            )
+        for key in (
+            "gate_sweep_interval_seconds",
+            "container_sweep_interval_seconds",
+            "lifecycle_sweep_interval_seconds",
+            "stale_open_after_seconds",
+        ):
+            if getattr(self, key) < 0:
+                errors.append(ConfigError("work_graph", key, "must be >= 0"))
         return errors
 
 
@@ -2235,6 +2248,12 @@ class IntegrationConfig:
     #: Starts disabled so the operator can observe the first backlog releases.
     owner_recovery_sweep: bool = False
 
+    #: Consecutive identical unsuccessful evaluations after which the
+    #: development publisher ends a skipped candidate's attempt as stalled:
+    #: doctor reports ERROR and the project supervisor gets one message.
+    #: Idle ticks and downtime do not count; changed evidence starts over.
+    publisher_stall_after: int = 5
+
     def validate(self) -> list[ConfigError]:
         from src.git.ci_gate import MERGE_CI_POLICIES
         from src.models import INTEGRATION_MODES
@@ -2264,6 +2283,18 @@ class IntegrationConfig:
                     "integration",
                     "merge_required_checks",
                     "must be a list of non-empty check names",
+                )
+            )
+        if (
+            isinstance(self.publisher_stall_after, bool)
+            or not isinstance(self.publisher_stall_after, int)
+            or self.publisher_stall_after < 1
+        ):
+            errors.append(
+                ConfigError(
+                    "integration",
+                    "publisher_stall_after",
+                    "must be a positive integer",
                 )
             )
         if self.github_app is not None:
@@ -2817,6 +2848,22 @@ class ProviderFailoverRerouteConfig:
 
 
 @dataclass
+class ProviderFailoverSpillConfig:
+    """Capacity spill (D24): READY work leaves a pool that cannot serve it.
+
+    Runs inside the automatic re-route sweep, so it applies only when
+    failover would (``mode: enforce`` and ``reroute.enabled``).  A spill move
+    counts toward ``reroute.max_auto_per_task`` and
+    ``reroute.task_cooldown_seconds`` like any automatic move.
+    """
+
+    enabled: bool = True
+    #: How long a task must have waited (``now - tasks.updated_at``) first.
+    after_seconds: int = 300
+    max_per_sweep: int = 5
+
+
+@dataclass
 class ProviderFailoverNotifyConfig:
     """Who hears about a state change, and when a human is paged (D19)."""
 
@@ -2870,6 +2917,7 @@ class ProviderFailoverConfig:
         default_factory=ProviderFailoverOverrideConfig
     )
     reroute: ProviderFailoverRerouteConfig = field(default_factory=ProviderFailoverRerouteConfig)
+    spill: ProviderFailoverSpillConfig = field(default_factory=ProviderFailoverSpillConfig)
     notify: ProviderFailoverNotifyConfig = field(default_factory=ProviderFailoverNotifyConfig)
     doctor: ProviderFailoverDoctorConfig = field(default_factory=ProviderFailoverDoctorConfig)
     evidence: ProviderFailoverEvidenceConfig = field(
@@ -2946,6 +2994,7 @@ class ProviderFailoverConfig:
             "rate_limit.exits_to_trip": self.rate_limit.exits_to_trip,
             "reroute.max_per_sweep": self.reroute.max_per_sweep,
             "reroute.max_auto_per_task": self.reroute.max_auto_per_task,
+            "spill.max_per_sweep": self.spill.max_per_sweep,
             "notify.flap_threshold": self.notify.flap_threshold,
             "evidence.keep": self.evidence.keep,
         }
@@ -2979,6 +3028,7 @@ class ProviderFailoverConfig:
             "override.default_ttl_seconds": self.override.default_ttl_seconds,
             "override.max_ttl_seconds": self.override.max_ttl_seconds,
             "reroute.task_cooldown_seconds": self.reroute.task_cooldown_seconds,
+            "spill.after_seconds": self.spill.after_seconds,
             "notify.escalate_failing_after_seconds": self.notify.escalate_failing_after_seconds,
             "notify.escalate_all_down_after_seconds": self.notify.escalate_all_down_after_seconds,
             "doctor.held_warn_seconds": self.doctor.held_warn_seconds,
@@ -3014,6 +3064,7 @@ PROVIDER_FAILOVER_SUBSECTIONS: dict[str, type] = {
     "recovery": ProviderFailoverRecoveryConfig,
     "override": ProviderFailoverOverrideConfig,
     "reroute": ProviderFailoverRerouteConfig,
+    "spill": ProviderFailoverSpillConfig,
     "notify": ProviderFailoverNotifyConfig,
     "doctor": ProviderFailoverDoctorConfig,
     "evidence": ProviderFailoverEvidenceConfig,
@@ -4647,6 +4698,10 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             gate_sweep_interval_seconds=int(wg.get("gate_sweep_interval_seconds", 30)),
             conditional_autoclose=bool(wg.get("conditional_autoclose", True)),
             container_sweep_interval_seconds=int(wg.get("container_sweep_interval_seconds", 60)),
+            lifecycle_sweep_interval_seconds=int(
+                wg.get("lifecycle_sweep_interval_seconds", 300)
+            ),
+            stale_open_after_seconds=int(wg.get("stale_open_after_seconds", 6 * 3600)),
         )
 
     if "integration" in raw and isinstance(raw["integration"], dict):
@@ -4689,6 +4744,8 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             scratch_probe=scratch_probe,
             merge_require_up_to_date=bool(integ.get("merge_require_up_to_date", True)),
             owner_recovery_sweep=bool(integ.get("owner_recovery_sweep", False)),
+            # Passed through as written so ``validate()`` names a bad value.
+            publisher_stall_after=integ.get("publisher_stall_after", 5),
         )
 
     if "swarm" in raw and isinstance(raw["swarm"], dict):

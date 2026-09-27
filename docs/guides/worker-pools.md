@@ -419,6 +419,56 @@ Over the API the shape matches: `PoolStatusRow` carries `projects[]`
 `workspace_capacity`, `quarantined_until` / `quarantined_reason`) and
 `instances[]`, each instance naming the `project_id` it launched into.
 
+### 3.3 Capacity spill — work leaves a pool that cannot serve it
+
+A pool session claims only tasks routed to its own profile, and pool demand
+counts only those tasks. On its own that means a READY task on a full
+`max_active: 1` rung waits for that one seat while a sibling rung of the same
+class sits idle. **Capacity spill** closes that gap: it moves such a task to the
+sibling. It changes no bound, no admission rule and no claim query. Every move
+is an ordinary re-route that is recorded and can be undone
+([provider failover](../specs/provider-failover.md) §4a, D24).
+
+Spill is the second pass of the automatic `provider_reroute` sweep, which the
+shipped `provider-failover` playbook runs every five minutes and on each
+provider state change. A sweep scoped with `--provider` or `--task-id` never
+spills. Each sweep takes one `_measure_pools()` measurement, the same numbers
+the sizer and placement read. In project X, a READY task on pool A moves when
+**all** of these hold:
+
+| Condition | Otherwise |
+|---|---|
+| it has waited `provider_failover.spill.after_seconds` (default 300) since `tasks.updated_at` | not considered yet |
+| A's provider is launchable (an unavailable one is failover's job) | failover moves it instead |
+| A cannot serve it: `ready - idle - starting > 0` in X, and A is at `max_active`, the fleet is at its global pool cap, `(X, A)` is quarantined, or X has no free workspace or room under its project cap. A disabled pool always counts as unable to serve. | `skip` |
+| intent is `preferred` or `class_only` | `pinned` holds `spill_pinned` |
+| the class policy is not `hold`, and the task is under `reroute.max_auto_per_task` and outside `reroute.task_cooldown_seconds` (a spill counts as an automatic move for both) | `class_policy_hold` / `reroute_limit_reached` |
+| a same-class, enabled `lifecycle: pool` rung on an `available` provider (never `degraded`) has headroom in X, net of its own unserved demand and of the work failover is moving onto it this sweep | `spill_no_target`, or `spill_preferred_provider` when the project's preferred provider has no room |
+| fewer than `provider_failover.spill.max_per_sweep` (default 5) tasks have moved this sweep | `spill_sweep_limit` |
+
+Targets are tried in the failover provider order, then by the canonical rung
+first. When a project sets a preferred provider, only rungs on that provider are
+targets, and spill never moves work off it.
+
+Each move writes a `task_reroutes` row with `reason_code: capacity_spill` and
+a batch id `spill-<UTC yyyymmddThhmm>`. It also leaves a task comment that
+names the saturation, for example "standard-high-opencode had no free capacity
+for 9 min: 1/1 live, 0 idle", along with the undo command, and emits one
+`task.rerouted` event per task. Each sweep that spilled work emits one
+`pool.spilled` summary with its batch, the per-route counts and the projects.
+Spill sends no supervisor message.
+
+```bash
+aq provider reroute --dry-run                       # what the next sweep would move; each row has reason_code
+aq provider reroute-undo --batch-id spill-20260927T1405
+aq provider reroute-undo --task-id <id>
+aq system config set provider_failover.spill.enabled=false   # switch the pass off
+```
+
+Spill applies only when failover would. If `provider_failover.mode` is not
+`enforce`, or `reroute.enabled` is false, the sweep answers `disabled` for both
+passes and returns the plan without applying it.
+
 ## 3a. Upgrading from per-project pools
 
 Bounds used to be copied into one pool key per active project, so `max_active`
@@ -663,6 +713,7 @@ aq doctor --fix                             # apply fixable repairs, then re-run
 | `pools.placement_starved` | WARN | no | A profile has had authorised starts and no eligible project for over 5 minutes, with the blocking reason per project (`quarantined` / `no workspace capacity` / `at project cap`). Reads the running orchestrator's observation, so it reports INFO ("cannot see") when no daemon is reachable. |
 | `claims.holder_consistency` | WARN | no | An IN_PROGRESS task whose claim holder disagrees with `agents.current_task_id` or with the `claimed_by_session` task-meta. Report-only. |
 | `agents.dangling_current_task` | WARN | yes | An agent's `current_task_id` names a task that is missing or not `ASSIGNED`/`IN_PROGRESS`, and the agent has no live session attempt on it. Broader than the BUSY-only reconciler rescue: any agent row, since the dashboard's graph markers read `current_task_id` regardless of `state`. The report is safe to run on its own. `--fix` clears the stale pointer and emits `agent.updated`; it resets only a BUSY agent to `IDLE`, preserving `PAUSED`, `ERROR`, and `RETIRED` state, and never touches `tasks.assigned_agent_id`. |
+| `claims.container_held` | WARN | yes | An agent's current task is a container whose children it did not file: none of the task's children has `created_by_id` = the holding session, and at least one was filed by the session that filed the task itself. A plain task claimed a moment before its planner reparented its children under it turns into one while held (prime-glacier.1); a follow-up someone else files under a worker's task does not count. The pool reconcile step releases pool holders every tick on its own, so a hit means a push-launched session, an agent row BUSY with no session, or a disabled swarm. `--fix` puts the task back in container shape (`IN_PROGRESS`, no agent), settles it if its children are done, releases and drains the holding session so the pool relaunches a fresh worker, or resets an orphaned agent row to `IDLE`. A worker's own emergent filings under its held task never count. |
 
 ### The agent-row rule, and the one thing not to do
 
@@ -1148,11 +1199,13 @@ reseed command is the supported path.
 | `pool status` shows a pool flat at 0, with `quarantined_reason` | §4a — harness, provider, base checkout, or a dead startup |
 | `pool status` shows a pool flat at 0, no quarantine reason | starved: no `project-repo` kind, or no free workspace. `aq doctor --check pools.placement_starved` names the blocking reason per project |
 | `desired` is below `ready` | `max_active` or `swarm.global_max_active` is binding — not a bug |
+| READY work waits on a full pool while a same-class pool sits idle | capacity spill (§3.3) moves it after `provider_failover.spill.after_seconds`. `aq provider reroute --dry-run` names each task's `kind` (`spill_pinned`, `spill_no_target`, ...); check `spill.enabled`, `provider_failover.mode` and that the `provider-failover` playbook is active |
 | The fleet is much smaller than it was before an upgrade | bounds are fleet-wide now: `aq doctor --check pools.global_bounds_migration` (§3a) |
 | A project never gets a warm worker | placement follows demand; set `min_per_project` (§2) — and check `pools.floor_exceeds_max` if you already did |
 | `desired` is met but one project has no worker | placement chose elsewhere: read the `Projects` column and `pool.scaled`'s `placement_reason` |
 | Workers appear and vanish every minute | a quarantining launch failure; read `quarantined_reason` (§4a) |
 | A session holds a task that is already closed | `aq doctor --check pools.stuck --fix` |
+| A worker holds an epic whose children someone else filed | released on the next pool tick; `aq doctor --check claims.container_held --fix` for any other holder. File epics with a graph whose `parent:` block creates the container, or (supervisor/operator) `aq task create --container`, so it is never claimable |
 | A completed integration task still has a running pool claim and attached branch owner after a restart | As a local operator, run `aq integration flush <project-id>`; it recovers only a quiescent, clean, origin-published exact holder. |
 | A claim never completes | `aq doctor --check pools.preparing_stuck --fix` (releases as `prepare_failed`) |
 | Pools stopped growing and nothing is quarantined | a soft-deleted worker row is fencing `create_automatic_agent` — §5 |

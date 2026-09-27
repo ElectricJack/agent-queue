@@ -98,13 +98,37 @@ not silently leave a completed or overdue wait active. Task-result messages
 resolve the session currently attached to the owner task, including pool
 sessions whose names are independent of the task id. An idle current holder
 receives the result pointer once; busy or absent holders retain queued results.
+Current-instance transcripts determine idle/busy when they contain turn evidence:
+completed turns are idle even while a terminal keeps redrawing, and a subsequent
+prompt or tool/model entry invalidates that idle signal. Missing or unreadable
+transcripts fall back to provider activity. Transcript reads are incremental;
+instance changes, path changes and truncation discard cached turn state. Nudges
+still use the provider's instance fence and composer guards.
 Delivery never starts a task worker or changes the task's status.
+Plain task- and session-addressed messages share this idle delivery path.
+A message-kind wait matches only messages on its thread, so supervisor
+guidance that answers a worker's threaded message carries `reply_to`
+(`agent_message`), which copies the original's thread and links the reply.
+`messages.idle_worker_backlog` reports task/session messages older than five
+minutes whose live recipient the delivery lens reads as idle, with the lens's
+last refused-nudge reason.
+The bounded scan prioritizes timers at their `due_at` instant alongside waits
+past their hard deadlines, before unresolved future conditions. It continues
+to rotate unresolved candidates using their last check time.
 
 `aq doctor --check waits.pending_terminal_tasks` reports active task-kind waits
 whose same-project producer is COMPLETED, FAILED or BLOCKED, including archived
 producers. It reports wait, owner and session ids and the target status in a
 bounded diagnostic. This is read-only: the normal command reconciler owns
 resolution and the result outbox.
+
+`aq doctor --check waits.pending_timers` reports active timer waits whose due
+instant or hard deadline has passed. Timer readiness is determined by `due_at`,
+not the default two-hour timeout. The bounded read-only diagnostic includes the
+wait, owner and session ids, due instant, deadline and last reconciliation check.
+It also reports satisfied/expired timer results still undelivered after the
+larger of 30 seconds or two configured delivery intervals, with their resolution
+time and result message id. Delivered or archived result messages are excluded.
 
 ### Publisher validation and console streams
 

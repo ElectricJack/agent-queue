@@ -21,7 +21,6 @@ mixin owns authorization and wiring; nothing here asks who the caller is.
 
 from __future__ import annotations
 
-import datetime
 import logging
 import shutil
 import time
@@ -37,6 +36,7 @@ from src.reviews.diff import block_diff
 from src.reviews.vault import (
     body_sha256,
     candidate_paths,
+    frontmatter_for,
     render,
     split_frontmatter,
     write_atomic,
@@ -44,7 +44,7 @@ from src.reviews.vault import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["MAX_CONTENT_BYTES", "ReviewError", "ReviewHooks", "ReviewService"]
+__all__ = ["MAX_CONTENT_BYTES", "PlaybookPin", "ReviewError", "ReviewHooks", "ReviewService"]
 
 #: Submitted content, frontmatter included, in UTF-8 bytes (256 KB).
 MAX_CONTENT_BYTES = 262144
@@ -85,6 +85,27 @@ class ReviewHooks:
     resolve_gate: Callable[[str, str, str], Awaitable[set[str]]]
     #: ``(review row, decided revision, feedback text)``: hand feedback to the author.
     changes_requested: Callable[[dict, dict, str], Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class PlaybookPin:
+    """The compiled Playbook V2 artifact one revision asks approval for.
+
+    ``meta`` is the ``doc_review_revisions.playbook`` JSON (playbook id,
+    artifact hash, source hash, scope, ``activate_on_approval``, ...) and
+    ``artifact`` the exact canonical artifact text approval stores.  The
+    command layer compiles it; the service only keeps it with the revision.
+    """
+
+    meta: dict
+    artifact: str
+
+    @classmethod
+    def from_revision(cls, row: dict) -> PlaybookPin | None:
+        meta, artifact = row.get("playbook"), row.get("playbook_artifact")
+        if not meta or not artifact:
+            return None
+        return cls(meta=dict(meta), artifact=artifact)
 
 
 def _body(content: str) -> str:
@@ -162,8 +183,12 @@ class ReviewService:
         content: str,
         submitted_by: str,
         decider: str = "user",
+        playbook: PlaybookPin | None = None,
     ) -> dict:
-        """Create a review at revision 1, its gate and its vault file."""
+        """Create a review at revision 1, its gate and its vault file.
+
+        *playbook* pins the compiled artifact this revision asks approval for.
+        """
         kind = _kind(kind)
         title = _title(title)
         if decider not in DOC_REVIEW_DECIDERS:
@@ -202,7 +227,8 @@ class ReviewService:
                     await self.db.insert_review(
                         review=review,
                         revision=self._revision_row(
-                            review_id, 1, body, submitted_by, author_task_id, None, now
+                            review_id, 1, body, submitted_by, author_task_id, None, now,
+                            playbook,
                         ),
                         conn=conn,
                     )
@@ -212,7 +238,7 @@ class ReviewService:
                     raise
                 logger.info("review submit raced another submission; retrying", exc_info=True)
 
-        self._sync_vault(review, body)
+        self._sync_vault(review, body, playbook.meta if playbook else None)
         await self._emit("review.submitted", {**_base_payload(review), "vault_path": vault_path})
         return {"review_id": review_id, "vault_path": vault_path, "revision": 1, "gate_id": gate_id}
 
@@ -237,10 +263,12 @@ class ReviewService:
         resolves: list[str],
         submitted_by: str,
         submitted_task_id: str | None,
+        playbook: PlaybookPin | None = None,
     ) -> dict:
         """Store revision N+1 and put the review back ``in_review``.
 
-        *resolves* marks those open comments addressed in the new revision.
+        *resolves* marks those open comments addressed in the new revision;
+        *playbook* pins the artifact the new revision asks approval for.
         A vault file edited outside the review is copied to
         ``<name>.edited-<unix>.md`` (returned as ``backup_path``) before the
         new revision replaces it.
@@ -272,6 +300,7 @@ class ReviewService:
                         submitted_task_id,
                         changes_note,
                         now,
+                        playbook,
                     ),
                     conn=conn,
                 )
@@ -288,7 +317,7 @@ class ReviewService:
             backup_path = self._backup(review, now)
             writable = backup_path is not None
         if writable:
-            self._sync_vault(review, body)
+            self._sync_vault(review, body, playbook.meta if playbook else None)
         else:
             logger.warning(
                 "review %s: vault file %s was edited outside the review and could not be "
@@ -579,6 +608,9 @@ class ReviewService:
                 "not_utf8", f"the vault file {review['vault_path']} is not valid UTF-8"
             ) from None
         body = _body(text)
+        # The artifact is compiled from the playbook source, not this prose:
+        # an edit to the document keeps the revision's pin.
+        playbook = PlaybookPin.from_revision(stored)
         new_revision = current + 1
         now = self._clock()
         async with self.db.immediate() as conn:
@@ -592,7 +624,7 @@ class ReviewService:
             if moved:
                 await self.db.insert_review_revision(
                     revision=self._revision_row(
-                        review_id, new_revision, body, by, None, IMPORT_NOTE, now
+                        review_id, new_revision, body, by, None, IMPORT_NOTE, now, playbook
                     ),
                     conn=conn,
                 )
@@ -600,7 +632,7 @@ class ReviewService:
             raise await self._lost_race(review_id)
 
         review = await self._get(review_id)
-        self._sync_vault(review, body)
+        self._sync_vault(review, body, playbook.meta if playbook else None)
         await self._emit(
             "review.revised",
             {
@@ -635,11 +667,13 @@ class ReviewService:
 
         state = self.vault_state(review, current["content_sha256"])
         if state == "missing":
-            self._sync_vault(review, current["content"])
+            self._sync_vault(review, current["content"], current.get("playbook"))
 
         out: dict = {
             "review": review,
-            "revision": shown,
+            # The pinned artifact bytes stay in the database; ``playbook``
+            # names their hash.
+            "revision": {k: v for k, v in shown.items() if k != "playbook_artifact"},
             "revisions": await self.db.list_review_revisions(review_id),
             "vault_state": state,
         }
@@ -691,24 +725,10 @@ class ReviewService:
     def _path(self, review: dict) -> Path:
         return self.vault_root / review["vault_path"]
 
-    def _sync_vault(self, review: dict, body: str) -> None:
+    def _sync_vault(self, review: dict, body: str, playbook: dict | None = None) -> None:
         """Write the vault copy of *review* at its current revision; never raises."""
-        # The submission's local date, as in the path ``candidate_paths`` chose.
-        created = datetime.date.fromisoformat(
-            time.strftime("%Y-%m-%d", time.localtime(review["created_at"]))
-        )
-        frontmatter = {
-            "title": review["title"],
-            "status": review["state"],
-            "kind": review["kind"],
-            "review": review["id"],
-            "revision": review["current_revision"],
-            "project": review["project_id"],
-            "author_task": review["author_task_id"] or "",
-            "date": created,
-        }
         try:
-            write_atomic(self._path(review), render(frontmatter, body))
+            write_atomic(self._path(review), render(frontmatter_for(review, playbook), body))
         except OSError:
             logger.warning(
                 "review %s: writing vault file %s failed; the database copy stands",
@@ -730,7 +750,7 @@ class ReviewService:
                 review["vault_path"],
             )
             return
-        self._sync_vault(review, current["content"])
+        self._sync_vault(review, current["content"], current.get("playbook"))
 
     # -- helpers -------------------------------------------------------------
 
@@ -762,8 +782,9 @@ class ReviewService:
         submitted_task_id: str | None,
         changes_note: str | None,
         now: float,
+        playbook: PlaybookPin | None = None,
     ) -> dict:
-        return {
+        row = {
             "review_id": review_id,
             "revision": revision,
             "content": body,
@@ -773,6 +794,10 @@ class ReviewService:
             "changes_note": changes_note,
             "submitted_at": now,
         }
+        if playbook is not None:
+            row["playbook"] = playbook.meta
+            row["playbook_artifact"] = playbook.artifact
+        return row
 
     async def _get(self, review_id: str) -> dict:
         review = await self.db.get_review(review_id)

@@ -31,6 +31,33 @@ class TerminalAttachError(Exception):
     """A safe, fixed terminal error suitable for an API response."""
 
 
+async def resolve_session_id(provider: TmuxProvider, name: str, token: str | None) -> str | None:
+    """The numeric tmux id (``$N``) of session *name* while it still carries *token*.
+
+    ``None`` when the name is gone, the id is malformed, or the session's
+    ``AQ_INSTANCE_TOKEN`` differs. Callers compare the result with the id they
+    resolved first, so a same-named successor, or a restarted tmux server that
+    reused ``$N`` for another instance, never matches. Never uses provider caches.
+    """
+    if not token:
+        return None
+    try:
+        session_id = (await provider._tmux(
+            "display-message", "-p", "-t", f"={name}:",
+            "#{session_id}", timeout=1,
+        )).strip()
+        if not re.fullmatch(r"\$[0-9]+", session_id):
+            return None
+        observed = await provider._tmux(
+            "show-environment", "-t", session_id, "AQ_INSTANCE_TOKEN", timeout=1,
+        )
+        if observed.rstrip("\r\n") != f"AQ_INSTANCE_TOKEN={token}":
+            return None
+        return session_id
+    except Exception:
+        return None
+
+
 class PtyTmuxClient:
     def __init__(self, provider: TmuxProvider, row: SessionRecord):
         self._provider = provider
@@ -113,23 +140,7 @@ class PtyTmuxClient:
                 os.close(slave)
 
     async def _current_session_id(self) -> str | None:
-        if not self._token:
-            return None
-        try:
-            session_id = (await self._provider._tmux(
-                "display-message", "-p", "-t", f"={self._name}:",
-                "#{session_id}", timeout=1,
-            )).strip()
-            if not re.fullmatch(r"\$[0-9]+", session_id):
-                return None
-            token = await self._provider._tmux(
-                "show-environment", "-t", session_id, "AQ_INSTANCE_TOKEN", timeout=1,
-            )
-            if token.rstrip("\r\n") != f"AQ_INSTANCE_TOKEN={self._token}":
-                return None
-            return session_id
-        except Exception:
-            return None
+        return await resolve_session_id(self._provider, self._name, self._token)
 
     async def _attached(self) -> bool:
         proc = self._process

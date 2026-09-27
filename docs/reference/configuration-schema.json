@@ -599,6 +599,7 @@
         "merge_require_up_to_date": true,
         "merge_required_checks": [],
         "owner_recovery_sweep": false,
+        "publisher_stall_after": 5,
         "scratch_probe": null
       },
       "properties": {
@@ -668,6 +669,10 @@
         "owner_recovery_sweep": {
           "default": false,
           "type": "boolean"
+        },
+        "publisher_stall_after": {
+          "default": 5,
+          "type": "integer"
         },
         "scratch_probe": {
           "additionalProperties": false,
@@ -1641,6 +1646,11 @@
           "target_backlog_factor": 1.0,
           "task_cooldown_seconds": 1800
         },
+        "spill": {
+          "after_seconds": 300,
+          "enabled": true,
+          "max_per_sweep": 5
+        },
         "usage": {
           "degraded_percent": 85.0,
           "exhausted_percent": 99.0,
@@ -1890,6 +1900,29 @@
             },
             "task_cooldown_seconds": {
               "default": 1800,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "spill": {
+          "additionalProperties": false,
+          "default": {
+            "after_seconds": 300,
+            "enabled": true,
+            "max_per_sweep": 5
+          },
+          "properties": {
+            "after_seconds": {
+              "default": 300,
+              "type": "integer"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "max_per_sweep": {
+              "default": 5,
               "type": "integer"
             }
           },
@@ -2747,7 +2780,9 @@
       "default": {
         "conditional_autoclose": true,
         "container_sweep_interval_seconds": 60,
-        "gate_sweep_interval_seconds": 30
+        "gate_sweep_interval_seconds": 30,
+        "lifecycle_sweep_interval_seconds": 300,
+        "stale_open_after_seconds": 21600
       },
       "properties": {
         "conditional_autoclose": {
@@ -2760,6 +2795,14 @@
         },
         "gate_sweep_interval_seconds": {
           "default": 30,
+          "type": "integer"
+        },
+        "lifecycle_sweep_interval_seconds": {
+          "default": 300,
+          "type": "integer"
+        },
+        "stale_open_after_seconds": {
+          "default": 21600,
           "type": "integer"
         }
       },

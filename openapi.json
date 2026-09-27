@@ -1366,6 +1366,77 @@
         }
       }
     },
+    "/api/providers/allocation": {
+      "get": {
+        "summary": "Get Provider Allocation",
+        "operationId": "get_provider_allocation_api_providers_allocation_get",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Provider"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderAllocationStatusResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "unknown project"
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "404": {
+            "description": "unknown provider"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/providers/{provider}/state": {
       "post": {
         "summary": "Post Provider State",
@@ -3120,6 +3191,241 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SubagentEventResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/collaboration/accept": {
+      "post": {
+        "tags": [
+          "collaboration"
+        ],
+        "summary": "Join a collaboration thread for the held task's live claim.",
+        "description": "Join a collaboration thread for the held task's live claim.",
+        "operationId": "collaboration_accept",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollaborationAcceptArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollaborationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/collaboration/close": {
+      "post": {
+        "tags": [
+          "collaboration"
+        ],
+        "summary": "Close a collaboration thread without changing any member task. Elevated callers may instead remove one member, or close every active thread in the project.",
+        "description": "Close a collaboration thread without changing any member task. Elevated callers may instead remove one member, or close every active thread in the project.",
+        "operationId": "collaboration_close",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollaborationCloseArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollaborationCloseResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/collaboration/create": {
+      "post": {
+        "tags": [
+          "collaboration"
+        ],
+        "summary": "Create a bounded collaboration thread between 2 to 4 tasks of one project and invite each once. Operator or supervisor only; replays on idempotency_key.",
+        "description": "Create a bounded collaboration thread between 2 to 4 tasks of one project and invite each once. Operator or supervisor only; replays on idempotency_key.",
+        "operationId": "collaboration_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollaborationCreateArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollaborationResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/collaboration/get": {
+      "post": {
+        "tags": [
+          "collaboration"
+        ],
+        "summary": "Read a collaboration thread: members, deadline, capacity hold and up to 20 ordered messages (the tail, or those after after_seq).",
+        "description": "Read a collaboration thread: members, deadline, capacity hold and up to 20 ordered messages (the tail, or those after after_seq).",
+        "operationId": "collaboration_get",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollaborationGetArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollaborationGetResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/collaboration/list": {
+      "post": {
+        "tags": [
+          "collaboration"
+        ],
+        "summary": "List collaboration threads for the held task, or a project's threads.",
+        "description": "List collaboration threads for the held task, or a project's threads.",
+        "operationId": "collaboration_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CollaborationListArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollaborationListResponse"
                 }
               }
             }
@@ -6603,6 +6909,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MessageStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/message/wait": {
+      "post": {
+        "tags": [
+          "message"
+        ],
+        "summary": "Wait up to 60 seconds for ordered collaboration messages on the existing durable message wait. On timeout end this turn; the wait retains the claim and seat.",
+        "description": "Wait up to 60 seconds for ordered collaboration messages on the existing durable message wait. On timeout end this turn; the wait retains the claim and seat.",
+        "operationId": "message_wait",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageWaitArgs"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageWaitResponse"
                 }
               }
             }
@@ -10421,6 +10774,53 @@
         }
       }
     },
+    "/api/provider/allocation-status": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Show every ordinary worker profile grouped by provider (the harness login: claude, codex): lifecycle, per-profile bounds, class and enabled flag; fleet and per-project pool supply (ready, idle, busy, starting, draining, unresponsive); live sessions with their task and idle age; READY/ASSIGNED/IN_PROGRESS tasks pinned or preferred to each profile; manual agent definitions and their overrides; each project's preferred provider; and the provider-wide configured pool ceiling.  Control, named, template, malformed and unknown-provider profiles are listed as diagnostics.  Read-only; a project-scoped caller sees other projects' sessions and tasks redacted.",
+        "description": "Show every ordinary worker profile grouped by provider (the harness login: claude, codex): lifecycle, per-profile bounds, class and enabled flag; fleet and per-project pool supply (ready, idle, busy, starting, draining, unresponsive); live sessions with their task and idle age; READY/ASSIGNED/IN_PROGRESS tasks pinned or preferred to each profile; manual agent definitions and their overrides; each project's preferred provider; and the provider-wide configured pool ceiling.  Control, named, template, malformed and unknown-provider profiles are listed as diagnostics.  Read-only; a project-scoped caller sees other projects' sessions and tasks redacted.",
+        "operationId": "provider_allocation_status",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderAllocationStatusRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderAllocationStatusResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/provider/held-tasks": {
       "post": {
         "tags": [
@@ -11460,8 +11860,8 @@
         "tags": [
           "review"
         ],
-        "summary": "Submit markdown for review, or submit a revision to an open review.",
-        "description": "Submit markdown for review, or submit a revision to an open review.",
+        "summary": "Submit markdown for review, or submit a revision to an open review. A playbook review (kind other) also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision. Approval stores that artifact (and activates it when activate_on_approval is set); a revision recompiles it.",
+        "description": "Submit markdown for review, or submit a revision to an open review. A playbook review (kind other) also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision. Approval stores that artifact (and activates it when activate_on_approval is set); a revision recompiles it.",
         "operationId": "review_submit",
         "requestBody": {
           "content": {
@@ -15587,8 +15987,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Close a task with an outcome. This is the ONLY way a session-run task reaches COMPLETED \u2014 process exit is a failure signal, never success. Records outcome metadata, runs the completion pipeline (commit/push/PR/verify), and transitions the task. Follow it with `aq session drain-ack`. Backs `aq task close`.",
-        "description": "Close a task with an outcome. This is the ONLY way a session-run task reaches COMPLETED \u2014 process exit is a failure signal, never success. Records outcome metadata, runs the completion pipeline (commit/push/PR/verify), and transitions the task. Follow it with `aq session drain-ack`. Backs `aq task close`.",
+        "summary": "Close a task with an outcome. This is the ONLY way a session-run task reaches COMPLETED \u2014 process exit is a failure signal, never success. Records outcome metadata, runs the completion pipeline (commit/push/PR/verify), and transitions the task. Follow it with `aq session drain-ack`. Backs `aq task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners are released through the release-owner safety proof and it is dropped from parked development batches, so it can then be deleted.",
+        "description": "Close a task with an outcome. This is the ONLY way a session-run task reaches COMPLETED \u2014 process exit is a failure signal, never success. Records outcome metadata, runs the completion pipeline (commit/push/PR/verify), and transitions the task. Follow it with `aq session drain-ack`. Backs `aq task close`. With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead retires superseded work: the task goes to COMPLETED as abandoned and is never published, its branch owners are released through the release-owner safety proof and it is dropped from parked development batches, so it can then be deleted.",
         "operationId": "task_close",
         "requestBody": {
           "content": {
@@ -16940,6 +17340,61 @@
           }
         }
       }
+    },
+    "/ws/terminal/{session_id}": {
+      "get": {
+        "summary": "Terminal Access",
+        "operationId": "terminal_access",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "browser_origin",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Browser Origin"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalAccessResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -17376,6 +17831,18 @@
             ],
             "title": "Wait",
             "description": "Wait up to 60 seconds for delivery"
+          },
+          "reply_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply To",
+            "description": "Message id this guidance answers; it joins that message's thread, so a worker waiting on the thread resumes"
           }
         },
         "type": "object",
@@ -19827,6 +20294,852 @@
         "title": "ClusterBoundsDTO",
         "description": "Grid-unit bounding box of one rule cluster."
       },
+      "CollaborationAcceptArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "thread_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Thread Id"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "thread_id"
+        ],
+        "title": "CollaborationAcceptArgs"
+      },
+      "CollaborationCloseArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "thread_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Id"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "remove_task_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remove Task Id"
+          },
+          "all_active": {
+            "type": "boolean",
+            "title": "All Active",
+            "default": false
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CollaborationCloseArgs"
+      },
+      "CollaborationCloseResponse": {
+        "properties": {
+          "thread": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CollaborationThreadRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "closed_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed Count"
+          },
+          "thread_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread Ids"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CollaborationCloseResponse"
+      },
+      "CollaborationCreateArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string",
+              "maxLength": 256,
+              "minLength": 1
+            },
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 2,
+            "title": "Task Ids"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal"
+          },
+          "deadline_seconds": {
+            "type": "integer",
+            "maximum": 7200.0,
+            "minimum": 60.0,
+            "title": "Deadline Seconds",
+            "default": 7200
+          },
+          "message_budget": {
+            "type": "integer",
+            "maximum": 40.0,
+            "minimum": 1.0,
+            "title": "Message Budget",
+            "default": 40
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "task_ids",
+          "idempotency_key"
+        ],
+        "title": "CollaborationCreateArgs"
+      },
+      "CollaborationGetArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "thread_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Thread Id"
+          },
+          "after_seq": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After Seq"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "thread_id"
+        ],
+        "title": "CollaborationGetArgs"
+      },
+      "CollaborationGetResponse": {
+        "properties": {
+          "thread": {
+            "$ref": "#/components/schemas/CollaborationThreadRecord"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/CollaborationMessageRecord"
+            },
+            "type": "array",
+            "title": "Messages"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More"
+          },
+          "capacity_hold": {
+            "type": "boolean",
+            "title": "Capacity Hold"
+          },
+          "next_step": {
+            "type": "string",
+            "title": "Next Step"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "thread",
+          "messages",
+          "has_more",
+          "capacity_hold",
+          "next_step"
+        ],
+        "title": "CollaborationGetResponse"
+      },
+      "CollaborationListArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "closed",
+                  "expired"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 20
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "CollaborationListArgs"
+      },
+      "CollaborationListResponse": {
+        "properties": {
+          "threads": {
+            "items": {
+              "$ref": "#/components/schemas/CollaborationThreadRecord"
+            },
+            "type": "array",
+            "title": "Threads"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "threads",
+          "count"
+        ],
+        "title": "CollaborationListResponse"
+      },
+      "CollaborationMemberRecord": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "invited",
+              "accepted",
+              "removed"
+            ],
+            "title": "State"
+          },
+          "invited_at": {
+            "type": "number",
+            "title": "Invited At"
+          },
+          "accepted_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted At"
+          },
+          "accepted_claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted Claim Epoch"
+          },
+          "removed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removed At"
+          },
+          "task_status": {
+            "type": "string",
+            "title": "Task Status"
+          },
+          "task_claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Claim Epoch"
+          },
+          "running": {
+            "type": "boolean",
+            "title": "Running"
+          },
+          "needs_accept": {
+            "type": "boolean",
+            "title": "Needs Accept"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "task_id",
+          "state",
+          "invited_at",
+          "task_status",
+          "running",
+          "needs_accept"
+        ],
+        "title": "CollaborationMemberRecord",
+        "description": "One member task; ``needs_accept`` means its live claim has not joined."
+      },
+      "CollaborationMessageRecord": {
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "title": "Seq"
+          },
+          "message_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Id"
+          },
+          "sender_task_id": {
+            "type": "string",
+            "title": "Sender Task Id"
+          },
+          "subject": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subject"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "seq",
+          "sender_task_id",
+          "created_at"
+        ],
+        "title": "CollaborationMessageRecord",
+        "description": "One accepted send; ``body`` is null once content retention has elapsed."
+      },
+      "CollaborationResponse": {
+        "properties": {
+          "thread": {
+            "$ref": "#/components/schemas/CollaborationThreadRecord"
+          },
+          "replayed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replayed"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "thread"
+        ],
+        "title": "CollaborationResponse"
+      },
+      "CollaborationThreadRecord": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "created_by_kind": {
+            "type": "string",
+            "enum": [
+              "operator",
+              "supervisor"
+            ],
+            "title": "Created By Kind"
+          },
+          "created_by_id": {
+            "type": "string",
+            "title": "Created By Id"
+          },
+          "idempotency_key": {
+            "type": "string",
+            "title": "Idempotency Key"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "closed",
+              "expired"
+            ],
+            "title": "State"
+          },
+          "close_reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "closed",
+                  "budget_exhausted",
+                  "expired",
+                  "members_below_two"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Close Reason"
+          },
+          "created_at": {
+            "type": "number",
+            "title": "Created At"
+          },
+          "deadline_at": {
+            "type": "number",
+            "title": "Deadline At"
+          },
+          "closed_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Closed At"
+          },
+          "remaining_seconds": {
+            "type": "number",
+            "title": "Remaining Seconds"
+          },
+          "message_budget": {
+            "type": "integer",
+            "title": "Message Budget"
+          },
+          "message_count": {
+            "type": "integer",
+            "title": "Message Count"
+          },
+          "last_seq": {
+            "type": "integer",
+            "title": "Last Seq"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "final_result": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Result"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/CollaborationMemberRecord"
+            },
+            "type": "array",
+            "title": "Members"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "id",
+          "project_id",
+          "created_by_kind",
+          "created_by_id",
+          "idempotency_key",
+          "state",
+          "created_at",
+          "deadline_at",
+          "remaining_seconds",
+          "message_budget",
+          "message_count",
+          "last_seq",
+          "version",
+          "members"
+        ],
+        "title": "CollaborationThreadRecord"
+      },
       "CommandCenterPreferences": {
         "properties": {
           "density": {
@@ -21633,6 +22946,12 @@
             "title": "Parent Id",
             "description": ""
           },
+          "root": {
+            "type": "boolean",
+            "title": "Root",
+            "description": "For a worker-filed graph that declares a document-level parent: create that new container at the project root instead of under the held task. It carries a discovered-from edge to the held task and the routing gate every worker root filing gets, and its children wait behind it until the gate is resolved. Mutually exclusive with parent_id.",
+            "default": false
+          },
           "reason": {
             "anyOf": [
               {
@@ -21892,6 +23211,12 @@
             ],
             "title": "Parent Title",
             "description": "Title for the standing container when parent_key has to create one. Defaults to the key, title-cased."
+          },
+          "container": {
+            "type": "boolean",
+            "title": "Container",
+            "description": "Create the task as a container (an epic whose children are filed or reparented under it afterwards). It is flagged in the creation transaction, so no worker ever claims it, and it stays open until its children finish. Refused for worker sessions, which file an epic with its children through create_task_graph and a document-level parent block.",
+            "default": false
           },
           "depends_on": {
             "anyOf": [
@@ -35574,6 +36899,30 @@
             "title": "Message Id",
             "description": "Message being replied to"
           },
+          "client_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Key",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          },
           "body": {
             "type": "string",
             "title": "Body",
@@ -35647,6 +36996,53 @@
           },
           "reply": {
             "$ref": "#/components/schemas/MessageModel"
+          },
+          "message_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Ids"
+          },
+          "seq": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seq"
+          },
+          "replayed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replayed"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
           }
         },
         "additionalProperties": true,
@@ -35673,12 +37069,26 @@
             "description": "Owning project id"
           },
           "to_kind": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "To Kind",
-            "description": "Recipient kind: session | task | profile | user"
+            "description": "Recipient kind; omit for collaboration fanout"
           },
           "to_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "To Id",
             "description": "Recipient id"
           },
@@ -35721,6 +37131,31 @@
             ],
             "title": "Thread Id"
           },
+          "client_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 128,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Key"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          },
           "priority": {
             "type": "integer",
             "title": "Priority",
@@ -35752,8 +37187,6 @@
         },
         "type": "object",
         "required": [
-          "to_kind",
-          "to_id",
           "body"
         ],
         "title": "MessageSendRequest",
@@ -35827,6 +37260,184 @@
           "message"
         ],
         "title": "MessageStatusResponse"
+      },
+      "MessageWaitArgs": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id"
+          },
+          "thread_id": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Thread Id"
+          },
+          "after_seq": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "After Seq"
+          },
+          "timeout": {
+            "type": "integer",
+            "maximum": 60.0,
+            "minimum": 1.0,
+            "title": "Timeout",
+            "default": 60
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256,
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "thread_id",
+          "after_seq"
+        ],
+        "title": "MessageWaitArgs"
+      },
+      "MessageWaitResponse": {
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "satisfied",
+              "waiting",
+              "expired",
+              "cancelled",
+              "thread_closed",
+              "peer_failed",
+              "peer_gone",
+              "partner_not_running"
+            ],
+            "title": "State"
+          },
+          "wait": {
+            "$ref": "#/components/schemas/AgentWaitRecord"
+          },
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/CollaborationMessageRecord"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Messages"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "has_more": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Has More"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor"
+          },
+          "next_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Step"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "state",
+          "wait"
+        ],
+        "title": "MessageWaitResponse"
       },
       "MetricsSample": {
         "properties": {
@@ -42695,6 +44306,865 @@
         ],
         "title": "ProvideInputResponse"
       },
+      "ProviderAllocationCeiling": {
+        "properties": {
+          "min_active": {
+            "type": "integer",
+            "title": "Min Active",
+            "default": 0
+          },
+          "max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Active",
+            "default": 0
+          },
+          "unbounded": {
+            "type": "boolean",
+            "title": "Unbounded",
+            "default": false
+          },
+          "pool_profiles": {
+            "type": "integer",
+            "title": "Pool Profiles",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "ProviderAllocationCeiling",
+        "description": "The provider-wide configured ceiling over its enabled pool profiles.\n\n``max_active`` is ``None`` (and ``unbounded`` true) when any of them is\nunbounded.  Bounds stay per profile; this total is for reading only."
+      },
+      "ProviderAllocationDiagnostic": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "lifecycle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lifecycle"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "id",
+          "reason"
+        ],
+        "title": "ProviderAllocationDiagnostic",
+        "description": "A profile (or agent) bulk allocation never selects, and why."
+      },
+      "ProviderAllocationEvent": {
+        "properties": {
+          "event_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Event Id"
+          },
+          "at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "At"
+          },
+          "request_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Id"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          }
+        },
+        "type": "object",
+        "title": "ProviderAllocationEvent",
+        "description": "The newest ``provider.allocation_changed`` event for a provider."
+      },
+      "ProviderAllocationGroup": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "vendor": {
+            "type": "string",
+            "title": "Vendor",
+            "default": ""
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "default": "available"
+          },
+          "harnesses": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Harnesses",
+            "default": []
+          },
+          "supply": {
+            "$ref": "#/components/schemas/ProviderAllocationSupply"
+          },
+          "ceiling": {
+            "$ref": "#/components/schemas/ProviderAllocationCeiling"
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationProfile"
+            },
+            "type": "array",
+            "title": "Profiles",
+            "default": []
+          },
+          "manual_agents": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationManualAgent"
+            },
+            "type": "array",
+            "title": "Manual Agents",
+            "default": []
+          },
+          "pinned_tasks": {
+            "type": "integer",
+            "title": "Pinned Tasks",
+            "default": 0
+          },
+          "preferred_tasks": {
+            "type": "integer",
+            "title": "Preferred Tasks",
+            "default": 0
+          },
+          "last_allocation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAllocationEvent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "supply",
+          "ceiling"
+        ],
+        "title": "ProviderAllocationGroup",
+        "description": "One provider: its ordinary worker profiles and what runs on them."
+      },
+      "ProviderAllocationHidden": {
+        "properties": {
+          "projects": {
+            "type": "integer",
+            "title": "Projects",
+            "default": 0
+          },
+          "sessions": {
+            "type": "integer",
+            "title": "Sessions",
+            "default": 0
+          },
+          "tasks": {
+            "type": "integer",
+            "title": "Tasks",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "ProviderAllocationHidden",
+        "description": "What the caller's view left out of one profile."
+      },
+      "ProviderAllocationIntent": {
+        "properties": {
+          "count": {
+            "type": "integer",
+            "title": "Count",
+            "default": 0
+          },
+          "by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "By Status"
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Task Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ProviderAllocationIntent",
+        "description": "READY/ASSIGNED/IN_PROGRESS tasks carrying one explicit provider intent.\n\n``count`` and ``by_status`` are fleet-wide; ``task_ids`` holds only the\nones inside the caller's view."
+      },
+      "ProviderAllocationManualAgent": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "has_overrides": {
+            "type": "boolean",
+            "title": "Has Overrides",
+            "default": false
+          },
+          "effective_harness": {
+            "type": "string",
+            "title": "Effective Harness",
+            "default": ""
+          },
+          "effective_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Class"
+          },
+          "current_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Task Id"
+          },
+          "current_task_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Task Title"
+          },
+          "current_project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Project Id"
+          },
+          "redacted": {
+            "type": "boolean",
+            "title": "Redacted",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id",
+          "name",
+          "profile_id",
+          "state"
+        ],
+        "title": "ProviderAllocationManualAgent",
+        "description": "A durable agent definition no live pool session owns.\n\n``harness`` / ``intelligence_class`` / ``model`` are the agent's own\noverrides; ``effective_*`` is what a launch would use.  Allocation never\nrewrites any of them."
+      },
+      "ProviderAllocationProfile": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "harness": {
+            "type": "string",
+            "title": "Harness"
+          },
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "intelligence_class": {
+            "type": "string",
+            "title": "Intelligence Class",
+            "default": ""
+          },
+          "min_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Active"
+          },
+          "max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Active"
+          },
+          "min_per_project": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Per Project"
+          },
+          "supply": {
+            "$ref": "#/components/schemas/ProviderAllocationSupply"
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationProjectSupply"
+            },
+            "type": "array",
+            "title": "Projects",
+            "default": []
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationSession"
+            },
+            "type": "array",
+            "title": "Sessions",
+            "default": []
+          },
+          "pinned": {
+            "$ref": "#/components/schemas/ProviderAllocationIntent"
+          },
+          "preferred": {
+            "$ref": "#/components/schemas/ProviderAllocationIntent"
+          },
+          "hidden": {
+            "$ref": "#/components/schemas/ProviderAllocationHidden"
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id",
+          "harness",
+          "lifecycle",
+          "supply",
+          "pinned",
+          "preferred",
+          "hidden"
+        ],
+        "title": "ProviderAllocationProfile",
+        "description": "One ordinary worker profile: its bounds, supply, sessions and pins."
+      },
+      "ProviderAllocationProject": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": ""
+          },
+          "preferred_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Provider"
+          },
+          "default_profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Profile Id"
+          },
+          "max_concurrent_agents": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Agents"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id"
+        ],
+        "title": "ProviderAllocationProject",
+        "description": "A project's routing preference and effective limit."
+      },
+      "ProviderAllocationProjectSupply": {
+        "properties": {
+          "ready": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ready",
+            "default": 0
+          },
+          "idle": {
+            "type": "integer",
+            "title": "Idle",
+            "default": 0
+          },
+          "busy": {
+            "type": "integer",
+            "title": "Busy",
+            "default": 0
+          },
+          "starting": {
+            "type": "integer",
+            "title": "Starting",
+            "default": 0
+          },
+          "draining": {
+            "type": "integer",
+            "title": "Draining",
+            "default": 0
+          },
+          "unresponsive": {
+            "type": "integer",
+            "title": "Unresponsive",
+            "default": 0
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          }
+        },
+        "type": "object",
+        "title": "ProviderAllocationProjectSupply",
+        "description": "One project's share of a profile's supply."
+      },
+      "ProviderAllocationSession": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "activity": {
+            "type": "string",
+            "title": "Activity"
+          },
+          "agent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Id"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "task_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Title"
+          },
+          "idle_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Seconds"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "lifecycle",
+          "state",
+          "activity"
+        ],
+        "title": "ProviderAllocationSession",
+        "description": "One live session of an ordinary worker profile."
+      },
+      "ProviderAllocationStatusRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Narrow the per-project detail (project rows, sessions, task ids) to one project; fleet-wide counts are unchanged."
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider",
+            "description": "Only this provider: a key (codex) or vendor (openai)."
+          }
+        },
+        "type": "object",
+        "title": "ProviderAllocationStatusRequest"
+      },
+      "ProviderAllocationStatusResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "now": {
+            "type": "number",
+            "title": "Now"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "redacted": {
+            "type": "boolean",
+            "title": "Redacted",
+            "default": false
+          },
+          "global_max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Global Max Active"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationGroup"
+            },
+            "type": "array",
+            "title": "Providers",
+            "default": []
+          },
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationProject"
+            },
+            "type": "array",
+            "title": "Projects",
+            "default": []
+          },
+          "diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationDiagnostic"
+            },
+            "type": "array",
+            "title": "Diagnostics",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "now"
+        ],
+        "title": "ProviderAllocationStatusResponse",
+        "description": "``provider_allocation_status`` and ``GET /api/providers/allocation``."
+      },
+      "ProviderAllocationSupply": {
+        "properties": {
+          "ready": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ready",
+            "default": 0
+          },
+          "idle": {
+            "type": "integer",
+            "title": "Idle",
+            "default": 0
+          },
+          "busy": {
+            "type": "integer",
+            "title": "Busy",
+            "default": 0
+          },
+          "starting": {
+            "type": "integer",
+            "title": "Starting",
+            "default": 0
+          },
+          "draining": {
+            "type": "integer",
+            "title": "Draining",
+            "default": 0
+          },
+          "unresponsive": {
+            "type": "integer",
+            "title": "Unresponsive",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "ProviderAllocationSupply",
+        "description": "Supply counters as the pool sizer reads them.\n\n``ready`` is pool demand and is ``None`` for a task-lifecycle profile,\nwhich has live sessions but no pool."
+      },
       "ProviderAvailabilityStatus": {
         "properties": {
           "provider": {
@@ -46415,6 +48885,17 @@
               }
             ],
             "title": "Provider Generation"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
           }
         },
         "type": "object",
@@ -46425,7 +48906,7 @@
           "action"
         ],
         "title": "RerouteDecision",
-        "description": "What one re-route sweep did (or would do) with one task (D12-D15).\n\n``action`` is ``move``, ``hold`` or ``skip``; ``kind`` names why a held\ntask is not moving (``provider_pinned``, ``no_equivalent_rung``,\n``awaiting_failover_capacity`` with ``ahead``, ...)."
+        "description": "What one re-route sweep did (or would do) with one task (D12-D15).\n\n``action`` is ``move``, ``hold`` or ``skip``; ``kind`` names why a held\ntask is not moving (``provider_pinned``, ``no_equivalent_rung``,\n``awaiting_failover_capacity`` with ``ahead``, the capacity spill kinds\n``spill_no_target`` / ``spill_pinned`` / ..., ...)."
       },
       "RerouteUndoRefusal": {
         "properties": {
@@ -46853,6 +49334,18 @@
             "type": "array",
             "title": "Unblocked Task Ids",
             "default": []
+          },
+          "playbook": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook"
           }
         },
         "type": "object",
@@ -47485,6 +49978,54 @@
             ],
             "title": "Resolves",
             "description": ""
+          },
+          "playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Id",
+            "description": "The playbook this review asks approval for; its Markdown source must already be in the vault."
+          },
+          "semantic_body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Body",
+            "description": "JSON text with exactly the proposal's rules and steps. Omitted on a revision, the previous artifact's are reused."
+          },
+          "semantic_body_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Body Path",
+            "description": "Vault path of the semantic body, instead of semantic_body."
+          },
+          "activate_on_approval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activate On Approval",
+            "description": "Activate the pinned artifact when the review is approved (default: store it and tell the supervisor)."
           }
         },
         "type": "object",
@@ -47511,6 +50052,18 @@
           "vault_path": {
             "type": "string",
             "title": "Vault Path"
+          },
+          "playbook": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook"
           }
         },
         "additionalProperties": true,
@@ -52444,7 +54997,14 @@
             "description": "Task ID"
           },
           "outcome": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Outcome",
             "description": "Overall task outcome"
           },
@@ -52618,12 +55178,29 @@
             ],
             "title": "Wait",
             "description": "Seconds to long-poll for the next claim when claim_next is set (optional, clamped to swarm.claim_wait_max)."
+          },
+          "obsolete": {
+            "type": "boolean",
+            "title": "Obsolete",
+            "description": "Close the task as obsolete/superseded instead of with an outcome (operator or supervisor only; needs task_id and reason, not outcome).",
+            "default": false
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why the task is obsolete (required with obsolete)."
           }
         },
         "type": "object",
         "required": [
-          "task_id",
-          "outcome"
+          "task_id"
         ],
         "title": "TaskCloseRequest"
       },
@@ -55335,6 +57912,34 @@
           "settled"
         ],
         "title": "TaskSubtasksResponse"
+      },
+      "TerminalAccessResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "code": {
+            "type": "integer",
+            "title": "Code",
+            "default": 0
+          },
+          "message": {
+            "type": "string",
+            "title": "Message",
+            "default": ""
+          },
+          "retryable": {
+            "type": "boolean",
+            "title": "Retryable",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "TerminalAccessResponse"
       },
       "TestSelectRequest": {
         "properties": {

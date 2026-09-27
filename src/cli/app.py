@@ -420,6 +420,7 @@ from . import db as _db_cli  # noqa: E402, F401
 from . import doctor  # noqa: E402, F401
 from . import install as _install_cli  # noqa: E402, F401
 from . import uninstall as _uninstall_cli  # noqa: E402, F401
+from . import service as _service_cli  # noqa: E402, F401
 from . import update as _update_cli  # noqa: E402, F401
 from . import logs  # noqa: E402, F401
 from . import tasks  # noqa: E402, F401
@@ -430,12 +431,14 @@ from . import agent_surface  # noqa: E402, F401
 from . import formulas as _formulas_cli  # noqa: E402, F401
 from . import sessions as _sessions_cli  # noqa: E402, F401
 from . import messages as _messages_cli  # noqa: E402, F401
+from . import message_wait as _message_wait_cli  # noqa: E402, F401
 from . import agent_messages as _agent_messages_cli  # noqa: E402, F401
 from . import questions as _questions_cli  # noqa: E402, F401
 from . import reviews as _reviews_cli  # noqa: E402, F401
 from . import reports as _reports_cli  # noqa: E402, F401
 from . import jobs as _jobs_cli  # noqa: E402, F401
 from . import waits as _waits_cli  # noqa: E402, F401
+from . import collaboration as _collaboration_cli  # noqa: E402, F401
 from . import streams as _streams_cli  # noqa: E402, F401
 from . import playbook as _playbook_cli  # noqa: E402, F401
 from . import test_runner as _test_runner_cli  # noqa: E402, F401

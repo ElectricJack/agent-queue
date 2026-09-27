@@ -515,23 +515,21 @@ class TestConditionalDisposal:
         from src.database.queries.blocked_state import _blocks_unsat
 
         sql = str(sa_select(tasks_t.c.id).where(or_(_blocks_unsat(), _blocks_unsat())).compile())
-        # Each blocks clause also checks development mode and its delivery.
-        assert sql.count("EXISTS") == 6
+        # Graph-only clauses have independent task/dependency aliases. Git
+        # delivery is deliberately absent from the persisted SQL projection.
+        assert sql.count("EXISTS") == 2
         assert "task_dependencies AS task_dependencies_1" in sql
         assert "task_dependencies AS task_dependencies_2" in sql
-        # `_blocked_ignoring_conditional` shares four clauses with
-        # `blocked_predicate`; both must still carry every term, including
-        # the manual-pause dependency guard.
+        assert "development_deliveries" not in sql
         from src.database.queries.blocked_state import _blocked_ignoring_conditional
 
         assert (
-            str(sa_select(tasks_t.c.id).where(blocked_predicate()).compile()).count("EXISTS") == 9
+            str(sa_select(tasks_t.c.id).where(blocked_predicate()).compile()).count("EXISTS") == 7
         )
         assert (
             str(sa_select(tasks_t.c.id).where(_blocked_ignoring_conditional()).compile()).count(
                 "EXISTS"
-            )
-            == 8
+            ) == 6
         )
 
 

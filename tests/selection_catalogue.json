@@ -117,6 +117,18 @@
         "tests/test_resource_semaphore.py"
       ]
     },
+    "collaboration": {
+      "description": "Bounded task collaboration: membership, ordered messages, durable waits and delivery.",
+      "modules": [
+        "tests/test_collaboration.py",
+        "tests/test_collaboration_commands.py",
+        "tests/test_collaboration_lifecycle.py",
+        "tests/test_collaboration_message_wait.py",
+        "tests/test_collaboration_messages.py",
+        "tests/test_collaboration_queries.py",
+        "tests/test_collaboration_waits.py"
+      ]
+    },
     "command-dispatch": {
       "description": "Command dispatch: CommandHandler.execute, the placement of every command on the surface, per-call scope isolation, the scope matrix, surface and system commands, prompt path validation and command.invoked events.",
       "modules": [
@@ -201,6 +213,7 @@
       "modules": [
         "tests/test_branch_discard.py",
         "tests/test_close_unpushed_work.py",
+        "tests/test_delivery_consumers.py",
         "tests/test_delivery_integration.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
@@ -288,6 +301,7 @@
         "tests/test_review_gating.py",
         "tests/test_review_keys.py",
         "tests/test_review_notifier.py",
+        "tests/test_review_playbooks.py",
         "tests/test_review_profile_rules.py",
         "tests/test_review_queries.py",
         "tests/test_review_reopen_cascade.py",
@@ -368,6 +382,12 @@
         "tests/test_formulas_parse.py",
         "tests/test_formulas_provenance.py",
         "tests/test_formulas_resolve.py"
+      ]
+    },
+    "generated-artifacts": {
+      "description": "Generated artifacts: the one regeneration command and its drift check, the .gitattributes merge=aq-generated set kept in step with it, and the merge driver under which those files never conflict.",
+      "modules": [
+        "tests/test_generated_artifacts.py"
       ]
     },
     "git-manager": {
@@ -459,6 +479,7 @@
         "tests/test_install_pools.py",
         "tests/test_install_postgres.py",
         "tests/test_install_providers.py",
+        "tests/test_install_service.py",
         "tests/test_install_wizard.py",
         "tests/test_install_wsl.py",
         "tests/test_known_tools.py",
@@ -658,6 +679,8 @@
         "tests/test_migration_boolean_defaults.py",
         "tests/test_migration_candidate_authority.py",
         "tests/test_migration_candidate_mutation_claims.py",
+        "tests/test_migration_capacity_spill.py",
+        "tests/test_migration_collaboration_threads.py",
         "tests/test_migration_conflict_resolution.py",
         "tests/test_migration_epic_pull_requests.py",
         "tests/test_migration_escalation_actions.py",
@@ -677,6 +700,7 @@
         "tests/test_migration_postgres_upgrade_head.py",
         "tests/test_migration_repair_stages.py",
         "tests/test_migration_retired_intelligence_classes.py",
+        "tests/test_migration_review_playbook_pin.py",
         "tests/test_migration_root_main_promotion.py",
         "tests/test_migration_session_hooks_provisioned.py",
         "tests/test_migration_single_head.py",
@@ -860,9 +884,10 @@
       ]
     },
     "provider-failover": {
-      "description": "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine, in-flight failure handling, escalation pages and availability API and doctor checks.",
+      "description": "Provider availability and failover: the reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and capacity-spill planner, in-flight failures, escalations, availability API and doctor checks, and the provider allocation status read.",
       "modules": [
         "tests/test_fake_session_script.py",
+        "tests/test_provider_allocation.py",
         "tests/test_provider_availability.py",
         "tests/test_provider_availability_api.py",
         "tests/test_provider_availability_doctor.py",
@@ -872,6 +897,7 @@
         "tests/test_provider_inflight.py",
         "tests/test_provider_intent.py",
         "tests/test_provider_reroute.py",
+        "tests/test_provider_spill.py",
         "tests/test_provider_suppression.py"
       ]
     },
@@ -1041,12 +1067,13 @@
       ]
     },
     "task-lifecycle": {
-      "description": "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events and destructive-command authorization.",
+      "description": "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events, destructive-command authorization, and lifecycle cleanup (stale BLOCKED/PAUSED containers and tasks, obsolete closes, dangling-state doctor).",
       "modules": [
         "tests/test_cli_task_create_output.py",
         "tests/test_deliverables.py",
         "tests/test_dv2_phase1_models.py",
         "tests/test_ensure_task.py",
+        "tests/test_lifecycle_cleanup.py",
         "tests/test_models.py",
         "tests/test_reopen_with_feedback.py",
         "tests/test_state_machine.py",
@@ -1094,6 +1121,7 @@
         "tests/test_selection_queries.py",
         "tests/test_selection_questions.py",
         "tests/test_selection_replay.py",
+        "tests/test_selection_retention_sweep.py",
         "tests/test_selection_service.py",
         "tests/test_selection_snapshot.py",
         "tests/test_selection_static_impact.py",
@@ -1114,13 +1142,16 @@
     "tmux-terminals": {
       "description": "tmux and terminals: the tmux provider, nudge submit confirmation, draft protection and lost-Enter recovery, startup dialog detection, PATH propagation, usage-limit screens, PTY terminals and the terminal WebSocket.",
       "modules": [
+        "tests/test_terminal_input.py",
         "tests/test_terminal_origin_config.py",
         "tests/test_terminal_pty.py",
         "tests/test_terminal_stream.py",
+        "tests/test_tmux_harness_wake.py",
         "tests/test_tmux_integration.py",
         "tests/test_tmux_nudge_confirm.py",
         "tests/test_tmux_nudge_drafts.py",
         "tests/test_tmux_nudge_recovery.py",
+        "tests/test_tmux_opencode_composer.py",
         "tests/test_tmux_path.py",
         "tests/test_tmux_startup_dialogs.py",
         "tests/test_usage_limit_screen.py"
@@ -1247,7 +1278,7 @@
       ]
     }
   },
-  "digest": "sha256:0286d9cb9311175aeef3da31a5b445f22413ac432cf04b7e1daa28ccb0450c72",
+  "digest": "sha256:863c8d8fe623e571103c1c820fe3507d11b14871f2cd8fdbebdaa8f280501cde",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2150,6 +2181,7 @@
         "src.api.app",
         "src.api.codegen",
         "src.api.dependencies",
+        "src.api.models.task",
         "src.api.spec",
         "src.config",
         "src.database",
@@ -2296,9 +2328,12 @@
       "imports": [
         "src.api",
         "src.api.perf_middleware",
+        "src.metrics",
         "src.metrics.perf"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Route labels are templates, streams are handshakes, failures are re-raised."
     },
     "tests/test_api_playbook_v2_commands.py": {
@@ -2427,6 +2462,8 @@
         "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.models",
         "src.orchestrator"
       ],
@@ -2836,6 +2873,8 @@
         "src.doctor.pool_checks",
         "src.event_bus",
         "src.git.manager",
+        "src.integration.admission",
+        "src.integration.development",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
@@ -2977,6 +3016,7 @@
       "imports": [
         "src.cli.app",
         "src.cli.daemon",
+        "src.daemon_state",
         "src.sessions.env"
       ],
       "markers": [
@@ -3429,6 +3469,145 @@
         "parametrize"
       ],
       "summary": "Codex tiers launch the requested current model families at the class effort."
+    },
+    "tests/test_collaboration.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.collaboration"
+      ],
+      "markers": [],
+      "summary": "Pure collaboration limits, identifiers and pointer bodies."
+    },
+    "tests/test_collaboration_commands.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.scope",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.collaboration",
+        "src.commands",
+        "src.commands.contracts",
+        "src.commands.message_commands",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.models",
+        "src.profiles.parser",
+        "src.sessions.provider"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Scoped collaboration commands, contracts, grants and CLI on disposable PostgreSQL."
+    },
+    "tests/test_collaboration_lifecycle.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.api.codegen",
+        "src.collaboration",
+        "src.commands",
+        "src.commands.collaboration_lifecycle",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.mcp_registration",
+        "src.orchestrator",
+        "src.profiles.capabilities",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize",
+        "skipif"
+      ],
+      "summary": "Bounded expiry, retention and daemon-only collaboration reconciliation."
+    },
+    "tests/test_collaboration_message_wait.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.scope",
+        "src.cli.app",
+        "src.cli.client",
+        "src.commands.contracts",
+        "src.database.tables",
+        "src.profiles.parser",
+        "src.tools.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Bounded message long-poll on the same durable wait, with lossless cursors."
+    },
+    "tests/test_collaboration_messages.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.messages",
+        "src.cli.app",
+        "src.database.tables",
+        "src.event_bus",
+        "src.messages.delivery",
+        "src.models",
+        "src.prime.sections",
+        "src.sessions.provider"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Collaboration sends and replies, safe delivery, and rollover prime context."
+    },
+    "tests/test_collaboration_queries.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.collaboration",
+        "src.database",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Collaboration ordering and claim fencing on disposable PostgreSQL."
+    },
+    "tests/test_collaboration_waits.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.collaboration",
+        "src.database",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Collaboration thread semantics inside the durable message wait, on PostgreSQL."
     },
     "tests/test_command_capability_authorization.py": {
       "areas": [
@@ -4089,6 +4268,8 @@
       "imports": [
         "src.database",
         "src.database.engine",
+        "src.database.queries",
+        "src.database.queries.task_queries",
         "src.database.schema_key",
         "src.database.tables",
         "src.models"
@@ -4295,6 +4476,28 @@
       ],
       "summary": "Tests for the deterministic deliverable evaluator (``src/deliverables.py``)."
     },
+    "tests/test_delivery_consumers.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.git.manager",
+        "src.integration.controls",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
+        "src.integration.development",
+        "src.integration.status",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "Every delivery consumer asks git the same question and gets the same answer."
+    },
     "tests/test_delivery_integration.py": {
       "areas": [
         "development-delivery"
@@ -4351,7 +4554,6 @@
         "src.commands.principal",
         "src.config",
         "src.database",
-        "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.doctor.git_checks",
@@ -4361,11 +4563,16 @@
         "src.event_bus",
         "src.git.manager",
         "src.integration",
+        "src.integration.admission",
         "src.integration.controls",
         "src.integration.delivery_branches",
+        "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
+        "src.integration.provenance",
+        "src.integration.provenance_migration",
         "src.integration.status",
         "src.jobs.adapters",
         "src.jobs.policy",
@@ -4688,6 +4895,7 @@
         "src.doctor.resource_checks",
         "src.doctor.review_checks",
         "src.doctor.runner",
+        "src.doctor.service_checks",
         "src.doctor.session_checks",
         "src.doctor.skill_checks",
         "src.doctor.stall_checks",
@@ -4756,6 +4964,7 @@
         "src.doctor.models",
         "src.doctor.runner",
         "src.git.github_contracts",
+        "src.integration.development",
         "src.models"
       ],
       "markers": [
@@ -4888,6 +5097,9 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.config",
+        "src.jobs.adapters",
+        "src.jobs.policy",
         "src.profiles.parser"
       ],
       "markers": [
@@ -5291,14 +5503,19 @@
         "src.commands.handler",
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.explain",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.pools",
         "src.playbooks.artifact_ref",
-        "src.scheduler"
+        "src.scheduler",
+        "src.sessions.harness_parser"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Work-graph WG-4: explain + ready frontier."
     },
     "tests/test_factory_policy_instructions.py": {
@@ -5519,6 +5736,19 @@
       "markers": [],
       "summary": "Work-graph WG-3: gate query layer."
     },
+    "tests/test_generated_artifacts.py": {
+      "areas": [
+        "generated-artifacts"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.development"
+      ],
+      "markers": [
+        "slow"
+      ],
+      "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
+    },
     "tests/test_get_downstream_tasks.py": {
       "areas": [
         "task-dependencies"
@@ -5578,13 +5808,22 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.claim_file",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
+        "src.integration.provenance",
+        "src.integration.provenance_migration",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Unit tests for git-related command handler methods."
     },
     "tests/test_git_events.py": {
@@ -5943,7 +6182,9 @@
         "src.orchestrator",
         "src.tools"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Container-close semantics and the hierarchy command surface — spec §7, §14."
     },
     "tests/test_hierarchy_doctor.py": {
@@ -6328,6 +6569,34 @@
       "markers": [],
       "summary": "Provider CLI adapters stay optional, idempotent, and credential-free."
     },
+    "tests/test_install_service.py": {
+      "areas": [
+        "install"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app",
+        "src.cli.daemon",
+        "src.daemon_state",
+        "src.doctor",
+        "src.doctor.models",
+        "src.install",
+        "src.install.command",
+        "src.install.lifecycle",
+        "src.install.platform",
+        "src.install.results",
+        "src.install.service",
+        "src.install.state",
+        "src.install.steps",
+        "src.install.watchdog",
+        "src.install.wizard",
+        "src.sessions.env"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Auto-restart: the watchdog's policy, the service entries it is installed as,"
+    },
     "tests/test_install_wizard.py": {
       "areas": [
         "install"
@@ -6654,6 +6923,7 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.controls",
+        "src.integration.delivery_observer",
         "src.integration.development",
         "src.integration.legacy_deliveries",
         "src.integration.legacy_repositories",
@@ -6675,6 +6945,8 @@
       "default_arm": true,
       "imports": [
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.integration.legacy_repositories",
         "src.integration.status",
         "src.models"
@@ -7416,6 +7688,33 @@
       "markers": [],
       "summary": "Tests for L0 + L1 tier injection — Roadmap 3.3.7."
     },
+    "tests/test_lifecycle_cleanup.py": {
+      "areas": [
+        "task-lifecycle"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.commands.session_commands",
+        "src.config",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.queries.task_recovery_queries",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.task_checks",
+        "src.git.manager",
+        "src.integration.delivery_truth",
+        "src.integration.development",
+        "src.integration.obsolete_close",
+        "src.integration.owner_recovery",
+        "src.models",
+        "src.orchestrator",
+        "src.profiles.capabilities"
+      ],
+      "markers": [],
+      "summary": "Lifecycle cleanup: stale containers, stale-open tasks, obsolete closes, doctor."
+    },
     "tests/test_list_playbooks_v2.py": {
       "areas": [
         "playbook-authoring"
@@ -8010,6 +8309,35 @@
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
     },
+    "tests/test_migration_capacity_spill.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine",
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Capacity-spill schema upgrades and rollback on owned disposable PostgreSQL."
+    },
+    "tests/test_migration_collaboration_threads.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The collaboration revision creates its schema and preserves it on rollback."
+    },
     "tests/test_migration_conflict_resolution.py": {
       "areas": [
         "migrations"
@@ -8265,6 +8593,20 @@
       ],
       "summary": "The retired-class revision repoints live pins and spares the evidence rows."
     },
+    "tests/test_migration_review_playbook_pin.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The review-playbook-pin revision adds its columns once and keeps them on rollback."
+    },
     "tests/test_migration_root_main_promotion.py": {
       "areas": [
         "migrations"
@@ -8403,6 +8745,8 @@
       "default_arm": true,
       "imports": [
         "src.cli.app",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.commands.report_commands",
         "src.config",
@@ -8413,6 +8757,8 @@
         "src.git.manager",
         "src.models",
         "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
         "src.playbooks.required",
         "src.profiles.capabilities",
         "src.remote_links",
@@ -8515,6 +8861,7 @@
         "src.orchestrator",
         "src.playbooks.run_state",
         "src.runtimes.base",
+        "src.scheduler",
         "src.sessions.harness_parser",
         "src.workspace_spec_watcher"
       ],
@@ -9031,6 +9378,9 @@
         "src.api.auth",
         "src.api.models",
         "src.api.scope",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.playbook",
         "src.commands.handler",
         "src.commands.playbook_v2_commands",
         "src.commands.principal",
@@ -9331,9 +9681,12 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.models",
         "src.scheduler"
       ],
-      "markers": [],
+      "markers": [
+        "asyncio"
+      ],
       "summary": "size_pools — desired-state sizing over the global (profile-only) pool key."
     },
     "tests/test_portable_config.py": {
@@ -9913,6 +10266,26 @@
       "markers": [],
       "summary": "``proposal.status_changed`` bus event — schema + emission."
     },
+    "tests/test_provider_allocation.py": {
+      "areas": [
+        "provider-failover"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.providers",
+        "src.api.scope",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.models",
+        "src.providers.allocation",
+        "src.providers.intent",
+        "src.sessions.harness_parser"
+      ],
+      "markers": [],
+      "summary": "Provider allocation status (provider-worker-allocation-controls, plan Task 6)."
+    },
     "tests/test_provider_availability.py": {
       "areas": [
         "provider-failover"
@@ -10100,19 +10473,45 @@
         "src.config",
         "src.database.queries",
         "src.database.queries.claim_queries",
+        "src.database.queries.task_reroute_queries",
+        "src.database.tables",
         "src.intelligence_classes",
         "src.llm.client",
         "src.llm.fake",
         "src.llm.providers.errors",
         "src.models",
+        "src.orchestrator.pools",
         "src.providers.availability",
         "src.providers.availability_service",
         "src.providers.intent",
         "src.providers.reroute",
+        "src.scheduler",
         "src.sessions.harness_parser"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The re-route engine (provider-failover D11-D17)."
+    },
+    "tests/test_provider_spill.py": {
+      "areas": [
+        "provider-failover"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.models",
+        "src.orchestrator.pools",
+        "src.providers.availability",
+        "src.providers.intent",
+        "src.providers.reroute",
+        "src.providers.spill",
+        "src.scheduler"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Capacity spill (provider-failover D24): the pure planner, its view and its config."
     },
     "tests/test_provider_suppression.py": {
       "areas": [
@@ -10302,6 +10701,7 @@
         "src.cli.app",
         "src.cli.daemon",
         "src.config",
+        "src.dashboard_paths",
         "src.dashboard_server.process",
         "src.digest",
         "src.digest.facts",
@@ -10401,6 +10801,7 @@
       "default_arm": true,
       "imports": [
         "src.commands.playbook_v2_commands",
+        "src.config",
         "src.database",
         "src.doctor",
         "src.doctor.models",
@@ -10413,7 +10814,8 @@
         "src.playbooks.profiles",
         "src.playbooks.required",
         "src.playbooks.runtime",
-        "src.playbooks.validation"
+        "src.playbooks.validation",
+        "src.timer_service"
       ],
       "markers": [],
       "summary": "Required V2 playbooks survive daemon restarts and activation gaps."
@@ -10657,6 +11059,29 @@
         "parametrize"
       ],
       "summary": "Discord delivery behavior for the durable document-review outbox."
+    },
+    "tests/test_review_playbooks.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli",
+        "src.cli.app",
+        "src.cli.reviews",
+        "src.database.tables",
+        "src.doctor",
+        "src.doctor.models",
+        "src.doctor.review_checks",
+        "src.event_bus",
+        "src.models",
+        "src.playbooks.definition",
+        "src.reviews.vault"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Playbook reviews: submission pins a compiled artifact, approval stores it."
     },
     "tests/test_review_profile_rules.py": {
       "areas": [
@@ -10999,6 +11424,20 @@
       ],
       "summary": "Historical selection is blind to labels; only usable held-out reds earn recall."
     },
+    "tests/test_selection_retention_sweep.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.orchestrator.monitoring"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Retention sweep tests for smart test selection records, plus the operator"
+    },
     "tests/test_selection_service.py": {
       "areas": [
         "test-selection"
@@ -11125,11 +11564,13 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.parent_completion",
+        "src.integration.provenance",
         "src.intelligence_classes",
         "src.mcp_registration",
         "src.models",
         "src.orchestrator.execution",
         "src.orchestrator.git_ops",
+        "src.orchestrator.pools",
         "src.orchestrator.workspace",
         "src.scheduler",
         "src.sessions",
@@ -11152,14 +11593,21 @@
       "default_arm": true,
       "imports": [
         "src.database",
+        "src.database.tables",
         "src.doctor",
         "src.doctor.models",
+        "src.messages.session_lens",
         "src.models",
         "src.sessions",
         "src.sessions.fake",
-        "src.sessions.provider"
+        "src.sessions.harness_registry",
+        "src.sessions.provider",
+        "src.sessions.spec",
+        "src.sessions.tmux"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``sessions.stuck_composer`` — the doctor half of the lost-Enter stall."
     },
     "tests/test_session_executable.py": {
@@ -11230,6 +11678,7 @@
         "src.sessions.harness_registry",
         "src.sessions.provider",
         "src.sessions.spec",
+        "src.sessions.transcripts",
         "src.sessions.transcripts.claude"
       ],
       "markers": [
@@ -11282,6 +11731,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.messages.delivery",
+        "src.messages.session_lens",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.workspace",
@@ -11295,7 +11745,8 @@
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.tmux",
-        "src.sessions.transcripts"
+        "src.sessions.transcripts",
+        "src.sessions.transcripts.codex"
       ],
       "markers": [
         "parametrize",
@@ -11940,7 +12391,9 @@
         "src.orchestrator",
         "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "An explicit intelligence class picks its own lane at creation time."
     },
     "tests/test_task_close_summary_enforcement.py": {
@@ -12344,6 +12797,23 @@
       ],
       "summary": "``task_subtasks`` — durable, non-schedulable checklist rows (Task C1)."
     },
+    "tests/test_terminal_input.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.models",
+        "src.sessions.terminal_input",
+        "src.sessions.terminal_pty",
+        "src.sessions.tmux"
+      ],
+      "markers": [
+        "parametrize",
+        "tmux"
+      ],
+      "summary": "Input-only terminal against a real isolated tmux; a tiny raw-mode stub app, never an LLM."
+    },
     "tests/test_terminal_origin_config.py": {
       "areas": [
         "config",
@@ -12384,8 +12854,10 @@
         "src.api",
         "src.api.auth",
         "src.api.terminal_stream",
+        "src.dashboard_server.proxy",
         "src.database",
         "src.models",
+        "src.sessions.terminal_input",
         "src.sessions.terminal_pty"
       ],
       "markers": [
@@ -12476,6 +12948,22 @@
       ],
       "summary": "Tests for ``cron.HH:MM`` wall-clock triggers in the timer service."
     },
+    "tests/test_tmux_harness_wake.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.sessions",
+        "src.sessions.harness_parser",
+        "src.sessions.provider",
+        "src.sessions.tmux"
+      ],
+      "markers": [
+        "tmux"
+      ],
+      "summary": "Waking an idle worker: the real Codex and Claude CLIs in real tmux panes."
+    },
     "tests/test_tmux_integration.py": {
       "areas": [
         "tmux-terminals"
@@ -12532,6 +13020,21 @@
         "parametrize"
       ],
       "summary": "Recovering a nudge whose Enter was lost to the composer's repaint."
+    },
+    "tests/test_tmux_opencode_composer.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.sessions",
+        "src.sessions.provider",
+        "src.sessions.tmux"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Nudging an OpenCode worker: its box composer, and plugin output painted over it."
     },
     "tests/test_tmux_path.py": {
       "areas": [
@@ -12938,6 +13441,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.playbooks.required",
         "src.profiles.capabilities",
         "src.profiles.parser",
         "src.vault"
@@ -13157,8 +13661,10 @@
         "src.database.queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.hierarchy",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.vault"
       ],
       "markers": [
         "parametrize",

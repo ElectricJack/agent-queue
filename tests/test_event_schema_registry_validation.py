@@ -379,6 +379,13 @@ _CANONICAL_PAYLOADS: dict[str, dict] = {
         "body": "3 tasks are running.",
         "thread_id": "discord:5678",
     },
+    "collaboration.created": {
+        "thread_id": "collab-0123456789abcdef",
+        "project_id": "proj-1",
+        "task_ids": ["task-a", "task-b"],
+        "created_by_id": "supervisor-proj-1",
+        "deadline_at": 1800007200.0,
+    },
     # Durable human escalation state hints (Discord simplification §5)
     "escalation.created.v1": {
         "version": 1,
@@ -927,6 +934,10 @@ _CANONICAL_PAYLOADS["pool.bounds_rescoped"] = {
     "previous_effective_max_active": 20,
     "previous_effective_min_active": 0,
 }
+_CANONICAL_PAYLOADS["pool.spilled"] = {
+    "batch_id": "spill-20260927T1405",
+    "moved": 1,
+}
 _CANONICAL_PAYLOADS["provider.state_changed"] = {
     "provider": "codex",
     "from_state": "available",
@@ -1099,6 +1110,34 @@ _CANONICAL_PAYLOADS.update(
             "project_id": "my-app",
             "proposal_id": "prop-1",
             "status": "committed",
+        },
+    }
+)
+
+# -- test-selection lifecycle events ---------------------------------------
+# Payloads mirror the literal dicts passed to ``bus.emit`` in
+# ``test_selection_commands._cmd_test_select``, ``_cmd_test_selection_promote``
+# and ``_cmd_test_selection_revoke``.
+_CANONICAL_PAYLOADS.update(
+    {
+        "test_selection.recorded.v1": {
+            "project_id": "my-app",
+            "selection_id": "sel-1",
+            "mode": "shadow",
+            "task_id": "t-1",
+            "full_required": False,
+            "jev_status": "ok",
+            "final_count": 3,
+            "fallback_count": 0,
+        },
+        "test_selection.promoted.v1": {
+            "project_id": "my-app",
+            "promotion_id": "promo-1",
+            "model": "jev-1.13.0",
+        },
+        "test_selection.revoked.v1": {
+            "promotion_id": "promo-1",
+            "reason": "evaluation regressed",
         },
     }
 )

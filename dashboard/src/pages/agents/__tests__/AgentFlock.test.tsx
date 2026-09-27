@@ -75,6 +75,7 @@ beforeEach(() => {
   FitAddonMock.instances = [];
   vi.stubGlobal("WebSocket", TerminalSocketMock);
   vi.stubGlobal("EventSource", vi.fn());
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 800, height: 400 } as DOMRect);
   roster = [agent("a", "Supervisor"), agent("b", "Builder"), agent("c", "Reviewer"),
     agent("d", "Tester"), agent("e", "Writer")];
   roster[0] = { ...roster[0]!, role: "supervisor", state: "busy", current_task_id: "task-1",

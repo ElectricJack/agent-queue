@@ -233,6 +233,54 @@ async def test_active_legacy_session_wins_over_linked_history(handler):
     assert row["current_task_id"] == "task"
 
 
+async def test_roster_reads_only_active_tasks_and_keeps_current_work(handler, monkeypatch):
+    """A large backlog of idle tasks is not hydrated for the roster (wise-ember.16)."""
+    from src.models import AgentState, SessionRecord, Task, TaskStatus
+    await handler.db.create_project(Project(id="p", name="Project"))
+    await handler.db.create_agent(Agent(id="a", name="Ada", profile_id="coder"))
+    await handler.db.create_agent(Agent(id="b", name="Bea", profile_id="coder"))
+    await handler.db.create_task(Task(
+        id="task", project_id="p", title="Current work", description="Work",
+        status=TaskStatus.IN_PROGRESS, assigned_agent_id="a",
+    ))
+    # Bea's pointer names a finished task: a non-active row reads as no task.
+    await handler.db.create_task(Task(
+        id="done", project_id="p", title="Finished", description="Work",
+        status=TaskStatus.COMPLETED, assigned_agent_id="b",
+    ))
+    for index in range(5):
+        await handler.db.create_task(Task(
+            id=f"backlog-{index}", project_id="p", title="Backlog", description="Work",
+            status=TaskStatus.READY,
+        ))
+    await handler.db.update_agent("a", state=AgentState.BUSY, current_task_id="task")
+    await handler.db.update_agent("b", current_task_id="done")
+    await handler.db.create_session(SessionRecord(
+        id="live", project_id="p", profile_id="coder", harness="claude", provider="tmux",
+        name="active", lifecycle="task", work_dir="/tmp", epoch="e", instance_token="t",
+        started_at=1, agent_id="a", task_id="task", state="running",
+    ))
+    reads = []
+    original = handler.db.list_tasks
+
+    async def spy(*args, **kwargs):
+        rows = await original(*args, **kwargs)
+        reads.append((kwargs.get("statuses"), [task.id for task in rows]))
+        return rows
+
+    monkeypatch.setattr(handler.db, "list_tasks", spy)
+    result = await handler._cmd_list_agents({"project_id": "p"})
+    assert [(row["id"], row["current_task_id"]) for row in result["agents"]] == [("a", "task")]
+    everyone = {row["id"]: row for row in (await handler._cmd_list_agents({}))["agents"]}
+    assert everyone["a"]["current_task_title"] == "Current work"
+    assert everyone["b"]["current_task_id"] is None
+    assert reads and all(
+        statuses == {TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS, TaskStatus.WAITING_INPUT}
+        and ids == ["task"]
+        for statuses, ids in reads
+    )
+
+
 def _flock_api(handler, scope=None):
     from fastapi import FastAPI
     from src.api.auth import LOCAL_SCOPE

@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 # would otherwise reach the same commands through the back door.
 API_EXCLUDED = {
     "reconcile_agent_waits",  # internal scan; never callable over HTTP
+    "reconcile_collaborations",  # daemon-only expiry and retention
     "job_reconcile",
     "job_submit_integration",
 
@@ -143,6 +144,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "test_selection_promote",
             "test_selection_revoke",
             "job_submit",
+            "message_wait",
             "job_get",
             "job_list",
             "job_cancel",

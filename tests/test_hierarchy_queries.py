@@ -7,7 +7,8 @@ import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import event, insert, select
+from sqlalchemy import Text, event, insert, select
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
@@ -82,6 +83,46 @@ async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
         Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid, status=status, **kw)
     )
     return tid
+
+
+@pytest.mark.parametrize("lookup", ["hierarchy_runnable_task_ids", "task_ids_with_meta"])
+async def test_runnable_candidate_reads_use_one_array_bind(db, lookup):
+    """A 10k frontier must not become 10k SQL parameters on every tick."""
+    await mktask(db, "included")
+    await mktask(db, "unmarked")
+    await mktask(db, "outside")
+    await db.set_task_meta("included", "container", False)
+    await db.set_task_meta("outside", "container", True)
+    await db.set_task_meta("unmarked", "different_key", True)
+    ids = ["included", "unmarked", "included", *[f"missing-{i}" for i in range(10_000)]]
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append((statement, parameters, context.compiled))
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        if lookup == "hierarchy_runnable_task_ids":
+            assert await db.hierarchy_runnable_task_ids(ids) == {"included", "unmarked"}
+            assert await db.hierarchy_runnable_task_ids([]) == set()
+        else:
+            # Presence matters even when the metadata value is false.
+            assert await db.task_ids_with_meta(ids, "container") == {"included"}
+            assert await db.task_ids_with_meta([], "container") == set()
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", capture)
+
+    assert len(statements) == 1  # Empty input never checks out a connection or queries.
+    statement, parameters, compiled = statements[0]
+    assert "= ANY (" in statement
+    candidate_bind = compiled.binds["task_ids"]
+    assert isinstance(candidate_bind.type, ARRAY)
+    assert isinstance(candidate_bind.type.item_type, Text)
+    assert not candidate_bind.expanding
+    arrays = [value for value in parameters if isinstance(value, list)]
+    assert len(arrays) == 1
+    assert set(arrays[0]) == set(ids)
+    assert len(parameters) < 50  # Other binds belong to the fixed eligibility predicates.
 
 
 async def test_set_parent_takes_project_hierarchy_lock(db, monkeypatch):

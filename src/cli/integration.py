@@ -600,12 +600,18 @@ def integration_recover_candidate_member(ctx: click.Context, reservation_id: str
 @click.option("--slot-wait-seconds", type=click.IntRange(0, 3600), default=None,
               help="Seconds a command may queue for a test slot before the batch is "
                    "deferred (default 600).")
+@click.option("--regenerate", default=None,
+              help="Command that rebuilds the files .gitattributes marks merge=aq-generated, "
+                   "run after a merge both sides changed one in (e.g. "
+                   "scripts/regenerate-generated.sh).")
+@click.option("--regenerate-timeout-seconds", type=click.IntRange(1, 3600), default=None,
+              help="Seconds one regeneration may run (default 600).")
 @click.option("--reason", required=True)
 @click.pass_context
 @_handle_errors
 def integration_develop(
     ctx, project_id, validation, commands, interval_seconds, timeout_seconds,
-    slot_wait_seconds, reason,
+    slot_wait_seconds, regenerate, regenerate_timeout_seconds, reason,
 ):
     """Use automatic development batches with explicit local validation."""
     policy = {"validation": validation, "commands": list(commands),
@@ -614,6 +620,10 @@ def integration_develop(
         policy["timeout_seconds"] = timeout_seconds
     if slot_wait_seconds is not None:
         policy["slot_wait_seconds"] = slot_wait_seconds
+    if regenerate is not None:
+        policy["regenerate"] = regenerate
+    if regenerate_timeout_seconds is not None:
+        policy["regenerate_timeout_seconds"] = regenerate_timeout_seconds
     _execute(ctx, "integration_develop", {"project_id": project_id, "reason": reason,
         "policy": policy})
 
@@ -643,6 +653,23 @@ def integration_development_sweep(ctx, project_id, retry, recover_child):
     """Build and publish a development batch now."""
     _execute(ctx, "integration_development_sweep", {
         "project_id": project_id, "retry": retry, "recover_child": recover_child,
+    })
+
+
+@integration.command("migrate-provenance")
+@click.argument("project_id")
+@click.option("--apply", is_flag=True, help="Publish verified evidence; default is read-only inventory.")
+@click.option("--limit", type=click.IntRange(1, 1000), default=500)
+@click.option("--offset", type=click.IntRange(min=0), default=0)
+@click.option("--task-id", default=None,
+              help="Only the sources this held task's close needs; ignores --limit/--offset.")
+@click.pass_context
+@_handle_errors
+def integration_migrate_provenance(ctx, project_id, apply, limit, offset, task_id):
+    """Inventory legacy completion generations and exact repair bindings in Git."""
+    _execute(ctx, "integration_migrate_provenance", {
+        "project_id": project_id, "apply": apply, "limit": limit, "offset": offset,
+        **({"task_id": task_id} if task_id else {}),
     })
 
 

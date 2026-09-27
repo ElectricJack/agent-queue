@@ -8,6 +8,8 @@ surface.  Currently contains:
   callable only by profiles that grant ``pr_merge``.  A merge is also where the daemon
   learns *which branch* the work actually landed on — see
   :meth:`GitCommandsMixin._record_pr_base`.
+- ``integration_migrate_provenance`` — inventory or retain verified legacy
+  completion/repair identities in Git without changing delivery rows.
 """
 
 from __future__ import annotations
@@ -19,7 +21,24 @@ logger = logging.getLogger(__name__)
 
 
 class GitCommandsMixin:
-    """Mixin that adds git PR commands to CommandHandler."""
+    """Git PR and provenance migration commands for CommandHandler."""
+
+    async def _cmd_integration_migrate_provenance(self, args: dict) -> dict:
+        from src.commands.integration_commands import integration_operator
+        from src.git.manager import GitError
+        from src.integration.provenance_migration import ProvenanceMigration
+
+        _operator, refusal = await integration_operator(self.db, args["project_id"])
+        if refusal is not None:
+            return {"success": False, "outcome": "blocked", "error": refusal}
+        try:
+            return await ProvenanceMigration(self.db, self.orchestrator.git).run(
+                args["project_id"], apply=args.get("apply", False),
+                limit=args.get("limit", 500), offset=args.get("offset", 0),
+                task_id=args.get("task_id") or None,
+            )
+        except (ValueError, RuntimeError, GitError) as exc:
+            return {"success": False, "outcome": "blocked", "error": str(exc)}
 
     async def _cmd_pr_merge(self, args: dict) -> dict:
         """Merge a PR.  Backs ``aq pr merge`` and the ``pr_merge`` agent tool.

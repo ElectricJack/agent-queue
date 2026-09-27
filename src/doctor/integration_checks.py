@@ -709,14 +709,14 @@ async def _find_stranded_dependents(
 
     A delivered manifest normally makes its source durable enough to survive
     branch cleanup. Older publisher builds consulted an empty completion first,
-    however, and silently marked that blocker unavailable. The cleanup receipt
-    is the durable proof that this is that specific failure mode; a merely
-    completed task with no commits is not enough to warrant an alarm.
+    however, and silently marked that blocker unavailable. The cleanup record
+    is the durable evidence that this is that specific failure mode; a merely
+    completed task with no commits is not enough to warrant an alarm.  Whether
+    the dependent itself is already delivered is git's answer.
     """
     from sqlalchemy import select
 
     from src.database.tables import (
-        development_deliveries,
         projects,
         task_completion_records,
         task_dependencies,
@@ -801,30 +801,10 @@ async def _find_stranded_dependents(
             .all()
         ):
             completions.setdefault(row["task_id"], row)
-        rows = (
-            (
-                await conn.execute(
-                    select(development_deliveries)
-                    .where(
-                        development_deliveries.c.project_id.in_(development),
-                        development_deliveries.c.state.in_(("delivered", "adopted")),
-                    )
-                    .order_by(
-                        development_deliveries.c.created_at.desc(),
-                        development_deliveries.c.id.desc(),
-                    )
-                )
-            )
-            .mappings()
-            .all()
-        )
+        from src.integration.development import operation_rows_on
+        rows = await operation_rows_on(conn, development)
 
-    delivered_task_ids = {
-        member.get("task_id")
-        for row in rows
-        for member in row["manifest"] or []
-        if isinstance(member, dict) and member.get("task_id")
-    }
+
     stranded = {}
     for row in rows:
         cleanup = (row["evidence"] or {}).get("branch_cleanup") or {}
@@ -849,10 +829,7 @@ async def _find_stranded_dependents(
                 if link["depends_on_task_id"] != blocker_id:
                     continue
                 dependent_id = link["task_id"]
-                if (
-                    candidate_projects.get(dependent_id) != row["project_id"]
-                    or dependent_id in delivered_task_ids
-                ):
+                if candidate_projects.get(dependent_id) != row["project_id"]:
                     continue
                 key = (dependent_id, blocker_id)
                 stranded.setdefault(
@@ -865,6 +842,22 @@ async def _find_stranded_dependents(
                         "source_sha": source_sha,
                     },
                 )
+    # A dependent whose own work git already finds on its target is not
+    # stranded, whatever its blocker's history.  Git answers that, not a
+    # delivery row; without an observer nothing is proven and all are listed.
+    observer = getattr(ctx.db, "_delivery_observer", None)
+    dependents = {item["dependent_task_id"] for item in stranded.values()}
+    if observer is not None and dependents:
+        from src.integration.delivery_truth import DeliveryState
+
+        view = await observer.observe(dependents)
+        stranded = {
+            key: item for key, item in stranded.items()
+            if not (
+                (evidence := view.get(item["dependent_task_id"])) is not None
+                and evidence.state is DeliveryState.CONTAINED
+            )
+        }
     return sorted(stranded.values(), key=lambda item: (item["project_id"], item["dependent_task_id"]))
 
 
@@ -908,12 +901,17 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
 
     from src.database.tables import (
         archived_tasks,
-        development_deliveries,
         projects,
         task_completion_records,
         task_metadata,
         tasks,
     )
+    from src.integration.development_stalls import (
+        DEFAULT_STALL_AFTER,
+        PUBLISHER_SKIP_KEY,
+        is_stalled,
+    )
+    from src.integration.development_stalls import WAITING as SKIP_WAITING
 
     async with ctx.db._engine.connect() as conn:
         development = set(
@@ -927,21 +925,8 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
         )
         if not development:
             return []
-        rows = (
-            (
-                await conn.execute(
-                    select(
-                        development_deliveries.c.id,
-                        development_deliveries.c.project_id,
-                        development_deliveries.c.state,
-                        development_deliveries.c.manifest,
-                        development_deliveries.c.evidence,
-                    ).where(development_deliveries.c.project_id.in_(development))
-                )
-            )
-            .mappings()
-            .all()
-        )
+        from src.integration.development import operation_rows_on
+        rows = await operation_rows_on(conn, development)
         owners = dict(
             (
                 await conn.execute(
@@ -977,7 +962,7 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
                 select(tasks.c.id, tasks.c.project_id, task_metadata.c.value)
                 .select_from(task_metadata.join(tasks, task_metadata.c.task_id == tasks.c.id))
                 .where(
-                    task_metadata.c.key == "development_publisher_skip",
+                    task_metadata.c.key == PUBLISHER_SKIP_KEY,
                     tasks.c.project_id.in_(development),
                     tasks.c.status == TaskStatus.COMPLETED.value,
                 )
@@ -1035,29 +1020,41 @@ async def _find_publisher_stalls(ctx: DoctorContext) -> list[dict]:
                 "first_failed_at": completed_at,
             }
         )
+    stall_after = getattr(
+        getattr(ctx.config, "integration", None), "publisher_stall_after", DEFAULT_STALL_AFTER
+    )
     for task_id, project_id, raw in skips:
         try:
             skip = json.loads(raw)
         except (TypeError, ValueError):
             continue
-        ticks = skip.get("consecutive_ticks", 0)
-        if ticks < _SKIP_STALL_TICKS:
+        if not isinstance(skip, dict) or skip.get("state") == SKIP_WAITING:
+            # Waiting on a live repair is delegated work, not a stall.
+            continue
+        ticks = skip.get("consecutive_ticks", 0) or 0
+        stalled = is_stalled(skip, stall_after=stall_after)
+        if not stalled and ticks < _SKIP_STALL_TICKS:
             continue
         dependency_id = skip.get("dependency_id")
         reason = skip.get("reason", "unknown")
+        detail = (
+            f"child {task_id} skipped because dependency {dependency_id} is {reason}"
+            if dependency_id else f"child {task_id} skipped: {reason}"
+        )
+        if stalled:
+            detail += f"; stalled after {ticks} identical evaluations"
         findings.append({
             "project_id": project_id,
             "batch_id": None,
-            "cause": "candidate_skipped",
-            "detail": (
-                f"child {task_id} skipped because dependency {dependency_id} is {reason}"
-                if dependency_id else f"child {task_id} skipped: {reason}"
-            ),
+            "cause": "candidate_stalled" if stalled else "candidate_skipped",
+            "detail": detail,
             "consecutive_ticks": ticks,
             "task_ids": [task_id],
             "dependency_id": dependency_id,
             "reason": reason,
             "first_failed_at": skip.get("first_skipped_at"),
+            "evidence": skip.get("evidence"),
+            "notified_message_id": skip.get("notified_message_id"),
         })
     findings.sort(key=lambda f: (f["first_failed_at"] or 0))
     return findings
@@ -1113,14 +1110,23 @@ async def _check_publisher_stalled(ctx: DoctorContext) -> CheckResult:
             severity=Severity.OK,
             detail="every development publisher is making progress",
         )
-    first = stalls[0]
+    # A skip below the stall bound is a progress observation (WARN); every
+    # other finding, a stalled candidate included, is an ERROR and leads.
+    serious = [stall for stall in stalls if stall["cause"] != "candidate_skipped"]
+    first = (serious or stalls)[0]
     where = f"batch {first['batch_id']}" if first["batch_id"] else f"project {first['project_id']}"
-    skipped_only = all(stall["cause"] == "candidate_skipped" for stall in stalls)
-    if skipped_only:
+    skipped_only = not serious
+    if first["cause"] in {"candidate_skipped", "candidate_stalled"}:
         advice = (
             f"Run `aq integration sweep {first['project_id']} --recover-child "
             f"{first['task_ids'][0]}` to retry and verify publication"
         )
+        if first["cause"] == "candidate_stalled":
+            advice = (
+                "The publisher stopped retrying this attempt and messaged the project "
+                "supervisor; changed source, completion or target evidence starts a new "
+                "one. " + advice
+            )
     elif first["cause"] == "validation_infrastructure":
         advice = (
             "Fix the validation environment (test database, test slots, "
@@ -1262,6 +1268,134 @@ async def _check_stale_repair_intents(ctx: DoctorContext) -> CheckResult:
             if stale else "live repair delegates name their current conflict intents"
         ),
         data={"count": len(stale), "delegates": stale},
+    )
+
+
+#: The publisher files a parked conflict's repair in the sweep that parked it.
+#: The grace keeps a doctor run between the park and the dispatch quiet.
+_UNREPAIRED_GRACE_SECONDS = 10 * 60
+
+
+async def _find_unrepaired_conflicts(ctx: DoctorContext) -> list[dict]:
+    """Completed sources parked on a merge conflict that no repair is carrying.
+
+    A parked conflict is resolved only by a repair (or a later batch that
+    contains its source).  The repair's own publication may park again, so
+    the question is answered along the whole chain
+    (:func:`src.integration.development.repair_chain`), never by the first
+    repair alone.  A source is listed when that chain ends with no repair
+    filed, a repair that ended without completing, or a loop.
+    """
+    from sqlalchemy import select
+
+    from src.database.tables import projects, tasks
+    from src.integration.development import (
+        _manifest_members,
+        describe_repair_chain,
+        repair_chain,
+        repair_statuses,
+    )
+
+    async with ctx.db._engine.connect() as conn:
+        development = set((await conn.execute(
+            select(projects.c.id).where(projects.c.hierarchical_integration_mode == "development")
+        )).scalars())
+        if not development:
+            return []
+        from src.integration.development import operation_rows_on
+        rows = await operation_rows_on(conn, development)
+        conflicts = [
+            row for row in rows
+            if row["state"] == "parked"
+            and (row["evidence"] or {}).get("kind") == "merge_conflict"
+        ]
+        if not conflicts:
+            return []
+        statuses = await repair_statuses(conn, development)
+        sources = {m["task_id"] for row in conflicts for m in _manifest_members(row["manifest"])}
+        live = dict((await conn.execute(
+            select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(sources))
+        )).all())
+
+    history = {}
+    for row in rows:
+        history.setdefault(row["project_id"], []).append(row)
+    cutoff = time.time() - _UNREPAIRED_GRACE_SECONDS
+    findings, seen = [], set()
+    for row in sorted(conflicts, key=lambda row: (row["created_at"] or 0, row["id"])):
+        members = _manifest_members(row["manifest"])
+        # A row whose sources were all reopened, archived or deleted holds no
+        # dependent back; the publisher's own diagnostics cover it.
+        if (row["created_at"] or 0) > cutoff or not any(
+            live.get(m["task_id"]) == TaskStatus.COMPLETED.value for m in members
+        ):
+            continue
+        result = repair_chain(
+            row["manifest"], history[row["project_id"]], statuses,
+            repository_id=row["repository_id"], target_ref=row["target_ref"],
+        )
+        first = result["chain"][0]["task_id"]
+        if result["open_repair"] or first in seen:
+            continue  # carried, or a duplicate row of the same manifest
+        seen.add(first)
+        diagnostic = (row["evidence"] or {}).get("publisher_diagnostic") or {}
+        findings.append({
+            "project_id": row["project_id"],
+            "batch_id": row["id"],
+            "task_ids": [m["task_id"] for m in members],
+            "source_shas": {m["task_id"]: m.get("source_sha") for m in members},
+            "conflicting_files": (row["evidence"] or {}).get("conflicting_files", []),
+            "state": result["state"],
+            "detail": result["detail"],
+            "chain": result["chain"],
+            "chain_text": describe_repair_chain(result),
+            "diagnostic": diagnostic.get("kind"),
+            "diagnostic_detail": diagnostic.get("detail"),
+            "parked_at": row["created_at"],
+        })
+    # A repair's own conflict belongs to its source's chain: report the source.
+    chained = {link["task_id"] for finding in findings for link in finding["chain"]}
+    return [
+        finding for finding in findings
+        if not set(finding["task_ids"]) <= chained
+    ]
+
+
+async def _check_unrepaired_conflicts(ctx: DoctorContext) -> CheckResult:
+    check_id = "integration.development_conflicts_unrepaired"
+    if ctx.db is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="database not initialised — development conflict repairs unknown",
+        )
+    findings = await _find_unrepaired_conflicts(ctx)
+    if not findings:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.OK,
+            detail="every parked development conflict is carried by an open repair",
+        )
+    first = findings[0]
+    why = first["detail"]
+    if first["diagnostic"]:
+        why += f"; publisher: {first['diagnostic']}: {first['diagnostic_detail']}"
+    return CheckResult(
+        id=check_id,
+        severity=Severity.ERROR,
+        detail=(
+            f"{len(findings)} completed source(s) parked on a merge conflict have no open "
+            f"repair — e.g. {', '.join(first['task_ids'])} (batch {first['batch_id']}, "
+            f"project {first['project_id']}, conflicting "
+            f"{', '.join(first['conflicting_files']) or 'files unrecorded'}): {why}; "
+            f"chain: {first['chain_text']}. Their dependents wait until the conflict is "
+            f"resolved: read the batch with `aq integration status {first['project_id']}`, "
+            "then reopen the ended repair, merge the source revision onto the target on a "
+            "branch that keeps it as an ancestor and record it with `aq integration adopt`, "
+            "or cancel the batch"
+        ),
+        fixable=False,
+        data={"count": len(findings), "conflicts": findings[:50]},
     )
 
 
@@ -1844,6 +1978,14 @@ def integration_checks() -> list[DoctorCheck]:
         DoctorCheck(
             id="integration.development_publisher_stalled",
             run=_check_publisher_stalled,
+            owner=OWNER,
+        ),
+        # Report-only.  Whether to reopen an ended repair, resolve the
+        # conflict by hand or cancel the batch is the operator's call; the
+        # publisher already files the one repair it may.
+        DoctorCheck(
+            id="integration.development_conflicts_unrepaired",
+            run=_check_unrepaired_conflicts,
             owner=OWNER,
         ),
         # Fixable, and the fix is the same code the reconciliation tick and

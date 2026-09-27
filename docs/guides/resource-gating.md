@@ -179,6 +179,11 @@ subject is the suite; it is not a routine worker close check. Task authors
 should name the focused and area checks a worker must run rather than require
 "run the full suite before closing".
 
+`aq test --aq-smart --aq-plan-only` is shadow-only: it prints a recorded
+proposal of the modules your change touches and verifies nothing. It is a hint
+for choosing the focused and area checks above — never a substitute for them.
+[The smart-test-selection guide](smart-test-selection.md) is the reference.
+
 For the agent-queue project, the recorded known-failing list on `origin/main`
 is a dated note in the operator vault:
 `projects/agent-queue/notes/full-suite-baseline-2026-09-22.md` (under the

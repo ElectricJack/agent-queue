@@ -26,6 +26,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.config import load_config
+from src.jobs.adapters import finite_command
+from src.jobs.policy import presets, validate_args
 from src.profiles.parser import parse_profile
 from tests.test_e2e_cli_stateful import SCENARIO_GROUPS
 
@@ -49,6 +52,50 @@ def _load_smoke():
     finally:
         sys.modules.pop(spec.name, None)
     return module
+
+
+def test_development_validation_preset_checks_the_committed_readme(tmp_path):
+    smoke = _load_smoke()
+    smoke._seed_development_validation(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text("development fixture\n")
+    preset, args = finite_command(smoke.DEVELOPMENT_VALIDATION_COMMAND)
+    command = validate_args(presets(REPO_ROOT)[preset], args, tmp_path, worker_cap=1)
+
+    passed = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    assert "1 passed" in passed.stdout
+
+    readme.unlink()
+    failed = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert failed.returncode == 1, failed.stdout + failed.stderr
+    assert "test_readme_exists" in failed.stdout and "1 failed" in failed.stdout
+
+
+@pytest.mark.parametrize("test_dsn", [None, "postgresql+asyncpg://test@localhost:5534/postgres"])
+def test_e2e_config_enables_jobs_with_a_separate_test_database(tmp_path, test_dsn):
+    (tmp_path / "onboarding").mkdir()
+    text = E2E_ENV.read_text()
+    section = re.search(
+        r"^# 4\. Config\n.*?(?=^# -+\n# 5\. Database)", text, re.DOTALL | re.MULTILINE
+    )
+    assert section, "e2e-env.sh no longer has a '4. Config' section"
+    env = {**os.environ, "AQ_E2E_HOME": str(tmp_path), "REPO_ROOT": str(REPO_ROOT)}
+    env.pop("POSTGRES_TEST_DSN", None)
+    if test_dsn:
+        env["POSTGRES_TEST_DSN"] = test_dsn
+    subprocess.run(
+        ["bash", "-euo", "pipefail", "-c",
+         'source "$REPO_ROOT/scripts/e2e-common.sh"\n' + section.group(0)],
+        check=True, env=env, capture_output=True, text=True,
+    )
+    config = load_config(str(tmp_path / "config.yaml"))
+    assert config.resources.jobs.enabled
+    assert config.resources.jobs.test_database_url == (
+        test_dsn or
+        "postgresql+asyncpg://agent_queue_test:agent_queue_test_dev@localhost:5534/postgres"
+    )
+    assert config.resources.jobs.test_database_url != config.database.url
 
 
 def test_s4_child_close_reports_a_no_op_work_outcome(monkeypatch):
@@ -245,6 +292,85 @@ def test_fresh_workers_quiesces_every_project_in_the_global_profile(monkeypatch)
     assert [worker.session_id for worker in workers] == ["fresh-1", "fresh-2"]
     assert "other-leftover" not in open_tasks[smoke.OTHER_PROJECT]
     assert not any(row["id"] == "s-draining" for row in live)
+
+
+@pytest.fixture
+def s1_surfaces(monkeypatch):
+    smoke = _load_smoke()
+    observed = SimpleNamespace(now=0.0, stages=[], session_reads=0, audit_reads=0)
+
+    def stage():
+        return observed.stages[min(int(observed.now / 2), len(observed.stages) - 1)]
+
+    def pool_row():
+        idle, starting, _sessions, _audit = stage()
+        return {"max_active": 2, "ready": 3, "running_idle": idle,
+                "running_busy": 0, "starting": starting}
+
+    def pool_sessions():
+        observed.session_reads += 1
+        return [{"id": f"session-{n}"} for n in range(stage()[2])]
+
+    def api(command, args):
+        assert command == "get_recent_events"
+        observed.audit_reads += 1
+        return {"events": [{"project_id": smoke.PROJECT, "payload": "start 2 worker"}]
+                if stage()[3] else []}
+
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: observed.now,
+        sleep=lambda seconds: setattr(observed, "now", observed.now + seconds),
+        time=lambda: observed.now,
+    ))
+    monkeypatch.setattr(smoke, "create_task", lambda title, **kwargs: title)
+    monkeypatch.setattr(smoke, "pool_row", pool_row)
+    monkeypatch.setattr(smoke, "pool_sessions", pool_sessions)
+    monkeypatch.setattr(smoke, "api", api)
+    monkeypatch.setattr(smoke, "pool_wait_state", lambda *_: {"enabled": False})
+    original_wait = smoke.wait_for_pool_session
+    monkeypatch.setattr(smoke, "wait_for_pool_session", lambda predicate, **kwargs:
+                        original_wait(predicate, **kwargs, timeout=8))
+    return smoke, observed
+
+
+def test_s1_waits_for_reserved_launches_session_rows_and_scale_audit(s1_surfaces):
+    smoke, observed = s1_surfaces
+    # Reservations already fill max_active before either durable row exists.
+    # The scale audit may also lag the second row while its launch finishes.
+    observed.stages = [(0, 2, 0, False), (1, 1, 1, False),
+                       (2, 0, 2, False), (2, 0, 2, True)]
+    state = {}
+
+    result = smoke.s1_pool_sizing(state)
+
+    assert observed.now == 6
+    assert observed.session_reads == 4
+    assert observed.audit_reads == 2
+    assert len(state["s1_tasks"]) == 3
+    assert "2 sessions for 3 ready tasks" in result
+
+
+@pytest.mark.parametrize("stage, message", [
+    ((2, 1, 2, True), "pool supply exceeded max_active=2: saw 3"),
+    ((0, 0, 3, True), "live pool sessions exceeded max_active=2: saw 3"),
+])
+def test_s1_rejects_oversubscription_without_waiting(s1_surfaces, stage, message):
+    smoke, observed = s1_surfaces
+    observed.stages = [stage]
+
+    with pytest.raises(smoke.Failure, match=message):
+        smoke.s1_pool_sizing({})
+
+    assert observed.now == 0
+
+
+@pytest.mark.parametrize("stage", [(1, 1, 1, False), (2, 0, 2, False)])
+def test_s1_requires_both_durable_sessions_and_scale_audit(s1_surfaces, stage):
+    smoke, observed = s1_surfaces
+    observed.stages = [stage]
+
+    with pytest.raises(smoke.Failure, match="timed out after 8s"):
+        smoke.s1_pool_sizing({})
 
 
 def test_pool_wait_extends_once_while_daemon_has_unplaced_demand(monkeypatch):

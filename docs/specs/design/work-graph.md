@@ -90,6 +90,24 @@ Cross-project dependencies are **allowed, explicitly** (todo §3b, decision 9). 
 
 It is *graph* blockedness only. Transient capacity reasons — no idle agent, workspace locked, budget, cooldown — are **not** persisted; they change per-tick and belong to explain (§9), not the row.
 
+Development delivery is a separate dynamic admission condition. In development
+mode, completed `blocks` prerequisites and completed children consumed by
+`waits-for` must be contained in the configured repository target, or have no
+artifact. `src/integration/admission.py` gathers these identities in a batch and
+uses `delivery_truth` to fetch and inspect git outside row-lock transactions.
+Readiness, scheduler supply, pool demand, claim selection and explain share that
+request-scoped answer. Unknown git evidence withholds work; absent or misleading
+SQL delivery rows never establish containment. Branchless organizational tasks
+have no own artifact; a missing worker ref is unknown.
+
+Claim selection receives an ephemeral allowed set and retains priority, age,
+affinity and `SKIP LOCKED` exclusivity. Keyset paging continues past withheld
+candidates. Activation rechecks prerequisite completion generation, dependency
+and gate inputs, integration configuration and target freshness after workspace
+preparation. Movement retries admission without persisting a delivery projection.
+The receipt-based SQL helper exists temporarily only for consumers still awaiting
+migration; it is not part of `tasks.is_blocked` or development admission.
+
 ### 4.2 Recompute triggers
 
 Recomputed **in the same transaction** as the mutation, Beads-style (`issueops/blocked_state.py` semantics):
@@ -281,6 +299,7 @@ Every event type emitted anywhere (bus or `log_event`) must have a registered pa
 - `validate_dag_with_new_edge` grows a `dep_type` parameter and skips validation for non-blocking types (self-edges still rejected for all types).
 - **`waits-for` deadlock rule:** reject a `waits-for` edge from *X* to container *C* when *X* is a (transitive) child of *C* — it fans in over a set containing itself. Static DFS cannot see future children, so the write-time rule is complemented by a doctor/lint check that reports runtime-detected unsatisfiable fan-ins (Beads returns `Cycles[][]` from `ready --explain`; ours surfaces them as `explain` reasons and a doctor finding).
 - Cross-project edges participate in the same global DFS — the graph is one DB, so no special casing.
+- **Ancestor rule (filing):** new work may not carry a gating edge (`blocks`, `parent-child`, `waits-for`, `conditional-blocks`) onto the task it is filed under, any ancestor of that task, or, for a worker filing, the task the session holds. Membership is already the `parent-child` edge, a container settles only after its children, and a planning task's plan exists before it files. `create_task_graph` and `formula_cook` report the validation error `dependency_on_ancestor` and write nothing; `create_task` refuses its `depends_on` with the same code. Non-gating edges (`related`, `discovered-from`, …) are unaffected, and the operator control `add_dependency` does not apply the rule. (nimble-bridge filed every child with a `blocks` edge onto itself as a barrier; see noble-quest.)
 
 ## 12. Future: status collapse (design only — later phase)
 
@@ -318,9 +337,9 @@ Every event type emitted anywhere (bus or `log_event`) must have a registered pa
 
 **Any task can be a container** — a task with a `parent-child` in-edge is a group; there is no separate group entity. The `parent-child` edge is the source of truth; `tasks.parent_task_id` is a denormalized cache, written only by `HierarchyQueryMixin.set_parent` (`src/database/queries/hierarchy_queries.py`). Exactly one parent per task is enforced by the partial unique index `uq_task_deps_single_parent` on `task_dependencies` (`dep_type = 'parent-child'`). Ids are immutable and dotted (`<parent_id>.<n>`), assigned from `tasks.next_child_ordinal` (`src/task_names.py: reserve_child_ordinal` / `child_task_id`). Two depths are tracked separately: structural depth (parent-child chain, root = 1) is capped at `MAX_STRUCTURAL_DEPTH` (3); naming depth (dot segments in the id) is a display artifact of the same cap. `--parent` on task creation is refused at either cap with `hierarchy.depth`.
 
-Containers are marked explicitly: `task_metadata.container = true`, set on a task's first child and never cleared. Group **progress is computed from the graph, never stored** (Beads' swarm rule): `get_group_progress(container_id)` derives done/ready/blocked/in-progress counts, Kahn-layered **waves** over the blocking edges among the children, and **max parallelism** (the widest wave) on demand. Container **settlement** (auto-completing a container once every child is terminal) is event-driven — it runs inside `_apply_transition` → `settle_containers`, in the same transaction as the child transition that completes it, walking up to `MAX_STRUCTURAL_DEPTH` ancestor levels. A settled container emits `task.completed` on the bus like any other transition, so the default pipeline's branch-guarded review rules (and reflection, once unpaused) see it. A backstop sweep, `_sweep_container_completion`, runs every `work_graph.container_sweep_interval_seconds` (default 60; 0 disables) and logs a WARNING on any hit — it should normally find nothing. Waves inform humans and the supervisor; the scheduler keeps ignoring them — parallelism stays emergent from the frontier plus caps.
+Containers are marked explicitly: `task_metadata.container = true`, set on a task's first child and never cleared. A task can also be *declared* a container when it is created, before any child exists (§13a). Group **progress is computed from the graph, never stored** (Beads' swarm rule): `get_group_progress(container_id)` derives done/ready/blocked/in-progress counts, Kahn-layered **waves** over the blocking edges among the children, and **max parallelism** (the widest wave) on demand. Container **settlement** (auto-completing a container once every child is terminal) is event-driven — it runs inside `_apply_transition` → `settle_containers`, in the same transaction as the child transition that completes it, walking up to `MAX_STRUCTURAL_DEPTH` ancestor levels. A settled container emits `task.completed` on the bus like any other transition, so the default pipeline's branch-guarded review rules (and reflection, once unpaused) see it. A backstop sweep, `_sweep_container_completion`, runs every `work_graph.container_sweep_interval_seconds` (default 60; 0 disables) and logs a WARNING on any hit — it should normally find nothing. Settlement has a second, stricter leg for a container stranded **BLOCKED or PAUSED** by a restart, an update or an operator hold: it completes once every child is COMPLETED *and* every non-container child's development delivery has landed on the default branch, superseding the stale status and any hold (`stale_container_clauses`, audit event `task.stale_container_settled`). The event path runs it when a child's completion seeds the container, the backstop sweep runs it for deliveries that land later, and daemon start runs it once. A lifecycle sweep (`work_graph.lifecycle_sweep_interval_seconds`, default 300) re-checks every BLOCKED/PAUSED task unchanged for `work_graph.stale_open_after_seconds` (default 6h). A task whose graph blockers are all satisfied, or whose pause hold is gone, is unblocked. Any other task gets the advisory `needs_attention=stale_open` and one supervisor message. Unlike every other attention code, `stale_open` never holds a task out of promotion or opens a recovery incident, and it clears itself on leaving BLOCKED/PAUSED. Superseded work is retired with `aq task close <id> --obsolete --reason`: COMPLETED with an `obsolete` marker that the development publisher and readiness honor, its branch owners released through the release-owner proof, and parked batches that list it cancelled (`src/integration/obsolete_close.py`). Waves inform humans and the supervisor; the scheduler keeps ignoring them — parallelism stays emergent from the frontier plus caps.
 
-**Events and error codes.** A successful reparent emits `task.reparented` on the bus after commit, with `task_id`, `project_id`, `title`, `old_parent` and `new_parent` (`null` at the root); playbooks can trigger on it. Rejected hierarchy mutations raise `HierarchyError` and surface as `hierarchy.<code>`, the full set being: `not_found` (task or parent missing), `self_parent`, `cross_project`, `container_closed` (parent is COMPLETED), `cycle`, `depth` (structural or naming cap), `open_children` (any unforced transition to COMPLETED with a non-terminal direct child — enforced in `_apply_transition`, not only at the close surfaces), `open_descendants` (archive of a subtree with a non-terminal *descendant*), `has_children` (delete without `--cascade`), `live_descendants` (abandon or cascade while a *descendant* — never the closing task itself — has a live session), `manually_paused_descendants` (abandon while a descendant is hand-paused), and `cycle_check_skipped` (internal: the bulk graph-creation writer `set_parent_bulk` was handed a task that is not a freshly inserted leaf). `aq schema` exposes the same list as the `hierarchy_error` enum.
+**Events and error codes.** A successful reparent emits `task.reparented` on the bus after commit, with `task_id`, `project_id`, `title`, `old_parent` and `new_parent` (`null` at the root); playbooks can trigger on it. Rejected hierarchy mutations raise `HierarchyError` and surface as `hierarchy.<code>`, the full set being: `not_found` (task or parent missing), `self_parent`, `cross_project`, `container_closed` (parent is COMPLETED), `cycle`, `depth` (structural or naming cap), `open_children` (any unforced transition to COMPLETED with a non-terminal direct child — enforced in `_apply_transition`, not only at the close surfaces), `open_descendants` (archive of a subtree with a non-terminal *descendant*), `has_children` (delete without `--cascade`), `live_descendants` (abandon or cascade while a *descendant* — never the closing task itself — has a live session), `live_parent` (reparenting onto another worker's held task, refused under the destination task lock so the claim cannot race the check), `manually_paused_descendants` (abandon while a descendant is hand-paused), and `cycle_check_skipped` (internal: the bulk graph-creation writer `set_parent_bulk` was handed a task that is not a freshly inserted leaf). `aq schema` exposes the same list as the `hierarchy_error` enum.
 
 **Hierarchical child ids:** children created under a parent (supervisor graphs, plan subtasks, `--parent`) get `<parent_id>.1`, `<parent_id>.1.2` — ordinal per parent via `next_child_ordinal`, depth ≤ 3 — while root ids stay adjective-noun slugs. Ids never change after assignment. A name is never minted while anything still keys it: a live or archived task, or the integration identity a deleted task leaves behind (a `task_integration_checkpoints` row, a `task_branch_origins` row, live or retired, or an `integration_branch_owners` row it owns) — a new task minted onto that name would inherit the predecessor's checkpoint and branch fence (`_task_identity_exists` in `src/task_names.py`). The id itself now carries structure a human can read in Discord, a branch name (`aq/swift-falcon.2`), or a log line, and sorting groups a family together everywhere.
 
@@ -337,6 +356,46 @@ depends on is emitted on every `DEFINED → READY` promotion, `is_blocked` flip,
 removal, and gate resolution (design §9), not only on the legacy `task.unblocked` path.
 Off by default (`swarm.enabled: false`, `docs/specs/config.md` §4.11).
 
+**A container is never leased (bold-flare-35).** The claim frontier
+(`_frontier_predicates`, `src/database/queries/claim_queries.py`) excludes a task that
+carries the container flag (`container_settles_without_worker`) and, as a second rule for
+any parent row the flag never reached, a task that has children (`has_children`). The
+flag lands with a task's first child, so an epic filed as a plain task and given its
+children afterwards used to sit on the frontier in between, and pool workers leased it
+(prime-glacier.1, nimble-bridge.1). Three mechanisms close that window:
+
+- **Declared at creation.** `create_task` with `container: true` (`aq task create
+  --container`) writes the flag and the held-open `declared_container` key in the
+  transaction that inserts the task, through the internal `_after_create_on` hook. The
+  task is never on the frontier, and it does not settle while it has no children. A
+  READY one is released to IN_PROGRESS without an agent like any other flagged task.
+  An empty declared container has no sweep or timeout, so a worker session is refused
+  (`hierarchy.container_not_for_sessions`) and files its epic through a graph instead.
+- **Created with its children.** A worker graph (`create_task_graph` from a non-elevated
+  session) may declare a document-level `parent:`. Its new container is written, flagged
+  and linked in the graph's transaction. It goes under the held task by default. That
+  needs room for two more levels, so only a root held task qualifies (`hierarchy.depth`
+  otherwise). With `root: true` (`--root`) it goes at the project root instead. A root
+  container carries a `discovered-from` edge to the held task and the routing gate a
+  worker root filing is born with; it is created DEFINED, so its children wait until
+  the gate is resolved, and the planner's own task keeps no open child. A root graph
+  without a `parent:` block is refused (`graph.root_needs_parent`), and so is a
+  `parent:` block in a hierarchy/train project (`hierarchy.parent_out_of_scope`).
+- **Released when it happens anyway.** `list_container_claims` finds every agent whose
+  current task has children *none of which the holding session filed*
+  (`created_by_kind = 'session'`, `created_by_id` = the holder) and *at least one of
+  which the task's own filer filed* — the planner that created the epic and then gave it
+  its children. A worker's own emergent filings, and a follow-up someone else files
+  under a task a worker is working on, therefore never count. The holder is the session
+  pointing at the task in any state but `stopped`; a session-less agent row counts only
+  for an IN_PROGRESS task. The pool reconcile step releases pool holders on every tick
+  where a pool session holds a task (`release_container_claim`): the task is flagged,
+  goes back to IN_PROGRESS with no agent and settles if its children are done, and the
+  session is released and drained so the pool relaunches a fresh worker. A holder with
+  an attached integration owner (hierarchy/train) is left alone and logged once.
+  `aq doctor --check claims.container_held` reports every holder, including a
+  push-launched session or an agent row BUSY with no session, and `--fix` releases them.
+
 ## 13b. Phases
 
 **Implemented, graph-visibility branch.** A phase is nothing new at the schema level: it is an ordinary container task (`task_metadata.container = true`, set at creation rather than on first child, so a childless phase is never a claimable READY task) carrying `task_metadata` key `phase = {"order": int, "label": str}`, plus a `blocks` edge onto **every** earlier sibling phase under the same parent that has not COMPLETED. The redundant-looking edges are the point: with a single edge onto the immediate predecessor, deleting an abandoned empty phase *N* dropped the only edge phase *N+1* had and released it while phase *N-1* was still open. A COMPLETED earlier phase is left out — the projection would resolve such an edge immediately anyway. `phase_create`'s response reports the immediate predecessor as `blocked_by` and the full gate set as `blocked_by_all`. Ordering falls entirely out of §3–§4: those edges keep phase *N+1*'s `is_blocked` set until every earlier phase is COMPLETED, and the `parent-child` rule withholds every descendant of a DEFINED parent, so the claim frontier and the promotion cascade need no phase-specific code. A phase settles by ordinary container settlement (§13) — all children COMPLETED — so a FAILED child holds the gate deliberately.
@@ -345,11 +404,37 @@ A phase may sit at the project root or nest one level under an epic (the existin
 
 `phase_create` / `phase_list` are commands (category `task`; CLI `aq task phase-create` / `aq task phase-list` — there is no `aq phase` group). They are operator/planner/supervisor surfaces, not granted to worker profiles; work joins a phase the ordinary way, `aq task create --parent <phase-id>`.
 
-**A childless container that carries the `phase` key (or the `standing_parent` key, §13d) is deliberately held open**: `childless_held_open_container()` (`src/database/queries/hierarchy_queries.py`) excludes it from both `settle_containers` and `settle_candidates`, so it does not auto-complete while empty — every other childless container still settles normally. An abandoned empty phase must be deleted (`task delete`); deleting it drops its own edges and leaves every remaining gate intact, so the later phases stay behind whichever earlier phases are still open.
+**A childless container that carries the `phase` key (or the `standing_parent` key, §13d, or the `declared_container` key, §13a) is deliberately held open**: `childless_held_open_container()` (`src/database/queries/hierarchy_queries.py`) excludes it from both `settle_containers` and `settle_candidates`, so it does not auto-complete while empty — every other childless container still settles normally. An abandoned empty phase must be deleted (`task delete`); deleting it drops its own edges and leaves every remaining gate intact, so the later phases stay behind whichever earlier phases are still open.
 
 **Declared in the graph grammar.** An `aq-graph` document may declare top-level `phases: [{key, title, label?}]` — document order is phase order 1..N — and each node may name one with `phase: <key>`; a node that names none stays a direct child of the container. `create_task_graph` / `formula_cook` then create the epic, the phase containers (`<epic>.<i>`), their work (`<epic>.<i>.<j>`, unphased nodes numbered after the phases as `<epic>.<k>`), the container flags, the `phase` metadata, the inter-phase `blocks` edges and every node's subtasks inside `write_plan`'s **one** transaction — where `phase_create` needs three transactions plus one per gate edge, between which a phase exists first unflagged and then ungated. The ordering inside that transaction is load-bearing: phase rows are linked to the epic, then node rows to their phase, and only then are the `blocks` edges written, because `set_parent_bulk` asserts freshly inserted childless leaves with no blocking out-edges; `mark_container` plus the `phase` metadata run for **every** phase including a childless one, and `recompute_blocked` covers the phases as well as the nodes. Findings: errors `duplicate_phase_key`, `unknown_phase` and `inverted_phase_edge`; warnings `phase_without_nodes` and `redundant_phase_edge`. Both cross-phase rules read gating edges only (`blocks`/`waits-for`/`conditional-blocks`/`parent-child`); a `related` or `discovered-from` edge schedules nothing and is reported as neither. **Backward, per edge:** a need onto an *earlier* phase is `redundant_phase_edge`, a warning — the phase gate already orders them. **Within one phase:** nothing, that is ordinary intra-stage ordering. **Forward, transitively:** a gating path from a phased node that reaches a phased node in a *later* phase — directly or through any number of **unphased** intermediates — is `inverted_phase_edge`. It must be transitive: an unphased node is a direct child of the epic, so no phase withholds it through the `parent-child` rule, but it is still gated by its own edges, so `phase1.A needs U needs phase2.B` deadlocks exactly as the direct edge does (B is withheld under DEFINED phase 2, so U never satisfies, so A never completes, so phase 1 never settles). The loop runs through the phase containers, which are not edges in the document, so neither the document's own cycle check nor a per-edge test can see it. Propagation stops at a phased intermediate, which answers for its own outgoing edge. **Every** gating type is an error, `waits-for` included: `_waits_for_unsat` is vacuously satisfied only while the target has no `parent-child` children, and a document *can* give a node children — `needs: [{on: X, dep_type: parent-child}]` is legal and the creator writes it — so an in-document `waits-for` into a later phase deadlocks for real; ranking it below the hard types also let a farther soft reach mask a nearer hard one, since one finding is emitted per node. The traversal is iterative (Kahn over the reversed gating edges, linear, and safe on the thousands-of-nodes chain the 2,000,000-character document cap permits); a node inside a gating cycle keeps only what its settled targets gave it, which is harmless because the cycle check already errors. A long route is folded in the reported detail. A document that declares phases must be created at the project root (`graph.phases_need_root` when combined with `parent_id`): epic → phase → task already spends the whole `MAX_STRUCTURAL_DEPTH` budget. Spec: `docs/superpowers/specs/2026-09-20-planning-emits-phases-and-subtasks-design.md` §7.3.
 
-**Refused in `hierarchy`/`train`.** One check (`phase_mode_refusal`, `src/database/queries/hierarchy_queries.py`) and one code, `hierarchy.phases_unsupported_mode`, behind both doors — `phase_create` and a graph declaring `phases:`. In those modes a phase container owns a branch and its children deliver *to it*, so phase *N+1* can open on a base that lacks phase *N*'s work and one FAILED child strands the whole stage's delivery: the hazard `hierarchy.parent_key_unsupported_mode` (§13d) already bars for standing parents. `disabled`, `observe` and `development` are unaffected — a container there is a plain task row with no branch, and in `development` an inter-phase gate releases on COMPLETED alone precisely because `_development_delivery_pending` requires a `branch_name` the container does not have.
+**Refused in `hierarchy`/`train`.** One check (`phase_mode_refusal`, `src/database/queries/hierarchy_queries.py`) and one code, `hierarchy.phases_unsupported_mode`, behind both doors — `phase_create` and a graph declaring `phases:`. In those modes a phase container owns a branch and its children deliver *to it*, so phase *N+1* can open on a base that lacks phase *N*'s work and one FAILED child strands the whole stage's delivery: the hazard `hierarchy.parent_key_unsupported_mode` (§13d) already bars for standing parents. `disabled`, `observe` and `development` are unaffected — a container there is a plain task row with no branch, and in `development` an inter-phase graph gate releases on COMPLETED. Dynamic admission treats a branchless organizational container as having no own artifact.
+
+**Empty missing sources in development (2026-09-26).** Historical completed containers
+and ordinary tasks can retain a branch name that was never published to origin. After
+a successful pruned origin fetch, the development publisher retires that branch requirement
+when the source ref is absent, every completion record has no commits (including tasks
+with no completion record), and no delivery journal manifest names the task. Branch
+identities, including canonical integration checkpoints, remain intact. The observation
+is kept in `task_metadata.development_empty_source`, bound to the repository, branch,
+task update timestamp and latest completion id; reopening, editing the task or recording
+another completion invalidates it. Legacy candidate collection treats the observed revision as branchless. Fresh
+admission uses `delivery_truth` and does not infer no artifact from an absent
+worker ref or a stored observation. The stale `development_publisher_skip` is removed.
+Retirement and dependent blocked-state recomputation commit together, before the batch
+orders dependencies.
+The task stays COMPLETED, requires no synthetic delivery receipt, and no longer keeps an
+otherwise idle project opening Git transport on every tick. Any reported commits or
+journal artifacts, including parked sources, still require delivery or recovery. A
+failed origin fetch cannot prove an absent source and never retires a branch.
+
+**Delivered commits-less work after branch cleanup.** A completed task whose close lists
+no commits, such as a plan or docs task whose branch is its base, is released by its
+development delivery receipt, not by its branch. The manifest names the task (with no
+source on the close, the receipt matches on task id alone), and the publisher binds the
+empty close through `evidence.completion_sources`. Branch cleanup afterwards re-blocks
+nothing, and an edge written after cleanup starts satisfied, at readiness and at
+publication (`test_docs_only_plan_dependency_stays_satisfied_after_branch_cleanup`).
 
 ## 13c. In-task subtasks
 

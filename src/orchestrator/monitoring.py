@@ -17,7 +17,7 @@ from src.notifications.events import (
 )
 from src.models import Task, TaskStatus
 from src.database.queries.hierarchy_queries import CONTAINER_KEY
-from src.database.queries.task_queries import TERMINAL_BLOCKED_META_KEY
+from src.database.queries.task_queries import STALE_OPEN_ATTENTION, TERMINAL_BLOCKED_META_KEY
 from src.task_summary import write_task_summary
 
 logger = logging.getLogger(__name__)
@@ -236,9 +236,14 @@ class MonitoringMixin:
         # One statement instead of one per BLOCKED task.  Every in-tree
         # writer stores a non-empty code, and task_edit normalises an empty
         # string to a delete, so "key present" is exactly "needs attention".
+        # ``stale_open`` is the one advisory code: it reports a long wait, it
+        # does not decide one, so it must not freeze the wait it reports.
         attention = await self.db.task_ids_with_meta(
             [task.id for task in blocked], "needs_attention"
         )
+        if attention:
+            codes = await self.db.get_task_meta_bulk(sorted(attention), "needs_attention")
+            attention = {tid for tid in attention if codes.get(tid) != STALE_OPEN_ATTENTION}
         blocked = [task for task in blocked if task.id not in attention]
         # A terminal close (hard failure, retry budget spent, pipeline stop,
         # timeout, operator stop) is BLOCKED by decision, not by the graph.
@@ -445,23 +450,78 @@ class MonitoringMixin:
             return
         self._last_container_sweep = now
         candidates = await self.db.settle_candidates()
-        if not candidates:
-            return
-        settled = await self._settle_seeds(set(candidates))
-        for cid in settled:
-            logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
+        if candidates:
+            settled = await self._settle_seeds(set(candidates))
+            for cid in settled:
+                logger.warning("container settlement backstop hit: %s (event path missed it)", cid)
+        await self.reconcile_stale_containers()
 
-    async def _settle_seeds(self, seeds: set[str]) -> list[str]:
+    @property
+    def delivery_observer(self):
+        """Git delivery truth for settlement and the readers outside the publisher."""
+        from src.integration.delivery_observer import DeliveryObserver
+
+        observer = getattr(self, "_delivery_observer", None)
+        if observer is None or observer.db is not self.db or observer.git is not self.git:
+            observer = DeliveryObserver(self.db, git=self.git, data_dir=self.config.data_dir)
+            self._delivery_observer = observer
+        return observer
+
+    async def reconcile_stale_containers(self) -> list[str]:
+        """Complete BLOCKED/PAUSED containers whose children are all delivered.
+
+        The stale-status leg of settlement (``stale_container_clauses``).  A
+        child's completion settles its stranded container on the event path
+        only when no child needs delivery proof; a delivery that lands later
+        has no event, so the backstop sweep runs this every interval, and
+        :meth:`initialize` runs it once on start, because restarts and updates
+        are what strand these containers.
+
+        Git proves delivery here, outside any transaction, and settlement
+        rechecks each child's identity and the target under its own locks.
+        A settled container can make its own stale parent a candidate, so the
+        pass repeats (bounded by the structural depth) while it makes
+        progress.  Returns the settled ids.
+        """
+        from src.database.queries.hierarchy_queries import MAX_STRUCTURAL_DEPTH
+
+        settled: list[str] = []
+        for _level in range(MAX_STRUCTURAL_DEPTH + 1):
+            candidates = await self.db.stale_container_candidates()
+            if not candidates:
+                break
+            required = await self.db.stale_container_delivery_children(candidates)
+            children = set().union(*required.values()) if required else set()
+            delivery = await self.delivery_observer.observe(children) if children else None
+            if delivery is not None and not await delivery.fresh():
+                # The target kept moving: settle only what needs no proof.
+                delivery = None
+            now_settled = [
+                cid for cid in await self._settle_seeds(set(candidates), delivery=delivery)
+                if cid not in settled
+            ]
+            for cid in now_settled:
+                logger.info(
+                    "Completed stale container %s: every child is COMPLETED and delivered", cid
+                )
+            settled.extend(now_settled)
+            if not now_settled:
+                break
+        return settled
+
+    async def _settle_seeds(self, seeds: set[str], *, delivery=None) -> list[str]:
         """Run the §7 settlement predicate over *seeds* now, with post-commit fan-out.
 
         The same commit-then-notify shape as ``transition_task``: blocked-state
         flips are logged, settled containers reach the settlement listener, and
         waiters the settlement released are announced to the ready listener.
+        *delivery* is the git view the stale leg verifies inside the
+        transaction.
         """
         if not seeds:
             return []
         async with self.db._engine.begin() as conn:
-            result = await self.db.settle_containers(set(seeds), conn=conn)
+            result = await self.db.settle_containers(set(seeds), conn=conn, delivery=delivery)
         await self.db.log_blocked_flips(result.flipped)
         await self.db._notify_settled(result.settled)
         await self.db._notify_ready(result.ready)
@@ -780,6 +840,33 @@ class MonitoringMixin:
                 logger.info("Onboarding request retention: removed %d terminal request(s)", removed)
         except Exception as e:
             logger.warning("Onboarding request retention sweep failed: %s", e)
+
+    async def _sweep_test_selection_retention(self) -> None:
+        """Delete selection records past ``test_selection.retention_days``.
+
+        Selections are immutable history: a failed sweep only leaves rows
+        that the next cycle deletes, so a warning is the whole of the error
+        handling.  Observations cascade on delete (FK ``ondelete=CASCADE``).
+        """
+        if not getattr(self.config.test_selection, "enabled", False):
+            return
+        now = time.time()
+        if now - self._last_test_selection_retention_sweep < 3600:
+            return
+        self._last_test_selection_retention_sweep = now
+        try:
+            days = int(self.config.test_selection.retention_days)
+            removed = await self.db.delete_test_selections_older_than(
+                older_than=now - days * 86_400.0
+            )
+            if removed:
+                logger.info(
+                    "Test selection retention: removed %d selection(s) older than %d day(s)",
+                    removed,
+                    days,
+                )
+        except Exception as e:
+            logger.warning("Test selection retention sweep failed: %s", e)
 
     async def _find_stuck_downstream(self, blocked_task_id: str) -> list[Task]:
         """BFS walk of the dependency graph to find orphaned DEFINED tasks.

@@ -162,6 +162,76 @@ def test_activity_type_literal():
 
 
 class TestActivity:
+    @pytest.mark.parametrize("harness", ["codex", "claude"])
+    async def test_completed_transcript_beats_terminal_redraw_and_new_prompt_clears_idle(
+        self, db, providers, lens, tmp_path, monkeypatch, harness
+    ):
+        from src.sessions.transcripts import resolve_reader
+        from unittest.mock import AsyncMock
+
+        row, handle = await _seed_running_task(db, providers)
+        await db.update_session(row.id, harness=harness)
+        providers.create("fake").sessions[handle.name].activity = time.time()
+        transcript = tmp_path / "activity.jsonl"
+        reader = resolve_reader(harness, base_dir=tmp_path)
+        monkeypatch.setattr(reader, "resolve_session", lambda _: transcript)
+        monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda _: reader)
+
+        def line(kind):
+            if harness == "codex":
+                return json.dumps({
+                    "timestamp": time.time(), "type": "event_msg",
+                    "payload": ({"type": "task_complete", "last_agent_message": "Waiting."}
+                                if kind == "done" else
+                                {"type": "user_message", "message": "Continue."}),
+                }) + "\n"
+            return json.dumps({
+                "timestamp": time.time(), "type": "assistant" if kind == "done" else "user",
+                "uuid": kind,
+                "message": {"role": "assistant" if kind == "done" else "user",
+                            "content": "Waiting." if kind == "done" else "Continue.",
+                            "stop_reason": "end_turn" if kind == "done" else None},
+            }) + "\n"
+
+        transcript.write_text(line("done"))
+        read = AsyncMock(wraps=reader.read_new)
+        monkeypatch.setattr(reader, "read_new", read)
+        assert await lens.activity(kind="task", target_id=row.task_id, project_id="proj1") == "idle"
+        assert await lens.activity(kind="task", target_id=row.task_id, project_id="proj1") == "idle"
+        assert read.call_args_list[1].args[1] == transcript.stat().st_size
+        if harness == "codex":
+            with transcript.open("a") as file:
+                file.write(json.dumps({
+                    "timestamp": time.time(), "type": "event_msg",
+                    "payload": {"type": "token_count", "info": {
+                        "total_token_usage": {"input_tokens": 10, "output_tokens": 5},
+                    }},
+                }) + "\n")
+            assert await lens.activity(
+                kind="task", target_id=row.task_id, project_id="proj1"
+            ) == "idle"
+        with transcript.open("a") as file:
+            file.write(line("user"))
+        # A live model/tool turn remains busy even after terminal output goes quiet.
+        providers.create("fake").sessions[handle.name].activity = time.time() - 300
+        assert await lens.activity(kind="task", target_id=row.task_id, project_id="proj1") == "busy"
+        # Truncation clears the cached completion/prompt rather than retaining stale state.
+        transcript.write_text("")
+        assert await lens.activity(kind="task", target_id=row.task_id, project_id="proj1") == "idle"
+
+    async def test_unreadable_transcript_falls_back_to_provider_activity(
+        self, db, providers, lens, monkeypatch
+    ):
+        from unittest.mock import Mock
+
+        row, handle = await _seed_running_task(db, providers)
+        reader = Mock(resolve_session=Mock(side_effect=OSError("unavailable")))
+        monkeypatch.setattr("src.sessions.transcripts.resolve_reader", lambda _: reader)
+        providers.create("fake").sessions[handle.name].activity = time.time()
+        assert await lens.activity(kind="task", target_id=row.task_id, project_id="proj1") == "busy"
+        reader.resolve_session = Mock(return_value=None)
+        assert await lens.activity(kind="task", target_id=row.task_id, project_id="proj1") == "busy"
+
     async def test_running_db_row_with_missing_provider_handle_is_absent(self, db, lens):
         await db.create_session(
             SessionRecord(
@@ -563,6 +633,35 @@ class TestNudge:
         assert "delivery remains pending" in caplog.text
         assert row.name in caplog.text
         assert "AQ text remains in the composer" in caplog.text
+
+    async def test_deferred_nudge_logs_and_remembers_its_reason(
+        self, db, providers, lens, caplog, monkeypatch
+    ):
+        # 2026-09-27: thousands of "was not submitted" warnings never said
+        # the composer guard was refusing an idle Codex footer.
+        from src.sessions.provider import NudgeDeferred
+
+        row, _handle = await _seed_running_task(db, providers)
+        fake = providers.create("fake")
+
+        async def refuse(h, text):
+            raise NudgeDeferred(f"terminal {h.name!r} has a draft or its input is unknown")
+
+        monkeypatch.setattr(fake, "nudge", refuse)
+        with caplog.at_level(logging.WARNING, logger="src.messages.session_lens"):
+            ok = await lens.nudge(kind="task", target_id=row.task_id, project_id="proj1", text="hi")
+        assert ok is False
+        assert "has a draft or its input is unknown" in caplog.text
+        failure = lens.nudge_failure(row.id)
+        assert failure["reason"].endswith("has a draft or its input is unknown")
+        assert failure["deferred"] is True
+        assert failure["at"] <= time.time()
+
+        monkeypatch.undo()
+        assert await lens.nudge(
+            kind="task", target_id=row.task_id, project_id="proj1", text="hi"
+        ) is True
+        assert lens.nudge_failure(row.id) is None
 
     async def test_nudge_returns_false_when_no_session(self, lens):
         ok = await lens.nudge(kind="task", target_id="never-existed", project_id="proj1", text="hi")

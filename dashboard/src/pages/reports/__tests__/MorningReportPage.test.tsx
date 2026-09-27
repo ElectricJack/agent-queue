@@ -53,6 +53,12 @@ describe("Morning report route", () => {
     expect(await screen.findByText("This report was skipped. Coverage did not advance.")).toBeInTheDocument();
   });
 
+  it("links task evidence to the full task page", async () => {
+    vi.mocked(reportGet).mockResolvedValue({ data: { report: record } } as never);
+    open();
+    expect(await screen.findByRole("link", { name: "Task t1" })).toHaveAttribute("href", "/tasks/t1");
+  });
+
   it("shows a readable failure for a missing or inaccessible report", async () => {
     vi.mocked(reportGet).mockRejectedValue(new Error("report not found"));
     open();

@@ -1,5 +1,5 @@
 // Real Chrome regression smoke against an ephemeral local fixture; no daemon/database.
-// Needs puppeteer-core beside the harness and CHROME (as in README.md).
+// Needs puppeteer-core (the root `npm install`) and CHROME (as in README.md).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 const dir = await mkdtemp(join(tmpdir(), "aq-perf-smoke-"));
 const server = createServer((req, res) => {
   req.resume();
-  const isPage = req.url.startsWith("/projects/") || req.url === "/agents";
+  const isPage = req.url.startsWith("/projects/") || req.url === "/agents" || req.url.startsWith("/focus");
   const body = isPage
     ? '<main><a href="/projects/fixture/tasks" onclick="event.preventDefault()">Tasks</a><table><tr data-task-row><td>Fixture</td></tr></table><button aria-label="Open pool fixture">Pool</button></main>'
     : JSON.stringify(req.url === "/api/task/list" ? { tasks: [{ id: "fixture-1" }] } : {});
@@ -25,8 +25,8 @@ try {
   const out = join(dir, "smoke.json");
   child = spawn(process.execPath, [fileURLToPath(new URL("harness.mjs", import.meta.url)),
     base, out, "--api", base, "--clients", "3", "--warmup-ms", "50",
-    "--observe-ms", "200", "--idle-ms", "999", "--runs", "1", "--only", "tasks,agents",
-    "--project", "fixture", "--no-interactions"], { detached: true, stdio: "inherit" });
+    "--observe-ms", "200", "--idle-ms", "999", "--runs", "1", "--only", "tasks,agents,focus",
+    "--project", "fixture", "--no-interactions", "--viewport", "390x844"], { detached: true, stdio: "inherit" });
   const code = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       process.kill(-child.pid, "SIGTERM");
@@ -41,8 +41,9 @@ try {
   assert.equal(data.manifest.observe_ms, 200); // Alias precedence.
   assert.equal(data.manifest.warmup_ms, 50);
   assert.match(data.manifest.chrome, /^Chrome\//);
+  assert.deepEqual(data.manifest.viewport, [390, 844]);
   // Every surface gets its own set of concurrent clients, each in a separate window.
-  for (const surface of ["tasks", "agents"]) {
+  for (const surface of ["tasks", "agents", "focus"]) {
     const clients = data.idle[surface].clients;
     assert.equal(clients.length, 3);
     assert.ok(Math.max(...clients.map((c) => c.start_ts)) < Math.min(...clients.map((c) => c.end_ts)));
@@ -52,7 +53,7 @@ try {
   assert.equal(data.warm.tasks.raw_samples.length, 1);
   assert.equal(data.api["POST /api/task/get"].raw_ms.length, 30);
   assert.equal(data.api["POST /api/task/get"].errors, 0);
-  console.log("Chrome smoke passed: three concurrent windowed clients on two surfaces, duration alias, manifests, raw browser/API samples");
+  console.log("Chrome smoke passed: three concurrent windowed clients on three surfaces at a phone viewport, duration alias, manifests, raw browser/API samples");
 } finally {
   if (child?.pid) {
     try { process.kill(-child.pid, "SIGKILL"); } catch (error) {

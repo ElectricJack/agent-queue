@@ -195,14 +195,20 @@ Step by step:
 5. **Ordering.** Candidates are topologically ordered by their `blocks`,
    `waits-for` and `conditional-blocks` dependencies, so a dependent is never
    merged before its prerequisite. A dependent of a parked task is skipped for
-   this batch; so is every sibling under a parent whose earlier child
-   conflicted.
-6. **Assembly.** Each source is merged with an ordinary merge commit (author
-   `Agent Queue <aq@localhost>`). A child of a parent task is first merged into
-   a per-parent aggregate ref, which is published on its own so the parent's
-   work stays independently reusable, and the aggregate is then merged into the
-   batch. A member whose source is already an ancestor of `main` joins the
-   manifest without being merged again. Assembly stops at `max_batch_size` members (default 50).
+   this batch; independent siblings remain eligible, even when they share a
+   parent with the parked task.
+6. **Assembly.** Each clean source is merged directly into the batch aggregate
+   with an ordinary merge commit (author `Agent Queue <aq@localhost>`).
+   Parent membership is recorded in the manifest but does not create a separate
+   aggregate ref. Work already proven to be on the default branch is recognized
+   before dependency ordering and assembly; it needs no merge, and newly
+   observed deliveries are recorded in the journal. Assembly stops at
+   `max_batch_size` members (default 50).
+   With a `regenerate` policy, files the repository's `.gitattributes` marks
+   `merge=aq-generated` never conflict: when both sides changed one, the
+   policy's command rebuilds them from the merged sources inside the member's
+   merge commit, and only conflicts in other files park the member
+   ([generated files](../guides/development-integration.md#conflicts-confined-to-generated-files)).
 7. **Preservation.** Before validation can reject anything, the candidate head
    is pushed to `refs/heads/aq/development/<project digest>/<head sha>`. No
    worker owns that ref, and it is what lets a failed batch be inspected.
@@ -297,7 +303,7 @@ the current policy.
 | | |
 |---|---|
 | **Inputs** | `COMPLETED` tasks with a pushed `aq/<task-id>` branch; their dependency edges; the project's `DevelopmentPolicy`; the current remote state of the default branch. |
-| **Outputs** | Commits on the default branch; candidate and per-parent aggregate refs under `refs/heads/aq/development/…`; one journal row per batch, park, adoption, configuration change and preservation; repair tasks for content that could not be merged. |
+| **Outputs** | Commits on the default branch; preserved batch candidate refs under `refs/heads/aq/development/…`; one journal row per batch, park, adoption, configuration change and preservation; repair tasks for content that could not be merged. |
 | **Never outputs** | Rewritten worker history, deleted task branches, synthetic review verdicts, synthetic CI receipts. |
 
 ## State ownership

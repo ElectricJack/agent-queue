@@ -50,7 +50,9 @@ lease exemptions never follow an old epoch into a new claim.
 
 The daemon scans at most 100 rows per cycle, rotates past unresolved conditions,
 and reads durable producer state, including archived tasks. It preserves actual
-task status and close outcome. Completion at or before the deadline wins even if
+task status and close outcome. Due timers receive the same scan priority as
+waits past their hard deadline, without waiting for the timer's later timeout.
+Completion at or before the deadline wins even if
 observed later. Job waits return the actual terminal state, outcome, exit code, infrastructure
 reason and a bounded failure-first excerpt with a `job:ID` result reference.
 Read the full immutable result with `aq job result ID`; read retained output with
@@ -85,11 +87,54 @@ their existing wake path. A manual pause never automatically resumes.
 
 Task-addressed results route to the session currently holding the task,
 including pool workers whose session names do not contain the task id.
+Plain messages to `task:<id>` or `session:<id>` use the same idle delivery:
+an idle holder has ``Handle `aq message status <id> --json`.`` typed into its
+terminal.
+
+A message wait (`--kind message --ref <thread> --after-seq <n>`) resolves on
+the first later message on that thread addressed to the waiting session or its
+task. An answer only satisfies it when it lands on the thread: answer with
+`aq message reply <message-id>`, or as a supervisor with
+`aq agent message <task-id> BODY --reply-to <message-id>`. Guidance sent
+without `--reply-to` has no thread; it still wakes an idle worker through the
+ordinary message nudge, but the wait stays active until its deadline.
+
+The same cursor rule applies to collaboration threads. A message wait whose
+`--ref` is a `collab-*` thread id resolves on the first later collaboration
+message. Unlike an ordinary task thread, a collaboration wait can also end in
+one of four typed reasons (first match wins; the result is final):
+
+| reason                | meaning                                                             |
+|-----------------------|---------------------------------------------------------------------|
+| `peer_failed`         | at least one peer task is **FAILED** or **BLOCKED**                  |
+| `peer_gone`           | all peer tasks are terminal, archived or missing                     |
+| `thread_closed`       | thread state is `closed` (e.g. `budget_exhausted`, `members_below_two`, manual close) or `expired`, or the deadline has passed |
+| `partner_not_running` | no peer is running after a 120-second grace period                  |
+
+In each case the daemon records the terminal result; the thread is not a live
+conversation to nudge. Continue with your own task rather than re-registering.
+
+For mail that has waited more than five minutes for an idle live worker, run
+`aq doctor --check messages.idle_worker_backlog`. It uses the delivery engine's
+session lens and reports each message with the last refused-nudge reason for
+its session.
 For unresolved task waits whose targets have already settled, operators can run
 `aq doctor --check waits.pending_terminal_tasks`. The read-only check includes
 live and archived COMPLETED, FAILED and BLOCKED targets and reports the wait,
 owner and session ids. The daemon's normal reconciliation resolves these waits
 and queues their result pointers; doctor does not change claims or task state.
+
+For timers that missed their due instant, run
+`aq doctor --check waits.pending_timers`. This read-only check flags active
+timers as soon as `due_at` passes, including timers whose hard timeout remains
+in the future, and also flags timers past that timeout. It reports due and
+deadline times, the last reconciliation check, and wait, owner and session ids.
+It also flags resolved timers whose result remains undelivered for at least
+30 seconds (or two delivery intervals, whichever is longer), including the
+resolution time and result message id. An idle agent receives its result pointer
+even when its terminal keeps repainting: completed transcript turns determine
+idle status, and the next prompt makes the session busy again. Missing transcript
+evidence falls back to recent terminal activity.
 
 `agents.stuck_timeout_seconds` defaults to disabled (`0`) both with and without
 an `agents:` configuration section. Explicit configured limits still apply.
@@ -97,7 +142,17 @@ an `agents:` configuration section. Explicit configured limits still apply.
 ## Opt-in live harness check
 
 The regular reconciler and delivery tests use a fake terminal and disposable
-PostgreSQL. To measure idle behavior with installed harness credentials, run
+PostgreSQL. A real tmux pool-terminal test uses a small local input stub and a
+five-second timer and continuous idle terminal redraws, with no model credentials
+or operator daemon:
+
+```bash
+aq test -m tmux -p no:xdist \
+  tests/test_session_reconciler.py::test_short_timer_wakes_idle_pool_through_real_tmux
+```
+
+It checks normal reconciliation, result submission exactly once, and retained
+claim and workspace. To measure idle behavior with installed harness credentials, run
 the paid probe on an isolated tmux socket:
 
 ```bash

@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 425,
+    "leaf_commands": 440,
     "registration": {
-      "generated": 283,
-      "handwritten": 142
+      "generated": 285,
+      "handwritten": 155
     },
     "ownership": {
-      "core": 386,
+      "core": 401,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 424
+      "supported": 439
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 283,
-      "registration": 128
+      "dispatch": 285,
+      "registration": 141
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 365
+      "untested": 380
     }
   },
   "commands": [
@@ -625,6 +625,7 @@
           "--all-running",
           "--profile",
           "--wait",
+          "--reply-to",
           "--json",
           "--brief",
           "--api-url"
@@ -825,6 +826,169 @@
           "--once",
           "--thread-id",
           "--timeout",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq collaboration accept",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.collaboration.collaboration_accept",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "thread_id"
+        ],
+        "optional": [
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq collaboration close",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.collaboration.collaboration_close",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "thread_id",
+          "--note",
+          "--remove-task",
+          "--all-active",
+          "--project",
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq collaboration create",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.collaboration.collaboration_create",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project",
+          "--task",
+          "--idempotency-key"
+        ],
+        "optional": [
+          "--goal",
+          "--deadline-minutes",
+          "--budget",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq collaboration list",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.collaboration.collaboration_list",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project",
+          "--task-id",
+          "--state",
+          "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq collaboration show",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.collaboration.collaboration_show",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "thread_id"
+        ],
+        "optional": [
+          "--after",
           "--json",
           "--brief",
           "--api-url"
@@ -3517,6 +3681,8 @@
           "--interval-seconds",
           "--timeout-seconds",
           "--slot-wait-seconds",
+          "--regenerate",
+          "--regenerate-timeout-seconds",
           "--json",
           "--brief",
           "--api-url"
@@ -3614,6 +3780,40 @@
           "project_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration migrate-provenance",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_migrate_provenance",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id"
+        ],
+        "optional": [
+          "--apply",
+          "--limit",
+          "--offset",
+          "--task-id",
           "--json",
           "--brief",
           "--api-url"
@@ -4864,6 +5064,8 @@
         ],
         "optional": [
           "--via",
+          "--client-key",
+          "--claim-epoch",
           "--json",
           "--brief",
           "--api-url"
@@ -4905,6 +5107,8 @@
           "--from-id",
           "--from-kind",
           "--thread-id",
+          "--client-key",
+          "--claim-epoch",
           "--priority",
           "--archive-after-inject",
           "--pane-open",
@@ -4941,6 +5145,41 @@
           "message_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq message wait",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "message_wait",
+      "callback": "src.cli.message_wait.message_wait",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--thread",
+          "--after"
+        ],
+        "optional": [
+          "--timeout",
+          "--idempotency-key",
+          "--claim-epoch",
           "--json",
           "--brief",
           "--api-url"
@@ -5606,6 +5845,37 @@
           "--playbook-id",
           "--status",
           "--limit",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq playbook import",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.playbook.playbook_import",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--path"
+        ],
+        "optional": [
+          "--activate",
           "--json",
           "--brief",
           "--api-url"
@@ -7707,6 +7977,39 @@
       }
     },
     {
+      "path": "aq provider allocation-status",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_allocation_status",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
+          "--provider",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq provider held-tasks",
       "registration": "generated",
       "owner_kind": "core",
@@ -8069,6 +8372,8 @@
         ],
         "optional": [
           "--via",
+          "--client-key",
+          "--claim-epoch",
           "--json",
           "--brief",
           "--api-url"
@@ -8710,6 +9015,9 @@
           "--title",
           "--changes",
           "--resolves",
+          "--playbook-id",
+          "--playbook-body",
+          "--activate-on-approval",
           "--json",
           "--brief",
           "--api-url"
@@ -8808,6 +9116,154 @@
       "parameters": {
         "required": [],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq service check",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.service.service_check",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--boot",
+          "--reset",
+          "--interval",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq service install",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.service.service_install",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--mechanism",
+          "--interval",
+          "--dry-run",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq service run",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.service.service_run",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--interval",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq service status",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.service.service_status_command",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq service uninstall",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.service.service_uninstall",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--dry-run",
           "--json",
           "--brief",
           "--api-url"
@@ -9176,6 +9632,7 @@
         "optional": [
           "--no-dashboard",
           "--no-dashboard-server",
+          "--unless-stopped",
           "--json",
           "--brief",
           "--api-url"
@@ -11684,6 +12141,40 @@
       }
     },
     {
+      "path": "aq system reconcile-collaborations",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "reconcile_collaborations",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--now",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--now"
+        ]
+      }
+    },
+    {
       "path": "aq system reload-config",
       "registration": "generated",
       "owner_kind": "core",
@@ -12329,11 +12820,12 @@
         "disposable-daemon:S2/S4"
       ],
       "parameters": {
-        "required": [
-          "--outcome"
-        ],
+        "required": [],
         "optional": [
           "task_id",
+          "--outcome",
+          "--obsolete",
+          "--reason",
           "--summary",
           "--failure-class",
           "--work-outcome",
@@ -12531,6 +13023,7 @@
           "--parent",
           "--after-review",
           "--root",
+          "--container",
           "--reason",
           "--deliverable",
           "--requires-kind",

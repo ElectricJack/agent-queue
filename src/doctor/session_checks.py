@@ -22,21 +22,40 @@ confirm, so this check is a read of provider state plus one screen capture
 per suspect session — never a scan of every pane.  A session is reported
 only while the composer *still* shows that marker on its input line; an
 agent that submitted or deleted the text in the meantime clears the record
-and reports OK.
+and reports OK.  A record whose composer cannot be read at all (a harness
+layout the guard does not recognise) is reported too, as ``unreadable``:
+that text blocks every later wake exactly the same way, and it is the state
+Codex 0.157 panes sat in, invisibly, on 2026-09-27.
 
 ``--fix`` presses Enter, gated on the same marker match.  That is the same
 key the operator would send by hand, and it can only ever submit text this
 daemon typed: a human draft never carries the marker, so it is never
-touched.
+touched.  An unreadable record is never submitted by ``--fix``.
+
+sessions.stall_unreachable — the rule
+-------------------------------------
+
+The stall ladder nudges a task holder idle past the session lease, and a
+nudge the composer guard defers is silent: no rung is spent, no
+``task.stalled`` is emitted, and the worker waits for a human.  That is how
+OpenCode workers sat idle for 20+ minutes on 2026-09-26/27 — the guard did
+not recognise OpenCode's box composer, and the fast-jev plugin had painted
+its log line over it.  This check lists every live task holder idle past
+the lease whose composer would refuse the nudge right now, with the refusal
+and the text the composer shows, so a human draft, a painted-over box and an
+unrecognised layout can be told apart.  Read-only: it neither repaints nor
+presses a key.  Sessions in a durable wait are not stalled and are skipped.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import time
 
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.env_scrub import harness_session_markers
+from src.models import TaskStatus
 from src.sessions.provider import SessionHandle
 
 OWNER = "session-runtime"
@@ -47,6 +66,17 @@ STUCK_CHECK_ID = "sessions.stuck_composer"
 _LIVE_STATES = ("starting", "running", "draining")
 
 ENV_CHECK_ID = "sessions.env_markers"
+
+BACKLOG_CHECK_ID = "messages.idle_worker_backlog"
+
+UNREACHABLE_CHECK_ID = "sessions.stall_unreachable"
+
+#: The delivery cascade nudges an idle recipient on every pass, so mail this
+#: old for an idle live worker is a failed wake, not a queue that is draining.
+_BACKLOG_AGE_SECONDS = 300.0
+_BACKLOG_LIMIT = 200
+#: Terminal results the engine deliberately holds for a manually paused task.
+_HELD_FOR_PAUSE = frozenset({"wait_result", "job_result"})
 
 
 async def _check_env_markers(ctx: DoctorContext) -> CheckResult:
@@ -110,27 +140,38 @@ async def _find_stuck(ctx: DoctorContext, *, resubmit: bool = False) -> list[dic
         except Exception:
             logger.debug("could not construct session provider %s", row.provider, exc_info=True)
             continue
+        detail_probe = getattr(provider, "pending_submit_detail", None)
         probe = getattr(provider, "pending_submit", None)
-        if probe is None:
+        if detail_probe is None and probe is None:
             continue
         try:
-            marker = await probe(_handle(row))
+            if detail_probe is not None:
+                detail = await detail_probe(_handle(row))
+            else:
+                marker = await probe(_handle(row))
+                detail = {"marker": marker, "observable": True} if marker else None
         except Exception:
             logger.debug("could not inspect composer for session %s", row.id, exc_info=True)
             continue
-        if not marker:
+        if not detail or not detail.get("marker"):
             continue
+        observable = bool(detail.get("observable", True))
         entry = {
             "session_id": row.id,
             "name": row.name,
             "task_id": row.task_id,
             "project_id": row.project_id,
-            "marker": marker,
+            "marker": detail["marker"],
+            # False: the durable record says AQ typed this text, but no screen
+            # parse can attribute the composer, so Enter is never pressed.
+            "observable": observable,
             # Providers can expose durable provenance without publishing the
             # injected text itself. Legacy/third-party hooks remain honest.
             "evidence": getattr(provider, "pending_submit_evidence", "provider_pending_submit"),
         }
-        if resubmit:
+        if resubmit and not observable:
+            entry["recovered"] = False
+        elif resubmit:
             fix = getattr(provider, "resubmit_pending", None)
             recovered = False
             if fix is not None:
@@ -160,15 +201,26 @@ async def _check_stuck_composer(ctx: DoctorContext) -> CheckResult:
             detail="no session is holding an unsubmitted nudge",
             fixable=True,
         )
+    readable = [e for e in stuck if e["observable"]]
+    unreadable = [e for e in stuck if not e["observable"]]
+    parts = []
+    if readable:
+        parts.append(
+            f"{len(readable)} session(s) have a nudge stuck in the composer "
+            f"(Enter was never confirmed): {_describe(readable)}"
+        )
+    if unreadable:
+        # --fix cannot help these: attaching and looking is the next step.
+        parts.append(
+            f"{len(unreadable)} session(s) hold AQ-typed text the composer guard "
+            f"cannot read, so every later wake defers on it: {_describe(unreadable)}"
+        )
     return CheckResult(
         id=STUCK_CHECK_ID,
         severity=Severity.WARN,
-        detail=(
-            f"{len(stuck)} session(s) have a nudge stuck in the composer "
-            f"(Enter was never confirmed): {_describe(stuck)}"
-        ),
+        detail="; ".join(parts),
         fixable=True,
-        data={"count": len(stuck), "sessions": stuck},
+        data={"count": len(stuck), "unreadable": len(unreadable), "sessions": stuck},
     )
 
 
@@ -184,13 +236,250 @@ async def _fix_stuck_composer(ctx: DoctorContext) -> CheckResult:
     )
 
 
+def _lease_ttl(config) -> float:
+    from src.config import SessionsConfig
+
+    sessions = getattr(config, "sessions", None)
+    ttl = getattr(sessions, "lease_ttl_seconds", None)
+    return float(SessionsConfig.lease_ttl_seconds if ttl is None else ttl)
+
+
+async def _stalled_holders(ctx: DoctorContext, ttl: float, now: float) -> list:
+    """Live sessions the stall ladder would try to nudge on its next tick."""
+    rows = await ctx.db.list_sessions(state="running")
+    stalled = []
+    for row in rows:
+        if row.lifecycle not in ("task", "pool") or not row.task_id:
+            continue
+        if row.lifecycle == "pool" and row.claim_phase != "active":
+            continue
+        if now - (row.last_activity or row.started_at or now) <= ttl:
+            continue
+        task = await ctx.db.get_task(row.task_id)
+        if task is None or task.status is not TaskStatus.IN_PROGRESS:
+            continue
+        try:
+            if await ctx.db.blocking_wait_for(row, task.claim_epoch, now):
+                continue
+        except Exception:
+            logger.debug("could not read the wait for session %s", row.id, exc_info=True)
+        stalled.append(row)
+    return stalled
+
+
+async def _find_unreachable(ctx: DoctorContext, registry, config, ttl: float) -> list[dict]:
+    """Stalled task holders whose composer would defer the ladder's nudge."""
+    now = time.time()
+    unreachable: list[dict] = []
+    for row in await _stalled_holders(ctx, ttl, now):
+        try:
+            provider = registry.create(row.provider, config)
+            probe = getattr(provider, "composer_probe", None)
+            # A provider without a composer (subprocess) has no nudge rung.
+            result = await probe(_handle(row)) if probe is not None else None
+        except Exception:
+            logger.debug("could not probe the composer of session %s", row.id, exc_info=True)
+            continue
+        if result is None or result.get("ready"):
+            continue
+        unreachable.append({
+            "session_id": row.id,
+            "name": row.name,
+            "harness": row.harness,
+            "task_id": row.task_id,
+            "project_id": row.project_id,
+            "idle_seconds": int(now - (row.last_activity or row.started_at or now)),
+            "reason": result.get("reason"),
+            "input": result.get("input") or "",
+        })
+    return unreachable
+
+
+async def _check_stall_unreachable(ctx: DoctorContext) -> CheckResult:
+    resolved = _providers(ctx)
+    if resolved is None or ctx.db is None:
+        return CheckResult(
+            id=UNREACHABLE_CHECK_ID,
+            severity=Severity.INFO,
+            detail="session providers are unavailable outside the daemon",
+        )
+    registry, config = resolved
+    ttl = _lease_ttl(config or ctx.config)
+    if ttl <= 0:
+        return CheckResult(
+            id=UNREACHABLE_CHECK_ID,
+            severity=Severity.INFO,
+            detail="the stall ladder is disabled (sessions.lease_ttl_seconds <= 0)",
+        )
+    unreachable = await _find_unreachable(ctx, registry, config, ttl)
+    if not unreachable:
+        return CheckResult(
+            id=UNREACHABLE_CHECK_ID,
+            severity=Severity.OK,
+            detail="every task holder idle past the session lease can be nudged",
+        )
+    shown = "; ".join(
+        f"{e['name']} (task {e['task_id']}, idle {e['idle_seconds'] // 60}m)"
+        + (f" shows: {e['input'][:120]}" if e["input"] else f": {e['reason']}")
+        for e in unreachable[:5]
+    )
+    return CheckResult(
+        id=UNREACHABLE_CHECK_ID,
+        severity=Severity.WARN,
+        detail=(
+            f"{len(unreachable)} task holder(s) idle past the {int(ttl) // 60} min lease "
+            f"cannot be nudged, so the stall ladder cannot climb: {shown}"
+        ),
+        data={"count": len(unreachable), "sessions": unreachable},
+    )
+
+
+async def _old_pending_mail(ctx: DoctorContext) -> tuple[list[dict], bool]:
+    """Undelivered task/session mail older than the backlog age, oldest first."""
+    from sqlalchemy import select
+
+    from src.database.tables import messages
+
+    cutoff = time.time() - _BACKLOG_AGE_SECONDS
+    stmt = (
+        select(
+            messages.c.id, messages.c.project_id, messages.c.to_kind, messages.c.to_id,
+            messages.c.from_kind, messages.c.from_id, messages.c.body_kind,
+            messages.c.created_at,
+        )
+        .where(
+            messages.c.delivered_at.is_(None),
+            messages.c.archived_at.is_(None),
+            messages.c.to_kind.in_(("task", "session")),
+            messages.c.created_at <= cutoff,
+        )
+        .order_by(messages.c.created_at, messages.c.id)
+        .limit(_BACKLOG_LIMIT + 1)
+    )
+    async with ctx.db._engine.connect() as conn:
+        rows = [dict(row) for row in (await conn.execute(stmt)).mappings().all()]
+    return rows[:_BACKLOG_LIMIT], len(rows) > _BACKLOG_LIMIT
+
+
+def _backlog_entry(row: dict, now: float, session=None, failure=None) -> dict:
+    return {
+        "message_id": row["id"],
+        "project_id": row["project_id"],
+        "to_kind": row["to_kind"],
+        "to_id": row["to_id"],
+        "from": f"{row['from_kind']}:{row['from_id']}",
+        "body_kind": row["body_kind"],
+        "created_at": row["created_at"],
+        "age_seconds": int(now - row["created_at"]),
+        "session_id": getattr(session, "id", None),
+        "session_name": getattr(session, "name", None),
+        "task_id": getattr(session, "task_id", None),
+        "last_nudge_failure": failure,
+    }
+
+
+async def _check_idle_worker_backlog(ctx: DoctorContext) -> CheckResult:
+    """Mail older than five minutes addressed to a live worker the lens reads as idle.
+
+    Uses the delivery engine's own :class:`SessionLens`, so "idle" means
+    exactly what the cascade acted on, and each entry carries the lens's
+    last refused-nudge reason for that session.
+    """
+    if ctx.db is None:
+        return CheckResult(
+            id=BACKLOG_CHECK_ID, severity=Severity.INFO, detail="database unavailable"
+        )
+    rows, truncated = await _old_pending_mail(ctx)
+    now = time.time()
+    lens = getattr(getattr(ctx.handler, "orchestrator", None), "session_lens", None)
+    if lens is None:
+        if not rows:
+            return CheckResult(
+                id=BACKLOG_CHECK_ID, severity=Severity.OK,
+                detail="no task or session message has waited more than 5 minutes",
+            )
+        return CheckResult(
+            id=BACKLOG_CHECK_ID,
+            severity=Severity.INFO,
+            detail=(
+                f"{len(rows)} task/session message(s) older than 5 minutes; "
+                "worker activity is unknown without the daemon's session lens"
+            ),
+            data={"messages": [_backlog_entry(row, now) for row in rows],
+                  "truncated": truncated},
+        )
+
+    entries: list[dict] = []
+    recipients: dict[tuple, tuple] = {}
+    for row in rows:
+        key = (row["to_kind"], row["to_id"], row["project_id"])
+        if key not in recipients:
+            try:
+                activity = await lens.activity(
+                    kind=row["to_kind"], target_id=row["to_id"], project_id=row["project_id"]
+                )
+                session = (
+                    await lens.session_for(
+                        kind=row["to_kind"], target_id=row["to_id"],
+                        project_id=row["project_id"],
+                    )
+                    if activity == "idle"
+                    else None
+                )
+            except Exception:
+                logger.debug("could not read activity for %s:%s", *key[:2], exc_info=True)
+                activity, session = "unknown", None
+            recipients[key] = (activity, session)
+        activity, session = recipients[key]
+        if activity != "idle" or session is None:
+            continue
+        if row["to_kind"] == "task" and row["body_kind"] in _HELD_FOR_PAUSE:
+            task = await ctx.db.get_task(row["to_id"])
+            if task is not None and task.status == TaskStatus.PAUSED:
+                continue
+        entries.append(_backlog_entry(row, now, session, lens.nudge_failure(session.id)))
+
+    if not entries:
+        return CheckResult(
+            id=BACKLOG_CHECK_ID, severity=Severity.OK,
+            detail="no idle live worker has mail older than 5 minutes",
+        )
+    names = sorted({entry["session_name"] for entry in entries})
+    reasons = sorted({
+        entry["last_nudge_failure"]["reason"]
+        for entry in entries if entry["last_nudge_failure"]
+    })
+    return CheckResult(
+        id=BACKLOG_CHECK_ID,
+        severity=Severity.WARN,
+        detail=(
+            f"{len(entries)} message(s) older than 5 minutes are waiting for "
+            f"{len(names)} idle worker(s): {', '.join(names[:5])}"
+            + (f"; last nudge refusal: {reasons[0]}" if reasons else "")
+        ),
+        data={"messages": entries, "truncated": truncated},
+    )
+
+
 def session_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=ENV_CHECK_ID, run=_check_env_markers, owner=OWNER),
         DoctorCheck(
+            id=BACKLOG_CHECK_ID,
+            run=_check_idle_worker_backlog,
+            owner=OWNER,
+            timeout_s=15.0,
+        ),
+        DoctorCheck(
             id=STUCK_CHECK_ID,
             run=_check_stuck_composer,
             fix=_fix_stuck_composer,
+            owner=OWNER,
+            timeout_s=15.0,
+        ),
+        DoctorCheck(
+            id=UNREACHABLE_CHECK_ID,
+            run=_check_stall_unreachable,
             owner=OWNER,
             timeout_s=15.0,
         ),

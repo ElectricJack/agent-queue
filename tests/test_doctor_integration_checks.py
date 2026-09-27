@@ -915,9 +915,7 @@ async def _batch(
     branch_cleanup=None,
     project_id="p",
 ):
-    import sqlalchemy as sa
-
-    from src.database.tables import development_deliveries
+    from src.integration.development import DevelopmentIntegration
 
     now = time.time()
     evidence = {"kind": "validation"}
@@ -925,9 +923,10 @@ async def _batch(
         evidence["publisher_diagnostic"] = diagnostic
     if branch_cleanup is not None:
         evidence["branch_cleanup"] = branch_cleanup
+    # The publisher records its operations in the event log, not a receipt table.
     async with db._engine.begin() as conn:
         await conn.execute(
-            sa.insert(development_deliveries).values(
+            DevelopmentIntegration._operation_insert(
                 id=batch_id,
                 project_id=project_id,
                 repository_id="r",
@@ -1013,6 +1012,75 @@ async def test_publisher_stalled_warns_after_repeated_candidate_skip(db):
     assert result.data["stalls"][0]["dependency_id"] == "parent"
 
 
+async def _skipped_child(db, task_id, skip):
+    await db.create_task(Task(
+        id=task_id, project_id="p", title=task_id, description="",
+        branch_name=f"aq/{task_id}", status=TaskStatus.COMPLETED,
+    ))
+    await db.set_task_meta(task_id, "development_publisher_skip", skip)
+
+
+async def test_publisher_stalled_is_an_error_once_a_skip_attempt_stalls(db):
+    await _development_project(db)
+    now = time.time()
+    # An older skip still below the bound must not headline over the stall.
+    await _skipped_child(db, "observed", {
+        "reason": "missing_ref", "dependency_id": "gone", "state": "observing",
+        "consecutive_ticks": 4, "first_skipped_at": now - 3600,
+    })
+    await _skipped_child(db, "stuck", {
+        "reason": "missing_ref", "dependency_id": "gone", "state": "stalled",
+        "consecutive_ticks": 5, "first_skipped_at": now - 1500,
+        "evidence": {"repository_id": "r", "target_ref": "refs/heads/main",
+                     "target_sha": "b" * 40, "source_sha": "a" * 40,
+                     "completion_id": "stuck-close"},
+        "notified_message_id": "msg-dev-publisher-stall-1",
+    })
+
+    result = await run_check(db, "integration.development_publisher_stalled")
+
+    assert result.severity is Severity.ERROR
+    assert "candidate_stalled" in result.detail and "stuck" in result.detail
+    assert "--recover-child stuck" in result.detail
+    assert "messaged the project supervisor" in result.detail
+    by_task = {stall["task_ids"][0]: stall for stall in result.data["stalls"]}
+    assert by_task["stuck"]["cause"] == "candidate_stalled"
+    assert by_task["stuck"]["evidence"]["completion_id"] == "stuck-close"
+    assert by_task["stuck"]["notified_message_id"] == "msg-dev-publisher-stall-1"
+    assert by_task["observed"]["cause"] == "candidate_skipped"
+
+
+async def test_publisher_stalled_ignores_a_skip_waiting_on_a_live_repair(db):
+    await _development_project(db)
+    await _skipped_child(db, "waits", {
+        "reason": "source_parked", "dependency_id": "waits", "state": "waiting",
+        "waiting_on": "development-repair-abc", "consecutive_ticks": 0,
+        "first_skipped_at": time.time() - 86_400,
+    })
+
+    result = await run_check(db, "integration.development_publisher_stalled")
+
+    assert result.severity is Severity.OK
+
+
+async def test_publisher_stalled_judges_a_pre_bound_skip_by_the_configured_threshold(db):
+    """A record written before attempts had states is judged by its count."""
+    from types import SimpleNamespace
+
+    await _development_project(db)
+    await _skipped_child(db, "legacy", {
+        "reason": "undelivered_dependency", "dependency_id": "parent",
+        "consecutive_ticks": 4, "first_skipped_at": time.time() - 1200,
+    })
+
+    assert (await run_check(db, "integration.development_publisher_stalled")).severity \
+        is Severity.WARN
+    eager = SimpleNamespace(integration=SimpleNamespace(publisher_stall_after=4))
+    result = await run_check(db, "integration.development_publisher_stalled", config=eager)
+    assert result.severity is Severity.ERROR
+    assert result.data["stalls"][0]["cause"] == "candidate_stalled"
+
+
 async def test_publisher_stalled_flags_a_pushed_but_uncollected_repair(db):
     """A repair closed pass whose branch no batch ever picked up."""
     from src.models import TaskCompletion
@@ -1045,14 +1113,12 @@ async def test_publisher_stalled_flags_a_pushed_but_uncollected_repair(db):
 
 
 async def _deferral_streak(db, identity, *, consecutive, open_=True):
-    import sqlalchemy as sa
-
-    from src.database.tables import development_deliveries
+    from src.integration.development import DevelopmentIntegration
 
     now = time.time()
     async with db._engine.begin() as conn:
         await conn.execute(
-            sa.insert(development_deliveries).values(
+            DevelopmentIntegration._operation_insert(
                 id=identity,
                 project_id="p",
                 repository_id="r",

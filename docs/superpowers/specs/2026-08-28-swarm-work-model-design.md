@@ -176,6 +176,19 @@ promotion, or came back from `PAUSED` — and releases it the same way, and the 
 frontier excludes the flag. A released container whose children are already all
 `COMPLETED` settles immediately rather than at the next sweep.
 
+**Reparenting onto a live holder.** `reparent_task` must not turn another
+worker's claimed leaf into a container: its worker would retain a claim whose
+passing close is refused while the newly attached children are open. The
+command locks the destination task before checking its assigned agent and
+live session holders, and refuses with `hierarchy.live_parent` before changing
+edges, flags, or provenance. Existing placement and ownership remain intact.
+An idempotent move to the current parent remains allowed, as does a worker
+deliberately reparenting its own filing back under the task it holds. Creating
+subtasks under one's held task still preserves ownership as described below;
+there is no automatic displacement or abandonment of that worker's work.
+The final pool claim CAS also excludes flagged containers, even when a
+candidate was selected before its container flag was written.
+
 **Transition machinery refactor (prerequisite).** `transition_task` today opens its own
 transaction and has no `conn` parameter. It is split into `_apply_transition(conn, task_id,
 new_status, *, context, event, force, **cols) -> TransitionResult` (read, validate, apply,
@@ -185,7 +198,9 @@ emits after commit. Nothing in this spec writes `tasks.status` with raw SQL.
 
 **Containers are marked, not inferred.** `task_metadata.container = true` is written in the
 same transaction that gives a task its first child — by `set_parent` (any path),
-`create_task_graph`, `formula_cook`, `approve_plan`. It is never cleared: a container
+`create_task_graph`, `formula_cook`, `approve_plan` — or, for a container declared before
+its children exist (`create_task` with `container: true`), in the transaction that
+creates it (work-graph §13a). It is never cleared: a container
 whose children were all moved away is still a container, which is what lets settlement
 handle the empty case without guessing whether an `IN_PROGRESS` leaf is mid-launch.
 
@@ -810,11 +825,16 @@ close is skipped for pools; the token is revoked at drain.
   :held AND filed_count < :max` (`tasks.filed_count INTEGER NOT NULL DEFAULT 0`, §9);
   `rowcount = 0` → quota exceeded, nothing created. Concurrent creates cannot overshoot;
 - initial status **`DEFINED`** regardless of edges;
-- **root-level worker-filed tasks get a `routing` gate in the same transaction**
+- **root-level worker-filed tasks without a profile get a `routing` gate in the same transaction**
   (`create_gate(gate_type='routing', await_id=<task_id>)` + `task_gates` row, via the
   existing routing-gate code path that `task-created-routing` uses today). The task is
   therefore blocked by a durable record from the instant it exists; nothing about its
-  safety depends on a playbook running. Parented filings — subtasks of the held task
+  safety depends on a playbook running. A root filing with an explicit profile gets
+  no routing gate, using the same `unrouted_only` rule as `gate_create` and a move
+  to root: an already-routed filing has no assignment resolver to release that gate
+  (amber-orbit). It still starts DEFINED and waits for its blocking dependencies.
+  This rule applies in ordinary and hierarchical integration modes alike.
+  Parented filings — subtasks of the held task
   and sibling filings under its parent alike — get no born-with gate: they sit inside a
   container the assignment router already routes, inherit `profile_id` from the filing
   session's own profile when the delegation bound resolves one (never wider), and
@@ -869,7 +889,11 @@ the filing path's own scope, decided under the same `lock_filing_scope` locks:
 - the new parent is constrained exactly as a filing's: `T`, a descendant of `T`, `T`'s
   own immediate parent, or root (`hierarchy.parent_out_of_scope` otherwise);
 - a move **to root attaches the routing gate** a root filing is born with (deduplicated
-  against an open one), so the finding still waits for triage rather than running;
+  against an open one), so the finding still waits for triage rather than running. A
+  task that already carries a profile gets no gate: `task.route_needed` never fires for
+  a routed task, so nothing would resolve it, and on an epic it would withhold every
+  child after the epic's last blocker cleared (clear-orbit). This is the `unrouted_only`
+  rule `gate_create` applies. A gate the move does attach is announced with `gate.created`;
 - a filing whose only provenance was the parent-child edge to `T` (a filing under `T`
   writes no separate `discovered-from`, above) gets a `discovered-from` edge to that
   former parent written in the same transaction as the move, so placement and provenance

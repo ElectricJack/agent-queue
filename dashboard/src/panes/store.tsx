@@ -11,6 +11,7 @@ import {
 import { PANE_REGISTRY as DEFAULT_REGISTRY, type PaneEntry } from "./registry";
 import { useShellPreferences, withPaneWidth, withRightSurface } from "../shell/useShellPreferences";
 import { useSettledWidth } from "../shell/useSettledWidth";
+import { useCompactViewport } from "../hooks/useCompactViewport";
 
 export type PaneState =
   | { kind: "closed" }
@@ -64,6 +65,13 @@ interface Props {
   children: ReactNode;
   /** Overridable for tests. */
   registryOverride?: Record<string, PaneEntry>;
+  /**
+   * Skip restoring the roaming last pane. App sets it, once, when the page
+   * loads on a focus route or a compact viewport (mobile dashboard §4.2, D7),
+   * so a desktop's pane never pops up in a phone's first view — even after it
+   * leaves the focus tree.
+   */
+  suppressRestore?: boolean;
 }
 
 /**
@@ -73,7 +81,7 @@ interface Props {
  * is read from and written to the server. Toolbar callbacks and pane component
  * state stay in memory.
  */
-export function ShellPaneProvider({ children, registryOverride }: Props) {
+export function ShellPaneProvider({ children, registryOverride, suppressRestore = false }: Props) {
   const registry = registryOverride ?? DEFAULT_REGISTRY;
   const { prefs, status, update } = useShellPreferences();
   const stateRef = useRef<Snapshot>({ pane: { kind: "closed" }, origin: "restore" });
@@ -94,16 +102,21 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
   const getSnapshot = useCallback(() => stateRef.current, []);
   const { pane, origin } = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
+  // Below 768 px the pane is a full-screen sheet: what a phone opens does not
+  // roam to the desktop (mobile dashboard D7), and there is no width to keep.
+  const compact = useCompactViewport();
   const persistPane = useCallback(
     (next: { view: string; args: Record<string, unknown> } | null) => {
+      if (compact) return;
       void update(withRightSurface({ pane: next }));
     },
-    [update],
+    [update, compact],
   );
 
   useEffect(() => {
     if (status !== "ready" || restored.current) return;
     restored.current = true;
+    if (suppressRestore) return;
     const saved = prefs.right_surface;
     if (touched.current || saved.kind !== "pane" || !saved.pane) return;
     const entry = registry[saved.pane.view];
@@ -113,7 +126,7 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
     if (args === INVALID) return;
     stateRef.current = { pane: { kind: "open", view: saved.pane.view, args }, origin: "restore" };
     emit();
-  }, [status, prefs.right_surface, registry, emit]);
+  }, [status, prefs.right_surface, registry, emit, suppressRestore]);
 
   const openPane = useCallback(
     (view: string, args: unknown, origin: Extract<PaneChangeOrigin, "call" | "agent">) => {
@@ -183,8 +196,8 @@ export function ShellPaneProvider({ children, registryOverride }: Props) {
 
   const view = pane.kind === "open" ? pane.view : null;
   const persistWidth = useCallback(
-    (id: string, width: number) => update(withPaneWidth(id, width)),
-    [update],
+    (id: string, width: number) => (compact ? Promise.resolve() : update(withPaneWidth(id, width))),
+    [update, compact],
   );
   const [width, setWidth] = useSettledWidth(
     view,

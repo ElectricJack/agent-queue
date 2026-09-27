@@ -683,6 +683,60 @@ async def test_an_activation_write_publishes_required_status(tmp_path):
         await db.close()
 
 
+
+async def test_activation_writes_reach_the_timer_service_without_a_restart(tmp_path):
+    """The timer service follows the runtime's trigger map.  Activation writes
+    used to refresh only the routing snapshot, so a playbook activated on a
+    ``timer.*`` interval nothing else used (``morning-report`` on
+    ``timer.1m``) never fired until the daemon restarted."""
+    from src.config import PlaybooksConfig
+    from src.timer_service import TimerService
+
+    db, handler, reconciler = await _reconciler(tmp_path)
+    runtime = V2PlaybookRuntime(
+        config=SimpleNamespace(
+            compiled_root=handler.config.compiled_root,
+            playbooks=PlaybooksConfig(enabled=True),
+            security=SimpleNamespace(capability_enforcement="enforce"),
+        ),
+        db=db,
+        handler=SimpleNamespace(),
+        llm=None,
+        bus=None,
+    )
+    try:
+        await reconciler.reconcile()
+        await runtime.refresh()
+        handler.orchestrator = SimpleNamespace(playbook_manager=runtime)
+        timer = TimerService(event_bus=SimpleNamespace(emit=AsyncMock()), playbook_manager=runtime)
+        timer.start()
+        assert "timer.10m" in timer.active_intervals  # provider-usage-probe alone
+
+        paused = await handler._cmd_set_playbook_enabled(
+            {"playbook_id": "provider-usage-probe", "enabled": False}
+        )
+        assert paused["success"] is True
+        await timer.tick()
+        assert "timer.10m" not in timer.active_intervals
+
+        [row] = [
+            row
+            for row in await db.list_playbook_activations(enabled_only=False)
+            if row["playbook_id"] == "provider-usage-probe"
+        ]
+        activated = await handler._cmd_playbook_activate(
+            {
+                "playbook_id": "provider-usage-probe",
+                "artifact_sha256": row["active_artifact_sha256"],
+            }
+        )
+        assert activated.get("success") is True, activated
+        await timer.tick()
+        assert "timer.10m" in timer.active_intervals
+    finally:
+        await runtime.shutdown()
+        await db.close()
+
 # -- doctor: playbooks.reviewed_bundles ----------------------------------------
 
 

@@ -237,13 +237,39 @@ def test_other_listed_files_are_revalidated(client: TestClient):
     assert response.headers["cache-control"] == "no-cache"
 
 
-@pytest.mark.parametrize("path", ["/nope.js", "/assets/nope.js", "/tasks/v1.2"])
+@pytest.mark.parametrize(
+    "path", ["/nope.js", "/assets/nope.js", "/nope.css", "/robots.txt", "/app.js.map", "/NOPE.JS"]
+)
 def test_an_unlisted_path_with_a_suffix_is_404(client: TestClient, path: str):
     response = client.get(path)
 
     assert response.status_code == 404
     assert response.text == "Not Found"
     _assert_secured(response)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/tasks/v1.2",
+        "/tasks/stark-impact-60.1",
+        "/focus/tasks/stark-impact-60.1",
+        "/focus/sessions/pool.worker-3",
+    ],
+)
+def test_dotted_route_ids_serve_the_app(client: TestClient, path: str):
+    """Child task ids are ``parent.N``; a posted link to one must load the app."""
+    response = client.get(path)
+
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert response.text == INDEX_HTML
+    _assert_secured(response)
+
+
+def test_missing_assets_still_404(client: TestClient):
+    for path in ("/assets/app-deadbeef.js", "/assets/app-deadbeef.css", "/favicon.ico"):
+        assert client.get(path).status_code == 404, path
 
 
 def test_a_file_on_disk_outside_the_manifest_is_never_served(staged: Path):

@@ -122,6 +122,49 @@ revision's `content_sha256`. If it differs:
 - the daemon never overwrites a diverged file. If the file is simply
   missing, `import-edits` rewrites it from the current revision.
 
+## Playbook reviews
+
+A review that asks approval for a Playbook V2 policy pins the compiled
+artifact to the revision, so an approval always ends in something that can be
+activated. (Before this, approving a playbook review left only prose, and the
+artifact had to be compiled and imported by hand afterwards.)
+
+- **Submitting.** The author writes the playbook's Markdown source into the
+  vault, then submits the review document with the playbook attached:
+  `aq review submit --task-id <task> --file <draft.md> --kind other --title "…" --playbook-id <id> --playbook-body <body.json> [--activate-on-approval]`.
+  The body is JSON with exactly the proposal's `rules` and `steps`
+  (`semantic_body_path` names a vault file instead). The daemon compiles the
+  vault source with it, exactly as `aq playbook v2-propose` does, and refuses
+  the submission — `playbook_invalid` with the diagnostics — unless the
+  artifact is activatable. A playbook review is always kind `other`: a spec
+  approval would also start spec ingest.
+- **What is pinned.** The revision stores the artifact's canonical bytes and
+  its metadata: `playbook_id`, `artifact_sha256`, `source_sha256`, scope and
+  `activate_on_approval` (`aq review show` prints the metadata; the vault
+  file's frontmatter names the playbook and the hash). Nothing reaches the
+  artifact store before approval, so an unapproved artifact cannot be
+  activated.
+- **Revising.** Every revision pins again. `--playbook-body` sends a new body;
+  without it the previous artifact's rules and steps are recompiled against
+  the current source. `activate_on_approval` carries forward unless the
+  revision sets it. `import-edits` keeps the pin: the artifact comes from the
+  source, not from the document's prose.
+- **Approving.** After the approval commits, the daemon stores exactly the
+  pinned bytes, revalidated against the live registries as an import is. If
+  the review asked for it, it then activates that hash as the decider (the
+  usual `playbook_activate` checks apply). The supervisor's approval notice,
+  and the decision's `playbook` result, say what happened: stored and
+  activated, stored with the `aq playbook activate --playbook-id <id> --artifact-sha256 <hash>` command to run, or not
+  stored and why. A failure never undoes the approval.
+- **Checking.** `aq doctor --check reviews.playbook_artifacts` lists the most
+  recent approved review of each playbook whose artifact is `not_stored`
+  (`--fix` stores it, never activates) or `not_activated`. A review approved
+  before revisions could pin an artifact names none and is not listed.
+
+A reviewed bundle that is already in the vault — a shipped one, or one
+compiled by hand — is imported with
+`aq playbook import --path reviewed-playbooks/<id> [--activate]`.
+
 ## What happens when you reject
 
 Rejection files new work; it never reopens the author. Every `request_changes`

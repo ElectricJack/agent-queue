@@ -142,7 +142,10 @@ describe("dashboard back / forward", () => {
     await screen.findByRole("heading", { name: "Agent flock" });
     expect(where()).toHaveTextContent("/agents?agent=worker-1");
     expect(pane()).toHaveTextContent("closed");
-    expect(backButton()).toHaveAttribute("title", "Back to First project · Tasks — Task task-p1 (Alt+←)");
+    // The route commits before the history provider's effect updates the trail.
+    await waitFor(() => expect(backButton()).toHaveAttribute(
+      "title", "Back to First project · Tasks — Task task-p1 (Alt+←)",
+    ));
 
     await user.click(backButton());
     await screen.findByRole("heading", { name: "Command Center tasks" });
@@ -210,7 +213,9 @@ describe("dashboard back / forward", () => {
     await screen.findByRole("heading", { name: "Agent flock" });
     await user.click(screen.getByRole("button", { name: "Open session page" }));
     await screen.findByRole("heading", { name: "Session detail" });
-    expect(backButton()).toHaveAttribute("title", "Back to Agents: agent-a — Session Peek session-1 (Alt+←)");
+    await waitFor(() => expect(backButton()).toHaveAttribute(
+      "title", "Back to Agents: agent-a — Session Peek session-1 (Alt+←)",
+    ));
 
     await user.click(backButton());
     await screen.findByRole("heading", { name: "Agent flock" });

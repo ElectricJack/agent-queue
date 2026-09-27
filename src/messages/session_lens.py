@@ -29,6 +29,8 @@ import logging
 import os
 import time
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
 
 
@@ -36,10 +38,12 @@ from src.models import SessionRecord, TaskStatus
 from src.sessions.provider import (
     CapabilityUnsupported,
     NotSubmitted,
+    NudgeDeferred,
     SessionHandle,
     SessionExecutableNotFound,
 )
 from src.sessions.spec import named_session_name
+from src.sessions.transcripts.base import TranscriptEntry
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +60,14 @@ __all__ = ["Activity", "SessionManagerProto", "SessionLens"]
 #: * ``absent``   — no live session and the messenger must not spawn one
 #:                  (task sessions are launched by the task lifecycle).
 Activity = Literal["idle", "busy", "sleeping", "absent"]
+
+
+@dataclass
+class _ActivityCursor:
+    path: Path
+    instance_token: str
+    offset: int = 0
+    last: TranscriptEntry | None = None
 
 
 #: Seconds since the provider last observed output within which a session
@@ -188,6 +200,10 @@ class SessionLens:
         #: omit; the harness falls back to no bearer (LOCAL_SCOPE).
         self._token_store = token_store
         self._start_locks: dict[str, asyncio.Lock] = {}
+        self._activity_cursors: dict[str, _ActivityCursor] = {}
+        #: Latest refused nudge per session id, cleared by the next success.
+        #: Doctor reads it to say *why* a live idle worker still has mail.
+        self._nudge_failures: dict[str, dict] = {}
 
     # -- SessionManagerProto ------------------------------------------------
 
@@ -205,6 +221,10 @@ class SessionLens:
         if not running:
             return self._absent_signal(kind=kind, target_id=target_id)
 
+        activity = await self._transcript_activity(row)
+        if activity is not None:
+            return activity
+
         try:
             last = await provider.last_activity(handle)
         except Exception:
@@ -213,6 +233,47 @@ class SessionLens:
         if last is not None and (time.time() - last) <= _BUSY_WINDOW_SECONDS:
             return "busy"
         return "idle"
+
+    async def _transcript_activity(self, row) -> Activity | None:
+        """Turn completion outranks cosmetic terminal output; missing data falls back.
+
+        Keep one meaningful entry per session and read only appended bytes on
+        subsequent passes. A new prompt invalidates the previous idle signal.
+        The provider still fences the instance and guards its composer on nudge.
+        """
+        from src.sessions.transcripts import resolve_reader
+
+        reader = resolve_reader(row.harness)
+        if reader is None:
+            return None
+        try:
+            path = await asyncio.to_thread(reader.resolve_session, row)
+            if path is None:
+                return None
+            size = await asyncio.to_thread(lambda: path.stat().st_size)
+            cursor = self._activity_cursors.get(row.id)
+            if (cursor is None or cursor.path != path
+                    or cursor.instance_token != row.instance_token or size < cursor.offset):
+                # Bound retained history even when a daemon sees many retired workers.
+                if len(self._activity_cursors) >= 256:
+                    self._activity_cursors.pop(next(iter(self._activity_cursors)))
+                cursor = _ActivityCursor(path, row.instance_token)
+                self._activity_cursors[row.id] = cursor
+            entries, cursor.offset = await reader.read_new(path, cursor.offset)
+            for entry in entries:
+                if entry.type not in {"user", "assistant", "tool_use", "tool_result"}:
+                    continue
+                if entry.type == "assistant" and not entry.text and not entry.turn_complete:
+                    continue
+                cursor.last = entry
+            last = cursor.last
+            # A resumed transcript can contain completion from a prior process.
+            if last is None or not last.ts or last.ts < (row.started_at or 0) - 5:
+                return None
+            return "idle" if last.turn_complete else "busy"
+        except Exception:
+            logger.debug("transcript activity unavailable for %s", row.name, exc_info=True)
+            return None
 
     async def ensure_started(
         self, *, kind: str, target_id: str, project_id: str | None,
@@ -479,11 +540,15 @@ class SessionLens:
             # The delivery engine deliberately leaves its rows pending until
             # the provider confirms Enter took.  Keep this visible: a
             # terminal that accepted the paste but not the submit otherwise
-            # looks exactly like an ordinary, transient delivery retry.
+            # looks exactly like an ordinary, transient delivery retry.  The
+            # reason is what separates a transient race from a composer
+            # guard that refuses this terminal on every pass.
+            self._record_nudge_failure(row.id, exc)
             logger.warning(
-                "message nudge to %s (%s) was not submitted; delivery remains pending%s",
+                "message nudge to %s (%s) was not submitted (%s); delivery remains pending%s",
                 row.name,
                 row.id,
+                exc,
                 "; AQ text remains in the composer" if exc.composer_dirty else "",
             )
             return False
@@ -493,7 +558,29 @@ class SessionLens:
         except Exception:
             logger.exception("nudge failed for %s", row.name)
             return False
+        self._nudge_failures.pop(row.id, None)
         return True
+
+    async def session_for(
+        self, *, kind: str, target_id: str, project_id: str | None
+    ) -> SessionRecord | None:
+        """The session row a recipient resolves to, exactly as delivery resolves it."""
+        row, _handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
+        return row
+
+    def nudge_failure(self, session_id: str) -> dict | None:
+        """The latest refused nudge for *session_id* since its last success."""
+        return self._nudge_failures.get(session_id)
+
+    def _record_nudge_failure(self, session_id: str, exc: NotSubmitted) -> None:
+        if session_id not in self._nudge_failures and len(self._nudge_failures) >= 256:
+            self._nudge_failures.pop(next(iter(self._nudge_failures)))
+        self._nudge_failures[session_id] = {
+            "at": time.time(),
+            "reason": str(exc),
+            "deferred": isinstance(exc, NudgeDeferred),
+            "composer_dirty": exc.composer_dirty,
+        }
 
     async def tail_assistant_turn(
         self,

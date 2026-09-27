@@ -117,6 +117,30 @@ class ReportSubmitValue(CommandValue):
     version: int
 
 
+#: Validated refusal values for the report commands a reviewed playbook calls.
+#: The playbook executor round-trips every value before it takes an outcome
+#: edge, so an empty ``model_construct()`` turned an ordinary refusal (a
+#: supervisor's manual ``morning-report`` run is ``out_of_scope``) into
+#: ``contract_violation`` and hid the handler's reason.
+_REJECTED_VALUES: dict[type[CommandValue], Any] = {
+    MorningReportTickValue: lambda code: {
+        "report_id": None,
+        "state": "rejected",
+        "reason": code,
+        "next_due_at": None,
+        "cancelled": 0,
+    },
+    ReportReconcileValue: lambda code: {"requested": 0},
+}
+
+
+def _rejected_value(result_model: type[CommandValue], raw: dict[str, Any]) -> CommandValue:
+    payload = _REJECTED_VALUES.get(result_model)
+    if payload is None:
+        return result_model.model_construct()
+    return result_model(**payload(str(raw.get("error_code") or "rejected")))
+
+
 def _registration(
     name: str,
     args_model: type[CommandArgs],
@@ -131,7 +155,7 @@ def _registration(
         if raw.get("success") is False or raw.get("error"):
             return CommandResult(
                 outcome="rejected",
-                value=result_model.model_construct(),
+                value=_rejected_value(result_model, raw),
                 summary=str(raw.get("error") or "rejected"),
             )
         value = result_model(**{field: raw[field] for field in result_model.model_fields})

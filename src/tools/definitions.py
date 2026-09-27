@@ -85,6 +85,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_mcp_server": "mcp",
     # message — inter-agent / user message queue (supervisor-agent §6.1)
     "message_send": "message",
+    "message_wait": "message",
     "message_reply": "message",
     "message_inbox": "message",
     "message_list": "message",
@@ -127,6 +128,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "wait_get": "wait",
     "wait_list": "wait",
     "wait_cancel": "wait",
+    "collaboration_create": "collaboration",
+    "collaboration_accept": "collaboration",
+    "collaboration_get": "collaboration",
+    "collaboration_list": "collaboration",
+    "collaboration_close": "collaboration",
     "report_request": "report",
     "report_reconcile": "report",
     "report_brief": "report",
@@ -340,6 +346,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "provider_set_state": "provider",
     "provider_reroute": "provider",
     "provider_reroute_undo": "provider",
+    "provider_allocation_status": "provider",
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_scale": "pool",
@@ -1373,6 +1380,18 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": (
                         "Title for the standing container when parent_key has to create "
                         "one. Defaults to the key, title-cased."
+                    ),
+                },
+                "container": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Create the task as a container (an epic whose children are "
+                        "filed or reparented under it afterwards). It is flagged in the "
+                        "creation transaction, so no worker ever claims it, and it stays "
+                        "open until its children finish. Refused for worker sessions, "
+                        "which file an epic with its children through create_task_graph "
+                        "and a document-level parent block."
                     ),
                 },
                 "depends_on": {
@@ -4925,7 +4944,11 @@ _ALL_TOOL_DEFINITIONS = [
             "Close a task with an outcome. This is the ONLY way a session-run task reaches "
             "COMPLETED — process exit is a failure signal, never success. Records outcome "
             "metadata, runs the completion pipeline (commit/push/PR/verify), and transitions "
-            "the task. Follow it with `aq session drain-ack`. Backs `aq task close`."
+            "the task. Follow it with `aq session drain-ack`. Backs `aq task close`. "
+            "With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead "
+            "retires superseded work: the task goes to COMPLETED as abandoned and is never "
+            "published, its branch owners are released through the release-owner safety proof "
+            "and it is dropped from parked development batches, so it can then be deleted."
         ),
         "input_schema": {
             "type": "object",
@@ -5009,8 +5032,20 @@ _ALL_TOOL_DEFINITIONS = [
                         "(optional, clamped to swarm.claim_wait_max)."
                     ),
                 },
+                "obsolete": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Close the task as obsolete/superseded instead of with an outcome "
+                        "(operator or supervisor only; needs task_id and reason, not outcome)."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why the task is obsolete (required with obsolete).",
+                },
             },
-            "required": ["task_id", "outcome"],
+            "required": ["task_id"],
         },
     },
     {
@@ -5162,7 +5197,8 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Queue a message to a session, task, profile, or user.  Messages "
             "are the single transport for user<->agent and agent<->agent "
-            "traffic; delivery is asynchronous."
+            "traffic; delivery is asynchronous. For an accepted collaboration thread, "
+            "omit the recipient to send to every other member; sender identity is server-derived."
         ),
         "input_schema": {
             "type": "object",
@@ -5192,6 +5228,9 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Conversation grouping key (Discord channel, chat id)",
                 },
+                "client_key": {"type": "string", "minLength": 1, "maxLength": 128,
+                               "description": "Optional collaboration retry key"},
+                "claim_epoch": {"type": "integer", "minimum": 0},
                 "priority": {
                     "type": "integer",
                     "description": "Delivery ordering, lower first (default 100)",
@@ -5204,7 +5243,7 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "reply_to_id": {"type": "string", "description": "Message this replies to"},
             },
-            "required": ["to_kind", "to_id", "body", "from_id"],
+            "required": ["body"],
         },
     },
     {
@@ -5218,6 +5257,8 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "message_id": {"type": "string", "description": "Message being replied to"},
+                "client_key": {"type": "string", "minLength": 1, "maxLength": 128},
+                "claim_epoch": {"type": "integer", "minimum": 0},
                 "body": {"type": "string", "description": "Markdown reply body"},
                 "subject": {"type": "string", "description": "Optional subject line"},
                 "from_kind": {
@@ -5325,6 +5366,13 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Optional profile filter for broadcast",
                 },
                 "wait": {"type": "integer", "description": "Wait up to 60 seconds for delivery"},
+                "reply_to": {
+                    "type": "string",
+                    "description": (
+                        "Message id this guidance answers; it joins that message's thread, "
+                        "so a worker waiting on the thread resumes"
+                    ),
+                },
             },
             "required": ["body"],
         },
@@ -5410,6 +5458,18 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": False,
                 },
                 "parent_id": {"type": "string"},
+                "root": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "For a worker-filed graph that declares a document-level parent: "
+                        "create that new container at the project root instead of under "
+                        "the held task. It carries a discovered-from edge to the held task "
+                        "and the routing gate every worker root filing gets, and its "
+                        "children wait behind it until the gate is resolved. Mutually "
+                        "exclusive with parent_id."
+                    ),
+                },
                 "reason": {
                     "type": "string",
                     "description": (
@@ -5691,6 +5751,40 @@ _ALL_TOOL_DEFINITIONS = [
                 "project_id": {
                     "type": "string",
                     "description": "Only this project's tasks. Default: every project.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "provider_allocation_status",
+        "description": (
+            "Show every ordinary worker profile grouped by provider (the harness "
+            "login: claude, codex): lifecycle, per-profile bounds, class and "
+            "enabled flag; fleet and per-project pool supply (ready, idle, busy, "
+            "starting, draining, unresponsive); live sessions with their task and "
+            "idle age; READY/ASSIGNED/IN_PROGRESS tasks pinned or preferred to "
+            "each profile; manual agent definitions and their overrides; each "
+            "project's preferred provider; and the provider-wide configured pool "
+            "ceiling.  Control, named, template, malformed and unknown-provider "
+            "profiles are listed as diagnostics.  Read-only; a project-scoped "
+            "caller sees other projects' sessions and tasks redacted."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": (
+                        "Narrow the per-project detail (project rows, sessions, "
+                        "task ids) to one project; fleet-wide counts are unchanged."
+                    ),
+                },
+                "provider": {
+                    "type": "string",
+                    "description": (
+                        "Only this provider: a key (codex) or vendor (openai)."
+                    ),
                 },
             },
             "required": [],
@@ -6441,7 +6535,14 @@ _ALL_TOOL_DEFINITIONS.extend(
     [
         {
             "name": "review_submit",
-            "description": "Submit markdown for review, or submit a revision to an open review.",
+            "description": (
+                "Submit markdown for review, or submit a revision to an open review. "
+                "A playbook review (kind other) also names playbook_id and its semantic "
+                "body: the daemon compiles the vault source and refuses the submission "
+                "unless the Playbook V2 artifact is activatable, then pins its exact hash "
+                "to the revision. Approval stores that artifact (and activates it when "
+                "activate_on_approval is set); a revision recompiles it."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -6453,6 +6554,32 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "content": {"type": "string", "maxLength": 262144},
                     "changes": {"type": "string"},
                     "resolves": {"type": "array", "items": {"type": "string"}},
+                    "playbook_id": {
+                        "type": "string",
+                        "description": (
+                            "The playbook this review asks approval for; its Markdown "
+                            "source must already be in the vault."
+                        ),
+                    },
+                    "semantic_body": {
+                        "type": "string",
+                        "maxLength": 1048576,
+                        "description": (
+                            "JSON text with exactly the proposal's rules and steps. "
+                            "Omitted on a revision, the previous artifact's are reused."
+                        ),
+                    },
+                    "semantic_body_path": {
+                        "type": "string",
+                        "description": "Vault path of the semantic body, instead of semantic_body.",
+                    },
+                    "activate_on_approval": {
+                        "type": "boolean",
+                        "description": (
+                            "Activate the pinned artifact when the review is approved "
+                            "(default: store it and tell the supervisor)."
+                        ),
+                    },
                 },
                 "required": ["content"],
                 "additionalProperties": False,
@@ -7062,6 +7189,26 @@ _ALL_TOOL_DEFINITIONS.extend([
 
 _ALL_TOOL_DEFINITIONS.extend([
     {
+        "name": "message_wait",
+        "description": (
+            "Wait up to 60 seconds for ordered collaboration messages on the existing durable "
+            "message wait. On timeout end this turn; the wait retains the claim and seat."
+        ),
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["thread_id", "after_seq"],
+            "properties": {
+                "thread_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                "after_seq": {"type": "integer", "minimum": 0},
+                "timeout": {"type": "integer", "minimum": 1, "maximum": 60, "default": 60},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+                "claim_epoch": {"type": "integer", "minimum": 0},
+                "project_id": {"type": "string"}, "task_id": {"type": "string"},
+                "session_id": {"type": "string"},
+            },
+        },
+    },
+    {
         "name": "wait_register",
         "description": "Register a bounded typed wait and end the turn until its result pointer arrives.",
         "input_schema": {
@@ -7113,10 +7260,110 @@ _ALL_TOOL_DEFINITIONS.extend([
 ])
 
 
+_COLLABORATION_SCOPE = {
+    "project_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "session_id": {"type": "string"},
+}
+_COLLABORATION_THREAD = {"type": "string", "minLength": 1, "maxLength": 64}
+_CLAIM_EPOCH = {"type": "integer", "minimum": 0}
+
+_ALL_TOOL_DEFINITIONS.extend([
+    {
+        "name": "collaboration_create",
+        "description": (
+            "Create a bounded collaboration thread between 2 to 4 tasks of one project "
+            "and invite each once. Operator or supervisor only; replays on idempotency_key."
+        ),
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["task_ids", "idempotency_key"],
+            "properties": {
+                "task_ids": {
+                    "type": "array", "minItems": 2, "maxItems": 4,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 256},
+                },
+                "goal": {"type": "string", "maxLength": 1000},
+                "deadline_seconds": {"type": "integer", "minimum": 60, "maximum": 7200},
+                "message_budget": {"type": "integer", "minimum": 1, "maximum": 40},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+                **_COLLABORATION_SCOPE,
+            },
+        },
+    },
+    {
+        "name": "collaboration_accept",
+        "description": "Join a collaboration thread for the held task's live claim.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False, "required": ["thread_id"],
+            "properties": {
+                "thread_id": _COLLABORATION_THREAD,
+                "claim_epoch": _CLAIM_EPOCH,
+                **_COLLABORATION_SCOPE,
+            },
+        },
+    },
+    {
+        "name": "collaboration_get",
+        "description": (
+            "Read a collaboration thread: members, deadline, capacity hold and up to 20 "
+            "ordered messages (the tail, or those after after_seq)."
+        ),
+        "input_schema": {
+            "type": "object", "additionalProperties": False, "required": ["thread_id"],
+            "properties": {
+                "thread_id": _COLLABORATION_THREAD,
+                "after_seq": {"type": "integer", "minimum": 0},
+                "claim_epoch": _CLAIM_EPOCH,
+                **_COLLABORATION_SCOPE,
+            },
+        },
+    },
+    {
+        "name": "collaboration_list",
+        "description": "List collaboration threads for the held task, or a project's threads.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "state": {"type": "string", "enum": ["active", "closed", "expired"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "claim_epoch": _CLAIM_EPOCH,
+                **_COLLABORATION_SCOPE,
+            },
+        },
+    },
+    {
+        "name": "collaboration_close",
+        "description": (
+            "Close a collaboration thread without changing any member task. Elevated "
+            "callers may instead remove one member, or close every active thread "
+            "in the project."
+        ),
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "thread_id": _COLLABORATION_THREAD,
+                "note": {"type": "string", "maxLength": 1000},
+                "remove_task_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "all_active": {"type": "boolean"},
+                "claim_epoch": _CLAIM_EPOCH,
+                **_COLLABORATION_SCOPE,
+            },
+        },
+    },
+])
+
+
 # Internal scan remains excluded from MCP/API; the daemon supplies its clock.
 _FALLBACK_INPUT_SCHEMAS["reconcile_agent_waits"] = {
     "type": "object",
     "properties": {"now": {"type": "number"}, "wait_id": {"type": ["string", "null"]}},
+    "additionalProperties": False,
+}
+
+_FALLBACK_INPUT_SCHEMAS["reconcile_collaborations"] = {
+    "type": "object",
+    "properties": {"now": {"type": ["number", "null"]}},
     "additionalProperties": False,
 }
 
@@ -7136,6 +7383,28 @@ _JOB_INPUT_SCHEMAS: dict[str, dict] = {
             "wait": {"type": "boolean"},
         },
         "required": ["preset", "idempotency_key"],
+    },
+    "job_submit_integration": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string"},
+            "operation_id": {"type": "string"},
+            "store": {"type": "string"},
+            "input_ref": {"type": "string"},
+            "preset": {"type": "string"},
+            "argv": {"type": "array", "items": {"type": "string"}},
+            "idempotency_key": {"type": "string"},
+            "queue_seconds": {"type": "number", "minimum": 0},
+            "run_seconds": {"type": "number", "minimum": 0},
+        },
+        "required": [
+            "project_id",
+            "operation_id",
+            "store",
+            "input_ref",
+            "preset",
+            "idempotency_key",
+        ],
     },
     "job_list": {
         "type": "object",
@@ -7180,6 +7449,7 @@ _ALL_TOOL_DEFINITIONS.extend([
     {"name": name, "description": description, "input_schema": _JOB_INPUT_SCHEMAS[name]}
     for name, description in (
         ("job_submit", "Submit a finite preset, optionally with an atomic durable wait."),
+        ("job_submit_integration", "Submit an integration job: provision a detached snapshot and run at band zero."),
         ("job_get", "Read a scoped managed job."),
         ("job_list", "List this owner's managed jobs."),
         ("job_cancel", "Cancel a job and verify cleanup before releasing its pin."),

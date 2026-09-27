@@ -661,6 +661,66 @@ async def _check_needs(graph: TaskGraph, project_id: str, db: Any) -> list[Graph
     return errors
 
 
+async def task_and_ancestors(db: Any, task_id: str | None) -> list[str]:
+    """*task_id* followed by its live parent chain, nearest first.
+
+    Bounded past ``MAX_STRUCTURAL_DEPTH`` and cycle-safe, so a corrupt chain
+    cannot hang a filing.  A missing *task_id* yields ``[]``.
+    """
+    from src.task_names import MAX_STRUCTURAL_DEPTH
+
+    chain: list[str] = []
+    while task_id and task_id not in chain and len(chain) <= MAX_STRUCTURAL_DEPTH:
+        task = await db.get_task(task_id)
+        if task is None:
+            break
+        chain.append(task_id)
+        task_id = getattr(task, "parent_task_id", None)
+    return chain
+
+
+async def _check_ancestor_needs(
+    graph: TaskGraph, *, parent_id: str | None, filed_by: str | None, db: Any
+) -> list[GraphError]:
+    """No gating ``needs`` onto the graph's own container chain or its filer.
+
+    A node filed under *parent_id* is already its child through the
+    ``parent-child`` edge.  A gating edge onto that parent, or onto any of its
+    ancestors, can only deadlock (a container settles after its children) or
+    repeat membership (a planning task, whose plan exists before it files).
+    *filed_by* is the task a worker session holds: its filings never wait on it,
+    wherever in the tree they land (noble-quest).
+    """
+    if db is None:
+        return []
+    forbidden = set(await task_and_ancestors(db, parent_id))
+    if filed_by:
+        forbidden.add(filed_by)
+    keys = {node.key for node in graph.nodes}
+    errors: list[GraphError] = []
+    for node in graph.nodes:
+        for need in node.needs:
+            if need.on in keys or need.on not in forbidden:
+                continue
+            if need.dep_type not in BLOCKING_DEP_TYPES:
+                continue
+            role = (
+                "the task filing this graph" if need.on == filed_by
+                else "the task this graph is filed under" if need.on == parent_id
+                else "an ancestor of the task this graph is filed under"
+            )
+            errors.append(
+                _error(
+                    "dependency_on_ancestor",
+                    f"node '{node.key}' has a '{need.dep_type}' need on '{need.on}', {role}; "
+                    "membership already orders a child under its parent, and a container "
+                    "settles only after its children — drop the need",
+                    node.key,
+                )
+            )
+    return errors
+
+
 async def _check_profiles(graph: TaskGraph, project_id: str, db: Any) -> list[GraphError]:
     """Every referenced profile must exist.
 
@@ -897,12 +957,16 @@ async def validate_graph(
     project_id: str,
     db: Any,
     vault_root: str | None = None,
+    parent_id: str | None = None,
+    filed_by: str | None = None,
 ) -> list[GraphError]:
     """Validate *graph* for *project_id*, returning every finding.
 
     Substitutes ``{var}`` references **in place** first, then applies the
     §8.3 rule table.  The returned list mixes errors and warnings; callers
-    split on :attr:`GraphError.is_error`.
+    split on :attr:`GraphError.is_error`.  *parent_id* is the existing task the
+    graph is created under and *filed_by* the task a worker session holds;
+    both feed the ``dependency_on_ancestor`` rule.
     """
     findings: list[GraphError] = []
 
@@ -923,6 +987,9 @@ async def validate_graph(
     findings.extend(_check_cycles(graph))
     findings.extend(_check_foreign_projects(graph, project_id))
     findings.extend(await _check_needs(graph, project_id, db))
+    findings.extend(
+        await _check_ancestor_needs(graph, parent_id=parent_id, filed_by=filed_by, db=db)
+    )
     findings.extend(_check_pins(graph))
     findings.extend(await _check_profiles(graph, project_id, db))
     findings.extend(await _check_subtasks_reportable(graph, project_id, db))

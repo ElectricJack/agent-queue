@@ -20,7 +20,8 @@ Key method call hierarchy (read these to understand the full lifecycle)::
     run_one_cycle()                       # Main loop entry (~5s interval)
     ├── _resume_paused_tasks()            # Backoff timer expiry
     ├── _check_defined_tasks()            # Dependency promotion
-    ├── _sweep_container_completion()     # backstop only
+    ├── _sweep_container_completion()     # backstop + stale containers
+    ├── _sweep_lifecycle()                # stale-open tasks, obsolete cleanup
     ├── _check_stuck_defined_tasks()      # Monitoring alerts
     ├── _check_failed_blocked_tasks()    # Periodic failed/blocked report
     ├── _schedule()                       # Proportional fair-share assignment
@@ -107,6 +108,7 @@ from src.orchestrator.events import EventsMixin
 from src.orchestrator.execution import ExecutionMixin
 from src.orchestrator.git_ops import GitOpsMixin
 from src.orchestrator.layout_step import LayoutStepMixin
+from src.orchestrator.lifecycle import LifecycleMixin
 from src.orchestrator.monitoring import MonitoringMixin
 from src.orchestrator.pools import PoolsMixin
 from src.orchestrator.pr_polling import PRPollingMixin
@@ -129,6 +131,11 @@ logger = logging.getLogger(__name__)
 PAUSE_CHECKPOINT_RETRY_META = "manual_pause_checkpoint_retry"
 PAUSE_CHECKPOINT_MAX_ATTEMPTS = 3
 PAUSE_CHECKPOINT_MAX_BACKOFF = 30.0
+
+# File handlers run synchronously on the scheduler's event loop. Bound writes
+# even when a capacity change affects every READY task at once.
+_SCHEDULER_BLOCKER_DETAIL_LIMIT = 20
+_SCHEDULER_BLOCKER_SAMPLE_LIMIT = 3
 
 
 def _parse_reset_time(error_msg: str) -> float | None:
@@ -184,6 +191,7 @@ class Orchestrator(
     WorkspaceMixin,
     ExecutionMixin,
     MonitoringMixin,
+    LifecycleMixin,
     GitOpsMixin,
     PRPollingMixin,
     ContextMixin,
@@ -317,6 +325,7 @@ class Orchestrator(
         # Terminal onboarding records share the hourly operational retention
         # cadence, but remain independent of Playbook V2 being enabled.
         self._last_operational_event_retention_sweep: float = 0.0
+        self._last_test_selection_retention_sweep: float = 0.0
         self._last_conversation_maintenance: float = 0.0
         # Playbook V2 retention sweep, interval-limited by configuration.
         self._last_playbook_retention_sweep: float = 0.0
@@ -333,6 +342,8 @@ class Orchestrator(
         self._last_scheduler_state = None
         self._last_scheduler_workspace_counts: dict[str, int] = {}
         self._last_scheduler_idle_by_project: dict[str, int] = {}
+        # Last-observed reasons, including changes summarized by the log budget.
+        self._scheduler_blocker_reasons: dict[str, str] = {}
         # In-flight ``task_claim`` attempts a concurrent long-poller can wait
         # on instead of re-polling (swarm-work-model §10).  Keyed by
         # ``(session_id, claim_epoch)``; resolved by
@@ -479,6 +490,10 @@ class Orchestrator(
                 self.session_spec_builder, "_intelligence_classes", None
             ) or self.intelligence_classes,
             bus=self.bus,
+            # Capacity spill (provider-failover D24) reads one pool
+            # measurement per automatic sweep, with the sizer's global cap.
+            pool_measure=self._measure_pools,
+            pool_global_cap=self._pool_global_cap,
         )
         self.provider_availability.reroute = self.provider_reroute
         # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for
@@ -871,6 +886,9 @@ class Orchestrator(
         suffix that sets the agent's "role" for the task.
         """
         project = await self.db.get_project(task.project_id)
+        if not task.profile_id and project and getattr(project, "preferred_provider", None):
+            profile_id = await self._effective_default_profile_id(project)
+            return await self.db.get_profile(profile_id) if profile_id else None
         profile_id = task.profile_id or (
             await self._availability_aware_default(project.default_profile_id, project.id)
             if project
@@ -952,7 +970,8 @@ class Orchestrator(
             project, system_profiles=system_profiles
         )
         return await self._availability_aware_default(
-            raw, getattr(project, "id", None), system_profiles=system_profiles
+            raw, getattr(project, "id", None), system_profiles=system_profiles,
+            preferred_provider=getattr(project, "preferred_provider", None),
         )
 
     async def _availability_aware_default(
@@ -961,19 +980,21 @@ class Orchestrator(
         project_id: str | None = None,
         *,
         system_profiles: list[AgentProfile] | None = None,
+        preferred_provider: str | None = None,
     ) -> str | None:
-        """The default's equivalent rung while its provider is unavailable (D13).
+        """Equivalent default for project preference or unavailable provider (D13).
 
         Derived per call and never persisted -- ``projects.default_profile_id``
         is not rewritten, so recovery needs no undo.  Reads the profiles only
-        while some provider is actually suppressed, so a healthy box pays
-        nothing.
+        while a preference is set or some provider is actually suppressed.
         """
         if not default_profile_id:
             return default_profile_id
         availability = getattr(self, "provider_availability", None)
         reroute = getattr(self, "provider_reroute", None)
-        if availability is None or reroute is None or not availability.suppressed_providers():
+        if availability is None or reroute is None or (
+            not preferred_provider and not availability.suppressed_providers()
+        ):
             return default_profile_id
         try:
             available = (
@@ -982,9 +1003,10 @@ class Orchestrator(
             profiles = {profile.id: profile for profile in available}
         except Exception:
             logger.debug("availability-aware default: profiles unreadable", exc_info=True)
-            return default_profile_id
+            return None if preferred_provider else default_profile_id
         return reroute.resolve_default_profile_id(
-            default_profile_id, profiles, project_id=project_id
+            default_profile_id, profiles, project_id=project_id,
+            preferred_provider=preferred_provider,
         )
 
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
@@ -1486,6 +1508,9 @@ class Orchestrator(
             if row.project_id is None and row.agent_id is None:
                 await self.db.update_session(row.id, agent_id=supervisor_agent.id)
         self.register_settlement_listener()
+        # Archive/removal guards prove development delivery in git before
+        # their transaction; the database layer has no Git of its own.
+        self.db.set_delivery_observer(self.delivery_observer)
         # aq-surface Phase S2: construct the session-token store now that
         # the DB is live.  The API layer prefers this instance so
         # revocations from the cascade sweep share the same cache as
@@ -1519,6 +1544,13 @@ class Orchestrator(
             except Exception:
                 logger.error("Session adoption pass failed", exc_info=True)
         await self._recover_stale_state(skip_task_ids=adopted_task_ids)
+        # Restarts and updates are what strand a finished container BLOCKED or
+        # PAUSED; settle every one whose children are all delivered before the
+        # first tick rather than waiting for the first backstop sweep.
+        try:
+            await self.reconcile_stale_containers()
+        except Exception:
+            logger.exception("Stale container reconciliation on start failed")
         # Seed provider availability before the first tick (D5, D7): load
         # what the last run knew -- a restart must not spend its first
         # minute rediscovering that Codex is logged out -- and probe once.
@@ -1894,6 +1926,7 @@ class Orchestrator(
             self.db, data_dir=self.config.data_dir, git=self.git,
             confirm_stopped=development_confirm_stopped,
             job_client=PublisherJobs(lambda: self._command_handler),
+            stall_after=self.config.integration.publisher_stall_after,
         )
         owner_recovery = owner_recovery_for(self)
         self.development_integration.owner_recovery = owner_recovery
@@ -2853,6 +2886,15 @@ class Orchestrator(
             #     catches containers the event path somehow missed.
             await self._sweep_container_completion()
 
+            # 3d. Lifecycle sweep: re-check BLOCKED/PAUSED tasks past
+            #     ``work_graph.stale_open_after_seconds`` (unblock, else flag
+            #     stale_open for the supervisor) and retry obsolete-close
+            #     cleanup a publishing batch or owner proof held back.
+            try:
+                await self._sweep_lifecycle()
+            except Exception:
+                logger.exception("Lifecycle sweep error")
+
             # 4. Monitoring: detect DEFINED tasks stuck beyond threshold.
             #    Runs after promotion so we don't false-alarm on tasks that
             #    were just promoted in step 3.
@@ -2981,6 +3023,10 @@ class Orchestrator(
             # Terminal onboarding requests are durable idempotency state; a
             # failed cleanup must not interrupt scheduling.
             await self._sweep_operational_event_retention()
+
+            # Selection records are history, not live state; a failed sweep
+            # must not interrupt scheduling.
+            await self._sweep_test_selection_retention()
 
             # Conversation retention runs even with intake disabled when old
             # rows remain. Delay notices go through the currently bound outbox.
@@ -3408,6 +3454,14 @@ class Orchestrator(
             logger.error("AgentQuestionService tick failed", exc_info=True)
         if self._command_handler is not None:
             try:
+                from src.commands.collaboration_lifecycle import CollaborationReconciler
+
+                result = await CollaborationReconciler(self._command_handler).tick()
+                if not result.get("success"):
+                    logger.error("CollaborationReconciler tick refused: %s", result)
+            except Exception:
+                logger.error("CollaborationReconciler tick failed", exc_info=True)
+            try:
                 from src.agent_waits import AgentWaitReconciler
 
                 result = await AgentWaitReconciler(self._command_handler).tick()
@@ -3419,6 +3473,7 @@ class Orchestrator(
             # main.py installs the handler before the first cycle; without one
             # no durable wait can resolve, so say so rather than skip silently.
             logger.warning("AgentWaitReconciler skipped: no command handler installed")
+            logger.warning("CollaborationReconciler skipped: no command handler installed")
         await self.session_reconciler.tick()
         from src.integration.completion_recovery import schedule_ready_owner_recovery
 
@@ -3610,6 +3665,13 @@ class Orchestrator(
         # turn into a queued worker or consume a scheduler/reconciler slot.
         task_snapshot = [
             task for task in task_snapshot if not is_supervisor_profile(task.profile_id)
+        ]
+        delivery_admission = await self._delivery_admission(
+            [task.id for task in task_snapshot if task.status == TaskStatus.READY]
+        )
+        task_snapshot = [
+            task for task in task_snapshot
+            if task.status != TaskStatus.READY or task.id in delivery_admission.allowed
         ]
         hierarchy_runnable_task_ids = await self.db.hierarchy_runnable_task_ids(
             [task.id for task in task_snapshot if task.status == TaskStatus.READY]
@@ -3806,11 +3868,6 @@ class Orchestrator(
         self._log_scheduler_blockers(state, actions, workspace_counts)
         return actions
 
-    # Per-task reason cache to dedupe scheduler-blocker logs across ticks.
-    # Maps task_id → last-emitted blocker string; logs only when the reason
-    # changes (including clears via removal).
-    _scheduler_blocker_reasons: dict[str, str] = {}
-
     def _log_scheduler_blockers(
         self,
         state: "SchedulerState",
@@ -3821,8 +3878,9 @@ class Orchestrator(
 
         Called after every scheduler tick. Dedupes via
         ``_scheduler_blocker_reasons`` so an unassignable task logs once, not
-        every 5s. Logs again if the *reason* changes, and logs a "cleared"
-        line when the task finally assigns or otherwise leaves READY.
+        every 5s. Logs again if the *reason* changes or the task assigns or
+        otherwise leaves READY. Each tick shares a fixed detail budget across
+        blocked and unblocked changes, with one bounded overflow summary.
         """
         assigned_task_ids = {a.task_id for a in actions}
         ready_tasks = [t for t in state.tasks if t.status == TaskStatus.READY]
@@ -3839,21 +3897,48 @@ class Orchestrator(
             if reason:
                 current_reasons[task.id] = reason
 
-        # Emit diffs: newly blocked, reason-changed, or newly unblocked.
+        # Emit diffs with a shared write budget. Samples also stay bounded
+        # when each task has a different reason; grouping by reason alone
+        # would not bound the number of log records.
+        detail_count = 0
+        omitted_blocked = 0
+        omitted_unblocked = 0
+        blocked_samples: list[tuple[str, str]] = []
+        unblocked_samples: list[tuple[str, str]] = []
         for task_id, reason in current_reasons.items():
             if self._scheduler_blocker_reasons.get(task_id) != reason:
-                logger.info("scheduler blocked task=%s reason=%s", task_id, reason)
-                self._scheduler_blocker_reasons[task_id] = reason
+                if detail_count < _SCHEDULER_BLOCKER_DETAIL_LIMIT:
+                    logger.info("scheduler blocked task=%s reason=%s", task_id, reason)
+                    detail_count += 1
+                else:
+                    omitted_blocked += 1
+                    if len(blocked_samples) < _SCHEDULER_BLOCKER_SAMPLE_LIMIT:
+                        blocked_samples.append((task_id, reason))
 
         # Clear any tasks that used to be blocked but aren't anymore.
-        cleared = set(self._scheduler_blocker_reasons) - set(current_reasons)
-        for task_id in cleared:
+        for task_id, reason in self._scheduler_blocker_reasons.items():
+            if task_id in current_reasons:
+                continue
+            if detail_count < _SCHEDULER_BLOCKER_DETAIL_LIMIT:
+                logger.info("scheduler unblocked task=%s (prev=%s)", task_id, reason)
+                detail_count += 1
+            else:
+                omitted_unblocked += 1
+                if len(unblocked_samples) < _SCHEDULER_BLOCKER_SAMPLE_LIMIT:
+                    unblocked_samples.append((task_id, reason))
+
+        # Remember every transition, even if it did not get a detailed line,
+        # so omitted tasks do not produce another burst on the following tick.
+        self._scheduler_blocker_reasons = current_reasons
+        if omitted_blocked or omitted_unblocked:
             logger.info(
-                "scheduler unblocked task=%s (prev=%s)",
-                task_id,
-                self._scheduler_blocker_reasons[task_id],
+                "scheduler blocker changes summarized omitted_blocked=%s "
+                "omitted_unblocked=%s blocked_samples=%s unblocked_samples=%s",
+                omitted_blocked,
+                omitted_unblocked,
+                blocked_samples,
+                unblocked_samples,
             )
-            del self._scheduler_blocker_reasons[task_id]
 
     def _describe_task_blocker(
         self,

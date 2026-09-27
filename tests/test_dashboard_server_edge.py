@@ -184,7 +184,7 @@ def test_a_lan_peer_reaches_local_operator_routes():
 
 @pytest.mark.parametrize("kind", ["websocket", "http"])
 def test_a_lan_peer_is_refused_terminals(kind):
-    for path in ("/ws/terminal/sess-1", "/ws/terminal"):
+    for path in ("/ws/terminal/sess-1", "/ws/terminal", "/ws/terminal/sess-1/input"):
         assert _error(_lan_gate(), _lan_scope(path, kind=kind)) == "403 loopback_only"
 
 

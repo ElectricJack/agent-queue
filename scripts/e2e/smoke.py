@@ -655,23 +655,25 @@ def s1_pool_sizing(state: dict) -> str:
 
     def _pool_at_max():
         row = pool_row()
-        return row if row["running_idle"] + row["running_busy"] + row["starting"] == 2 else None
+        check(row["max_active"] == 2, f"max_active should be 2, got {row['max_active']}")
+        supply = row["running_idle"] + row["running_busy"] + row["starting"]
+        check(supply <= 2, f"pool supply exceeded max_active=2: saw {supply}")
+        sessions = pool_sessions()
+        check(len(sessions) <= 2,
+              f"live pool sessions exceeded max_active=2: saw {len(sessions)}")
+        # `starting` includes reserved launches before their session rows
+        # exist. The batch's scale audit follows the last completed launch.
+        if supply != 2 or len(sessions) != 2:
+            return None
+        events = api("get_recent_events", {"event_type": "pool.scaled", "limit": 10})["events"]
+        scaled = [e for e in events
+                  if e["project_id"] == PROJECT and e["payload"].startswith("start")]
+        return (row, scaled) if scaled else None
 
-    row = wait_for_pool_session(_pool_at_max, what="the pool to reach max_active=2 sessions")
-    check(row["max_active"] == 2, f"max_active should be 2, got {row['max_active']}")
+    row, scaled = wait_for_pool_session(
+        _pool_at_max, what="the pool to reach max_active=2 durable sessions with a scale-up audit",
+    )
     check(row["ready"] >= 3, f"expected >=3 ready tasks, saw {row['ready']}")
-    check(
-        len(pool_sessions()) == 2,
-        f"expected exactly 2 live pool sessions, saw {len(pool_sessions())}",
-    )
-
-    events = api("get_recent_events", {"event_type": "pool.scaled", "limit": 10})["events"]
-    scaled = [e for e in events if e["project_id"] == PROJECT]
-    check(scaled, "no pool.scaled audit row for project 'e2e'")
-    check(
-        any(e["payload"].startswith("start") for e in scaled),
-        f"pool.scaled rows record no scale-up: {[e['payload'] for e in scaled]}",
-    )
     return f"2 sessions for 3 ready tasks; pool.scaled = {scaled[0]['payload']!r}"
 
 
@@ -1615,6 +1617,18 @@ def s14_graph_and_vault(state: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+DEVELOPMENT_VALIDATION_COMMAND = "pytest test_validation.py -q"
+
+
+def _seed_development_validation(source: Path) -> None:
+    """Seed a finite pytest equivalent of the fixtures' README file check."""
+    (source / "test_validation.py").write_text(
+        "from pathlib import Path\n\n\n"
+        "def test_readme_exists():\n"
+        "    assert Path('README.md').is_file()\n"
+    )
+
+
 def s15_development_delivery(state: dict) -> str:
     """Operator configure → real published branch → AQ validation/promotion → adoption."""
     from pathlib import Path
@@ -1625,13 +1639,14 @@ def s15_development_delivery(state: dict) -> str:
     _git_text(str(source), "config", "user.name", "AQ E2E")
     _git_text(str(source), "config", "user.email", "e2e@example.test")
     (source / "README.md").write_text("development fixture\n")
+    _seed_development_validation(source)
     _git_text(str(source), "add", ".")
     _git_text(str(source), "commit", "-m", "base")
     _git_text(str(source), "push", "origin", "main")
     aq_text("project", "onboard", "--request-id", "e2e-development", "--source-mode", "link",
             "--root-id", "e2e-onboarding", "--relative-path", "development-source",
             "--project-name", "Development", "--project-id", "e2e-development")
-    configured = aq("integration", "develop", "e2e-development", "--command", "test -f README.md",
+    configured = aq("integration", "develop", "e2e-development", "--command", DEVELOPMENT_VALIDATION_COMMAND,
                     "--interval-seconds", "86400", "--reason", "isolated acceptance")
     check(configured.get("outcome") == "configured", str(configured))
     _git_text(str(source), "checkout", "-b", "fixture-feature")
@@ -1654,11 +1669,47 @@ def s15_development_delivery(state: dict) -> str:
     successor_id = successor.get("task_id") or successor.get("created")
     check(bool(successor_id), str(successor))
     api("add_dependency", {"task_id": successor_id, "depends_on": task_id})
-    check(task_show(successor_id)["is_blocked"], "undelivered code released its successor")
+    check(not task_show(successor_id)["is_blocked"], "delivery leaked into graph projection")
+    waiting = api("explain_task", {"task_id": successor_id})
+    check(any(reason["code"] == "development_dependency_delivery"
+              for reason in waiting.get("reasons", [])),
+          f"undelivered code released its successor: {waiting}")
     result = aq("integration", "sweep", "e2e-development")
     check(result.get("outcome") == "delivered", str(result))
     check(_git_text(str(remote), "rev-parse", "main") == head, "AQ did not promote exact checked commit")
-    check(not task_show(successor_id)["is_blocked"], "publication did not release the successor")
+    released = api("explain_task", {"task_id": successor_id})
+    check(not any(reason["code"].startswith("development_")
+                  for reason in released.get("reasons", [])),
+          f"publication did not release the successor: {released}")
+    status = aq("integration", "status", "e2e-development")
+    delivery = next((row for row in status.get("deliveries", []) if row["id"] == result["id"]), None)
+    check(delivery is not None, f"missing publisher operation evidence: {status}")
+    evidence = delivery["evidence"]
+    checks = evidence.get("checks", [])
+    check(evidence.get("conclusion") == "passed" and len(checks) == 1,
+          f"validation did not pass: {evidence}")
+    validation = checks[0]
+    check(validation.get("command") == DEVELOPMENT_VALIDATION_COMMAND
+          and bool(validation.get("job_id")) and bool(validation.get("result_hash"))
+          and validation.get("exit_code") == 0 and validation.get("outcome") == "passed"
+          and validation.get("input_ref") == head and validation.get("input_mode") == "snapshot",
+          f"validation receipt does not attest the published snapshot: {validation}")
+    # set-status deliberately models an old task without an immutable close.
+    # Neither a finished push operation nor ancestry invents that generation.
+    inventory = aq("integration", "migrate-provenance", "e2e-development")
+    check(not inventory.get("zero_fallback") and any(
+        entry["task_id"] == task_id and entry.get("generation") is None
+        for entry in inventory.get("fallback_generations", [])
+    ), f"unlabelled generation was not named: {inventory}")
+    refused = aq("integration", "adopt", "e2e-development", "--task", task_id,
+                 "--head-sha", head, "--reason", "unlabelled legacy generation", check_ok=False)
+    check("provenance migration" in str(refused.get("_error")),
+          f"adoption invented legacy completion identity: {refused}")
+    aq("task", "set-status", "--task-id", task_id, "--status", "READY")
+    api("pause_task", {"task_id": task_id})
+    adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
+                 "--head-sha", head, "--reason", "operator creates an exact completion generation")
+    check(adopted.get("outcome") == "adopted", str(adopted))
     adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
                  "--head-sha", head, "--reason", "prove repeatable operator reconciliation")
     check(adopted.get("outcome") == "adopted", str(adopted))
@@ -1677,7 +1728,7 @@ def s15_development_delivery(state: dict) -> str:
         return deleted.get("deleted") == successor_id
 
     wait_for(_delete_successor, what=f"S15 successor {successor_id} to be removed")
-    return "local validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication"
+    return "managed pytest snapshot validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication"
 
 
 # ---------------------------------------------------------------------------
@@ -2218,6 +2269,7 @@ def _ensure_phased_development_project() -> tuple[str, Path, Path]:
         _git_text(str(source), "config", "user.name", "AQ E2E")
         _git_text(str(source), "config", "user.email", "e2e@example.test")
         (source / "README.md").write_text("phased graph fixture\n")
+        _seed_development_validation(source)
         _git_text(str(source), "add", ".")
         _git_text(str(source), "commit", "-m", "base")
         _git_text(str(source), "push", "origin", "main")
@@ -2246,7 +2298,7 @@ def _ensure_phased_development_project() -> tuple[str, Path, Path]:
         "develop",
         project_id,
         "--command",
-        "test -f README.md",
+        DEVELOPMENT_VALIDATION_COMMAND,
         "--interval-seconds",
         "86400",
         "--reason",
@@ -2655,10 +2707,12 @@ def s19_scoped_planner_graph(state: dict) -> str:
         cross_project is not None and "project_id mismatch" in f"{cross_project.error} {cross_project.details}",
         f"cross-project graph was not refused by token scope: {cross_project}",
     )
-    cli_root = run_aq(*graph_args, "--root", token=planner.token, session_id=planner.session_id)
+    # A worker graph may go to the root only as a new container it declares
+    # with a ``parent:`` block (bold-flare-35); this graph declares none.
+    cli_root = planner.aq(*graph_args, "--root", check_ok=False).get("_error")
     check(
-        cli_root.returncode == 2
-        and "--root only applies to single-task creation" in f"{cli_root.stdout} {cli_root.stderr}",
+        cli_root is not None
+        and "graph.root_needs_parent" in f"{cli_root.error} {cli_root.details}",
         f"CLI root graph refusal: {cli_root}",
     )
     server_root = api(
@@ -2667,12 +2721,12 @@ def s19_scoped_planner_graph(state: dict) -> str:
             "project_id": PROJECT,
             "graph": graph,
             "root": True,
-            "reason": "S19 must not request root filing",
+            "reason": "S19 must not request a root filing without a container",
         },
         token=planner.token,
     )
     check(
-        server_root.get("code") == "hierarchy.parent_out_of_scope",
+        server_root.get("code") == "graph.root_needs_parent",
         f"server root graph refusal: {server_root}",
     )
     after_denials = api("task_children", {"task_id": held_task}, token=planner.token)

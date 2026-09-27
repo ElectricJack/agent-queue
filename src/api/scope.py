@@ -45,7 +45,14 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "wait_get",
         "wait_list",
         "wait_cancel",
+        # Collaboration reads and joins derive the held task and fence joins
+        # and closes by claim epoch; creation stays operator/supervisor-only.
+        "collaboration_accept",
+        "collaboration_get",
+        "collaboration_list",
+        "collaboration_close",
         "message_send",
+        "message_wait",
         "message_inbox",
         "message_reply",
         # The idle-session nudge (``src/messages/delivery.py:_render_nudge``)

@@ -92,6 +92,24 @@ _SUBMIT_POLLS: tuple[tuple[float, ...], ...] = (
 #: the line, so a wrapped paste can need more than one.
 _CLEAR_ATTEMPTS = 3
 
+#: Landed check (``TmuxProvider._await_landed``): typed text must render on
+#: the input line before Enter.  OpenCode renders keystroke by keystroke,
+#: ~2 s for a 330-character stall reminder (measured on 1.18.32), so the
+#: former fixed ~1.2 s window read every OpenCode nudge as swallowed.  The
+#: wait now ends after this many polls on an unchanged screen, or at the cap.
+_LANDED_POLL_SECONDS = 0.15
+_LANDED_QUIET_POLLS = 7
+_LANDED_MAX_SECONDS = 6.0
+
+#: A detached pane is force-repainted at most this often (seconds) when its
+#: composer shows text, and re-read on this schedule afterwards; OpenCode
+#: redraws within a second (see ``TmuxProvider._repaint_stray_output``).
+_REPAINT_MIN_INTERVAL = 60.0
+_REPAINT_SETTLE_POLLS: tuple[float, ...] = (0.25, 0.5, 0.75)
+
+#: Characters of composer text reported by ``composer_probe``.
+_PREVIEW_CHARS = 200
+
 _META_TOKEN_KEY = "AQ_INSTANCE_TOKEN"
 _PENDING_SUBMIT_KEY = "AQ_PENDING_SUBMIT"
 _PENDING_SUBMIT_VERSION = 1
@@ -127,7 +145,7 @@ class _PendingSubmit:
         return base64.urlsafe_b64encode(raw).decode()
 
     @classmethod
-    def decode(cls, value: str | None) -> "_PendingSubmit | None":
+    def decode(cls, value: str | None) -> _PendingSubmit | None:
         if not value:
             return None
         try:
@@ -195,6 +213,8 @@ class TmuxProvider(SessionProvider):
         #: cache avoids an environment lookup on each submit poll; the
         #: environment is authoritative after a daemon restart.
         self._unsubmitted: dict[str, _PendingSubmit] = {}
+        #: Monotonic time of the last forced repaint per session name.
+        self._last_repaint_at: dict[str, float] = {}
 
     # -- plumbing ----------------------------------------------------------
 
@@ -644,8 +664,7 @@ class TmuxProvider(SessionProvider):
             if _parse_environment_value(observed, _META_TOKEN_KEY) != h.instance_token:
                 raise SessionError("Terminal session instance changed")
 
-            # Unpark copy mode. A detached TUI may also need a one-time
-            # resize signal before accepting input after an idle period.
+            # Unpark copy mode before sending input.
             with contextlib.suppress(TmuxCommandError):
                 in_mode = (
                     await self._tmux(
@@ -658,9 +677,6 @@ class TmuxProvider(SessionProvider):
                 ).strip()
                 if in_mode == "1":
                     await self._tmux("send-keys", "-t", pane, "-X", "cancel")
-                if time.monotonic() - self._last_input_at.get(h.name, 0) > 5:
-                    await self._tmux("resize-pane", "-t", pane, "-D", "1")
-                    await self._tmux("resize-pane", "-t", pane, "-U", "1")
             if key is not None:
                 await self._tmux("send-keys", "-t", pane, key)
             else:
@@ -716,15 +732,17 @@ class TmuxProvider(SessionProvider):
             if pending is not None:
                 state = await self._pending_composer_state(pane, prefix, pending)
                 if state is True:
-                    if pending.text != text:
-                        raise NudgeDeferred(
-                            f"terminal {h.name!r} is holding a different AQ injection"
-                        )
                     self._last_nudge_at[h.name] = time.monotonic()
                     self._poke[h.name] = (time.time(), before)
                     await self._submit(h, pane, prefix, pending, before)
-                    return
-                if state is False:
+                    if pending.text == text:
+                        return
+                    # A different AQ injection is still AQ's own text: submit
+                    # it rather than defer on it.  Deferring deadlocked every
+                    # later wake — the stall reminder names its idle minutes,
+                    # so no retry ever matched the text left in the composer.
+                    # This nudge is typed next, into the now-empty composer.
+                elif state is False:
                     await self._forget_pending(h)
                 else:
                     # No safe observation means no key press and no record
@@ -733,13 +751,8 @@ class TmuxProvider(SessionProvider):
 
             # Never append a reminder to a user's draft or compete with an
             # attached terminal. This guard shares send_input's lock and runs
-            # before any resize, key, or paste (including copy-mode cancel).
+            # before any key or paste (including copy-mode cancel).
             await self._require_empty_composer(h.name, pane, prefix)
-
-            # Detached TUIs drop pastes until a SIGWINCH wakes them (§9).
-            with contextlib.suppress(TmuxCommandError):
-                await self._tmux("resize-pane", "-t", pane, "-D", "1")
-                await self._tmux("resize-pane", "-t", pane, "-U", "1")
 
             # A repaint or a newly attached client can invalidate the first
             # observation. Recheck immediately before writing the reminder.
@@ -770,16 +783,14 @@ class TmuxProvider(SessionProvider):
             # Require the marker to render before pressing Enter.  Paste-
             # buffer pastes are exempt: harnesses collapse large pastes to
             # a placeholder, so the marker legitimately never renders.
-            if pending.marker and len(payload) <= _SEND_KEYS_MAX_BYTES:
-                for _poll in range(8):
-                    tail = await self._capture_tail(pane, lines=40)
-                    if pending.marker in _normalize(tail):
-                        break
-                    await asyncio.sleep(0.15)
-                else:
-                    raise NotSubmitted(
-                        f"typed text never rendered in {h.name!r}", session_name=h.name
-                    )
+            if (
+                pending.marker
+                and len(payload) <= _SEND_KEYS_MAX_BYTES
+                and not await self._await_landed(pane, prefix, pending.marker)
+            ):
+                raise NotSubmitted(
+                    f"typed text never rendered in {h.name!r}", session_name=h.name
+                )
 
             # Per-harness Escape semantics (§9): only when the harness says
             # it is safe — grok clears the input line, codex backtracks.
@@ -788,6 +799,30 @@ class TmuxProvider(SessionProvider):
                 await asyncio.sleep(0.05)
 
             await self._submit(h, pane, prefix, pending, before)
+
+    async def _await_landed(self, pane: str, prefix: str, marker: str) -> bool:
+        """Whether typed text rendered on the input line (the landed check).
+
+        A screen that stops changing without the marker is a swallowed
+        input, given up after :data:`_LANDED_QUIET_POLLS` unchanged polls as
+        before.  A screen still changing is a composer still rendering, and
+        is waited for up to :data:`_LANDED_MAX_SECONDS`.
+        """
+        deadline = time.monotonic() + _LANDED_MAX_SECONDS
+        previous: str | None = None
+        quiet = 0
+        while True:
+            tail = await self._capture_tail(pane, lines=40)
+            # Composers wrap long input onto rows of their own, so the
+            # marker is looked for on the input line with the wrap's
+            # whitespace ignored (see :func:`_submit_pending`).
+            if _submit_pending(tail, marker, prefix):
+                return True
+            quiet = quiet + 1 if tail == previous else 0
+            previous = tail
+            if quiet >= _LANDED_QUIET_POLLS or time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(_LANDED_POLL_SECONDS)
 
     async def _pending_composer_state(
         self, pane: str, prefix: str, pending: _PendingSubmit
@@ -819,12 +854,26 @@ class TmuxProvider(SessionProvider):
         # ``-J`` joins soft terminal wraps while retaining explicit newlines,
         # allowing an exact injected multi-line payload comparison instead
         # of mistaking a narrow pane's wrapping for an edited composer.
-        tail = await self._capture_tail(pane, lines=40, join_wrapped=True)
+        # OpenCode paints every box row itself, bar included, so it has no
+        # soft wrap to join and ``-J`` would glue a full-width row onto the
+        # next one.
+        tail = await self._capture_tail(
+            pane, lines=40, join_wrapped=not _is_opencode_prefix(prefix)
+        )
         if not tail:
             return None
         prefix_text = _normalize(prefix).strip()
         rendered_prefix = _normalize(prefix).lstrip()
         lines = _normalize(tail).splitlines()
+        if _is_opencode_prefix(prefix):
+            typed = _opencode_input(lines)
+            if typed is None or re.search(r"\[Pasted\b[^\]]*\]", typed, re.IGNORECASE):
+                return None
+            if _squash(pending.marker) not in _squash(typed):
+                return False
+            # The box holds the input and nothing else, so its whole content
+            # is the draft: identical to the injection, or not ours to submit.
+            return True if _squash(typed) == _squash(pending.text) else None
         last_prompt = next(
             (
                 index
@@ -840,11 +889,11 @@ class TmuxProvider(SessionProvider):
             # A collapsed paste does not prove delivery or exact draft identity.
             # Preserve recovery evidence and never submit an unobservable draft.
             return None
-        if pending.marker not in input_text:
+        if _squash(pending.marker) not in _squash(input_text):
             return False
         # Exact text identity is what makes an edited AQ-looking draft a
-        # draft, not a command to submit. Wrapped/truncated prompts fail
-        # closed rather than accepting a marker collision.
+        # draft, not a command to submit. Truncated prompts fail closed
+        # rather than accepting a marker collision.
         # Strip the known rendered prompt and stop at the composer border.
         # A substring match would submit human text prepended/appended to
         # the original injection. Unknown layouts deliberately fail closed.
@@ -859,26 +908,14 @@ class TmuxProvider(SessionProvider):
             content.append(line)
         if prefix_text == "›":
             # Codex renders a blank separator and a status footer below input.
-            # Remove only a recognisable footer followed solely by literal
-            # terminal-padding lines; arbitrary text remains part of the draft.
-            for index in range(1, len(content)):
-                footer = content[index].strip()
-                known = bool(re.fullmatch(r"\d+% context left", footer)) or bool(
-                    re.fullmatch(r"(?:gpt|o\d)[\w. -]* · .+", footer)
-                )
-                if (
-                    known
-                    and not content[index - 1].strip()
-                    and all(row == "" for row in content[index + 1 :])
-                ):
-                    content = content[: index - 1]
-                    break
-            # ``capture-pane`` includes the frame's empty padding below the
-            # Codex composer.  It is not payload; remove literal empty rows
-            # only, never whitespace or any user-supplied text.
-            while content and content[-1] == "":
-                content.pop()
-        if "\n".join(content) == _normalize(pending.text):
+            # Remove only a recognisable footer; arbitrary text remains part
+            # of the draft.
+            above_footer = _strip_codex_footer(content)
+            if above_footer is not None:
+                content = above_footer
+        # The composer wraps the text itself, onto indented rows, so identity
+        # is judged character for character with whitespace ignored.
+        if _squash("\n".join(content)) == _squash(pending.text):
             return True
         # The marker is still present, but a busy/changed footer or a draft
         # edit prevents exact attribution. Retain evidence without pressing
@@ -1014,6 +1051,23 @@ class TmuxProvider(SessionProvider):
         in which case the record is dropped.  Read-only: it never presses a
         key, so ``aq doctor`` without ``--fix`` cannot disturb a session.
         """
+        detail = await self.pending_submit_detail(h)
+        if detail is None or not detail["observable"]:
+            return None
+        return detail["marker"]
+
+    async def pending_submit_detail(self, h: SessionHandle) -> dict | None:
+        """:meth:`pending_submit`, plus the records the composer guard cannot read.
+
+        ``{"marker": ..., "observable": True}`` is a nudge still sitting in
+        the composer exactly as typed.  ``"observable": False`` is a durable
+        record whose composer no screen parse can attribute (an unknown
+        footer, a collapsed paste, copy mode): the text may well still be
+        there, blocking every later wake, and no key is pressed on it.  That
+        second state is the one an operator could not see on 2026-09-27,
+        when Codex 0.157 layouts left reminders typed but never submitted.
+        Read-only, like :meth:`pending_submit`.
+        """
         if not await self._fenced(h):
             self._unsubmitted.pop(h.name, None)
             return None
@@ -1025,11 +1079,10 @@ class TmuxProvider(SessionProvider):
             return None
         prefix = await self._ready_prefix_hint(h.name)
         state = await self._pending_composer_state(pane, prefix, record)
-        if state is True:
-            return record.marker
         if state is False:
             await self._forget_pending(h)
-        return None
+            return None
+        return {"marker": record.marker, "observable": state is True}
 
     async def resubmit_pending(self, h: SessionHandle) -> bool:
         """Press Enter on a stuck composer.  True when the text went in.
@@ -1165,7 +1218,28 @@ class TmuxProvider(SessionProvider):
         return "\n".join(trimmed.splitlines()[-lines:])
 
     async def _require_empty_composer(self, name: str, pane: str, prefix: str) -> None:
-        """Fail closed on drafts, active terminal clients, and unknown TUIs."""
+        """Fail closed on drafts, active terminal clients, and unknown TUIs.
+
+        The one repair attempted first is a repaint of an OpenCode box that
+        shows text (:meth:`_repaint_stray_output`): a draft survives it, text
+        a plugin painted over the input does not.
+        """
+        refusal, repaintable = await self._composer_refusal(name, pane, prefix)
+        if refusal is not None and repaintable and await self._repaint_stray_output(name, pane):
+            for delay in _REPAINT_SETTLE_POLLS:
+                await asyncio.sleep(delay)
+                refusal, _ = await self._composer_refusal(name, pane, prefix)
+                if refusal is None:
+                    break
+        if refusal is not None:
+            raise NudgeDeferred(refusal)
+
+    async def _composer_refusal(self, name: str, pane: str, prefix: str) -> tuple[str | None, bool]:
+        """Why a nudge cannot be typed now (``None`` when it can), read-only.
+
+        The flag says whether a repaint could change the answer: a detached,
+        stable OpenCode pane whose box was read cleanly and still showed text.
+        """
         fmt = (
             "#{cursor_x}\t#{cursor_y}\t#{pane_width}\t#{pane_height}\t"
             "#{cursor_flag}\t#{pane_in_mode}\t#{session_attached}"
@@ -1175,19 +1249,90 @@ class TmuxProvider(SessionProvider):
             x, y, width, height, visible, in_mode, attached = map(int, before.split())
             if (
                 not prefix.strip()
-                or visible != 1
                 or in_mode != 0
                 or attached != 0
                 or not 0 <= x < width
                 or not 0 <= y < height
             ):
-                raise NudgeDeferred(f"terminal {name!r} is busy or its input is unknown")
+                return f"terminal {name!r} is busy or its input is unknown", False
             screen = await self._tmux("capture-pane", "-p", "-e", "-t", pane)
             after = await self._tmux("display-message", "-p", "-t", pane, fmt)
-        except (TmuxCommandError, ValueError) as exc:
-            raise NudgeDeferred(f"cannot inspect input for {name!r}") from exc
-        if before != after or not _composer_is_empty(screen, prefix, x, y, height):
-            raise NudgeDeferred(f"terminal {name!r} has a draft or its input is unknown")
+        except (TmuxCommandError, ValueError):
+            return f"cannot inspect input for {name!r}", False
+        if before != after:
+            return f"terminal {name!r} has a draft or its input is unknown", False
+        if not _composer_is_empty(screen, prefix, x, y, height, cursor_visible=visible == 1):
+            return (
+                f"terminal {name!r} has a draft or its input is unknown",
+                _is_opencode_prefix(prefix),
+            )
+        return None, False
+
+    async def _repaint_stray_output(self, name: str, pane: str) -> bool:
+        """Make a detached pane redraw its whole screen; False when not attempted.
+
+        OpenCode runs its plugins inside the TUI process, so a plugin that
+        writes to stderr paints straight over the composer (fast-jev logged
+        every compaction that way, 2026-09-26/27).  OpenCode's renderer only
+        redraws cells it changed itself, so that text stays until something
+        forces a full frame, and :meth:`_require_empty_composer` reads it as
+        a draft on every stall and message nudge — the worker waits for a
+        human.  Shrinking the window one row and restoring it is that full
+        frame; a real draft survives it.  ``resize-pane`` cannot shrink a
+        single-pane window and a bare SIGWINCH at an unchanged size is
+        ignored.  ``resize-window`` switches the window to ``manual`` sizing,
+        so the ``latest`` set at start is put back.
+
+        At most once per :data:`_REPAINT_MIN_INTERVAL` per session, so a real
+        draft in a detached pane is not resized on every delivery attempt.
+        """
+        now = time.monotonic()
+        last = self._last_repaint_at.get(name)
+        if last is not None and now - last < _REPAINT_MIN_INTERVAL:
+            return False
+        self._last_repaint_at[name] = now
+        window = f"={name}:"
+        try:
+            height = int(
+                (await self._tmux("display-message", "-p", "-t", pane, "#{window_height}")).strip()
+            )
+        except (TmuxCommandError, ValueError):
+            return False
+        if height < 2:
+            return False
+        try:
+            await self._tmux("resize-window", "-t", window, "-y", str(height - 1))
+            await self._tmux("resize-window", "-t", window, "-y", str(height))
+        except TmuxCommandError:
+            logger.debug("repaint of %s failed", name, exc_info=True)
+            return False
+        finally:
+            with contextlib.suppress(TmuxCommandError):
+                await self._tmux("set-option", "-w", "-t", window, "window-size", "latest")
+        return True
+
+    async def composer_probe(self, h: SessionHandle) -> dict | None:
+        """Whether a nudge would be typed into *h* now, and what its input shows.
+
+        ``{"ready": bool, "reason": str | None, "input": str}``.  ``input`` is
+        the visible composer text (for OpenCode, the whole box region), so an
+        operator can tell a human draft from output painted over the input.
+        ``None`` when the session or its pane is gone.  Read-only: neither a
+        repaint nor a key, so ``aq doctor`` cannot disturb a session.
+        """
+        if not await self._fenced(h):
+            return None
+        pane = await self._find_agent_pane(h.name, await self._process_names_hint(h.name))
+        if pane is None:
+            return None
+        prefix = await self._ready_prefix_hint(h.name)
+        refusal, _ = await self._composer_refusal(h.name, pane, prefix)
+        tail = await self._capture_tail(pane, lines=40)
+        return {
+            "ready": refusal is None,
+            "reason": refusal,
+            "input": _composer_preview(tail, prefix)[:_PREVIEW_CHARS],
+        }
 
     async def _process_names_hint(self, name: str) -> tuple[str, ...]:
         """The spec's ``process_names``, recovered from the session env."""
@@ -1245,10 +1390,179 @@ class TmuxProvider(SessionProvider):
 
 _SGR = re.compile(r"\x1b\[[0-9;:]*m")
 _CODEX_PLACEHOLDER = "Ask Codex to do anything"
+#: The cursor cell Claude paints itself while the terminal cursor is hidden.
+_CLAUDE_DRAWN_CURSOR = "\x1b[7m \x1b[0m"
+#: Codex's model/status row under the composer: ``gpt-5.6-sol high · /cwd``
+#: (older builds) or ``GPT-6-Sol xhigh · ~/cwd · title`` (codex-cli 0.157,
+#: which appends `` · ⠦`` while a turn runs).  Older builds show
+#: ``NN% context left`` in that slot instead.
+_CODEX_MODEL_ROW = re.compile(r"(?:gpt|o\d)[\w. -]* · .+", re.IGNORECASE)
+_CODEX_CONTEXT_ROW = re.compile(r"\d+% context left")
+
+
+def _strip_codex_footer(rows: list[str]) -> list[str] | None:
+    """*rows* above Codex's status footer, or ``None`` when none is recognised.
+
+    The footer is a blank separator, the model row, then at most one hint
+    or notice row and terminal padding.  That last row's wording differs
+    between builds and states (``? for shortcuts``, ``← for agents · ? for
+    shortcuts``, a right-aligned ``⚠ 2 warnings · f2 to view``, painted
+    over with spaces once the composer holds text), so it is bounded by
+    shape rather than enumerated.  The search runs from the bottom: Codex
+    paints its composer above the footer, so no input sits below the model
+    row, while a draft line that merely looks like one sits above the real
+    footer.  A busy footer (``tab to queue message    91% context left``)
+    is not a model row and is not recognised.
+    """
+    for index in range(len(rows) - 1, 0, -1):
+        status = rows[index].strip()
+        if not (_CODEX_MODEL_ROW.fullmatch(status) or _CODEX_CONTEXT_ROW.fullmatch(status)):
+            continue
+        notices = [row for row in rows[index + 1 :] if row.strip()]
+        if rows[index - 1].strip() or len(notices) > 1:
+            return None
+        return rows[: index - 1]
+    return None
+
+
+#: OpenCode's composer is a box, not a prompt line.  Its left edge is this
+#: heavy vertical bar (U+2503), which the operator's OpenCode harness names
+#: as its ``ready_prompt_prefix``; two cells of padding separate it from the
+#: input.  Measured on OpenCode 1.18.32, idle in a session::
+#:
+#:       ┃                                  top padding
+#:       ┃  <cursor>                        input rows (one per wrapped line)
+#:       ┃                                  bottom padding
+#:       ┃  Build · Qwen3.8 27B (local)     agent row
+#:       ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀   bottom border
+#:
+#: The transcript draws its message blocks with the same bar at the same
+#: indent, so the input is never "the last bar-prefixed line" (that is the
+#: agent row): the box is found from its bottom border upwards.
+_OPENCODE_BAR = "┃"
+_OPENCODE_PAD = 2
+_OPENCODE_BORDER = re.compile(r"╹▀+")
+#: The agent row names an agent and a model (``Build · Qwen3.8 27B (local)``,
+#: ``Build auto · …`` under ``--auto``).  Shell mode paints a bare ``Shell``
+#: there and would run typed text as a command, so it never matches.
+_OPENCODE_AGENT_ROW = re.compile(r"\S.* · \S.*")
+
+
+@dataclass(frozen=True)
+class _OpenCodeBox:
+    """Row indices of the OpenCode composer box on one captured screen."""
+
+    indent: int
+    top: int
+    agent: int
+
+    def rows(self, lines: list[str]) -> list[str]:
+        """The rows between the top padding and the agent row, bar removed."""
+        return [line[self.indent + len(_OPENCODE_BAR) :] for line in lines[self.top : self.agent]]
+
+
+def _is_opencode_prefix(prompt_prefix: str) -> bool:
+    return _normalize(prompt_prefix).strip() == _OPENCODE_BAR
+
+
+def _opencode_border(lines: list[str]) -> int | None:
+    """Index of the bottom-most composer border row, or ``None``."""
+    return next(
+        (i for i in range(len(lines) - 1, -1, -1) if _OPENCODE_BORDER.fullmatch(lines[i].strip())),
+        None,
+    )
+
+
+def _opencode_box(lines: list[str]) -> _OpenCodeBox | None:
+    """The composer box above the last bottom border, or ``None``.
+
+    Only the bottom-most border is considered; a malformed box there fails
+    closed rather than matching a box further up the screen.
+    """
+    border = _opencode_border(lines)
+    if not border:
+        return None
+    indent = len(lines[border]) - len(lines[border].lstrip(" "))
+    bar = " " * indent + _OPENCODE_BAR
+    agent = border - 1
+    if not lines[agent].startswith(bar) or not _OPENCODE_AGENT_ROW.fullmatch(
+        lines[agent][len(bar) :].strip()
+    ):
+        return None
+    top = agent
+    while top > 0 and lines[top - 1].startswith(bar):
+        top -= 1
+    return _OpenCodeBox(indent=indent, top=top, agent=agent) if top < agent else None
+
+
+def _opencode_input(lines: list[str]) -> str | None:
+    """Everything typed into the OpenCode composer, or ``None`` if none is seen."""
+    box = _opencode_box(lines)
+    if box is None:
+        return None
+    return "\n".join(box.rows(lines))
+
+
+def _opencode_composer_is_empty(lines: list[str], cursor_x: int, cursor_y: int) -> bool:
+    """The measured idle shape exactly: three blank rows, cursor on the middle one.
+
+    A multi-line draft adds rows, a wrapped stray write breaks the bar, and
+    plugin output painted over the input row is text — each fails closed.
+    """
+    box = _opencode_box(lines)
+    if box is None or box.agent - box.top != 3 or cursor_y != box.top + 1:
+        return False
+    if cursor_x != box.indent + len(_OPENCODE_BAR) + _OPENCODE_PAD:
+        return False
+    return all(not row.strip() for row in box.rows(lines))
+
+
+def _composer_preview(tail: str, prompt_prefix: str) -> str:
+    """The composer's visible text on one line, for an operator to read.
+
+    For OpenCode, every non-blank row of the region that ends at its bottom
+    border, bar removed — including a stray write that broke the box, which
+    is exactly what the operator needs to see.  Otherwise the last
+    prompt-prefixed line.
+    """
+    lines = [_normalize(line) for line in tail.splitlines()]
+    if _is_opencode_prefix(prompt_prefix):
+        border = _opencode_border(lines)
+        if border is None:
+            return ""
+        top = border
+        while top > 0 and lines[top - 1].strip():
+            top -= 1
+        rows = (line.strip().removeprefix(_OPENCODE_BAR).strip() for line in lines[top:border])
+        return " / ".join(row for row in rows if row)
+    prefix = _normalize(prompt_prefix).strip()
+    if not prefix:
+        return ""
+    return next(
+        (line.strip() for line in reversed(lines) if line.lstrip().startswith(prefix)), ""
+    )
+
+
+def _squash(text: str) -> str:
+    """*text* with every run of whitespace removed.
+
+    Harness composers wrap long input themselves: Codex and Claude paint
+    explicit rows with a two-space continuation indent, which
+    ``capture-pane -J`` cannot join, and break at word boundaries.  Neither
+    the rows nor a space-joined reading reproduce the typed text, but its
+    visible characters, in order, survive the wrap unchanged.
+    """
+    return "".join(_normalize(text).split())
 
 
 def _composer_is_empty(
-    screen: str, prompt_prefix: str, cursor_x: int, cursor_y: int, height: int
+    screen: str,
+    prompt_prefix: str,
+    cursor_x: int,
+    cursor_y: int,
+    height: int,
+    *,
+    cursor_visible: bool = True,
 ) -> bool:
     """Recognize an empty *current* input, never a prompt in scrollback.
 
@@ -1256,11 +1570,23 @@ def _composer_is_empty(
     cursor, and a multiline draft can begin with a blank line. Only accept
     a blank composer with no continuation, both borders, or Codex's
     actual dim placeholder. Unrecognized layouts defer without sending keys.
+
+    A hidden cursor is accepted only between Claude's two borders.  Claude
+    Code 2.1 can keep the terminal cursor hidden for a pane's whole life
+    (observed on every pane of a freshly started tmux server) while still
+    parking it at the input and painting its own cursor cell there, so the
+    borders, not the cursor flag, identify its idle composer.  Every other
+    layout still requires a visible cursor.
+
+    OpenCode has no prompt line at all; its box is recognised whole
+    (:func:`_opencode_composer_is_empty`).
     """
     raw_lines = screen.splitlines()
     if len(raw_lines) != height or not 0 <= cursor_y < len(raw_lines):
         return False
     lines = [_normalize(_SGR.sub("", line)) for line in raw_lines]
+    if _is_opencode_prefix(prompt_prefix):
+        return cursor_visible and _opencode_composer_is_empty(lines, cursor_x, cursor_y)
     line = lines[cursor_y]
     prefix = _normalize(prompt_prefix)
     indent = len(line) - len(line.lstrip(" "))
@@ -1271,6 +1597,15 @@ def _composer_is_empty(
         return False
     suffix = line[input_start:]
     below = lines[cursor_y + 1 :]
+    if (
+        not cursor_visible
+        and prefix == "❯ "
+        and suffix == " "
+        and raw_lines[cursor_y].endswith(_CLAUDE_DRAWN_CURSOR)
+    ):
+        # With the terminal cursor hidden Claude paints its own: one
+        # inverse-video blank at the input, which is not a draft.
+        suffix = ""
     if suffix:
         # A literal draft with these words must NOT be mistaken for the
         # placeholder. Its verified dim styling is part of the contract.
@@ -1280,12 +1615,15 @@ def _composer_is_empty(
             and f"\x1b[2m{_CODEX_PLACEHOLDER}" in raw_lines[cursor_y]
         )
         # Codex can leave blank screen rows below its status footer after
-        # resizing. Accept padding only; extra content still fails closed.
+        # resizing. Accept its footer (see _strip_codex_footer) or padding
+        # only; extra content still fails closed.
+        above_footer = _strip_codex_footer(below)
         return (
             placeholder
-            and len(below) >= 2
+            and cursor_visible
+            and bool(below)
             and not below[0].strip()
-            and all(not row.strip() for row in below[2:])
+            and all(not row.strip() for row in (below if above_footer is None else above_footer))
         )
     # Continuation lines can contain a pasted prompt glyph. An indented
     # one must never be mistaken for the start of an empty composer.
@@ -1297,7 +1635,7 @@ def _composer_is_empty(
             return True
     # Without a known placeholder or both Claude borders, earlier prompt
     # rows make the input boundary ambiguous for every harness.
-    if any(row.lstrip().startswith(prefix) for row in lines[:cursor_y]):
+    if not cursor_visible or any(row.lstrip().startswith(prefix) for row in lines[:cursor_y]):
         return False
     return all(not row.strip() for row in below)
 
@@ -1327,13 +1665,16 @@ def _marker_on_input_line(tail: str, marker: str, prompt_prefix: str) -> bool:
     if not prefix:
         return False
     lines = _normalize(tail).splitlines()
+    if _is_opencode_prefix(prompt_prefix):
+        typed = _opencode_input(lines)
+        return typed is not None and _squash(marker) in _squash(typed)
     last_prompt = None
     for i, line in enumerate(lines):
         if line.lstrip().startswith(prefix):
             last_prompt = i
     if last_prompt is None:
         return False
-    return any(marker in line for line in lines[last_prompt:])
+    return _squash(marker) in _squash("\n".join(lines[last_prompt:]))
 
 
 def _submit_pending(tail: str, marker: str, prompt_prefix: str) -> bool:
@@ -1350,11 +1691,27 @@ def _submit_pending(tail: str, marker: str, prompt_prefix: str) -> bool:
     fall back to the historical whole-tail scan — a false "pending" there
     only costs a retry Enter, whereas a false "submitted" silently drops
     the nudge.
+
+    The composer wraps long input onto rows of its own, which can split the
+    marker, so matching ignores whitespace (:func:`_squash`).  A per-row
+    match read a wrapped nudge as never typed and, after Enter, as
+    submitted.
+
+    OpenCode's input is the inside of its composer box, above the agent
+    row that is its last bar-prefixed line (:func:`_opencode_box`).  Every
+    wrapped row of it carries the bar, so the box is read bar-less.
     """
     if not marker:
         return False
     tail = _normalize(tail)
-    if marker not in tail:
+    needle = _squash(marker)
+    if _is_opencode_prefix(prompt_prefix):
+        typed = _opencode_input(tail.splitlines())
+        if typed is None:
+            # No recognisable box: a visible marker is still pending, as below.
+            return needle in _squash(tail.replace(_OPENCODE_BAR, ""))
+        return needle in _squash(typed)
+    if needle not in _squash(tail):
         return False
     prefix = _normalize(prompt_prefix).strip()
     if not prefix:
@@ -1368,7 +1725,7 @@ def _submit_pending(tail: str, marker: str, prompt_prefix: str) -> bool:
         # Input line not visible (e.g. long wrapped paste pushed it out of
         # the captured window) — treat a visible marker as still pending.
         return True
-    return any(marker in line for line in lines[last_prompt:])
+    return needle in _squash("\n".join(lines[last_prompt:]))
 
 
 _SAFE_META_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

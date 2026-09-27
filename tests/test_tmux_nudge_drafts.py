@@ -270,6 +270,51 @@ class TestCodexFooterPadding:
         await provider_for(composer).nudge(handle(), REMINDER)
         assert composer.submitted == [REMINDER]
 
+    # codex-cli 0.157 (observed live 2026-09-27): a model row, then one hint
+    # row whose wording varies by build and state, with right-aligned notices.
+    @pytest.mark.parametrize(
+        "hint",
+        [
+            "  ? for shortcuts",
+            "  ? for shortcuts" + " " * 40 + "⚠ 2 warnings · f2 to view",
+            "  ← for agents · ? for shortcuts",
+            " " * 60 + "⚠ 2 warnings · f2 to view",
+        ],
+        ids=["plain-hint", "hint-with-warnings", "agents-hint", "notice-only"],
+    )
+    @pytest.mark.parametrize("padding", [[], ["", ""]], ids=["no-padding", "padding"])
+    async def test_two_row_codex_footer_accepts_reminder(self, hint, padding):
+        model_row = "  GPT-6-Sol xhigh · ~/dev/agent-queue2/.aq/worktrees/slot-3 · Process tasks"
+        below = ["", model_row, hint, *padding]
+        composer = Composer(
+            row=CODEX_PLACEHOLDER, cursor_y=17, height=18 + len(below), below=below
+        )
+        await provider_for(composer).nudge(handle(), REMINDER)
+        assert composer.submitted == [REMINDER]
+
+    # The footer is bounded by shape, not wording: its one hint row changed
+    # twice in a day (``? for shortcuts``, ``← for agents · ? for
+    # shortcuts``) and each change left every idle Codex worker unwakeable.
+    # The dim placeholder under the cursor is what proves the input empty.
+    @pytest.mark.parametrize(
+        "below",
+        [
+            ["", "  GPT-6-Sol xhigh · /project", "  ? for shortcuts", "  unsent continuation"],
+            ["  unsent continuation", "  GPT-6-Sol xhigh · /project", "  ? for shortcuts"],
+            ["", "  unsent continuation", "  GPT-6-Sol xhigh · /project", "  ? for shortcuts"],
+            ["", "  tab to queue message    91% context left", "  ? for shortcuts"],
+        ],
+        ids=["two-rows-after-model-row", "no-separator", "row-above-footer", "busy-footer"],
+    )
+    async def test_two_row_footer_does_not_bypass_input_safety(self, below):
+        composer = Composer(
+            row=CODEX_PLACEHOLDER, cursor_y=17, height=18 + len(below), below=below
+        )
+        with pytest.raises(NotSubmitted):
+            await provider_for(composer).nudge(handle(), REMINDER)
+        assert composer.submitted == []
+        assert composer.mutations == []
+
     @pytest.mark.parametrize("unsafe", ["attached", "literal-placeholder", "text-after-footer"])
     async def test_padding_does_not_bypass_input_safety(self, unsafe):
         composer = Composer(
@@ -284,10 +329,56 @@ class TestCodexFooterPadding:
             composer.draft = "Ask Codex to do anything"
             composer.row = composer.prefix + composer.draft
         else:
-            composer.below[-1] = "  unsent continuation"
+            composer.below[-2:] = ["  unsent continuation", "  and more"]
         original = composer.draft
         with pytest.raises(NotSubmitted):
             await provider_for(composer).nudge(handle(), REMINDER)
         assert composer.draft == original
+        assert composer.submitted == []
+        assert composer.mutations == []
+
+
+CLAUDE_BORDER = "─" * 40
+#: Claude Code 2.1.283 on a freshly started tmux server keeps the terminal
+#: cursor hidden and paints its own: one inverse-video blank at the input.
+CLAUDE_DRAWN_CURSOR_ROW = "❯\N{NO-BREAK SPACE}\x1b[7m \x1b[0m"
+
+
+def claude_hidden_cursor(row=CLAUDE_DRAWN_CURSOR_ROW, *, bordered=True):
+    return Composer(
+        prefix="❯ ",
+        row=row,
+        visible=0,
+        above=["older output", CLAUDE_BORDER if bordered else "older output"],
+        below=[CLAUDE_BORDER if bordered else "", "  ⏵⏵ bypass permissions on"],
+    )
+
+
+class TestHiddenCursor:
+    async def test_claudes_bordered_composer_with_its_drawn_cursor_is_empty(self):
+        composer = claude_hidden_cursor()
+        await provider_for(composer).nudge(handle(), REMINDER)
+        assert composer.submitted == [REMINDER]
+
+    @pytest.mark.parametrize(
+        "composer",
+        [
+            claude_hidden_cursor("❯\N{NO-BREAK SPACE}draft\x1b[7m \x1b[0m"),
+            claude_hidden_cursor("❯\N{NO-BREAK SPACE}\x1b[7md\x1b[0mraft"),
+            claude_hidden_cursor(bordered=False),
+            Composer(row=CODEX_PLACEHOLDER, visible=0, below=["", "  GPT-6-Sol xhigh · /p"]),
+            Composer(prefix="❯ ", row="❯ ", visible=0),
+        ],
+        ids=[
+            "claude-draft",
+            "claude-cursor-on-draft",
+            "claude-without-borders",
+            "codex-placeholder",
+            "plain-prompt",
+        ],
+    )
+    async def test_every_other_hidden_cursor_still_defers(self, composer):
+        with pytest.raises(NotSubmitted):
+            await provider_for(composer).nudge(handle(), REMINDER)
         assert composer.submitted == []
         assert composer.mutations == []

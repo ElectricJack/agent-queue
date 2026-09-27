@@ -19,6 +19,8 @@ from typing import Any
 
 from sqlalchemy import and_, case, func, insert, select, update
 
+from src.database.queries.blocked_state import apply_label_filters
+from src.database.queries.claim_queries import _frontier_predicates
 from src.database.tables import messages, sessions, task_reroutes, tasks
 from src.models import TaskStatus
 
@@ -29,8 +31,9 @@ REROUTABLE_STATUSES = (
     TaskStatus.BLOCKED.value,
     TaskStatus.PAUSED.value,
 )
-#: The automatic reason code; the others are an operator's.
+#: Automatic reasons share the per-task move limit and cooldown.
 AUTOMATIC_REASON = "provider_unavailable"
+SPILL_REASON = "capacity_spill"
 UNDO_REASON = "operator_undo"
 
 _UNSET = object()
@@ -249,7 +252,8 @@ class TaskRerouteQueryMixin:
 
         What the sweep's per-task limits read (D15: ``max_auto_per_task``,
         ``task_cooldown_seconds``; D12: "skipping any provider it already
-        left").  Tasks with no re-route are absent.
+        left"). Capacity spills share automatic limits but do not mark a
+        provider as left. Tasks with no re-route are absent.
         """
         ids = sorted(set(task_ids))
         if not ids:
@@ -270,11 +274,11 @@ class TaskRerouteQueryMixin:
             )
             if reason == UNDO_REASON:
                 continue
-            if reason == AUTOMATIC_REASON:
+            if reason in (AUTOMATIC_REASON, SPILL_REASON):
                 entry["auto_count"] += 1
                 if entry["last_auto_at"] is None or at > entry["last_auto_at"]:
                     entry["last_auto_at"] = at
-            if undone_at is None and from_provider:
+            if reason != SPILL_REASON and undone_at is None and from_provider:
                 entry["left_providers"].add(from_provider)
         return stats
 
@@ -293,6 +297,45 @@ class TaskRerouteQueryMixin:
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).all()
         return {profile_id: int(count) for profile_id, count in rows}
+
+    async def list_provider_intent_tasks(
+        self,
+        *,
+        intents: Sequence[str] = ("pinned", "preferred"),
+        statuses: Sequence[str] = (
+            TaskStatus.READY.value,
+            TaskStatus.ASSIGNED.value,
+            TaskStatus.IN_PROGRESS.value,
+        ),
+    ) -> list[dict[str, Any]]:
+        """Routed tasks carrying an explicit provider intent, ordered by profile then id.
+
+        The provider allocation snapshot's pin read: which queued and running
+        tasks a bulk provider change must leave where they are.  Only the
+        routing columns are read, never the task body.
+        """
+        wanted_intents = sorted(set(intents))
+        wanted_statuses = sorted(set(statuses))
+        if not wanted_intents or not wanted_statuses:
+            return []
+        stmt = (
+            select(
+                tasks.c.id,
+                tasks.c.project_id,
+                tasks.c.profile_id,
+                tasks.c.status,
+                tasks.c.provider_intent,
+            )
+            .where(
+                tasks.c.profile_id.is_not(None),
+                tasks.c.provider_intent.in_(wanted_intents),
+                tasks.c.status.in_(wanted_statuses),
+            )
+            .order_by(tasks.c.profile_id, tasks.c.id)
+        )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().all()
+        return [dict(row) for row in rows]
 
     async def list_reroute_candidates(
         self,
@@ -335,6 +378,51 @@ class TaskRerouteQueryMixin:
             rows = (await conn.execute(stmt)).mappings().all()
         return [dict(row) for row in rows]
 
+    async def list_spill_candidates(
+        self,
+        profile_ids: Sequence[str],
+        *,
+        updated_before: float | None = None,
+    ) -> list[dict]:
+        """READY tasks on *profile_ids* capacity spill may move (D24 S3), in claim order.
+
+        Exactly the claim frontier: the acceptance predicates
+        ``_frontier_where`` applies per project and the ``hold:`` label
+        filter, so spill weighs the tasks a pool worker could claim and
+        ``count_ready_by_profile`` counts as pool demand -- never a blocked,
+        assigned or held one.  *updated_before* keeps only tasks that have
+        waited (``tasks.updated_at``) since at least then.
+        """
+        ids = sorted(set(profile_ids))
+        if not ids:
+            return []
+        stmt = (
+            select(
+                tasks.c.id,
+                tasks.c.project_id,
+                tasks.c.profile_id,
+                tasks.c.priority,
+                tasks.c.created_at,
+                tasks.c.updated_at,
+                tasks.c.status,
+                tasks.c.title,
+                tasks.c.intelligence_class,
+                tasks.c.provider_intent,
+            )
+            .where(
+                tasks.c.status == TaskStatus.READY.value,
+                tasks.c.profile_id.in_(ids),
+                *_frontier_predicates().values(),
+            )
+            .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc(), tasks.c.id.asc())
+        )
+        if updated_before is not None:
+            stmt = stmt.where(tasks.c.updated_at <= float(updated_before))
+        stmt = apply_label_filters(stmt, exclude_hold=True)
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().all()
+        return [dict(row) for row in rows]
+
     async def reroute_notice_sent(self, thread_id: str, to_kind: str, to_id: str) -> bool:
         """Has a batch notice with *thread_id* already gone to ``to_kind:to_id``?
 
@@ -358,6 +446,7 @@ class TaskRerouteQueryMixin:
 __all__ = [
     "AUTOMATIC_REASON",
     "REROUTABLE_STATUSES",
+    "SPILL_REASON",
     "UNDO_REASON",
     "TaskRerouteQueryMixin",
 ]

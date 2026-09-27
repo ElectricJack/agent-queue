@@ -327,6 +327,22 @@ class TestAgentMessageCLI:
             ("agent_message", {"body": "stop the suite", "all_running": True})
         ]
 
+    def test_reply_to_is_forwarded(self, runner):
+        from src.cli.app import cli
+
+        mock = _mock_client({"agent_message": {"message_id": "msg-2", "state": "queued"}})
+        with patch("src.cli.agent_messages._get_client", return_value=mock):
+            result = runner.invoke(
+                cli, ["agent", "message", "task-1", "filed", "--reply-to", "msg-1"]
+            )
+        assert result.exit_code == 0, result.output
+        assert mock.calls == [
+            (
+                "agent_message",
+                {"target": "task-1", "body": "filed", "all_running": False, "reply_to": "msg-1"},
+            )
+        ]
+
 
 # ---------------------------------------------------------------------------
 # aq handoff

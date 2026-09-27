@@ -1,11 +1,14 @@
 import { useId } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { useTaskSessions } from "../api/taskSessions";
+import { focusSessionHref } from "../pages/focus/routes";
+import { useTerminalLinkMode } from "./terminalLinks";
 
 export default function TaskSessions({ taskId, onOpenSession, fromTaskPane = false }: { taskId: string; onOpenSession?: () => void; fromTaskPane?: boolean }) {
   const headingId = useId();
   const location = useLocation();
   const history = useTaskSessions(taskId);
+  const mode = useTerminalLinkMode();
   const attempts = history.data?.sessions;
   const from = location.pathname + location.search + location.hash;
 
@@ -33,8 +36,12 @@ export default function TaskSessions({ taskId, onOpenSession, fromTaskPane = fal
               <li key={attempt.id} className="px-3 py-2">
                 <div className="flex items-center justify-between gap-2">
                   <Link
-                    to={`/sessions/${encodeURIComponent(attempt.session_id)}?attempt=${encodeURIComponent(attempt.id)}&taskId=${encodeURIComponent(taskId)}`}
-                    state={{ from, taskPane: fromTaskPane ? { taskId } : undefined, terminalFocus: true }} onClick={onOpenSession}
+                    to={mode === "watch"
+                      ? focusSessionHref(attempt.session_id, { started: attempt.session_started_at })
+                      : `/sessions/${encodeURIComponent(attempt.session_id)}?attempt=${encodeURIComponent(attempt.id)}&taskId=${encodeURIComponent(taskId)}`}
+                    state={mode === "watch" ? undefined : { from, taskPane: fromTaskPane ? { taskId } : undefined, terminalFocus: true }}
+                    // A pane closes as its session opens; a focus page is left by the link itself.
+                    onClick={mode === "watch" ? undefined : onOpenSession}
                     title={name} className="min-w-0 truncate text-sm font-medium text-indigo-400 hover:underline"
                   >{name}</Link>
                   {attempt.state && <span className="shrink-0 rounded bg-gray-800 px-1.5 py-0.5 text-[10px] text-gray-300">{attempt.state}</span>}

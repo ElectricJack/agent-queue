@@ -31,6 +31,8 @@ from src.database.queries.assignment_route_queries import AssignmentRouteQueryMi
 from src.database.queries.blocked_state import BlockedStateMixin
 from src.database.queries.chat_queries import ChatQueryMixin
 from src.database.queries.claim_queries import ClaimQueryMixin
+from src.database.queries.collaboration_queries import CollaborationQueriesMixin
+from src.database.queries.collaboration_lifecycle_queries import CollaborationLifecycleQueriesMixin
 from src.database.queries.conversation_queries import ConversationQueriesMixin
 from src.database.queries.dashboard_state_queries import DashboardStateQueriesMixin
 from src.database.queries.dependency_queries import DependencyQueryMixin
@@ -49,6 +51,7 @@ from src.database.queries.integration_state_queries import IntegrationStateQueri
 from src.database.queries.integration_train_queries import IntegrationTrainQueriesMixin
 from src.database.queries.job_queries import JobQueriesMixin
 from src.database.queries.layout_queries import LayoutQueryMixin
+from src.database.queries.lifecycle_queries import LifecycleQueryMixin
 from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
 from src.database.queries.message_queries import MessageQueriesMixin
 from src.database.queries.metrics_queries import MetricsQueryMixin
@@ -102,6 +105,7 @@ class PostgreSQLDatabaseAdapter(
     RepoQueryMixin,
     TaskQueryMixin,
     TaskRecoveryQueryMixin,
+    LifecycleQueryMixin,
     TaskCommentQueriesMixin,
     TaskSubtaskQueriesMixin,
     DependencyQueryMixin,
@@ -111,6 +115,8 @@ class PostgreSQLDatabaseAdapter(
     AgentQueryMixin,
     AgentQuestionQueriesMixin,
     AgentWaitQueriesMixin,
+    CollaborationQueriesMixin,
+    CollaborationLifecycleQueriesMixin,
     WorkspaceQueryMixin,
     WorkspaceKindQueryMixin,
     TaskRequirementsQueryMixin,

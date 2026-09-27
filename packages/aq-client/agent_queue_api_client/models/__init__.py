@@ -81,6 +81,29 @@ from .claude_usage_response_active_sessions_item import ClaudeUsageResponseActiv
 from .claude_usage_response_model_usage_type_0 import ClaudeUsageResponseModelUsageType0
 from .claude_usage_response_rate_limit_type_0 import ClaudeUsageResponseRateLimitType0
 from .cluster_bounds_dto import ClusterBoundsDTO
+from .collaboration_accept_args import CollaborationAcceptArgs
+from .collaboration_accept_response_422 import CollaborationAcceptResponse422
+from .collaboration_close_args import CollaborationCloseArgs
+from .collaboration_close_response import CollaborationCloseResponse
+from .collaboration_close_response_422 import CollaborationCloseResponse422
+from .collaboration_create_args import CollaborationCreateArgs
+from .collaboration_create_response_422 import CollaborationCreateResponse422
+from .collaboration_get_args import CollaborationGetArgs
+from .collaboration_get_response import CollaborationGetResponse
+from .collaboration_get_response_422 import CollaborationGetResponse422
+from .collaboration_list_args import CollaborationListArgs
+from .collaboration_list_args_state_type_0 import CollaborationListArgsStateType0
+from .collaboration_list_response import CollaborationListResponse
+from .collaboration_list_response_422 import CollaborationListResponse422
+from .collaboration_member_record import CollaborationMemberRecord
+from .collaboration_member_record_state import CollaborationMemberRecordState
+from .collaboration_message_record import CollaborationMessageRecord
+from .collaboration_response import CollaborationResponse
+from .collaboration_thread_record import CollaborationThreadRecord
+from .collaboration_thread_record_close_reason_type_0 import CollaborationThreadRecordCloseReasonType0
+from .collaboration_thread_record_created_by_kind import CollaborationThreadRecordCreatedByKind
+from .collaboration_thread_record_final_result_type_0 import CollaborationThreadRecordFinalResultType0
+from .collaboration_thread_record_state import CollaborationThreadRecordState
 from .command_center_preferences import CommandCenterPreferences
 from .command_center_preferences_density import CommandCenterPreferencesDensity
 from .command_center_preferences_document import CommandCenterPreferencesDocument
@@ -679,6 +702,10 @@ from .message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenTyp
 from .message_status_request import MessageStatusRequest
 from .message_status_response import MessageStatusResponse
 from .message_status_response_422 import MessageStatusResponse422
+from .message_wait_args import MessageWaitArgs
+from .message_wait_response import MessageWaitResponse
+from .message_wait_response_422 import MessageWaitResponse422
+from .message_wait_response_state import MessageWaitResponseState
 from .metrics_sample import MetricsSample
 from .metrics_series_response import MetricsSeriesResponse
 from .model_tokens import ModelTokens
@@ -936,6 +963,22 @@ from .provenance_ref import ProvenanceRef
 from .provide_input_request import ProvideInputRequest
 from .provide_input_response import ProvideInputResponse
 from .provide_input_response_422 import ProvideInputResponse422
+from .provider_allocation_ceiling import ProviderAllocationCeiling
+from .provider_allocation_diagnostic import ProviderAllocationDiagnostic
+from .provider_allocation_event import ProviderAllocationEvent
+from .provider_allocation_group import ProviderAllocationGroup
+from .provider_allocation_hidden import ProviderAllocationHidden
+from .provider_allocation_intent import ProviderAllocationIntent
+from .provider_allocation_intent_by_status import ProviderAllocationIntentByStatus
+from .provider_allocation_manual_agent import ProviderAllocationManualAgent
+from .provider_allocation_profile import ProviderAllocationProfile
+from .provider_allocation_project import ProviderAllocationProject
+from .provider_allocation_project_supply import ProviderAllocationProjectSupply
+from .provider_allocation_session import ProviderAllocationSession
+from .provider_allocation_status_request import ProviderAllocationStatusRequest
+from .provider_allocation_status_response import ProviderAllocationStatusResponse
+from .provider_allocation_status_response_422 import ProviderAllocationStatusResponse422
+from .provider_allocation_supply import ProviderAllocationSupply
 from .provider_availability_status import ProviderAvailabilityStatus
 from .provider_availability_status_evidence_item import ProviderAvailabilityStatusEvidenceItem
 from .provider_held_task import ProviderHeldTask
@@ -1091,6 +1134,7 @@ from .review_comment_response_422 import ReviewCommentResponse422
 from .review_decide_request import ReviewDecideRequest
 from .review_decide_response import ReviewDecideResponse
 from .review_decide_response_422 import ReviewDecideResponse422
+from .review_decide_response_playbook_type_0 import ReviewDecideResponsePlaybookType0
 from .review_delegate_request import ReviewDelegateRequest
 from .review_delegate_response import ReviewDelegateResponse
 from .review_delegate_response_422 import ReviewDelegateResponse422
@@ -1118,6 +1162,7 @@ from .review_show_response_revisions_item import ReviewShowResponseRevisionsItem
 from .review_submit_request import ReviewSubmitRequest
 from .review_submit_response import ReviewSubmitResponse
 from .review_submit_response_422 import ReviewSubmitResponse422
+from .review_submit_response_playbook_type_0 import ReviewSubmitResponsePlaybookType0
 from .review_withdraw_request import ReviewWithdrawRequest
 from .review_withdraw_response import ReviewWithdrawResponse
 from .review_withdraw_response_422 import ReviewWithdrawResponse422
@@ -1378,6 +1423,7 @@ from .task_subtask_with_context import TaskSubtaskWithContext
 from .task_subtasks_request import TaskSubtasksRequest
 from .task_subtasks_response import TaskSubtasksResponse
 from .task_subtasks_response_422 import TaskSubtasksResponse422
+from .terminal_access_response import TerminalAccessResponse
 from .test_select_request import TestSelectRequest
 from .test_select_response import TestSelectResponse
 from .test_select_response_422 import TestSelectResponse422
@@ -1554,6 +1600,29 @@ __all__ = (
     "ClaudeUsageResponseModelUsageType0",
     "ClaudeUsageResponseRateLimitType0",
     "ClusterBoundsDTO",
+    "CollaborationAcceptArgs",
+    "CollaborationAcceptResponse422",
+    "CollaborationCloseArgs",
+    "CollaborationCloseResponse",
+    "CollaborationCloseResponse422",
+    "CollaborationCreateArgs",
+    "CollaborationCreateResponse422",
+    "CollaborationGetArgs",
+    "CollaborationGetResponse",
+    "CollaborationGetResponse422",
+    "CollaborationListArgs",
+    "CollaborationListArgsStateType0",
+    "CollaborationListResponse",
+    "CollaborationListResponse422",
+    "CollaborationMemberRecord",
+    "CollaborationMemberRecordState",
+    "CollaborationMessageRecord",
+    "CollaborationResponse",
+    "CollaborationThreadRecord",
+    "CollaborationThreadRecordCloseReasonType0",
+    "CollaborationThreadRecordCreatedByKind",
+    "CollaborationThreadRecordFinalResultType0",
+    "CollaborationThreadRecordState",
     "CommandCenterPreferences",
     "CommandCenterPreferencesDensity",
     "CommandCenterPreferencesDocument",
@@ -2144,6 +2213,10 @@ __all__ = (
     "MessageStatusRequest",
     "MessageStatusResponse",
     "MessageStatusResponse422",
+    "MessageWaitArgs",
+    "MessageWaitResponse",
+    "MessageWaitResponse422",
+    "MessageWaitResponseState",
     "MetricsSample",
     "MetricsSeriesResponse",
     "ModelTokens",
@@ -2399,6 +2472,22 @@ __all__ = (
     "ProvideInputRequest",
     "ProvideInputResponse",
     "ProvideInputResponse422",
+    "ProviderAllocationCeiling",
+    "ProviderAllocationDiagnostic",
+    "ProviderAllocationEvent",
+    "ProviderAllocationGroup",
+    "ProviderAllocationHidden",
+    "ProviderAllocationIntent",
+    "ProviderAllocationIntentByStatus",
+    "ProviderAllocationManualAgent",
+    "ProviderAllocationProfile",
+    "ProviderAllocationProject",
+    "ProviderAllocationProjectSupply",
+    "ProviderAllocationSession",
+    "ProviderAllocationStatusRequest",
+    "ProviderAllocationStatusResponse",
+    "ProviderAllocationStatusResponse422",
+    "ProviderAllocationSupply",
     "ProviderAvailabilityStatus",
     "ProviderAvailabilityStatusEvidenceItem",
     "ProviderHeldTask",
@@ -2554,6 +2643,7 @@ __all__ = (
     "ReviewDecideRequest",
     "ReviewDecideResponse",
     "ReviewDecideResponse422",
+    "ReviewDecideResponsePlaybookType0",
     "ReviewDelegateRequest",
     "ReviewDelegateResponse",
     "ReviewDelegateResponse422",
@@ -2581,6 +2671,7 @@ __all__ = (
     "ReviewSubmitRequest",
     "ReviewSubmitResponse",
     "ReviewSubmitResponse422",
+    "ReviewSubmitResponsePlaybookType0",
     "ReviewWithdrawRequest",
     "ReviewWithdrawResponse",
     "ReviewWithdrawResponse422",
@@ -2839,6 +2930,7 @@ __all__ = (
     "TaskSubtaskUpdateResponse",
     "TaskSubtaskUpdateResponse422",
     "TaskSubtaskWithContext",
+    "TerminalAccessResponse",
     "TestSelectionListRequest",
     "TestSelectionListResponse",
     "TestSelectionListResponse422",

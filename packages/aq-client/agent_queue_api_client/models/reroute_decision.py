@@ -17,7 +17,8 @@ class RerouteDecision:
 
     ``action`` is ``move``, ``hold`` or ``skip``; ``kind`` names why a held
     task is not moving (``provider_pinned``, ``no_equivalent_rung``,
-    ``awaiting_failover_capacity`` with ``ahead``, ...).
+    ``awaiting_failover_capacity`` with ``ahead``, the capacity spill kinds
+    ``spill_no_target`` / ``spill_pinned`` / ..., ...).
 
         Attributes:
             task_id (str):
@@ -39,6 +40,7 @@ class RerouteDecision:
             title (str | Unset):  Default: ''.
             status (str | Unset):  Default: ''.
             provider_generation (int | None | Unset):
+            reason_code (None | str | Unset):
     """
 
     task_id: str
@@ -60,6 +62,7 @@ class RerouteDecision:
     title: str | Unset = ""
     status: str | Unset = ""
     provider_generation: int | None | Unset = UNSET
+    reason_code: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -129,6 +132,12 @@ class RerouteDecision:
         else:
             provider_generation = self.provider_generation
 
+        reason_code: None | str | Unset
+        if isinstance(self.reason_code, Unset):
+            reason_code = UNSET
+        else:
+            reason_code = self.reason_code
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -169,6 +178,8 @@ class RerouteDecision:
             field_dict["status"] = status
         if provider_generation is not UNSET:
             field_dict["provider_generation"] = provider_generation
+        if reason_code is not UNSET:
+            field_dict["reason_code"] = reason_code
 
         return field_dict
 
@@ -262,6 +273,15 @@ class RerouteDecision:
 
         provider_generation = _parse_provider_generation(d.pop("provider_generation", UNSET))
 
+        def _parse_reason_code(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason_code = _parse_reason_code(d.pop("reason_code", UNSET))
+
         reroute_decision = cls(
             task_id=task_id,
             project_id=project_id,
@@ -282,6 +302,7 @@ class RerouteDecision:
             title=title,
             status=status,
             provider_generation=provider_generation,
+            reason_code=reason_code,
         )
 
         reroute_decision.additional_properties = d

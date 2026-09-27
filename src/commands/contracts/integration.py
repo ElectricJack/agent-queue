@@ -8,11 +8,13 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from src.commands.contracts.models import (
+    ClausePredicate,
     CommandArgs,
     CommandContract,
     CommandPresentation,
     CommandResult,
     CommandValue,
+    CreateClause,
     CreateOrReuseClause,
     EffectSubject,
     ExecutionContract,
@@ -68,6 +70,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_abort",
         "integration_develop",
         "integration_adopt",
+        "integration_migrate_provenance",
         "integration_development_sweep",
         "integration_cancel_preserving",
         "integration_retry_cleanup",
@@ -346,6 +349,29 @@ class IntegrationAdoptArgs(CommandArgs):
     head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
     accept_equivalent: bool = False
     reason: str = Field(min_length=1)
+
+
+class IntegrationMigrateProvenanceArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    apply: bool = False
+    limit: int = Field(default=500, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0)
+    # Only the source generations this (held) task's close needs.
+    task_id: str | None = Field(default=None, min_length=1)
+
+
+class IntegrationMigrateProvenanceValue(CommandValue):
+    project_id: str | None = None
+    repository_id: str | None = None
+    inventory: list[dict[str, Any]] = Field(default_factory=list)
+    repairs: list[dict[str, Any]] = Field(default_factory=list)
+    ambiguous: list[dict[str, Any]] = Field(default_factory=list)
+    fallback_generations: list[dict[str, Any]] = Field(default_factory=list)
+    fallback_count: int = Field(default=0, ge=0)
+    zero_fallback: bool = False
+    operations: list[dict[str, Any]] = Field(default_factory=list)
+    legacy_heads: list[dict[str, Any]] = Field(default_factory=list)
+    next_offset: int | None = None
 
 
 class IntegrationDevelopmentSweepArgs(CommandArgs):
@@ -2605,6 +2631,27 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     declaration together.  Unavailable security-sensitive mutations remain
     outside the allowlist.
     """
+    name = "integration_migrate_provenance"
+    if registry.get(name) is None:
+        contract = _operational_contract(name, IntegrationMigrateProvenanceArgs,
+            ("inventory", "migrated", "blocked"), successes=frozenset({"inventory", "migrated"}),
+            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationMigrateProvenanceValue)
+        contract = contract.model_copy(update={
+            "execution": contract.execution.model_copy(update={"effects": (
+                ReadClause(subject=EffectSubject.DELIVERY_EVIDENCE),
+                CreateClause(subject=EffectSubject.DELIVERY_EVIDENCE,
+                             when=ClausePredicate(arg_equals=("apply", True))),
+            )}),
+            "presentation": contract.presentation.model_copy(update={
+                "summary": "Inventory exact legacy completions; optionally retain verified Git provenance.",
+            }),
+        })
+
+        async def migrate(args, ctx):
+            return await _hierarchy_adapter("integration_migrate_provenance", args, ctx, IntegrationMigrateProvenanceValue,
+                                             {"inventory", "migrated", "blocked"})
+
+        registry.register(CommandRegistration(name, contract, migrate))
     for name, args_model in _DEVELOPMENT_CONTRACT_ARGS:
         if registry.get(name) is None:
             contract = _operational_contract(name, args_model, _DEVELOPMENT_OUTCOMES,

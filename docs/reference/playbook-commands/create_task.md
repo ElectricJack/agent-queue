@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:d7858b8ab6ff344efe5de33ec3c618bf10f7fa6afdc923315460463da7d2ee3c` |
+| Contract fingerprint | `sha256:6b42134bd02d6111e6dde186aa5ffebfb2aae8ba6842a9c4024a465086359ca2` |
 
 ## Parameters
 
@@ -36,6 +36,7 @@
 | `root` | `boolean \| null` | no | `null` | Create at project root |
 | `parent_key` | `string \| null` | no | `null` | — |
 | `parent_title` | `string \| null` | no | `null` | — |
+| `container` | `boolean \| null` | no | `null` | — |
 | `labels` | `string[] \| null` | no | `null` | Labels |
 | `reason` | `string \| null` | no | `null` | Reason |
 | `discovered_from` | `string \| null` | no | `null` | Discovered from |
@@ -206,7 +207,7 @@ from the database rather than from the event.
 
 | Outcome | Cause |
 |---|---|
-| `rejected` | Any validation refusal: unknown project / profile / class / workspace / dependency / parent, a control-plane profile, `--root` together with a `parent_id`, an invalid enum value, a class with no model mapping for the profile's harness, `delegation refused: caller has no resolved profile`, or a `hierarchy.*` refusal such as `hierarchy.container_closed` or `hierarchy.depth`. |
+| `rejected` | Any validation refusal: unknown project / profile / class / workspace / dependency / parent, a control-plane profile, `--root` together with a `parent_id`, an invalid enum value, a class with no model mapping for the profile's harness, `delegation refused: caller has no resolved profile`, `dependency_on_ancestor` (a gating `depends_on` onto the new task's own parent chain or the filer's held task), or a `hierarchy.*` refusal such as `hierarchy.container_closed` or `hierarchy.depth`. |
 | `rejected` (worker filing) | `idle_session_cannot_file`, `filing_quota_exceeded` (`swarm.max_filings_per_task`), a parent outside the held task's subtree, or a project other than the session's. |
 | `unauthorized` | The capability gate refused `create_task` for this principal (`handler.py:962`); under `capability_enforcement: audit` the same case only logs `capability_denied_shadow`. |
 | `contract_violation` | The result did not match `CreateTaskValue`, or the step's `transitions` has no edge for the returned outcome and no `runtime_error` edge (`command.py:69`). |

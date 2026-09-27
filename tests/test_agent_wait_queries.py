@@ -412,6 +412,10 @@ async def test_bounded_batches_rotate_past_active_producers(env):
     row = await register(env, kind="timer", match={"due_at": NOW + 2}, timeout=200)
     first = await env.db.reconcile_agent_waits(now=NOW + 3, limit=1000)
     assert first["scanned"] == 100
+    # A due timer must not wait behind 100 unresolved producer subscriptions
+    # until its much later hard timeout (or the next scan rotation).
+    assert first["resolved"] == 1
+    assert (await env.db.get_agent_wait(row["id"]))["state"] == "satisfied"
     await env.db.reconcile_agent_waits(now=NOW + 4)
     assert (await env.db.get_agent_wait(row["id"]))["state"] == "satisfied"
     assert await env.db.blocking_wait_for("super", 0, NOW + 4) is None

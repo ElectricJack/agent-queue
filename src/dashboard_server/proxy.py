@@ -766,7 +766,7 @@ class DaemonProxy:
                     headers=upstream_request_headers(scope.get("headers") or [], websocket=True),
                     autoclose=False,
                     autoping=True,
-                    heartbeat=None,
+                    heartbeat=15.0,
                     compress=0,
                     max_msg_size=self._max_message_size,
                     timeout=aiohttp.ClientWSTimeout(ws_receive=None, ws_close=_CLOSE_SECONDS),

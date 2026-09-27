@@ -277,6 +277,7 @@ def test_unimplemented_integration_operations_are_not_registered():
         "integration_abort",
         "integration_develop",
         "integration_adopt",
+        "integration_migrate_provenance",
         "integration_cancel_preserving",
         "integration_development_sweep",
         "integration_retry_cleanup",

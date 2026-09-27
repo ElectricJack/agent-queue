@@ -120,6 +120,177 @@ def make_state(**kw):
     )
 
 
+@pytest.fixture
+async def spill_pool(handler, db):
+    from src.orchestrator.pools import PoolMeasurement
+    from src.scheduler import PlacementCandidate, PoolKey, PoolProjectSupply, PoolSupply
+    from src.sessions.harness_parser import Harness
+
+    orch = handler.orchestrator
+    handler.config.swarm.enabled = True
+    orch.harness_registry.upsert(Harness(id="codex", name="Codex", command="codex"))
+    orch.session_spec_builder._intelligence_classes["fast-low"] = IntelligenceClass(
+        "fast-low", "Fast", "", {
+            "anthropic": {"model": "claude-sonnet-5"},
+            "openai": {"model": "gpt-5"},
+        },
+    )
+    measurement = PoolMeasurement(projects={PROJECT_ID: await db.get_project(PROJECT_ID)})
+    for harness, idle, busy, ready in (("codex", 0, 1, 1), ("claude", 1, 0, 0)):
+        pid = f"fast-low-{harness}"
+        profile = AgentProfile(
+            id=pid, name=pid, harness=harness, default_class="fast-low",
+            lifecycle="pool", max_active=1,
+        )
+        await db.create_profile(profile)
+        key = PoolKey(pid)
+        measurement.profiles[key] = profile
+        measurement.supply[key] = PoolSupply(
+            running_idle=idle, running_busy=busy,
+            by_project={PROJECT_ID: PoolProjectSupply(running_idle=idle, running_busy=busy)},
+        )
+        measurement.demand[key] = ready
+        measurement.bounds[key] = (0, 1)
+        measurement.candidates[key] = [PlacementCandidate(
+            PROJECT_ID, ready=ready, live=1, project_live_total=2,
+            project_cap=None, workspace_capacity=0, quarantined=False, warm_floor=0,
+        )]
+    orch._measure_pools = AsyncMock(return_value=measurement)
+    orch.provider_reroute._pool_measure = orch._measure_pools
+    orch.provider_reroute._pool_global_cap = lambda: None
+    orch.provider_reroute._clock = lambda: 10_000.0
+    orch.provider_reroute.playbook_active = AsyncMock(return_value=True)
+    return measurement
+
+
+async def spill_task(db, tid="spill", *, age=900, intent="preferred", priority=100):
+    from sqlalchemy import update
+
+    from src.database.tables import tasks
+
+    await mktask(
+        db, tid, status=TaskStatus.READY, profile_id="fast-low-codex",
+        intelligence_class="fast-low", provider_intent=intent, priority=priority,
+    )
+    async with db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == tid).values(updated_at=10_000 - age))
+
+
+@pytest.mark.parametrize(
+    "age,intent,target_idle,expected",
+    [
+        (100, "preferred", 1, "eligible in 200 s"),
+        (900, "preferred", 1, "the next sweep moves it to fast-low-claude"),
+        (900, "pinned", 1, "spill_pinned"),
+        (900, "preferred", 0, "spill_no_target"),
+    ],
+)
+async def test_pool_wait_explains_capacity_spill(
+    handler, db, spill_pool, age, intent, target_idle, expected,
+):
+    from src.scheduler import PoolKey
+
+    await spill_task(db, age=age, intent=intent)
+    target = spill_pool.supply[PoolKey("fast-low-claude")]
+    target.running_idle = target_idle
+    target.running_busy = 1 - target_idle
+    target.by_project[PROJECT_ID].running_idle = target_idle
+    target.by_project[PROJECT_ID].running_busy = 1 - target_idle
+    result = await handler._cmd_explain_task({"task_id": "spill"})
+    reason = next(r for r in result["reasons"] if r["code"] == "awaiting_pool_session")
+    assert "capacity spill:" in reason["detail"]
+    assert expected in reason["detail"]
+    task = await db.get_task("spill")
+    assert task.profile_id == "fast-low-codex"
+    assert await db.list_task_reroutes(task_id="spill") == []
+
+
+@pytest.mark.parametrize("inactive", ["observe", "reroute", "spill", "playbook", "swarm"])
+async def test_pool_wait_explains_inactive_capacity_spill(handler, db, spill_pool, inactive):
+    await spill_task(db)
+    cfg = handler.config
+    if inactive == "observe":
+        cfg.provider_failover.mode = "observe"
+    elif inactive == "reroute":
+        cfg.provider_failover.reroute.enabled = False
+    elif inactive == "spill":
+        cfg.provider_failover.spill.enabled = False
+    elif inactive == "playbook":
+        handler.orchestrator.provider_reroute.playbook_active.return_value = False
+    else:
+        cfg.swarm.enabled = False
+    result = await handler._cmd_explain_task({"task_id": "spill"})
+    reason = next(r for r in result["reasons"] if r["code"] == "awaiting_pool_session")
+    assert "spill_inactive" in reason["detail"]
+    assert "the next sweep moves" not in reason["detail"]
+
+
+async def test_capacity_spill_explanation_respects_queue_headroom(handler, db, spill_pool):
+    from dataclasses import replace
+
+    from src.scheduler import PoolKey
+
+    await spill_task(db, "first", priority=10)
+    await spill_task(db, "second", priority=20)
+    source = PoolKey("fast-low-codex")
+    spill_pool.demand[source] = 2
+    spill_pool.candidates[source][0] = replace(spill_pool.candidates[source][0], ready=2)
+    reroute = handler.orchestrator.provider_reroute
+    first = await reroute.spill_state(await db.get_task("first"))
+    second = await reroute.spill_state(await db.get_task("second"))
+    assert first["to_profile_id"] == "fast-low-claude"
+    assert second["kind"] == "spill_no_target"
+    plan = await reroute.sweep(dry_run=True)
+    assert [d["task_id"] for d in plan["moved"]] == ["first"]
+    assert [(d["task_id"], d["kind"]) for d in plan["held"]] == [
+        ("second", second["kind"]),
+    ]
+
+
+async def test_capacity_spill_explanation_excludes_other_young_tasks(handler, db, spill_pool):
+    from dataclasses import replace
+
+    from src.scheduler import PoolKey
+
+    await spill_task(db, "young", age=100, priority=10)
+    await spill_task(db, "old", priority=20)
+    source = PoolKey("fast-low-codex")
+    spill_pool.demand[source] = 2
+    supply = spill_pool.supply[source]
+    supply.running_idle, supply.running_busy = 1, 0
+    supply.by_project[PROJECT_ID].running_idle = 1
+    supply.by_project[PROJECT_ID].running_busy = 0
+    spill_pool.candidates[source][0] = replace(spill_pool.candidates[source][0], ready=2)
+    state = await handler.orchestrator.provider_reroute.spill_state(await db.get_task("old"))
+    assert state["to_profile_id"] == "fast-low-claude"
+
+
+async def test_capacity_spill_explanation_keeps_frontier_exclusions(handler, db, spill_pool):
+    await spill_task(db)
+    await db.add_task_label("spill", "hold:operator")
+    result = await handler._cmd_explain_task({"task_id": "spill"})
+    reason = next(r for r in result["reasons"] if r["code"] == "awaiting_pool_session")
+    assert "capacity spill:" not in reason["detail"]
+    assert "frontier_hold_label" in result["reason_codes"]
+
+
+@pytest.mark.parametrize("profile_id", [None, "worker"])
+async def test_project_preferred_provider_unavailable_is_explained(handler, db, profile_id):
+    await db.update_project(PROJECT_ID, default_profile_id="worker", preferred_provider="codex")
+    await mktask(db, "preferred-held", status=TaskStatus.READY,
+                 intelligence_class="fast-low", profile_id=profile_id)
+    result = await handler._cmd_explain_task({"task_id": "preferred-held"})
+    reason = next(r for r in result["reasons"] if r["code"] == "preferred_provider_unavailable")
+    assert reason["ref"] == "codex"
+    assert "fast-low" in reason["detail"]
+    assert "codex" in reason["detail"]
+
+    await db.update_task("preferred-held", profile_id="worker", provider_intent="pinned")
+    assert "preferred_provider_unavailable" not in (
+        await handler._cmd_explain_task({"task_id": "preferred-held"})
+    )["reason_codes"]
+
+
 # ── Golden per reason code ───────────────────────────────────────────────
 
 

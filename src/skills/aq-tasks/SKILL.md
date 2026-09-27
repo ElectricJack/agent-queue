@@ -227,8 +227,18 @@ a task parked in `WAITING_INPUT` with no question row behind it.
 `create_task` is on the agent surface: a worker or reviewer session may
 file emergent work it discovers. A worker-filed task starts DEFINED with a
 `discovered-from` edge back to the filing task; a root filing also opens a
-routing gate, so triage — not the filer — dedupes and routes it. `--from-spec`,
-`--graph` and `create_task_graph` stay elevated/supervisor-only.
+routing gate, so triage — not the filer — dedupes and routes it.
+
+A session whose profile grants `create_task_graph` (a planner) may file a whole
+graph with `--graph` / `--from-spec` and a `--reason`. Its nodes land under the
+task it holds. A document-level `parent:` block creates the graph's own container
+in the same transaction: under the held task by default, or at the project root
+with `--root`, where the container carries the routing gate a root filing gets
+and its children wait behind it. A root graph must declare that `parent:` block.
+Never file an epic as a plain task: a pool worker can claim it before its
+children arrive. The supervisor or an operator can file a single epic with
+`aq task create --container` and add its children afterwards; a worker session
+is refused (`hierarchy.container_not_for_sessions`) and uses the graph instead.
 
 By default a worker-filed task is a **child of the task you hold**: it stays
 visible and, while open, blocks that task's successful close. `--parent <id>`
@@ -412,6 +422,15 @@ task-id dependencies, `cross_project`, or authored `parent-child` edges.
 `graph.phases_need_root`; a planner cannot use phase creation to gain an
 arbitrary container into which to file work.
 
+Never make a node `need` the planning task you hold, or any task above it, not
+even as a barrier that holds children back while you arrange them. The plan
+exists before you file, and membership is already the `parent-child` edge. A
+gating edge onto the filer or the filing's own parent chain is refused as
+`dependency_on_ancestor`, by a graph and by `aq task create --depends-on`
+alike. Order the new tasks among themselves with local `needs`. A delivered
+plan still satisfies anything that depends on it after its branch is cleaned
+up, because readiness trusts the delivery receipt rather than the branch.
+
 **Checklist ownership.** An unphased planner graph may put `subtasks:` on a
 child task. Those are checklist rows owned and settled by the worker that
 later holds that child, not work assigned to the planner or separate tasks to
@@ -434,6 +453,36 @@ Dependency types: `blocks`, `parent-child`, `waits-for`,
 `conditional-blocks`, `discovered-from`, `related`, `duplicates`,
 `supersedes`. Only the first four gate readiness.
 
+## Superseded and stale work
+
+Work that is no longer needed (a duplicate fix landed another way, or the plan
+changed) is retired by an operator or supervisor with one command, not with a
+failing close plus a status edit:
+
+```bash
+aq task close <id> --obsolete --reason "superseded by PR #639"
+```
+
+It moves the task to COMPLETED as abandoned without publishing anything, so its
+dependents stop waiting. It releases the task's branch owners through the
+release-owner safety proof and cancels any parked development batch that lists
+it. A batch still publishing, an open development repair or a refused owner
+proof stays pending in the task's `obsolete` metadata, and the daemon retries it.
+Once nothing is pending the task can be deleted. A worker session is refused:
+close your own task with `--outcome` and name the superseding work in the summary.
+
+The daemon checks for stranded lifecycle state on its own:
+
+- A container stuck BLOCKED or PAUSED is completed as soon as every child is
+  COMPLETED and delivered, and again on every daemon start.
+- A task left BLOCKED or PAUSED past `work_graph.stale_open_after_seconds`
+  (default 6h) is re-checked. If its blocker is gone, it is unblocked. If not,
+  it gets `needs_attention=stale_open` and the supervisor gets one message. The
+  flag is advisory: it clears itself once the task leaves that status.
+- `aq doctor --check tasks.dangling_lifecycle` lists finished work that still
+  holds branch owners or batch membership, and open containers whose children
+  are all done.
+
 ## Archives
 
 Completed / failed tasks eventually archive:
@@ -454,7 +503,7 @@ archived id can never be recreated in a different project.
   summary should tell the reader what you did and why; link to relevant findings and comments.
 - File emergent work rather than widening your own scope: `aq task create`
   from a worker session is expected, and lands behind a routing gate for
-  triage. Don't build task *graphs* from a worker session — `--graph`,
-  `--from-spec` and `formula cook` are supervisor-only.
+  triage. Don't build task *graphs* from a worker session unless your profile
+  grants `create_task_graph` (planners); `formula cook` is supervisor-only.
 - Don't retry an `out of scope: <command>` error. It is a property of your
   token, not a transient failure; say so in a comment and close or ask instead.

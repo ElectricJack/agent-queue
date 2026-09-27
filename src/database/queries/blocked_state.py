@@ -39,7 +39,7 @@ from src.database.tables import (
     task_metadata,
     tasks,
 )
-from src.integration.publishable_artifact import has_publishable_artifact
+from src.integration.publishable_artifact import development_empty_source, has_publishable_artifact
 from src.models import BLOCKING_DEP_TYPES, HOLD_LABEL_PREFIX, DepType, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -90,9 +90,8 @@ def development_delivery_receipt(task, project, repo):
     True when a ``delivered`` or ``adopted`` development delivery of *project*
     to *repo*'s default branch lists *task* with the source of its latest
     completion (or binds that exact close through ``completion_sources``).
-    That row is the development publisher's delivery receipt: blocked-state
-    readiness releases dependents on it, and integration status accepts it for
-    a child whose terminal parent the train will never collect.  *task*,
+    Transitional helper for consumers awaiting migration. Admission and the
+    graph projection never use receipt state as authority.  *task*,
     *project* and *repo* are tables or aliases correlated by the caller.
     """
     delivery = development_deliveries.alias()
@@ -143,12 +142,31 @@ def development_delivery_receipt(task, project, repo):
     return delivered
 
 
+#: ``task_metadata`` key an obsolete close writes (``aq task close --obsolete``):
+#: the task's work was superseded, so there is nothing of it to publish.  JSON:
+#: ``reason``, ``closed_by``, ``closed_at``, ``previous_status`` and the
+#: ``cleanup`` it still owes (src/integration/obsolete_close.py).
+OBSOLETE_META_KEY = "obsolete"
+
+
+def obsolete_marker(task):
+    """``EXISTS``: the correlated *task* (table or alias) was closed as obsolete."""
+    marker = task_metadata.alias()
+    return (
+        select(literal(1))
+        .where(marker.c.task_id == task.c.id, marker.c.key == OBSOLETE_META_KEY)
+        .correlate(task)
+        .exists()
+    )
+
+
 def _development_delivery_pending(task, *, include_foreign_repos=False):
     """Completed code is usable only after publication to the configured default ref.
 
     Candidate preservation and parent aggregates are not worker checkout bases.
     A delivery of an older revision cannot release a new completion revision.
-    Branchless tasks have no repository artifact to publish.
+    Branchless tasks and observed empty revisions have no artifact to publish,
+    and an obsolete one (:data:`OBSOLETE_META_KEY`) has none worth publishing.
 
     *include_foreign_repos* also counts a task whose ``repo_id`` names a
     repository that is not one of its project's own.  The publisher never
@@ -177,8 +195,10 @@ def _development_delivery_pending(task, *, include_foreign_repos=False):
             project.c.id == task.c.project_id,
             project.c.hierarchical_integration_mode == "development",
             has_publishable_artifact(task.c.branch_name),
+            ~development_empty_source(task, repo.c.id),
             repo_scope,
             ~delivered,
+            ~obsolete_marker(task),
         )
         .correlate(task)
         .exists()
@@ -186,7 +206,7 @@ def _development_delivery_pending(task, *, include_foreign_repos=False):
 
 
 def unmet_dependency_predicate(
-    dependency, depends_on, *, dep_types=None, include_development_delivery=True,
+    dependency, depends_on, *, dep_types=None, include_development_delivery=False,
 ):
     """Return whether one typed dependency edge is currently unsatisfied.
 
@@ -275,8 +295,8 @@ def unmet_dependency_predicate(
     return or_(*clauses) if clauses else false()
 
 
-def _blocks_unsat(*, include_development_delivery=True):
-    """``blocks`` — completion plus development publication when applicable."""
+def _blocks_unsat(*, include_development_delivery=False):
+    """``blocks`` — graph completion; optional legacy delivery for unmigrated readers."""
     bd = task_dependencies.alias()
     bt = tasks.alias()
     return (
@@ -368,7 +388,7 @@ def _gate_open():
     )
 
 
-def blocked_predicate(*, include_development_delivery=True):
+def blocked_predicate(*, include_development_delivery=False):
     """Return the SQL boolean expression for "this ``tasks`` row is blocked".
 
     Correlates against the ``tasks`` table itself, so it can be dropped into
@@ -376,9 +396,9 @@ def blocked_predicate(*, include_development_delivery=True):
     Built from correlated ``EXISTS`` subqueries.
 
     One clause per blocking rule, in the order of design §3.1.
-    Only the development publisher may omit delivery checks: it assembles
-    completed prerequisites in order and publishes them together. Worker
-    readiness always includes delivery.
+    The projection is graph/gate-only. Development delivery is observed
+    asynchronously by integration.admission outside SQL transactions. The
+    explicit compatibility option is only for consumers awaiting migration.
     """
     return or_(
         _blocks_unsat(include_development_delivery=include_development_delivery),
@@ -681,7 +701,10 @@ class BlockedStateMixin:
         labels: list[str] | None = None,
         any_label: list[str] | None = None,
     ) -> list[Task]:
-        """Tasks that would be picked next (design §9.2).
+        """Structurally ready tasks (design §9.2).
+
+        Development callers evaluate dynamic delivery admission separately;
+        this SQL query never treats delivery rows as git authority.
 
         ``status = READY ∧ is_blocked = 0 ∧ no hold:* label``, ordered
         ``(priority, created_at)``.  ``labels`` is all-of, ``any_label`` is

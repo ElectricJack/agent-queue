@@ -3,10 +3,11 @@
 ``GET /api/providers/usage`` is described below.  The availability routes
 (``GET /api/providers/availability``, ``POST /api/providers/{provider}/state``,
 ``POST /api/providers/{provider}/recheck``, ``POST /api/providers/reroute`` and
-``POST /api/providers/reroute/undo``, provider-failover D20) hold no logic of
-their own: each runs the ``provider_status`` / ``provider_set_state`` /
-``provider_recheck`` / ``provider_reroute`` / ``provider_reroute_undo``
-command through the CommandHandler under the request's
+``POST /api/providers/reroute/undo``, provider-failover D20) and the provider
+allocation read (``GET /api/providers/allocation``) hold no logic of their own:
+each runs the ``provider_status`` / ``provider_set_state`` /
+``provider_recheck`` / ``provider_reroute`` / ``provider_reroute_undo`` /
+``provider_allocation_status`` command through the CommandHandler under the request's
 scope, exactly as a generated command route does, so the CLI, the typed API
 and these paths can never disagree.  The dashboard joins the two families on
 the provider key.
@@ -36,6 +37,7 @@ from fastapi.responses import JSONResponse
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.models.provider import (
+    ProviderAllocationStatusResponse,
     ProviderRecheckResponse,
     ProviderRerouteBody,
     ProviderRerouteResponse,
@@ -213,6 +215,28 @@ def _add_availability_routes(router: APIRouter, resolve) -> None:
         if provider:
             args["provider"] = provider
         return await _run_command(handler, db, "provider_status", args, request)
+
+    @router.get(
+        "/api/providers/allocation",
+        response_model=ProviderAllocationStatusResponse,
+        responses={
+            400: {"description": "unknown project"},
+            403: {"description": "out of scope"},
+            404: {"description": "unknown provider"},
+        },
+    )
+    async def get_provider_allocation(
+        request: Request,
+        project_id: str | None = Query(None),
+        provider: str | None = Query(None),
+    ):
+        db, handler = resolve()
+        args: dict = {}
+        if project_id:
+            args["project_id"] = project_id
+        if provider:
+            args["provider"] = provider
+        return await _run_command(handler, db, "provider_allocation_status", args, request)
 
     @router.post(
         "/api/providers/{provider}/state",
