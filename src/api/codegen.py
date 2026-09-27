@@ -144,6 +144,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "test_selection_promote",
             "test_selection_revoke",
             "job_submit",
+            "message_wait",
             "job_get",
             "job_list",
             "job_cancel",

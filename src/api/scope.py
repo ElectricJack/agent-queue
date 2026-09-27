@@ -52,6 +52,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "collaboration_list",
         "collaboration_close",
         "message_send",
+        "message_wait",
         "message_inbox",
         "message_reply",
         # The idle-session nudge (``src/messages/delivery.py:_render_nudge``)

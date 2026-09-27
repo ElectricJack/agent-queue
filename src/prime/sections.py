@@ -483,6 +483,37 @@ async def build_messages_section(
 
     messages_enabled = bool(getattr(getattr(config, "messages", None), "enabled", False))
     if messages_enabled:
+        if callable(getattr(db, "list_collaboration_threads", None)):
+            try:
+                task = task or await db.get_task(task_id)
+                threads = await db.list_collaboration_threads(
+                    project_id=task.project_id, task_id=task_id, state="active", limit=20
+                )
+                lines = []
+                for thread in threads:
+                    members = ", ".join(
+                        f"{m['task_id']} ({'running' if m['running'] else 'not running'})"
+                        for m in thread["members"] if m["state"] != "removed"
+                    )
+                    lines.append(
+                        f"{thread['id']}: {thread.get('goal') or 'Collaboration'}; "
+                        f"members: {members}; deadline: {thread['deadline_at']}; "
+                        f"last_seq: {thread['last_seq']}."
+                    )
+                    member = next(m for m in thread["members"] if m["task_id"] == task_id)
+                    if (
+                        member["state"] != "accepted"
+                        or member["accepted_claim_epoch"] != member["task_claim_epoch"]
+                    ):
+                        lines.append(
+                            f"Run `aq collaboration accept {thread['id']}` before sending or waiting."
+                        )
+                    else:
+                        lines.append(f"Read `aq collaboration show {thread['id']} --json`.")
+                if lines:
+                    parts.append("Active collaboration threads:\n" + "\n".join(lines))
+            except Exception:
+                logger.debug("prime: could not read collaborations for %s", task_id, exc_info=True)
         inbox_queries: list[tuple[str, str]] = [("task", task_id)]
         if profile_id:
             inbox_queries.append(("profile", profile_id))

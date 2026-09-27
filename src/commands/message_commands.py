@@ -21,7 +21,9 @@ flat ``dict`` of arguments and returns a ``dict`` — domain data on success,
 from __future__ import annotations
 
 import logging
+import time
 
+from src.collaboration import CollaborationError, is_collaboration_thread
 from src.models import MESSAGE_FROM_KINDS, MESSAGE_TO_KINDS, Message
 
 logger = logging.getLogger(__name__)
@@ -155,6 +157,9 @@ class MessageCommandsMixin:
         if disabled:
             return disabled
 
+        if is_collaboration_thread(args.get("thread_id")):
+            return await self._send_collaboration_message(args)
+
         to_kind = (args.get("to_kind") or "").strip()
         to_id = (args.get("to_id") or "").strip()
         if to_kind not in MESSAGE_TO_KINDS:
@@ -215,6 +220,11 @@ class MessageCommandsMixin:
             parent = await self.db.get_message(reply_to_id)
             if parent is None:
                 return {"error": f"Message '{reply_to_id}' not found (reply_to_id)"}
+            if is_collaboration_thread(parent.thread_id):
+                return {
+                    "error": "Collaboration replies must use their collaboration thread",
+                    "error_code": "collaboration.invalid",
+                }
 
         pane_open = args.get("pane_open")
         # Private internal callers can label a message for a delivery policy
@@ -284,6 +294,77 @@ class MessageCommandsMixin:
             "message": message_to_dict(msg),
         }
 
+    async def _send_collaboration_message(self, args: dict) -> dict:
+        """One sequenced send, with a delivery row for each other member."""
+        try:
+            caller = await self._collaboration_caller(args, mutation=True)
+            if caller["kind"] != "member":
+                raise CollaborationError("out_of_scope", "only a held member task may send")
+            thread = await self._visible_collaboration(caller, args["thread_id"])
+            to_kind, to_id = args.get("to_kind"), args.get("to_id")
+            if (to_kind is not None or to_id is not None) and (
+                to_kind != "task" or not isinstance(to_id, str) or not to_id.strip()
+            ):
+                raise CollaborationError("invalid", "recipient must be task:<another member>")
+            body = args.get("body")
+            if not isinstance(body, str) or not body.strip():
+                raise CollaborationError("invalid", "body is required")
+            client_key = args.get("client_key")
+            if client_key is not None and (
+                not isinstance(client_key, str) or not client_key.strip() or len(client_key) > 128
+            ):
+                raise CollaborationError("invalid", "client_key must be 1 to 128 characters")
+            reply_to_id = args.get("reply_to_id")
+            if reply_to_id:
+                original = await self.db.get_message(reply_to_id)
+                if (
+                    original is None
+                    or original.thread_id != thread["id"]
+                    or original.project_id != caller["project_id"]
+                ):
+                    raise CollaborationError("not_found", "Reply message not found in this thread")
+            result = await self.db.append_collaboration_message(
+                thread_id=thread["id"],
+                project_id=caller["project_id"],
+                sender_task_id=caller["task_id"],
+                sender_claim_epoch=caller["claim_epoch"],
+                sender_session_id=caller["session_id"],
+                client_key=client_key,
+                body=body,
+                subject=args.get("subject"),
+                reply_to_id=reply_to_id,
+                to_task_id=to_id,
+                now=time.time(),
+            )
+            if not result["replayed"]:
+                for message_id in result["message_ids"]:
+                    msg = await self.db.get_message(message_id)
+                    await self._emit_message_event(
+                        "message.sent",
+                        {
+                            "message_id": msg.id,
+                            "project_id": msg.project_id,
+                            "from_kind": msg.from_kind,
+                            "from_id": msg.from_id,
+                            "to_kind": msg.to_kind,
+                            "to_id": msg.to_id,
+                            "thread_id": msg.thread_id,
+                            "subject": msg.subject,
+                        },
+                    )
+            return {
+                "message_id": result["message_id"],
+                "message_ids": result["message_ids"],
+                "seq": result["seq"],
+                "replayed": result["replayed"],
+                "state": "queued",
+            }
+        except CollaborationError as exc:
+            result = {"error": str(exc), "error_code": exc.code}
+            if exc.retry_after is not None:
+                result["retry_after"] = exc.retry_after
+            return result
+
     async def _cmd_message_reply(self, args: dict) -> dict:
         """Reply to a message: marks it read and writes the linked reply row."""
         disabled = self._messages_disabled_error()
@@ -296,6 +377,31 @@ class MessageCommandsMixin:
         original = await self.db.get_message(message_id)
         if original is None:
             return {"error": f"Message '{message_id}' not found"}
+
+        if is_collaboration_thread(original.thread_id):
+            result = await self._send_collaboration_message(
+                {**args, "thread_id": original.thread_id, "reply_to_id": original.id}
+            )
+            if "error" in result:
+                return result
+            await self.db.mark_read(original.id)
+            if not result["replayed"]:
+                await self._emit_message_event(
+                    "message.replied",
+                    {
+                        "message_id": original.id,
+                        "reply_id": result["message_id"],
+                        "project_id": original.project_id,
+                        "thread_id": original.thread_id,
+                        "body": args["body"],
+                    },
+                )
+            return {
+                **result,
+                "message_id": original.id,
+                "reply_id": result["message_id"],
+                "reply": message_to_dict(await self.db.get_message(result["message_id"])),
+            }
 
         if original.project_id is None:
             scope_error = self._system_message_scope_error()

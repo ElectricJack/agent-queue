@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 436,
+    "leaf_commands": 437,
     "registration": {
       "generated": 284,
-      "handwritten": 152
+      "handwritten": 153
     },
     "ownership": {
-      "core": 397,
+      "core": 398,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 435
+      "supported": 436
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 284,
-      "registration": 138
+      "registration": 139
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 376
+      "untested": 377
     }
   },
   "commands": [
@@ -5027,6 +5027,8 @@
         ],
         "optional": [
           "--via",
+          "--client-key",
+          "--claim-epoch",
           "--json",
           "--brief",
           "--api-url"
@@ -5068,6 +5070,8 @@
           "--from-id",
           "--from-kind",
           "--thread-id",
+          "--client-key",
+          "--claim-epoch",
           "--priority",
           "--archive-after-inject",
           "--pane-open",
@@ -5104,6 +5108,41 @@
           "message_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq message wait",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "message_wait",
+      "callback": "src.cli.message_wait.message_wait",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--thread",
+          "--after"
+        ],
+        "optional": [
+          "--timeout",
+          "--idempotency-key",
+          "--claim-epoch",
           "--json",
           "--brief",
           "--api-url"
@@ -8232,6 +8271,8 @@
         ],
         "optional": [
           "--via",
+          "--client-key",
+          "--claim-epoch",
           "--json",
           "--brief",
           "--api-url"

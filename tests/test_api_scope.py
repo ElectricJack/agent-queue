@@ -40,6 +40,7 @@ EXPECTED_AGENT_COMMANDS = {
     "collaboration_list",
     "collaboration_close",
     "message_send",
+    "message_wait",
     "message_inbox",
     "message_reply",
     "message_status",

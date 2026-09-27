@@ -85,6 +85,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_mcp_server": "mcp",
     # message — inter-agent / user message queue (supervisor-agent §6.1)
     "message_send": "message",
+    "message_wait": "message",
     "message_reply": "message",
     "message_inbox": "message",
     "message_list": "message",
@@ -5183,7 +5184,8 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Queue a message to a session, task, profile, or user.  Messages "
             "are the single transport for user<->agent and agent<->agent "
-            "traffic; delivery is asynchronous."
+            "traffic; delivery is asynchronous. For an accepted collaboration thread, "
+            "omit the recipient to send to every other member; sender identity is server-derived."
         ),
         "input_schema": {
             "type": "object",
@@ -5213,6 +5215,9 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Conversation grouping key (Discord channel, chat id)",
                 },
+                "client_key": {"type": "string", "minLength": 1, "maxLength": 128,
+                               "description": "Optional collaboration retry key"},
+                "claim_epoch": {"type": "integer", "minimum": 0},
                 "priority": {
                     "type": "integer",
                     "description": "Delivery ordering, lower first (default 100)",
@@ -5225,7 +5230,7 @@ _ALL_TOOL_DEFINITIONS = [
                 },
                 "reply_to_id": {"type": "string", "description": "Message this replies to"},
             },
-            "required": ["to_kind", "to_id", "body", "from_id"],
+            "required": ["body"],
         },
     },
     {
@@ -5239,6 +5244,8 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "message_id": {"type": "string", "description": "Message being replied to"},
+                "client_key": {"type": "string", "minLength": 1, "maxLength": 128},
+                "claim_epoch": {"type": "integer", "minimum": 0},
                 "body": {"type": "string", "description": "Markdown reply body"},
                 "subject": {"type": "string", "description": "Optional subject line"},
                 "from_kind": {
@@ -7082,6 +7089,26 @@ _ALL_TOOL_DEFINITIONS.extend([
 ])
 
 _ALL_TOOL_DEFINITIONS.extend([
+    {
+        "name": "message_wait",
+        "description": (
+            "Wait up to 60 seconds for ordered collaboration messages on the existing durable "
+            "message wait. On timeout end this turn; the wait retains the claim and seat."
+        ),
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["thread_id", "after_seq"],
+            "properties": {
+                "thread_id": {"type": "string", "minLength": 1, "maxLength": 64},
+                "after_seq": {"type": "integer", "minimum": 0},
+                "timeout": {"type": "integer", "minimum": 1, "maximum": 60, "default": 60},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+                "claim_epoch": {"type": "integer", "minimum": 0},
+                "project_id": {"type": "string"}, "task_id": {"type": "string"},
+                "session_id": {"type": "string"},
+            },
+        },
+    },
     {
         "name": "wait_register",
         "description": "Register a bounded typed wait and end the turn until its result pointer arrives.",
