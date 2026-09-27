@@ -28,8 +28,11 @@ __all__ = ["ReviewQueriesMixin"]
 #: suffix — the same budget as ``fresh_root_id`` in ``src/task_names.py``.
 _ID_RETRIES = 10
 
-#: ``list_review_revisions`` omits the (up to 256 KB) body.
-_REVISION_SUMMARY = [c for c in doc_review_revisions.c if c.name != "content"]
+#: ``list_review_revisions`` omits the (up to 256 KB) body and a playbook
+#: review's pinned artifact bytes (its ``playbook`` pin names their hash).
+_REVISION_SUMMARY = [
+    c for c in doc_review_revisions.c if c.name not in {"content", "playbook_artifact"}
+]
 
 
 class ReviewQueriesMixin:

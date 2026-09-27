@@ -741,6 +741,12 @@ doc_review_revisions = Table(
     Column("responder_class", Text, nullable=True),
     Column("responder_profile", Text, nullable=True),
     Column("responder_profile_source", Text, nullable=True),
+    # A playbook review pins the compiled Playbook V2 artifact the revision
+    # asks approval for: its metadata (id, artifact_sha256, source_sha256,
+    # scope, activate_on_approval, ...) and its exact canonical bytes, which
+    # approval stores in the artifact store.  NULL for every other review.
+    Column("playbook", JSON, nullable=True),
+    Column("playbook_artifact", Text, nullable=True),
 )
 
 doc_review_comments = Table(

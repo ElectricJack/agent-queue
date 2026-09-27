@@ -407,3 +407,84 @@ def test_import_help_matches_the_required_bundle_layout():
 
     assert "artifact.json, artifact.sha256, source.md, and manifest.md" in help_text
     assert "review.md" not in help_text
+
+
+class _FakeClient:
+    """Records ``aq playbook import``'s daemon calls."""
+
+    def __init__(self, results: dict[str, dict]) -> None:
+        self.results = results
+        self.calls: list[tuple[str, dict]] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def execute(self, command: str, args: dict) -> dict:
+        self.calls.append((command, args))
+        return self.results[command]
+
+
+_IMPORTED = {
+    "success": True,
+    "playbook_id": "morning-report",
+    "artifact_sha256": "sha256:" + "b" * 64,
+    "scope": "system",
+    "scope_identifier": None,
+    "activated": False,
+}
+
+
+def _invoke_import(monkeypatch, client: _FakeClient, *args: str):
+    from click.testing import CliRunner
+
+    from src.cli import playbook
+    from src.cli.app import cli
+
+    monkeypatch.setattr(playbook, "_get_client", lambda _api_url=None: client)
+    return CliRunner().invoke(cli, ["playbook", "import", *args])
+
+
+def test_cli_import_imports_the_reviewed_bundle_without_activating(monkeypatch):
+    client = _FakeClient({"playbook_v2_import": _IMPORTED})
+    result = _invoke_import(monkeypatch, client, "--path", "reviewed-playbooks/morning-report")
+    assert result.exit_code == 0, result.output
+    assert client.calls == [
+        ("playbook_v2_import", {"path": "reviewed-playbooks/morning-report"})
+    ]
+    assert "Not activated" in result.output
+    assert (
+        "aq playbook activate --playbook-id morning-report "
+        f"--artifact-sha256 {_IMPORTED['artifact_sha256']}"
+    ) in result.output.splitlines()[-1]
+
+
+def test_cli_import_activate_activates_the_exact_imported_hash(monkeypatch):
+    client = _FakeClient({
+        "playbook_v2_import": _IMPORTED,
+        "playbook_activate": {"success": True, "blocked": False, "blockers": []},
+    })
+    result = _invoke_import(
+        monkeypatch, client, "--path", "reviewed-playbooks/morning-report", "--activate", "--json"
+    )
+    assert result.exit_code == 0, result.output
+    assert client.calls[1] == (
+        "playbook_activate",
+        {"playbook_id": "morning-report", "artifact_sha256": _IMPORTED["artifact_sha256"]},
+    )
+    assert '"activated": true' in result.output
+
+
+def test_cli_import_activate_exits_non_zero_when_activation_is_blocked(monkeypatch):
+    client = _FakeClient({
+        "playbook_v2_import": _IMPORTED,
+        "playbook_activate": {"success": True, "blocked": True, "blockers": ["stale contract"]},
+    })
+    result = _invoke_import(
+        monkeypatch, client, "--path", "reviewed-playbooks/morning-report", "--activate"
+    )
+    assert result.exit_code == 1
+    assert "Activation refused" in result.output
+    assert "stale contract" in result.output

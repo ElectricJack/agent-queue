@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
 import uuid
 from typing import Any
 
-from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_principal
+from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.models import TaskStatus
-from src.reviews.service import ReviewError, ReviewHooks, ReviewService
+from src.reviews.service import PlaybookPin, ReviewError, ReviewHooks, ReviewService
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,37 @@ _LIVE = frozenset({"starting", "running", "draining"})
 def _error(code: str, message: str) -> dict[str, Any]:
     """Return the stable review-command refusal envelope."""
     return {"success": False, "error_code": code, "error": message}
+
+
+#: The ``review_submit`` arguments that attach a playbook to a revision.
+_PLAYBOOK_ARGS = ("playbook_id", "semantic_body", "semantic_body_path", "activate_on_approval")
+
+
+def _activate_command(playbook: dict) -> str:
+    return (
+        f"aq playbook activate --playbook-id {playbook['playbook_id']} "
+        f"--artifact-sha256 {playbook['artifact_sha256']}"
+    )
+
+
+def playbook_outcome_text(outcome: dict) -> str:
+    """One paragraph for the supervisor: what approval did with the artifact."""
+    playbook_id, sha = outcome["playbook_id"], outcome["artifact_sha256"]
+    if not outcome["stored"]:
+        return (
+            f"Playbook {playbook_id}: the approved artifact {sha} could not be stored: "
+            f"{outcome['error']}. Nothing was activated. Recompile it and submit a new "
+            "revision, or store it once the cause is fixed with "
+            "`aq doctor --check reviews.playbook_artifacts --fix`."
+        )
+    if outcome["activated"]:
+        return f"Playbook {playbook_id}: the approved artifact {sha} is stored and activated."
+    lines = [f"Playbook {playbook_id}: the approved artifact {sha} is stored, not activated."]
+    if outcome.get("activation_error") or outcome.get("activation_blockers"):
+        why = outcome.get("activation_error") or "; ".join(outcome["activation_blockers"])
+        lines.append(f"The review asked for activation, which was refused: {why}.")
+    lines.append(f"Activate it with: {outcome['next_step']}")
+    return " ".join(lines)
 
 
 class ReviewCommandsMixin:
@@ -178,6 +210,12 @@ class ReviewCommandsMixin:
                     if not is_response_task and not author_draft:
                         return _error("not_your_task", "only the assigned revision task may answer requested changes")
                     submitted_task_id = held.id
+                previous = await self.db.get_review_revision(
+                    review["id"], review["current_revision"]
+                )
+                playbook, error = await self._review_playbook_pin(args, review["kind"], previous)
+                if error:
+                    return error
                 return {
                     "success": True,
                     **await service.revise(
@@ -187,9 +225,17 @@ class ReviewCommandsMixin:
                         resolves=list(args.get("resolves") or []),
                         submitted_by=principal.describe(),
                         submitted_task_id=submitted_task_id,
+                        playbook=playbook,
                     ),
+                    **({"playbook": playbook.meta} if playbook else {}),
                 }
             project_id, author_task_id, error = await self._submit_project(args)
+            if error:
+                return error
+            kind = str(args.get("kind") or "")
+            if not kind and args.get("playbook_id") is not None:
+                kind = "other"
+            playbook, error = await self._review_playbook_pin(args, kind, None)
             if error:
                 return error
             project = await self.db.get_project(project_id)
@@ -198,7 +244,7 @@ class ReviewCommandsMixin:
                 **await service.submit(
                     project_id=project_id,
                     author_task_id=author_task_id,
-                    kind=str(args.get("kind") or ""),
+                    kind=kind,
                     title=str(args.get("title") or ""),
                     content=content,
                     submitted_by=principal.describe(),
@@ -207,10 +253,234 @@ class ReviewCommandsMixin:
                         if project is not None and project.review_delegate_to == "supervisor"
                         else "user"
                     ),
+                    playbook=playbook,
                 ),
+                **({"playbook": playbook.meta} if playbook else {}),
             }
         except ReviewError as error:
             return _error(error.code, error.message)
+
+    async def _review_playbook_pin(
+        self, args: dict, kind: str, previous: dict | None
+    ) -> tuple[PlaybookPin | None, dict | None]:
+        """Compile the playbook a submission names into its revision's pin.
+
+        A new review pins one only when ``playbook_id`` is given.  A revision
+        of a review that already pins one always pins again: it recompiles
+        against the current vault source, from the semantic body it was sent
+        or, when none was, from the previous artifact's rules and steps.  The
+        submission is refused unless the proposal is activatable, so approval
+        can only ever name an artifact that validated when it was submitted.
+        """
+        previous_pin = PlaybookPin.from_revision(previous) if previous else None
+        given = {key: args.get(key) for key in _PLAYBOOK_ARGS if args.get(key) is not None}
+        if not given and previous_pin is None:
+            return None, None
+        if previous_pin is None and "playbook_id" not in given:
+            return None, _error(
+                "playbook_required",
+                f"{', '.join(sorted(given))} needs playbook_id: name the playbook the "
+                "review is for",
+            )
+        playbook_id = given.get("playbook_id")
+        if previous_pin is not None and playbook_id not in (
+            None, previous_pin.meta["playbook_id"]
+        ):
+            return None, _error(
+                "playbook_mismatch",
+                f"this review is for playbook {previous_pin.meta['playbook_id']!r}, "
+                f"not {playbook_id!r}",
+            )
+        if previous_pin is not None:
+            playbook_id = previous_pin.meta["playbook_id"]
+        if not isinstance(playbook_id, str) or not playbook_id.strip():
+            return None, _error("playbook_required", "playbook_id must be a playbook id")
+        if kind != "other":
+            return None, _error(
+                "bad_kind",
+                "a playbook review is kind 'other' (a spec approval would start spec ingest)",
+            )
+        activate = given.get(
+            "activate_on_approval",
+            bool(previous_pin.meta.get("activate_on_approval")) if previous_pin else False,
+        )
+        if not isinstance(activate, bool):
+            return None, _error("playbook_invalid", "activate_on_approval must be a boolean")
+        if "semantic_body" in given and "semantic_body_path" in given:
+            return None, _error(
+                "playbook_invalid", "send semantic_body or semantic_body_path, not both"
+            )
+
+        from src.commands.playbook_v2_commands import (
+            V2_COMPILER_DISABLED_ERROR,
+            _diagnostic_counts,
+            _diagnostic_dict,
+        )
+        from src.playbooks.definition import canonical_bytes
+        from src.playbooks.proposal import (
+            DuplicateSemanticKey,
+            load_semantic_body_json,
+            propose,
+        )
+
+        if not self._v2_compiler_enabled():
+            return None, _error("playbook_unavailable", V2_COMPILER_DISABLED_ERROR)
+        source, source_error = self._v2_find_source(playbook_id)
+        if source_error:
+            return None, _error("playbook_unavailable", source_error)
+        if "semantic_body" in given:
+            text = given["semantic_body"]
+            if not isinstance(text, str):
+                return None, _error("playbook_invalid", "semantic_body must be JSON text")
+        elif "semantic_body_path" in given:
+            path, path_error = self._v2_resolve_vault_path(
+                given["semantic_body_path"], "semantic_body_path"
+            )
+            if path_error:
+                return None, _error("playbook_unavailable", path_error)
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                return None, _error("playbook_unavailable", f"semantic body is unreadable: {exc}")
+        elif previous_pin is not None:
+            try:
+                prior = json.loads(previous_pin.artifact)
+                text = json.dumps({"rules": prior["rules"], "steps": prior["steps"]})
+            except (ValueError, KeyError, TypeError) as exc:
+                return None, _error(
+                    "playbook_invalid", f"the previous artifact has no rules/steps to reuse: {exc}"
+                )
+        else:
+            return None, _error(
+                "playbook_required",
+                "a playbook review needs the semantic body to compile: semantic_body "
+                "(the CLI's --playbook-body file) or semantic_body_path (in the vault)",
+            )
+        try:
+            body = load_semantic_body_json(text)
+        except (ValueError, DuplicateSemanticKey, json.JSONDecodeError) as exc:
+            return None, _error("playbook_invalid", f"invalid semantic body: {exc}")
+
+        version = source.frontmatter.get("version")
+        contracts, profiles, events = await self._v2_lookups()
+        proposal = propose(
+            source,
+            body,
+            contracts=contracts,
+            profiles=profiles,
+            events=events,
+            version=version if isinstance(version, int) and version >= 1 else 1,
+        )
+        diagnostics = [_diagnostic_dict(diagnostic) for diagnostic in proposal.diagnostics]
+        counts = _diagnostic_counts(proposal.diagnostics)
+        if not proposal.activatable:
+            refusal = _error(
+                "playbook_invalid",
+                f"playbook {playbook_id!r} does not compile to an activatable artifact "
+                f"({counts['error']} error(s), {counts['question']} question(s)); fix the "
+                "source or the semantic body and submit again",
+            )
+            refusal["diagnostics"] = diagnostics
+            return None, refusal
+        artifact = proposal.artifact
+        artifact_bytes = canonical_bytes(artifact)
+        scope, scope_identifier = self._v2_scope(artifact)
+        meta = {
+            "playbook_id": artifact.id,
+            "artifact_sha256": "sha256:" + hashlib.sha256(artifact_bytes).hexdigest(),
+            "source_sha256": artifact.source_hash,
+            "source_path": source.vault_path,
+            "contract_fingerprint": artifact.contract_fingerprint(),
+            "scope": scope,
+            "scope_identifier": scope_identifier or None,
+            "version": artifact.version,
+            "activate_on_approval": activate,
+            "counts": counts,
+        }
+        return PlaybookPin(meta=meta, artifact=artifact_bytes.decode("utf-8")), None
+
+    async def _review_record_playbook(
+        self, review: dict, revision: int, decided_by: str
+    ) -> dict | None:
+        """Store an approved revision's pinned artifact; activate it if asked.
+
+        Runs after the approval committed, as the decider, so activation is
+        subject to exactly the checks ``playbook_activate`` applies to them.
+        Nothing here can undo the approval: a failure is reported in the
+        outcome (and by ``aq doctor --check reviews.playbook_artifacts``).
+        """
+        row = await self.db.get_review_revision(review["id"], revision)
+        pin = PlaybookPin.from_revision(row) if row else None
+        if pin is None:
+            return None
+        outcome = {
+            "playbook_id": pin.meta["playbook_id"],
+            "artifact_sha256": pin.meta["artifact_sha256"],
+            "activate_on_approval": bool(pin.meta.get("activate_on_approval")),
+            "stored": False,
+            "activated": False,
+            "error": None,
+            "next_step": _activate_command(pin.meta),
+        }
+        try:
+            stored = await self._review_store_playbook(review, revision, pin, decided_by)
+            if not stored.get("success"):
+                outcome["error"] = stored.get("error") or "artifact could not be stored"
+                if stored.get("diagnostics"):
+                    outcome["diagnostics"] = stored["diagnostics"]
+                return outcome
+            outcome["stored"] = True
+            if not outcome["activate_on_approval"]:
+                return outcome
+            activated = await self._cmd_playbook_activate(
+                {"playbook_id": outcome["playbook_id"], "artifact_sha256": outcome["artifact_sha256"]}
+            )
+            if activated.get("error"):
+                outcome["activation_error"] = activated["error"]
+            elif activated.get("blocked"):
+                outcome["activation_blockers"] = list(activated.get("blockers") or [])
+            else:
+                outcome["activated"] = True
+                outcome["next_step"] = None
+        except Exception as exc:
+            logger.exception("review %s: recording the approved playbook failed", review["id"])
+            if outcome["stored"]:
+                outcome["activation_error"] = f"activating the artifact failed: {exc}"
+            else:
+                outcome["error"] = outcome["error"] or f"storing the artifact failed: {exc}"
+        return outcome
+
+    async def _review_store_playbook(
+        self, review: dict, revision: int, pin: PlaybookPin, decided_by: str | None = None
+    ) -> dict:
+        """Store exactly the pinned bytes, after checking they are what was pinned."""
+        from src.commands.playbook_v2_commands import V2_API_DISABLED_ERROR
+        from src.playbooks.definition import canonical_bytes, load_definition_json
+
+        if not self._v2_api_enabled():
+            return {"success": False, "error": V2_API_DISABLED_ERROR}
+        artifact_bytes = pin.artifact.encode("utf-8")
+        try:
+            definition = load_definition_json(pin.artifact)
+        except ValueError as exc:  # pydantic's ValidationError and JSON errors included
+            return {"success": False, "error": f"the pinned artifact is invalid: {exc}"}
+        sha = "sha256:" + hashlib.sha256(artifact_bytes).hexdigest()
+        if canonical_bytes(definition) != artifact_bytes or sha != pin.meta["artifact_sha256"]:
+            return {
+                "success": False,
+                "error": "the pinned artifact bytes do not match the pinned artifact_sha256",
+            }
+        return await self._v2_store_artifact(
+            definition,
+            artifact_bytes,
+            provenance={
+                "review": {
+                    "review_id": review["id"],
+                    "revision": revision,
+                    "decided_by": decided_by or review.get("decided_by"),
+                }
+            },
+        )
 
     async def _cmd_review_show(self, args: dict) -> dict:
         review, error = await self._review_for_caller(args.get("review_id"))
@@ -435,7 +705,17 @@ class ReviewCommandsMixin:
                     responder_profile=responder_profile,
                     responder_profile_source=profile_source,
                 )
+            playbook = None
             if decision == "approve":
+                playbook = await self._review_record_playbook(
+                    review, args.get("revision"), label
+                )
+                body = (
+                    f"Review {review['id']} approved: {review['kind']} document "
+                    f"{review['vault_path']}."
+                )
+                if playbook is not None:
+                    body = f"{body}\n\n{playbook_outcome_text(playbook)}"
                 notice = await self._cmd_message_send({
                     "project_id": review["project_id"],
                     "to_kind": "session",
@@ -443,14 +723,11 @@ class ReviewCommandsMixin:
                     "from_kind": "system",
                     "from_id": f"review:{review['id']}",
                     "subject": f"Review {review['id']} approved",
-                    "body": (
-                        f"Review {review['id']} approved: {review['kind']} document "
-                        f"{review['vault_path']}."
-                    ),
+                    "body": body,
                 })
                 if not notice.get("success"):
                     logger.error("review %s: supervisor approval notice failed: %s", review["id"], notice)
-            return {"success": True, **result}
+            return {"success": True, **result, **({"playbook": playbook} if playbook else {})}
         except ReviewError as error:
             return _error(error.code, error.message)
 

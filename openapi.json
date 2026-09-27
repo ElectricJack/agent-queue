@@ -11695,8 +11695,8 @@
         "tags": [
           "review"
         ],
-        "summary": "Submit markdown for review, or submit a revision to an open review.",
-        "description": "Submit markdown for review, or submit a revision to an open review.",
+        "summary": "Submit markdown for review, or submit a revision to an open review. A playbook review (kind other) also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision. Approval stores that artifact (and activates it when activate_on_approval is set); a revision recompiles it.",
+        "description": "Submit markdown for review, or submit a revision to an open review. A playbook review (kind other) also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision. Approval stores that artifact (and activates it when activate_on_approval is set); a revision recompiles it.",
         "operationId": "review_submit",
         "requestBody": {
           "content": {
@@ -47989,6 +47989,18 @@
             "type": "array",
             "title": "Unblocked Task Ids",
             "default": []
+          },
+          "playbook": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook"
           }
         },
         "type": "object",
@@ -48621,6 +48633,54 @@
             ],
             "title": "Resolves",
             "description": ""
+          },
+          "playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Id",
+            "description": "The playbook this review asks approval for; its Markdown source must already be in the vault."
+          },
+          "semantic_body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Body",
+            "description": "JSON text with exactly the proposal's rules and steps. Omitted on a revision, the previous artifact's are reused."
+          },
+          "semantic_body_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Body Path",
+            "description": "Vault path of the semantic body, instead of semantic_body."
+          },
+          "activate_on_approval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activate On Approval",
+            "description": "Activate the pinned artifact when the review is approved (default: store it and tell the supervisor)."
           }
         },
         "type": "object",
@@ -48647,6 +48707,18 @@
           "vault_path": {
             "type": "string",
             "title": "Vault Path"
+          },
+          "playbook": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook"
           }
         },
         "additionalProperties": true,
