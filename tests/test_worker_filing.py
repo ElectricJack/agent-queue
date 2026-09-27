@@ -12,7 +12,9 @@ from click.testing import CliRunner
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, DiscordConfig
 from src.database import Database
-from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStatus
+from src.models import (
+    Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus,
+)
 from src.orchestrator import Orchestrator
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
@@ -1082,6 +1084,18 @@ class TestRootFilingCLI:
         client.execute.assert_not_awaited()
 
 
+async def route(db, task_id):
+    """Route *task_id* as ``task_route`` would: a profile and a class on the row."""
+    if await db.get_profile("standard-high-claude") is None:
+        await db.create_profile(
+            AgentProfile(id="standard-high-claude", name="standard-high-claude", harness="claude")
+        )
+    assert await db.update_task_routing(
+        task_id, profile_id="standard-high-claude", intelligence_class="standard-high",
+        preferred_workspace_id=None,
+    )
+
+
 class TestWorkerReparent:
     """A worker may deliberately move its own unclaimed filing in scope."""
 
@@ -1156,6 +1170,87 @@ class TestWorkerReparent:
 
         assert again.get("success") is True, again
         assert len(await db.get_gates_for_task(filed)) == 1
+
+    async def test_worker_move_to_root_announces_the_routing_gate_it_attaches(
+        self, handler, db
+    ):
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+
+        res = await scoped(handler, sid)._cmd_reparent_task({"task_id": filed, "root": True})
+
+        emitted = [
+            c.args[1] for c in handler.orchestrator.bus.emit.await_args_list
+            if c.args[0] == "gate.created"
+        ]
+        assert [(e["gate_id"], e["gate_type"], e["waiter_task_ids"]) for e in emitted] == [
+            (res["gate_id"], "routing", [filed])
+        ]
+
+    async def test_worker_move_of_a_routed_filing_to_root_attaches_no_routing_gate(
+        self, handler, db
+    ):
+        """A routing gate on a routed task is one nothing resolves (clear-orbit).
+
+        ``task.route_needed`` fires only for a task missing its class or
+        profile, so the assignment playbook never sees it and the gate would
+        hold the task — and, for a container, every child — indefinitely.
+        """
+        sid = await holding_child_session(db)
+        filed = await self._filed_under_held(handler, db, sid)
+        await route(db, filed)
+
+        res = await scoped(handler, sid)._cmd_reparent_task({"task_id": filed, "root": True})
+
+        assert res.get("success") is True, res
+        assert "gate_id" not in res
+        assert await db.get_gates_for_task(filed) == []
+        moved = await db.get_task(filed)
+        assert moved.parent_task_id is None
+        assert moved.is_blocked is False
+
+    async def test_routed_epic_moved_to_root_releases_its_children_when_the_barrier_goes(
+        self, handler, db
+    ):
+        """The nimble-bridge.2 barrier recipe, end to end (clear-orbit).
+
+        A planner files a routed epic and a child under the task it holds,
+        moves the child under the epic, bars the epic on the held task, and
+        moves the epic to root so its own close is not refused.  Removing the
+        barrier must release the epic and its child without any manual status
+        edit.
+        """
+        sid = await holding_session(db)
+
+        async def file(title):
+            res = await scoped(handler, sid)._cmd_create_task({
+                "title": title, "description": "d", "reason": "held planned it",
+            })
+            assert res["success"] is True, res
+            return res["task_id"]
+
+        epic = await file("Provider allocation epic")
+        await route(db, epic)
+        child = await file("Implement one slice")
+        under = await scoped(handler, sid)._cmd_reparent_task({"task_id": child, "parent_id": epic})
+        assert under.get("success") is True, under
+        await db.add_dependency(epic, "held", "blocks")
+        moved = await scoped(handler, sid)._cmd_reparent_task({"task_id": epic, "root": True})
+        assert moved.get("success") is True, moved
+        orch = handler.orchestrator
+        await orch._check_defined_tasks()
+        assert (await db.get_task(epic)).status == TaskStatus.DEFINED
+
+        handler._current_scope = None
+        removed = await handler._cmd_remove_dependency({"task_id": epic, "depends_on": "held"})
+        assert removed.get("ok") is True, removed
+        await orch._check_defined_tasks()
+        await orch._check_defined_tasks()
+
+        released = await db.get_task(epic)
+        assert released.status == TaskStatus.IN_PROGRESS
+        assert released.assigned_agent_id is None
+        assert (await db.get_task(child)).status == TaskStatus.READY
 
     async def test_worker_may_move_a_filing_under_its_own_task(self, handler, db):
         sid = await holding_child_session(db)

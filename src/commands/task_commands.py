@@ -1322,6 +1322,7 @@ class TaskCommandsMixin:
         new_parent = None if args.get("root") else args["parent_id"]
         old_parent = task.parent_task_id
         gate_id: str | None = None
+        gate_created = False
         scope = self._current_scope or {}
         worker = scope.get("kind") == "session" and not scope.get("elevated")
         held_id: str | None = None
@@ -1375,17 +1376,23 @@ class TaskCommandsMixin:
                 if worker and new_parent is None:
                     # A root filing is born with a routing gate (§12) so it
                     # never runs before triage; a filing moved to root gets
-                    # the same, unless it already carries an open one.
-                    gate_id, _created, gate_flipped = await self.db._create_gate_on(
+                    # the same, unless it already carries an open one or is
+                    # already routed. Routing resolves the gate only for a
+                    # task that lacks a profile, so on a routed task it would
+                    # hold the task, and a container's children, for good
+                    # (clear-orbit).
+                    (
+                        gate_id,
+                        gate_created,
+                        gate_flipped,
+                    ) = await self.db._create_unrouted_routing_gate_on(
                         conn,
                         task.project_id,
-                        "routing",
                         f"Route: {task.title}",
                         question="",
                         await_id=None,
                         timeout_at=None,
                         waiter_task_ids=[task_id],
-                        caller_owns_conn=True,
                     )
                     result.flipped |= gate_flipped
         except HierarchyError as exc:
@@ -1393,6 +1400,12 @@ class TaskCommandsMixin:
         await self.db.log_blocked_flips(result.flipped)
         await self.db._notify_settled(result.settled)
         await self.db._notify_ready(result.ready)
+        if gate_created:
+            await self._emit_gate_created({
+                "gate_id": gate_id, "gate_type": "routing", "project_id": task.project_id,
+                "title": f"Route: {task.title}", "question": "", "await_id": None,
+                "timeout_at": None, "waiter_task_ids": [task_id],
+            })
         try:
             await self.orchestrator._emit_task_event(
                 "task.reparented", task, old_parent=old_parent or "", new_parent=new_parent or ""
