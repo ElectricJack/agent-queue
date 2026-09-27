@@ -99,6 +99,101 @@ def worker_graph(*keys: str, parent: bool = False) -> dict:
 
 
 class TestFiling:
+    @pytest.mark.parametrize("mode", [None, "hierarchy", "train"])
+    @pytest.mark.parametrize("placement", [{"root": True}, {"parent_id": None}])
+    @pytest.mark.parametrize("routed", [False, True])
+    async def test_root_filing_only_gates_unrouted_work(
+        self, handler, db, tmp_path, monkeypatch, mode, placement, routed
+    ):
+        from src.integration.hierarchy import HierarchyIntegration
+        from src.models import RepoConfig, RepoSourceType
+        from src.vault import ensure_default_intelligence_classes
+
+        sid = await holding_session(db)
+        await db.create_profile(AgentProfile(
+            id="worker", name="Worker", harness="claude", lifecycle="pool",
+            default_class="standard-high", needs_workspace=False,
+        ))
+        handler._caller_profile_id = "worker"
+        ensure_default_intelligence_classes(handler.config.data_dir)
+        handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+        if mode:
+            await db.create_repo(RepoConfig(
+                id="repo", project_id=PROJECT_ID, source_type=RepoSourceType.LINK,
+                source_path=str(tmp_path),
+            ))
+            await db.update_project(
+                PROJECT_ID, hierarchical_integration_mode=mode,
+                integration_repository_id="repo",
+            )
+            service = HierarchyIntegration(
+                db, default_head_resolver=lambda _repo, _branch: "a" * 40
+            )
+            monkeypatch.setattr(handler, "_hierarchy_integration_service", lambda: service)
+
+        result = await scoped(handler, sid)._cmd_create_task({
+            "title": "Root finding", "description": "d", "reason": "held exposed it",
+            "intelligence_class": "standard-high", **placement,
+            **({"profile_id": "worker"} if routed else {}),
+        })
+
+        assert result.get("success") is True, result
+        task = await db.get_task(result["task_id"])
+        assert task.parent_task_id is None
+        assert task.status == TaskStatus.DEFINED
+        assert task.intelligence_class == "standard-high"
+        assert await db.get_typed_dependencies(task.id) == [("held", "discovered-from")]
+        gates = await db.get_gates_for_task(task.id)
+        gate_events = [c.args[1] for c in handler.orchestrator.bus.emit.await_args_list
+                       if c.args[0] == "gate.created"]
+        if routed:
+            assert task.profile_id == "worker"
+            assert task.is_blocked is False
+            assert result["gate_id"] is None
+            assert gates == []
+            assert gate_events == []
+            assert result["profile_source"] == "explicit"
+        else:
+            assert task.profile_id is None
+            assert task.is_blocked is True
+            assert [g["gate_type"] for g in gates] == ["routing"]
+            assert result["gate_id"] == gates[0]["id"]
+            assert [event["gate_id"] for event in gate_events] == [result["gate_id"]]
+        event = created_events(handler)[0]
+        assert (event["parent_task_id"], event["discovered_from"]) == (None, "held")
+        assert (await db.get_task("held")).filed_count == 1
+
+    async def test_routed_root_filing_releases_when_its_dependency_clears(self, handler, db):
+        from src.vault import ensure_default_intelligence_classes
+
+        sid = await holding_session(db)
+        await db.create_profile(AgentProfile(
+            id="worker", name="Worker", harness="claude", lifecycle="pool",
+            default_class="standard-high", needs_workspace=False,
+        ))
+        handler._caller_profile_id = "worker"
+        ensure_default_intelligence_classes(handler.config.data_dir)
+        handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+        result = await scoped(handler, sid)._cmd_create_task({
+            "title": "Follow-up", "description": "d", "root": True,
+            "reason": "held exposed it", "depends_on": "held",
+            "profile_id": "worker", "intelligence_class": "standard-high",
+        })
+        assert result.get("success") is True, result
+        task_id = result["task_id"]
+        await handler.orchestrator._check_defined_tasks()
+        assert (await db.get_task(task_id)).status == TaskStatus.DEFINED
+
+        handler._current_scope = None
+        removed = await handler._cmd_remove_dependency({"task_id": task_id, "depends_on": "held"})
+        assert removed.get("ok") is True, removed
+        await handler.orchestrator._check_defined_tasks()
+
+        task = await db.get_task(task_id)
+        assert task.status == TaskStatus.READY
+        assert task.is_blocked is False
+        assert await db.get_gates_for_task(task_id) == []
+
     async def test_legacy_null_instance_claim_keeps_unmanaged_worker_filing_compatible(
         self, handler, db
     ):
