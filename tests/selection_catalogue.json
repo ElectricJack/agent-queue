@@ -122,7 +122,8 @@
       "modules": [
         "tests/test_collaboration.py",
         "tests/test_collaboration_lifecycle.py",
-        "tests/test_collaboration_queries.py"
+        "tests/test_collaboration_queries.py",
+        "tests/test_collaboration_waits.py"
       ]
     },
     "command-dispatch": {
@@ -1260,7 +1261,7 @@
       ]
     }
   },
-  "digest": "sha256:6f67963f887a920864d547cba4d77b8d5f0dbf8f01ed5ee39a5abe10a8fd96d8",
+  "digest": "sha256:8cef1ecd38f5a55a5a319c91ae6be8f35646623afc37d363175a90306a8140dc",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3499,6 +3500,23 @@
         "parametrize"
       ],
       "summary": "Collaboration ordering and claim fencing on disposable PostgreSQL."
+    },
+    "tests/test_collaboration_waits.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.collaboration",
+        "src.database",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Collaboration thread semantics inside the durable message wait, on PostgreSQL."
     },
     "tests/test_command_capability_authorization.py": {
       "areas": [
@@ -6019,7 +6037,9 @@
         "src.orchestrator",
         "src.tools"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Container-close semantics and the hierarchy command surface — spec §7, §14."
     },
     "tests/test_hierarchy_doctor.py": {

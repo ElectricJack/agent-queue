@@ -111,6 +111,8 @@ class ProducerObservation:
     completed_at: float | None = None
     result_ref: str | None = None
     digest: dict[str, Any] = field(default_factory=dict)
+    # Typed reason an unavailable producer resolves with; its digest adds context.
+    reason: str = "source_unavailable"
 
 
 @dataclass(frozen=True)
@@ -129,7 +131,11 @@ def resolve_wait(
     if now >= deadline:
         return WaitResolution("expired", observation.result_ref, {"reason": "deadline_expired"})
     if not observation.available:
-        return WaitResolution("satisfied", observation.result_ref, {"reason": "source_unavailable"})
+        return WaitResolution(
+            "satisfied",
+            observation.result_ref,
+            {"reason": observation.reason, **observation.digest},
+        )
     return None
 
 

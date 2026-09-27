@@ -306,4 +306,4 @@ async def test_expiry_resolves_collaboration_wait_in_same_cycle(commands, env):
     assert (await CollaborationReconciler(commands).tick(now=NOW + 60))["expired"] == 1
     assert (await AgentWaitReconciler(commands).tick(now=NOW + 60))["success"]
     result = await env.db.get_agent_wait(wait["id"])
-    assert result["state"] == "satisfied" and result["result_digest"]["reason"] == "thread_closed"
+    assert result["state"] == "satisfied" and result["digest"]["reason"] == "thread_closed"
