@@ -220,10 +220,14 @@ supervisor token can reach it.
 ### What each scenario proves
 
 **S1 — pool sizing.** Three READY tasks routed to the `worker` pool profile.
-Within a few 5s cascades `aq pool status` shows exactly two live sessions —
-`max_active`, not "one per task" — and
-`aq system get-recent-events --event-type pool.scaled` carries the audit row
-for the scale-up. *Regression it catches: a sizer that ignores its bounds, or
+Within a few 5s cascades `aq pool status` reports supply of exactly two and
+`aq session list --lifecycle pool` has exactly two live session rows, bounded
+by `max_active`. The wait includes
+`aq system get-recent-events --event-type pool.scaled` carrying the scale-up
+audit row: `starting` includes reservations before session rows exist, and
+the audit follows completion of the launch batch. Every sampled supply and
+session count must stay at or below two, including during startup.
+*Regression it catches: a sizer that ignores its bounds, or
 one that never fires at all.*
 
 **S2 — the claim loop.** The whole worker lifecycle through one session's own
