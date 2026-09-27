@@ -1098,7 +1098,10 @@ class DevelopmentIntegration:
             await self.stalls.observe(
                 SweepObservation(
                     project_id=project_id, repository_id=repo.id, target_ref=target,
-                    target_sha=base, branches={}, source_heads=source_heads,
+                    target_sha=base,
+                    branches={task["id"]: task["branch_name"] for task in candidates},
+                    source_heads=source_heads, history=history,
+                    pending=frozenset(own_truth),
                 ),
                 set(contained) | no_artifact, {},
             )

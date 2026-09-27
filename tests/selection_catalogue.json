@@ -1266,7 +1266,7 @@
       ]
     }
   },
-  "digest": "sha256:cd1da10ddcb6e9eb3887d1aec63bb657238db2d0fe1e5e7b3e8d5af8dd220aec",
+  "digest": "sha256:b838b674c3a5c3c0585f079e63ca7218c0d59eee7332db005043dcc49bda3269",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5712,6 +5712,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"
@@ -13488,8 +13489,10 @@
         "src.database.queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.hierarchy",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.vault"
       ],
       "markers": [
         "parametrize",
