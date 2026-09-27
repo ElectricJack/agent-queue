@@ -9,6 +9,7 @@ closing: each still held a branch-owner row and sat in a development batch.
 
 from __future__ import annotations
 
+import subprocess
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,6 +19,7 @@ from sqlalchemy import insert, select, update
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.database.tables import development_deliveries, events, projects, tasks
+from src.git.manager import GitManager
 from src.models import (
     Project,
     RepoConfig,
@@ -88,13 +90,13 @@ async def epic(db, *, status, kids=2, project_id=PROJECT_ID, **kid_kw):
     return names
 
 
-async def dev_project(db) -> None:
+async def dev_project(db, url="https://example.test/dev.git") -> None:
     """A development-mode project that delivers to ``dev-repo``'s ``main``."""
     await db.create_project(Project(id=DEV_PROJECT, name="Development"))
     await db.create_repo(
         RepoConfig(
             id="dev-repo", project_id=DEV_PROJECT, source_type=RepoSourceType.CLONE,
-            url="https://example.test/dev.git",
+            url=url,
         )
     )
     async with db._engine.begin() as conn:
@@ -105,14 +107,94 @@ async def dev_project(db) -> None:
         )
 
 
-async def close_with_commit(db, tid, sha=SHA):
+async def close_with_commit(db, tid, sha=SHA, *, close_id=None):
     await db.save_task_completion(
         TaskCompletion(
-            id=f"close-{tid}", task_id=tid, outcome="pass", commits=[sha],
+            id=close_id or f"close-{tid}", task_id=tid, outcome="pass", commits=[sha],
             completed_at=time.time(),
         )
     )
     await db.transition_task(tid, TaskStatus.COMPLETED)
+
+
+def git(path, *args):
+    return subprocess.check_output(
+        ["git", "-C", str(path), *args], text=True, stderr=subprocess.PIPE
+    ).strip()
+
+
+class Origin:
+    """A disposable bare ``origin`` and a clone that pushes task work to it."""
+
+    def __init__(self, tmp_path):
+        self.url = str(tmp_path / "origin.git")
+        git(tmp_path, "init", "--bare", "--initial-branch=main", self.url)
+        self.clone = tmp_path / "clone"
+        git(tmp_path, "clone", self.url, str(self.clone))
+        git(self.clone, "config", "user.name", "Tester")
+        git(self.clone, "config", "user.email", "tester@example.test")
+        (self.clone / "base.txt").write_text("base\n")
+        git(self.clone, "add", ".")
+        git(self.clone, "commit", "-q", "-m", "base")
+        git(self.clone, "push", "-q", "origin", "main")
+
+    def work(self, tid, *, name=None):
+        """Commit on ``aq/<tid>`` and push it; return the commit."""
+        branch = f"aq/{tid}"
+        git(self.clone, "checkout", "-q", "-B", branch, f"origin/{branch}"
+            if branch in git(self.clone, "branch", "-r") else "main")
+        (self.clone / f"{tid}-{name or 'work'}.txt").write_text(tid + "\n")
+        git(self.clone, "add", ".")
+        git(self.clone, "commit", "-q", "-m", f"{tid} {name or 'work'}")
+        git(self.clone, "push", "-q", "origin", branch)
+        return git(self.clone, "rev-parse", "HEAD")
+
+    def land(self, tid, *, onto="main"):
+        """Merge ``aq/<tid>`` into *onto* on origin, as a publisher would."""
+        git(self.clone, "fetch", "-q", "origin")
+        if onto in git(self.clone, "branch", "-r"):
+            git(self.clone, "checkout", "-q", "-B", onto, f"origin/{onto}")
+        else:
+            git(self.clone, "checkout", "-q", "-B", onto, "origin/main")
+        git(self.clone, "merge", "-q", "--no-ff", "-m", f"deliver {tid}", f"origin/aq/{tid}")
+        git(self.clone, "push", "-q", "origin", onto)
+
+
+@pytest.fixture
+def origin(tmp_path, orch):
+    orch.git = GitManager()
+    return Origin(tmp_path)
+
+
+async def git_epic(db, origin, *, status, kids=1):
+    """A development epic on *origin* whose children work on ``aq/<child>``."""
+    await dev_project(db, url=origin.url)
+    names = await epic(
+        db, status=status, kids=kids, project_id=DEV_PROJECT, repo_id="dev-repo",
+    )
+    async with db._engine.begin() as conn:
+        for name in names:
+            await conn.execute(
+                update(tasks).where(tasks.c.id == name).values(branch_name=f"aq/{name}")
+            )
+    return names
+
+
+async def receipts(db):
+    async with db._engine.connect() as conn:
+        return len((await conn.execute(select(development_deliveries.c.id))).all())
+
+
+async def stale_audit(db, tid):
+    async with db._engine.connect() as conn:
+        return (
+            await conn.execute(
+                select(events.c.payload).where(
+                    events.c.task_id == tid,
+                    events.c.event_type == "task.stale_container_settled",
+                )
+            )
+        ).scalars().all()
 
 
 async def delivery(db, row_id, *, state, members, target_ref="refs/heads/main"):
@@ -201,38 +283,161 @@ class TestStaleContainerSettlement:
         assert await status(db, "g.1") == TaskStatus.COMPLETED
         assert await status(db, "g") == TaskStatus.COMPLETED
 
-    async def test_undelivered_child_waits_for_delivery_then_the_sweep_settles(self, db, orch):
-        await dev_project(db)
-        kids = await epic(
-            db, status=TaskStatus.BLOCKED, kids=1, project_id=DEV_PROJECT,
-            repo_id="dev-repo", branch_name="aq/e.0",
-        )
-        await close_with_commit(db, kids[0])
+    async def test_undelivered_child_waits_for_delivery_then_the_sweep_settles(
+        self, db, orch, origin
+    ):
+        kids = await git_epic(db, origin, status=TaskStatus.BLOCKED)
+        head = origin.work(kids[0])
+        await close_with_commit(db, kids[0], head)
         # COMPLETED is not delivered: the publisher has not landed it on main.
         assert await status(db, "e") == TaskStatus.BLOCKED
         assert await orch.reconcile_stale_containers() == []
 
-        await delivery(db, "batch-1", state="delivered", members=[(kids[0], SHA)])
-
+        # Git is the only delivery answer: no receipt row is ever written.
+        origin.land(kids[0])
         orch._last_container_sweep = 0.0
         await orch._sweep_container_completion()
         assert await status(db, "e") == TaskStatus.COMPLETED
         emitted = [c.args[0] for c in orch.bus.emit.await_args_list]
         assert "task.completed" in emitted
+        assert await receipts(db) == 0
+        # Once: a later pass has nothing left to settle and audits nothing.
+        assert await orch.reconcile_stale_containers() == []
+        assert len(await stale_audit(db, "e")) == 1
 
-    async def test_delivery_to_another_ref_is_not_delivery(self, db, orch):
-        await dev_project(db)
-        kids = await epic(
-            db, status=TaskStatus.PAUSED, kids=1, project_id=DEV_PROJECT,
-            repo_id="dev-repo", branch_name="aq/e.0",
-        )
-        await close_with_commit(db, kids[0])
-        await delivery(
-            db, "batch-x", state="delivered", members=[(kids[0], SHA)],
-            target_ref="refs/heads/release",
-        )
+    async def test_delivery_to_another_ref_is_not_delivery(self, db, orch, origin):
+        kids = await git_epic(db, origin, status=TaskStatus.PAUSED)
+        await close_with_commit(db, kids[0], origin.work(kids[0]))
+        origin.land(kids[0], onto="release")
         assert await orch.reconcile_stale_containers() == []
         assert await status(db, "e") == TaskStatus.PAUSED
+
+    async def test_a_paused_epic_delivered_in_git_settles_once_and_clears_its_hold(
+        self, db, orch, origin
+    ):
+        kids = await git_epic(db, origin, status=TaskStatus.PAUSED, kids=2)
+        for kid in kids:
+            await close_with_commit(db, kid, origin.work(kid))
+            origin.land(kid)
+
+        assert await orch.reconcile_stale_containers() == ["e"]
+        assert await status(db, "e") == TaskStatus.COMPLETED
+        assert await db.get_task_meta("e", "manual_pause") is None
+        audit = await stale_audit(db, "e")
+        assert len(audit) == 1 and '"from_status": "PAUSED"' in audit[0]
+        assert await orch.reconcile_stale_containers() == []
+
+    async def test_a_misleading_receipt_does_not_settle_undelivered_work(
+        self, db, orch, origin
+    ):
+        kids = await git_epic(db, origin, status=TaskStatus.BLOCKED)
+        head = origin.work(kids[0])
+        await close_with_commit(db, kids[0], head)
+        await delivery(db, "lie", state="delivered", members=[(kids[0], head)])
+        assert await orch.reconcile_stale_containers() == []
+        assert await status(db, "e") == TaskStatus.BLOCKED
+
+    async def test_a_reopened_child_is_not_released_by_its_old_delivery(
+        self, db, orch, origin
+    ):
+        kids = await git_epic(db, origin, status=TaskStatus.BLOCKED)
+        await close_with_commit(db, kids[0], origin.work(kids[0]), close_id="close-1")
+        origin.land(kids[0])
+        # Reopened and re-completed with new work that has not landed.
+        await db.transition_task(kids[0], TaskStatus.IN_PROGRESS, force=True)
+        await close_with_commit(
+            db, kids[0], origin.work(kids[0], name="second"), close_id="close-2",
+        )
+        assert await orch.reconcile_stale_containers() == []
+        assert await status(db, "e") == TaskStatus.BLOCKED
+
+    async def test_a_missing_ref_or_wrong_repository_holds_the_container(
+        self, db, orch, origin
+    ):
+        from src.integration.delivery_truth import DeliveryState
+
+        kids = await git_epic(db, origin, status=TaskStatus.BLOCKED, kids=2)
+        # e.0: a branch that was never pushed and a close with no commits.
+        await db.save_task_completion(
+            TaskCompletion(id="close-e0", task_id=kids[0], outcome="pass", commits=[],
+                           completed_at=time.time())
+        )
+        await db.transition_task(kids[0], TaskStatus.COMPLETED)
+        # e.1: delivered work, but the task names another project's repository.
+        await close_with_commit(db, kids[1], origin.work(kids[1]))
+        origin.land(kids[1])
+        await db.create_project(Project(id="p-web", name="Web"))
+        await db.create_repo(
+            RepoConfig(id="web-repo", project_id="p-web", source_type=RepoSourceType.CLONE,
+                       url="https://example.test/web.git")
+        )
+        async with db._engine.begin() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == kids[1]).values(repo_id="web-repo"))
+
+        assert await orch.reconcile_stale_containers() == []
+        assert await status(db, "e") == TaskStatus.BLOCKED
+        view = await orch.delivery_observer.observe(kids)
+        assert {kid: (view.get(kid).state, view.get(kid).reason) for kid in kids} == {
+            kids[0]: (DeliveryState.UNKNOWN, "missing_ref"),
+            kids[1]: (DeliveryState.UNKNOWN, "scope_mismatch"),
+        }
+
+    async def test_a_child_that_changes_after_observation_is_not_settled(
+        self, db, orch, origin
+    ):
+        kids = await git_epic(db, origin, status=TaskStatus.BLOCKED)
+        await close_with_commit(db, kids[0], origin.work(kids[0]))
+        origin.land(kids[0])
+        view = await orch.delivery_observer.observe(kids)
+        assert view.satisfied(kids[0]) and await view.fresh()
+        # Reopened and re-completed between the observation and the write.
+        await db.transition_task(kids[0], TaskStatus.IN_PROGRESS, force=True)
+        await close_with_commit(db, kids[0], origin.work(kids[0], name="again"),
+                                close_id="close-again")
+
+        assert await orch._settle_seeds({"e"}, delivery=view) == []
+        assert await status(db, "e") == TaskStatus.BLOCKED
+
+    async def test_a_nested_stale_epic_settles_level_by_level_on_git_proof(
+        self, db, orch, origin
+    ):
+        await dev_project(db, url=origin.url)
+        for tid, parent in (("g", None), ("g.1", "g"), ("g.1.1", "g.1"), ("g.2", "g")):
+            await mktask(
+                db, tid, status=TaskStatus.IN_PROGRESS if tid in {"g", "g.1"} else
+                TaskStatus.READY, project_id=DEV_PROJECT, repo_id="dev-repo",
+                branch_name=None if tid in {"g", "g.1"} else f"aq/{tid}",
+            )
+            if parent:
+                await db.add_dependency(tid, parent, "parent-child")
+        for tid in ("g", "g.1"):
+            await db.transition_task(tid, TaskStatus.BLOCKED, context="restart_recovery",
+                                     force=True)
+        for tid in ("g.1.1", "g.2"):
+            await close_with_commit(db, tid, origin.work(tid))
+            origin.land(tid)
+
+        # The stale parent needs its own child's proof once g.1 has settled.
+        assert await orch.reconcile_stale_containers() == ["g.1", "g"]
+        assert await status(db, "g") == TaskStatus.COMPLETED
+
+    async def test_live_session_keeps_a_delivered_stale_container_open(
+        self, db, orch, origin
+    ):
+        kids = await git_epic(db, origin, status=TaskStatus.BLOCKED)
+        await close_with_commit(db, kids[0], origin.work(kids[0]))
+        origin.land(kids[0])
+        now = time.time()
+        await db.create_session(
+            SessionRecord(
+                id="s1", task_id="e", project_id=DEV_PROJECT, profile_id="worker",
+                harness="claude", provider="fake", name="s-e", lifecycle="task",
+                state="running", work_dir="/tmp", epoch="e", instance_token="t",
+                started_at=now, last_activity=now,
+            )
+        )
+        assert await orch.reconcile_stale_containers() == []
+        assert await status(db, "e") == TaskStatus.BLOCKED
 
     async def test_startup_reconciliation_settles_a_container_stranded_by_a_restart(
         self, db, orch

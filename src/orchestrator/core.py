@@ -1497,6 +1497,9 @@ class Orchestrator(
             if row.project_id is None and row.agent_id is None:
                 await self.db.update_session(row.id, agent_id=supervisor_agent.id)
         self.register_settlement_listener()
+        # Archive/removal guards prove development delivery in git before
+        # their transaction; the database layer has no Git of its own.
+        self.db.set_delivery_observer(self.delivery_observer)
         # aq-surface Phase S2: construct the session-token store now that
         # the DB is live.  The API layer prefers this instance so
         # revocations from the cascade sweep share the same cache as
