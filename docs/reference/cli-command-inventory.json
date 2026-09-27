@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 435,
+    "leaf_commands": 436,
     "registration": {
-      "generated": 283,
+      "generated": 284,
       "handwritten": 152
     },
     "ownership": {
-      "core": 396,
+      "core": 397,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 434
+      "supported": 435
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 283,
+      "dispatch": 284,
       "registration": 138
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 375
+      "untested": 376
     }
   },
   "commands": [
@@ -11992,6 +11992,40 @@
         "structured": [],
         "nullable": [
           "--wait-id"
+        ]
+      }
+    },
+    {
+      "path": "aq system reconcile-collaborations",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "reconcile_collaborations",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--now",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": [
+          "--now"
         ]
       }
     },
