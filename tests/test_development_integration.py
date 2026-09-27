@@ -22,7 +22,9 @@ from src.integration.development import (
 from src.integration.development_validation import (
     DEFERRAL_KIND, FAILED, INFRA_ALERT_AFTER, INFRASTRUCTURE, PASSED,
 )
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus, Workspace
+from src.models import (
+    Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus, TaskType, Workspace,
+)
 from tests.db_fixtures import lease_dsn
 
 
@@ -401,6 +403,43 @@ async def test_deleted_delivered_branch_with_no_commits_uses_delivery_receipt(se
 
     assert result["outcome"] == "delivered"
     assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
+
+
+async def test_docs_only_plan_dependency_stays_satisfied_after_branch_cleanup(setup):
+    """The nimble-bridge shape: a plan task writes its plan outside the repository,
+    so its branch is its base and its close lists no commits. Once that is delivered,
+    cleaning up the branch must neither re-block a waiting dependent nor strand one
+    whose edge is written afterwards, at readiness or at publication."""
+    db, service, source, remote, _repo = setup
+    git(source, "push", "origin", "main:refs/heads/aq/plan")
+    await db.create_task(Task(
+        id="plan", project_id="p", repo_id="r", title="plan", description="",
+        branch_name="aq/plan", status=TaskStatus.COMPLETED, task_type=TaskType.PLAN,
+    ))
+    await db.save_task_completion(TaskCompletion(
+        id="plan-close", task_id="plan", outcome="pass", commits=[], completed_at=time.time(),
+    ))
+    await db.create_task(Task(id="waiting", project_id="p", title="waiting", description=""))
+    await db.add_dependency("waiting", "plan")
+    assert (await db.get_task("waiting")).is_blocked
+
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert not (await db.get_task("waiting")).is_blocked
+
+    await service.collect_delivered_branches("p")
+    assert "aq/plan" not in remote_branches(remote)
+    assert not await _delivery_pending(db, "plan")
+    assert await db.get_blocking_dependencies("waiting") == []
+    # An edge written after cleanup recomputes against the receipt, not the branch.
+    await db.create_task(Task(id="filed-later", project_id="p", title="f", description=""))
+    await db.add_dependency("filed-later", "plan")
+    assert not (await db.get_task("filed-later")).is_blocked
+
+    head = await aq_feature(setup, "implementation")
+    await db.add_dependency("implementation", "plan")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+    assert await db.get_task_meta("implementation", PUBLISHER_SKIP_KEY) is None
 
 
 async def test_branchless_epic_dependencies_are_satisfied_without_manifest_members(setup):

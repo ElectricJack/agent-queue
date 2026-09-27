@@ -270,6 +270,44 @@ class TestCodexFooterPadding:
         await provider_for(composer).nudge(handle(), REMINDER)
         assert composer.submitted == [REMINDER]
 
+    # codex-cli 0.157 (observed live 2026-09-27): a model row, then a
+    # ``? for shortcuts`` hint row that may carry right-aligned notices.
+    @pytest.mark.parametrize(
+        "hint",
+        [
+            "  ? for shortcuts",
+            "  ? for shortcuts" + " " * 40 + "⚠ 2 warnings · f2 to view",
+        ],
+        ids=["plain-hint", "hint-with-warnings"],
+    )
+    @pytest.mark.parametrize("padding", [[], ["", ""]], ids=["no-padding", "padding"])
+    async def test_two_row_codex_footer_accepts_reminder(self, hint, padding):
+        model_row = "  GPT-6-Sol xhigh · ~/dev/agent-queue2/.aq/worktrees/slot-3 · Process tasks"
+        below = ["", model_row, hint, *padding]
+        composer = Composer(
+            row=CODEX_PLACEHOLDER, cursor_y=17, height=18 + len(below), below=below
+        )
+        await provider_for(composer).nudge(handle(), REMINDER)
+        assert composer.submitted == [REMINDER]
+
+    @pytest.mark.parametrize(
+        "below",
+        [
+            ["", "  GPT-6-Sol xhigh · /project", "  ? for shortcuts", "  unsent continuation"],
+            ["", "  GPT-6-Sol xhigh · /project", "  unsent continuation", ""],
+            ["", "  GPT-6-Sol xhigh · /project", "  ? for shortcutsX", ""],
+        ],
+        ids=["text-after-hint", "unknown-second-row", "hint-lookalike"],
+    )
+    async def test_two_row_footer_does_not_bypass_input_safety(self, below):
+        composer = Composer(
+            row=CODEX_PLACEHOLDER, cursor_y=17, height=18 + len(below), below=below
+        )
+        with pytest.raises(NotSubmitted):
+            await provider_for(composer).nudge(handle(), REMINDER)
+        assert composer.submitted == []
+        assert composer.mutations == []
+
     @pytest.mark.parametrize("unsafe", ["attached", "literal-placeholder", "text-after-footer"])
     async def test_padding_does_not_bypass_input_safety(self, unsafe):
         composer = Composer(

@@ -96,7 +96,9 @@ class FormulaCommandsMixin:
             return {}, {"success": False, "error": "vars must be an object of string values"}
         return raw, None
 
-    async def _resolve_formula_graph(self, name: str, project_id: str | None, supplied: dict):
+    async def _resolve_formula_graph(
+        self, name: str, project_id: str | None, supplied: dict, *, parent_id: str | None = None
+    ):
         """resolve → parse → validate.
 
         Returns ``(resolved, graph, errors, warnings)``.  ``graph`` is
@@ -121,6 +123,7 @@ class FormulaCommandsMixin:
             project_id=project_id,
             db=self.db,
             vault_root=getattr(self.config, "vault_root", None),
+            parent_id=parent_id,
         )
         errors, warnings = split_findings(findings)
         return resolved, graph, errors, warnings
@@ -285,7 +288,7 @@ class FormulaCommandsMixin:
 
         try:
             resolved, graph, errors, warnings = await self._resolve_formula_graph(
-                name, project_id, supplied
+                name, project_id, supplied, parent_id=parent_id
             )
         except FormulaError as exc:
             return {"success": False, "error": str(exc)}

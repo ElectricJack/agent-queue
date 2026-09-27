@@ -83,10 +83,16 @@ _PHASE_FAILURE_META_KEYS = ("blocked_terminal", "needs_attention")
 #: container flag; its presence is the second half of
 #: :func:`childless_held_open_container`.
 STANDING_PARENT_KEY = "standing_parent"
+#: ``task_metadata`` key a task created as a container carries
+#: (``create_task(container=true)``, ``aq task create --container``).  Written
+#: with the container flag in the creation transaction by
+#: :meth:`HierarchyQueryMixin.declare_container`, so an epic filed before its
+#: children is never claimable and never settles empty (bold-flare-35).
+DECLARED_CONTAINER_KEY = "declared_container"
 #: Every ``task_metadata`` key that holds a childless container open.  A
 #: container carrying any of these is created *before* the work it will hold,
 #: so it must survive the window in which it has no children at all.
-HELD_OPEN_CONTAINER_KEYS = (PHASE_KEY, STANDING_PARENT_KEY)
+HELD_OPEN_CONTAINER_KEYS = (PHASE_KEY, STANDING_PARENT_KEY, DECLARED_CONTAINER_KEY)
 #: Two-key PostgreSQL advisory-lock namespace "AQHI" (AQ hierarchy).
 HIERARCHY_LOCK_NAMESPACE = 0x41514849
 #: Bounds the recursive walk on an already-cyclic graph; far above any real
@@ -129,8 +135,9 @@ def container_flag_exists():
 def childless_held_open_container():
     """``WHERE`` clause: the row is a held-open container with no children.
 
-    A *held-open* container — a phase (A1) or a keyed standing parent (A2) —
-    is created *before* the work that belongs to it, so it spends a window
+    A *held-open* container — a phase (A1), a keyed standing parent (A2) or a
+    declared container (``create_task(container=true)``, bold-flare-35) — is
+    created *before* the work that belongs to it, so it spends a window
     with no children at all.  The §7 settlement predicate below asks "no
     child is un-COMPLETED", which is vacuously true of zero children, and
     would therefore complete such a container the instant the promotion
@@ -747,6 +754,17 @@ class HierarchyQueryMixin:
             .values(task_id=task_id, key=CONTAINER_KEY, value=CONTAINER_VALUE)
             .on_conflict_do_nothing()
         )
+
+    async def declare_container(self, task_id: str, *, conn) -> None:
+        """Flag *task_id* a container that is held open until work arrives.
+
+        Both writes in the caller's transaction, for the reason
+        ``_mark_standing_parent`` gives: the flag alone is a childless
+        container the §7 sweep completes, the held-open key alone a claimable
+        task.  Idempotent.
+        """
+        await self.mark_container(task_id, conn=conn)
+        await self._upsert_meta(task_id, DECLARED_CONTAINER_KEY, True, conn=conn)
 
     async def is_container(self, task_id: str, *, conn) -> bool:
         row = (

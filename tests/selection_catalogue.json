@@ -299,6 +299,7 @@
         "tests/test_review_gating.py",
         "tests/test_review_keys.py",
         "tests/test_review_notifier.py",
+        "tests/test_review_playbooks.py",
         "tests/test_review_profile_rules.py",
         "tests/test_review_queries.py",
         "tests/test_review_reopen_cascade.py",
@@ -690,6 +691,7 @@
         "tests/test_migration_postgres_upgrade_head.py",
         "tests/test_migration_repair_stages.py",
         "tests/test_migration_retired_intelligence_classes.py",
+        "tests/test_migration_review_playbook_pin.py",
         "tests/test_migration_root_main_promotion.py",
         "tests/test_migration_session_hooks_provisioned.py",
         "tests/test_migration_single_head.py",
@@ -873,9 +875,10 @@
       ]
     },
     "provider-failover": {
-      "description": "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and its capacity-spill planner, in-flight failure handling, escalation pages and availability API and doctor checks.",
+      "description": "Provider availability and failover: the reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and capacity-spill planner, in-flight failures, escalations, availability API and doctor checks, and the provider allocation status read.",
       "modules": [
         "tests/test_fake_session_script.py",
+        "tests/test_provider_allocation.py",
         "tests/test_provider_availability.py",
         "tests/test_provider_availability_api.py",
         "tests/test_provider_availability_doctor.py",
@@ -1264,7 +1267,7 @@
       ]
     }
   },
-  "digest": "sha256:cd35caf26c55d6a9e9bdfd706352aa4f31989f6e59123cc4988032183868b9ce",
+  "digest": "sha256:47fb2cc566bfb8d2f81d4943915c432603bef34758ba004cb124e7f8f59f7f1f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8492,6 +8495,20 @@
       ],
       "summary": "The retired-class revision repoints live pins and spares the evidence rows."
     },
+    "tests/test_migration_review_playbook_pin.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The review-playbook-pin revision adds its columns once and keeps them on rollback."
+    },
     "tests/test_migration_root_main_promotion.py": {
       "areas": [
         "migrations"
@@ -9263,6 +9280,9 @@
         "src.api.auth",
         "src.api.models",
         "src.api.scope",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.playbook",
         "src.commands.handler",
         "src.commands.playbook_v2_commands",
         "src.commands.principal",
@@ -10145,6 +10165,26 @@
       "markers": [],
       "summary": "``proposal.status_changed`` bus event — schema + emission."
     },
+    "tests/test_provider_allocation.py": {
+      "areas": [
+        "provider-failover"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.providers",
+        "src.api.scope",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.models",
+        "src.providers.allocation",
+        "src.providers.intent",
+        "src.sessions.harness_parser"
+      ],
+      "markers": [],
+      "summary": "Provider allocation status (provider-worker-allocation-controls, plan Task 6)."
+    },
     "tests/test_provider_availability.py": {
       "areas": [
         "provider-failover"
@@ -10913,6 +10953,29 @@
       ],
       "summary": "Discord delivery behavior for the durable document-review outbox."
     },
+    "tests/test_review_playbooks.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli",
+        "src.cli.app",
+        "src.cli.reviews",
+        "src.database.tables",
+        "src.doctor",
+        "src.doctor.models",
+        "src.doctor.review_checks",
+        "src.event_bus",
+        "src.models",
+        "src.playbooks.definition",
+        "src.reviews.vault"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Playbook reviews: submission pins a compiled artifact, approval stores it."
+    },
     "tests/test_review_profile_rules.py": {
       "areas": [
         "document-reviews",
@@ -11422,12 +11485,16 @@
       "default_arm": true,
       "imports": [
         "src.database",
+        "src.database.tables",
         "src.doctor",
         "src.doctor.models",
+        "src.messages.session_lens",
         "src.models",
         "src.sessions",
         "src.sessions.fake",
-        "src.sessions.provider"
+        "src.sessions.harness_registry",
+        "src.sessions.provider",
+        "src.sessions.spec"
       ],
       "markers": [],
       "summary": "``sessions.stuck_composer`` — the doctor half of the lost-Enter stall."
@@ -13450,8 +13517,10 @@
         "src.database.queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.hierarchy",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.vault"
       ],
       "markers": [
         "parametrize",

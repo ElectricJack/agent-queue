@@ -1402,6 +1402,208 @@ class TestClaim:
         assert (await h._cmd_task_claim({"task_id": "other"}))["result"] == "out_of_scope"
 
 
+def elevated(handler):
+    handler._current_scope = None
+    return handler
+
+
+class TestContainerClaims:
+    """An epic container is never leased, even while it is being filed (bold-flare-35).
+
+    A planner used to file the epic as a plain task and reparent its children
+    under it afterwards; a pool worker claimed the epic in between
+    (prime-glacier.1, nimble-bridge.1).
+    """
+
+    async def _plain_epic(self, db, tid="epic", filed_by="planner-session"):
+        """An epic filed the old way: a plain, claimable task from a planner."""
+        await mktask(
+            db, tid, profile_id="worker", created_by_kind="session", created_by_id=filed_by
+        )
+
+    async def _child_of(self, db, parent, child, *, filed_by=None, status=TaskStatus.DEFINED):
+        await mktask(
+            db, child, status=status, profile_id="worker",
+            created_by_kind="session" if filed_by else None, created_by_id=filed_by,
+        )
+        async with db.immediate() as conn:
+            await db.set_parent(child, parent, conn=conn)
+
+    async def test_a_parent_without_the_container_flag_is_off_the_frontier(
+        self, handler, db, tmp_path
+    ):
+        from sqlalchemy import delete
+
+        await mktask(db, "epic", profile_id="worker")
+        await self._child_of(db, "epic", "epic.1")
+        # A parent row whose flag never landed (a legacy row, a crash between
+        # writes): having a child is enough to keep it off the frontier.
+        async with db.immediate() as conn:
+            await conn.execute(
+                delete(task_metadata).where(
+                    task_metadata.c.task_id == "epic", task_metadata.c.key == "container"
+                )
+            )
+        sid, _ = await pool_session(db, tmp_path)
+        res = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert res["result"] == "no_ready_work"
+        codes = [r["code"] for r in await db.claim_frontier_exclusions("epic")]
+        assert codes == ["frontier_has_children"]
+
+    async def test_declared_container_is_never_leased_before_or_after_children_arrive(
+        self, handler, db, tmp_path
+    ):
+        handler.orchestrator.bus.emit = AsyncMock()
+        created = await elevated(handler).execute("create_task", {
+            "project_id": PROJECT_ID, "title": "Epic", "description": "epic",
+            "profile_id": "worker", "container": True,
+        })
+        assert "task_id" in created, created
+        epic = created["task_id"]
+        async with db._engine.connect() as conn:
+            assert await db.is_container(epic, conn=conn)
+        # The cascade releases it the way it releases any flagged READY task,
+        # and a childless *declared* container is held open, not settled.
+        await handler.orchestrator._release_ready_containers([epic])
+        task = await db.get_task(epic)
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, None)
+        assert epic not in await db.settle_candidates()
+
+        sid, _ = await pool_session(db, tmp_path)
+        assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == (
+            "no_ready_work"
+        )
+        # The planner's children are filed elsewhere and reparented under it.
+        for n in (1, 2):
+            await mktask(db, f"work-{n}", profile_id="worker")
+            moved = await elevated(handler).execute(
+                "reparent_task", {"task_id": f"work-{n}", "parent_id": epic}
+            )
+            assert moved["success"], moved
+        claimed = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert claimed["result"] == "claimed"
+        assert claimed["task"]["id"] in {"work-1", "work-2"}
+        assert (await db.get_task(epic)).assigned_agent_id is None
+
+    async def test_a_worker_session_cannot_declare_a_container(self, handler, db, tmp_path):
+        # An empty declared container is held open with no timeout; a worker
+        # files an epic with its children through a graph ``parent:`` block.
+        handler.orchestrator.bus.emit = AsyncMock()
+        await mktask(db, "plan", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        h = scoped(handler, sid)
+        await h._cmd_task_claim({"next": True})
+        res = await h._cmd_create_task({
+            "project_id": PROJECT_ID, "title": "Epic", "description": "epic",
+            "reason": "the plan's epic", "container": True,
+        })
+        assert res["code"] == "hierarchy.container_not_for_sessions"
+        assert {t.id for t in await db.list_tasks(PROJECT_ID)} == {"plan"}
+
+    async def test_a_container_claimed_in_the_filing_window_is_released(
+        self, handler, db, tmp_path
+    ):
+        handler.orchestrator.bus.emit = AsyncMock()
+        await self._plain_epic(db)
+        sid, _ = await pool_session(db, tmp_path)
+        claimed = await scoped(handler, sid)._cmd_task_claim({"next": True})
+        assert claimed["task"]["id"] == "epic"
+        # Another session's planner reparents its children under it afterwards.
+        await self._child_of(db, "epic", "epic.1", filed_by="planner-session")
+
+        [row] = await db.list_container_claims()
+        assert (row["agent_id"], row["task_id"], row["session_id"]) == ("agent-1", "epic", sid)
+
+        released = await handler.orchestrator._release_container_claims()
+        assert released == ["epic"]
+        task = await db.get_task("epic")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, None)
+        session = await db.get_session(sid)
+        assert session.task_id is None
+        assert session.desired_state == "stopped"  # the seat is freed for a fresh worker
+        assert session.last_claim_result == "container_released"
+        agent = await db.get_agent("agent-1")
+        assert (agent.state, agent.current_task_id) == (AgentState.IDLE, None)
+        assert await db.list_container_claims() == []
+        # Nothing else was disturbed: the child is still waiting for work.
+        assert (await db.get_task("epic.1")).status is TaskStatus.DEFINED
+
+    async def test_the_pool_reconcile_tick_releases_it(self, handler, db, tmp_path):
+        handler.orchestrator.bus.emit = AsyncMock()
+        await self._plain_epic(db)
+        sid, _ = await pool_session(db, tmp_path)
+        await scoped(handler, sid)._cmd_task_claim({"next": True})
+        await self._child_of(db, "epic", "epic.1", filed_by="planner-session")
+
+        await handler.orchestrator._reconcile_pools()
+        await handler.orchestrator.wait_for_pool_launches(cancel=True)
+
+        assert (await db.get_session(sid)).task_id is None
+        assert (await db.get_task("epic")).assigned_agent_id is None
+
+    async def test_a_released_parent_without_the_flag_is_flagged(self, handler, db, tmp_path):
+        # Otherwise it would sit IN_PROGRESS with no agent, off the frontier
+        # (``has_children``) and out of settlement (which needs the flag).
+        from sqlalchemy import delete
+
+        handler.orchestrator.bus.emit = AsyncMock()
+        await self._plain_epic(db)
+        sid, _ = await pool_session(db, tmp_path)
+        await scoped(handler, sid)._cmd_task_claim({"next": True})
+        await self._child_of(db, "epic", "epic.1", filed_by="planner-session")
+        async with db.immediate() as conn:
+            await conn.execute(
+                delete(task_metadata).where(
+                    task_metadata.c.task_id == "epic", task_metadata.c.key == "container"
+                )
+            )
+        assert await handler.orchestrator._release_container_claims() == ["epic"]
+        async with db._engine.connect() as conn:
+            assert await db.is_container("epic", conn=conn)
+
+    async def test_a_follow_up_filed_by_someone_else_keeps_the_claim(
+        self, handler, db, tmp_path
+    ):
+        # Real work that picks up a supervisor's follow-up child is not an epic:
+        # only children from the task's own filer mark it as one.
+        handler.orchestrator.bus.emit = AsyncMock()
+        await self._plain_epic(db)
+        sid, _ = await pool_session(db, tmp_path)
+        await scoped(handler, sid)._cmd_task_claim({"next": True})
+        await self._child_of(db, "epic", "epic.1", filed_by="supervisor-session")
+
+        assert await db.list_container_claims() == []
+        assert await handler.orchestrator._release_container_claims() == []
+        assert (await db.get_session(sid)).task_id == "epic"
+
+    async def test_emergent_work_the_holder_filed_keeps_its_claim(self, handler, db, tmp_path):
+        handler.orchestrator.bus.emit = AsyncMock()
+        await mktask(db, "t1", profile_id="worker")
+        sid, _ = await pool_session(db, tmp_path)
+        await scoped(handler, sid)._cmd_task_claim({"next": True})
+        await self._child_of(db, "t1", "t1.1", filed_by=sid)
+        # A child from elsewhere does not turn it into someone else's container
+        # while the holder's own finding is under it too.
+        await self._child_of(db, "t1", "t1.2", filed_by="other-session")
+
+        assert await db.list_container_claims() == []
+        assert await handler.orchestrator._release_container_claims() == []
+        assert (await db.get_session(sid)).task_id == "t1"
+
+    async def test_a_released_container_settles_once_its_children_are_done(
+        self, handler, db, tmp_path
+    ):
+        handler.orchestrator.bus.emit = AsyncMock()
+        await self._plain_epic(db)
+        sid, _ = await pool_session(db, tmp_path)
+        await scoped(handler, sid)._cmd_task_claim({"next": True})
+        await self._child_of(
+            db, "epic", "epic.1", filed_by="planner-session", status=TaskStatus.COMPLETED
+        )
+        assert await handler.orchestrator._release_container_claims() == ["epic"]
+        assert (await db.get_task("epic")).status is TaskStatus.COMPLETED
+
+
 class TestFence:
     async def test_stale_epoch_rejected_on_close(self, handler, db, tmp_path):
         handler.config.swarm.fresh_context_per_task = False

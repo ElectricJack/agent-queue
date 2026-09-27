@@ -83,24 +83,11 @@ class GateQueriesMixin:
         (and commits) its own transaction as before.
         """
         if unrouted_only and gate_type == "routing":
-            # Serialize with task_route's guarded UPDATE and with competing
-            # gate creation. Rechecking the profile under this lock prevents
-            # a late pipeline callback from gating an already routed task.
             async def attach(connection):
-                requested = sorted(set(waiter_task_ids))
-                rows = (await connection.execute(
-                    select(tasks.c.id, tasks.c.profile_id)
-                    .where(tasks.c.id.in_(requested))
-                    .order_by(tasks.c.id).with_for_update()
-                )).fetchall()
-                routed = {row.id for row in rows if (row.profile_id or "").strip()}
-                waiters = [tid for tid in requested if tid not in routed]
-                if requested and not waiters:
-                    return None, False, set()
-                return await self._create_gate_on(
-                    connection, project_id, gate_type, title,
+                return await self._create_unrouted_routing_gate_on(
+                    connection, project_id, title,
                     question=question, await_id=await_id, timeout_at=timeout_at,
-                    waiter_task_ids=waiters, caller_owns_conn=True,
+                    waiter_task_ids=waiter_task_ids,
                 )
             if conn is not None:
                 gate_id, was_created, _flipped = await attach(conn)
@@ -138,6 +125,45 @@ class GateQueriesMixin:
             )
         await self.log_blocked_flips(flipped)
         return gate_id, was_created
+
+    async def _create_unrouted_routing_gate_on(
+        self,
+        conn,
+        project_id: str,
+        title: str,
+        *,
+        question: str,
+        await_id: str | None,
+        timeout_at: float | None,
+        waiter_task_ids: Iterable[str],
+    ) -> tuple[str | None, bool, set[str]]:
+        """Attach a ``routing`` gate to the waiters that still need a profile.
+
+        A routed waiter is left out: ``task.route_needed`` never fires for it,
+        so nothing would ever resolve the gate and it would hold the task — and
+        a container's every child — until someone routed it by hand
+        (clear-orbit).  Returns ``(None, False, set())`` when every waiter is
+        routed, else what :meth:`_create_gate_on` returns.
+
+        The waiter rows are locked first, which serializes this with
+        ``task_route``'s guarded UPDATE and with competing gate creation, so a
+        late caller cannot gate a task routed a moment earlier.
+        """
+        requested = sorted(set(waiter_task_ids))
+        rows = (await conn.execute(
+            select(tasks.c.id, tasks.c.profile_id)
+            .where(tasks.c.id.in_(requested))
+            .order_by(tasks.c.id).with_for_update()
+        )).fetchall()
+        routed = {row.id for row in rows if (row.profile_id or "").strip()}
+        waiters = [tid for tid in requested if tid not in routed]
+        if requested and not waiters:
+            return None, False, set()
+        return await self._create_gate_on(
+            conn, project_id, "routing", title,
+            question=question, await_id=await_id, timeout_at=timeout_at,
+            waiter_task_ids=waiters, caller_owns_conn=True,
+        )
 
     async def _create_gate_on(
         self,

@@ -42,6 +42,9 @@ from src.database.tables import (
 from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
 
 
+_frontier_child = tasks.alias("frontier_child")
+
+
 def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
     """Named acceptance predicates shared by claiming and diagnostics."""
     return {
@@ -58,6 +61,11 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
         # Containers settle when their children finish. A worker holding one
         # could never close it and would block the settlement it waits for.
         "container_settles_without_worker": ~container_flag_exists(),
+        # The flag lands with a task's first child, so this is the same rule
+        # for any parent row the flag never reached (bold-flare-35).
+        "has_children": ~exists(
+            select(literal(1)).where(_frontier_child.c.parent_task_id == tasks.c.id)
+        ),
         # Stale READY delegates must not be claimed while cleanup catches up
         # with their expired stage.
         "retired_repair_delegate": ~exists(
@@ -85,6 +93,10 @@ def _frontier_where(project_id: str, hierarchy_mode: ProjectIntegrationMode | No
         *_frontier_predicates(hierarchy_mode).values(),
     )
 
+
+#: Transition context, session end reason and audit suffix of a claim taken
+#: back because its task turned out to be a container (bold-flare-35).
+CONTAINER_CLAIM_RELEASED = "container_claim_released"
 
 # Kept in task metadata rather than a task column: this is operational
 # claim-state, not lifecycle state, and therefore needs no schema migration.
@@ -173,6 +185,7 @@ FRONTIER_PREDICATE_DETAILS = {
         "parent, repository, branch and checkpoint head, created after that sibling's rework cutoff"
     ),
     "container_settles_without_worker": "container_flag_exists() must be false",
+    "has_children": "the task must have no children (a parent is a container)",
     "retired_repair_delegate": "repair delegate stage must be active or awaiting_completion",
     "workspace_requirement": "workspace requirements must be project-repo or vault",
     "claim_prepare_backoff": "claim_prepare_backoff_until must not be in the future",
@@ -993,6 +1006,165 @@ class ClaimQueryMixin:
         async with self.immediate() as conn:
             out = await self._release_claim_on(conn, session_id, **kwargs)
         await self._after_release(out)
+        return out
+
+    async def list_container_claims(self) -> list[dict]:
+        """Every agent whose current task is a container it did not fill (bold-flare-35).
+
+        The claim frontier never offers a container, but a task can become
+        one *after* it was claimed: a planner files an epic as a plain task
+        and reparents its children under it, and a pool worker leases the
+        epic in between (prime-glacier.1).  Its holder then has nothing to
+        do — the work is in the children — and cannot close it while they
+        are open.
+
+        A task gains children legitimately while held, too: a worker files
+        emergent work under the task it holds (swarm-work-model §12), and a
+        supervisor may file a follow-up under a task someone is working on.
+        What separates those from an epic is who filed what, so a claim is
+        reported only when both hold:
+
+        * **none** of the task's children was filed by the session holding
+          it (``created_by_kind='session'``, ``created_by_id`` = that
+          session), and
+        * at least one child was filed by the **same session that filed the
+          task itself** — the planner that created the epic and then gave it
+          its children.  A follow-up filed by anyone else leaves the holder
+          alone.
+
+        The holder is the session pointing at the task through this agent in
+        any state but ``stopped`` (a ``sleeping`` session on a rate-limit
+        cooldown still holds its claim).  An agent row with no such session
+        is reported on the same rule when its task is ``IN_PROGRESS``; an
+        ``ASSIGNED`` one may simply be waiting for its session to start.
+
+        Returns one dict per agent: ``agent_id``, ``agent_state``,
+        ``task_id``, ``project_id``, ``task_status``, ``task_claim_epoch``,
+        and — ``None`` for an orphaned agent row — ``session_id``,
+        ``lifecycle`` and ``claim_epoch`` (the session's last claim epoch).
+        """
+        filer_child = tasks.alias("container_claim_filer_child")
+        own_child = tasks.alias("container_claim_own_child")
+        holder = sessions.alias("container_claim_holder")
+        stmt = (
+            select(
+                agents.c.id.label("agent_id"),
+                agents.c.state.label("agent_state"),
+                tasks.c.id.label("task_id"),
+                tasks.c.project_id.label("project_id"),
+                tasks.c.status.label("task_status"),
+                tasks.c.claim_epoch.label("task_claim_epoch"),
+                holder.c.id.label("session_id"),
+                holder.c.lifecycle.label("lifecycle"),
+                holder.c.last_claim_epoch.label("claim_epoch"),
+            )
+            .select_from(
+                agents.join(tasks, tasks.c.id == agents.c.current_task_id).outerjoin(
+                    holder,
+                    and_(
+                        holder.c.task_id == tasks.c.id,
+                        holder.c.agent_id == agents.c.id,
+                        holder.c.state != "stopped",
+                    ),
+                )
+            )
+            .where(
+                tasks.c.status.in_(
+                    (TaskStatus.ASSIGNED.value, TaskStatus.IN_PROGRESS.value)
+                ),
+                holder.c.id.is_not(None) | (tasks.c.status == TaskStatus.IN_PROGRESS.value),
+                tasks.c.created_by_kind == "session",
+                exists(
+                    select(literal(1)).where(
+                        filer_child.c.parent_task_id == tasks.c.id,
+                        filer_child.c.created_by_kind == "session",
+                        filer_child.c.created_by_id == tasks.c.created_by_id,
+                    )
+                ),
+                ~exists(
+                    select(literal(1)).where(
+                        own_child.c.parent_task_id == tasks.c.id,
+                        own_child.c.created_by_kind == "session",
+                        own_child.c.created_by_id == holder.c.id,
+                    )
+                ),
+            )
+            .order_by(agents.c.id)
+        )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(stmt)).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def release_container_claim(self, claim: dict, *, now: float) -> TransitionResult:
+        """Give a claimed container back to its children (bold-flare-35).
+
+        *claim* is a row of :meth:`list_container_claims`.  The task goes back
+        to the shape every container lives in — ``IN_PROGRESS`` with no agent
+        (``creator.PARENT_STATUS``) — and settles at once if its children are
+        already done.  A live holder's session is released and drained, so
+        the pool frees the seat and relaunches a fresh worker instead of
+        leaving one idle on a claim it can never close.  An agent row with
+        no live session is reset the same way.  Every write is fenced on the
+        observed task status and epochs; a claim that moved on is left alone
+        and ``released`` stays ``False``.
+        """
+        task_id, agent_id = claim["task_id"], claim["agent_id"]
+        task_status = TaskStatus(claim["task_status"])
+        if claim.get("session_id"):
+            out = await self.release_claim(
+                claim["session_id"],
+                task_status=TaskStatus.IN_PROGRESS,
+                context=CONTAINER_CLAIM_RELEASED,
+                now=now,
+                result="container_released",
+                expected_task_id=task_id,
+                expected_claim_epoch=claim.get("claim_epoch"),
+                expected_task_status=task_status,
+                expected_task_claim_epoch=claim.get("task_claim_epoch"),
+                drain_after_release=True,
+                end_reason=CONTAINER_CLAIM_RELEASED,
+            )
+        else:
+            async with self.immediate() as conn:
+                out = await self._apply_transition(
+                    conn,
+                    task_id,
+                    TaskStatus.IN_PROGRESS,
+                    context=CONTAINER_CLAIM_RELEASED,
+                    force=True,
+                    assigned_agent_id=None,
+                    projection_stable=True,
+                    returning=True,
+                    extra_where=and_(
+                        tasks.c.status == task_status.value,
+                        tasks.c.claim_epoch == claim.get("task_claim_epoch"),
+                        tasks.c.assigned_agent_id.is_(None)
+                        | (tasks.c.assigned_agent_id == agent_id),
+                    ),
+                )
+                if out.row is not None:
+                    await conn.execute(
+                        update(workspaces)
+                        .where(
+                            workspaces.c.locked_by_agent_id == agent_id,
+                            workspaces.c.locked_by_task_id == task_id,
+                        )
+                        .values(locked_by_task_id=None)
+                    )
+                    cleared = await conn.execute(
+                        update(agents)
+                        .where(agents.c.id == agent_id, agents.c.current_task_id == task_id)
+                        .values(state=AgentState.IDLE.value, current_task_id=None)
+                    )
+                    out.released = cleared.rowcount == 1
+            await self._after_release(out)
+        if out.released:
+            async with self._engine.begin() as conn:
+                # A parent caught by ``has_children`` alone may lack the flag,
+                # and settlement acts only on flagged containers.
+                await self.mark_container(task_id, conn=conn)
+                settled = await self.settle_containers({task_id}, conn=conn)
+            await self._after_release(settled)
         return out
 
     async def release_displaced_pool_claim(self, session_id: str, *, now: float) -> bool:

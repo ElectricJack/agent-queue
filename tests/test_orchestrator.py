@@ -1143,6 +1143,34 @@ class TestContainerRelease:
         await orch._check_defined_tasks()
         assert (await orch.db.get_task("c-1.1")).status == TaskStatus.READY
 
+    async def test_removing_the_last_blocker_releases_container_and_children(self, orch):
+        """No manual status edit once the container's last blocker goes (clear-orbit)."""
+        await orch.db.create_project(Project(id="p-1", name="alpha"))
+        await orch.db.create_task(
+            Task(
+                id="plan",
+                project_id="p-1",
+                title="Plan and file the epic",
+                description="the filer",
+                status=TaskStatus.IN_PROGRESS,
+            )
+        )
+        await self._container_with_child(
+            orch, container_status=TaskStatus.DEFINED, child_status=TaskStatus.DEFINED
+        )
+        await orch.db.add_dependency("c-1", "plan", DepType.BLOCKS.value)
+        await orch._check_defined_tasks()
+        assert (await orch.db.get_task("c-1")).status == TaskStatus.DEFINED
+
+        await orch.db.remove_dependency("c-1", "plan")
+        await orch._check_defined_tasks()
+
+        container = await orch.db.get_task("c-1")
+        assert container.status == TaskStatus.IN_PROGRESS
+        assert container.assigned_agent_id is None
+        await orch._check_defined_tasks()
+        assert (await orch.db.get_task("c-1.1")).status == TaskStatus.READY
+
     async def test_container_with_open_children_is_never_in_routed_ready(self, session_orch):
         orch = session_orch
         await _create_session_project(orch)

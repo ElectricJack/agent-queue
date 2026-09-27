@@ -105,6 +105,13 @@ transcripts fall back to provider activity. Transcript reads are incremental;
 instance changes, path changes and truncation discard cached turn state. Nudges
 still use the provider's instance fence and composer guards.
 Delivery never starts a task worker or changes the task's status.
+Plain task- and session-addressed messages share this idle delivery path.
+A message-kind wait matches only messages on its thread, so supervisor
+guidance that answers a worker's threaded message carries `reply_to`
+(`agent_message`), which copies the original's thread and links the reply.
+`messages.idle_worker_backlog` reports task/session messages older than five
+minutes whose live recipient the delivery lens reads as idle, with the lens's
+last refused-nudge reason.
 The bounded scan prioritizes timers at their `due_at` instant alongside waits
 past their hard deadlines, before unresolved future conditions. It continues
 to rotate unresolved candidates using their last check time.
