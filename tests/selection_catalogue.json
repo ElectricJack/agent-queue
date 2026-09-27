@@ -880,9 +880,10 @@
       ]
     },
     "provider-failover": {
-      "description": "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and its capacity-spill planner, in-flight failure handling, escalation pages and availability API and doctor checks.",
+      "description": "Provider availability and failover: the reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and capacity-spill planner, in-flight failures, escalations, availability API and doctor checks, and the provider allocation status read.",
       "modules": [
         "tests/test_fake_session_script.py",
+        "tests/test_provider_allocation.py",
         "tests/test_provider_availability.py",
         "tests/test_provider_availability_api.py",
         "tests/test_provider_availability_doctor.py",
@@ -1271,7 +1272,7 @@
       ]
     }
   },
-  "digest": "sha256:392278cef879c2e105b40a410e9f9cd0c754ab06040087e548698444f3018765",
+  "digest": "sha256:faadd512b71f49bbb7285f477da411ac79b485a4d7fdd8c9d062870dc67f603d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4490,6 +4491,7 @@
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
         "src.integration.status",
@@ -10153,6 +10155,26 @@
       "markers": [],
       "summary": "``proposal.status_changed`` bus event — schema + emission."
     },
+    "tests/test_provider_allocation.py": {
+      "areas": [
+        "provider-failover"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.providers",
+        "src.api.scope",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.models",
+        "src.providers.allocation",
+        "src.providers.intent",
+        "src.sessions.harness_parser"
+      ],
+      "markers": [],
+      "summary": "Provider allocation status (provider-worker-allocation-controls, plan Task 6)."
+    },
     "tests/test_provider_availability.py": {
       "areas": [
         "provider-failover"
@@ -13485,8 +13507,10 @@
         "src.database.queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.hierarchy",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.vault"
       ],
       "markers": [
         "parametrize",

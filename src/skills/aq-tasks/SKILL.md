@@ -422,6 +422,15 @@ task-id dependencies, `cross_project`, or authored `parent-child` edges.
 `graph.phases_need_root`; a planner cannot use phase creation to gain an
 arbitrary container into which to file work.
 
+Never make a node `need` the planning task you hold, or any task above it, not
+even as a barrier that holds children back while you arrange them. The plan
+exists before you file, and membership is already the `parent-child` edge. A
+gating edge onto the filer or the filing's own parent chain is refused as
+`dependency_on_ancestor`, by a graph and by `aq task create --depends-on`
+alike. Order the new tasks among themselves with local `needs`. A delivered
+plan still satisfies anything that depends on it after its branch is cleaned
+up, because readiness trusts the delivery receipt rather than the branch.
+
 **Checklist ownership.** An unphased planner graph may put `subtasks:` on a
 child task. Those are checklist rows owned and settled by the worker that
 later holds that child, not work assigned to the planner or separate tasks to

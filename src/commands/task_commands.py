@@ -1515,7 +1515,7 @@ class TaskCommandsMixin:
         read that writes nothing — then ``reserve_filing`` (``False`` raises
         :class:`_FilingQuota` with nothing written), then the task row, then
         the parent-child edge (if any) and the ``discovered-from`` edge,
-        then (root filings only) the routing gate, then the ``depends_on``
+        then (unrouted root filings only) the routing gate, then the ``depends_on``
         edges. Any exception rolls the whole transaction back untouched.
 
         ``parent_id`` arrives already defaulted by ``_cmd_create_task``: a
@@ -1535,7 +1535,7 @@ class TaskCommandsMixin:
         depth_cap_fallback, parent_id)`` — the last being the parent
         actually written, which the caller reports instead of the one it
         passed in.
-        ``gate_id`` is set for root filings and policy-gated parented
+        ``gate_id`` is set for unrouted root filings and policy-gated parented
         filings. ``discovered_from_origin`` is the provenance origin for
         every worker filing: ``discovered_from`` or the held task, except
         for a depth-cap-fallback filing, where it is the would-be container.
@@ -1676,16 +1676,14 @@ class TaskCommandsMixin:
                         edges=integration_edges,
                         labels=labels,
                     )
-                    gate_id, _created, gate_flipped = await self.db._create_gate_on(
+                    gate_id, _created, gate_flipped = await self.db._create_unrouted_routing_gate_on(
                         conn,
                         task.project_id,
-                        "routing",
                         f"Route: {task.title}",
                         question="",
                         await_id=None,
                         timeout_at=None,
                         waiter_task_ids=[task.id],
-                        caller_owns_conn=True,
                     )
                     flipped |= gate_flipped
                 gate_id = created.get("gate_id") or gate_id
@@ -1754,21 +1752,17 @@ class TaskCommandsMixin:
                     )
                     or set()
                 )
-                # ``create_gate``'s own conn-path deliberately does not log
-                # blocked flips (the caller's transaction hasn't committed
-                # yet) — call the same underlying writer directly so we get
-                # the flip set back to fold into our own post-commit log,
-                # instead of discarding it.
-                gate_id, _created, gate_flipped = await self.db._create_gate_on(
+                # Use gate_create/reparent's unrouted-only writer: a task
+                # with a profile has no assignment resolver to release a
+                # routing gate. Fold its flips into our post-commit log.
+                gate_id, _created, gate_flipped = await self.db._create_unrouted_routing_gate_on(
                     conn,
                     task.project_id,
-                    "routing",
                     f"Route: {task.title}",
                     question="",
                     await_id=None,
                     timeout_at=None,
                     waiter_task_ids=[task.id],
-                    caller_owns_conn=True,
                 )
                 flipped |= gate_flipped
             if not hierarchy_enabled:
@@ -2871,6 +2865,31 @@ class TaskCommandsMixin:
             parent = await self.db.get_task(parent_id)
             if parent is None:
                 return {"error": f"Parent task '{parent_id}' not found"}
+        if edges:
+            # Membership is already the parent-child edge, and a container
+            # settles only after its children: a gating edge onto the new
+            # task's own ancestor chain, or onto the task a worker holds,
+            # never helps (noble-quest; graph rule ``dependency_on_ancestor``).
+            from src.task_graph.validator import task_and_ancestors
+
+            forbidden = set(await task_and_ancestors(self.db, parent_id))
+            if held_id:
+                forbidden.add(held_id)
+            gated = sorted({
+                dep_id for dep_id, dep_type, _reason in edges
+                if dep_type in BLOCKING_DEP_TYPES and dep_id in forbidden
+            })
+            if gated:
+                return {
+                    "success": False,
+                    "code": "dependency_on_ancestor",
+                    "error": (
+                        f"depends_on names {', '.join(gated)}: the task filing this one "
+                        "or its own parent chain. Membership already orders a child under "
+                        "its parent, and a container settles only after its children — "
+                        "drop that dependency."
+                    ),
+                }
         if (
             filing_session is not None
             and hierarchy_enabled
@@ -3708,7 +3727,8 @@ class TaskCommandsMixin:
                     class_matched[node.key] = routed.id
 
         findings = await validate_graph(
-            graph, project_id=project_id, db=self.db, vault_root=vault_root
+            graph, project_id=project_id, db=self.db, vault_root=vault_root,
+            parent_id=parent_id, filed_by=filing.held_task_id if filing else None,
         )
         findings.extend(route_findings)
         class_errors: dict[tuple[str | None, str], str | None] = {}

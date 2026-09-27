@@ -825,11 +825,16 @@ close is skipped for pools; the token is revoked at drain.
   :held AND filed_count < :max` (`tasks.filed_count INTEGER NOT NULL DEFAULT 0`, §9);
   `rowcount = 0` → quota exceeded, nothing created. Concurrent creates cannot overshoot;
 - initial status **`DEFINED`** regardless of edges;
-- **root-level worker-filed tasks get a `routing` gate in the same transaction**
+- **root-level worker-filed tasks without a profile get a `routing` gate in the same transaction**
   (`create_gate(gate_type='routing', await_id=<task_id>)` + `task_gates` row, via the
   existing routing-gate code path that `task-created-routing` uses today). The task is
   therefore blocked by a durable record from the instant it exists; nothing about its
-  safety depends on a playbook running. Parented filings — subtasks of the held task
+  safety depends on a playbook running. A root filing with an explicit profile gets
+  no routing gate, using the same `unrouted_only` rule as `gate_create` and a move
+  to root: an already-routed filing has no assignment resolver to release that gate
+  (amber-orbit). It still starts DEFINED and waits for its blocking dependencies.
+  This rule applies in ordinary and hierarchical integration modes alike.
+  Parented filings — subtasks of the held task
   and sibling filings under its parent alike — get no born-with gate: they sit inside a
   container the assignment router already routes, inherit `profile_id` from the filing
   session's own profile when the delegation bound resolves one (never wider), and

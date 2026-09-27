@@ -22,7 +22,12 @@ from src.integration.development import (
 from src.integration.development_validation import (
     DEFERRAL_KIND, FAILED, INFRA_ALERT_AFTER, INFRASTRUCTURE, PASSED,
 )
-from src.models import Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus, Workspace
+from src.integration.development_stalls import (
+    DEFAULT_STALL_AFTER, STALL_MESSAGE_KIND, PublisherStalls, SweepObservation,
+)
+from src.models import (
+    Project, RepoConfig, RepoSourceType, Task, TaskCompletion, TaskStatus, TaskType, Workspace,
+)
 from tests.db_fixtures import lease_dsn
 
 
@@ -398,6 +403,43 @@ async def test_deleted_delivered_branch_with_no_commits_uses_delivery_receipt(se
 
     assert result["outcome"] == "delivered"
     assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
+
+
+async def test_docs_only_plan_dependency_stays_satisfied_after_branch_cleanup(setup):
+    """The nimble-bridge shape: a plan task writes its plan outside the repository,
+    so its branch is its base and its close lists no commits. Once that is delivered,
+    cleaning up the branch must neither re-block a waiting dependent nor strand one
+    whose edge is written afterwards, at readiness or at publication."""
+    db, service, source, remote, _repo = setup
+    git(source, "push", "origin", "main:refs/heads/aq/plan")
+    await db.create_task(Task(
+        id="plan", project_id="p", repo_id="r", title="plan", description="",
+        branch_name="aq/plan", status=TaskStatus.COMPLETED, task_type=TaskType.PLAN,
+    ))
+    await db.save_task_completion(TaskCompletion(
+        id="plan-close", task_id="plan", outcome="pass", commits=[], completed_at=time.time(),
+    ))
+    await db.create_task(Task(id="waiting", project_id="p", title="waiting", description=""))
+    await db.add_dependency("waiting", "plan")
+    assert (await db.get_task("waiting")).is_blocked
+
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert not (await db.get_task("waiting")).is_blocked
+
+    await service.collect_delivered_branches("p")
+    assert "aq/plan" not in remote_branches(remote)
+    assert not await _delivery_pending(db, "plan")
+    assert await db.get_blocking_dependencies("waiting") == []
+    # An edge written after cleanup recomputes against the receipt, not the branch.
+    await db.create_task(Task(id="filed-later", project_id="p", title="f", description=""))
+    await db.add_dependency("filed-later", "plan")
+    assert not (await db.get_task("filed-later")).is_blocked
+
+    head = await aq_feature(setup, "implementation")
+    await db.add_dependency("implementation", "plan")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+    assert await db.get_task_meta("implementation", PUBLISHER_SKIP_KEY) is None
 
 
 async def test_branchless_epic_dependencies_are_satisfied_without_manifest_members(setup):
@@ -871,7 +913,12 @@ async def test_parked_blocker_holds_dependent_and_names_both_tasks_in_log(setup,
     skip = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
     assert skip["dependency_id"] == "blocked"
     assert skip["reason"] == "undelivered_dependency"
-    assert skip["consecutive_ticks"] == 3
+    # The parked blocker has a live repair: the dependent waits on it rather
+    # than counting unsuccessful evaluations toward a stall.
+    (repair,) = await _repairs(db)
+    assert skip["state"] == "waiting"
+    assert skip["waiting_on"] == repair.id
+    assert skip["consecutive_ticks"] == 0
 
 
 async def test_repair_cycle_publishes_newest_and_satisfies_older(setup):
@@ -988,6 +1035,320 @@ async def test_idle_sweep_clears_skip_records_nothing_evaluates(setup):
 
     assert (await service.sweep("p"))["outcome"] == "idle"
     assert await db.get_task_meta("done-elsewhere", PUBLISHER_SKIP_KEY) is None
+
+
+# --------------------------------------------------------------------------
+# Bounded skips: a repeated identical skip ends as a stall, once.
+# --------------------------------------------------------------------------
+
+
+async def _lost_source_pair(setup):
+    """'unpublished' lost its ref before delivery and 'dependent' waits on it.
+
+    Neither can be published and nothing else will change that: both are
+    skipped identically on every evaluation.
+    """
+    db, _service, source, _remote, _repo = setup
+    head = await feature(setup, "unpublished")
+    await db.save_task_completion(TaskCompletion(
+        id="unpublished-close", task_id="unpublished", outcome="pass",
+        commits=[head], completed_at=time.time(),
+    ))
+    git(source, "push", "origin", "--delete", "unpublished")
+    await feature(setup, "dependent")
+    await db.add_dependency("dependent", "unpublished")
+    return head
+
+
+async def _stall_messages(db):
+    async with db._engine.connect() as conn:
+        return (await conn.execute(
+            select(messages)
+            .where(messages.c.to_id == "supervisor-p",
+                   messages.c.body_kind == STALL_MESSAGE_KIND)
+            .order_by(messages.c.created_at)
+        )).mappings().all()
+
+
+async def _stall_to_threshold(service, db):
+    for _tick in range(DEFAULT_STALL_AFTER):
+        assert (await service.sweep("p"))["outcome"] == "idle"
+    for task_id in ("unpublished", "dependent"):
+        assert (await db.get_task_meta(task_id, PUBLISHER_SKIP_KEY))["state"] == "stalled"
+
+
+async def test_fifth_identical_skip_stalls_once_at_error_with_one_supervisor_message(
+    setup, caplog,
+):
+    import logging
+
+    db, service, _source, _remote, _repo = setup
+    await _lost_source_pair(setup)
+
+    with caplog.at_level(logging.INFO, logger="src.integration.development"):
+        for tick in range(1, DEFAULT_STALL_AFTER):
+            assert (await service.sweep("p"))["outcome"] == "idle"
+            skip = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+            assert skip["state"] == "observing"
+            assert skip["consecutive_ticks"] == tick
+            doctor = await run_doctor_check(db, "integration.development_publisher_stalled")
+            # Progress observations: quiet, then a warning, never an error.
+            assert doctor.severity is (Severity.OK if tick < 3 else Severity.WARN)
+            assert await _stall_messages(db) == []
+
+        assert (await service.sweep("p"))["outcome"] == "idle"
+
+    dependent = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+    unpublished = await db.get_task_meta("unpublished", PUBLISHER_SKIP_KEY)
+    for skip in (dependent, unpublished):
+        assert skip["state"] == "stalled"
+        assert skip["consecutive_ticks"] == DEFAULT_STALL_AFTER
+    assert dependent["reason"] == "missing_ref"
+    assert dependent["dependency_id"] == "unpublished"
+    assert dependent["evidence"]["completion_id"] is None
+    assert unpublished["evidence"]["completion_id"] == "unpublished-close"
+    assert unpublished["evidence"]["source_sha"] is None  # the ref is gone
+    doctor = await run_doctor_check(db, "integration.development_publisher_stalled")
+    assert doctor.severity is Severity.ERROR
+    assert {s["cause"] for s in doctor.data["stalls"]} == {"candidate_stalled"}
+    assert "--recover-child" in doctor.detail
+    (message,) = await _stall_messages(db)
+    assert dependent["notified_message_id"] == unpublished["notified_message_id"] == message["id"]
+    body = message["body"]
+    for evidence in ("- dependent: missing_ref (unpublished)", "- unpublished: missing_ref",
+                     "Repository r", "refs/heads/main", "unpublished-close",
+                     "aq integration sweep p --recover-child dependent"):
+        assert evidence in body
+    stalled_logs = [r for r in caplog.records if "stalled after" in r.getMessage()]
+    assert len(stalled_logs) == 2 and all(r.levelno == logging.ERROR for r in stalled_logs)
+
+    # Further unchanged ticks, and a restarted daemon, change nothing.
+    caplog.clear()
+    restarted = DevelopmentIntegration(
+        db, data_dir=service.data_dir.parent, git=GitManager(), job_client=service.job_client,
+    )
+    with caplog.at_level(logging.INFO, logger="src.integration.development"):
+        for publisher in (service, service, restarted, restarted):
+            assert (await publisher.sweep("p"))["outcome"] == "idle"
+    assert len(await _stall_messages(db)) == 1
+    assert not [r for r in caplog.records if "stalled after" in r.getMessage()]
+    again = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+    assert again["state"] == "stalled"
+    assert again["attempt_id"] == dependent["attempt_id"]
+    assert again["consecutive_ticks"] == DEFAULT_STALL_AFTER  # bounded: not counted on
+    assert again["last_skipped_at"] > dependent["last_skipped_at"]  # but still checked
+    doctor = await run_doctor_check(db, "integration.development_publisher_stalled")
+    assert doctor.severity is Severity.ERROR
+
+
+async def test_a_new_completion_generation_starts_a_fresh_attempt(setup):
+    db, service, _source, _remote, _repo = setup
+    head = await _lost_source_pair(setup)
+    await _stall_to_threshold(service, db)
+    stalled = await db.get_task_meta("unpublished", PUBLISHER_SKIP_KEY)
+
+    await db.save_task_completion(TaskCompletion(
+        id="unpublished-reclose", task_id="unpublished", outcome="pass",
+        commits=[head], completed_at=time.time() + 1,
+    ))
+    assert (await service.sweep("p"))["outcome"] == "idle"
+
+    fresh = await db.get_task_meta("unpublished", PUBLISHER_SKIP_KEY)
+    assert fresh["state"] == "observing" and fresh["consecutive_ticks"] == 1
+    assert fresh["attempt_id"] != stalled["attempt_id"]
+    assert fresh["evidence"]["completion_id"] == "unpublished-reclose"
+    # The dependent's own evidence did not change: its attempt stays over.
+    assert (await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY))["state"] == "stalled"
+
+    for _tick in range(DEFAULT_STALL_AFTER - 1):
+        assert (await service.sweep("p"))["outcome"] == "idle"
+    first, second = await _stall_messages(db)
+    assert first["id"] != second["id"]
+    assert "- unpublished: missing_ref" in second["body"]
+    assert "- dependent:" not in second["body"]
+
+
+async def test_an_explicit_retry_starts_a_fresh_attempt(setup):
+    db, service, _source, _remote, _repo = setup
+    await _lost_source_pair(setup)
+    await _stall_to_threshold(service, db)
+    stalled = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+
+    assert (await service.sweep("p", retry=True))["outcome"] == "idle"
+
+    retried = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+    assert retried["state"] == "observing" and retried["consecutive_ticks"] == 1
+    assert retried["attempt_id"] != stalled["attempt_id"]
+    assert len(await _stall_messages(db)) == 1
+    for _tick in range(DEFAULT_STALL_AFTER - 1):
+        assert (await service.sweep("p"))["outcome"] == "idle"
+    assert len(await _stall_messages(db)) == 2
+
+
+async def test_a_moved_target_is_not_new_evidence_until_it_contains_the_work(setup):
+    """Unrelated delivery must not reset a stall; delivery of the work clears it."""
+    db, service, source, remote, _repo = setup
+    head = await _lost_source_pair(setup)
+    await _stall_to_threshold(service, db)
+    stalled = await db.get_task_meta("unpublished", PUBLISHER_SKIP_KEY)
+
+    git(source, "checkout", "-B", "main", "origin/main")
+    (source / "unrelated.txt").write_text("unrelated\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "unrelated delivery")
+    git(source, "push", "origin", "main")
+    assert (await service.sweep("p"))["outcome"] == "idle"
+
+    moved = await db.get_task_meta("unpublished", PUBLISHER_SKIP_KEY)
+    assert moved["state"] == "stalled" and moved["attempt_id"] == stalled["attempt_id"]
+    assert moved["evidence"]["target_sha"] == git(remote, "rev-parse", "main")
+    assert moved["evidence"]["target_sha"] != stalled["evidence"]["target_sha"]
+    assert len(await _stall_messages(db)) == 1
+
+    # Git now proves the lost source delivered: both candidates publish and
+    # their stale diagnostics clear, with no further message.
+    git(source, "merge", "--no-edit", head)
+    git(source, "push", "origin", "main")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert await db.get_task_meta("unpublished", PUBLISHER_SKIP_KEY) is None
+    assert await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY) is None
+    doctor = await run_doctor_check(db, "integration.development_publisher_stalled")
+    assert doctor.severity is Severity.OK
+    assert len(await _stall_messages(db)) == 1
+
+
+async def test_a_new_configured_target_starts_a_fresh_attempt(setup):
+    db, service, source, _remote, _repo = setup
+    await _lost_source_pair(setup)
+    await _stall_to_threshold(service, db)
+    stalled = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+    git(source, "push", "origin", "origin/main:refs/heads/trunk")
+    from src.database.tables import repos
+
+    async with db._engine.begin() as conn:
+        await conn.execute(update(repos).where(repos.c.id == "r").values(default_branch="trunk"))
+
+    assert (await service.sweep("p"))["outcome"] == "idle"
+
+    fresh = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+    assert fresh["state"] == "observing" and fresh["consecutive_ticks"] == 1
+    assert fresh["evidence"]["target_ref"] == "refs/heads/trunk"
+    assert fresh["attempt_id"] != stalled["attempt_id"]
+
+
+async def test_waiting_on_a_live_repair_does_not_stall_until_the_repair_fails(setup):
+    db, service, source, _remote, _repo = setup
+    blocked = await feature(setup, "blocked")
+    await _park(service, "blocked-batch", [{"task_id": "blocked", "source_sha": blocked}])
+    git(source, "push", "origin", "--delete", "blocked")
+    await feature(setup, "dependent")
+    await db.add_dependency("dependent", "blocked")
+
+    for _tick in range(DEFAULT_STALL_AFTER + 2):
+        assert (await service.sweep("p"))["outcome"] == "idle"
+
+    (repair,) = await _repairs(db)
+    for task_id in ("blocked", "dependent"):
+        skip = await db.get_task_meta(task_id, PUBLISHER_SKIP_KEY)
+        assert skip["state"] == "waiting" and skip["waiting_on"] == repair.id
+        assert skip["consecutive_ticks"] == 0
+    doctor = await run_doctor_check(db, "integration.development_publisher_stalled")
+    assert doctor.severity is Severity.OK
+    assert await _stall_messages(db) == []
+
+    # A failed repair ends the wait; from then on the skip counts.
+    await db.update_task(repair.id, status=TaskStatus.FAILED)
+    for tick in range(1, DEFAULT_STALL_AFTER + 1):
+        assert (await service.sweep("p"))["outcome"] == "idle"
+        skip = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+        assert "waiting_on" not in skip and skip["consecutive_ticks"] == tick
+    assert skip["state"] == "stalled"
+    (message,) = await _stall_messages(db)
+    assert "- dependent: undelivered_dependency (blocked)" in message["body"]
+    doctor = await run_doctor_check(db, "integration.development_publisher_stalled")
+    assert doctor.severity is Severity.ERROR
+
+
+async def test_a_skip_counted_before_bounded_stalls_stalls_on_the_next_evaluation(setup):
+    """An upgrade keeps an indefinite skip's count and reports it at once."""
+    db, service, _source, _remote, _repo = setup
+    await _lost_source_pair(setup)
+    await db.set_task_meta("dependent", PUBLISHER_SKIP_KEY, {
+        "reason": "missing_ref", "dependency_id": "unpublished", "consecutive_ticks": 35,
+        "first_skipped_at": time.time() - 3 * 3600, "last_skipped_at": time.time() - 300,
+    })
+
+    assert (await service.sweep("p"))["outcome"] == "idle"
+
+    skip = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+    assert skip["state"] == "stalled" and skip["consecutive_ticks"] == 36
+    (message,) = await _stall_messages(db)
+    assert "- dependent: missing_ref (unpublished)" in message["body"]
+    assert "- unpublished:" not in message["body"]  # its first skip
+
+
+async def test_the_stall_threshold_is_configurable_and_positive(setup, tmp_path):
+    from src.config import IntegrationConfig, load_config
+
+    assert IntegrationConfig().publisher_stall_after == DEFAULT_STALL_AFTER == 5
+    for bad in (0, -1, True, "5", None):
+        errors = IntegrationConfig(publisher_stall_after=bad).validate()
+        assert [e.field for e in errors] == ["publisher_stall_after"], bad
+    assert IntegrationConfig(publisher_stall_after=1).validate() == []
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "discord:\n  bot_token: t\n  guild_id: '1'\n"
+        "database:\n  url: postgresql+asyncpg://test:test@localhost/test\n"
+        "integration:\n  publisher_stall_after: 2\n"
+    )
+    assert load_config(str(path)).integration.publisher_stall_after == 2
+    with pytest.raises(ValueError, match="positive"):
+        PublisherStalls(None, stall_after=0, repair_identity=DevelopmentIntegration._repair_identity)
+
+    db, service, _source, _remote, _repo = setup
+    await _lost_source_pair(setup)
+    eager = DevelopmentIntegration(
+        db, data_dir=service.data_dir.parent, git=GitManager(),
+        job_client=service.job_client, stall_after=2,
+    )
+    assert (await eager.sweep("p"))["outcome"] == "idle"
+    assert (await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY))["state"] == "observing"
+    assert (await eager.sweep("p"))["outcome"] == "idle"
+    skip = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
+    assert skip["state"] == "stalled" and skip["stall_after"] == 2
+    assert len(await _stall_messages(db)) == 1
+
+
+def test_only_merge_outcomes_treat_a_moved_target_as_new_evidence():
+    stalls = PublisherStalls(None, repair_identity=DevelopmentIntegration._repair_identity)
+
+    def observe(target_sha="1" * 40, source_sha="a" * 40, target_ref="refs/heads/main"):
+        return SweepObservation(
+            project_id="p", repository_id="r", target_ref=target_ref, target_sha=target_sha,
+            branches={"t": "aq/t"}, source_heads={"refs/remotes/origin/aq/t": source_sha},
+        )
+
+    def step(old, kind, observation, *, completion_id="c1", fresh=False):
+        return stalls.advance("t", old, kind, None, observation, completion_id=completion_id,
+                              waiting_on=None, fresh=fresh, now=time.time())
+
+    first = step(None, "missing_ref", observe())
+    moved_target = step(first, "missing_ref", observe(target_sha="2" * 40))
+    assert moved_target["attempt_id"] == first["attempt_id"]
+    assert moved_target["consecutive_ticks"] == 2
+    conflict = step(None, "merge_conflict", observe())
+    moved_conflict = step(conflict, "merge_conflict", observe(target_sha="2" * 40))
+    assert moved_conflict["attempt_id"] != conflict["attempt_id"]
+    assert moved_conflict["consecutive_ticks"] == 1
+    for changed in (
+        step(moved_target, "missing_ref", observe(source_sha="b" * 40)),
+        step(moved_target, "missing_ref", observe(target_ref="refs/heads/trunk")),
+        step(moved_target, "missing_ref", observe(), completion_id="c2"),
+        step(moved_target, "dependency_cycle", observe()),
+        step(moved_target, "missing_ref", observe(), fresh=True),
+    ):
+        assert changed["attempt_id"] != first["attempt_id"]
+        assert changed["consecutive_ticks"] == 1
 
 
 async def test_recover_child_command_reports_empty_exception_type():
