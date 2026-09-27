@@ -1280,7 +1280,7 @@
       ]
     }
   },
-  "digest": "sha256:8526cea88f988c5f92556c3188c07c588a90717a9d71ce0e3dca2649877cbbab",
+  "digest": "sha256:2060cb512e552e516bfc33ea635c320059a75b78f0df3086347ad64705b88273",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10208,6 +10208,7 @@
         "src.commands.handler",
         "src.config",
         "src.database",
+        "src.event_schemas",
         "src.git.github_contracts",
         "src.git.manager",
         "src.models",
@@ -13636,11 +13637,15 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api",
         "src.api.auth",
+        "src.api.dependencies",
         "src.api.websocket",
         "src.event_bus"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Guard: gate.*/session.*/task.* events reach WebSocket clients (D3/D1/D2)."
     },
     "tests/test_wiki_links.py": {
