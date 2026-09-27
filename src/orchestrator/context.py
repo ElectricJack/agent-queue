@@ -20,13 +20,15 @@ class ContextMixin:
         has_remote: bool,
         is_final_subtask: bool,
         integration_mode: str,
+        is_worktree: bool = False,
     ) -> str:
         """Return execution rules tailored to the task type and git context.
 
-        Produces three prompt variants:
-        A) Normal / final subtask, ``direct`` mode — branch, merge to default, push
+        Produces four prompt variants:
+        A) Normal / final subtask, ``direct`` clone — branch, merge to default, push
         B) ``pull_request`` mode — branch, push, create PR
         C) Intermediate subtask — branch, commit, stay on branch
+        D) Normal / final subtask, ``direct`` worktree — commit, push task branch
         """
         from src.models import INTEGRATION_MODE_PULL_REQUEST
 
@@ -101,6 +103,27 @@ class ContextMixin:
                 f"(research, analysis, investigation):\n"
                 f"- Do not create a branch. Stay on `{default_branch}`.\n"
                 f"- Do not create a PR."
+            )
+        elif is_worktree:
+            # The default branch lives in the base checkout; the daemon integrates.
+            push_line = (
+                f"2. Push your task branch: `git push origin {branch_name}`\n"
+                if has_remote else ""
+            )
+            git_rules = (
+                f"\n\n## Important: Git Workflow (Worktree)\n"
+                f"Default branch: `{default_branch}`. "
+                f"Task branch: `{branch_name}`.\n"
+                f"Stay on `{branch_name}` in this worktree throughout the task, "
+                f"including tasks that require no code changes.\n"
+                f"\nWhen you finish (if you made code changes):\n"
+                f"1. Commit all remaining changes on `{branch_name}`\n"
+                f"{push_line}"
+                f"\nThe daemon merges the task branch into `{default_branch}` "
+                f"{'and pushes the default branch ' if has_remote else ''}"
+                f"from the base workspace.\n"
+                f"Do not check out `{default_branch}`, merge into it, push it, "
+                f"or delete `{branch_name}`."
             )
         else:
             # Normal task / final subtask: merge to default + push
@@ -224,6 +247,18 @@ class ContextMixin:
             from src.models import INTEGRATION_MODE_PULL_REQUEST
 
             integration_mode = INTEGRATION_MODE_PULL_REQUEST
+        is_worktree = False
+        if workspace and self._worktrees_enabled():
+            # Match the prompt's cwd: a multi-kind task can lock several workspaces.
+            workspace_row = next(
+                (
+                    ws for ws in await self.db.list_workspaces(task.project_id)
+                    if ws.workspace_path == workspace
+                ),
+                None,
+            )
+            if workspace_row is not None:
+                is_worktree = await self._workspace_is_worktree_mode(workspace_row.id)
         builder.add_context(
             "execution_rules",
             self._get_execution_rules(
@@ -233,6 +268,7 @@ class ContextMixin:
                 has_remote=has_remote,
                 is_final_subtask=is_final,
                 integration_mode=integration_mode,
+                is_worktree=is_worktree,
             ),
         )
 

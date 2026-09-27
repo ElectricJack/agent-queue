@@ -200,6 +200,15 @@ Integration must be serialized per project so only one task lands on the default
 
 The completion pipeline stays algorithmic. After verification, integration runs under the merge slot and the base git mutex:
 
+Direct-mode execution prompts for worktree-mode workspaces instruct the agent to stay on
+the assigned task branch, commit its changes, and push that branch when a remote exists.
+The daemon owns the merge into the default branch and its push from the base workspace.
+The agent must not check out or push the default branch, merge into it, or delete the
+task branch; tasks producing no code changes also stay on the assigned branch.
+Intermediate plan subtasks keep their commit-only shared-branch instructions, and PR-mode
+tasks keep their PR workflow. Workspace-mode detection is shared with the completion
+pipeline and uses the workspace whose path is the prompt's working directory.
+
 1. Acquire merge slot → emit `merge.started`.
 2. In the **slot worktree** (the branch's home — a branch checked out in one worktree cannot be checked out in another): `git fetch origin`, `git merge --no-edit origin/<default>` into `aq/<task>`, then a plain push. This was a rebase plus `--force-with-lease` until 2026-09-05: a rebase cannot replay merge commits, and a worker that resolves drift with `git merge origin/main` (what the `pr-merger` profile instructs) produces exactly such a branch, so branches GitHub reported mergeable were blocked at close with `merge_conflict`. Merging keeps every mergeable branch integrable, and because nothing is rewritten the push needs no force: a remote branch that moved under the slot is refused rather than overwritten. Squash-merging at PR time collapses the merge commits, so the default branch's history is unchanged.
 3. Per the task's effective integration mode (task override → project policy → `integration.default_mode`): in `pull_request` mode, open a PR via `gh` (record `pr_url` on the task; the task completes unmerged and the review pipeline's `pr-merged` gate sweep takes over), **or** in `direct` mode, local merge: in the **base** — `checkout <default>`, `reset --hard origin/<default>`, merge the branch, push.

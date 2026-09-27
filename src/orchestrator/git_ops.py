@@ -1995,7 +1995,11 @@ class GitOpsMixin:
     # ── worktree-mode integration ─────────────────────────────────────────
 
     async def _task_is_worktree_mode(self, ctx: PipelineContext) -> bool:
-        """True when the task's workspace kind is in worktree mode.
+        """True when the task's workspace kind is in worktree mode."""
+        return await self._workspace_is_worktree_mode(getattr(ctx, "workspace_id", None))
+
+    async def _workspace_is_worktree_mode(self, ws_id: str | None) -> bool:
+        """Shared worktree-mode detection for prompts and the completion pipeline.
 
         Worktree-execution spec §6.5: the integrate phase runs whenever
         the task's project-repo kind is configured as worktree mode —
@@ -2008,7 +2012,6 @@ class GitOpsMixin:
 
         if not getattr(self.config, "worktrees", None) or not self.config.worktrees.enabled:
             return False
-        ws_id = getattr(ctx, "workspace_id", None)
         if not ws_id:
             return False
         try:
