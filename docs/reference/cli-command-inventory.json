@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 437,
+    "leaf_commands": 438,
     "registration": {
-      "generated": 284,
+      "generated": 285,
       "handwritten": 153
     },
     "ownership": {
-      "core": 398,
+      "core": 399,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 436
+      "supported": 437
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 284,
+      "dispatch": 285,
       "registration": 139
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 377
+      "untested": 378
     }
   },
   "commands": [
@@ -7894,6 +7894,39 @@
           "--workspace-id",
           "--all-retired",
           "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq provider allocation-status",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_allocation_status",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
+          "--provider",
           "--json",
           "--brief",
           "--api-url"

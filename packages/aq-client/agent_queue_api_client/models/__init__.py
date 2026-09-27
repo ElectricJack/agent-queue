@@ -959,6 +959,22 @@ from .provenance_ref import ProvenanceRef
 from .provide_input_request import ProvideInputRequest
 from .provide_input_response import ProvideInputResponse
 from .provide_input_response_422 import ProvideInputResponse422
+from .provider_allocation_ceiling import ProviderAllocationCeiling
+from .provider_allocation_diagnostic import ProviderAllocationDiagnostic
+from .provider_allocation_event import ProviderAllocationEvent
+from .provider_allocation_group import ProviderAllocationGroup
+from .provider_allocation_hidden import ProviderAllocationHidden
+from .provider_allocation_intent import ProviderAllocationIntent
+from .provider_allocation_intent_by_status import ProviderAllocationIntentByStatus
+from .provider_allocation_manual_agent import ProviderAllocationManualAgent
+from .provider_allocation_profile import ProviderAllocationProfile
+from .provider_allocation_project import ProviderAllocationProject
+from .provider_allocation_project_supply import ProviderAllocationProjectSupply
+from .provider_allocation_session import ProviderAllocationSession
+from .provider_allocation_status_request import ProviderAllocationStatusRequest
+from .provider_allocation_status_response import ProviderAllocationStatusResponse
+from .provider_allocation_status_response_422 import ProviderAllocationStatusResponse422
+from .provider_allocation_supply import ProviderAllocationSupply
 from .provider_availability_status import ProviderAvailabilityStatus
 from .provider_availability_status_evidence_item import ProviderAvailabilityStatusEvidenceItem
 from .provider_held_task import ProviderHeldTask
@@ -2446,6 +2462,22 @@ __all__ = (
     "ProvideInputRequest",
     "ProvideInputResponse",
     "ProvideInputResponse422",
+    "ProviderAllocationCeiling",
+    "ProviderAllocationDiagnostic",
+    "ProviderAllocationEvent",
+    "ProviderAllocationGroup",
+    "ProviderAllocationHidden",
+    "ProviderAllocationIntent",
+    "ProviderAllocationIntentByStatus",
+    "ProviderAllocationManualAgent",
+    "ProviderAllocationProfile",
+    "ProviderAllocationProject",
+    "ProviderAllocationProjectSupply",
+    "ProviderAllocationSession",
+    "ProviderAllocationStatusRequest",
+    "ProviderAllocationStatusResponse",
+    "ProviderAllocationStatusResponse422",
+    "ProviderAllocationSupply",
     "ProviderAvailabilityStatus",
     "ProviderAvailabilityStatusEvidenceItem",
     "ProviderHeldTask",
