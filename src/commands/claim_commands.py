@@ -468,17 +468,22 @@ class ClaimCommandsMixin:
         )
 
     async def _claim_effective_default(self, project, default_profile):
-        """*default_profile*, or its equivalent rung while its provider is down (D13)."""
+        """Default widening follows project preference and availability (D13)."""
         if not default_profile:
             return default_profile
         resolver = getattr(self.orchestrator, "_availability_aware_default", None)
         if resolver is None:
             return default_profile
         try:
-            resolved = await resolver(default_profile, getattr(project, "id", None))
+            resolved = await resolver(
+                default_profile, getattr(project, "id", None),
+                preferred_provider=getattr(project, "preferred_provider", None),
+            )
         except Exception:  # never let a derived default break a claim
             logger.debug("claim: availability-aware default failed", exc_info=True)
-            return default_profile
+            return None if getattr(project, "preferred_provider", None) else default_profile
+        if resolved is None and getattr(project, "preferred_provider", None):
+            return None
         return resolved if isinstance(resolved, str) and resolved else default_profile
 
     async def _attempt_claim(self, session, want_id, cap, project, *, routing=None, repaired=False):

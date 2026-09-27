@@ -547,6 +547,21 @@ policy == "same_class":
 | **Playbook `agent_task` steps** | The created task follows every rule above — a step that names a profile creates a `preferred` task (D9), so it fails over like any other. The run's wait is untouched: it ends when the step's `timeout_seconds` does (see §9 for why that is the only way it ends today), and the run overlay shows the child's `provider_hold` as the reason it is waiting. | `pin_provider: true` on the step. The child holds; the run waits out the outage or times out, which is the author's choice to make. |
 | **Headless `llm` steps and other direct-path callers** | See D13a. | n/a |
 
+**Project allocation preference (provider-worker-allocation-controls, Task 7).**
+When `projects.preferred_provider` is set (a harness provider key, such as
+`codex`), automatic routing for unrouted and `class_only` work filters the
+existing catalog to that provider. `preferred` and `pinned` task profiles keep
+their explicit routes. Class-match selection during task creation uses the
+same restriction; an unsupported class remains unrouted for the routing
+playbook. No enabled, launchable compatible option means waiting with
+`preferred_provider_unavailable`, using the existing `held` / `no_options`
+routing outcomes. There is no fallback to another provider. The project
+default is derived as its enabled, launchable same-class worker rung on the
+preferred provider, or no route when none exists. Pool demand, dispatch and
+claim default widening share that derived value; it is never persisted over
+`projects.default_profile_id`. Clearing the preference restores D13's normal
+availability fallback. The reviewed assignment-routing contract is unchanged.
+
 **As built (`bold-rapids.4`).** The decision is one pure function,
 `decide(availability, failure)` in `src/providers/inflight.py`, read *after*
 the failure's evidence is recorded: `tripped` when the provider is now in the

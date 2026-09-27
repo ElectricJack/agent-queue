@@ -625,6 +625,46 @@ async def test_project_default_is_derived_never_persisted(orch):
     assert await orch._effective_default_profile_id(project) == "standard-high-codex"
 
 
+async def test_project_preference_redirects_default_without_persisting_or_spilling(orch):
+    await orch.db.update_project("p-1", default_profile_id="standard-high-claude",
+                                 preferred_provider="codex")
+    project = await orch.db.get_project("p-1")
+    assert await orch._effective_default_profile_id(project) == "standard-high-codex"
+    await _task(orch, "default", None, intent=CLASS_ONLY)
+    assert await _handler(orch)._claim_effective_default(
+        project, project.default_profile_id,
+    ) == "standard-high-codex"
+    task = await orch.db.get_task("default")
+    assert (await orch._resolve_profile(task)).id == "standard-high-codex"
+    from src.models import Agent
+
+    agent = Agent(id="codex-worker", name="Codex", profile_id="standard-high-codex")
+    assert await orch._check_agent_routing(task, agent) is None
+    profiles = {p.id: p for p in await orch.db.list_profiles()}
+    assert orch.provider_availability.queued_route(
+        task, project=project, profiles=profiles,
+    )[1] == "codex"
+    await _codex_down(orch)
+    assert await orch._effective_default_profile_id(project) is None
+    assert await _handler(orch)._claim_effective_default(project, project.default_profile_id) is None
+    assert await orch._resolve_profile(task) is None
+    assert await orch._check_agent_routing(task, agent) == "preferred_provider_unavailable"
+    assert orch.provider_availability.queued_route(task, project=project, profiles=profiles) is None
+    assert (await orch.db.get_project("p-1")).default_profile_id == "standard-high-claude"
+
+
+@pytest.mark.parametrize("cause", ["disabled", "missing_class", "unknown_class"])
+async def test_project_preference_default_needs_an_enabled_equivalent_rung(orch, cause):
+    await orch.db.update_project("p-1", default_profile_id=(
+        "astra-high-codex" if cause == "missing_class" else "standard-high-codex"
+    ), preferred_provider="claude")
+    if cause == "disabled":
+        await orch.db.update_profile("standard-high-claude", enabled=False)
+    elif cause == "unknown_class":
+        orch.session_spec_builder._intelligence_classes.pop("standard-high")
+    assert await orch._effective_default_profile_id(await orch.db.get_project("p-1")) is None
+
+
 async def test_recovery_leaves_moved_tasks_and_releases_holds(orch):
     await _task(orch, "pref", "standard-high-codex")
     await _task(orch, "pin", "standard-high-codex", intent=PINNED)

@@ -35,6 +35,15 @@ def profile_provider(profile, harness_registry=None, project_id: str | None = No
     return str(getattr(harness, "provider", "") or _infer_provider_from_harness(harness))
 
 
+def profile_provider_key(profile, harness_registry=None, project_id: str | None = None) -> str:
+    """The harness login key, rather than the vendor used by class mappings."""
+    from src.providers.availability import provider_key
+
+    harness_id = getattr(profile, "harness", "") or ""
+    harness = harness_registry.get(harness_id, project_id) if harness_registry else None
+    return provider_key(harness if harness is not None else harness_id)
+
+
 def _effective_profiles(profiles):
     """Profiles are global; rows still carrying a retired ``project:`` id resolve nowhere."""
     return [profile for profile in profiles if ":" not in profile.id]
@@ -157,7 +166,7 @@ def profile_for_class(
     def rank(option):
         return (
             option["lifecycle"] != "pool",
-            option["provider"] != (prefer_provider or ""),
+            prefer_provider not in {option["provider"], option.get("provider_key")},
             # A degraded provider sorts after an available one (D1).
             option.get("provider_state", "available") != "available",
             option["profile_id"],
@@ -221,6 +230,16 @@ class RoutingCommandsMixin:
             [option for option in catalog if option["profile_id"] == narrowing]
             if narrowing else catalog
         )
+        preferred_provider = getattr(project, "preferred_provider", None) if not narrowing else None
+        if preferred_provider:
+            by_id = {profile.id: profile for profile in profiles}
+            automatic_catalog = [
+                option for option in automatic_catalog
+                if profile_provider_key(
+                    by_id[option["profile_id"]],
+                    getattr(orchestrator, "harness_registry", None), task.project_id,
+                ) == preferred_provider
+            ]
         options = [
             option for option in automatic_catalog
             if option.get("enabled", True) and option.get("launchable", True)
@@ -257,12 +276,14 @@ class RoutingCommandsMixin:
                     and o["intelligence_class"] == explicit
                     and o.get("enabled", True)
                     and o.get("launchable", True)
-                    for o in catalog
+                    for o in automatic_catalog
                 )
                 else None
             )
             explicit_profile_id = profile_for_class(
-                catalog, explicit, pinned_profile_id=keep, prefer_provider=default_provider,
+                automatic_catalog if preferred_provider else catalog,
+                explicit, pinned_profile_id=keep,
+                prefer_provider=preferred_provider or default_provider,
             )
             if explicit_profile_id is None:
                 held = any(o["intelligence_class"] == explicit for o in unavailable_options)
