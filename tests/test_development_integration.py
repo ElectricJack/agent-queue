@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete, insert, select, update
 
 from src.database import Database
 from src.git.manager import GitManager
@@ -614,7 +614,7 @@ async def test_branchless_parent_does_not_skip_clean_child_after_sibling_conflic
     )
 
 
-async def test_branchless_dependency_ignores_parked_newer_attempt(setup):
+async def test_branchless_code_dependency_keeps_parked_newer_attempt(setup):
     db, service, source, _remote, _repo = setup
     await feature(setup, "previous")
     assert (await service.sweep("p"))["outcome"] == "delivered"
@@ -635,9 +635,10 @@ async def test_branchless_dependency_ignores_parked_newer_attempt(setup):
     await feature(setup, "later")
     await db.add_dependency("later", "previous")
 
+    # SQL projection migrates separately; publication already obeys git truth.
     assert not await _delivery_pending(db, "previous")
-    assert (await service.sweep("p"))["outcome"] == "delivered"
-    assert await db.get_task_meta("later", PUBLISHER_SKIP_KEY) is None
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert (await db.get_task_meta("later", PUBLISHER_SKIP_KEY))["dependency_id"] == "previous"
 
 
 async def test_branchful_undelivered_dependency_still_blocks_publication(setup, caplog):
@@ -664,10 +665,10 @@ async def test_branchful_undelivered_dependency_still_blocks_publication(setup, 
 
 @pytest.mark.parametrize("completion_record", [False, True])
 @pytest.mark.parametrize("container", [False, True])
-async def test_missing_empty_source_releases_dependents_and_stops_git_sweeps(
+async def test_missing_source_with_empty_payload_never_releases_dependents(
     setup, completion_record, container,
 ):
-    db, service, _source, remote, repo = setup
+    db, service, _source, remote, _repo = setup
     branch = "aq/epic/empty" if container else "refs/heads/aq/empty"
     await db.create_task(Task(
         id="empty", project_id="p", title="empty", description="",
@@ -693,27 +694,23 @@ async def test_missing_empty_source_releases_dependents_and_stops_git_sweeps(
     assert (await db.get_task("ready-after-empty")).is_blocked
     assert await _delivery_pending(db, "empty")
 
-    assert (await service.sweep("p"))["outcome"] == "delivered"
-
+    before = git(remote, "rev-parse", "main")
+    assert (await service.sweep("p"))["outcome"] == "idle"
     assert (await db.get_task("empty")).status == TaskStatus.COMPLETED
     assert (await db.get_task("empty")).branch_name == branch
-    assert not await _delivery_pending(db, "empty")
-    assert not (await db.get_task("ready-after-empty")).is_blocked
-    assert not (await db.get_task("dependent")).is_blocked
-    assert await db.get_task_meta("empty", PUBLISHER_SKIP_KEY) is None
-    evidence = await db.get_task_meta("empty", EMPTY_SOURCE_KEY)
-    assert evidence["branch_name"] == branch
-    assert evidence["repository_id"] == repo.id
-    assert evidence["reason"] == "missing_ref_without_completion_commits"
-    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+    assert await _delivery_pending(db, "empty")
+    assert (await db.get_task("ready-after-empty")).is_blocked
+    assert (await db.get_task("dependent")).is_blocked
+    assert (await db.get_task_meta("empty", PUBLISHER_SKIP_KEY))["reason"] == "missing_ref"
+    assert await db.get_task_meta("empty", EMPTY_SOURCE_KEY) is None
+    assert git(remote, "rev-parse", "main") == before != head
     assert all(member["task_id"] != "empty" for row in await service.rows("p")
                for member in row["manifest"])
-    # The new dependent delivery has one legitimate branch-cleanup pass.
-    await service.collect_delivered_branches("p")
-    with patch.object(service, "store", new_callable=AsyncMock) as store:
+    # A missing ref remains an unresolved artifact on subsequent fresh checks.
+    with patch.object(service.git, "afetch_origin", wraps=service.git.afetch_origin) as fetch:
         assert (await service.sweep("p"))["outcome"] == "idle"
         assert (await service.sweep("p"))["outcome"] == "idle"
-    store.assert_not_awaited()
+    assert fetch.await_count == 2
 
 
 async def test_missing_source_keeps_commits_from_earlier_completions(setup):
@@ -749,9 +746,9 @@ async def test_empty_missing_source_alone_becomes_idle_without_a_delivery(setup)
 
     assert (await db.get_task("empty")).branch_name == "aq/epic/empty"
     assert await service.rows("p") == history
-    with patch.object(service, "store", new_callable=AsyncMock) as store:
+    with patch.object(service.git, "afetch_origin", wraps=service.git.afetch_origin) as fetch:
         assert (await service.sweep("p"))["outcome"] == "idle"
-    store.assert_not_awaited()
+    fetch.assert_awaited_once()
 
 
 async def test_missing_empty_canonical_branch_retains_its_identity(setup):
@@ -771,11 +768,11 @@ async def test_missing_empty_canonical_branch_retains_its_identity(setup):
     assert (await service.sweep("p"))["outcome"] == "idle"
 
     assert (await db.get_task("canonical")).branch_name == "aq/epic/canonical"
-    assert not await _delivery_pending(db, "canonical")
-    assert await db.get_task_meta("canonical", EMPTY_SOURCE_KEY) is not None
-    with patch.object(service, "store", new_callable=AsyncMock) as store:
+    assert await _delivery_pending(db, "canonical")
+    assert await db.get_task_meta("canonical", EMPTY_SOURCE_KEY) is None
+    with patch.object(service.git, "afetch_origin", wraps=service.git.afetch_origin) as fetch:
         assert (await service.sweep("p"))["outcome"] == "idle"
-    store.assert_not_awaited()
+    fetch.assert_awaited_once()
 
 
 @pytest.mark.parametrize("new_completion", [False, True])
@@ -786,7 +783,7 @@ async def test_empty_source_observation_does_not_hide_later_work(setup, new_comp
         branch_name="aq/empty", status=TaskStatus.COMPLETED,
     ))
     assert (await service.sweep("p"))["outcome"] == "idle"
-    assert not await _delivery_pending(db, "empty")
+    assert await _delivery_pending(db, "empty")
     git(source, "checkout", "-b", "aq/empty")
     (source / "later.txt").write_text("later work\n")
     git(source, "add", ".")
@@ -832,7 +829,7 @@ async def test_empty_source_observation_is_bound_to_the_delivery_repository(setu
         branch_name="aq/empty", status=TaskStatus.COMPLETED,
     ))
     assert (await service.sweep("p"))["outcome"] == "idle"
-    assert not await _delivery_pending(db, "empty")
+    assert await _delivery_pending(db, "empty")
     await db.create_repo(RepoConfig(
         id="other-delivery", project_id="p", source_type=RepoSourceType.CLONE, url=str(remote),
     ))
@@ -843,8 +840,8 @@ async def test_empty_source_observation_is_bound_to_the_delivery_repository(setu
 
     assert await _delivery_pending(db, "empty")
     assert (await service.sweep("p"))["outcome"] == "idle"
-    assert not await _delivery_pending(db, "empty")
-    assert (await db.get_task_meta("empty", EMPTY_SOURCE_KEY))["repository_id"] == "other-delivery"
+    assert await _delivery_pending(db, "empty")
+    assert await db.get_task_meta("empty", EMPTY_SOURCE_KEY) is None
 
 
 async def test_parked_blocker_holds_dependent_and_names_both_tasks_in_log(setup, caplog):
@@ -946,7 +943,7 @@ async def test_adopted_repair_cycle_drops_out_of_candidate_evaluation(setup, cap
     go with them."""
     import logging
 
-    db, service, _source, remote, _repo = setup
+    db, service, source, remote, _repo = setup
     older, newer, older_sha, newer_sha = await repair_cycle(setup, source_contract=False)
     assert (await service.sweep("p"))["outcome"] == "idle"
     assert (await db.get_task_meta(older, PUBLISHER_SKIP_KEY))["reason"] == "dependency_cycle"
@@ -963,6 +960,13 @@ async def test_adopted_repair_cycle_drops_out_of_candidate_evaluation(setup, cap
         "created_at": now, "updated_at": now,
     })
     assert not await _delivery_pending(db, older) and not await _delivery_pending(db, newer)
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert (await db.get_task_meta(older, PUBLISHER_SKIP_KEY))["reason"] == "dependency_cycle"
+    # Receipt state is insufficient. An external ancestry-preserving merge
+    # supplies the exact proof, even with the invalid repair contract/cycle.
+    git(source, "checkout", newer)
+    git(source, "merge", "--no-edit", older)
+    git(source, "push", "origin", "HEAD:main")
     unrelated = await feature(setup, "unrelated")
     caplog.clear()
 
@@ -2594,11 +2598,11 @@ async def test_tick_collects_right_after_the_sweep_delivers(setup):
     service.next_due.clear()  # configure() armed the periodic deadline
     await service.tick(time.time())
     assert remote_branches(remote) == {"main"}
-    # A later tick has historical receipts but no remaining publication or cleanup.
+    # A later tick rechecks git: a receipt cannot hide external target movement.
     service.next_due.clear()
-    with patch.object(service, "store", new_callable=AsyncMock) as store:
+    with patch.object(service, "store", wraps=service.store) as store:
         await service.tick(time.time())
-    store.assert_not_awaited()
+    store.assert_awaited_once()
 
 
 async def test_due_branch_cleanup_runs_after_an_earlier_delivery(setup):
@@ -3512,3 +3516,285 @@ async def test_result_retention_removes_only_verified_terminal_snapshot(setup, m
     assert await db.get_job(job["id"]) is None
     assert await db.get_workspace(job["workspace_id"]) is None
     assert not snapshot.exists() and store.exists()
+
+
+async def truth_snapshot(setup, *, legacy_rows=(), target_ref="refs/heads/main"):
+    from src.integration.delivery_truth import delivery_snapshot
+
+    _db, service, _source, _remote, repo = setup
+    store = await service.store(repo, fetch=False)
+    return await delivery_snapshot(
+        service.git, store, project_id="p", repository_id=repo.id,
+        repository_url=repo.url, target_ref=target_ref, legacy_rows=legacy_rows,
+    )
+
+
+@pytest.mark.parametrize("receipt_state", [None, "delivered", "adopted"])
+async def test_eleven_contained_candidates_ignore_missing_ancestor_and_receipts(setup, receipt_state):
+    """The eleven-way incident: inspect own git truth before ancestor gates."""
+    db, service, source, remote, _repo = setup
+    await db.create_task(Task(
+        id="missing-ancestor", project_id="p", title="missing ancestor", description="",
+        status=TaskStatus.COMPLETED, branch_name="aq/missing-ancestor",
+    ))
+    heads = {}
+    for index in range(11):
+        task_id = f"contained-{index}"
+        heads[task_id] = await feature(setup, task_id)
+        await db.save_task_completion(TaskCompletion(
+            id=f"close-{index}", task_id=task_id, outcome="pass",
+            commits=[heads[task_id]], completed_at=time.time(),
+        ))
+        await db.add_dependency(task_id, "missing-ancestor")
+        await db.set_task_meta(task_id, PUBLISHER_SKIP_KEY, {
+            "reason": "missing_ref", "dependency_id": "missing-ancestor",
+        })
+    git(source, "checkout", "main")
+    for task_id in heads:
+        git(source, "merge", "--no-edit", task_id)
+    git(source, "push", "origin", "main")
+    for task_id in heads:
+        git(source, "push", "origin", "--delete", task_id)
+    if receipt_state:
+        now = time.time()
+        await service.save({
+            "id": "misleading-receipt", "project_id": "p", "repository_id": "r",
+            "target_ref": "refs/heads/main", "expected_sha": None, "prepared_sha": None,
+            "state": receipt_state, "manifest": [
+                {"task_id": task_id, "source_sha": head} for task_id, head in heads.items()
+            ], "evidence": {}, "reason": "test receipt state is not authority",
+            "created_at": now, "updated_at": now,
+        })
+    before = git(remote, "rev-parse", "main")
+    result = await service.sweep("p")
+    assert result["outcome"] in {"idle", "delivered"}
+    assert git(remote, "rev-parse", "main") == before
+    assert (await db.get_task_meta("missing-ancestor", PUBLISHER_SKIP_KEY))["reason"] == "missing_ref"
+    for task_id in heads:
+        assert await db.get_task_meta(task_id, PUBLISHER_SKIP_KEY) is None
+    assert await db.get_task_meta("missing-ancestor", EMPTY_SOURCE_KEY) is None
+
+
+@pytest.mark.parametrize("receipt_state", ["delivered", "adopted"])
+async def test_receipt_cannot_exclude_uncontained_candidate(setup, receipt_state):
+    _db, service, _source, remote, _repo = setup
+    head = await feature(setup, "not-delivered")
+    now = time.time()
+    await service.save({
+        "id": "false-delivery", "project_id": "p", "repository_id": "r",
+        "target_ref": "refs/heads/main", "expected_sha": None, "prepared_sha": head,
+        "state": receipt_state, "manifest": [{"task_id": "not-delivered", "source_sha": head}],
+        "evidence": {}, "reason": "misleading state", "created_at": now, "updated_at": now,
+    })
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+
+
+async def test_snapshot_scopes_generation_and_fences_target_movement(setup):
+    from dataclasses import replace
+
+    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+
+    db, _service, source, _remote, _repo = setup
+    old_head = await feature(setup, "reopened")
+    await db.save_task_completion(TaskCompletion(
+        id="old-close", task_id="reopened", outcome="pass", commits=[old_head],
+        completed_at=time.time(),
+    ))
+    git(source, "push", "origin", f"{old_head}:main")
+    old_requests = await load_delivery_requests(
+        db, ["reopened"], repository_id="r", target_ref="refs/heads/main",
+    )
+    snapshot = await truth_snapshot(setup)
+    request = old_requests["reopened"]
+    assert (await snapshot.evaluate(request)).state is DeliveryState.CONTAINED
+    assert snapshot.matches([request], graph_inputs=("edge",), current_graph_inputs=("edge",))
+    assert not snapshot.matches([request], graph_inputs=("edge",), current_graph_inputs=())
+    assert await snapshot.is_fresh()
+    assert not await snapshot.is_fresh(repository_url="wrong-repository")
+    assert not await snapshot.is_fresh(target_ref="refs/heads/elsewhere")
+    for wrong in (replace(request, project_id="other"), replace(request, repository_id="other"),
+                  replace(request, target_ref="refs/heads/elsewhere")):
+        evidence = await snapshot.evaluate(wrong)
+        assert evidence.state is DeliveryState.UNKNOWN and evidence.reason == "scope_mismatch"
+    git(source, "checkout", "reopened")
+    (source / "new-generation.txt").write_text("new generation\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "new completion")
+    newer = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", "reopened")
+    await db.save_task_completion(TaskCompletion(
+        id="new-close", task_id="reopened", outcome="pass", commits=[newer],
+        completed_at=time.time(),
+    ))
+    current = await load_delivery_requests(
+        db, ["reopened"], repository_id="r", target_ref="refs/heads/main",
+    )
+    fresh = await truth_snapshot(setup)
+    evidence = await fresh.evaluate(current["reopened"])
+    assert evidence.state is DeliveryState.PENDING and evidence.source_oid == newer
+    assert not snapshot.matches(current.values())
+    # The old snapshot never changes its pinned answer when main advances.
+    git(source, "push", "origin", f"{newer}:main")
+    assert not await snapshot.is_fresh()
+    assert snapshot.target_oid == old_head
+    latest = await truth_snapshot(setup)
+    assert (await latest.evaluate(current["reopened"])).state is DeliveryState.CONTAINED
+
+
+async def test_snapshot_archived_completion_survives_ref_cleanup(setup):
+    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+
+    db, service, source, _remote, _repo = setup
+    head = await feature(setup, "archived-source")
+    await db.save_task_completion(TaskCompletion(
+        id="archived-close", task_id="archived-source", outcome="pass", commits=[head],
+        completed_at=time.time(),
+    ))
+    git(source, "push", "origin", f"{head}:main")
+    git(source, "push", "origin", "--delete", "archived-source")
+    # Archive still uses the legacy readiness projection until consumers
+    # migrate. Retire that journal after archiving; git is sufficient here.
+    await service.sweep("p")
+    await db.archive_task("archived-source")
+    async with db._engine.begin() as conn:
+        await conn.execute(delete(development_deliveries))
+    requests = await load_delivery_requests(
+        db, ["archived-source", "missing-task"], repository_id="r", target_ref="refs/heads/main",
+    )
+    assert "missing-task" not in requests
+    request = requests["archived-source"]
+    assert request.archived
+    evidence = await (await truth_snapshot(setup)).evaluate(request)
+    assert evidence.state is DeliveryState.CONTAINED
+    assert evidence.source_oid == head and evidence.request.completion_id == "archived-close"
+
+
+@pytest.mark.parametrize("failure", ["fetch", "ancestry", "invalid", "missing", "abbreviated"])
+async def test_snapshot_git_errors_and_unresolved_sources_are_unknown(setup, failure):
+    from dataclasses import replace
+
+    from src.git.manager import GitError
+    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+
+    db, service, source, _remote, _repo = setup
+    head = await feature(setup, "probe")
+    await db.save_task_completion(TaskCompletion(
+        id="probe-close", task_id="probe", outcome="pass", commits=[head],
+        completed_at=time.time(),
+    ))
+    git(source, "push", "origin", f"{head}:main")
+    requests = await load_delivery_requests(
+        db, ["probe"], repository_id="r", target_ref="refs/heads/main",
+    )
+    request = requests["probe"]
+    if failure == "fetch":
+        with patch.object(service.git, "afetch_origin", side_effect=GitError("offline")):
+            snapshot = await truth_snapshot(setup)
+        assert snapshot.error and not await snapshot.is_fresh()
+        evidence = await snapshot.evaluate(request)
+    elif failure == "ancestry":
+        snapshot = await truth_snapshot(setup)
+        with patch.object(service.git, "ais_ancestor", return_value=None):
+            evidence = await snapshot.evaluate(request)
+    else:
+        source = {"invalid": "HEAD~1", "missing": "a" * 40, "abbreviated": "abcdef123"}[failure]
+        evidence = await (await truth_snapshot(setup)).evaluate(replace(request, reported_source=source))
+    assert evidence.state is DeliveryState.UNKNOWN and not evidence.satisfied
+
+
+async def test_legacy_locator_is_generation_repo_target_scoped_and_requires_git(setup):
+    from dataclasses import replace
+
+    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+
+    db, _service, source, _remote, _repo = setup
+    head = await feature(setup, "legacy")
+    await db.save_task_completion(TaskCompletion(
+        id="legacy-close", task_id="legacy", outcome="pass", commits=[], completed_at=time.time(),
+    ))
+    git(source, "push", "origin", f"{head}:main")
+    git(source, "push", "origin", "--delete", "legacy")
+    requests = await load_delivery_requests(
+        db, ["legacy"], repository_id="r", target_ref="refs/heads/main",
+    )
+    request = requests["legacy"]
+    row = {
+        "project_id": "p", "repository_id": "r", "target_ref": "refs/heads/main",
+        "state": "parked", "created_at": time.time(), "manifest": [],
+        "evidence": {"completion_sources": [
+            {"task_id": "legacy", "completion_id": "legacy-close", "source_sha": head}
+        ]},
+    }
+    snapshot = await truth_snapshot(setup, legacy_rows=[row])
+    assert (await snapshot.evaluate(request)).state is DeliveryState.CONTAINED
+    assert snapshot.legacy_inventory == (("legacy", "legacy-close", head, "legacy_completion_source"),)
+    for wrong in ({**row, "repository_id": "other"}, {**row, "target_ref": "refs/heads/other"}):
+        other = await truth_snapshot(setup, legacy_rows=[wrong])
+        assert (await other.evaluate(request)).state is DeliveryState.UNKNOWN
+    reopened = replace(request, completion_id="new-close", completed_at=time.time())
+    assert (await snapshot.evaluate(reopened)).state is DeliveryState.UNKNOWN
+
+
+async def test_snapshot_distinguishes_organization_from_branchless_code(setup):
+    from dataclasses import replace
+
+    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+
+    db, _service, _source, _remote, _repo = setup
+    await db.create_task(Task(
+        id="organization", project_id="p", title="organization", description="",
+        status=TaskStatus.COMPLETED,
+    ))
+    requests = await load_delivery_requests(
+        db, ["organization"], repository_id="r", target_ref="refs/heads/main",
+    )
+    snapshot = await truth_snapshot(setup)
+    request = requests["organization"]
+    assert (await snapshot.evaluate(request)).state is DeliveryState.NO_ARTIFACT
+    code = replace(request, task_id="code", has_recorded_source=True)
+    assert (await snapshot.evaluate(code)).state is DeliveryState.UNKNOWN
+    missing = replace(request, task_id="missing", branch_name="aq/deleted")
+    assert (await snapshot.evaluate(missing)).state is DeliveryState.UNKNOWN
+
+
+async def test_legacy_repair_bridge_checks_exact_current_replacement_and_git(setup):
+    from dataclasses import replace
+
+    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+
+    db, service, _source, remote, _repo = setup
+    older, newer, older_sha, _newer_sha = await repair_cycle(setup, source_contract=True)
+    await _park(service, "original-park", [{"task_id": older, "source_sha": older_sha}])
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert subprocess.run(
+        ["git", "-C", str(remote), "merge-base", "--is-ancestor", older_sha, "main"]
+    ).returncode == 1
+    requests = await load_delivery_requests(
+        db, [older, newer], repository_id="r", target_ref="refs/heads/main",
+    )
+    rows = await service.rows("p")
+    snapshot = await truth_snapshot(setup, legacy_rows=rows)
+    results = await snapshot.evaluate_many(requests.values())
+    assert results[older].state is DeliveryState.CONTAINED
+    assert results[older].reason == "legacy_repair_replacement"
+    # A reopened replacement cannot release the original using its old proof.
+    current = {**requests, newer: replace(requests[newer], completion_id="new-generation")}
+    results = await snapshot.evaluate_many(current.values())
+    assert results[older].state is DeliveryState.PENDING
+    # Reopening the replacement before its next close also invalidates proof.
+    current = {**requests, newer: replace(requests[newer], task_status="READY")}
+    results = await (await truth_snapshot(setup, legacy_rows=rows)).evaluate_many(current.values())
+    assert results[older].state is DeliveryState.PENDING
+    # An original's newer completion is not covered by its earlier repair map.
+    current = {**requests, older: replace(
+        requests[older], completion_id="new-original", completed_at=time.time()
+    )}
+    results = await (await truth_snapshot(setup, legacy_rows=rows)).evaluate_many(current.values())
+    assert results[older].state is DeliveryState.PENDING
+    # An adopted state without exact replacement proof never suffices.
+    without_proof = [{**row, "evidence": {}} for row in rows]
+    results = await (await truth_snapshot(setup, legacy_rows=without_proof)).evaluate_many(
+        requests.values()
+    )
+    assert results[older].state is DeliveryState.PENDING

@@ -129,6 +129,7 @@ its outbox; transport failures never need a new author turn.
     "integration_eject",
     "integration_enable",
     "integration_flush",
+    "integration_migrate_provenance",
     "integration_rebind_reused_identity",
     "integration_rebind_repair",
     "integration_reconcile_unmaterialized",
