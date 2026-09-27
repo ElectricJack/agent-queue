@@ -281,6 +281,7 @@ Every event type emitted anywhere (bus or `log_event`) must have a registered pa
 - `validate_dag_with_new_edge` grows a `dep_type` parameter and skips validation for non-blocking types (self-edges still rejected for all types).
 - **`waits-for` deadlock rule:** reject a `waits-for` edge from *X* to container *C* when *X* is a (transitive) child of *C* — it fans in over a set containing itself. Static DFS cannot see future children, so the write-time rule is complemented by a doctor/lint check that reports runtime-detected unsatisfiable fan-ins (Beads returns `Cycles[][]` from `ready --explain`; ours surfaces them as `explain` reasons and a doctor finding).
 - Cross-project edges participate in the same global DFS — the graph is one DB, so no special casing.
+- **Ancestor rule (filing):** new work may not carry a gating edge (`blocks`, `parent-child`, `waits-for`, `conditional-blocks`) onto the task it is filed under, any ancestor of that task, or, for a worker filing, the task the session holds. Membership is already the `parent-child` edge, a container settles only after its children, and a planning task's plan exists before it files. `create_task_graph` and `formula_cook` report the validation error `dependency_on_ancestor` and write nothing; `create_task` refuses its `depends_on` with the same code. Non-gating edges (`related`, `discovered-from`, …) are unaffected, and the operator control `add_dependency` does not apply the rule. (nimble-bridge filed every child with a `blocks` edge onto itself as a barrier; see noble-quest.)
 
 ## 12. Future: status collapse (design only — later phase)
 
@@ -407,6 +408,14 @@ The task stays COMPLETED, requires no synthetic delivery receipt, and no longer 
 otherwise idle project opening Git transport on every tick. Any reported commits or
 journal artifacts, including parked sources, still require delivery or recovery. A
 failed origin fetch cannot prove an absent source and never retires a branch.
+
+**Delivered commits-less work after branch cleanup.** A completed task whose close lists
+no commits, such as a plan or docs task whose branch is its base, is released by its
+development delivery receipt, not by its branch. The manifest names the task (with no
+source on the close, the receipt matches on task id alone), and the publisher binds the
+empty close through `evidence.completion_sources`. Branch cleanup afterwards re-blocks
+nothing, and an edge written after cleanup starts satisfied, at readiness and at
+publication (`test_docs_only_plan_dependency_stays_satisfied_after_branch_cleanup`).
 
 ## 13c. In-task subtasks
 

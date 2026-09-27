@@ -43,9 +43,10 @@ GOLDEN = FIXTURES / "golden"
 
 
 class _FakeTask:
-    def __init__(self, task_id: str, project_id: str):
+    def __init__(self, task_id: str, project_id: str, parent_task_id: str | None = None):
         self.id = task_id
         self.project_id = project_id
+        self.parent_task_id = parent_task_id
 
 
 class _FakeProfile:
@@ -56,13 +57,19 @@ class _FakeProfile:
 class _FakeDB:
     """Minimal db surface the validator uses: get_task + get_profile."""
 
-    def __init__(self, tasks: dict[str, str] | None = None, profiles: set[str] | None = None):
+    def __init__(
+        self,
+        tasks: dict[str, str] | None = None,
+        profiles: set[str] | None = None,
+        parents: dict[str, str] | None = None,
+    ):
         self._tasks = tasks or {"foreign-task": "other-project", "local-task": "p1"}
         self._profiles = profiles if profiles is not None else {"coding", "planner", "reviewer"}
+        self._parents = parents or {}
 
     async def get_task(self, task_id: str):
         project = self._tasks.get(task_id)
-        return _FakeTask(task_id, project) if project else None
+        return _FakeTask(task_id, project, self._parents.get(task_id)) if project else None
 
     async def get_profile(self, profile_id: str):
         return _FakeProfile(profile_id) if profile_id in self._profiles else None
@@ -1080,6 +1087,73 @@ class TestSelfEdges:
         )
         findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
         assert [f.rule for f in findings] == []
+
+
+class TestNeedsOnAncestors:
+    """A node never gates on the task it is filed under, its ancestors, or its filer.
+
+    Membership is already the ``parent-child`` edge, and a container only settles
+    after its children, so such a need either deadlocks or (for a working plan
+    task) repeats what membership says (noble-quest).
+    """
+
+    @staticmethod
+    def _db():
+        return _FakeDB(
+            tasks={"epic": "p1", "plan": "p1", "sibling": "p1"},
+            parents={"plan": "epic", "sibling": "epic"},
+        )
+
+    @staticmethod
+    def _graph(on: str, dep_type: str = "blocks") -> TaskGraph:
+        return parse_graph({
+            "version": 1,
+            "nodes": [{
+                "key": "a", "title": "A", "acceptance": ["x"],
+                "needs": [{"on": on, "dep_type": dep_type}],
+            }],
+        })
+
+    @pytest.mark.parametrize("dep_type", ["blocks", "waits-for", "conditional-blocks", "parent-child"])
+    @pytest.mark.parametrize("on", ["plan", "epic"])
+    async def test_a_gating_need_on_the_parent_or_an_ancestor_is_an_error(
+        self, on, dep_type, vault
+    ):
+        findings = await validate_graph(
+            self._graph(on, dep_type), project_id="p1", db=self._db(), vault_root=vault,
+            parent_id="plan",
+        )
+        errors, _warnings = split_findings(findings)
+        assert [(f.rule, f.node) for f in errors] == [("dependency_on_ancestor", "a")]
+        assert f"'{on}'" in errors[0].detail
+
+    async def test_the_filer_is_refused_wherever_the_graph_lands(self, vault):
+        findings = await validate_graph(
+            self._graph("plan"), project_id="p1", db=self._db(), vault_root=vault,
+            filed_by="plan",
+        )
+        assert [f.rule for f in findings if f.is_error] == ["dependency_on_ancestor"]
+
+    @pytest.mark.parametrize("dep_type", ["related", "discovered-from"])
+    async def test_a_non_gating_edge_to_the_parent_is_allowed(self, dep_type, vault):
+        findings = await validate_graph(
+            self._graph("plan", dep_type), project_id="p1", db=self._db(), vault_root=vault,
+            parent_id="plan", filed_by="plan",
+        )
+        assert [f.rule for f in findings if f.is_error] == []
+
+    async def test_a_need_on_a_sibling_of_the_parent_is_untouched(self, vault):
+        findings = await validate_graph(
+            self._graph("sibling"), project_id="p1", db=self._db(), vault_root=vault,
+            parent_id="plan", filed_by="plan",
+        )
+        assert [f.rule for f in findings if f.is_error] == []
+
+    async def test_a_root_graph_may_still_need_an_existing_task(self, vault):
+        findings = await validate_graph(
+            self._graph("plan"), project_id="p1", db=self._db(), vault_root=vault,
+        )
+        assert [f.rule for f in findings if f.is_error] == []
 
 
 # ---------------------------------------------------------------------------

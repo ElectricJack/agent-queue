@@ -2871,6 +2871,31 @@ class TaskCommandsMixin:
             parent = await self.db.get_task(parent_id)
             if parent is None:
                 return {"error": f"Parent task '{parent_id}' not found"}
+        if edges:
+            # Membership is already the parent-child edge, and a container
+            # settles only after its children: a gating edge onto the new
+            # task's own ancestor chain, or onto the task a worker holds,
+            # never helps (noble-quest; graph rule ``dependency_on_ancestor``).
+            from src.task_graph.validator import task_and_ancestors
+
+            forbidden = set(await task_and_ancestors(self.db, parent_id))
+            if held_id:
+                forbidden.add(held_id)
+            gated = sorted({
+                dep_id for dep_id, dep_type, _reason in edges
+                if dep_type in BLOCKING_DEP_TYPES and dep_id in forbidden
+            })
+            if gated:
+                return {
+                    "success": False,
+                    "code": "dependency_on_ancestor",
+                    "error": (
+                        f"depends_on names {', '.join(gated)}: the task filing this one "
+                        "or its own parent chain. Membership already orders a child under "
+                        "its parent, and a container settles only after its children — "
+                        "drop that dependency."
+                    ),
+                }
         if (
             filing_session is not None
             and hierarchy_enabled
@@ -3708,7 +3733,8 @@ class TaskCommandsMixin:
                     class_matched[node.key] = routed.id
 
         findings = await validate_graph(
-            graph, project_id=project_id, db=self.db, vault_root=vault_root
+            graph, project_id=project_id, db=self.db, vault_root=vault_root,
+            parent_id=parent_id, filed_by=filing.held_task_id if filing else None,
         )
         findings.extend(route_findings)
         class_errors: dict[tuple[str | None, str], str | None] = {}
