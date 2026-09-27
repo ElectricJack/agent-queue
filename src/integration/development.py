@@ -12,10 +12,12 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import signal
 import sys
+import tempfile
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -430,6 +432,9 @@ class DevelopmentIntegration:
             raise GitError(result.stderr or result.stdout or "Git command failed")
         return result.stdout.strip()
 
+    def _store_path(self, repo):
+        return self.data_dir / hashlib.sha256(repo.id.encode()).hexdigest()[:20] / "repository"
+
     async def merge_member(self, store, commit, policy) -> MergeOutcome:
         """Merge *commit* into the checkout's detached HEAD.
 
@@ -604,7 +609,7 @@ class DevelopmentIntegration:
         }
 
     async def store(self, repo, *, fetch=True):
-        path = self.data_dir / hashlib.sha256(repo.id.encode()).hexdigest()[:20] / "repository"
+        path = self._store_path(repo)
         path.parent.mkdir(parents=True, exist_ok=True)
         if not (path / ".git").exists():
             await self.git.acreate_checkout(repo.url, str(path), no_checkout=True)
@@ -623,6 +628,47 @@ class DevelopmentIntegration:
         if observed.state is RemoteRefState.ERROR:
             raise GitError(observed.error or "remote head observation failed")
         return observed.oid
+
+    @asynccontextmanager
+    async def read_snapshot(self, repo, target_ref, *, legacy_rows=()):
+        """Yield a freshly fetched snapshot taken in a private repository.
+
+        Reads that only confirm ancestry must neither wait for a sweep holding
+        the publisher lock nor move the refs and checkout it is using. The
+        private repository borrows the retained store's objects read-only (Git
+        never writes into an alternate) and starts from its origin tips, so the
+        fetch transfers only what is new. It is removed afterwards.
+        """
+        shared = self._store_path(repo)
+        shared.parent.mkdir(parents=True, exist_ok=True)
+        root = Path(tempfile.mkdtemp(prefix="reads-", dir=shared.parent))
+        try:
+            await self.run_git(root, "init", "--quiet")
+            objects = shared / ".git" / "objects"
+            if objects.is_dir():
+                (root / ".git" / "objects" / "info" / "alternates").write_text(f"{objects}\n")
+                try:
+                    tips = await self.run_git(
+                        shared, "for-each-ref", "--format=update %(refname) %(objectname)",
+                        "refs/remotes/origin/",
+                    )
+                    tips = "".join(
+                        line + "\n" for line in tips.splitlines()
+                        if not line.startswith("update refs/remotes/origin/HEAD ")
+                    )
+                    if tips:
+                        await self.git.arun_git_result(
+                            ["update-ref", "--stdin"], cwd=str(root), stdin=tips
+                        )
+                except GitError:
+                    pass  # Seeding only saves transfer; the fetch below is the truth.
+            await self.run_git(root, "remote", "add", "origin", repo.url)
+            yield await delivery_snapshot(
+                self.git, root, project_id=repo.project_id, repository_id=repo.id,
+                repository_url=repo.url, target_ref=target_ref, legacy_rows=legacy_rows,
+            )
+        finally:
+            await asyncio.to_thread(shutil.rmtree, root, True)
 
     async def save(self, row):
         async with self.db._engine.begin() as conn:
@@ -795,6 +841,14 @@ class DevelopmentIntegration:
                     state="parked",
                     evidence=row["evidence"] | {"reconciled": "not_applied"},
                 )
+            elif actual and prepared and await self.git.ais_ancestor(
+                str(store), prepared, actual, strict=True
+            ) is False:
+                # The target moved on without this write: it is not delivered,
+                # and nothing failed. The next assembly starts from current git.
+                await self.change(row["id"], state="cancelled", evidence=row["evidence"] | {
+                    "reconciled": "target_moved", "observed_sha": actual,
+                })
             else:
                 raise DevelopmentBusy(
                     f"remote write {row['id']} needs reconciliation: target changed"
@@ -1044,18 +1098,43 @@ class DevelopmentIntegration:
         await self.save(row)
         actual = await self.remote(store, target_ref)
         if actual != expected:
-            await self.change(
-                row["id"], state="parked", evidence=evidence | {"reason": "base_moved"}
-            )
-            return {"outcome": "base_moved", "id": row["id"]}
+            # Nothing was written and nothing failed: the caller re-assembles
+            # from a fresh fetch. A parked row would file a repair for it.
+            await self.change(row["id"], state="cancelled", evidence=evidence | {
+                "reason": "base_moved", "observed_sha": actual,
+            })
+            return {"outcome": "base_moved", "id": row["id"], "observed_sha": actual}
         if expected and not await self.git.ais_ancestor(str(store), expected, head):
             raise ValueError("development publication must preserve target history")
         await self.change(row["id"], state="publishing")
-        # Lease binds the actual remote old SHA; zero means ref must not exist.
-        await self.git.apush_validated_ref(
-            str(store), head, target_ref.removeprefix("refs/heads/"),
-            expected_old_oid=expected or "0" * 40,
-        )
+        try:
+            # Lease binds the actual remote old SHA; zero means ref must not exist.
+            await self.git.apush_validated_ref(
+                str(store), head, target_ref.removeprefix("refs/heads/"),
+                expected_old_oid=expected or "0" * 40,
+            )
+        except GitError as exc:
+            # A refused lease or an uncertain transfer is settled from the
+            # remote itself: only our head, or history built on it, applied.
+            actual = await self.remote(store, target_ref)
+            applied = actual == head or (
+                actual is not None
+                and await self.git.ais_ancestor(str(store), head, actual, strict=True)
+            )
+            if applied is None:
+                # The moved target is usually not local yet: fetch, never guess.
+                await self.git.afetch_origin(str(store), repository_url=repo.url, all_heads=True)
+                applied = await self.git.ais_ancestor(str(store), head, actual, strict=True)
+            if applied is None:
+                raise  # Unknown locally: the next sweep reconciles after its fetch.
+            if not applied:
+                await self.change(row["id"], state="cancelled", evidence=evidence | {
+                    "reason": "base_moved" if actual != expected else "not_applied",
+                    "observed_sha": actual, "error": str(exc)[-1000:],
+                })
+                if actual != expected:
+                    return {"outcome": "base_moved", "id": row["id"], "observed_sha": actual}
+                raise
         confirmed = await self.remote(store, target_ref)
         if confirmed != head:
             raise DevelopmentBusy("published ref could not be confirmed; journal retained")
@@ -1078,162 +1157,228 @@ class DevelopmentIntegration:
         operator_id,
         accept_equivalent=False,
     ):
+        """Record the delivery of work that *head_sha* on the target carries.
+
+        Ancestry is observed in a private read snapshot, so an ancestry-only
+        adoption succeeds while a sweep holds the publisher lock. Accepting a
+        source that is not an ancestor is a separate, reasoned decision: it
+        takes the publisher exclusion and observes again under it. Either way
+        the write refuses a task whose generation or writer changed after it
+        was observed.
+        """
         if not reason.strip() or not is_valid_git_oid(head_sha) or not task_ids:
             raise ValueError("task ids, exact target SHA and reason are required")
         project = await self.db.get_project(project_id)
         if project is None or not project.integration_repository_id:
             raise ValueError("project has no designated repository")
         repo = await self.db.get_repo(project.integration_repository_id)
+        task_ids = sorted(set(task_ids))
+        async with self.db._engine.connect() as conn:
+            rows = {
+                row["id"]: row for row in (
+                    await conn.execute(select(tasks).where(tasks.c.id.in_(task_ids)))
+                ).mappings()
+            }
+            generations = await self._completion_generations(conn, task_ids)
+        for task_id in task_ids:
+            row = rows.get(task_id)
+            if row is None or row["project_id"] != project_id or row["repo_id"] not in {
+                None, repo.id,
+            }:
+                raise ValueError(f"task {task_id} does not belong to the repository project")
+        identities = {
+            task_id: self._adoption_fence(rows[task_id], generations) for task_id in task_ids
+        }
+        manifest = await self._observe_adoption(repo, target_ref, head_sha, identities)
+        equivalent = [m["task_id"] for m in manifest if m["acceptance"] != "ancestry"]
+        if not equivalent:
+            return await self._record_adoption(
+                repo, project_id, target_ref, head_sha, manifest, identities,
+                reason=reason, operator_id=operator_id,
+            )
+        if not accept_equivalent:
+            raise ValueError(
+                f"{equivalent[0]}: source is not an ancestor; explicit equivalence acceptance required"
+            )
         async with self.exclusion(repo.id):
-            store = await self.store(repo)
-            if await self.remote(store, target_ref) != head_sha:
+            manifest = await self._observe_adoption(repo, target_ref, head_sha, identities)
+            return await self._record_adoption(
+                repo, project_id, target_ref, head_sha, manifest, identities,
+                reason=reason, operator_id=operator_id,
+            )
+
+    @staticmethod
+    async def _completion_generations(conn, task_ids):
+        """Each task's completion count and latest close, the generation adopt fences."""
+        return {
+            task_id: (count, latest) for task_id, count, latest in await conn.execute(
+                select(
+                    task_completion_records.c.task_id, func.count(),
+                    func.max(task_completion_records.c.completed_at),
+                )
+                .where(task_completion_records.c.task_id.in_(task_ids))
+                .group_by(task_completion_records.c.task_id)
+            )
+        }
+
+    @staticmethod
+    def _adoption_fence(row, generations):
+        return (row["status"], row["branch_name"], row["claim_epoch"], generations.get(row["id"]))
+
+    async def _observe_adoption(self, repo, target_ref, head_sha, identities):
+        """Name each task's current branch head and whether *head_sha* contains it."""
+        async with self.read_snapshot(repo, target_ref) as truth:
+            if truth.error and truth.error != "missing_target":
+                raise ValueError(f"target could not be observed: {truth.error}")
+            if truth.target_oid != head_sha:
                 raise ValueError("target ref is no longer at the supplied SHA")
             manifest = []
-            for task_id in sorted(set(task_ids)):
-                task = await self.db.get_task(task_id)
-                if (
-                    task is None
-                    or task.project_id != project_id
-                    or task.repo_id not in {None, repo.id}
-                ):
-                    raise ValueError(f"task {task_id} does not belong to the repository project")
-                source = (
-                    await self.remote(
-                        store, "refs/heads/" + task.branch_name.removeprefix("refs/heads/")
-                    )
-                    if task.branch_name
-                    else None
-                )
-                contained = bool(
-                    source and await self.git.ais_ancestor(str(store), source, head_sha)
-                )
-                if not contained and not accept_equivalent:
-                    raise ValueError(
-                        f"{task_id}: source is not an ancestor; explicit equivalence acceptance required"
-                    )
-                manifest.append(
-                    {
-                        "task_id": task_id,
-                        "source_sha": source,
-                        "acceptance": "ancestry" if contained else "operator_equivalent",
-                    }
-                )
-            async with self.db.immediate() as conn:
-                await self.db.lock_hierarchy_project(conn, project_id)
-                selected = (
-                    (
-                        await conn.execute(
-                            select(tasks).where(tasks.c.id.in_(task_ids)).with_for_update()
-                        )
-                    )
-                    .mappings()
-                    .all()
-                )
-                held = await conn.scalar(
-                    select(sessions.c.id)
-                    .where(sessions.c.task_id.in_(task_ids), sessions.c.state != "stopped")
-                    .limit(1)
-                )
-                if held or any(t["assigned_agent_id"] for t in selected):
-                    raise DevelopmentBusy("selected tasks still have a worker assignment")
-                outside = await conn.scalar(
-                    select(tasks.c.id)
-                    .where(
-                        tasks.c.parent_task_id.in_(task_ids),
-                        tasks.c.id.not_in(task_ids),
-                        tasks.c.status.not_in(["COMPLETED", "CANCELLED"]),
-                    )
-                    .limit(1)
-                )
-                if outside:
-                    raise ValueError(f"required child {outside} is still open")
-                now = time.time()
-                identity = str(uuid4())
-                # The completion recorded below reports the adopted head, while
-                # the manifest names each task by its branch head, so readiness
-                # cannot match the two on its own. Bind them in the same row.
-                recorded = {t["id"]: str(uuid4()) for t in selected if t["status"] != "COMPLETED"}
-                sources = {member["task_id"]: member["source_sha"] for member in manifest}
-                evidence = {
-                    "kind": "operator_accepted",
-                    "operator_id": operator_id,
-                    "validation": "operator_decision",
-                    "conclusion": "not_ci_attested",
-                }
-                if recorded:
-                    evidence["completion_sources"] = [
-                        self._completion_proof(task_id, completion_id, head_sha, sources[task_id])
-                        for task_id, completion_id in sorted(recorded.items())
-                    ]
-                if target_ref == "refs/heads/" + repo.default_branch:
-                    evidence = armed_for_branch_cleanup(evidence)
-                await conn.execute(
-                    insert(deliveries).values(
-                        id=identity,
-                        project_id=project_id,
-                        repository_id=repo.id,
-                        target_ref=target_ref,
-                        expected_sha=head_sha,
-                        prepared_sha=head_sha,
-                        state="adopted",
-                        manifest=manifest,
-                        evidence=evidence,
-                        reason=reason,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                )
-                from src.database.queries.task_queries import _OPERATOR_ADOPTION_TOKEN
+            for task_id, (_status, branch, _epoch, _generation) in identities.items():
+                source = truth.source_heads.get(
+                    "refs/remotes/origin/" + branch.removeprefix("refs/heads/")
+                ) if branch else None
+                contained = bool(source) and await self.git.ais_ancestor(
+                    truth.store, source, head_sha, strict=True
+                ) is True
+                manifest.append({
+                    "task_id": task_id,
+                    "source_sha": source,
+                    "acceptance": "ancestry" if contained else "operator_equivalent",
+                })
+            return manifest
 
-                results = []
-                pending_tasks = {t["id"]: t for t in selected}
-                close_order = []
-                while pending_tasks:
-                    parent_ids = {t["parent_task_id"] for t in pending_tasks.values()}
-                    leaves = sorted(set(pending_tasks) - parent_ids)
-                    if not leaves:
-                        raise ValueError("task hierarchy contains a cycle")
-                    close_order.extend(leaves)
-                    for identity_task in leaves:
-                        pending_tasks.pop(identity_task)
-                from src.database.tables import task_completion_records
-
-                for task_id in close_order:
-                    if task_id in recorded:
-                        await conn.execute(
-                            insert(task_completion_records).values(
-                                id=recorded[task_id],
-                                task_id=task_id,
-                                outcome="pass",
-                                summary=reason,
-                                verification="Operator adoption; not CI attested",
-                                commits=json.dumps([head_sha]),
-                                completed_at=now,
-                                notes=f"Delivery journal {identity}; operator {operator_id}",
-                            )
-                        )
-                    results.append(
-                        await self.db._apply_transition(
-                            conn,
-                            task_id,
-                            TaskStatus.COMPLETED,
-                            context="operator_adopt_delivery",
-                            _operator_adoption_token=_OPERATOR_ADOPTION_TOKEN,
-                            _manual_pause_control=True,
-                        )
+    async def _record_adoption(
+        self, repo, project_id, target_ref, head_sha, manifest, identities, *, reason,
+        operator_id,
+    ):
+        task_ids = sorted(identities)
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, project_id)
+            selected = (
+                (
+                    await conn.execute(
+                        select(tasks).where(tasks.c.id.in_(task_ids)).with_for_update()
                     )
-            for result in results:
-                await self.db.log_blocked_flips(result.flipped)
-                await self.db._notify_settled(result.settled)
-                await self.db._notify_ready(result.ready)
-            return {
-                "outcome": "adopted",
-                "id": identity,
-                "head_sha": head_sha,
-                "manifest": manifest,
+                )
+                .mappings()
+                .all()
+            )
+            generations = await self._completion_generations(conn, task_ids)
+            if {row["id"]: self._adoption_fence(row, generations) for row in selected} != (
+                identities
+            ):
+                raise DevelopmentBusy(
+                    "a selected task changed after its source was observed; adopt again"
+                )
+            held = await conn.scalar(
+                select(sessions.c.id)
+                .where(sessions.c.task_id.in_(task_ids), sessions.c.state != "stopped")
+                .limit(1)
+            )
+            if held or any(t["assigned_agent_id"] for t in selected):
+                raise DevelopmentBusy("selected tasks still have a worker assignment")
+            outside = await conn.scalar(
+                select(tasks.c.id)
+                .where(
+                    tasks.c.parent_task_id.in_(task_ids),
+                    tasks.c.id.not_in(task_ids),
+                    tasks.c.status.not_in(["COMPLETED", "CANCELLED"]),
+                )
+                .limit(1)
+            )
+            if outside:
+                raise ValueError(f"required child {outside} is still open")
+            now = time.time()
+            identity = str(uuid4())
+            # The completion recorded below reports the adopted head, while
+            # the manifest names each task by its branch head, so readiness
+            # cannot match the two on its own. Bind them in the same row.
+            recorded = {t["id"]: str(uuid4()) for t in selected if t["status"] != "COMPLETED"}
+            sources = {member["task_id"]: member["source_sha"] for member in manifest}
+            evidence = {
+                "kind": "operator_accepted",
+                "operator_id": operator_id,
+                "validation": "operator_decision",
+                "conclusion": "not_ci_attested",
             }
+            if recorded:
+                evidence["completion_sources"] = [
+                    self._completion_proof(task_id, completion_id, head_sha, sources[task_id])
+                    for task_id, completion_id in sorted(recorded.items())
+                ]
+            if target_ref == "refs/heads/" + repo.default_branch:
+                evidence = armed_for_branch_cleanup(evidence)
+            await conn.execute(
+                insert(deliveries).values(
+                    id=identity,
+                    project_id=project_id,
+                    repository_id=repo.id,
+                    target_ref=target_ref,
+                    expected_sha=head_sha,
+                    prepared_sha=head_sha,
+                    state="adopted",
+                    manifest=manifest,
+                    evidence=evidence,
+                    reason=reason,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            from src.database.queries.task_queries import _OPERATOR_ADOPTION_TOKEN
 
-    async def sweep(self, project_id, *, retry=False, recover_child_id=None):
+            results = []
+            pending_tasks = {t["id"]: t for t in selected}
+            close_order = []
+            while pending_tasks:
+                parent_ids = {t["parent_task_id"] for t in pending_tasks.values()}
+                leaves = sorted(set(pending_tasks) - parent_ids)
+                if not leaves:
+                    raise ValueError("task hierarchy contains a cycle")
+                close_order.extend(leaves)
+                for identity_task in leaves:
+                    pending_tasks.pop(identity_task)
+            for task_id in close_order:
+                if task_id in recorded:
+                    await conn.execute(
+                        insert(task_completion_records).values(
+                            id=recorded[task_id],
+                            task_id=task_id,
+                            outcome="pass",
+                            summary=reason,
+                            verification="Operator adoption; not CI attested",
+                            commits=json.dumps([head_sha]),
+                            completed_at=now,
+                            notes=f"Delivery journal {identity}; operator {operator_id}",
+                        )
+                    )
+                results.append(
+                    await self.db._apply_transition(
+                        conn,
+                        task_id,
+                        TaskStatus.COMPLETED,
+                        context="operator_adopt_delivery",
+                        _operator_adoption_token=_OPERATOR_ADOPTION_TOKEN,
+                        _manual_pause_control=True,
+                    )
+                )
+        for result in results:
+            await self.db.log_blocked_flips(result.flipped)
+            await self.db._notify_settled(result.settled)
+            await self.db._notify_ready(result.ready)
+        return {
+            "outcome": "adopted",
+            "id": identity,
+            "head_sha": head_sha,
+            "manifest": manifest,
+        }
+
+    async def sweep(self, project_id, *, retry=False, recover_child_id=None, _moved=None):
+        """Assemble, validate and publish one batch from a fresh target snapshot.
+
+        ``_moved`` is internal: the target this sweep's caller saw move before
+        its publication applied. The caller still holds the exclusion, and a
+        second movement is left to the next tick rather than chased.
+        """
         project = await self.db.get_project(project_id)
         if project is None or project.hierarchical_integration_mode != "development":
             raise ValueError("project is not in development mode")
@@ -1241,7 +1386,7 @@ class DevelopmentIntegration:
         repo = await self.db.get_repo(project.integration_repository_id)
         await self.rebind_foreign_repositories(project_id, repo)
         await self.refresh_dependencies(project_id)
-        async with self.exclusion(repo.id):
+        async with nullcontext() if _moved else self.exclusion(repo.id):
             if not (retry or recover_child_id) and not await self._has_pending_work(
                 project_id, repo, now=time.time()
             ):
@@ -1481,14 +1626,10 @@ class DevelopmentIntegration:
                     ordered.append(task)
                     remaining.pop(task["id"])
             dependency_ids = set().union(*dependencies.values()) if dependencies else set()
-            unavailable = {task_id for task_id, _source in parked}
-            # An old parked receipt cannot make a branchless container require
-            # publication. Include archived tasks because a dependency may
-            # already have moved out of the live table.
-            artifact_ids = (
-                dependency_ids | unavailable
-                | {task["parent_task_id"] for task in candidates if task["parent_task_id"]}
-            ) - candidate_ids
+            # Only a prerequisite outside this candidate set needs its own
+            # truth: candidates are ordered before their dependents and publish
+            # in this batch. A parent orders nothing, so no ancestor is read.
+            artifact_ids = dependency_ids - candidate_ids
             artifact_requests = await load_delivery_requests(
                 self.db, artifact_ids, repository_id=repo.id, target_ref=target,
             )
@@ -1502,18 +1643,19 @@ class DevelopmentIntegration:
                 evidence = all_truth.get(task_id)
                 return evidence is None or not evidence.satisfied
 
-            unavailable = {task_id for task_id in unavailable if requires_publication(task_id)}
-            for dependency_id in sorted(dependency_ids - candidate_ids):
+            for dependency_id in sorted(artifact_ids):
                 evidence = all_truth.get(dependency_id)
-                if requires_publication(dependency_id):
-                    unavailable.add(dependency_id)
-                elif evidence and evidence.state is DeliveryState.CONTAINED and (
+                if evidence and evidence.state is DeliveryState.CONTAINED and (
                     dependency_id, evidence.source_oid
                 ) not in done and dependency_id not in contained:
                     manifest.append({"task_id": dependency_id, "source_sha": evidence.source_oid})
             head = base
-            parent_heads = {}
-            blocked_parents = set()
+            # Only what this batch publishes releases a dependent. A skipped
+            # candidate holds its own dependents and nothing else: no sibling,
+            # parent or unrelated candidate inherits its skip.
+            published = set()
+            merged = []  # (task id, source) whose merge moved the aggregate
+            parked_ids = {task_id for task_id, _source in parked}
             processed, skipped = set(cycle_blocked), {
                 task_id: ("dependency_cycle", dependency_id)
                 for task_id, dependency_id in cycle_blocked.items()
@@ -1523,8 +1665,6 @@ class DevelopmentIntegration:
                     "development publisher: skipping %s: dependency cycle with %s",
                     task_id, dependency_id,
                 )
-            unavailable.update(cycle_blocked)
-            assembly_id = uuid4().hex[:12]
             for task in ordered:
                 processed.add(task["id"])
                 replacements = {
@@ -1539,7 +1679,6 @@ class DevelopmentIntegration:
                     ) not in {None, expected}
                 ), None)
                 if changed_source:
-                    unavailable.update({task["id"], *replacements})
                     processed.update(replacements)
                     skipped[task["id"]] = ("dependency_cycle_source_changed", changed_source)
                     for old_id in replacements:
@@ -1550,20 +1689,12 @@ class DevelopmentIntegration:
                         task["id"], changed_source,
                     )
                     continue
-                if (
-                    task["parent_task_id"] in blocked_parents
-                    and requires_publication(task["parent_task_id"])
-                ):
-                    unavailable.add(task["id"])
-                    skipped[task["id"]] = ("parent_unavailable", task["parent_task_id"])
-                    continue
-                unavailable_dependencies = {
-                    dependency_id
-                    for dependency_id in dependencies.get(task["id"], set()) & unavailable
-                    if requires_publication(dependency_id)
-                }
-                if unavailable_dependencies:
-                    for dependency_id in sorted(unavailable_dependencies):
+                held = sorted(
+                    dependency_id for dependency_id in dependencies.get(task["id"], set())
+                    if dependency_id not in published and requires_publication(dependency_id)
+                )
+                if held:
+                    for dependency_id in held:
                         dependency_reason = skipped.get(dependency_id, (None, None))[0]
                         dependency_kind = (
                             "dependency_cycle" if dependency_reason == "dependency_cycle" else
@@ -1584,30 +1715,24 @@ class DevelopmentIntegration:
                                 "project": project_id,
                             },
                         )
-                    unavailable.add(task["id"])
-                    unavailable.update(replacements)
-                    first_dependency = sorted(unavailable_dependencies)[0]
-                    first_reason = skipped.get(first_dependency, (None, None))[0]
+                    first_reason = skipped.get(held[0], (None, None))[0]
                     skipped[task["id"]] = (
                         "dependency_cycle" if first_reason == "dependency_cycle" else
                         "missing_ref" if first_reason == "missing_ref" else
-                        "undelivered_dependency", first_dependency,
+                        "undelivered_dependency", held[0],
                     )
                     continue
                 evidence = own_truth[task["id"]]
                 source_ref = "refs/remotes/origin/" + (task["branch_name"] or "").removeprefix(
                     "refs/heads/"
                 )
+                # PENDING already proves the source is absent from this base.
                 source = evidence.source_oid if (
                     evidence.state is DeliveryState.PENDING and source_ref in source_heads
                 ) else None
-                key = (task["id"], source)
                 if not source:
-                    was_parked = task["id"] in unavailable
-                    unavailable.add(task["id"])
-                    unavailable.update(replacements)
                     skipped[task["id"]] = (
-                        "source_parked" if was_parked else (
+                        "source_parked" if task["id"] in parked_ids else (
                             "git_error" if evidence.reason == "git_error" else "missing_ref"
                         ),
                         task["id"],
@@ -1617,82 +1742,35 @@ class DevelopmentIntegration:
                         task["id"], evidence.reason, evidence.request.completion_id, base,
                     )
                     continue
-                contained_in_main = await self.git.ais_ancestor(str(store), source, base)
-                if key in parked and not contained_in_main:
-                    unavailable.add(task["id"])
-                    unavailable.update(replacements)
+                if (task["id"], source) in parked:
                     skipped[task["id"]] = ("source_parked", None)
-                    continue
-                if key in done and contained_in_main and all(
-                    (old_id, old_sha) in done for old_id, old_sha in replacements.items()
-                ):
-                    unavailable.discard(task["id"])
-                    unavailable.difference_update(replacements)
-                    processed.update(replacements)
                     continue
                 member = {
                     "task_id": task["id"],
                     "source_sha": source,
                     "parent_task_id": task["parent_task_id"],
                 }
-                if contained_in_main:
-                    unavailable.discard(task["id"])
-                    manifest.append(member)
-                    for old_id, old_sha in sorted(replacements.items()):
-                        manifest.append({"task_id": old_id, "source_sha": old_sha,
-                                         "superseded_by": task["id"]})
-                        unavailable.discard(old_id)
-                        processed.add(old_id)
-                    if len(manifest) >= policy.max_batch_size:
-                        break
-                    continue
-                # Keep an independently reusable parent aggregate, with ordinary merge
-                # commits. No parent CI, verifier task, or worker-owned branch mutation.
-                parent_id = task["parent_task_id"]
-                if parent_id:
-                    parent_ref = (
-                        "refs/heads/aq/development/parent/"
-                        + hashlib.sha256(parent_id.encode()).hexdigest()[:16]
-                        + "/"
-                        + assembly_id
-                    )
-                    previous = parent_heads.get(parent_id)
-                    parent_base = previous or base
-                    await self.run_git(store, "checkout", "--detach", "--force", parent_base)
-                else:
-                    parent_ref, previous = None, None
+                # Every clean member goes straight into the batch aggregate.
+                # Grouping by parent is not required, so one member's conflict
+                # never holds a sibling.
+                await self.run_git(store, "checkout", "--detach", "--force", head)
+                outcome = await self.merge_member(store, source, policy)
+                if not outcome.ok:
                     await self.run_git(store, "checkout", "--detach", "--force", head)
-                merged = await self.merge_member(store, source, policy)
-                if merged.ok and parent_ref:
-                    aggregate_head = await self.run_git(store, "rev-parse", "HEAD")
-                    await self.publish(
-                        repo,
-                        store,
-                        parent_ref,
-                        aggregate_head,
-                        previous,
-                        [member],
-                        {"kind": "assembly", "conclusion": "not_run"},
-                        "parent assembly",
+                    attribution = await self._conflict_evidence(
+                        store, base=base, head=head, source=source, merged=merged,
+                        regenerate=bool(policy.regenerate),
                     )
-                    parent_heads[parent_id] = aggregate_head
-                    await self.run_git(store, "checkout", "--detach", "--force", head)
-                    rebuilt = merged.regenerated
-                    merged = await self.merge_member(store, aggregate_head, policy)
-                    merged = MergeOutcome(
-                        merged.ok, merged.detail, merged.conflicting_files,
-                        tuple(sorted({*rebuilt, *merged.regenerated})), merged.regeneration,
-                    )
-                if not merged.ok:
-                    await self.run_git(store, "checkout", "--detach", "--force", head)
                     now = time.time()
                     conflict = {
-                        "kind": "merge_conflict", "detail": merged.detail[-4000:],
-                        "conflicting_files": list(merged.conflicting_files),
+                        "kind": "merge_conflict", "detail": outcome.detail[-4000:],
+                        "conflicting_files": list(outcome.conflicting_files),
                         **({"regenerate": policy.regenerate}
                            if policy.regenerate else {}),
-                        **({"regeneration": merged.regeneration}
-                           if merged.regeneration else {}),
+                        **({"regeneration": outcome.regeneration}
+                           if outcome.regeneration else {}),
+                        "source_sha": source, "target_ref": target,
+                        "target_sha": base, "aggregate_sha": head, **attribution,
                     }
                     # ``--retry`` and ``--recover-child`` merge parked content
                     # again.  A repeat conflict refreshes the row that already
@@ -1727,22 +1805,21 @@ class DevelopmentIntegration:
                                 "updated_at": now,
                             }
                         )
-                    conflicts.append(member)
-                    if parent_id:
-                        blocked_parents.add(parent_id)
-                    unavailable.add(task["id"])
-                    unavailable.update(replacements)
+                    conflicts.append({**member, **attribution})
                     skipped[task["id"]] = ("merge_conflict", None)
                     continue
-                head = await self.run_git(store, "rev-parse", "HEAD")
-                if merged.regenerated:
-                    regenerated[task["id"]] = list(merged.regenerated)
-                unavailable.discard(task["id"])
+                merged_head = await self.run_git(store, "rev-parse", "HEAD")
+                if merged_head != head:
+                    merged.append((task["id"], source))
+                    head = merged_head
+                if outcome.regenerated:
+                    regenerated[task["id"]] = list(outcome.regenerated)
+                published.add(task["id"])
+                published.update(replacements)
                 manifest.append(member)
                 for old_id, old_sha in sorted(replacements.items()):
                     manifest.append({"task_id": old_id, "source_sha": old_sha,
                                      "superseded_by": task["id"]})
-                    unavailable.discard(old_id)
                     processed.add(old_id)
                 if len(manifest) >= policy.max_batch_size:
                     break
@@ -1832,6 +1909,20 @@ class DevelopmentIntegration:
                 repo, store, target, head, base, manifest, evidence, "development batch",
                 arm_branch_cleanup=True,
             )
+            if result["outcome"] == "base_moved" and not _moved:
+                # Nothing was written and nothing failed. Assemble again from a
+                # fresh fetch: members the new target contains drop out, and
+                # the rest merge onto it; stale history is never forced.
+                logger.info(
+                    "development publisher: %s moved from %s to %s before publication; "
+                    "re-assembling from a fresh snapshot",
+                    target, base, result.get("observed_sha"),
+                    extra={"project": project_id, "batch": result["id"]},
+                )
+                return await self.sweep(
+                    project_id, retry=retry, recover_child_id=recover_child_id,
+                    _moved=result.get("observed_sha") or "absent",
+                )
             await self.reconcile_parked(
                 repo, store, head if result["outcome"] == "delivered" else base
             )
@@ -1845,19 +1936,25 @@ class DevelopmentIntegration:
             or task.status != TaskStatus.COMPLETED or not task.branch_name
         ):
             raise ValueError(f"{child_id} is not a completed source task in {project_id}")
-        # Recovery is an explicit retry of this child. Selecting only its branch
-        # lets a sibling's parent-assembly conflict be handled independently.
+        # Recovery is an explicit retry of this child, selected on its own: an
+        # unrelated ancestor, sibling or candidate never joins or holds it.
         result = await self.sweep(project_id, retry=retry, recover_child_id=child_id)
         project = await self.db.get_project(project_id)
         repo = await self.db.get_repo(project.integration_repository_id)
-        store = await self.store(repo)
         target = "refs/heads/" + repo.default_branch
-        base = await self.remote(store, target)
         history = await self.rows(project_id)
-        source = await self._delivered_source(
-            store, history, child_id, base,
-            repository_id=repo.id,
-        )
+        completion = await self.db.get_task_completion(child_id)
+        # A private snapshot: the proof neither waits for nor disturbs a sweep.
+        async with self.read_snapshot(repo, target) as truth:
+            if truth.error:
+                raise ValueError(f"{child_id}: target could not be observed: {truth.error}")
+            source = await self._delivered_source(
+                truth.store, history, child_id, truth.target_oid, repository_id=repo.id,
+            )
+            latest = await self._completion_source(truth.store, completion, history=history)
+            branch = truth.source_heads.get(
+                "refs/remotes/origin/" + task.branch_name.removeprefix("refs/heads/")
+            )
         bound_to_main = any(
             row["state"] in {"delivered", "adopted"}
             and row["repository_id"] == repo.id
@@ -1867,11 +1964,6 @@ class DevelopmentIntegration:
                 for member in _manifest_members(row["manifest"])
             )
             for row in history
-        )
-        completion = await self.db.get_task_completion(child_id)
-        latest = await self._completion_source(store, completion, history=history)
-        branch = await self.remote(
-            store, "refs/heads/" + task.branch_name.removeprefix("refs/heads/")
         )
         if (source is None or not bound_to_main or (latest and latest != source)
                 or (branch and branch != source)):
@@ -1886,21 +1978,23 @@ class DevelopmentIntegration:
                 f"{skip or 'no receipt for the current source'}"
                 + await self._parked_repair_note(repo, target, history, child_id)
             )
-        sibling_conflicts = []
-        if task.parent_task_id:
-            for row in history:
-                if row["state"] != "parked" or "conflict" not in row["reason"]:
-                    continue
-                for member in _manifest_members(row["manifest"]):
-                    sibling_id = member["task_id"]
-                    if sibling_id == child_id:
-                        continue
-                    sibling = await self.db.get_task(sibling_id)
-                    if sibling and sibling.parent_task_id == task.parent_task_id:
-                        sibling_conflicts.append(sibling_id)
+        # Only a pair proven by its own merge is reported; a conflict against
+        # the target names no sibling.
+        sibling_conflicts = set()
+        for row in history:
+            evidence = row.get("evidence") or {}
+            if row["state"] != "parked" or evidence.get("kind") != "merge_conflict":
+                continue
+            members = {member["task_id"] for member in _manifest_members(row["manifest"])}
+            proven = {member["task_id"] for member in evidence.get("conflicting_members") or []}
+            if child_id in members:
+                sibling_conflicts |= proven
+            elif child_id in proven:
+                sibling_conflicts |= members
+        sibling_conflicts.discard(child_id)
         return {
             **result, "recovered_task_id": child_id, "source_sha": source,
-            "sibling_conflicts": sorted(set(sibling_conflicts)),
+            "sibling_conflicts": sorted(sibling_conflicts),
         }
 
     async def _parked_repair_note(self, repo, target, history, task_id):
@@ -2292,6 +2386,66 @@ class DevelopmentIntegration:
     def _repair_identity(manifest):
         digest = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()[:20]
         return "development-repair-" + digest
+
+    async def _merge_tree(self, store, ours, theirs):
+        """Return the merged tree and conflicted paths, without touching a checkout."""
+        result = await self.git.arun_git_result(
+            ["merge-tree", "--write-tree", "--name-only", "--no-messages", ours, theirs],
+            cwd=str(store),
+        )
+        lines = result.stdout.splitlines()
+        if result.returncode not in {0, 1} or not lines or not is_valid_git_oid(lines[0]):
+            raise GitError(result.stderr or "merge-tree could not merge")
+        return lines[0], lines[1:] if result.returncode else []
+
+    async def _conflict_evidence(self, store, *, base, head, source, merged, regenerate=False):
+        """Name what *source* conflicts with, each claim proven by its own merge.
+
+        A source that conflicts with the target alone blames no batch member.
+        Otherwise each member merged before it that touched a conflicting path
+        is merged onto the target as a pair with the source, and only a pair
+        that conflicts on its own is named. The rest stays unattributed. With
+        *regenerate*, a generated file is rebuilt rather than merged
+        (:meth:`merge_member`), so a conflict in one proves nothing.
+        """
+        async def merge_tree(ours, theirs):
+            tree, paths = await self._merge_tree(store, ours, theirs)
+            if regenerate and paths:
+                generated = await self.generated_paths(store, paths)
+                paths = [path for path in paths if path not in generated]
+            return tree, paths
+
+        try:
+            _tree, against_target = await merge_tree(base, source)
+            if against_target:
+                return {"conflict_with": "target", "conflicting_members": []}
+            _tree, against_batch = await merge_tree(head, source)
+            if not against_batch:
+                return {"conflict_with": "unproven", "conflicting_members": []}
+            proven = []
+            for task_id, member_source in merged:
+                touched = await self.run_git(
+                    store, "diff", "--name-only", f"{base}...{member_source}"
+                )
+                if not set(touched.splitlines()) & set(against_batch):
+                    continue
+                tree, alone = await merge_tree(base, member_source)
+                if alone:
+                    continue
+                pair = await self.run_git(
+                    store, "-c", "user.name=Agent Queue", "-c", "user.email=aq@localhost",
+                    "commit-tree", tree, "-p", base, "-p", member_source,
+                    "-m", "development conflict attribution",
+                )
+                _tree, paths = await merge_tree(pair, source)
+                if paths:
+                    proven.append(
+                        {"task_id": task_id, "source_sha": member_source, "paths": paths}
+                    )
+        except GitError as exc:
+            return {"conflict_with": "unproven", "conflicting_members": [],
+                    "attribution_error": str(exc)[-500:]}
+        return {"conflict_with": "members" if proven else "batch", "conflicting_members": proven}
 
     async def tick(self, now):
         async with self.db._engine.connect() as conn:
@@ -3601,8 +3755,31 @@ class DevelopmentIntegration:
                 evidence.get("detail") if evidence.get("kind") == "merge_conflict" else None
             ),
             "conflicting_files": evidence.get("conflicting_files", []),
+            "conflict_with": evidence.get("conflict_with"),
+            "conflicting_members": evidence.get("conflicting_members", []),
             "regeneration": evidence.get("regeneration"),
         }
+
+    @staticmethod
+    def _conflict_attribution_text(evidence):
+        """What a parked conflict was proven to conflict with; rows before this say nothing."""
+        kind = evidence.get("conflict_with")
+        target = f"{evidence.get('target_ref')} at {evidence.get('target_sha')}"
+        if kind == "target":
+            return [f"Conflicts with the target itself: {target}."]
+        if kind == "members":
+            return [
+                f"Conflicts with work merged before it in the same batch (on {target}):",
+                *(f"- {member['task_id']} ({member['source_sha']}): "
+                  + ", ".join(member.get("paths") or [])
+                  for member in evidence.get("conflicting_members") or []),
+            ]
+        if kind == "batch":
+            return [(
+                f"Merges cleanly onto {target}, but conflicts with the batch aggregate "
+                f"{evidence.get('aggregate_sha')}; no single member was proven responsible."
+            )]
+        return []
 
     @staticmethod
     def _regeneration_text(parked):
@@ -3636,6 +3813,7 @@ class DevelopmentIntegration:
             regeneration = evidence.get("regeneration")
             if files:
                 lines += ["Conflicting files:", *(f"- {path}" for path in files)]
+            lines += DevelopmentIntegration._conflict_attribution_text(evidence)
             if regeneration:
                 # The merge itself succeeded; rebuilding its generated files did not.
                 lines += [

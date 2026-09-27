@@ -115,7 +115,7 @@ aq integration status agent-queue
 
 In that mode workers push clean source branches and close with the checks they
 actually ran. Ordinary commits and merges are accepted; no intermediate
-verifier, PR, hosted-CI receipt chain or squash is required. Parent assembly
+verifier, PR, hosted-CI receipt chain or squash is required. Batch assembly
 and `main` publication happen separately, on a sweep interval.
 
 The guarantees that matter to a contributor:
