@@ -17,11 +17,11 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import case, delete, func, insert, select, text, update
+from sqlalchemy import delete, func, insert, select, text, update
 
 from src.database.queries.blocked_state import _development_delivery_pending, blocked_predicate
 from src.database.tables import (
-    archived_tasks, projects, sessions, task_completion_records,
+    projects, sessions, task_completion_records,
     task_metadata, tasks,
 )
 from src.database.tables import development_deliveries as deliveries
@@ -40,8 +40,11 @@ from src.integration.delivery_branches import (
     remote_heads,
 )
 from src.integration.development_validation import run_check as run_validation_check
+from src.integration.delivery_truth import (
+    DeliveryState, delivery_snapshot, load_delivery_requests,
+)
 from src.integration.publishable_artifact import (
-    EMPTY_SOURCE_KEY, development_empty_source, has_publishable_artifact,
+    EMPTY_SOURCE_KEY as EMPTY_SOURCE_KEY, has_publishable_artifact,
 )
 from src.models import TaskStatus
 
@@ -233,14 +236,15 @@ class DevelopmentIntegration:
             raise GitError(result.stderr or result.stdout or "Git command failed")
         return result.stdout.strip()
 
-    async def store(self, repo):
+    async def store(self, repo, *, fetch=True):
         path = self.data_dir / hashlib.sha256(repo.id.encode()).hexdigest()[:20] / "repository"
         path.parent.mkdir(parents=True, exist_ok=True)
         if not (path / ".git").exists():
             await self.git.acreate_checkout(repo.url, str(path), no_checkout=True)
         if await self.run_git(path, "remote", "get-url", "origin") != repo.url:
             raise ValueError("retained repository URL differs from configured repository")
-        await self.git.afetch_origin(str(path), repository_url=repo.url, all_heads=True)
+        if fetch:
+            await self.git.afetch_origin(str(path), repository_url=repo.url, all_heads=True)
         return path
 
     async def remote(self, store, ref):
@@ -295,9 +299,9 @@ class DevelopmentIntegration:
     async def _has_pending_work(self, project_id, repo, *, now):
         """Check durable work before opening the authenticated Git transport.
 
-        Use the same delivery predicate as readiness, including its latest
-        reported completion source. Branch cleanup is included only when its
-        retry deadline has passed.
+        Receipt state cannot exclude completed work: external edits can move
+        the target at any time. Only projects without artifact identities can
+        skip git. Branch cleanup is included when its retry deadline has passed.
         """
         target = "refs/heads/" + repo.default_branch
         cleanup = deliveries.c.evidence[BRANCH_CLEANUP_KEY]
@@ -323,7 +327,13 @@ class DevelopmentIntegration:
                 select(tasks.c.id).where(
                     tasks.c.project_id == project_id,
                     tasks.c.status == TaskStatus.COMPLETED.value,
-                    _development_delivery_pending(tasks),
+                    (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
+                    has_publishable_artifact(tasks.c.branch_name) | select(
+                        task_completion_records.c.id
+                    ).where(
+                        task_completion_records.c.task_id == tasks.c.id,
+                        task_completion_records.c.commits != "[]",
+                    ).exists(),
                 ).limit(1)
             )
             return candidate is not None
@@ -396,63 +406,6 @@ class DevelopmentIntegration:
             ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
         await self.db.log_blocked_flips(flipped)
         await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
-
-    async def _retire_empty_sources(self, repo, source_heads, history):
-        """Retire absent branches with no durable evidence of repository work.
-
-        The successful pruned fetch supplies the origin snapshot. Keep every
-        journaled source and reported commit: their absence requires recovery.
-        Record the empty revision without changing its canonical branch name.
-        """
-        journaled = {
-            member["task_id"] for row in history for member in _manifest_members(row["manifest"])
-        }
-        retired = []
-        async with self.db._engine.begin() as conn:
-            candidates = (await conn.execute(
-                select(tasks.c.id, tasks.c.branch_name, tasks.c.updated_at).where(
-                    tasks.c.project_id == repo.project_id,
-                    tasks.c.status == TaskStatus.COMPLETED.value,
-                    (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
-                    has_publishable_artifact(tasks.c.branch_name),
-                ).order_by(tasks.c.id).with_for_update()
-            )).all()
-            for task_id, branch, updated_at in candidates:
-                ref = "refs/remotes/origin/" + branch.removeprefix("refs/heads/")
-                if ref in source_heads or task_id in journaled:
-                    continue
-                records = (await conn.execute(
-                    select(task_completion_records.c.id, task_completion_records.c.commits).where(
-                        task_completion_records.c.task_id == task_id
-                    ).order_by(
-                        task_completion_records.c.completed_at.desc(),
-                        task_completion_records.c.id.desc(),
-                    )
-                )).all()
-                try:
-                    empty = all(json.loads(record.commits or "[]") == [] for record in records)
-                except ValueError:
-                    empty = False
-                if not empty:
-                    continue
-                await self.db._upsert_meta(task_id, EMPTY_SOURCE_KEY, {
-                    "branch_name": branch, "repository_id": repo.id,
-                    "task_updated_at": updated_at,
-                    "completion_id": records[0].id if records else None,
-                    "reason": "missing_ref_without_completion_commits", "observed_at": time.time(),
-                }, conn=conn)
-                await conn.execute(delete(task_metadata).where(
-                    task_metadata.c.task_id == task_id,
-                    task_metadata.c.key == PUBLISHER_SKIP_KEY,
-                ))
-                retired.append(task_id)
-            flipped = await self.db.recompute_blocked(set(retired), conn=conn) if retired else set()
-            ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
-        await self.db.log_blocked_flips(flipped)
-        await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
-        for task_id in retired:
-            logger.info("development publisher retired empty missing source for %s", task_id)
-        return retired
 
     async def reconcile(self, repo, store):
         for row in await self.rows(repo.project_id):
@@ -927,21 +880,20 @@ class DevelopmentIntegration:
                 # Nothing is left to evaluate, so no skip record is current.
                 await self._clear_stale_skips(project_id, keep=set())
                 return {"outcome": "idle", "parked": []}
-            store = await self.store(repo)
-            await self.reconcile(repo, store)
+            store = await self.store(repo, fetch=False)
             target = "refs/heads/" + repo.default_branch
-            base = await self.remote(store, target)
-            if not base:
-                raise ValueError("default branch does not exist")
+            truth = await delivery_snapshot(
+                self.git, store, project_id=project_id, repository_id=repo.id,
+                repository_url=repo.url, target_ref=target,
+            )
+            if truth.error:
+                raise GitError(truth.error)
+            base = truth.target_oid
+            await self.reconcile(repo, store)
             await self.run_git(store, "checkout", "--detach", "--force", base)
             history = await self._release_unverified_parks(repo, await self.rows(project_id))
-            # Pin source observations before retiring empty completions and
-            # ordering dependencies. No per-task network requests are needed.
-            fetched = await self.run_git(
-                store, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/"
-            )
-            source_heads = dict(line.split(" ", 1) for line in fetched.splitlines())
-            await self._retire_empty_sources(repo, source_heads, history)
+            truth = truth.with_legacy_rows(history)  # Temporary source-location bridge only.
+            source_heads = truth.source_heads
             done = {
                 (m["task_id"], m.get("source_sha"))
                 for r in history
@@ -976,19 +928,7 @@ class DevelopmentIntegration:
                                 tasks.c.project_id == project_id,
                                 tasks.c.status == "COMPLETED",
                                 (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
-                                has_publishable_artifact(tasks.c.branch_name),
-                                ~development_empty_source(tasks, repo.id),
-                                # Readiness's own delivery predicate: a delivered or
-                                # adopted completion, and superseded (obsolete) work,
-                                # drop out of candidate evaluation, cycle detection
-                                # included, exactly as ``_has_pending_work`` ignores
-                                # them.
-                                _development_delivery_pending(tasks),
                                 *([tasks.c.id == isolated_child] if isolated_child else []),
-                                # Completion chains can be assembled in this
-                                # batch. Keep gates and unfinished dependencies,
-                                # but do not wait for our own earlier publication.
-                                ~blocked_predicate(include_development_delivery=False),
                             )
                             .order_by(tasks.c.updated_at, tasks.c.id)
                         )
@@ -996,6 +936,59 @@ class DevelopmentIntegration:
                     .mappings()
                     .all()
                 )
+            # Inspect every completion independently before gates, sorting,
+            # cycles or repair parking. SQL receipts never decide candidacy.
+            requests = await load_delivery_requests(
+                self.db, {task["id"] for task in candidates} | {
+                    proof["task_id"] for row in history
+                    if (proof := (row.get("evidence") or {}).get("resolved_by_delivered_repair"))
+                    and proof.get("task_id")
+                },
+                repository_id=repo.id, target_ref=target,
+            )
+            evaluated = await truth.evaluate_many(requests.values())
+            own_truth = {task["id"]: evaluated[task["id"]] for task in candidates}
+            contained = {
+                task_id: evidence for task_id, evidence in own_truth.items()
+                if evidence.state is DeliveryState.CONTAINED
+            }
+            no_artifact = {
+                task_id for task_id, evidence in own_truth.items()
+                if evidence.state is DeliveryState.NO_ARTIFACT
+            }
+            # Temporary compatibility writer: backfill existing bindings only
+            # after independent git proof, avoiding redundant publication for an
+            # adopted aggregate close. Operations/retire removes this journal.
+            await self.reconcile_completion_sources(repo, store, [
+                row for row in history if any(
+                    member["task_id"] in contained for member in _manifest_members(row["manifest"])
+                )
+            ])
+            async with self.db._engine.connect() as conn:
+                bridge_pending_ids = set((await conn.execute(
+                    select(tasks.c.id).where(
+                        tasks.c.id.in_(contained), _development_delivery_pending(tasks),
+                    )
+                )).scalars())
+            # Until admission/consumers migrate, retain the existing publication
+            # journal for newly observed exact sources. They are already removed
+            # from dependency evaluation, regardless of their ancestor graph.
+            for task_id, evidence in contained.items():
+                if task_id in bridge_pending_ids:
+                    manifest.append({"task_id": task_id, "source_sha": evidence.source_oid})
+            await self._record_candidate_skips(set(contained) | no_artifact, {})
+            async with self.db._engine.connect() as conn:
+                eligible_ids = set((await conn.execute(
+                    select(tasks.c.id).where(
+                        tasks.c.id.in_(requests),
+                        ~blocked_predicate(include_development_delivery=False),
+                    )
+                )).scalars())
+            obsolete_ids = set(await self.db.obsolete_task_ids(requests))
+            candidates = [task for task in candidates if (
+                task["id"] not in contained and task["id"] not in no_artifact
+                and task["id"] not in obsolete_ids and task["id"] in eligible_ids
+            )]
             from src.database.tables import task_dependencies
 
             async with self.db._engine.connect() as conn:
@@ -1121,84 +1114,28 @@ class DevelopmentIntegration:
                 dependency_ids | unavailable
                 | {task["parent_task_id"] for task in candidates if task["parent_task_id"]}
             ) - candidate_ids
-            branch_by_id = {task["id"]: task["branch_name"] for task in candidates}
-            if artifact_ids:
-                async with self.db._engine.connect() as conn:
-                    live = (
-                        await conn.execute(
-                            select(tasks.c.id, case(
-                                (development_empty_source(tasks, repo.id), None),
-                                else_=tasks.c.branch_name,
-                            ).label("branch_name"))
-                            .where(tasks.c.id.in_(artifact_ids))
-                        )
-                    ).all()
-                    branch_by_id.update(live)
-                    missing = artifact_ids - branch_by_id.keys()
-                    if missing:
-                        archived = (
-                            await conn.execute(
-                                select(archived_tasks.c.id, case(
-                                    (development_empty_source(archived_tasks, repo.id), None),
-                                    else_=archived_tasks.c.branch_name,
-                                ).label("branch_name"))
-                                .where(archived_tasks.c.id.in_(missing))
-                            )
-                        ).all()
-                        branch_by_id.update(archived)
-
-            # An obsolete dependency's work was superseded, not delivered;
-            # like a branchless task it has no source to wait for.
-            branch_by_id.update(
-                dict.fromkeys(await self.db.obsolete_task_ids(artifact_ids))
+            artifact_requests = await load_delivery_requests(
+                self.db, artifact_ids, repository_id=repo.id, target_ref=target,
             )
+            artifact_truth = await truth.evaluate_many(artifact_requests.values())
+            all_truth = {**own_truth, **artifact_truth}
+            obsolete_artifacts = set(await self.db.obsolete_task_ids(artifact_ids))
 
             def requires_publication(task_id):
-                # Missing tasks remain unavailable; only a known branchless
-                # task is satisfied without a source.
-                return task_id not in branch_by_id or has_publishable_artifact(
-                    branch_by_id[task_id]
-                )
+                if task_id in obsolete_artifacts:
+                    return False
+                evidence = all_truth.get(task_id)
+                return evidence is None or not evidence.satisfied
 
             unavailable = {task_id for task_id in unavailable if requires_publication(task_id)}
-            # A delivered source on the pinned target satisfies a dependency.
-            # Recovery can leave newer parked/conflict rows for other attempts,
-            # including rows later adopted by a repair. Those attempts cannot
-            # revoke an earlier delivery of this task's source. A genuinely
-            # newer completion is checked below against the pinned target.
-            for dependency_id in tuple(unavailable):
-                if await self._delivered_source(
-                    store, history, dependency_id, base,
-                    repository_id=repo.id,
-                ):
-                    unavailable.discard(dependency_id)
-            # A dependency may no longer be a candidate at all: its worker
-            # branch was cleaned up or its task was archived. Bind an already
-            # contained source to the default ref so readiness can release
-            # descendants without consulting that missing branch.
-            for dependency_id in sorted(dependency_ids):
-                if not requires_publication(dependency_id):
-                    continue
-                if dependency_id in candidate_ids or dependency_id in unavailable:
-                    continue
-                source = await self._delivered_source(
-                    store, history, dependency_id, base, repository_id=repo.id
-                )
-                completion = await self.db.get_task_completion(dependency_id)
-                latest = await self._completion_source(store, completion, history=history)
-                if latest and latest != source and not await self.git.ais_ancestor(
-                    str(store), latest, base
-                ):
+            for dependency_id in sorted(dependency_ids - candidate_ids):
+                evidence = all_truth.get(dependency_id)
+                if requires_publication(dependency_id):
                     unavailable.add(dependency_id)
-                    continue
-                if source is None and latest and await self.git.ais_ancestor(
-                    str(store), latest, base
-                ):
-                    source = latest
-                if source is None:
-                    unavailable.add(dependency_id)
-                elif (dependency_id, source) not in done:
-                    manifest.append({"task_id": dependency_id, "source_sha": source})
+                elif evidence and evidence.state is DeliveryState.CONTAINED and (
+                    dependency_id, evidence.source_oid
+                ) not in done and dependency_id not in contained:
+                    manifest.append({"task_id": dependency_id, "source_sha": evidence.source_oid})
             head = base
             parent_heads = {}
             blocked_parents = set()
@@ -1282,39 +1219,27 @@ class DevelopmentIntegration:
                         "undelivered_dependency", first_dependency,
                     )
                     continue
-                source = source_heads.get(
-                    "refs/remotes/origin/" + task["branch_name"].removeprefix("refs/heads/")
+                evidence = own_truth[task["id"]]
+                source_ref = "refs/remotes/origin/" + (task["branch_name"] or "").removeprefix(
+                    "refs/heads/"
                 )
-                if not source:
-                    # Branch cleanup after merge must not strand every later
-                    # batch. A durable completion plus default-branch ancestry
-                    # proves delivery even after the source ref is deleted.
-                    completion = await self.db.get_task_completion(task["id"])
-                    recorded_head = await self._completion_source(
-                        store, completion, history=history
-                    )
-                    if (
-                        recorded_head and is_valid_git_oid(recorded_head)
-                        and await self.git.ais_ancestor(str(store), recorded_head, base)
-                    ):
-                        source = recorded_head
-                if not source:
-                    # A delivered receipt is a source fact, independent of a
-                    # worker's completion payload. In particular, Codex and
-                    # OpenCode both legitimately close with ``commits: []``.
-                    # Prefer the newest delivered/adopted receipt whose exact
-                    # member is already on this sweep's pinned base.
-                    source = await self._delivered_source(
-                        store, history, task["id"], base, repository_id=repo.id
-                    )
+                source = evidence.source_oid if (
+                    evidence.state is DeliveryState.PENDING and source_ref in source_heads
+                ) else None
                 key = (task["id"], source)
                 if not source:
                     was_parked = task["id"] in unavailable
                     unavailable.add(task["id"])
                     unavailable.update(replacements)
                     skipped[task["id"]] = (
-                        "source_parked" if was_parked else "missing_ref",
+                        "source_parked" if was_parked else (
+                            "git_error" if evidence.reason == "git_error" else "missing_ref"
+                        ),
                         task["id"],
+                    )
+                    logger.warning(
+                        "development publisher: skipping %s: %s (completion %s, target %s)",
+                        task["id"], evidence.reason, evidence.request.completion_id, base,
                     )
                     continue
                 contained_in_main = await self.git.ais_ancestor(str(store), source, base)
