@@ -17,6 +17,7 @@ from types import MappingProxyType
 from typing import Mapping
 
 from src.git.manager import GitError, GitManager, RemoteRefState, is_valid_git_oid
+from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 
 
 class DeliveryState(StrEnum):
@@ -152,8 +153,24 @@ class DeliverySnapshot:
         if self.error or not self.target_oid:
             return result(DeliveryState.UNKNOWN, self.error or "missing_target")
         try:
+            provenance = GitProvenance(self.git, self.store, repository_url=self.repository_url)
+            if request.completion_id:
+                identity = CompletionIdentity(
+                    request.project_id, request.repository_id, request.task_id,
+                    request.completion_id,
+                )
+                record = await provenance.read_completion(identity)
+                if record is not None:
+                    source = record["source_oid"]
+                    # The immutable generation, rather than a branch tip or an
+                    # arbitrary task trailer, identifies the complete artifact.
+                    if not record["artifact"]:
+                        return result(DeliveryState.NO_ARTIFACT, "git_no_artifact", source)
+                    if await provenance.contained(CompletedSource(identity, source), self.target_oid):
+                        return result(DeliveryState.CONTAINED, "git_completion", source)
+                    return result(DeliveryState.PENDING, "git_completion", source)
             source = request.reported_source
-            locator = "completion"
+            locator = "legacy_reported_source"
             if source is not None:
                 # Resolve a unique legacy abbreviation, but never accept a ref
                 # name, revision expression, missing object or old generation.
@@ -203,91 +220,9 @@ class DeliverySnapshot:
                 return result(DeliveryState.UNKNOWN, "git_error", source)
             if contained:
                 return result(DeliveryState.CONTAINED, locator, source)
-            if await self._legacy_replacement(request, source):
-                return result(DeliveryState.CONTAINED, "legacy_repair_replacement", source)
-            if await self._legacy_adoption(request, source):
-                return result(DeliveryState.CONTAINED, "legacy_operator_adoption", source)
             return result(DeliveryState.PENDING, locator, source)
-        except (GitError, OSError):
+        except (GitError, OSError, ValueError, KeyError, TypeError):
             return result(DeliveryState.UNKNOWN, "missing_or_ambiguous_source")
-
-    async def _legacy_replacement(self, request, source):
-        """TEMPORARY operations/retire bridge for exact validated repair maps.
-
-        A resolved repair event identifies the original source and the exact
-        replacement completion. Both generation fences and git ancestry of
-        the replacement are required. Neither adopted state nor an arbitrary
-        superseded_by member is accepted as equivalence evidence.
-        """
-        for row in self.legacy_rows:
-            if (row.get("project_id"), row.get("repository_id"), row.get("target_ref")) != (
-                request.project_id, request.repository_id, request.target_ref
-            ):
-                continue
-            boundary = request.completed_at if request.completed_at is not None else (
-                request.task_version
-            )
-            if float(row.get("created_at", 0)) < boundary or not any(
-                member.get("task_id") == request.task_id and member.get("source_sha") == source
-                for member in row.get("manifest", [])
-            ):
-                continue
-            proof = (row.get("evidence") or {}).get("resolved_by_delivered_repair") or {}
-            repair = self._identities.get(proof.get("task_id"))
-            head = proof.get("accepted_head")
-            if (repair is None or repair.task_status != "COMPLETED"
-                    or repair.completion_id != proof.get("completion_id")
-                    or (repair.project_id, repair.repository_id, repair.target_ref) != (
-                        request.project_id, request.repository_id, request.target_ref
-                    ) or not is_valid_git_oid(repair.reported_source)
-                    or not is_valid_git_oid(head) or row.get("prepared_sha") != head):
-                continue
-            # The recovery writer already checked the exact repair contract;
-            # independently prove its current final source remains on our target.
-            if await self.git.ais_ancestor(
-                self.store, repair.reported_source, head, strict=True
-            ) is True and await self.git.ais_ancestor(
-                self.store, head, self.target_oid, strict=True
-            ) is True:
-                return True
-        return False
-
-    async def _legacy_adoption(self, request, source):
-        """TEMPORARY operations/retire bridge for an explicit operator adoption.
-
-        ``integration adopt`` records an operator's decision that this exact
-        source is delivered as the adopted head: by ancestry, or by explicit
-        equivalence when the content landed rebased. Only that operator record
-        counts (a bare adopted state does not), only for this completion
-        generation, and only while git still contains the adopted head.
-        """
-        for row in self.legacy_rows:
-            evidence = row.get("evidence") or {}
-            if row.get("state") != "adopted" or evidence.get("kind") != "operator_accepted":
-                continue
-            if (row.get("project_id"), row.get("repository_id"), row.get("target_ref")) != (
-                request.project_id, request.repository_id, request.target_ref
-            ):
-                continue
-            boundary = request.completed_at if request.completed_at is not None else (
-                request.task_version
-            )
-            if float(row.get("created_at", 0)) < boundary or not any(
-                member.get("task_id") == request.task_id and member.get("source_sha") == source
-                for member in row.get("manifest") or []
-            ):
-                continue
-            proofs = evidence.get("completion_sources") or []
-            bound = {proof.get("completion_id") for proof in proofs
-                     if proof.get("task_id") == request.task_id}
-            if bound and request.completion_id not in bound:
-                continue
-            head = row.get("prepared_sha")
-            if is_valid_git_oid(head) and await self.git.ais_ancestor(
-                self.store, head, self.target_oid, strict=True
-            ) is True:
-                return True
-        return False
 
     def _legacy_sources(self, request, *, bound_only=False):
         sources = set()
@@ -337,7 +272,9 @@ class DeliverySnapshot:
         return tuple(sorted((
             (request.task_id, request.completion_id, evidence.source_oid, evidence.reason)
             for request, evidence in self._cache.items()
-            if evidence.reason.startswith("legacy_")
+            if evidence.reason.startswith("legacy_") or (
+                request.completion_id and evidence.state is DeliveryState.UNKNOWN
+            )
         ), key=lambda item: (item[0], item[1] or "")))
 
 

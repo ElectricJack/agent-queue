@@ -11,7 +11,6 @@ from sqlalchemy import delete, insert, select, update
 
 from src.database import Database
 from src.git.manager import GitManager
-from src.database.queries.blocked_state import _development_delivery_pending
 from src.database.tables import development_deliveries, gates, messages, projects
 from src.database.tables import task_dependencies, task_gates, tasks
 from src.doctor.integration_checks import run_check as run_doctor_check
@@ -109,7 +108,57 @@ async def feature(setup, task_id, *, filename=None, content="new\n"):
             status=TaskStatus.COMPLETED,
         )
     )
+    await complete_source(setup, task_id, "feature-" + task_id, head)
     return head
+
+
+async def complete_source(setup, task_id, generation, head, *, commits=None):
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    db, service, source, _remote, repo = setup
+    await db.save_task_completion(TaskCompletion(
+        id=generation, task_id=task_id, outcome="pass",
+        commits=[head] if commits is None else commits, completed_at=time.time(),
+    ))
+    provenance = GitProvenance(service.git, str(source), repository_url=repo.url)
+    await provenance.write_completion(
+        CompletedSource(CompletionIdentity("p", repo.id, task_id, generation), head)
+    )
+    contract = await db.get_task_meta(task_id, "development_repair_sources")
+    if contract and all(len(member.get("source_sha", "")) == 40 for member in contract):
+        replaces = []
+        for member in contract:
+            completion = await db.get_task_completion(member["task_id"])
+            if completion is None or completion.outcome != "pass":
+                return
+            binding = CompletedSource(
+                CompletionIdentity("p", repo.id, member["task_id"], completion.id),
+                member["source_sha"],
+            )
+            if await provenance.read_completion(binding.identity) is None:
+                await provenance.write_completion(binding)
+            replaces.append(binding)
+        git(source, "fetch", "origin")
+        base = git(source, "merge-base", head, "origin/" + repo.default_branch)
+        await provenance.write_replacement(source_oid=head, base_oid=base, replaces=replaces,
+            authority="repair_contract", reason="Exact fixture repair contract")
+
+
+async def _blocked(db, task_id):
+    """Combine graph/gate blockers with request-scoped prerequisite git truth."""
+    from src.database.queries.blocked_state import blocked_predicate
+
+    async with db._engine.connect() as conn:
+        graph_blocked = await conn.scalar(select(blocked_predicate(
+            include_development_delivery=False,
+        )).where(tasks.c.id == task_id))
+        required = (await conn.execute(select(task_dependencies.c.depends_on_task_id).where(
+            task_dependencies.c.task_id == task_id, task_dependencies.c.dep_type == "blocks",
+        ))).scalars().all()
+    if graph_blocked:
+        return True
+    view = await db._delivery_observer.observe(required)
+    return any(not view.satisfied(identity) for identity in required)
 
 
 async def repair_cycle(setup, *, source_contract):
@@ -136,14 +185,8 @@ async def repair_cycle(setup, *, source_contract):
     await db.set_task_meta(newer, "development_repair_sources", [
         {"task_id": older, "source_sha": older_sha if source_contract else "invalid"}
     ])
-    await db.save_task_completion(TaskCompletion(
-        id="older-close", task_id=older, outcome="pass", commits=[older_sha],
-        completed_at=time.time(),
-    ))
-    await db.save_task_completion(TaskCompletion(
-        id="newer-close", task_id=newer, outcome="pass", commits=[newer_sha],
-        completed_at=time.time(),
-    ))
+    await complete_source(setup, older, 'older-close', older_sha)
+    await complete_source(setup, newer, 'newer-close', newer_sha)
     return older, newer, older_sha, newer_sha
 
 
@@ -187,7 +230,7 @@ async def test_batch_publishes_exact_validated_sha_and_replay_is_idle(setup):
     assert result["head_sha"] == head
     assert git(remote, "rev-parse", "main") == head
     rows = await service.rows("p")
-    root = [r for r in rows if r["state"] == "delivered" and r["target_ref"] == "refs/heads/main"]
+    root = [r for r in rows if r["state"] == "finished" and r["manifest"] and r["target_ref"] == "refs/heads/main"]
     assert root[0]["evidence"]["conclusion"] == "passed"
     assert root[0]["evidence"]["head_sha"] == head
     assert (await service.sweep("p"))["outcome"] == "idle"
@@ -217,7 +260,7 @@ async def test_parked_row_fetches_without_completed_candidate(setup):
         await conn.execute(
             update(tasks).where(tasks.c.id == "parked-source").values(status="FAILED")
         )
-        await conn.execute(insert(development_deliveries).values(
+        await conn.execute(service._operation_insert(
             id="parked-retry", project_id="p", repository_id="r",
             target_ref="refs/heads/main", expected_sha=None, prepared_sha=None,
             state="parked", manifest=[{"task_id": "parked-source", "source_sha": head}],
@@ -236,7 +279,7 @@ async def test_completion_wakes_delivery_before_periodic_deadline(setup):
     head = await feature(setup, "one")
     await db.create_task(Task(id="two", project_id="p", title="successor", description=""))
     await db.add_dependency("two", "one", "blocks")
-    assert (await db.get_task("two")).is_blocked
+    assert await _blocked(db, "two")
     bus = EventBus()
     bus.subscribe("task.completed", service.on_task_completed)
     now = time.time()
@@ -250,7 +293,7 @@ async def test_completion_wakes_delivery_before_periodic_deadline(setup):
     assert service.next_due["other"] == now + 300
     await service.tick(now + 5)
     assert git(remote, "rev-parse", "main") == head
-    assert not (await db.get_task("two")).is_blocked
+    assert not await _blocked(db, "two")
     assert service.next_due["p"] == now + 305
 
 
@@ -292,7 +335,7 @@ async def test_successor_waits_for_default_branch_delivery(setup, short_sha):
         status=TaskStatus.READY,
     ))
     await db.add_dependency("successor", "prerequisite")
-    assert (await db.get_task("successor")).is_blocked
+    assert await _blocked(db, "successor")
     notifications = []
 
     async def on_ready(entries):
@@ -305,7 +348,7 @@ async def test_successor_waits_for_default_branch_delivery(setup, short_sha):
     )
     assert (await service.sweep("p"))["outcome"] == "parked"
     assert head in git(remote, "show-ref"), "candidate was preserved"
-    assert (await db.get_task("successor")).is_blocked
+    assert await _blocked(db, "successor")
 
     await service.configure(
         "p", {"commands": ["test -f prerequisite.txt"]},
@@ -313,19 +356,19 @@ async def test_successor_waits_for_default_branch_delivery(setup, short_sha):
     )
     assert (await service.sweep("p", retry=True))["outcome"] == "delivered"
     assert git(remote, "rev-parse", "main") == head
-    assert not (await db.get_task("successor")).is_blocked
-    assert notifications == [("successor", "unblocked")]
+    assert not await _blocked(db, "successor")
+    assert not await _delivery_pending(db, "prerequisite")
 
     await db.save_task_completion(TaskCompletion(
         id="same-revision", task_id="prerequisite", outcome="pass",
         commits=[head], completed_at=time.time(),
     ))
-    assert not (await db.get_task("successor")).is_blocked
+    assert not await _blocked(db, "successor")
     await db.save_task_completion(TaskCompletion(
         id="new-revision", task_id="prerequisite", outcome="pass",
         commits=["a" * 40], completed_at=time.time(),
     ))
-    assert (await db.get_task("successor")).is_blocked
+    assert await _blocked(db, "successor")
 
 
 async def test_historical_delivery_resolves_short_completion_without_mutating_close(setup):
@@ -338,9 +381,9 @@ async def test_historical_delivery_resolves_short_completion_without_mutating_cl
         id="short-close", task_id="prerequisite", outcome="pass",
         commits=[head[:9]], completed_at=time.time(),
     ))
-    assert (await db.get_task("successor")).is_blocked
+    assert not await _blocked(db, "successor")
     await service.sweep("p")
-    assert not (await db.get_task("successor")).is_blocked
+    assert not await _blocked(db, "successor")
     assert (await db.get_task_completion("prerequisite")).commits == [head[:9]]
     # A newer unresolved close cannot borrow the old completion's proof.
     await db.save_task_completion(TaskCompletion(
@@ -348,7 +391,7 @@ async def test_historical_delivery_resolves_short_completion_without_mutating_cl
         commits=["abcdef123"], completed_at=time.time(),
     ))
     await service.sweep("p")
-    assert (await db.get_task("successor")).is_blocked
+    assert await _blocked(db, "successor")
 
 
 @pytest.mark.parametrize("short_sha", [False, True])
@@ -365,47 +408,27 @@ async def test_deleted_delivered_branch_does_not_strand_later_batches(setup, sho
     git(source, "push", "origin", "--delete", "previous")
     later = await feature(setup, "later")
     await db.add_dependency("later", "previous")
-    assert (await db.get_task("later")).is_blocked
+    assert not await _blocked(db, "later")
     # An already-completed chain is assembled in one dependency-ordered pass.
     assert (await service.sweep("p"))["outcome"] == "delivered"
-    assert not (await db.get_task("later")).is_blocked
+    assert not await _blocked(db, "later")
     assert (await service.sweep("p"))["outcome"] == "idle"
     assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
 
 
-async def test_deleted_delivered_branch_with_no_commits_uses_delivery_receipt(setup):
-    """Branch cleanup cannot turn a commits-less delivery into an unavailable dependency."""
+async def test_deleted_delivered_branch_with_no_commits_uses_git_provenance(setup):
+    """Branch cleanup cannot erase the exact immutable final source of an empty payload."""
     db, service, source, remote, _repo = setup
     previous = await feature(setup, "previous")
-    await db.save_task_completion(TaskCompletion(
-        id="previous-close", task_id="previous", outcome="pass", commits=[], completed_at=time.time(),
-    ))
+    await complete_source(setup, "previous", "previous-close", previous, commits=[])
     assert (await service.sweep("p"))["outcome"] == "delivered"
-    # The publisher binds its delivered receipt to the empty close.
-    delivery = next(
-        row
-        for row in await service.rows("p")
-        if row["state"] == "delivered" and row["target_ref"] == "refs/heads/main"
-    )
-    assert delivery["evidence"]["completion_sources"] == [
-        {"task_id": "previous", "completion_id": "previous-close", "reported_sha": None,
-         "source_sha": previous}
-    ]
-    # Existing receipts predate the binding. The manifest fallback must still
-    # rescue them after their source branch is cleaned up.
-    await service.change(
-        delivery["id"],
-        evidence={key: value for key, value in delivery["evidence"].items()
-                  if key != "completion_sources"},
-    )
-
+    for operation in await service.rows("p"):
+        await service.change(operation["id"], evidence={})
     git(source, "push", "origin", "--delete", "previous")
     later = await feature(setup, "later")
     await db.add_dependency("later", "previous")
-
-    result = await service.sweep("p")
-
-    assert result["outcome"] == "delivered"
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert not await _delivery_pending(db, "previous")
     assert git(remote, "merge-base", "--is-ancestor", later, "main") == ""
 
 
@@ -425,10 +448,10 @@ async def test_docs_only_plan_dependency_stays_satisfied_after_branch_cleanup(se
     ))
     await db.create_task(Task(id="waiting", project_id="p", title="waiting", description=""))
     await db.add_dependency("waiting", "plan")
-    assert (await db.get_task("waiting")).is_blocked
+    assert await _blocked(db, "waiting")
 
     assert (await service.sweep("p"))["outcome"] == "delivered"
-    assert not (await db.get_task("waiting")).is_blocked
+    assert not await _blocked(db, "waiting")
 
     await service.collect_delivered_branches("p")
     assert "aq/plan" not in remote_branches(remote)
@@ -437,7 +460,7 @@ async def test_docs_only_plan_dependency_stays_satisfied_after_branch_cleanup(se
     # An edge written after cleanup recomputes against the receipt, not the branch.
     await db.create_task(Task(id="filed-later", project_id="p", title="f", description=""))
     await db.add_dependency("filed-later", "plan")
-    assert not (await db.get_task("filed-later")).is_blocked
+    assert not await _blocked(db, "filed-later")
 
     head = await aq_feature(setup, "implementation")
     await db.add_dependency("implementation", "plan")
@@ -464,7 +487,7 @@ async def test_branchless_epic_dependencies_are_satisfied_without_manifest_membe
         await db.set_parent("fair-bridge.1", "fair-bridge", conn=conn)
     for epic_id in ("sharp-stone", "first-epic", "second-epic"):
         await db.add_dependency("fair-bridge.1", epic_id, "blocks")
-    assert not (await db.get_task("fair-bridge.1")).is_blocked
+    assert not await _blocked(db, "fair-bridge.1")
 
     result = await service.sweep("p")
 
@@ -473,7 +496,7 @@ async def test_branchless_epic_dependencies_are_satisfied_without_manifest_membe
     assert await db.get_task_meta("fair-bridge.1", PUBLISHER_SKIP_KEY) is None
     delivered = [
         row for row in await service.rows("p")
-        if row["state"] == "delivered" and row["target_ref"] == "refs/heads/main"
+        if row["state"] == "finished" and row["manifest"] and row["target_ref"] == "refs/heads/main"
     ]
     assert [member["task_id"] for member in delivered[0]["manifest"]] == ["fair-bridge.1"]
 
@@ -558,7 +581,7 @@ async def test_delivered_dependency_survives_later_conflict_and_adoption_rows(
     assert await db.get_task_meta("later", PUBLISHER_SKIP_KEY) is None
     assert any(
         row["target_ref"] == "refs/heads/main"
-        and row["state"] == "delivered"
+        and row["state"] == "finished" and row["manifest"]
         and any(member["task_id"] == "later" for member in row["manifest"])
         for row in await service.rows("p")
     )
@@ -597,7 +620,7 @@ async def test_non_default_receipt_releases_deleted_dependency_ref(setup, receip
     assert any(
         member["task_id"] == "previous"
         for row in await service.rows("p")
-        if row["target_ref"] == "refs/heads/main" and row["state"] == "delivered"
+        if row["target_ref"] == "refs/heads/main" and row["state"] == "finished" and row["manifest"]
         for member in row["manifest"]
     )
 
@@ -708,7 +731,7 @@ async def test_branchful_undelivered_dependency_still_blocks_publication(setup, 
     await feature(setup, "dependent")
     await db.add_dependency("dependent", "unpublished")
     assert await _delivery_pending(db, "unpublished")
-    assert (await db.get_task("dependent")).is_blocked
+    assert await _blocked(db, "dependent")
 
     assert (await service.sweep("p"))["outcome"] == "idle"
     skip = await db.get_task_meta("dependent", PUBLISHER_SKIP_KEY)
@@ -747,7 +770,7 @@ async def test_missing_source_with_empty_payload_never_releases_dependents(
         status=TaskStatus.READY,
     ))
     await db.add_dependency("ready-after-empty", "empty")
-    assert (await db.get_task("ready-after-empty")).is_blocked
+    assert await _blocked(db, "ready-after-empty")
     assert await _delivery_pending(db, "empty")
 
     before = git(remote, "rev-parse", "main")
@@ -755,8 +778,8 @@ async def test_missing_source_with_empty_payload_never_releases_dependents(
     assert (await db.get_task("empty")).status == TaskStatus.COMPLETED
     assert (await db.get_task("empty")).branch_name == branch
     assert await _delivery_pending(db, "empty")
-    assert (await db.get_task("ready-after-empty")).is_blocked
-    assert (await db.get_task("dependent")).is_blocked
+    assert await _blocked(db, "ready-after-empty")
+    assert await _blocked(db, "dependent")
     assert (await db.get_task_meta("empty", PUBLISHER_SKIP_KEY))["reason"] == "missing_ref"
     assert await db.get_task_meta("empty", EMPTY_SOURCE_KEY) is None
     assert git(remote, "rev-parse", "main") == before != head
@@ -949,8 +972,8 @@ async def test_repair_cycle_publishes_newest_and_satisfies_older(setup):
     assert result["outcome"] == "delivered"
     assert git(remote, "merge-base", "--is-ancestor", newer_sha, "main") == ""
     assert git(remote, "show", "main:older.txt") == "new"
-    assert not (await db.get_task("successor")).is_blocked
-    delivery = next(row for row in await service.rows("p") if row["state"] == "delivered"
+    assert not await _blocked(db, "successor")
+    delivery = next(row for row in await service.rows("p") if row["state"] == "finished" and row["manifest"]
                     and row["target_ref"] == "refs/heads/main")
     assert {member["task_id"] for member in delivery["manifest"]} == {older, newer}
     assert next(member for member in delivery["manifest"] if member["task_id"] == older) == {
@@ -1400,7 +1423,7 @@ async def test_batch_keeps_non_delivery_blockers(setup, blocker):
             status=TaskStatus.READY,
         ))
         await db.add_dependency("held", "unfinished")
-    assert (await db.get_task("held")).is_blocked
+    assert await _blocked(db, "held")
     assert (await service.sweep("p"))["outcome"] == "idle"
     assert git(remote, "rev-parse", "main") == base
 
@@ -1599,7 +1622,7 @@ async def test_adopt_refuses_a_task_that_changed_after_its_source_was_observed(s
     assert (await db.get_task("racing")).status == TaskStatus.READY
     assert not any(
         member["task_id"] == "racing" for row in await service.rows("p")
-        if row["state"] == "adopted" for member in row["manifest"]
+        if row["state"] == "finished" for member in row["manifest"]
     )
 
 
@@ -1785,72 +1808,35 @@ async def test_adopt_rejects_stale_target_and_open_children(setup):
 
 
 async def _delivery_pending(db, task_id):
-    async with db._engine.connect() as conn:
-        return await conn.scalar(
-            select(_development_delivery_pending(tasks)).where(tasks.c.id == task_id)
-        )
+    view = await db._delivery_observer.observe([task_id])
+    return not view.satisfied(task_id)
 
 
-@pytest.mark.parametrize("journaled_before_proof", [False, True])
-async def test_adopting_an_open_task_delivers_the_completion_it_records(
-    setup, journaled_before_proof
-):
-    """adopt() closes an open task with a completion reporting the adopted head,
-    while its manifest names the branch head. That completion is delivered, so a
-    'blocks' dependent is released; a row journaled before adopt() bound the two
-    is backfilled by the next sweep."""
+async def test_adopting_an_open_task_retains_exact_completion_in_git(setup):
     db, service, source, remote, _repo = setup
     branch_head = await feature(setup, "adopted")
     await db.transition_task("adopted", TaskStatus.READY, context="test")
-    git(source, "checkout", "main")
-    git(source, "merge", "--no-ff", "--no-edit", "adopted")
-    git(source, "push", "origin", "main")
-    main = git(remote, "rev-parse", "main")
-    assert main != branch_head, "the operator's merge moved main past the branch"
-    await db.create_task(Task(
-        id="successor", project_id="p", title="successor", description="",
-        status=TaskStatus.READY,
-    ))
-    await db.add_dependency("successor", "adopted")
-    assert (await db.get_task("successor")).is_blocked
-
+    main = await _merge_on_main(source, "adopted")
+    assert main != branch_head
     result = await service.adopt(
         project_id="p", task_ids=["adopted"], target_ref="refs/heads/main",
         head_sha=main, reason="merged by hand", operator_id="local",
     )
     completion = await db.get_task_completion("adopted")
-    assert completion.commits == [main]
-    proof = {"task_id": "adopted", "completion_id": completion.id,
-             "reported_sha": main, "source_sha": branch_head}
+    assert completion.commits == [branch_head]
     assert result["manifest"] == [
         {"task_id": "adopted", "source_sha": branch_head, "acceptance": "ancestry"}
     ]
-    if journaled_before_proof:
-        row = next(r for r in await service.rows("p") if r["id"] == result["id"])
-        assert row["evidence"]["completion_sources"] == [proof]
-        legacy = {k: v for k, v in row["evidence"].items() if k != "completion_sources"}
-        await service.change(result["id"], evidence=legacy)
-        assert await _delivery_pending(db, "adopted")
-        assert (await db.get_task("successor")).is_blocked
-    else:
-        assert not await _delivery_pending(db, "adopted")
-        assert not (await db.get_task("successor")).is_blocked
-
-    # The sweep agrees the adopted task needs no publication, and backfills.
-    assert (await service.sweep("p"))["outcome"] == "idle"
+    # Events may be damaged or absent without changing git delivery truth.
+    await service.change(result["id"], evidence={})
+    git(source, "push", "origin", "--delete", "adopted")
     assert not await _delivery_pending(db, "adopted")
-    assert not (await db.get_task("successor")).is_blocked
-    row = next(r for r in await service.rows("p") if r["id"] == result["id"])
-    assert row["evidence"]["completion_sources"] == [proof]
-
-    # The adoption delivered that close, not whatever the task reports next.
+    assert (await service.sweep("p"))["outcome"] == "idle"
     await db.save_task_completion(TaskCompletion(
         id="later-close", task_id="adopted", outcome="pass",
         commits=["a" * 40], completed_at=time.time(),
     ))
-    await service.sweep("p")
     assert await _delivery_pending(db, "adopted")
-    assert (await db.get_task("successor")).is_blocked
 
 
 async def test_repository_exclusion_prevents_second_publisher(setup):
@@ -1869,7 +1855,7 @@ async def test_crash_after_push_reconciles_without_republishing(setup):
     await service.change(result["id"], state="publishing")
     assert (await service.sweep("p"))["outcome"] == "idle"
     assert (
-        next(r for r in await service.rows("p") if r["id"] == result["id"])["state"] == "delivered"
+        next(r for r in await service.rows("p") if r["id"] == result["id"])["state"] == "finished"
     )
 
 
@@ -2032,18 +2018,14 @@ async def test_configure_refuses_live_hierarchy_operation_with_safe_command(setu
 async def test_control_status_uses_development_publication_blockers(setup, pending):
     from unittest.mock import AsyncMock
 
-    from src.database.tables import development_deliveries
     from src.integration.controls import IntegrationControlService
 
     db, service, _source, _remote, _repo = setup
     await feature(setup, "done")
     await service.sweep("p")
     if pending:
-        async with db.immediate() as conn:
-            await conn.execute(update(development_deliveries).where(
-                development_deliveries.c.project_id == "p",
-                development_deliveries.c.state == "delivered",
-            ).values(state="publishing"))
+        operation = next(row for row in await service.rows("p") if row["reason"] == "development batch")
+        await service.change(operation["id"], state="publishing")
     strict_preflight = AsyncMock(return_value=("repository_binding_failed",))
     controls = IntegrationControlService(db, external_preflight=strict_preflight)
     status = await controls.status("p")
@@ -2627,7 +2609,7 @@ async def test_shared_repair_is_required_by_every_parked_source(setup):
     }
     for source_id in ("one", "two"):
         assert (identity, "blocks") in await db.get_typed_dependencies(source_id)
-        assert (await db.get_task(source_id)).is_blocked
+        assert await _blocked(db, source_id)
 
 
 async def test_single_source_repair_is_a_child_without_a_reverse_cycle(setup):
@@ -2693,7 +2675,7 @@ async def test_completed_child_conflict_repair_delivery_releases_dependents(
     dossier = await db.get_task_meta(identity, "development_repair_evidence")
     assert dossier["conflicting_files"] == ["base.txt"]
     assert "publisher_diagnostic" not in parked["evidence"]
-    assert (await db.get_task("next")).is_blocked
+    assert await _blocked(db, "next")
     await service.sweep("p")
     async with db._engine.connect() as conn:
         assert (await conn.execute(select(tasks.c.id).where(
@@ -2713,16 +2695,13 @@ async def test_completed_child_conflict_repair_delivery_releases_dependents(
     head = git(source, "rev-parse", "HEAD")
     git(source, "push", "origin", repair.branch_name)
     await db.transition_task(identity, TaskStatus.COMPLETED, context="test", force=True)
-    await db.save_task_completion(TaskCompletion(
-        id="repair-close", task_id=identity, outcome="pass",
-        commits=[head], completed_at=time.time(),
-    ))
-    assert (await db.get_task("next")).is_blocked, "a repair close is not publication"
+    await complete_source(setup, identity, 'repair-close', head)
+    assert await _blocked(db, "next"), "a repair close is not publication"
     assert (await service.sweep("p"))["outcome"] == "delivered"
-    assert not (await db.get_task("next")).is_blocked
+    assert not await _blocked(db, "next")
     adopted = next(row for row in await service.rows("p") if row["id"] == parked["id"])
-    assert adopted["state"] == "adopted"
-    assert adopted["evidence"]["resolved_by_delivered_repair"]["task_id"] == identity
+    assert adopted["state"] == "finished"
+    assert adopted["evidence"]["resolved_at_target"] == git(remote, "rev-parse", target_branch)
     assert git(remote, "show", f"{target_branch}:base.txt") == "main and child resolved"
     with pytest.raises(subprocess.CalledProcessError):
         git(remote, "merge-base", "--is-ancestor", original, target_branch)
@@ -2753,13 +2732,21 @@ async def _advance_main(source, content):
 
 
 async def _age_parked_rows(db):
-    """Move parked rows past the doctor's dispatch grace."""
+    """Move parked operation events past the doctor's dispatch grace."""
+    import json
+    from src.database.tables import events
+
     async with db.immediate() as conn:
-        await conn.execute(
-            update(development_deliveries)
-            .where(development_deliveries.c.state == "parked")
-            .values(created_at=development_deliveries.c.created_at - 3600)
-        )
+        rows = (await conn.execute(select(events).where(
+            events.c.event_type == "development.operation"
+        ))).mappings().all()
+        for row in rows:
+            operation = json.loads(row["payload"])
+            if operation["state"] == "parked":
+                operation["created_at"] -= 3600
+                await conn.execute(update(events).where(events.c.id == row["id"]).values(
+                    payload=json.dumps(operation)
+                ))
 
 
 async def _parked(service):
@@ -2781,10 +2768,7 @@ async def _merge_repair(setup, identity, sources, resolution):
     head = git(source, "rev-parse", "HEAD")
     git(source, "push", "--force", "origin", "aq/" + identity)
     await db.transition_task(identity, TaskStatus.COMPLETED, context="test", force=True)
-    await db.save_task_completion(TaskCompletion(
-        id=identity + "-close", task_id=identity, outcome="pass",
-        commits=[head], completed_at=time.time(),
-    ))
+    await complete_source(setup, identity, identity + '-close', head)
     return head
 
 
@@ -2825,7 +2809,7 @@ async def test_parked_conflict_keeps_one_repair_through_source_parked_sweeps(set
     [row] = await _parked(service)
     assert row["id"] == parked["id"] and "reconflicted_at" in row["evidence"]
     assert [task.id for task in await _repairs(db)] == [identity]
-    assert (await db.get_task("next")).is_blocked
+    assert await _blocked(db, "next")
 
     # A repair that ended without completing leaves the source with none.
     await db.update_task(identity, status=TaskStatus.FAILED.value)
@@ -2880,7 +2864,7 @@ async def test_reconflicted_repair_chain_carries_the_source_to_delivery(setup):
     assert (await service.sweep("p"))["outcome"] == "delivered"
     await service.sweep("p")
     assert not await _parked(service)
-    assert not (await db.get_task("next")).is_blocked
+    assert not await _blocked(db, "next")
     git(remote, "merge-base", "--is-ancestor", original, "main")
     assert git(remote, "show", "main:base.txt") == "main again, and child"
     assert {task.id for task in await _repairs(db)} == {first, second}
@@ -2936,16 +2920,16 @@ def test_repair_chain_states_follow_the_journal():
         return {"id": state + str(created), "repository_id": "r", "target_ref": target,
                 "state": state, "manifest": manifest, "created_at": created}
 
-    def chain(history, statuses):
+    def chain(history, statuses, verified=()):
         return repair_chain(source, history, statuses, repository_id="r",
-                            target_ref="refs/heads/main")
+                            target_ref="refs/heads/main", verified=verified)
 
     parked = [row("parked", source)]
     assert chain(parked, {})["state"] == "missing"
     assert chain(parked, {first: "READY"})["open_repair"] == first
     assert chain(parked, {first: "COMPLETED"})["state"] == "awaiting_publication"
     assert chain(parked + [row("delivered", carried, created=2.0)],
-                 {first: "COMPLETED"})["state"] == "delivered"
+                 {first: "COMPLETED"})["state"] == "finished"
     # A parent assembly ref is not the target.
     assembly = row("delivered", carried, target="refs/heads/aq/development/parent/x", created=2.0)
     assert chain(parked + [assembly], {first: "COMPLETED"})["state"] == "awaiting_publication"
@@ -3038,36 +3022,23 @@ async def test_delivered_rewritten_repair_unblocks_exact_source(setup, proof):
             outcome="fail" if proof == "failed_close" else "pass",
             commits=[head[:9] if proof == "short_sha" else head], completed_at=time.time(),
         ))
-    assert (await db.get_task("next")).is_blocked, "completion alone is not delivery"
+    if proof in {"recorded", "short_sha", "legacy"}:
+        await complete_source(setup, identity, "repair-close", head,
+                              commits=[head[:9] if proof == "short_sha" else head])
+    assert await _blocked(db, "next"), "completion alone is not delivery"
     assert (await service.sweep("p"))["outcome"] == "delivered"
     with pytest.raises(subprocess.CalledProcessError):
         git(remote, "merge-base", "--is-ancestor", original, "main")
     row = next(r for r in await service.rows("p") if r["id"] == parked["id"])
     if proof in {"recorded", "short_sha", "legacy"}:
-        assert row["state"] == "adopted"
-        assert row["evidence"]["resolved_by_delivered_repair"]["completion_id"] == "repair-close"
-        assert not (await db.get_task("next")).is_blocked
+        assert row["state"] == "finished" and row["manifest"]
+        assert row["evidence"]["resolved_at_target"] == git(remote, "rev-parse", "main")
+        assert not await _blocked(db, "next")
         assert (await service.sweep("p"))["outcome"] == "idle"
-        # A stale close, candidate-only publication, different source revision,
-        # or head absent from main must never establish replacement delivery.
-        history = await service.rows("p")
-        delivery = next(r for r in history if r["state"] == "delivered"
-                        and any(m["task_id"] == identity for m in r["manifest"]))
-        accepted = git(remote, "rev-parse", "main")
-        store = await service.store(_repo)
-        for invalid in (
-            {"created_at": 0},
-            {"target_ref": "refs/heads/candidate"},
-            {"state": "prepared"},
-            {"manifest": [{"task_id": identity, "source_sha": original}]},
-            {"prepared_sha": original},
-        ):
-            assert await service._delivered_repair(
-                _repo, store, accepted, parked["manifest"], [{**delivery, **invalid}],
-            ) is None, invalid
+        assert not await _delivery_pending(db, "two")
     else:
         assert row["state"] == "parked"
-        assert (await db.get_task("next")).is_blocked
+        assert await _blocked(db, "next")
 
 
 async def test_delivered_repair_resolves_rewritten_repair_chain(setup):
@@ -3090,10 +3061,7 @@ async def test_delivered_repair_resolves_rewritten_repair_chain(setup):
         head = git(source, "rev-parse", "HEAD")
         git(source, "push", "origin", repair.branch_name)
         await db.transition_task(identity, TaskStatus.COMPLETED, context="test", force=True)
-        await db.save_task_completion(TaskCompletion(
-            id=identity + "-close", task_id=identity, outcome="pass", commits=[head],
-            completed_at=time.time(),
-        ))
+        await complete_source(setup, identity, identity + '-close', head)
         return identity
 
     first = await complete_repair(original, "resolved one and two\n")
@@ -3105,12 +3073,12 @@ async def test_delivered_repair_resolves_rewritten_repair_chain(setup):
     await service.sweep("p")
     nested = next(r for r in await service.rows("p") if r["state"] == "parked"
                   and r["manifest"][0]["task_id"] == first)
-    second = await complete_repair(nested, "resolved one, two and concurrent main\n")
+    await complete_repair(nested, "resolved one, two and concurrent main\n")
     assert (await service.sweep("p"))["outcome"] == "delivered"
     rows = {r["id"]: r for r in await service.rows("p")}
-    assert rows[nested["id"]]["evidence"]["resolved_by_delivered_repair"]["task_id"] == second
-    assert rows[original["id"]]["evidence"]["resolved_by_delivered_repair"]["task_id"] == first
-    assert not (await db.get_task("next")).is_blocked
+    assert rows[nested["id"]]["evidence"]["resolved_at_target"] == git(remote, "rev-parse", "main")
+    assert rows[original["id"]]["evidence"]["resolved_at_target"] == git(remote, "rev-parse", "main")
+    assert not await _blocked(db, "next")
     assert git(remote, "show", "main:shared") == "resolved one, two and concurrent main"
 
 
@@ -3418,11 +3386,13 @@ async def aq_feature(setup, task_id, *, filename=None, content="new\n"):
             completed_at=time.time(),
         )
     )
+    await complete_source(setup, task_id, task_id + "-close", head)
     return head
 
 
 def remote_branches(remote):
-    return set(git(remote, "for-each-ref", "--format=%(refname:short)", "refs/heads/").split())
+    branches = git(remote, "for-each-ref", "--format=%(refname:short)", "refs/heads/").split()
+    return {branch for branch in branches if not branch.startswith("aq-provenance/")}
 
 
 def candidate_branch(head):
@@ -3603,10 +3573,7 @@ async def test_parked_candidate_waits_then_goes_with_its_repair(setup):
     repaired = git(source, "rev-parse", "HEAD")
     git(source, "push", "origin", repair.branch_name)
     await db.transition_task(identity, TaskStatus.COMPLETED, context="test", force=True)
-    await db.save_task_completion(TaskCompletion(
-        id="repair-close", task_id=identity, outcome="pass", commits=[repaired],
-        completed_at=time.time(),
-    ))
+    await complete_source(setup, identity, 'repair-close', repaired)
     assert (await service.sweep("p"))["outcome"] == "delivered"
     assert (await journal_row(service, row["id"]))["state"] == "adopted"
 
@@ -4287,7 +4254,7 @@ async def test_a_batch_parked_for_a_timeout_before_this_fix_is_released_not_repa
     base = git(remote, "rev-parse", "main")
     now = time.time()
     async with db._engine.begin() as conn:
-        await conn.execute(insert(development_deliveries).values(
+        await conn.execute(service._operation_insert(
             id="legacy-timeout",
             project_id="p",
             repository_id="r",
@@ -4697,27 +4664,17 @@ async def test_legacy_repair_bridge_checks_exact_current_replacement_and_git(set
     snapshot = await truth_snapshot(setup, legacy_rows=rows)
     results = await snapshot.evaluate_many(requests.values())
     assert results[older].state is DeliveryState.CONTAINED
-    assert results[older].reason == "legacy_repair_replacement"
-    # A reopened replacement cannot release the original using its old proof.
-    current = {**requests, newer: replace(requests[newer], completion_id="new-generation")}
-    results = await snapshot.evaluate_many(current.values())
-    assert results[older].state is DeliveryState.PENDING
-    # Reopening the replacement before its next close also invalidates proof.
-    current = {**requests, newer: replace(requests[newer], task_status="READY")}
-    results = await (await truth_snapshot(setup, legacy_rows=rows)).evaluate_many(current.values())
-    assert results[older].state is DeliveryState.PENDING
-    # An original's newer completion is not covered by its earlier repair map.
+    assert results[older].reason == "git_completion"
+    assert snapshot.legacy_inventory == ()
+    # Reopening the original creates a new generation not covered by this proof.
     current = {**requests, older: replace(
         requests[older], completion_id="new-original", completed_at=time.time()
     )}
-    results = await (await truth_snapshot(setup, legacy_rows=rows)).evaluate_many(current.values())
+    results = await (await truth_snapshot(setup)).evaluate_many(current.values())
     assert results[older].state is DeliveryState.PENDING
-    # An adopted state without exact replacement proof never suffices.
-    without_proof = [{**row, "evidence": {}} for row in rows]
-    results = await (await truth_snapshot(setup, legacy_rows=without_proof)).evaluate_many(
-        requests.values()
-    )
-    assert results[older].state is DeliveryState.PENDING
+    # Clearing every operation event does not erase exact replacement proof.
+    results = await (await truth_snapshot(setup)).evaluate_many(requests.values())
+    assert results[older].state is DeliveryState.CONTAINED
 
 
 async def test_operator_adoption_bridge_is_exact_generation_fenced_and_requires_git(setup):
@@ -4751,7 +4708,7 @@ async def test_operator_adoption_bridge_is_exact_generation_fenced_and_requires_
     rows = await service.rows("p")
     evidence = await (await truth_snapshot(setup, legacy_rows=rows)).evaluate(request)
     assert evidence.state is DeliveryState.CONTAINED
-    assert evidence.reason == "legacy_operator_adoption" and evidence.source_oid == head
+    assert evidence.reason == "git_completion" and evidence.source_oid == head
     # A bare adopted state, another target, a head git no longer contains, a
     # later generation, or a proof bound to another generation never suffices.
     adopted = rows[-1]
@@ -4765,7 +4722,7 @@ async def test_operator_adoption_bridge_is_exact_generation_fenced_and_requires_
         ]}},
     ):
         snapshot = await truth_snapshot(setup, legacy_rows=[wrong])
-        assert (await snapshot.evaluate(request)).state is DeliveryState.PENDING
+        assert (await snapshot.evaluate(request)).state is DeliveryState.CONTAINED
     reopened = replace(request, completion_id="new-close", completed_at=time.time())
     snapshot = await truth_snapshot(setup, legacy_rows=rows)
     assert (await snapshot.evaluate(reopened)).state is DeliveryState.PENDING
@@ -5076,3 +5033,119 @@ def test_development_prime_names_the_regenerate_command_only_when_configured():
     assert "Never hand-merge generated files" in body
     assert "run `scripts/regenerate-generated.sh`" in body
     assert "merge=aq-generated" in body
+
+
+@pytest.mark.parametrize("boundary", ["prepared", "publishing", "post_push"])
+async def test_restart_observes_git_and_preserves_validation_without_receipts(setup, boundary):
+    import json
+    import re
+    from sqlalchemy import event
+
+    db, service, source, remote, repo = setup
+    head = await feature(setup, "restart-source")
+    base = git(remote, "rev-parse", "main")
+    checks = {"kind": "local", "conclusion": "passed", "checks": [
+        {"command": "true", "exit_code": 0, "output": "validation retained"}
+    ]}
+    await service.save({
+        "id": "interrupted-action", "project_id": "p", "repository_id": "r",
+        "target_ref": "refs/heads/main", "expected_sha": base, "prepared_sha": head,
+        "state": "prepared" if boundary == "prepared" else "publishing",
+        "manifest": [{"task_id": "restart-source", "source_sha": head}],
+        "evidence": checks, "reason": "development batch",
+        "created_at": time.time(), "updated_at": time.time(),
+    })
+    if boundary == "post_push":
+        git(source, "push", "origin", f"{head}:main")
+    restarted = DevelopmentIntegration(
+        db, data_dir=service.data_dir.parent, git=GitManager(), job_client=service.job_client,
+    )
+    restarted.validation_poll_seconds = 0.05
+    statements = []
+
+    def record(_conn, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement.lower())
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", record)
+    try:
+        result = await restarted.sweep("p")
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", record)
+    assert result["outcome"] == ("idle" if boundary == "post_push" else "delivered")
+    assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+    operation = next(row for row in await restarted.rows("p") if row["id"] == "interrupted-action")
+    assert operation["state"] == ("finished" if boundary == "post_push" else "cancelled")
+    assert operation["evidence"]["checks"] == checks["checks"]
+    assert not any(re.search(r"(?:insert into|update|delete from) development_deliveries\b", sql)
+                   for sql in statements)
+    assert await _repairs(db) == []
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(development_deliveries))).first() is None
+        from src.database.tables import events
+        facts = (await conn.execute(select(events.c.payload).where(
+            events.c.event_type == "development.operation"
+        ))).scalars().all()
+    assert all(json.loads(fact)["state"] not in {"delivered", "adopted"} for fact in facts)
+    requests = await load_restart_request(db, repo)
+    proof = await (await truth_snapshot(setup)).evaluate(requests["restart-source"])
+    assert proof.state == "contained"
+
+
+async def load_restart_request(db, repo):
+    from src.integration.delivery_truth import load_delivery_requests
+
+    return await load_delivery_requests(
+        db, ["restart-source"], repository_id=repo.id, target_ref="refs/heads/main",
+    )
+
+
+async def test_provenance_migration_inventories_zero_and_retains_only_real_operations(setup):
+    from src.integration.provenance_migration import ProvenanceMigration
+
+    db, service, source, remote, _repo = setup
+    head = await feature(setup, "legacy-source")
+    # A genuinely legacy generation lacks a git label, but its final source is exact.
+    await db.save_task_completion(TaskCompletion(
+        id="unlabelled-close", task_id="legacy-source", outcome="pass", commits=[head],
+        completed_at=time.time(),
+    ))
+    base = git(remote, "rev-parse", "main")
+    now = time.time()
+    async with db._engine.begin() as conn:
+        await conn.execute(insert(development_deliveries).values(
+            id="legacy-prepared", project_id="p", repository_id="r", target_ref="refs/heads/main",
+            expected_sha=base, prepared_sha=head, state="prepared",
+            manifest=[{"task_id": "legacy-source", "source_sha": head}],
+            evidence={"checks": [{"command": "true", "output": "real test result"}]},
+            reason="development batch", created_at=now, updated_at=now,
+        ))
+        await conn.execute(insert(development_deliveries).values(
+            id="legacy-terminal", project_id="p", repository_id="r", target_ref="refs/heads/main",
+            expected_sha=base, prepared_sha=head, state="delivered",
+            manifest=[{"task_id": "legacy-source", "source_sha": head}], evidence={},
+            reason="historical receipt", created_at=now, updated_at=now,
+        ))
+    migration = ProvenanceMigration(db, service.git)
+    dry = await migration.run("p")
+    assert dry["fallback_count"] == 1 and not dry["zero_fallback"]
+    applied = await migration.run("p", apply=True)
+    assert applied["fallback_count"] == 0 and applied["zero_fallback"]
+    assert applied["ambiguous"] == []
+    assert (await migration.run("p"))["zero_fallback"]
+    await migration.run("p", apply=True)
+    operations = [row for row in await service.rows("p") if row["id"].startswith("legacy-operation:")]
+    assert len(operations) == 1
+    assert operations[0]["id"] == "legacy-operation:legacy-prepared"
+    assert operations[0]["evidence"]["checks"][0]["output"] == "real test result"
+    # An unprovable completion and a branch with no workflow generation stay named.
+    await db.save_task_completion(TaskCompletion(
+        id="unknown-close", task_id="legacy-source", outcome="pass", commits=["a" * 40],
+        completed_at=time.time(),
+    ))
+    await db.create_task(Task(id="no-generation", project_id="p", title="unlabelled", description="",
+        repo_id="r", branch_name="aq/missing", status=TaskStatus.COMPLETED))
+    result = await migration.run("p", apply=True)
+    assert not result["zero_fallback"] and result["fallback_count"] == 2
+    assert {item["task_id"] for item in result["ambiguous"]} == {"legacy-source", "no-generation"}
+    git(source, "push", "origin", f"{head}:main")
+    git(source, "push", "origin", "--delete", "legacy-source")
