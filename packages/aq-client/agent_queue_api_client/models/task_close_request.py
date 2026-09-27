@@ -16,7 +16,7 @@ class TaskCloseRequest:
     """
     Attributes:
         task_id (str): Task ID
-        outcome (str): Overall task outcome
+        outcome (None | str | Unset): Overall task outcome
         failure_class (None | str | Unset): Failure classification, when outcome is 'fail' (optional)
         work_outcome (None | str | Unset): What actually happened to the work (optional)
         commit (None | str | Unset): Commit SHA (optional)
@@ -37,10 +37,13 @@ class TaskCloseRequest:
             profile (pool worker loop, swarm-work-model §10).
         wait (int | None | Unset): Seconds to long-poll for the next claim when claim_next is set (optional, clamped to
             swarm.claim_wait_max).
+        obsolete (bool | Unset): Close the task as obsolete/superseded instead of with an outcome (operator or
+            supervisor only; needs task_id and reason, not outcome). Default: False.
+        reason (None | str | Unset): Why the task is obsolete (required with obsolete).
     """
 
     task_id: str
-    outcome: str
+    outcome: None | str | Unset = UNSET
     failure_class: None | str | Unset = UNSET
     work_outcome: None | str | Unset = UNSET
     commit: None | str | Unset = UNSET
@@ -56,12 +59,18 @@ class TaskCloseRequest:
     claim_epoch: int | None | Unset = UNSET
     claim_next: bool | None | Unset = UNSET
     wait: int | None | Unset = UNSET
+    obsolete: bool | Unset = False
+    reason: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         task_id = self.task_id
 
-        outcome = self.outcome
+        outcome: None | str | Unset
+        if isinstance(self.outcome, Unset):
+            outcome = UNSET
+        else:
+            outcome = self.outcome
 
         failure_class: None | str | Unset
         if isinstance(self.failure_class, Unset):
@@ -154,14 +163,23 @@ class TaskCloseRequest:
         else:
             wait = self.wait
 
+        obsolete = self.obsolete
+
+        reason: None | str | Unset
+        if isinstance(self.reason, Unset):
+            reason = UNSET
+        else:
+            reason = self.reason
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
                 "task_id": task_id,
-                "outcome": outcome,
             }
         )
+        if outcome is not UNSET:
+            field_dict["outcome"] = outcome
         if failure_class is not UNSET:
             field_dict["failure_class"] = failure_class
         if work_outcome is not UNSET:
@@ -192,6 +210,10 @@ class TaskCloseRequest:
             field_dict["claim_next"] = claim_next
         if wait is not UNSET:
             field_dict["wait"] = wait
+        if obsolete is not UNSET:
+            field_dict["obsolete"] = obsolete
+        if reason is not UNSET:
+            field_dict["reason"] = reason
 
         return field_dict
 
@@ -200,7 +222,14 @@ class TaskCloseRequest:
         d = dict(src_dict)
         task_id = d.pop("task_id")
 
-        outcome = d.pop("outcome")
+        def _parse_outcome(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        outcome = _parse_outcome(d.pop("outcome", UNSET))
 
         def _parse_failure_class(data: object) -> None | str | Unset:
             if data is None:
@@ -347,6 +376,17 @@ class TaskCloseRequest:
 
         wait = _parse_wait(d.pop("wait", UNSET))
 
+        obsolete = d.pop("obsolete", UNSET)
+
+        def _parse_reason(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        reason = _parse_reason(d.pop("reason", UNSET))
+
         task_close_request = cls(
             task_id=task_id,
             outcome=outcome,
@@ -365,6 +405,8 @@ class TaskCloseRequest:
             claim_epoch=claim_epoch,
             claim_next=claim_next,
             wait=wait,
+            obsolete=obsolete,
+            reason=reason,
         )
 
         task_close_request.additional_properties = d

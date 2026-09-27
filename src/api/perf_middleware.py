@@ -58,7 +58,7 @@ def route_label(scope: Any) -> str:
             method = "OTHER"
     routes = getattr(getattr(scope.get("app"), "router", None), "routes", None) or ()
     partial = None
-    for route in routes:
+    for route in _registered_routes(routes):
         try:
             match, _ = route.matches(scope)
         except Exception:  # noqa: BLE001, S112 - a foreign route class must not break labelling
@@ -72,8 +72,31 @@ def route_label(scope: Any) -> str:
     return f"{method} {_UNMATCHED}"
 
 
+def _registered_routes(routes: Iterable[Any]) -> Iterable[Any]:
+    """Expand FastAPI includes into their registered, prefixed endpoint contexts.
+
+    Recent FastAPI versions retain includes as pathless router wrappers. Their
+    effective contexts use the same templates and matchers as dispatch, including
+    nested prefixes, and are cached/versioned by FastAPI. Older flattened includes
+    and plain Starlette routes already have the endpoint matcher we need.
+    """
+    for route in routes:
+        try:
+            contexts = getattr(route, "effective_route_contexts", None)
+            if callable(contexts):
+                for context in contexts():
+                    yield getattr(context, "starlette_route", None) or context
+            else:
+                yield route
+        except Exception:  # noqa: BLE001, S112 - foreign routes cannot break instrumentation
+            continue
+
+
 def _template(method: str, route: Any) -> str:
-    path = getattr(route, "path", "") or "/"
+    path = getattr(route, "path", None)
+    if not isinstance(path, str) or (not path and not isinstance(route, Mount)):
+        return f"{method} {_UNMATCHED}"
+    path = path or "/"
     return f"{method} MOUNT{path}" if isinstance(route, Mount) else f"{method} {path}"
 
 

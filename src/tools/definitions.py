@@ -4925,7 +4925,11 @@ _ALL_TOOL_DEFINITIONS = [
             "Close a task with an outcome. This is the ONLY way a session-run task reaches "
             "COMPLETED — process exit is a failure signal, never success. Records outcome "
             "metadata, runs the completion pipeline (commit/push/PR/verify), and transitions "
-            "the task. Follow it with `aq session drain-ack`. Backs `aq task close`."
+            "the task. Follow it with `aq session drain-ack`. Backs `aq task close`. "
+            "With `obsolete` (and `reason`, no `outcome`) an operator or supervisor instead "
+            "retires superseded work: the task goes to COMPLETED as abandoned and is never "
+            "published, its branch owners are released through the release-owner safety proof "
+            "and it is dropped from parked development batches, so it can then be deleted."
         ),
         "input_schema": {
             "type": "object",
@@ -5009,8 +5013,20 @@ _ALL_TOOL_DEFINITIONS = [
                         "(optional, clamped to swarm.claim_wait_max)."
                     ),
                 },
+                "obsolete": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Close the task as obsolete/superseded instead of with an outcome "
+                        "(operator or supervisor only; needs task_id and reason, not outcome)."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why the task is obsolete (required with obsolete).",
+                },
             },
-            "required": ["task_id", "outcome"],
+            "required": ["task_id"],
         },
     },
     {
@@ -7137,6 +7153,28 @@ _JOB_INPUT_SCHEMAS: dict[str, dict] = {
         },
         "required": ["preset", "idempotency_key"],
     },
+    "job_submit_integration": {
+        "type": "object",
+        "properties": {
+            "project_id": {"type": "string"},
+            "operation_id": {"type": "string"},
+            "store": {"type": "string"},
+            "input_ref": {"type": "string"},
+            "preset": {"type": "string"},
+            "argv": {"type": "array", "items": {"type": "string"}},
+            "idempotency_key": {"type": "string"},
+            "queue_seconds": {"type": "number", "minimum": 0},
+            "run_seconds": {"type": "number", "minimum": 0},
+        },
+        "required": [
+            "project_id",
+            "operation_id",
+            "store",
+            "input_ref",
+            "preset",
+            "idempotency_key",
+        ],
+    },
     "job_list": {
         "type": "object",
         "properties": {
@@ -7180,6 +7218,7 @@ _ALL_TOOL_DEFINITIONS.extend([
     {"name": name, "description": description, "input_schema": _JOB_INPUT_SCHEMAS[name]}
     for name, description in (
         ("job_submit", "Submit a finite preset, optionally with an atomic durable wait."),
+        ("job_submit_integration", "Submit an integration job: provision a detached snapshot and run at band zero."),
         ("job_get", "Read a scoped managed job."),
         ("job_list", "List this owner's managed jobs."),
         ("job_cancel", "Cancel a job and verify cleanup before releasing its pin."),

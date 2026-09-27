@@ -12,6 +12,7 @@ vi.mock("../../api/client", () => api);
 let frames: FrameRequestCallback[] = [];
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.spyOn(Math, "random").mockReturnValue(1);
   TerminalMock.instances = []; FitAddonMock.instances = []; TerminalSocketMock.instances = []; ResizeObserverMock.instances = [];
   frames = [];
   vi.stubGlobal("WebSocket", TerminalSocketMock);
@@ -75,25 +76,40 @@ describe("Interactive live terminal", () => {
     expect(socket.controls()).toEqual([{ type: "ack", bytes: bytes.length }]);
   });
 
-  it("disconnects without replay and reconnects only after explicit action", () => {
+  it("automatically reconnects without remounting or replaying input", () => {
     const { term, socket } = terminal();
     act(() => socket.ready());
     act(() => socket.serverClose());
     term.emitData("discard after disconnect");
-    expect(screen.getByRole("alert")).toHaveTextContent(/disconnected.*discarded/i);
+    expect(screen.getByRole("status", { name: "Builder terminal connection" })).toHaveTextContent("Reconnecting… (attempt 1)");
     expect(screen.getByRole("button", { name: "Interrupt Builder" })).toBeDisabled();
-    expect(TerminalSocketMock.instances).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Reconnect terminal" }));
-    act(() => vi.runOnlyPendingTimers());
+    act(() => vi.advanceTimersByTime(500));
     const next = TerminalSocketMock.instances[1]!;
-    expect(term.disposed).toBe(true);
-    expect(ResizeObserverMock.instances[0]!.disconnect).toHaveBeenCalled();
-    act(() => TerminalMock.instances[1]!.emitData("discard during reconnect"));
+    expect(term.disposed).toBe(false);
+    expect(TerminalMock.instances).toHaveLength(1);
+    term.emitData("discard during reconnect");
     act(() => next.ready());
+    expect(screen.getByRole("status", { name: "Builder terminal connection" })).toHaveTextContent("connected");
+    expect(term.write).toHaveBeenCalledWith(Uint8Array.of(27, 99), expect.any(Function));
     expect(next.inputs()).toEqual([]);
     fireEvent.click(screen.getByRole("button", { name: "Send Enter to Builder" }));
     expect(inputs(next)).toEqual(["\r"]);
     expect(socket.inputs()).toEqual([]);
+  });
+
+  it("can reconnect immediately and never reconnects after exit", () => {
+    const { socket } = terminal();
+    act(() => socket.ready());
+    act(() => socket.serverClose());
+    fireEvent.click(screen.getByRole("button", { name: "Reconnect now" }));
+    act(() => vi.advanceTimersByTime(0));
+    const next = TerminalSocketMock.instances[1]!;
+    act(() => next.ready());
+    act(() => next.message(JSON.stringify({ type: "exit" })));
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(TerminalSocketMock.instances).toHaveLength(2);
+    expect(screen.getByRole("status", { name: "Builder terminal connection" })).toHaveTextContent("exited");
+    expect(screen.queryByRole("button", { name: "Reconnect now" })).toBeNull();
   });
 
   it("disposes the old session, renderer and pending ACKs before showing another session", () => {
@@ -122,6 +138,19 @@ describe("Interactive live terminal", () => {
       expect(socket.controls()).toEqual([{ type: "resize", cols: 40 + index, rows: 12 }]);
       expect(TerminalMock.instances[index]!.cols).toBe(40 + index);
     });
+  });
+
+  it("defers the first connection of a hidden terminal until its host is laid out", () => {
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue({ width: 0, height: 0 } as DOMRect);
+    terminal();
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(TerminalSocketMock.instances).toHaveLength(0);
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockReturnValue({ width: 800, height: 400 } as DOMRect);
+    act(() => { ResizeObserverMock.instances[0]!.emit(); frames.splice(0).forEach((frame) => frame(0)); });
+    act(() => vi.advanceTimersByTime(0));
+    expect(TerminalSocketMock.instances).toHaveLength(1);
+    act(() => TerminalSocketMock.instances[0]!.ready());
+    expect(screen.getByRole("status", { name: "Builder terminal connection" })).toHaveTextContent("connected");
   });
 
   it("ignores hidden containers and clamps the browser renderer to server size limits", () => {

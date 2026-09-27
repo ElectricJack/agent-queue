@@ -12,7 +12,8 @@ import re
 import time
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, Response, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
 from src.api.auth import LOCAL_SCOPE
 from src.models import TaskStatus
@@ -26,6 +27,13 @@ _ACTIVE_TASKS = {
 _INPUT_FRAME_LIMIT = 64 * 1024
 _INPUT_QUEUE_LIMIT = 128 * 1024
 _OUTPUT_CHUNK = 16 * 1024
+
+
+class TerminalAccessResponse(BaseModel):
+    status: str
+    code: int = 0
+    message: str = ""
+    retryable: bool = False
 
 
 class TerminalStreamError(Exception):
@@ -108,14 +116,18 @@ class TerminalStreamService:
             raise TerminalStreamError("Terminal credentials must not be in the URL", 4401)
         return token
 
-    def _check_origin(self, ws):
+    def _check_origin(self, ws, *, browser_probe=False, browser_origin=None):
         origins = ws.headers.getlist("origin")
+        if not origins and browser_probe:
+            # Same-origin GETs may omit Origin. Still check their browser Host
+            # against the same literal-loopback/trusted-origin policy as WS.
+            origins = [browser_origin or f"{ws.url.scheme}://{ws.headers.get('host', '')}"]
         if not origins:
             return  # Native clients have no Origin; loopback/auth still apply.
         if len(origins) != 1 or len(ws.headers.getlist("host")) != 1:
             raise TerminalStreamError("Terminal origin is not allowed", 4403)
         origin = _origin(origins[0])
-        scheme = "https" if ws.url.scheme == "wss" else "http"
+        scheme = "https" if ws.url.scheme in {"wss", "https"} else "http"
         expected = _origin(f"{scheme}://{ws.headers['host']}")
         trusted = getattr(self.config.api_auth, "trusted_dashboard_origins", [])
         # A matching attacker-controlled Host/Origin can be DNS-rebound onto
@@ -188,7 +200,10 @@ class TerminalStreamService:
         with contextlib.suppress(Exception):
             async with asyncio.timeout(1):
                 if accepted:
-                    await ws.send_json({"type": "error", "message": message})
+                    await ws.send_json({
+                        "type": "error", "message": message, "code": code,
+                        "retryable": code in {1011, 4408, 4429},
+                    })
                 await ws.close(code=code, reason=message)
 
     async def handle(self, ws, session_id: str):
@@ -267,6 +282,8 @@ class TerminalStreamService:
                         credit.set()
                     elif control.get("type") == "resize" and set(control) == {"type", "cols", "rows"}:
                         await client.resize(*_dimensions(control["cols"], control["rows"]))
+                    elif control == {"type": "ping"}:
+                        await asyncio.wait_for(ws.send_json({"type": "pong"}), self.ack_timeout)
                     else:
                         raise TerminalStreamError("Invalid terminal control", 4400)
 
@@ -349,6 +366,27 @@ class TerminalStreamService:
 def build_terminal_router(orchestrator, config, *, token_store=None, **kwargs) -> APIRouter:
     service = TerminalStreamService(orchestrator, config, token_store=token_store, **kwargs)
     router = APIRouter()
+
+    @router.get("/ws/terminal/{session_id}", operation_id="terminal_access")
+    async def terminal_access(
+        request: Request, session_id: str, response: Response, browser_origin: str | None = None,
+    ) -> TerminalAccessResponse:
+        # Same edge prefix and checks as the WS. No attach, input or side effects.
+        # Browsers cannot read an HTTP rejection of a WebSocket handshake.
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            service._check_origin(request, browser_probe=True, browser_origin=browser_origin)
+            token = service._credentials(request)
+            await service._authorize(request, token)
+            await service._session(session_id)
+            if len(service._handlers) >= service.connection_limit:
+                raise TerminalStreamError("Too many terminal connections", 4429)
+            return TerminalAccessResponse(status="ready")
+        except TerminalStreamError as exc:
+            return TerminalAccessResponse(
+                status="exited" if exc.code == 4409 else "error",
+                code=exc.code, message=str(exc), retryable=exc.code == 4429,
+            )
 
     @router.websocket("/ws/terminal/{session_id}")
     async def terminal(websocket: WebSocket, session_id: str):

@@ -192,9 +192,18 @@ at 128 KiB of unacknowledged output and closes `4408` after 30 s. The terminal's
 3. Frames are relayed one-to-one in order, preserving text versus binary and
    frame boundaries — the terminal is binary output plus JSON text control
    frames. Maximum message size is 16 MiB on both hops (uvicorn's default, so the
-   proxy is never the tighter limit). Ping/pong is per hop and not relayed.
+   proxy is never the tighter limit). Ping/pong is per hop and not relayed;
+   the proxy sends upstream pings every 15 s. Interactive terminals also use
+   application ping/pong to detect a silently stalled browser connection.
 4. Close code and reason are relayed in both directions; `4400`–`4429` carry
    meaning the dashboard displays.
+5. `GET /ws/terminal/{session_id}` is a read-only access probe under the same
+   terminal-prefix edge gates. It never attaches a PTY and is not cached.
+   Browsers use it to diagnose opaque handshake failures and stop retrying
+   confirmed authorization/session refusals. `browser_origin` supplies the
+   page's origin when a same-origin GET omits Origin (including behind TLS).
+   [Terminal reconnection](terminal-reconnection.md) specifies the retry,
+   keepalive and screen reset contract for interactive and watch-only viewers.
 
 ### 2.5 When the daemon is down
 
@@ -202,7 +211,7 @@ The bundle keeps loading, so the SPA renders its own disconnected state. Proxied
 HTTP answers `503` with `{"ok": false, "error": "daemon_unreachable", "api_url":
 …}`, `Retry-After: 2` and `Cache-Control: no-store`; a WebSocket handshake is
 denied with `503`, which the browser reports as close `1006` and
-`useEventStream`'s existing backoff retries. Every response the dashboard server
+the event and terminal streams' backoff retries. Every response the dashboard server
 generates itself carries `X-AQ-Dashboard-Server: <version>`, which separates its
 `503` from the daemon's own degraded `/health` `503`.
 
@@ -328,11 +337,14 @@ address. AQ binds nothing wider and runs no `tailscale serve` for this
 * Verification runs at startup and **fails closed**: a digest mismatch exits
   non-zero with the reason, and no directory (a source checkout) exits `2`
   pointing at `npm -w dashboard run dev` and `aq install --restart-from
-  dashboard.build`. Only manifest-listed files are served. SPA fallback is
-  unchanged — an extensionless path that is not a file gets `index.html`, a path
-  with a suffix gets `404` — and never applies under a proxied prefix, `/__aq`
-  or the `404` prefixes of §2.1, so an unknown API path returns the daemon's
-  JSON, not HTML.
+  dashboard.build`. Only manifest-listed files are served. SPA fallback: an
+  unlisted path whose suffix is a static-asset suffix (`STATIC_SUFFIXES` in
+  `src/dashboard_server/bundle.py`: `.js`, `.css`, `.map`, images, fonts, …)
+  gets `404`; any other unlisted path is a browser route and gets `index.html` —
+  including route ids with a dot, such as child task ids
+  (`/tasks/stark-impact-60.1`). The fallback never applies under a proxied
+  prefix, `/__aq` or the `404` prefixes of §2.1, so an unknown API path returns
+  the daemon's JSON, not HTML.
 * `index.html` is `Cache-Control: no-cache`; content-hashed `assets/*` are
   `public, max-age=31536000, immutable`; every static response carries
   `X-Content-Type-Options: nosniff` and

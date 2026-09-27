@@ -49,6 +49,7 @@ from src.database.queries.integration_state_queries import IntegrationStateQueri
 from src.database.queries.integration_train_queries import IntegrationTrainQueriesMixin
 from src.database.queries.job_queries import JobQueriesMixin
 from src.database.queries.layout_queries import LayoutQueryMixin
+from src.database.queries.lifecycle_queries import LifecycleQueryMixin
 from src.database.queries.merge_slot_queries import MergeSlotQueriesMixin
 from src.database.queries.message_queries import MessageQueriesMixin
 from src.database.queries.metrics_queries import MetricsQueryMixin
@@ -102,6 +103,7 @@ class PostgreSQLDatabaseAdapter(
     RepoQueryMixin,
     TaskQueryMixin,
     TaskRecoveryQueryMixin,
+    LifecycleQueryMixin,
     TaskCommentQueriesMixin,
     TaskSubtaskQueriesMixin,
     DependencyQueryMixin,

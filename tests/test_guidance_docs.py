@@ -45,6 +45,7 @@ OPERATOR_DOCS = (
     _REPO_ROOT / "docs" / "guides" / "discord-conversations.md",
     _REPO_ROOT / "docs" / "guides" / "discord-replacement-checklist.md",
     _REPO_ROOT / "docs" / "guides" / "escalations.md",
+    _REPO_ROOT / "docs" / "guides" / "smart-test-selection.md",
     _REPO_ROOT / "docs" / "guides" / "reviews.md",
 )
 #: The CLI reference itself.  Its whole job is to show the reader the current

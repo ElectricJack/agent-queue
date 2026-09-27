@@ -459,6 +459,7 @@
         "tests/test_install_pools.py",
         "tests/test_install_postgres.py",
         "tests/test_install_providers.py",
+        "tests/test_install_service.py",
         "tests/test_install_wizard.py",
         "tests/test_install_wsl.py",
         "tests/test_known_tools.py",
@@ -1041,12 +1042,13 @@
       ]
     },
     "task-lifecycle": {
-      "description": "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events and destructive-command authorization.",
+      "description": "Task lifecycle: the status state machine, create/ensure/close/reopen, close-summary and deliverable enforcement, operator task controls, task events, destructive-command authorization, and lifecycle cleanup (stale BLOCKED/PAUSED containers and tasks, obsolete closes, dangling-state doctor).",
       "modules": [
         "tests/test_cli_task_create_output.py",
         "tests/test_deliverables.py",
         "tests/test_dv2_phase1_models.py",
         "tests/test_ensure_task.py",
+        "tests/test_lifecycle_cleanup.py",
         "tests/test_models.py",
         "tests/test_reopen_with_feedback.py",
         "tests/test_state_machine.py",
@@ -1094,6 +1096,7 @@
         "tests/test_selection_queries.py",
         "tests/test_selection_questions.py",
         "tests/test_selection_replay.py",
+        "tests/test_selection_retention_sweep.py",
         "tests/test_selection_service.py",
         "tests/test_selection_snapshot.py",
         "tests/test_selection_static_impact.py",
@@ -1247,7 +1250,7 @@
       ]
     }
   },
-  "digest": "sha256:0286d9cb9311175aeef3da31a5b445f22413ac432cf04b7e1daa28ccb0450c72",
+  "digest": "sha256:adf8b01cd4debb474fa6163b50621f47a20b380882083fbe7c980ca0c635ef12",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2977,6 +2980,7 @@
       "imports": [
         "src.cli.app",
         "src.cli.daemon",
+        "src.daemon_state",
         "src.sessions.env"
       ],
       "markers": [
@@ -4688,6 +4692,7 @@
         "src.doctor.resource_checks",
         "src.doctor.review_checks",
         "src.doctor.runner",
+        "src.doctor.service_checks",
         "src.doctor.session_checks",
         "src.doctor.skill_checks",
         "src.doctor.stall_checks",
@@ -4888,6 +4893,9 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.config",
+        "src.jobs.adapters",
+        "src.jobs.policy",
         "src.profiles.parser"
       ],
       "markers": [
@@ -6328,6 +6336,34 @@
       "markers": [],
       "summary": "Provider CLI adapters stay optional, idempotent, and credential-free."
     },
+    "tests/test_install_service.py": {
+      "areas": [
+        "install"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app",
+        "src.cli.daemon",
+        "src.daemon_state",
+        "src.doctor",
+        "src.doctor.models",
+        "src.install",
+        "src.install.command",
+        "src.install.lifecycle",
+        "src.install.platform",
+        "src.install.results",
+        "src.install.service",
+        "src.install.state",
+        "src.install.steps",
+        "src.install.watchdog",
+        "src.install.wizard",
+        "src.sessions.env"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Auto-restart: the watchdog's policy, the service entries it is installed as,"
+    },
     "tests/test_install_wizard.py": {
       "areas": [
         "install"
@@ -7415,6 +7451,31 @@
       ],
       "markers": [],
       "summary": "Tests for L0 + L1 tier injection — Roadmap 3.3.7."
+    },
+    "tests/test_lifecycle_cleanup.py": {
+      "areas": [
+        "task-lifecycle"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.commands.session_commands",
+        "src.config",
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.queries.task_recovery_queries",
+        "src.database.tables",
+        "src.doctor.models",
+        "src.doctor.task_checks",
+        "src.integration.development",
+        "src.integration.obsolete_close",
+        "src.integration.owner_recovery",
+        "src.models",
+        "src.orchestrator",
+        "src.profiles.capabilities"
+      ],
+      "markers": [],
+      "summary": "Lifecycle cleanup: stale containers, stale-open tasks, obsolete closes, doctor."
     },
     "tests/test_list_playbooks_v2.py": {
       "areas": [
@@ -8515,6 +8576,7 @@
         "src.orchestrator",
         "src.playbooks.run_state",
         "src.runtimes.base",
+        "src.scheduler",
         "src.sessions.harness_parser",
         "src.workspace_spec_watcher"
       ],
@@ -10302,6 +10364,7 @@
         "src.cli.app",
         "src.cli.daemon",
         "src.config",
+        "src.dashboard_paths",
         "src.dashboard_server.process",
         "src.digest",
         "src.digest.facts",
@@ -10999,6 +11062,20 @@
       ],
       "summary": "Historical selection is blind to labels; only usable held-out reds earn recall."
     },
+    "tests/test_selection_retention_sweep.py": {
+      "areas": [
+        "test-selection"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.orchestrator.monitoring"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Retention sweep tests for smart test selection records, plus the operator"
+    },
     "tests/test_selection_service.py": {
       "areas": [
         "test-selection"
@@ -11230,6 +11307,7 @@
         "src.sessions.harness_registry",
         "src.sessions.provider",
         "src.sessions.spec",
+        "src.sessions.transcripts",
         "src.sessions.transcripts.claude"
       ],
       "markers": [
@@ -11282,6 +11360,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.messages.delivery",
+        "src.messages.session_lens",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.workspace",
@@ -11295,7 +11374,8 @@
         "src.sessions.provider",
         "src.sessions.reconciler",
         "src.sessions.tmux",
-        "src.sessions.transcripts"
+        "src.sessions.transcripts",
+        "src.sessions.transcripts.codex"
       ],
       "markers": [
         "parametrize",
@@ -12384,6 +12464,7 @@
         "src.api",
         "src.api.auth",
         "src.api.terminal_stream",
+        "src.dashboard_server.proxy",
         "src.database",
         "src.models",
         "src.sessions.terminal_pty"

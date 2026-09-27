@@ -10,7 +10,8 @@ import uuid
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 
-from sqlalchemy import and_, delete, func, insert, literal, null, select, update
+from sqlalchemy import Text, and_, any_, bindparam, delete, func, insert, literal, null, select, update
+from sqlalchemy.dialects.postgresql import ARRAY
 
 from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
@@ -159,6 +160,15 @@ _READY_REASONS = {
 #: two apart.  Written and removed inside ``_apply_transition`` so the mark
 #: can never be observed out of step with the status.
 TERMINAL_BLOCKED_META_KEY = "blocked_terminal"
+
+#: ``needs_attention`` code the lifecycle sweep raises on a BLOCKED or PAUSED
+#: task that stayed put past ``work_graph.stale_open_after_seconds`` with its
+#: blocker still in place.  Advisory, unlike every other code: it never holds a
+#: task out of promotion or opens a recovery incident, and any transition out
+#: of BLOCKED/PAUSED removes it with its detail (see ``_apply_transition``).
+STALE_OPEN_ATTENTION = "stale_open"
+#: The recorded blockers behind a ``stale_open`` flag, for explain and doctor.
+STALE_OPEN_DETAIL_KEY = "stale_open_detail"
 
 #: Transition contexts that make an entry into BLOCKED terminal: the session
 #: close's three BLOCKED legs, merge conflicts, the execution timeout, an
@@ -1480,6 +1490,20 @@ class TaskQueryMixin:
                     )
                 )
 
+            # A ``stale_open`` flag describes one stale BLOCKED/PAUSED
+            # episode; leaving the status by any path ends it.
+            if current_status in (TaskStatus.BLOCKED, TaskStatus.PAUSED):
+                await conn.execute(
+                    delete(task_metadata).where(
+                        task_metadata.c.task_id == task_id,
+                        (task_metadata.c.key == STALE_OPEN_DETAIL_KEY)
+                        | (
+                            (task_metadata.c.key == "needs_attention")
+                            & (task_metadata.c.value == json.dumps(STALE_OPEN_ATTENTION))
+                        ),
+                    )
+                )
+
             # A task in flight or terminally completed has resolved the
             # previous operational incident.  Centralising this covers both
             # push and pull execution paths, including callers outside the
@@ -2138,7 +2162,10 @@ class TaskQueryMixin:
                 await conn.execute(
                     select(task_metadata.c.task_id).where(
                         and_(
-                            task_metadata.c.task_id.in_(sorted(set(task_ids))),
+                            # Keep the candidate set in one bind even for a large frontier.
+                            task_metadata.c.task_id == any_(
+                                bindparam("task_ids", sorted(set(task_ids)), type_=ARRAY(Text))
+                            ),
                             task_metadata.c.key == key,
                         )
                     )

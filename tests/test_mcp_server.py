@@ -693,6 +693,12 @@ class TestDriftDetection:
             "job_reconcile",
             "job_result",
             "job_submit",
+            # Internal integration job: provision a detached snapshot and submit
+            # at band zero.  Excluded from MCP, the CLI and HTTP (DEFAULT_
+            # EXCLUDED_COMMANDS); the publisher calls it directly, so it
+            # carries a codegen-only fallback schema rather than an LLM-facing
+            # definition.
+            "job_submit_integration",
             # Harness-hook telemetry writer (src/commands/surface_commands.py).
             # Excluded from MCP outright (DEFAULT_EXCLUDED_COMMANDS): the hook
             # calls it over the CLI/HTTP surface and the session comes from the

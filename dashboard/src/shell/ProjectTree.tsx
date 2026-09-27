@@ -140,6 +140,7 @@ export default function ProjectTree({
         <Link
           to={workspaceHref(project.id, tab, search)}
           data-listnav="1"
+          data-primary-control
           aria-current={activeProjectId === project.id ? "page" : undefined}
           className={`min-w-0 flex-1 ${linkClass(activeProjectId === project.id)}`}
         >

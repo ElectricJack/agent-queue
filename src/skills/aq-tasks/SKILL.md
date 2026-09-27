@@ -434,6 +434,36 @@ Dependency types: `blocks`, `parent-child`, `waits-for`,
 `conditional-blocks`, `discovered-from`, `related`, `duplicates`,
 `supersedes`. Only the first four gate readiness.
 
+## Superseded and stale work
+
+Work that is no longer needed (a duplicate fix landed another way, or the plan
+changed) is retired by an operator or supervisor with one command, not with a
+failing close plus a status edit:
+
+```bash
+aq task close <id> --obsolete --reason "superseded by PR #639"
+```
+
+It moves the task to COMPLETED as abandoned without publishing anything, so its
+dependents stop waiting. It releases the task's branch owners through the
+release-owner safety proof and cancels any parked development batch that lists
+it. A batch still publishing, an open development repair or a refused owner
+proof stays pending in the task's `obsolete` metadata, and the daemon retries it.
+Once nothing is pending the task can be deleted. A worker session is refused:
+close your own task with `--outcome` and name the superseding work in the summary.
+
+The daemon checks for stranded lifecycle state on its own:
+
+- A container stuck BLOCKED or PAUSED is completed as soon as every child is
+  COMPLETED and delivered, and again on every daemon start.
+- A task left BLOCKED or PAUSED past `work_graph.stale_open_after_seconds`
+  (default 6h) is re-checked. If its blocker is gone, it is unblocked. If not,
+  it gets `needs_attention=stale_open` and the supervisor gets one message. The
+  flag is advisory: it clears itself once the task leaves that status.
+- `aq doctor --check tasks.dangling_lifecycle` lists finished work that still
+  holds branch owners or batch membership, and open containers whose children
+  are all done.
+
 ## Archives
 
 Completed / failed tasks eventually archive:

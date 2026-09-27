@@ -25,4 +25,15 @@ describe("LivePaneConsole", () => {
     expect(screen.getByText(/final screen/)).toBeInTheDocument();
     expect(screen.getByText(/session ended/i)).toBeInTheDocument();
   });
+
+  it("renders at a given font size, dims a stale screen and scrolls sideways inside itself", () => {
+    const { container } = render(
+      <LivePaneConsole screen="text" status="open" fontSize={16} stale />,
+    );
+    const box = container.firstElementChild as HTMLElement;
+    expect(box).toHaveStyle({ fontSize: "16px" });
+    expect(box).not.toHaveClass("text-xs");
+    expect(box).toHaveClass("opacity-60");
+    expect(box).toHaveAttribute("data-allow-overflow-x");
+  });
 });

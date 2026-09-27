@@ -129,6 +129,11 @@ agent on the machine. Rationale and the baseline workflow:
 - **Swarm end to end:** after any change to claims, pools, formulas, the task hierarchy or
   provider failover, run `scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh` (real daemon,
   real PostgreSQL, no LLM, ~8 min) — [docs/guides/e2e-swarm.md](docs/guides/e2e-swarm.md).
+- **Smart test selection is shadow-only.** `aq test --aq-smart --aq-plan-only` prints a
+  recorded proposal of the modules your change touches (shadow only). It is a hint for
+  choosing area checks, never a substitute for the focused and area checks your task names,
+  the marker arms or the acceptance commands —
+  [docs/guides/smart-test-selection.md](docs/guides/smart-test-selection.md).
 
 ## Database migrations (Alembic)
 

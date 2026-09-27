@@ -24,6 +24,7 @@ from src.database.engine import create_postgres_engine
 from src.database.tables import (
     agent_profiles,
     agent_questions,
+    agent_waits,
     agents,
     api_session_tokens,
     archived_tasks,
@@ -81,6 +82,9 @@ from src.database.tables import (
     integration_review_evidence,
     integration_rollout_transitions,
     integration_root_intent_members,
+    job_outbox,
+    job_workspace_pins,
+    jobs,
     layout_dirty,
     layout_jobs,
     layout_reflow_requests,
@@ -90,6 +94,10 @@ from src.database.tables import (
     message_discord_receipts,
     messages,
     metrics_samples,
+    morning_report_coverage,
+    morning_report_facts,
+    morning_reports,
+    outbound_deliveries,
     playbook_activations,
     playbook_artifacts,
     playbook_pending_events,
@@ -215,6 +223,17 @@ _ORDERED_TABLES = [
     digest_windows,
     # Durable report authoring history; owner/session/message references are soft.
     supervisor_report_requests,
+    # Durable morning report history, coverage cursors and cited evidence.
+    # FK → morning_reports for facts; coverage uses a soft report reference.
+    morning_reports,
+    morning_report_coverage,
+    morning_report_facts,
+    # Frozen outbound payloads and delivery receipts; owner references are soft.
+    outbound_deliveries,
+    # Durable managed job contracts/results; owner/workspace references are soft.
+    jobs,
+    # FK → jobs; terminal receipt intents survive until delivery.
+    job_outbox,
     # FK → playbook_artifacts
     playbook_activations,
     playbook_v2_runs,
@@ -230,6 +249,8 @@ _ORDERED_TABLES = [
     gates,
     merge_slots,
     project_constraints,
+    # FK → projects; durable conditions and result pointers survive restarts.
+    agent_waits,
     # FK → projects, playbook_v2_runs
     workflows,
     # FK → projects (reply_to_id is a self-FK — deferred)
@@ -257,6 +278,8 @@ _ORDERED_TABLES = [
     task_assignment_routes,
     # FK → projects, agents, tasks
     workspaces,
+    # FK → jobs, workspaces; pins survive until verified process cleanup.
+    job_workspace_pins,
     # FK → projects, tasks
     task_layouts,
     # FK → tasks

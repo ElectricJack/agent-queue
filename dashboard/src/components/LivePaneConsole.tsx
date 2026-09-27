@@ -13,22 +13,45 @@ interface LivePaneConsoleProps {
   screen: string | null;
   status: PaneStatus;
   error?: string | null;
+  attempt?: number;
+  /** Shows the "Reconnecting… Reconnect now" line; a caller with its own status and Retry (WatchTerminal) omits it. */
+  reconnect?: () => void;
   className?: string;
+  /** CSS px (12–20 in watch mode). Rendering only: never the tmux window's size. */
+  fontSize?: number;
+  /** Dim the screen while it may be out of date (a dropped stream). */
+  stale?: boolean;
 }
 
 export default function LivePaneConsole({
   screen,
   status,
   error,
+  attempt,
+  reconnect,
   className,
+  fontSize,
+  stale = false,
 }: LivePaneConsoleProps) {
+  // The agent's columns are preserved: a wide screen scrolls sideways inside
+  // the console, never the page (data-allow-overflow-x for the layout checks).
   return (
     <div
+      data-allow-overflow-x
+      style={fontSize ? { fontSize } : undefined}
       className={
-        "overflow-auto bg-black p-3 font-mono text-xs leading-tight text-green-200 " +
+        "overflow-auto bg-black p-3 font-mono leading-tight text-green-200 " +
+        (fontSize ? "" : "text-xs ") +
+        (stale ? "opacity-60 " : "") +
         (className ?? "")
       }
     >
+      {status === "reconnecting" && reconnect && (
+        <p role="status" className="mb-1 text-gray-400">
+          Reconnecting… (attempt {attempt}){" "}
+          <button type="button" onClick={reconnect} className="underline">Reconnect now</button>
+        </p>
+      )}
       {status === "stopped" && (
         <p className="mb-1 text-amber-400">Session ended — last screen below.</p>
       )}
