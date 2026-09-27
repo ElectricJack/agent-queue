@@ -144,4 +144,4 @@ what each one does and why.
 | [`a00000000009_durable_escalation_state.py`](../../../migrations/versions/a00000000009_durable_escalation_state.py) | The escalation and digest tables. |
 | [`a0000000000a_add_task_comment_kind.py`](../../../migrations/versions/a0000000000a_add_task_comment_kind.py) | `task_comments.kind`. |
 | [`a0000000000b_escalation_actions.py`](../../../migrations/versions/a0000000000b_escalation_actions.py) | Verified-reply action reservations. |
-| [`a0000000000c_development_integration.py`](../../../migrations/versions/a0000000000c_development_integration.py) | The development delivery journal. Current head. |
+| [`a0000000000c_development_integration.py`](../../../migrations/versions/a0000000000c_development_integration.py) | The development delivery journal, retired by `a00000000038_retire_development_deliveries.py`. |

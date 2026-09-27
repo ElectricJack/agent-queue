@@ -2,15 +2,44 @@
 
 Revision ID: a0000000000c
 Revises: a0000000000b
+
+The journal is defined here, not imported from ``src.database.tables``:
+revision a00000000038 retired it from the live metadata.
 """
 
 from alembic import op
-from sqlalchemy import CheckConstraint
+from sqlalchemy import JSON, CheckConstraint, Column, Float, Index, MetaData, Table, Text
 
 revision = "a0000000000c"
 down_revision = "a0000000000b"
 branch_labels = None
 depends_on = None
+
+
+def development_deliveries_table() -> Table:
+    """The journal exactly as this revision created it (a00000000038 reuses it)."""
+    table = Table(
+        "development_deliveries",
+        MetaData(),
+        Column("id", Text, primary_key=True),
+        Column("project_id", Text, nullable=False),
+        Column("repository_id", Text, nullable=False),
+        Column("target_ref", Text, nullable=False),
+        Column("expected_sha", Text, nullable=True),
+        Column("prepared_sha", Text, nullable=True),
+        Column("state", Text, nullable=False),
+        Column("manifest", JSON, nullable=False),
+        Column("evidence", JSON, nullable=False),
+        Column("reason", Text, nullable=False),
+        Column("created_at", Float, nullable=False),
+        Column("updated_at", Float, nullable=False),
+        CheckConstraint(
+            "state IN ('prepared', 'publishing', 'delivered', 'parked', 'adopted', 'cancelled')",
+            name="ck_development_delivery_state",
+        ),
+    )
+    Index("idx_development_delivery_project", table.c.project_id, table.c.state)
+    return table
 
 
 def _constraints(development):
@@ -29,9 +58,7 @@ def _constraints(development):
 
 
 def upgrade():
-    from src.database.tables import development_deliveries
-
-    development_deliveries.create(op.get_bind(), checkfirst=True)
+    development_deliveries_table().create(op.get_bind(), checkfirst=True)
     _constraints(True)
 
 

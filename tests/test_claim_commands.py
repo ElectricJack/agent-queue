@@ -2158,6 +2158,12 @@ async def development_admission(handler, db, tmp_path):
             completed_at=time.time(),
         )
     )
+    # As a worker close does: the exact final source is retained in git.
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    await GitProvenance(GitManager(), str(source), repository_url=str(remote)).write_completion(
+        CompletedSource(CompletionIdentity(PROJECT_ID, "repo", "prerequisite", "close-1"), head)
+    )
     handler.orchestrator.git = GitManager()
     service = DevelopmentIntegration(db, data_dir=tmp_path / "truth", git=handler.orchestrator.git)
     handler.orchestrator.development_integration = service
@@ -2168,31 +2174,40 @@ async def development_admission(handler, db, tmp_path):
     )
 
 
-@pytest.mark.parametrize("misleading_receipt", [False, True])
+@pytest.mark.parametrize("misleading_history", [False, True])
 async def test_development_readiness_pool_and_claim_follow_git(
-    handler, db, tmp_path, development_admission, misleading_receipt
+    handler, db, tmp_path, development_admission, misleading_history
 ):
+    import json
+
     from sqlalchemy import insert
-    from src.database.tables import development_deliveries
+    from src.database.tables import events
     from src.integration.admission import observe_admission
 
     env = development_admission
-    if misleading_receipt:
+    if misleading_history:
+        # A finished publisher action and a retired journal row both naming the
+        # prerequisite: history, never a delivery answer.
+        row = {
+            "project_id": PROJECT_ID, "repository_id": "repo", "state": "delivered",
+            "target_ref": "refs/heads/main", "created_at": time.time(),
+            "updated_at": time.time(), "manifest": [{"task_id": "prerequisite",
+                                                     "source_sha": env.head}],
+            "evidence": {"completion_sources": [{"task_id": "prerequisite",
+                                                  "completion_id": "close-1",
+                                                  "source_sha": env.head}]},
+            "reason": "deliberately misleading fixture",
+        }
         async with db.immediate() as conn:
-            await conn.execute(
-                insert(development_deliveries).values(
-                    id="misleading",
-                    project_id=PROJECT_ID,
-                    repository_id="repo",
-                    state="delivered",
-                    target_ref="refs/heads/main",
-                    created_at=time.time(),
-                    updated_at=time.time(),
-                    manifest=[{"task_id": "prerequisite", "source_sha": env.head}],
-                    evidence={},
-                    reason="deliberately misleading fixture",
-                )
-            )
+            for event_type, payload in (
+                ("development.operation", {**row, "id": "misleading", "state": "finished"}),
+                ("development.legacy_provenance",
+                 {**row, "id": "legacy-provenance:old", "legacy_id": "old"}),
+            ):
+                await conn.execute(insert(events).values(
+                    event_type=event_type, project_id=PROJECT_ID,
+                    payload=json.dumps(payload), timestamp=time.time(),
+                ))
     assert not (await db.get_task("dependent")).is_blocked
     batch = await observe_admission(db, ["dependent"], env.service)
     assert batch.allowed == set()

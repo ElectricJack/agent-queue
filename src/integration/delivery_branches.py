@@ -47,7 +47,6 @@ from sqlalchemy import func, or_, select
 from src.database.queries.hierarchy_queries import LIVE_SESSION_STATES
 from src.database.tables import (
     archived_tasks,
-    development_deliveries,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -166,9 +165,9 @@ async def live_branch_references(conn: Any, *, delivery: Any = None) -> dict[str
       :class:`~src.integration.delivery_observer.DeliveryView` taken before
       this read) proves in git that its current work is on the target — the
       publisher collects from that branch, and unknown is never "delivered";
-    * every member branch of an unsettled journal row (prepared, publishing,
-      parked), the row's own target, and every assembly ref carrying one of
-      its members — a parked batch's candidate is what its repair inspects;
+    * every member branch of an unsettled publisher operation (prepared,
+      publishing, parked), its own target, and every assembly ref carrying one
+      of its members — a parked batch's candidate is what its repair inspects;
     * the source branches an open development repair lists;
     * an ``integration_branch_owners`` row that is not ``released``;
     * a live legacy operation's parent, verifier and repair tasks, an active
@@ -230,15 +229,17 @@ async def live_branch_references(conn: Any, *, delivery: Any = None) -> dict[str
             reason = f"task {row['id']} delivery is unknown ({why})"
         hold(row["branch_name"], reason, wip=True)
 
-    # Unsettled journal rows: their members, their targets and the assemblies
-    # that carry their members.
+    # Publisher operations still in flight (outstanding legacy journal rows
+    # were retained as ``legacy-operation:`` events): their members, their
+    # targets and the assemblies that carry their members.
+    from src.integration.development import operation_rows_on
+
+    operations = await operation_rows_on(conn)
     unsettled_members: set[tuple[str, str | None]] = set()
     member_ids: dict[str, str] = {}
-    for row in await rows(
-        select(development_deliveries).where(
-            development_deliveries.c.state.in_(UNSETTLED_DELIVERY_STATES)
-        )
-    ):
+    for row in operations:
+        if row["state"] not in UNSETTLED_DELIVERY_STATES:
+            continue
         reason = f"development batch {row['id']} is {row['state']}"
         target = branch_of(row["target_ref"])
         if target and target.startswith(TASK_BRANCH_PREFIX):
@@ -269,12 +270,9 @@ async def live_branch_references(conn: Any, *, delivery: Any = None) -> dict[str
             hold(f"aq/{task_id}", reason, wip=True)
 
     if unsettled_members:
-        for row in await rows(
-            select(
-                development_deliveries.c.target_ref,
-                development_deliveries.c.manifest,
-            ).where(development_deliveries.c.target_ref.like("refs/heads/aq/development/%"))
-        ):
+        for row in operations:
+            if not str(row.get("target_ref") or "").startswith("refs/heads/" + ASSEMBLY_PREFIX):
+                continue
             carried = {
                 (m["task_id"], m.get("source_sha")) for m in _manifest(row["manifest"])
             }

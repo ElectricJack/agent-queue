@@ -8,14 +8,12 @@ import time
 from sqlalchemy import and_, exists, func, literal, or_, select, union_all
 
 from src.agent_waits import TERMINAL_TASK_STATUSES
-from src.database.queries.archive_queries import SETTLED_DEVELOPMENT_DELIVERY_STATES
 from src.database.queries.blocked_state import OBSOLETE_META_KEY
 from src.database.queries.claim_queries import claim_frontier_predicates
 from src.database.queries.hierarchy_queries import container_flag_exists
 from src.database.tables import (
     agent_waits,
     archived_tasks,
-    development_deliveries,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -259,22 +257,16 @@ async def _find_dangling_lifecycle(ctx: DoctorContext) -> dict[str, list[dict]]:
             found["owners"].append(
                 {"task_id": row[0], "owner_row_id": row[1], "ref": row[2], "handoff_state": row[3]}
             )
-        unsettled = (
-            await conn.execute(
-                select(
-                    development_deliveries.c.id,
-                    development_deliveries.c.state,
-                    development_deliveries.c.manifest,
-                )
-                .where(development_deliveries.c.state.notin_(SETTLED_DEVELOPMENT_DELIVERY_STATES))
-                .order_by(development_deliveries.c.created_at, development_deliveries.c.id)
-            )
-        ).all()
+        from src.integration.development import OPEN_OPERATION_STATES, operation_rows_on
+
         listed: dict[str, list[tuple[str, str]]] = {}
-        for batch_id, state, manifest in unsettled:
+        for operation in await operation_rows_on(conn, states=OPEN_OPERATION_STATES):
+            manifest = operation["manifest"]
             for member in manifest if isinstance(manifest, list) else []:
                 if isinstance(member, dict) and member.get("task_id"):
-                    listed.setdefault(str(member["task_id"]), []).append((batch_id, state))
+                    listed.setdefault(str(member["task_id"]), []).append(
+                        (operation["id"], operation["state"])
+                    )
         if listed:
             completed = set(
                 (

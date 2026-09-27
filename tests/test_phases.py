@@ -950,12 +950,11 @@ class TestDevelopmentModeGate:
     """A phased graph gates correctly in ``development`` mode.
 
     This pins an escape that nothing else covers.  A ``blocks`` edge is
-    unsatisfied while the prerequisite is not COMPLETED **or**
-    ``_development_delivery_pending(prerequisite)`` is true, and that
-    predicate requires ``task.branch_name IS NOT NULL``
-    (``src/database/queries/blocked_state.py:146``).  A phase container never
-    owns a branch, so the delivery half is always false for an inter-phase
-    edge and the gate releases on COMPLETED alone — which for a container
+    unsatisfied while the prerequisite is not COMPLETED, and development
+    admission additionally withholds it until git proves the prerequisite's
+    artifact delivered (``src/integration/admission.py``).  A phase container
+    never owns a branch or records an artifact, so it is organizational (no
+    artifact) and the gate releases on COMPLETED alone — which for a container
     means every child COMPLETED.  Give a container a ``branch_name`` in
     development mode and every inter-phase gate silently stops releasing.
     """
@@ -970,9 +969,9 @@ class TestDevelopmentModeGate:
                 source_path=str(tmp_path / "repo"),
             )
         )
-        # With a repository configured, ``_development_delivery_pending``'s
-        # join resolves — so the only thing making it false is the container's
-        # NULL ``branch_name``.
+        # With a repository configured the container is in delivery scope —
+        # so the only thing making it organizational is its NULL
+        # ``branch_name`` and its lack of a recorded artifact.
         await db.update_project(
             PROJECT_ID,
             hierarchical_integration_mode="development",

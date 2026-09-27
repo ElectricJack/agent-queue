@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, or_, select, text, union_all
+from sqlalchemy import cast, func, or_, select, text, union_all
+from sqlalchemy.dialects.postgresql import JSONB
 
 from src.database.tables import (
     archived_tasks,
-    development_deliveries,
     digest_windows,
     escalations,
+    events,
     projects,
     provider_availability_transitions,
     repos,
@@ -92,8 +93,44 @@ async def read_morning_snapshot(
                     task_completion_records.c.id,
                 ),
             )
+            # Publisher operations are append-only event revisions; the latest
+            # one per operation stands for it. Its state is an action outcome,
+            # never delivery: the brief proves landing from git.
+            operation = cast(events.c.payload, JSONB)
+            identity = operation["id"].as_string()
+            latest = (
+                select(
+                    identity.label("id"),
+                    events.c.project_id,
+                    *(
+                        operation[key].as_string().label(key)
+                        for key in (
+                            "repository_id", "target_ref", "expected_sha", "prepared_sha",
+                            "state", "reason",
+                        )
+                    ),
+                    operation["manifest"].label("manifest"),
+                    operation["evidence"].label("evidence"),
+                    operation["created_at"].as_float().label("created_at"),
+                    operation["updated_at"].as_float().label("updated_at"),
+                )
+                .where(
+                    events.c.event_type == "development.operation",
+                    events.c.project_id.in_(selected_ids),
+                )
+                .distinct(identity)
+                .order_by(identity, events.c.id.desc())
+                .subquery()
+            )
+            await read(
+                "deliveries",
+                bounded(
+                    select(latest).where(latest.c.updated_at >= since, latest.c.updated_at < until),
+                    latest.c.updated_at,
+                    latest.c.id,
+                ),
+            )
             for name, table, at in (
-                ("deliveries", development_deliveries, development_deliveries.c.updated_at),
                 ("escalations", escalations, escalations.c.updated_at),
                 ("reroutes", task_reroutes, task_reroutes.c.at),
             ):

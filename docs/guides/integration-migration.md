@@ -196,9 +196,18 @@ then cuts the branches from the integration loop.
 ## Schema and downgrades
 
 Development mode's journal arrived with Alembic revision
-[`a0000000000c_development_integration`](../../migrations/versions/a0000000000c_development_integration.py).
-Its **downgrade refuses** to run while any `development_deliveries` row exists,
-or while any project is in (or wants) `development` mode:
+[`a0000000000c_development_integration`](../../migrations/versions/a0000000000c_development_integration.py)
+as the `development_deliveries` table, and revision
+[`a00000000038_retire_development_deliveries`](../../migrations/versions/a00000000038_retire_development_deliveries.py)
+retired it: git answers delivery, publisher actions are `development.operation`
+events, and each retired row that named a source is kept as an immutable
+`development.legacy_provenance` event without its state
+([what the retirement keeps](development-integration.md#retiring-the-legacy-delivery-table)).
+The retirement's downgrade recreates an empty table; the events stay.
+
+`a0000000000c`'s own **downgrade refuses** to run while any
+`development_deliveries` row exists, or while any project is in (or wants)
+`development` mode:
 
 ```text
 RuntimeError: development delivery history exists; retain the journal

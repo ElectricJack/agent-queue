@@ -174,24 +174,75 @@ and `cancelled`. Their revisions are stored as `development.operation` events
 in the existing event log. `finished` says an action ended; it never establishes
 that a task is delivered. Validation checks and infrastructure streaks remain
 actual execution evidence. After a restart or an uncertain push, the publisher
-fetches and inspects git before its next action. Status retains the compatibility
-field `deliveries` for this operation history until the legacy adapters retire.
+fetches and inspects git before its next action. The status field keeps its
+name, `deliveries`, but it is this operation history, not a delivery record.
 
-Before retiring legacy source locators, inventory and migrate completion
-provenance through the authorized command:
+### Delivery is git's answer
+
+Nothing in the database says a task is delivered. Every reader — readiness,
+claims and pool demand, the publisher, container settlement, archive, branch
+cleanup, status, explain and doctor — asks git one question through
+[`src/integration/delivery_truth.py`](../../src/integration/delivery_truth.py):
+is the exact final source of the task's *current* completion generation an
+ancestor of the configured target? A close retains that source in git
+(`refs/heads/aq-provenance/completions/…`, see
+[exact completion provenance](../specs/design/git-completion-provenance.md)), so
+branch cleanup and archive never erase the answer.
+
+A generation without that retained record is **unlabelled**. No branch head,
+reported commit or historical manifest stands in for it: it is `unknown`
+(`missing_git_provenance`), and unknown fails closed — its dependents wait, it is
+never published, never archived and never settles a container. The publisher
+names it with the `missing_provenance` skip reason, and a repeated identical
+skip stalls with one supervisor message, like every other stall. A branchless
+task with no recorded commits is organizational and has no artifact of its own.
+
+### Retiring the legacy delivery table
+
+Revision `a00000000038` removed the `development_deliveries` table, the
+receipt journal older publishers wrote. Before dropping it, the revision keeps
+what is not a delivery answer, and only that:
+
+* each outstanding action (`prepared`, `publishing` or `parked`, a validation
+  deferral, a pending branch cleanup) becomes the `development.operation`
+  event `legacy-operation:<row-id>`, so recovery resumes it by inspecting git;
+* each row that named a source becomes one immutable
+  `development.legacy_provenance` event: identity, target, member sources,
+  exact `completion_sources` bindings, repair replacement mapping and the test
+  or conflict evidence it recorded — without its state or any delivery
+  conclusion. Only `aq integration migrate-provenance`, a legacy repair's
+  close and train-mode `adopt-legacy-deliveries` read it, and each of them
+  re-proves every source in git;
+* a live branchless task a manifest named with a source its current completion
+  never recorded gets the `development_legacy_artifact` marker (fenced to that
+  generation), so it reads as unknown rather than as an empty container;
+* one `development.legacy_retirement` event per project lists the retained
+  actions, the marked tasks, archived tasks of the same shape and malformed
+  rows, and the daemon's upgrade log names them.
+
+The revision is idempotent: rerunning it, or running it after the operator
+command below already retained an action, retains each fact once. It never
+writes a delivered state, and it does not recreate the receipts under another
+name.
+
+Retain every legacy generation in git, ideally before the upgrade and again
+after it:
 
 ```bash
 aq integration migrate-provenance demo
 aq integration migrate-provenance demo --apply
 ```
 
-The result names `fallback_generations`, `fallback_count`, `zero_fallback`, and
-unresolved identities in `ambiguous`. Follow `next_offset` through all pages;
-a zero count on one page does not prove the entire project migrated. Exact
-completion and repair mappings are retained in git. Missing generations,
-ambiguous sources and incomplete equivalence evidence are reported rather than
-guessed. Only outstanding push, validation, repair or cleanup actions are
-retained in the event log; terminal delivery receipts are not copied.
+The result names `fallback_generations` (generations that would evaluate
+unknown for lack of retained provenance), `fallback_count`, `zero_fallback`, the
+outstanding legacy actions retained as events in `operations`, and unresolved
+identities in `ambiguous`. Follow `next_offset` through all pages; a zero count
+on one page does not prove the entire project migrated. Exact completion and
+repair mappings are retained in git. Missing generations, ambiguous sources,
+branchless tasks a retired manifest named without a generation, and incomplete
+equivalence evidence are reported with task ids rather than guessed; an
+operator resolves each (for example by reopening and closing the task again,
+or by an explicit `adopt`). Until then those tasks stay unknown.
 
 ## What a worker sees
 
@@ -409,17 +460,14 @@ Rules ([`DevelopmentIntegration.adopt`](../../src/integration/development.py)):
 * Tasks are closed leaf-first, with a completion record whose verification
   reads *"Operator adoption; not CI attested"*. The evidence is recorded as
   `operator_accepted` — never as a CI result.
-* That completion reports the adopted head, while the manifest names each
-  task by its branch head, so the row also binds the two in
-  `evidence.completion_sources`. The adopted tasks therefore count as
-  delivered at once, and their `blocks` dependents are released. An adoption
-  journaled before this binding existed gets it on the next sweep.
-* The publisher's git check honours the adoption as well. An
-  `operator_accepted` row that names the task's exact current source, and was
-  written after that completion, counts as delivered while its adopted head
-  stays on the target — including content that landed rebased, so a chain of
-  adopted repairs is never re-held as a dependency cycle. A bare `adopted`
-  state without that operator evidence never counts.
+* The adoption retains each task's exact completion generation in git (and,
+  for `--accept-equivalent`, an explicit operator replacement record naming the
+  generation, its source and the adopted base). Git then answers delivery like
+  for any other close, so the adopted tasks count as delivered while their
+  work stays on the target, and their `blocks` dependents are released —
+  including content that landed rebased, so a chain of adopted repairs is never
+  re-held as a dependency cycle. The `finished` operation event it appends is
+  history; neither it nor a retired `adopted` row counts as delivery.
 
 ## Cancel repair scheduling you no longer want
 
@@ -479,9 +527,9 @@ aq integration enable demo --mode disabled \
   --reason 'Finished the walkthrough'
 ```
 
-Delivery journal rows are deliberately retained: they are history, not runtime
-state. See [switching integration modes](integration-migration.md) for what
-does and does not carry over.
+Publisher operation events are deliberately retained: they are history, not
+runtime state. See [switching integration modes](integration-migration.md) for
+what does and does not carry over.
 
 ## Related pages
 

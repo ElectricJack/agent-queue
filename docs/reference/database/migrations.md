@@ -49,7 +49,7 @@ What is left is a baseline plus eleven revisions:
 | [`a00000000009`](../../../migrations/versions/a00000000009_durable_escalation_state.py) | The four escalation and digest tables. |
 | [`a0000000000a`](../../../migrations/versions/a0000000000a_add_task_comment_kind.py) | `task_comments.kind` — `note` vs `progress`, so the digest cannot treat chatter as progress. |
 | [`a0000000000b`](../../../migrations/versions/a0000000000b_escalation_actions.py) | Durable verified-reply action reservations. |
-| [`a0000000000c`](../../../migrations/versions/a0000000000c_development_integration.py) | The development delivery journal and its rollout mode. **Current head.** |
+| [`a0000000000c`](../../../migrations/versions/a0000000000c_development_integration.py) | The development delivery journal (retired by `a00000000038`, which keeps its outstanding actions and source provenance as events) and its rollout mode. |
 
 Supporting files in the same directory:
 

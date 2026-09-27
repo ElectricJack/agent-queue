@@ -18,6 +18,12 @@ PREFIX = "aq-provenance/"
 MAX_REPLACEMENTS = 1000
 MAX_RECORD_BYTES = 64 * 1024
 
+#: Event type the ``development_deliveries`` retirement revision (a00000000038)
+#: appends once per retired journal row that located sources: its identity,
+#: target, manifest and source bindings, without its delivery state. Only the
+#: operator provenance migration and a legacy repair's filing fence read it.
+LEGACY_PROVENANCE_EVENT = "development.legacy_provenance"
+
 
 class ProvenanceMigrationRequired(ValueError):
     """Legacy repair evidence needs an authorized operator migration."""
@@ -385,14 +391,8 @@ async def legacy_repair_source(db, store, project_id, repair_id, member, complet
     delivery_id = evidence.get("delivery_id") if isinstance(evidence, dict) else None
     if not delivery_id:
         return None
-    from sqlalchemy import select
-
-    from src.database.tables import development_deliveries
-
     async with db._engine.connect() as conn:
-        row = (await conn.execute(select(development_deliveries).where(
-            development_deliveries.c.id == delivery_id,
-        ))).mappings().first()
+        row = await filing_operation_on(conn, delivery_id)
     if (
         row is None or row["project_id"] != project_id
         or float(row["created_at"]) < completion.completed_at
@@ -407,3 +407,25 @@ async def legacy_repair_source(db, store, project_id, repair_id, member, complet
     except GitError:
         return None  # a source this checkout lacks is not in the repair either
     return source
+
+
+async def filing_operation_on(conn, delivery_id):
+    """The publisher attempt a repair's evidence names, as first recorded.
+
+    A current ``development.operation`` event, or a retired journal row retained
+    as :data:`LEGACY_PROVENANCE_EVENT`. Its manifest and creation time fence a
+    legacy source binding; neither says anything about delivery.
+    """
+    from sqlalchemy import and_, cast, or_, select
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    from src.database.tables import events
+
+    payload = cast(events.c.payload, JSONB)
+    raw = await conn.scalar(select(events.c.payload).where(or_(
+        and_(events.c.event_type == "development.operation",
+             payload["id"].as_string() == delivery_id),
+        and_(events.c.event_type == LEGACY_PROVENANCE_EVENT,
+             payload["legacy_id"].as_string() == delivery_id),
+    )).order_by(events.c.id).limit(1))
+    return json.loads(raw) if raw else None

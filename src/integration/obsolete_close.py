@@ -13,8 +13,8 @@ never be deleted (solid-cascade and crisp-apex, 2026-09-26).
    non-terminal status (a stale hold or terminal BLOCKED included) or from
    FAILED.  It gets ``work_outcome=abandoned`` and the ``obsolete`` marker
    (``blocked_state.OBSOLETE_META_KEY``).  The marker is what the development
-   publisher and ``_development_delivery_pending`` honor: the task is never
-   published, and dependents stop waiting for its delivery.  The dependents'
+   publisher and delivery admission honor: the task is never published, and
+   dependents stop waiting for its delivery.  The dependents'
    projection is recomputed in the same transaction.
 2. **The cleanup** (:meth:`ObsoleteClose.cleanup`, idempotent):
 
@@ -23,8 +23,8 @@ never be deleted (solid-cascade and crisp-apex, 2026-09-26).
      is gone, anything origin lacks is pushed to ``aq/preserved/<row>``, then a
      fenced compare-and-swap releases the row.  A refused proof stays pending
      with its reason;
-   * a *parked* development batch that lists the task is cancelled under the
-     publisher's lock.  Its other members return to the publisher and are
+   * a *parked* development publisher operation (``development.operation``
+     event) that lists the task is cancelled under the publisher's lock.  Its other members return to the publisher and are
      batched again without the obsolete source.  A batch still being published
      (``prepared``/``publishing``), an open development repair naming the task,
      and an active train batch are left alone and stay pending.
@@ -48,17 +48,13 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select
 
-from src.database.queries.archive_queries import (
-    DEVELOPMENT_REPAIR_SOURCES_KEY,
-    SETTLED_DEVELOPMENT_DELIVERY_STATES,
-)
+from src.database.queries.archive_queries import DEVELOPMENT_REPAIR_SOURCES_KEY
 from src.database.queries.blocked_state import OBSOLETE_META_KEY
 from src.database.queries.hierarchy_queries import HIERARCHY_MODES, LIVE_SESSION_STATES
 from src.database.queries.task_queries import STALE_OPEN_DETAIL_KEY, TransitionResult
 from src.database.tables import (
-    development_deliveries,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -474,26 +470,12 @@ class ObsoleteClose:
             ]
 
     async def _unsettled_batches(self, task_id: str, project_id: str) -> list[dict]:
+        """Publisher operations still in flight whose manifest lists *task_id*."""
+        from src.integration.development import OPEN_OPERATION_STATES, operation_rows_on
+
         async with self.db._engine.connect() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        select(development_deliveries)
-                        .where(
-                            development_deliveries.c.project_id == project_id,
-                            development_deliveries.c.state.notin_(
-                                SETTLED_DEVELOPMENT_DELIVERY_STATES
-                            ),
-                        )
-                        .order_by(development_deliveries.c.created_at, development_deliveries.c.id)
-                    )
-                )
-                .mappings()
-                .all()
-            )
-        return [
-            dict(row) for row in rows if self.db._named_task_ids(row["manifest"], {task_id})
-        ]
+            rows = await operation_rows_on(conn, [project_id], states=OPEN_OPERATION_STATES)
+        return [row for row in rows if self.db._named_task_ids(row["manifest"], {task_id})]
 
     async def _open_repair_naming(self, task_id: str, project_id: str) -> str | None:
         repair = tasks.alias("obsolete_repair")
@@ -543,39 +525,36 @@ class ObsoleteClose:
         self, batch: dict, task_id: str, principal: str
     ) -> tuple[str, str] | None:
         """Cancel one parked batch under the publisher's lock; ``None`` on success."""
-        from src.integration.development import DevelopmentBusy, publisher_exclusion
+        from src.integration.development import (
+            DevelopmentBusy,
+            publisher_exclusion,
+            revise_operation_on,
+        )
 
         try:
             async with publisher_exclusion(self.db, batch["repository_id"]):
                 now = self.clock()
-                async with self.db._engine.begin() as conn:
-                    current = (
-                        (
-                            await conn.execute(
-                                select(development_deliveries)
-                                .where(development_deliveries.c.id == batch["id"])
-                                .with_for_update()
-                            )
-                        )
-                        .mappings()
-                        .one_or_none()
-                    )
-                    if current is None or current["state"] != "parked":
-                        return None  # settled meanwhile: nothing left to drop
-                    evidence = {
-                        **(current["evidence"] or {}),
-                        "released": {
-                            "at": now,
-                            "conclusion": "obsolete_member",
-                            "task_id": task_id,
-                            "by": principal,
+
+                def cancel(current):
+                    if current["state"] != "parked":
+                        return None
+                    return {
+                        "state": "cancelled",
+                        "evidence": {
+                            **(current["evidence"] or {}),
+                            "released": {
+                                "at": now,
+                                "conclusion": "obsolete_member",
+                                "task_id": task_id,
+                                "by": principal,
+                            },
                         },
                     }
-                    await conn.execute(
-                        update(development_deliveries)
-                        .where(development_deliveries.c.id == batch["id"])
-                        .values(state="cancelled", evidence=evidence, updated_at=now)
-                    )
+
+                async with self.db._engine.begin() as conn:
+                    current = await revise_operation_on(conn, batch["id"], cancel)
+                    if current is None or current["state"] != "parked":
+                        return None  # settled meanwhile: nothing left to drop
                     members = {
                         member["task_id"]
                         for member in current["manifest"] or []

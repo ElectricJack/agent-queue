@@ -218,12 +218,28 @@ class TestLegacyGitProvenanceMigration:
                 "state": state, "manifest": manifest, "evidence": evidence or {},
                 "reason": "legacy", "created_at": created_at, "updated_at": created_at}
 
+    @staticmethod
+    async def _retain(db, rows):
+        """Retired journal rows, retained exactly as revision a00000000038 keeps them."""
+        import json
+        from importlib import import_module
+
+        from sqlalchemy import insert
+        from src.database.tables import events
+
+        retire = import_module("migrations.versions.a00000000038_retire_development_deliveries")
+        async with db._engine.begin() as conn:
+            await conn.execute(insert(events), [{
+                "event_type": retire.PROVENANCE_EVENT, "project_id": row["project_id"],
+                "payload": json.dumps(retire._provenance(
+                    row, row["evidence"], retire._members(row["manifest"]))),
+                "timestamp": row["created_at"],
+            } for row in rows])
+
     async def test_history_beyond_one_thousand_deliveries_pages_instead_of_refusing(
         self, provenance_repo, db, monkeypatch
     ):
         """keen-quest: agent-queue's 1602 deliveries refused every page."""
-        from sqlalchemy import insert
-        from src.database.tables import development_deliveries
         from src.integration import provenance_migration
         from src.integration.provenance_migration import ProvenanceMigration
         from src.models import Task, TaskCompletion
@@ -243,8 +259,7 @@ class TestLegacyGitProvenanceMigration:
         proof = self._delivery("proof", [{"task_id": "late", "source_sha": late}], created_at=9999,
             evidence={"completion_sources": [
                 {"task_id": "late", "completion_id": "late-g", "source_sha": late}]})
-        async with db._engine.begin() as conn:
-            await conn.execute(insert(development_deliveries), [*noise, proof])
+        await self._retain(db, [*noise, proof])
         migration = ProvenanceMigration(db, git)
         page = await migration.run("p", limit=1)
         assert page["success"] and page["next_offset"] == 1
@@ -262,8 +277,6 @@ class TestLegacyGitProvenanceMigration:
 
     async def test_held_task_scope_binds_only_its_fenced_contract_sources(self, provenance_repo, db):
         """--task-id migrates exactly the source generations a held repair's close needs."""
-        from sqlalchemy import insert
-        from src.database.tables import development_deliveries
         from src.integration.provenance import CompletionIdentity
         from src.integration.provenance_migration import ProvenanceMigration
         from src.models import Task, TaskCompletion
@@ -290,8 +303,7 @@ class TestLegacyGitProvenanceMigration:
         await db.set_task_meta("repair", "development_repair_sources", contract)
         await db.set_task_meta("repair", "development_repair_evidence", {"delivery_id": "parked"})
         rows.append(self._delivery("parked", contract, created_at=10, state="parked"))
-        async with db._engine.begin() as conn:
-            await conn.execute(insert(development_deliveries), rows)
+        await self._retain(db, rows)
         migration = ProvenanceMigration(db, git)
         preview = await migration.run("p", task_id="repair")
         assert [(i["task_id"], i["source_oid"], i["action"]) for i in preview["inventory"]] == [
@@ -394,8 +406,6 @@ class TestLegacyGitProvenanceMigration:
     async def test_complete_legacy_repair_is_retained_and_incomplete_evidence_reported(
         self, provenance_repo, db, binding_style
     ):
-        from sqlalchemy import insert
-        from src.database.tables import development_deliveries
         from src.integration.provenance import CompletedSource, CompletionIdentity
         from src.integration.provenance_migration import ProvenanceMigration
         from src.models import Task, TaskCompletion
@@ -428,12 +438,10 @@ class TestLegacyGitProvenanceMigration:
             row.update(state="adopted", manifest=contract, evidence={
                 "resolved_by_delivered_repair": {"task_id": "repair", "completion_id": "rg"},
             })
-        async with db._engine.begin() as conn:
-            await conn.execute(insert(development_deliveries).values(**row))
-            await conn.execute(insert(development_deliveries).values(**{
-                **row, "id": "operator", "manifest": [{"task_id": "task", "source_sha": original,
-                                                        "acceptance": "operator_equivalent"}],
-            }))
+        await self._retain(db, [row, {
+            **row, "id": "operator", "manifest": [{"task_id": "task", "source_sha": original,
+                                                    "acceptance": "operator_equivalent"}],
+        }])
         migration = ProvenanceMigration(db, git)
         refs = await store.run("ls-remote", "origin")
         preview = await migration.run("p")

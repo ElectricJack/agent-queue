@@ -1674,6 +1674,48 @@ def s15_development_delivery(state: dict) -> str:
     check(any(reason["code"] == "development_dependency_delivery"
               for reason in waiting.get("reasons", [])),
           f"undelivered code released its successor: {waiting}")
+    # set-status deliberately models an old task without an immutable close.
+    # Its branch head, reported commits and any journal are no stand-in for
+    # the generation's exact source: git delivery is unknown, so it is neither
+    # published nor allowed to release its successor.
+    base = _git_text(str(remote), "rev-parse", "main")
+    idle = aq("integration", "sweep", "e2e-development")
+    check(idle.get("outcome") == "idle", f"an unlabelled generation was published: {idle}")
+    check(_git_text(str(remote), "rev-parse", "main") == base, "unlabelled work reached main")
+    withheld = api("explain_task", {"task_id": successor_id})
+    check(any(reason["code"] == "development_dependency_delivery"
+              and "missing_git_provenance" in str(reason.get("detail"))
+              for reason in withheld.get("reasons", [])),
+          f"unknown provenance did not withhold the successor: {withheld}")
+    inventory = aq("integration", "migrate-provenance", "e2e-development")
+    check(not inventory.get("zero_fallback") and any(
+        entry["task_id"] == task_id and entry.get("generation") is None
+        for entry in inventory.get("fallback_generations", [])
+    ), f"unlabelled generation was not named: {inventory}")
+    # The operator records an exact generation for the pushed work (adopted
+    # against its own branch, which is at that SHA); neither a finished
+    # operation nor ancestry invents one for a COMPLETED task.
+    feature_ref = "refs/heads/fixture-feature"
+    refused = aq("integration", "adopt", "e2e-development", "--task", task_id,
+                 "--target-ref", feature_ref, "--head-sha", head,
+                 "--reason", "unlabelled legacy generation", check_ok=False)
+    check("provenance migration" in str(refused.get("_error")),
+          f"adoption invented legacy completion identity: {refused}")
+    aq("task", "set-status", "--task-id", task_id, "--status", "READY")
+    api("pause_task", {"task_id": task_id})
+    adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
+                 "--target-ref", feature_ref, "--head-sha", head,
+                 "--reason", "operator creates an exact completion generation")
+    check(adopted.get("outcome") == "adopted", str(adopted))
+    adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
+                 "--target-ref", feature_ref, "--head-sha", head,
+                 "--reason", "prove repeatable operator reconciliation")
+    check(adopted.get("outcome") == "adopted", str(adopted))
+    after = aq("integration", "migrate-provenance", "e2e-development")
+    check(not any(entry["task_id"] == task_id for entry in after.get("fallback_generations", [])),
+          f"the exact generation is still unlabelled: {after}")
+
+    # With its exact source retained, AQ validates and promotes that commit.
     result = aq("integration", "sweep", "e2e-development")
     check(result.get("outcome") == "delivered", str(result))
     check(_git_text(str(remote), "rev-parse", "main") == head, "AQ did not promote exact checked commit")
@@ -1694,25 +1736,6 @@ def s15_development_delivery(state: dict) -> str:
           and validation.get("exit_code") == 0 and validation.get("outcome") == "passed"
           and validation.get("input_ref") == head and validation.get("input_mode") == "snapshot",
           f"validation receipt does not attest the published snapshot: {validation}")
-    # set-status deliberately models an old task without an immutable close.
-    # Neither a finished push operation nor ancestry invents that generation.
-    inventory = aq("integration", "migrate-provenance", "e2e-development")
-    check(not inventory.get("zero_fallback") and any(
-        entry["task_id"] == task_id and entry.get("generation") is None
-        for entry in inventory.get("fallback_generations", [])
-    ), f"unlabelled generation was not named: {inventory}")
-    refused = aq("integration", "adopt", "e2e-development", "--task", task_id,
-                 "--head-sha", head, "--reason", "unlabelled legacy generation", check_ok=False)
-    check("provenance migration" in str(refused.get("_error")),
-          f"adoption invented legacy completion identity: {refused}")
-    aq("task", "set-status", "--task-id", task_id, "--status", "READY")
-    api("pause_task", {"task_id": task_id})
-    adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
-                 "--head-sha", head, "--reason", "operator creates an exact completion generation")
-    check(adopted.get("outcome") == "adopted", str(adopted))
-    adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
-                 "--head-sha", head, "--reason", "prove repeatable operator reconciliation")
-    check(adopted.get("outcome") == "adopted", str(adopted))
     status = aq("integration", "status", "e2e-development")
     check(status.get("effective_mode") == "development", str(status))
 
@@ -1728,7 +1751,9 @@ def s15_development_delivery(state: dict) -> str:
         return deleted.get("deleted") == successor_id
 
     wait_for(_delete_successor, what=f"S15 successor {successor_id} to be removed")
-    return "managed pytest snapshot validation and exact Git publication through real AQ CLI; operator adoption recorded without CI fabrication"
+    return ("unlabelled legacy generation withheld; operator adoption recorded an exact "
+            "generation without CI fabrication; managed pytest snapshot validation and exact "
+            "Git publication through real AQ CLI")
 
 
 # ---------------------------------------------------------------------------

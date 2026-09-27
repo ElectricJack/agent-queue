@@ -87,6 +87,11 @@ _RECOVERY = {
         "its source ref is gone and its completion's source is not on the target: push "
         "the branch again, or close the task again with the commit that holds the work"
     ),
+    "missing_provenance": (
+        "its completion has no exact source retained in git: run `aq integration "
+        "migrate-provenance <project-id> --apply` (or reopen and close it again), then "
+        "resolve anything it reports as ambiguous"
+    ),
     "undelivered_dependency": (
         "a dependency is not delivered: publish or recover that dependency first"
     ),

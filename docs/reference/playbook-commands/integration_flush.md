@@ -179,9 +179,9 @@ coalescing), and one durable row lands in the integration outbox as
 `integration.sweep_due`. The batch lease may be refreshed as a side effect of the
 same locked pass.
 
-In `development` mode: whatever the sweep wrote — a `development_deliveries` row
-(line 3839) in state `delivered` or `parked`, a pushed candidate snapshot ref,
-and possibly a repair task.
+In `development` mode: whatever the sweep wrote — a `development.operation`
+event in state `finished` or `parked`, a pushed candidate snapshot ref, and
+possibly a repair task.
 
 In `observe`/`hierarchy` mode: nothing at all. The eligibility projection is
 computed, not stored.

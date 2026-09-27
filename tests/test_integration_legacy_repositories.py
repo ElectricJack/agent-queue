@@ -8,7 +8,6 @@ import pytest
 from sqlalchemy import insert, select, update
 
 from src.database.tables import (
-    development_deliveries,
     integration_legacy_deliveries,
     projects,
     task_comments,
@@ -16,6 +15,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitManager
 from src.integration.delivery_observer import DeliveryObserver
+from src.integration.development import DevelopmentIntegration
 from src.integration.legacy_repositories import LegacyRepositoryBinding
 from src.integration.status import IntegrationStatusService
 from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
@@ -50,6 +50,17 @@ def landed(clone, name):
     git(clone, "commit", "-q", "-m", name)
     git(clone, "push", "-q", "origin", "main")
     return git(clone, "rev-parse", "HEAD")
+
+
+async def retained(clone, task_id, generation, commit):
+    """Retain *generation*'s exact source in git, as a worker close does; return it."""
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    url = git(clone, "remote", "get-url", "origin")
+    await GitProvenance(GitManager(), str(clone), repository_url=url).write_completion(
+        CompletedSource(CompletionIdentity("p", "repo", task_id, generation), commit)
+    )
+    return commit
 
 
 @pytest.fixture
@@ -87,7 +98,9 @@ async def test_dry_run_then_bind_only_proven_terminal_hierarchy(db, origin):
         # Git proves the child's latest completion on main; no receipt row.
         await conn.execute(insert(task_completion_records).values(
             id="completion-child", task_id="child", outcome="pass",
-            commits=json.dumps([landed(origin, "child")]), completed_at=now,
+            commits=json.dumps([await retained(
+                origin, "child", "completion-child", landed(origin, "child"),
+            )]), completed_at=now,
         ))
 
     service = LegacyRepositoryBinding(db)
@@ -136,7 +149,8 @@ async def test_apply_requires_reason_and_wrong_repository_receipt_is_unproven(db
             id="completion-child", task_id="child", outcome="pass",
             commits=json.dumps(["b" * 40]), completed_at=now,
         ))
-        await conn.execute(insert(development_deliveries).values(
+        # A finished publisher action on the wrong repository answers nothing.
+        await conn.execute(DevelopmentIntegration._operation_insert(
             id="wrong-delivery", project_id="p", repository_id="other",
             target_ref="refs/heads/main", state="delivered",
             manifest=[{"task_id": "child", "source_sha": "b" * 40}],
@@ -188,7 +202,9 @@ async def test_recorded_legacy_deliveries_prove_children_and_their_parent(db, or
         ))
         await conn.execute(insert(task_completion_records).values(
             id="completion-receipt", task_id="parent.receipt", outcome="pass",
-            commits=json.dumps([landed(origin, "parent-receipt")]), completed_at=now,
+            commits=json.dumps([await retained(
+                origin, "parent.receipt", "completion-receipt", landed(origin, "parent-receipt"),
+            )]), completed_at=now,
         ))
         await _legacy_delivery(conn, "parent.superseded", "parent", "superseded")
         await _legacy_delivery(conn, "parent.retired", "parent", "abandoned")

@@ -1,7 +1,11 @@
 """Bounded, conservative bridge from legacy source locators to Git provenance.
 
-Legacy state never proves containment. Leave original rows intact, report every
-unbound/ambiguous generation, and publish only exact Git-verified identities.
+The retired ``development_deliveries`` journal survives only as immutable
+``development.legacy_provenance`` events (source locators without delivery
+state) and, for outstanding actions, ``legacy-operation:`` operation events,
+both written by revision a00000000038. Legacy state never proves containment.
+Report every unbound/ambiguous generation and publish only exact Git-verified
+identities; a generation left unlabelled evaluates unknown, never delivered.
 """
 from __future__ import annotations
 
@@ -10,24 +14,28 @@ import re
 import tempfile
 from dataclasses import asdict
 
-from sqlalchemy import select, text, tuple_, union
+from sqlalchemy import cast, select, union
+from sqlalchemy.dialects.postgresql import JSONB
 
 from src.database.queries.task_identity import resolve_task_identity_on
 from src.database.tables import (
     archived_tasks,
-    development_deliveries,
+    events,
     task_completion_records,
+    task_metadata,
     tasks,
 )
 from src.git.manager import GitError
 from src.integration.provenance import (
+    LEGACY_PROVENANCE_EVENT,
     CompletedSource,
     CompletionIdentity,
     GitProvenance,
     legacy_repair_source,
 )
+from src.integration.publishable_artifact import LEGACY_ARTIFACT_KEY
 
-# The delivery journal is read in keyset chunks; only the rows naming a page's
+# The retained journal is read in keyset chunks; only the rows naming a page's
 # tasks are retained, and those alone are bounded.
 HISTORY_CHUNK = 500
 MAX_PAGE_HISTORY = 5000
@@ -68,10 +76,18 @@ class ProvenanceMigration:
                 ).order_by(task_completion_records.c.completed_at, task_completion_records.c.id)
                   .offset(offset).limit(limit + 1))).mappings().all()
                 more, rows, held, unheld = len(rows) > limit, rows[:limit], {}, []
+                # A retired manifest's source for a branchless live task is an
+                # artifact too (the retirement marker); without a generation it
+                # cannot be bound, only reported.
+                marked = select(task_metadata.c.task_id).where(
+                    task_metadata.c.task_id == tasks.c.id,
+                    task_metadata.c.key == LEGACY_ARTIFACT_KEY,
+                ).exists()
                 unlabelled = union(*[
                     select(table.c.id).where(
                         table.c.project_id == project_id, table.c.status == "COMPLETED",
-                        table.c.branch_name.is_not(None),
+                        table.c.branch_name.is_not(None) | marked
+                        if table is tasks else table.c.branch_name.is_not(None),
                         ~select(task_completion_records.c.id).where(
                             task_completion_records.c.task_id == table.c.id,
                         ).exists(),
@@ -88,6 +104,7 @@ class ProvenanceMigration:
                 rows, held, unheld = await self._held_task_rows(conn, project_id, task_id)
             page = {row["task_id"] for row in rows}
             history = await self._history(conn, project_id, repo.id, page)
+            operations = await self._operations(conn, project_id, history)
             identities = {row["task_id"]: await resolve_task_identity_on(conn, row["task_id"])
                           for row in rows}
         # An isolated read clone prevents even a dry-run fetch from changing
@@ -137,7 +154,6 @@ class ProvenanceMigration:
             repairs = ([], []) if task_id is not None else await self._repairs(
                 store, history, rows, bindings, target, apply, page)
             ambiguous.extend(repairs[1])
-            operations = await self._operations(history, apply)
             # Old operator equivalence rows name neither the immutable original
             # generation nor a replacement base. Do not silently convert an
             # operator's acceptance into a broader, unprovable Git claim.
@@ -159,52 +175,26 @@ class ProvenanceMigration:
                         "prepared_sha": r["prepared_sha"], "manifest": r["manifest"]} for r in history],
                     "next_offset": offset + limit if more else None}
 
-    async def _operations(self, history, apply):
-        """Retain outstanding actions and test evidence, never delivery receipts.
+    @staticmethod
+    async def _operations(conn, project_id, history):
+        """Outstanding legacy actions the retirement retained as operation events.
 
-        Only a pending push, unresolved test/merge attempt, infrastructure
-        streak or pending cleanup has recovery work. Terminal receipt mappings
-        belong in git and are deliberately not copied to another model.
+        Only a pending push, unresolved test/merge attempt, infrastructure streak
+        or pending cleanup had recovery work; revision a00000000038 appended
+        each as ``legacy-operation:<id>``. Terminal receipts were not copied.
         """
-        from sqlalchemy import cast
-        from sqlalchemy.dialects.postgresql import JSONB
-
-        from src.database.tables import events
-        from src.integration.development import BRANCH_CLEANUP_KEY, DevelopmentIntegration
-        from src.integration.development_validation import DEFERRAL_KIND
-
-        inventory = []
-        for old in history:
-            evidence = old["evidence"] or {}
-            cleanup = evidence.get(BRANCH_CLEANUP_KEY) or {}
-            if not (old["state"] in {"prepared", "publishing", "parked"}
-                    or evidence.get("kind") == DEFERRAL_KIND
-                    or cleanup.get("state") == "pending"):
-                continue
-            identity = "legacy-operation:" + old["id"]
-            # These keys are obsolete receipt bindings, not operation facts.
-            retained = {key: value for key, value in evidence.items() if key not in {
-                "completion_sources", "resolved_by_delivered_repair", "resolved_by_main_ancestry",
-            }}
-            row = {key: old[key] for key in (
-                "project_id", "repository_id", "target_ref", "expected_sha", "prepared_sha",
-                "manifest", "reason", "created_at", "updated_at",
-            )}
-            row.update(id=identity, state=old["state"], evidence=retained)
-            if apply:
-                async with self.db._engine.begin() as conn:
-                    await conn.execute(text(
-                        "SELECT pg_advisory_xact_lock(hashtextextended(:id, 0))"
-                    ), {"id": "development-operation:" + identity})
-                    present = await conn.scalar(select(events.c.id).where(
-                        events.c.event_type == "development.operation",
-                        cast(events.c.payload, JSONB)["id"].as_string() == identity,
-                    ).limit(1))
-                    if present is None:
-                        await conn.execute(DevelopmentIntegration._operation_insert(**row))
-            inventory.append({"legacy_id": old["id"], "operation_id": identity,
-                              "action": "retained" if apply else "would_retain"})
-        return inventory
+        wanted = {"legacy-operation:" + row["id"] for row in history}
+        if not wanted:
+            return []
+        identity = cast(events.c.payload, JSONB)["id"].as_string()
+        retained = set((await conn.execute(select(identity).where(
+            events.c.event_type == "development.operation",
+            events.c.project_id == project_id,
+            identity.in_(sorted(wanted)),
+        ).distinct())).scalars())
+        return [{"legacy_id": operation.removeprefix("legacy-operation:"),
+                 "operation_id": operation, "action": "retained"}
+                for operation in sorted(retained)]
 
     async def _held_task_rows(self, conn, project_id, task_id):
         """Current source generations a held task's close needs, keyed by contract.
@@ -240,28 +230,33 @@ class ProvenanceMigration:
         return rows, held, unheld
 
     async def _history(self, conn, project_id, repository_id, task_ids):
-        """Keyset-page the whole delivery journal, retaining rows naming *task_ids*.
+        """Keyset-page the retained legacy journal, keeping rows naming *task_ids*.
 
         No single read holds a project's full history and a long history never
-        refuses a page; only the page's own relevant rows are bounded.
+        refuses a page; only the page's own relevant rows are bounded. Each
+        :data:`LEGACY_PROVENANCE_EVENT` payload is read back in its journal
+        row's shape (``id`` is the retired row id), without any state.
         """
-        history, after = [], None
-        column = development_deliveries.c
+        history, after = [], 0
+        payload = cast(events.c.payload, JSONB)
         while task_ids:
-            query = select(development_deliveries).where(
-                column.project_id == project_id, column.repository_id == repository_id,
-            )
-            if after is not None:
-                query = query.where(tuple_(column.created_at, column.id) > tuple_(*after))
-            chunk = (await conn.execute(query.order_by(column.created_at, column.id)
-                                        .limit(HISTORY_CHUNK))).mappings().all()
-            history.extend(row for row in chunk if _names(row, task_ids))
+            chunk = (await conn.execute(select(events.c.id, events.c.payload).where(
+                events.c.event_type == LEGACY_PROVENANCE_EVENT,
+                events.c.project_id == project_id,
+                payload["repository_id"].as_string() == repository_id,
+                events.c.id > after,
+            ).order_by(events.c.id).limit(HISTORY_CHUNK))).all()
+            for _event_id, raw in chunk:
+                row = _journal_row(json.loads(raw))
+                if _names(row, task_ids):
+                    history.append(row)
             if len(history) > MAX_PAGE_HISTORY:
                 raise ValueError("legacy history for this page exceeds bounded inventory; "
                                  "use a smaller --limit or --task-id")
             if len(chunk) < HISTORY_CHUNK:
                 break
-            after = chunk[-1]["created_at"], chunk[-1]["id"]
+            after = chunk[-1][0]
+        history.sort(key=lambda row: (row["created_at"], row["id"]))
         return history
 
     async def _source(self, store, row, history, project_id, held=None):
@@ -356,6 +351,25 @@ class ProvenanceMigration:
                 except (ValueError, KeyError, TypeError, GitError) as exc:
                     ambiguous.append({**entry, "reason": str(exc)})
         return inventory, ambiguous
+
+
+def _journal_row(retained):
+    """A retained legacy provenance payload in the retired journal row's shape."""
+    return {
+        "id": retained["legacy_id"],
+        "project_id": retained["project_id"],
+        "repository_id": retained["repository_id"],
+        "target_ref": retained.get("target_ref"),
+        "expected_sha": retained.get("expected_sha"),
+        "prepared_sha": retained.get("prepared_sha"),
+        "manifest": retained.get("manifest") or [],
+        "evidence": {
+            key: retained[key]
+            for key in ("completion_sources", "resolved_by_delivered_repair")
+            if retained.get(key)
+        },
+        "created_at": float(retained.get("created_at") or 0),
+    }
 
 
 def _binding_key(binding):
