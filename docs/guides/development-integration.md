@@ -11,10 +11,11 @@ per-parent verifier and no squash in this path.
 
 A `blocks` dependency on a completed code task stays blocked until the delivery
 journal confirms its completion revision on the configured default branch.
-Preserving a candidate or publishing a parent aggregate does not release the
-successor. Publication updates dependency state automatically; a later completion
-at a different revision needs its own delivery. Branchless tasks have no code
-artifact to publish.
+Preserving a batch candidate does not release the successor. Each clean source
+merges directly into the batch, and a conflicting member holds only its own
+dependents; independent siblings can still publish. Publication updates
+dependency state automatically; a later completion at a different revision
+needs its own delivery. Branchless tasks have no code artifact to publish.
 
 The publisher can assemble an already-completed dependency chain in one batch,
 in dependency order. It does not spend a separate batch interval on each link.
