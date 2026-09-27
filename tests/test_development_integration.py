@@ -437,19 +437,23 @@ async def test_docs_only_plan_dependency_stays_satisfied_after_branch_cleanup(se
     ))
     await db.create_task(Task(id="waiting", project_id="p", title="waiting", description=""))
     await db.add_dependency("waiting", "plan")
-    assert (await db.get_task("waiting")).is_blocked
+    assert not (await db.get_task("waiting")).is_blocked
+    # The plan's base is already contained in main. Fresh git admission
+    # releases it before the publisher records a delivery receipt.
+    assert not await _admission_blocked(setup, "waiting")
 
     assert (await service.sweep("p"))["outcome"] == "delivered"
-    assert not (await db.get_task("waiting")).is_blocked
+    assert not await _admission_blocked(setup, "waiting")
 
     await service.collect_delivered_branches("p")
     assert "aq/plan" not in remote_branches(remote)
     assert not await _delivery_pending(db, "plan")
     assert await db.get_blocking_dependencies("waiting") == []
-    # An edge written after cleanup recomputes against the receipt, not the branch.
+    assert not await _admission_blocked(setup, "waiting")
+    # Fresh admission resolves the original source after branch cleanup too.
     await db.create_task(Task(id="filed-later", project_id="p", title="f", description=""))
     await db.add_dependency("filed-later", "plan")
-    assert not (await db.get_task("filed-later")).is_blocked
+    assert not await _admission_blocked(setup, "filed-later")
 
     head = await aq_feature(setup, "implementation")
     await db.add_dependency("implementation", "plan")
@@ -2543,7 +2547,8 @@ async def test_parked_conflict_keeps_one_repair_through_source_parked_sweeps(set
     [row] = await _parked(service)
     assert row["id"] == parked["id"] and "reconflicted_at" in row["evidence"]
     assert [task.id for task in await _repairs(db)] == [identity]
-    assert (await db.get_task("next")).is_blocked
+    assert not (await db.get_task("next")).is_blocked
+    assert await _admission_blocked(setup, "next")
 
     # A repair that ended without completing leaves the source with none.
     await db.update_task(identity, status=TaskStatus.FAILED.value)
@@ -2598,7 +2603,7 @@ async def test_reconflicted_repair_chain_carries_the_source_to_delivery(setup):
     assert (await service.sweep("p"))["outcome"] == "delivered"
     await service.sweep("p")
     assert not await _parked(service)
-    assert not (await db.get_task("next")).is_blocked
+    assert not await _admission_blocked(setup, "next")
     git(remote, "merge-base", "--is-ancestor", original, "main")
     assert git(remote, "show", "main:base.txt") == "main again, and child"
     assert {task.id for task in await _repairs(db)} == {first, second}
