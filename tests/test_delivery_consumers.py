@@ -343,3 +343,31 @@ async def test_a_retired_manifest_source_keeps_a_branchless_close_unknown(world)
         assert await delivery_sensitive_ids(conn, ["legacy-artifact"]) == set()
     view = await observer.observe(["legacy-artifact"])
     assert view.get("legacy-artifact").state is DeliveryState.NO_ARTIFACT
+
+
+def test_no_runtime_module_reads_or_writes_a_delivery_record():
+    """Retired for good: no table answers delivery and no source queries one.
+
+    Docs and comments may still name the table in prose; a Python identifier,
+    import or SQL reference to it is a reintroduced receipt reader or writer.
+    """
+    import re
+    from pathlib import Path
+
+    from src.database import tables
+
+    assert "development_deliveries" not in tables.metadata.tables
+    assert not hasattr(tables, "development_deliveries")
+    usage = re.compile(
+        r"development_deliveries(?:\.c\b|\.alias\(|\s*[,)]|\s*$)"
+        r"|\bimport\s+development_deliveries\b"
+        r"|(?i:\b(?:from|into|update|join|table)\s+\"?development_deliveries\b)"
+    )
+    src = Path(__file__).resolve().parent.parent / "src"
+    offenders = sorted(
+        f"{path.relative_to(src.parent)}:{number}"
+        for path in src.rglob("*.py")
+        for number, line in enumerate(path.read_text().splitlines(), 1)
+        if usage.search(line)
+    )
+    assert offenders == []

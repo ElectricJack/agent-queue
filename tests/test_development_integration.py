@@ -5255,9 +5255,19 @@ async def test_provenance_migration_inventories_zero_and_retains_only_real_opera
     ))
     await db.create_task(Task(id="no-generation", project_id="p", title="unlabelled", description="",
         repo_id="r", branch_name="aq/missing", status=TaskStatus.COMPLETED))
+    # A branchless close a retired manifest named is an artifact too.
+    from src.integration.publishable_artifact import LEGACY_ARTIFACT_KEY
+
+    await db.create_task(Task(id="marked-branchless", project_id="p", title="marked",
+        description="", repo_id="r", status=TaskStatus.COMPLETED))
+    await db.set_task_meta("marked-branchless", LEGACY_ARTIFACT_KEY, {
+        "legacy_id": "old", "source_sha": head, "completion_id": None, "reason": "retired",
+    })
     result = await migration.run("p", apply=True)
-    assert not result["zero_fallback"] and result["fallback_count"] == 2
-    assert {item["task_id"] for item in result["ambiguous"]} == {"legacy-source", "no-generation"}
+    assert not result["zero_fallback"] and result["fallback_count"] == 3
+    assert {item["task_id"] for item in result["ambiguous"]} == {
+        "legacy-source", "no-generation", "marked-branchless",
+    }
     git(source, "push", "origin", f"{head}:main")
     git(source, "push", "origin", "--delete", "legacy-source")
 
