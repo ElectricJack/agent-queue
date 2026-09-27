@@ -194,8 +194,9 @@ profiles) to another install; see the module docstring in
 `src/portable_config.py` for the allowlist. Because every tuned value is
 either a constant or a function of cores and RAM, the recommendation exports
 cleanly with no exclusions — a test asserts it. The `integration` section
-travels as four keys only (`default_mode`, `merge_ci_policy`,
-`merge_required_checks`, `merge_require_up_to_date`); `github_app` and
+travels as six keys only (`default_mode`, `merge_ci_policy`,
+`merge_required_checks`, `merge_require_up_to_date`, `owner_recovery_sweep`,
+`publisher_stall_after`); `github_app` and
 `scratch_probe` name one installation's own app, repository and key paths and
 are reported as excluded rather than shipped.
 

@@ -233,6 +233,44 @@ parked content under the current policy:
 aq integration sweep demo --retry
 ```
 
+## When a candidate keeps being skipped
+
+A completed task the sweep cannot publish yet is *skipped*, with the reason
+recorded in its `development_publisher_skip` task metadata: an undelivered
+dependency, a source ref that is gone before its work reached `main`, a
+dependency cycle, a parked source. A skip is an observation, not a failure —
+but one that repeats forever is a stall, so it has a bounded life
+([`src/integration/development_stalls.py`](../../src/integration/development_stalls.py)):
+
+* Each evaluation is fingerprinted: task, latest completion, reason, related
+  task, the configured target (repository and ref) and the git evidence that
+  matters — the candidate's observed source OID, plus the target OID for a
+  reason decided by merging into it (a conflict). A target that moved without
+  containing the work is not new evidence: unrelated deliveries do not reset
+  the count.
+* After `integration.publisher_stall_after` (default 5) consecutive identical
+  unsuccessful evaluations the attempt ends as `stalled`. The publisher logs
+  one error, sends `supervisor-<project>` one message naming each stalled task
+  with its repository, target and source OIDs, completion, reason and a
+  recovery command, and `aq doctor --check
+  integration.development_publisher_stalled` reports ERROR. Earlier
+  evaluations are progress observations (WARN from the third).
+* A stalled attempt is not retried blindly and not reported again, across
+  sweeps and daemon restarts alike. The sweep still checks it every time: as
+  soon as git shows the work delivered, the candidate publishes and its record
+  is removed. A new completion, a moved source, a changed target or reason, or
+  an explicit `aq integration sweep demo --retry` / `--recover-child <task>`
+  starts a new attempt, which can stall and notify again.
+* A skip waiting on a live repair (its own parked source, or a parked
+  dependency's) records `state: waiting` and does not count: the repair is the
+  work in progress. When that repair fails or finishes without releasing the
+  source, counting starts.
+* Idle ticks evaluate nothing and daemon downtime is not counted.
+
+The record holds observations and notification deduplication only. It is
+never proof that work did or did not reach `main`; git answers that on every
+sweep.
+
 ## Record work you delivered by hand
 
 If you merged something yourself, tell AQ so its journal and the tasks agree:
@@ -344,6 +382,8 @@ does and does not carry over.
 ## Source and tests
 
 [`src/integration/development.py`](../../src/integration/development.py),
+skip stalls in
+[`src/integration/development_stalls.py`](../../src/integration/development_stalls.py),
 commands in
 [`src/commands/integration_commands.py`](../../src/commands/integration_commands.py),
 CLI in [`src/cli/integration.py`](../../src/cli/integration.py).
