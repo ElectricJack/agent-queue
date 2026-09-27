@@ -333,6 +333,11 @@ class CollaborationQueriesMixin:
                 result["members"].append(member)
             return result
 
+    async def get_collaboration_thread_project(self, thread_id) -> str | None:
+        """The owning project, for callers without a project scope (the operator)."""
+        async with self._engine.connect() as conn:
+            return await conn.scalar(select(threads.c.project_id).where(threads.c.id == thread_id))
+
     async def list_collaboration_threads(
         self,
         *,

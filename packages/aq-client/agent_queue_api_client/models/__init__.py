@@ -81,6 +81,29 @@ from .claude_usage_response_active_sessions_item import ClaudeUsageResponseActiv
 from .claude_usage_response_model_usage_type_0 import ClaudeUsageResponseModelUsageType0
 from .claude_usage_response_rate_limit_type_0 import ClaudeUsageResponseRateLimitType0
 from .cluster_bounds_dto import ClusterBoundsDTO
+from .collaboration_accept_args import CollaborationAcceptArgs
+from .collaboration_accept_response_422 import CollaborationAcceptResponse422
+from .collaboration_close_args import CollaborationCloseArgs
+from .collaboration_close_response import CollaborationCloseResponse
+from .collaboration_close_response_422 import CollaborationCloseResponse422
+from .collaboration_create_args import CollaborationCreateArgs
+from .collaboration_create_response_422 import CollaborationCreateResponse422
+from .collaboration_get_args import CollaborationGetArgs
+from .collaboration_get_response import CollaborationGetResponse
+from .collaboration_get_response_422 import CollaborationGetResponse422
+from .collaboration_list_args import CollaborationListArgs
+from .collaboration_list_args_state_type_0 import CollaborationListArgsStateType0
+from .collaboration_list_response import CollaborationListResponse
+from .collaboration_list_response_422 import CollaborationListResponse422
+from .collaboration_member_record import CollaborationMemberRecord
+from .collaboration_member_record_state import CollaborationMemberRecordState
+from .collaboration_message_record import CollaborationMessageRecord
+from .collaboration_response import CollaborationResponse
+from .collaboration_thread_record import CollaborationThreadRecord
+from .collaboration_thread_record_close_reason_type_0 import CollaborationThreadRecordCloseReasonType0
+from .collaboration_thread_record_created_by_kind import CollaborationThreadRecordCreatedByKind
+from .collaboration_thread_record_final_result_type_0 import CollaborationThreadRecordFinalResultType0
+from .collaboration_thread_record_state import CollaborationThreadRecordState
 from .command_center_preferences import CommandCenterPreferences
 from .command_center_preferences_density import CommandCenterPreferencesDensity
 from .command_center_preferences_document import CommandCenterPreferencesDocument
@@ -1555,6 +1578,29 @@ __all__ = (
     "ClaudeUsageResponseModelUsageType0",
     "ClaudeUsageResponseRateLimitType0",
     "ClusterBoundsDTO",
+    "CollaborationAcceptArgs",
+    "CollaborationAcceptResponse422",
+    "CollaborationCloseArgs",
+    "CollaborationCloseResponse",
+    "CollaborationCloseResponse422",
+    "CollaborationCreateArgs",
+    "CollaborationCreateResponse422",
+    "CollaborationGetArgs",
+    "CollaborationGetResponse",
+    "CollaborationGetResponse422",
+    "CollaborationListArgs",
+    "CollaborationListArgsStateType0",
+    "CollaborationListResponse",
+    "CollaborationListResponse422",
+    "CollaborationMemberRecord",
+    "CollaborationMemberRecordState",
+    "CollaborationMessageRecord",
+    "CollaborationResponse",
+    "CollaborationThreadRecord",
+    "CollaborationThreadRecordCloseReasonType0",
+    "CollaborationThreadRecordCreatedByKind",
+    "CollaborationThreadRecordFinalResultType0",
+    "CollaborationThreadRecordState",
     "CommandCenterPreferences",
     "CommandCenterPreferencesDensity",
     "CommandCenterPreferencesDocument",

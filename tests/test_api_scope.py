@@ -34,6 +34,11 @@ EXPECTED_AGENT_COMMANDS = {
     "wait_get",
     "wait_list",
     "wait_cancel",
+    # Collaboration: the held task joins, reads and closes; never creates.
+    "collaboration_accept",
+    "collaboration_get",
+    "collaboration_list",
+    "collaboration_close",
     "message_send",
     "message_inbox",
     "message_reply",

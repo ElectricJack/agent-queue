@@ -127,6 +127,11 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "wait_get": "wait",
     "wait_list": "wait",
     "wait_cancel": "wait",
+    "collaboration_create": "collaboration",
+    "collaboration_accept": "collaboration",
+    "collaboration_get": "collaboration",
+    "collaboration_list": "collaboration",
+    "collaboration_close": "collaboration",
     "report_request": "report",
     "report_reconcile": "report",
     "report_brief": "report",
@@ -7124,6 +7129,100 @@ _ALL_TOOL_DEFINITIONS.extend([
                            "claim_epoch": {"type": "integer", "minimum": 0},
                            "project_id": {"type": "string"}, "task_id": {"type": "string"},
                            "session_id": {"type": "string"}},
+        },
+    },
+])
+
+
+_COLLABORATION_SCOPE = {
+    "project_id": {"type": "string"},
+    "task_id": {"type": "string"},
+    "session_id": {"type": "string"},
+}
+_COLLABORATION_THREAD = {"type": "string", "minLength": 1, "maxLength": 64}
+_CLAIM_EPOCH = {"type": "integer", "minimum": 0}
+
+_ALL_TOOL_DEFINITIONS.extend([
+    {
+        "name": "collaboration_create",
+        "description": (
+            "Create a bounded collaboration thread between 2 to 4 tasks of one project "
+            "and invite each once. Operator or supervisor only; replays on idempotency_key."
+        ),
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "required": ["task_ids", "idempotency_key"],
+            "properties": {
+                "task_ids": {
+                    "type": "array", "minItems": 2, "maxItems": 4,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 256},
+                },
+                "goal": {"type": "string", "maxLength": 1000},
+                "deadline_seconds": {"type": "integer", "minimum": 60, "maximum": 7200},
+                "message_budget": {"type": "integer", "minimum": 1, "maximum": 40},
+                "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+                **_COLLABORATION_SCOPE,
+            },
+        },
+    },
+    {
+        "name": "collaboration_accept",
+        "description": "Join a collaboration thread for the held task's live claim.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False, "required": ["thread_id"],
+            "properties": {
+                "thread_id": _COLLABORATION_THREAD,
+                "claim_epoch": _CLAIM_EPOCH,
+                **_COLLABORATION_SCOPE,
+            },
+        },
+    },
+    {
+        "name": "collaboration_get",
+        "description": (
+            "Read a collaboration thread: members, deadline, capacity hold and up to 20 "
+            "ordered messages (the tail, or those after after_seq)."
+        ),
+        "input_schema": {
+            "type": "object", "additionalProperties": False, "required": ["thread_id"],
+            "properties": {
+                "thread_id": _COLLABORATION_THREAD,
+                "after_seq": {"type": "integer", "minimum": 0},
+                "claim_epoch": _CLAIM_EPOCH,
+                **_COLLABORATION_SCOPE,
+            },
+        },
+    },
+    {
+        "name": "collaboration_list",
+        "description": "List collaboration threads for the held task, or a project's threads.",
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "state": {"type": "string", "enum": ["active", "closed", "expired"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                "claim_epoch": _CLAIM_EPOCH,
+                **_COLLABORATION_SCOPE,
+            },
+        },
+    },
+    {
+        "name": "collaboration_close",
+        "description": (
+            "Close a collaboration thread without changing any member task. Elevated "
+            "callers may instead remove one member, or close every active thread "
+            "in the project."
+        ),
+        "input_schema": {
+            "type": "object", "additionalProperties": False,
+            "properties": {
+                "thread_id": _COLLABORATION_THREAD,
+                "note": {"type": "string", "maxLength": 1000},
+                "remove_task_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                "all_active": {"type": "boolean"},
+                "claim_epoch": _CLAIM_EPOCH,
+                **_COLLABORATION_SCOPE,
+            },
         },
     },
 ])
