@@ -313,6 +313,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/install/**"], areas: ["install"] }
   - { paths: ["src/install/pools.py"], areas: ["worker-pools"] }
 
+  - { paths: ["src/integration/delivery_truth.py"], areas: ["development-delivery", "work-graph"] }
   - { paths: ["src/integration/**"], areas: ["integration-trains"] }
   - { paths: ["src/integration/ownership.py", "src/integration/owner_recovery.py", "src/integration/stale_owners.py", "src/integration/finished_owners.py", "src/integration/identity_rebind.py", "src/integration/delegate_release.py", "src/integration/live_operations.py", "src/integration/release.py", "src/integration/removal_guard.py", "src/integration/recovery_controls.py"], areas: ["integration-ownership"] }
   - { paths: ["src/integration/promotion.py", "src/integration/main_promotion.py", "src/integration/parent_completion.py", "src/integration/parent_ci.py", "src/integration/root_pull_requests.py", "src/integration/repair.py", "src/integration/review_evidence.py", "src/integration/legacy_*.py", "src/integration/collection.py", "src/integration/github_review_poll.py"], areas: ["integration-promotion"] }
