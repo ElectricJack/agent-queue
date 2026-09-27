@@ -982,7 +982,16 @@ class DevelopmentIntegration:
             for task_id, evidence in contained.items():
                 if task_id in bridge_pending_ids:
                     manifest.append({"task_id": task_id, "source_sha": evidence.source_oid})
-            await self._record_candidate_skips(set(contained) | no_artifact, {})
+            await self.stalls.observe(
+                SweepObservation(
+                    project_id=project_id, repository_id=repo.id, target_ref=target,
+                    target_sha=base,
+                    branches={task["id"]: task["branch_name"] for task in candidates},
+                    source_heads=source_heads, history=history,
+                    pending=frozenset(own_truth),
+                ),
+                set(contained) | no_artifact, {},
+            )
             async with self.db._engine.connect() as conn:
                 eligible_ids = set((await conn.execute(
                     select(tasks.c.id).where(
