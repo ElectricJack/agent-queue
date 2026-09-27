@@ -211,6 +211,7 @@
       "modules": [
         "tests/test_branch_discard.py",
         "tests/test_close_unpushed_work.py",
+        "tests/test_delivery_consumers.py",
         "tests/test_delivery_integration.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
@@ -379,6 +380,12 @@
         "tests/test_formulas_parse.py",
         "tests/test_formulas_provenance.py",
         "tests/test_formulas_resolve.py"
+      ]
+    },
+    "generated-artifacts": {
+      "description": "Generated artifacts: the one regeneration command and its drift check, the .gitattributes merge=aq-generated set kept in step with it, and the merge driver under which those files never conflict.",
+      "modules": [
+        "tests/test_generated_artifacts.py"
       ]
     },
     "git-manager": {
@@ -670,6 +677,7 @@
         "tests/test_migration_boolean_defaults.py",
         "tests/test_migration_candidate_authority.py",
         "tests/test_migration_candidate_mutation_claims.py",
+        "tests/test_migration_capacity_spill.py",
         "tests/test_migration_collaboration_threads.py",
         "tests/test_migration_conflict_resolution.py",
         "tests/test_migration_epic_pull_requests.py",
@@ -1266,7 +1274,7 @@
       ]
     }
   },
-  "digest": "sha256:8aa892bc247b48e55db28faab118970d1c710fe447f356dd5563e20c604dbe0c",
+  "digest": "sha256:2901831cfcec74753f974ef41fa0e09c7e60950cae5b4301ba42c30e229f2747",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2450,6 +2458,8 @@
         "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.models",
         "src.orchestrator"
       ],
@@ -4417,6 +4427,28 @@
       ],
       "summary": "Tests for the deterministic deliverable evaluator (``src/deliverables.py``)."
     },
+    "tests/test_delivery_consumers.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database",
+        "src.database.queries.hierarchy_queries",
+        "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
+        "src.git.manager",
+        "src.integration.controls",
+        "src.integration.delivery_observer",
+        "src.integration.delivery_truth",
+        "src.integration.development",
+        "src.integration.status",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "Every delivery consumer asks git the same question and gets the same answer."
+    },
     "tests/test_delivery_integration.py": {
       "areas": [
         "development-delivery"
@@ -5648,6 +5680,19 @@
       "markers": [],
       "summary": "Work-graph WG-3: gate query layer."
     },
+    "tests/test_generated_artifacts.py": {
+      "areas": [
+        "generated-artifacts"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.development"
+      ],
+      "markers": [
+        "slow"
+      ],
+      "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
+    },
     "tests/test_get_downstream_tasks.py": {
       "areas": [
         "task-dependencies"
@@ -6820,6 +6865,7 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.controls",
+        "src.integration.delivery_observer",
         "src.integration.development",
         "src.integration.legacy_deliveries",
         "src.integration.legacy_repositories",
@@ -6841,6 +6887,8 @@
       "default_arm": true,
       "imports": [
         "src.database.tables",
+        "src.git.manager",
+        "src.integration.delivery_observer",
         "src.integration.legacy_repositories",
         "src.integration.status",
         "src.models"
@@ -7597,6 +7645,8 @@
         "src.database.tables",
         "src.doctor.models",
         "src.doctor.task_checks",
+        "src.git.manager",
+        "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.obsolete_close",
         "src.integration.owner_recovery",
@@ -8200,6 +8250,21 @@
         "migration"
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
+    },
+    "tests/test_migration_capacity_spill.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine",
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Capacity-spill schema upgrades and rollback on owned disposable PostgreSQL."
     },
     "tests/test_migration_collaboration_threads.py": {
       "areas": [
@@ -10347,6 +10412,8 @@
         "src.config",
         "src.database.queries",
         "src.database.queries.claim_queries",
+        "src.database.queries.task_reroute_queries",
+        "src.database.tables",
         "src.intelligence_classes",
         "src.llm.client",
         "src.llm.fake",
@@ -11438,6 +11505,7 @@
         "src.models",
         "src.orchestrator.execution",
         "src.orchestrator.git_ops",
+        "src.orchestrator.pools",
         "src.orchestrator.workspace",
         "src.scheduler",
         "src.sessions",

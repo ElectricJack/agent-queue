@@ -5,10 +5,15 @@ No synthetic review/CI receipts are written. Legacy episodes remain audit histor
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
+import shlex
+import signal
+import sys
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -19,7 +24,11 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, insert, select, text, update
 
-from src.database.queries.blocked_state import _development_delivery_pending, blocked_predicate
+from src.database.queries.blocked_state import (
+    _development_delivery_pending,
+    blocked_predicate,
+    obsolete_marker,
+)
 from src.database.tables import (
     projects, sessions, task_completion_records,
     tasks,
@@ -32,6 +41,7 @@ from src.integration.delivery_branches import (
     ASSEMBLY_PREFIX,
     TASK_BRANCH_PREFIX,
     branch_of,
+    completed_branch_tasks,
     delete_branches,
     expired_task_branches,
     find_stale_branches,
@@ -77,9 +87,22 @@ BRANCH_CLEANUP_ROWS_PER_TICK = 10
 DEFERRAL_RUNS_KEPT = 5
 #: Task metadata key holding what a repair's parked batch recorded.
 REPAIR_EVIDENCE_KEY = "development_repair_evidence"
+#: Chained repairs of one parked batch before the rest is left to an operator.
+REPAIR_GENERATIONS = 3
 #: How much of a failure a repair description quotes.
 REPAIR_TESTS_LISTED = 20
 REPAIR_OUTPUT_TAIL_CHARS = 3000
+#: The ``merge`` attribute a repository gives its generated artifacts in
+#: ``.gitattributes``.  Under a ``regenerate`` policy the publisher defines this
+#: driver for its own merges as a text merge that keeps our side of every
+#: overlapping hunk -- it never conflicts -- and then rebuilds the files with
+#: the policy's command, so a conflict confined to them never parks a source.
+GENERATED_MERGE_DRIVER = "aq-generated"
+GENERATED_MERGE_CONFIG = (
+    "-c", f"merge.{GENERATED_MERGE_DRIVER}.name=generated artifact, rebuilt after the merge",
+    "-c", f"merge.{GENERATED_MERGE_DRIVER}.driver=git merge-file --quiet --ours %A %O %B",
+)
+REGENERATION_OUTPUT_TAIL_CHARS = 4000
 
 
 def armed_for_branch_cleanup(evidence):
@@ -126,6 +149,112 @@ def _dependency_cycles(dependencies, task_ids):
     return cycles
 
 
+#: A repair in one of these is still being worked on (or will be).
+OPEN_REPAIR_STATUSES = frozenset({
+    TaskStatus.DEFINED.value, TaskStatus.READY.value, TaskStatus.ASSIGNED.value,
+    TaskStatus.IN_PROGRESS.value, TaskStatus.WAITING_INPUT.value, TaskStatus.PAUSED.value,
+})
+#: Links followed through repairs of repairs.  The generation budget keeps a
+#: real chain at three; a longer one is a loop in the journal.
+REPAIR_CHAIN_LIMIT = 8
+
+
+def repair_chain(manifest, history, statuses, *, repository_id, target_ref, identity=None):
+    """Follow a parked batch through its repairs to the one still carrying it.
+
+    A parked batch's repair is ``development-repair-<digest of its manifest>``.
+    When that repair closes and its own publication parks too (the target
+    moved again), the batch is carried by the repair of *that* row, and so on.
+    That chain is what the source's dependents are waiting on.  Reading only
+    the first repair made a live chain look like no repair at all
+    (``wise-bridge``: fresh-ember.2, nimble-bridge.8).
+
+    *statuses* maps repair task ids to their status, the live table first and
+    then the archive; *identity* names a manifest's repair
+    (:meth:`DevelopmentIntegration._repair_identity` by default).  The result's ``open_repair`` names the repair that
+    carries the batch, or is ``None`` when nothing will resolve it by itself:
+
+    * ``open``: a repair in the chain is still being worked on;
+    * ``awaiting_publication``: the last repair closed and the publisher has
+      neither parked nor delivered it yet;
+    * ``delivered``: the last repair reached the target, so the next sweep
+      adopts the batch;
+    * ``missing``: no repair exists for the last parked row (not yet filed, or
+      refused, e.g. past the generation budget);
+    * ``finished``: the last repair ended without completing;
+    * ``loop``: the journal's chain repeats or passes :data:`REPAIR_CHAIN_LIMIT`.
+    """
+    rows = sorted(
+        (row for row in history if row.get("repository_id") == repository_id),
+        key=lambda row: (row.get("created_at") or 0, str(row.get("id"))),
+        reverse=True,
+    )
+    parked_in = {}
+    delivered = set()
+    for row in rows:
+        members = _manifest_members(row.get("manifest"))
+        if row.get("state") == "parked":
+            for member in members:
+                parked_in.setdefault(member["task_id"], []).append(row)
+        elif row.get("state") in {"delivered", "adopted"} and row.get("target_ref") == target_ref:
+            delivered.update(member["task_id"] for member in members)
+    identity = identity or DevelopmentIntegration._repair_identity
+    seen = set()
+
+    def outcome(open_repair, state, chain, detail):
+        return {"open_repair": open_repair, "state": state, "chain": chain, "detail": detail}
+
+    def follow(repair, chain):
+        status = statuses.get(repair)
+        chain = [*chain, {"task_id": repair, "status": status}]
+        if repair in seen or len(chain) > REPAIR_CHAIN_LIMIT:
+            return outcome(None, "loop", chain, f"repair chain repeats at {repair}")
+        seen.add(repair)
+        if status is None:
+            return outcome(None, "missing", chain, f"no repair {repair} exists")
+        if status in OPEN_REPAIR_STATUSES:
+            return outcome(repair, "open", chain, f"repair {repair} is {status}")
+        if status != TaskStatus.COMPLETED.value:
+            return outcome(None, "finished", chain, f"repair {repair} ended {status}")
+        if repair in delivered:
+            return outcome(repair, "delivered", chain, f"repair {repair} was delivered")
+        # Duplicate rows of one manifest share one repair: follow each once.
+        successors = list(dict.fromkeys(
+            identity(row["manifest"]) for row in parked_in.get(repair, [])
+        ))
+        if not successors:
+            return outcome(
+                repair, "awaiting_publication", chain,
+                f"repair {repair} closed and awaits publication",
+            )
+        results = [follow(successor, chain) for successor in successors]
+        return next((result for result in results if result["open_repair"]), results[0])
+
+    return follow(identity(manifest), [])
+
+
+def describe_repair_chain(result):
+    """One line naming each repair in *result*'s chain and its status."""
+    return " -> ".join(
+        f"{link['task_id']} ({link['status'] or 'not filed'})" for link in result["chain"]
+    )
+
+
+async def repair_statuses(conn, project_ids):
+    """Every development repair's status in *project_ids*, live table over archive."""
+    from src.database.tables import archived_tasks
+
+    statuses = {}
+    for table in (archived_tasks, tasks):
+        statuses.update((await conn.execute(
+            select(table.c.id, table.c.status).where(
+                table.c.id.like("development-repair-%"),
+                table.c.project_id.in_(list(project_ids)),
+            )
+        )).all())
+    return statuses
+
+
 @dataclass(frozen=True)
 class ResolvedTask:
     """The publisher's view of a task, wherever the task currently lives.
@@ -150,6 +279,23 @@ class ResolvedTask:
         return self.status in TERMINAL_STATUSES
 
 
+@dataclass(frozen=True)
+class MergeOutcome:
+    """What merging one source into the candidate produced.
+
+    ``conflicting_files`` names the conflicts a person has to resolve; generated
+    files are never among them under a ``regenerate`` policy.  ``regenerated``
+    names the generated files rebuilt after the merge, and ``regeneration`` is
+    the evidence of a rebuild that failed.
+    """
+
+    ok: bool
+    detail: str = ""
+    conflicting_files: tuple[str, ...] = ()
+    regenerated: tuple[str, ...] = ()
+    regeneration: dict | None = None
+
+
 class DevelopmentPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
     validation: str = "focused"
@@ -162,12 +308,27 @@ class DevelopmentPolicy(BaseModel):
     slot_wait_seconds: int = Field(default=600, ge=0, le=3600)
     interval_seconds: int = Field(default=300, gt=0)
     max_batch_size: int = Field(default=50, gt=0, le=500)
+    #: Command that rebuilds the repository's generated artifacts -- the paths
+    #: ``.gitattributes`` marks ``merge=aq-generated`` -- in the checkout it runs
+    #: in, e.g. ``scripts/regenerate-generated.sh``.  Run without a shell after
+    #: any merge that both sides changed a generated file in.  Unset, a conflict
+    #: in those files parks its source like any other conflict.
+    regenerate: str | None = None
+    #: Seconds one regeneration may run before the merge counts as failed.
+    regenerate_timeout_seconds: int = Field(default=600, gt=0, le=3600)
 
     def checked(self):
         if self.validation not in {"focused", "advisory", "none"}:
             raise ValueError("validation must be focused, advisory, or none")
         if self.validation == "focused" and not self.commands:
             raise ValueError("focused validation requires at least one local command")
+        if self.regenerate is not None:
+            try:
+                argv = shlex.split(self.regenerate)
+            except ValueError as exc:
+                raise ValueError(f"regenerate is not a valid command line: {exc}") from exc
+            if not argv:
+                raise ValueError("regenerate must name a command")
         return self
 
 
@@ -237,11 +398,210 @@ class DevelopmentIntegration:
     def exclusion(self, repository_id):
         return publisher_exclusion(self.db, repository_id)
 
+    @property
+    def delivery_observer(self):
+        """Git delivery truth for this service's readers, in its own isolated store."""
+        from src.integration.delivery_observer import DeliveryObserver
+
+        observer = getattr(self, "_delivery_observer", None)
+        if observer is None or observer.git is not self.git:
+            observer = DeliveryObserver(self.db, git=self.git, data_dir=self.data_dir.parent)
+            self._delivery_observer = observer
+        return observer
+
+    async def branch_holds(self, branches):
+        """:func:`live_branch_references` with git proof for the tasks owning *branches*.
+
+        Only the completed development tasks whose branch may be deleted are
+        observed.  A view whose target moved meanwhile proves nothing, so their
+        branches stay held.
+        """
+        async with self.db._engine.connect() as conn:
+            owners = await completed_branch_tasks(conn, branches)
+        delivery = await self.delivery_observer.observe(owners) if owners else None
+        if delivery is not None and not await delivery.fresh():
+            delivery = None
+        async with self.db._engine.connect() as conn:
+            return await live_branch_references(conn, delivery=delivery)
+
     async def run_git(self, store, *args):
         result = await self.git.arun_git_result(list(args), cwd=str(store))
         if result.returncode:
             raise GitError(result.stderr or result.stdout or "Git command failed")
         return result.stdout.strip()
+
+    async def merge_member(self, store, commit, policy) -> MergeOutcome:
+        """Merge *commit* into the checkout's detached HEAD.
+
+        Without a ``regenerate`` policy this is a plain ``git merge``.  With one,
+        files marked ``merge=aq-generated`` merge through a driver that never
+        conflicts, and when both sides changed one of them (or a modify/delete
+        left one unmerged) the policy's command rebuilds them from the merged
+        sources and the result is folded into the merge commit.  A conflict in
+        any other file still fails the merge, as does a rebuild that fails or
+        writes a file that is not generated.  A failed merge leaves HEAD and the
+        tree as they were.
+        """
+        before = await self.run_git(store, "rev-parse", "HEAD")
+        identity = ["-c", "user.name=Agent Queue", "-c", "user.email=aq@localhost"]
+        driver = list(GENERATED_MERGE_CONFIG) if policy.regenerate else []
+        result = await self.git.arun_git_result(
+            [*identity, *driver, "merge", "--no-edit", commit], cwd=str(store)
+        )
+        unmerged = [] if result.returncode == 0 else (await self.run_git(
+            store, "diff", "--name-only", "--diff-filter=U"
+        )).splitlines()
+        if not policy.regenerate:
+            if result.returncode:
+                await self.run_git(store, "merge", "--abort")
+                return MergeOutcome(False, result.stdout, tuple(unmerged))
+            return MergeOutcome(True)
+        # A generated file needs rebuilding when both sides changed it: the
+        # driver kept our side of whatever overlapped.  Against every merge base,
+        # so a criss-cross history cannot hide one.
+        both = set(unmerged)
+        bases = (await self.git.arun_git_result(
+            ["merge-base", "--all", before, commit], cwd=str(store)
+        )).stdout.split()
+        for base in bases:
+            ours = set(await self._changed(store, base, before))
+            both |= ours & set(await self._changed(store, base, commit))
+        generated = await self.generated_paths(store, both)
+        if result.returncode and (not unmerged or not set(unmerged) <= generated):
+            await self.run_git(store, "merge", "--abort")
+            return MergeOutcome(
+                False, result.stdout, tuple(p for p in unmerged if p not in generated)
+            )
+        if not generated:
+            return MergeOutcome(True)
+        run = await self.regenerate(store, policy)
+        failure = None if run["ok"] else run["detail"]
+        written = set()
+        if failure is None:
+            written = set((await self.run_git(store, "diff", "--name-only", "-z")).split("\0"))
+            written |= set((await self.run_git(
+                store, "ls-files", "--others", "--exclude-standard", "-z"
+            )).split("\0"))
+            written.discard("")
+            stray = sorted(written - await self.generated_paths(store, written))
+            if stray:
+                failure = (
+                    "the regeneration changed files that are not generated: "
+                    + ", ".join(stray[:20]) + (" …" if len(stray) > 20 else "")
+                )
+        if failure is None:
+            staged = sorted(written | set(unmerged))
+            if staged:
+                await self.run_git_input(
+                    store, "\0".join(staged) + "\0", "--literal-pathspecs", "add", "-A",
+                    "--pathspec-from-file=-", "--pathspec-file-nul",
+                )
+            if await self.run_git(store, "diff", "--name-only", "--diff-filter=U"):
+                failure = "generated files are still unmerged after the regeneration"
+        if failure is None:
+            if result.returncode:
+                await self.run_git(store, *identity, "commit", "--no-edit", "--no-verify")
+            elif (await self.git.arun_git_result(
+                ["diff", "--cached", "--quiet"], cwd=str(store)
+            )).returncode:
+                await self.run_git(
+                    store, *identity, "commit", "--amend", "--no-edit", "--no-verify"
+                )
+            regenerated = tuple(sorted(generated | written))
+            logger.info(
+                "development publisher: rebuilt %d generated file(s) merging %s",
+                len(regenerated), commit,
+                extra={"source_sha": commit, "regenerated": list(regenerated)},
+            )
+            return MergeOutcome(True, regenerated=regenerated)
+        # ``reset --hard`` also ends an unfinished merge; the clean removes what
+        # a failed rebuild created.
+        await self.run_git(store, "reset", "--hard", "-q", before)
+        await self.run_git(store, "clean", "-fdq")
+        return MergeOutcome(
+            False,
+            f"{failure}\n{run['output']}".strip(),
+            regeneration={**run, "ok": False, "detail": failure},
+        )
+
+    async def _changed(self, store, base, commit):
+        return (await self.run_git(
+            store, "diff", "--name-only", "--no-renames", "-z", base, commit
+        )).split("\0")
+
+    async def generated_paths(self, store, paths):
+        """The subset of *paths* the checkout's ``.gitattributes`` marks generated."""
+        paths = sorted(p for p in paths if p)
+        if not paths:
+            return set()
+        output = await self.run_git_input(
+            store, "\0".join(paths) + "\0", "check-attr", "-z", "--stdin", "merge"
+        )
+        fields = output.split("\0")
+        return {
+            fields[i] for i in range(0, len(fields) - 2, 3)
+            if fields[i + 2] == GENERATED_MERGE_DRIVER
+        }
+
+    async def run_git_input(self, store, stdin, *args):
+        result = await self.git.arun_git_result(list(args), cwd=str(store), stdin=stdin)
+        if result.returncode:
+            raise GitError(result.stderr or result.stdout or "Git command failed")
+        return result.stdout
+
+    async def regenerate(self, store, policy):
+        """Run the policy's regeneration command in *store*, without a shell.
+
+        The command sees a minimal environment: this interpreter's ``bin``
+        first on ``PATH`` (the generators need the daemon's packages), and the
+        same database refusal sentinels a worker session carries.
+        """
+        from src.sessions.env import SCRATCH_DB_SENTINEL
+
+        command = policy.regenerate
+        env = {
+            "PATH": f"{Path(sys.executable).parent}:/usr/local/bin:/usr/bin:/bin",
+            "HOME": str(Path.home()),
+            "LANG": "C.UTF-8",
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "AQ_DB_SCOPE": "worker",
+            "AQ_DATABASE_URL": SCRATCH_DB_SENTINEL,
+            "AGENT_QUEUE_DB": SCRATCH_DB_SENTINEL,
+        }
+        started = time.monotonic()
+        evidence = {"command": command, "exit_code": None, "output": ""}
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *shlex.split(command), cwd=str(store), env=env,
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+            )
+        except OSError as exc:
+            return {**evidence, "ok": False, "detail": f"could not start `{command}`: {exc}",
+                    "duration_seconds": 0.0}
+        try:
+            output, _ = await asyncio.wait_for(
+                process.communicate(), policy.regenerate_timeout_seconds
+            )
+        except (TimeoutError, asyncio.CancelledError) as exc:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            await process.wait()
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return {**evidence, "ok": False,
+                    "detail": f"`{command}` timed out after {policy.regenerate_timeout_seconds}s",
+                    "duration_seconds": round(time.monotonic() - started, 3)}
+        text = output.decode("utf-8", "replace")[-REGENERATION_OUTPUT_TAIL_CHARS:]
+        ok = process.returncode == 0
+        return {
+            **evidence, "ok": ok, "exit_code": process.returncode, "output": text,
+            "detail": "regenerated" if ok else f"`{command}` exited {process.returncode}",
+            "duration_seconds": round(time.monotonic() - started, 3),
+        }
 
     async def store(self, repo, *, fetch=True):
         path = self.data_dir / hashlib.sha256(repo.id.encode()).hexdigest()[:20] / "repository"
@@ -341,6 +701,7 @@ class DevelopmentIntegration:
                         task_completion_records.c.task_id == tasks.c.id,
                         task_completion_records.c.commits != "[]",
                     ).exists(),
+                    ~obsolete_marker(tasks),
                 ).limit(1)
             )
             return candidate is not None
@@ -919,6 +1280,8 @@ class DevelopmentIntegration:
                 else set()
             )
             manifest, conflicts = [], []
+            #: Generated files rebuilt while merging each member, by task id.
+            regenerated = {}
             async with self.db._engine.connect() as conn:
                 # Recovering a repair must see its completed repair peers:
                 # selecting only one vertex hides a repair dependency cycle.
@@ -1299,19 +1662,8 @@ class DevelopmentIntegration:
                 else:
                     parent_ref, previous = None, None
                     await self.run_git(store, "checkout", "--detach", "--force", head)
-                result = await self.git.arun_git_result(
-                    [
-                        "-c",
-                        "user.name=Agent Queue",
-                        "-c",
-                        "user.email=aq@localhost",
-                        "merge",
-                        "--no-edit",
-                        source,
-                    ],
-                    cwd=str(store),
-                )
-                if result.returncode == 0 and parent_ref:
+                merged = await self.merge_member(store, source, policy)
+                if merged.ok and parent_ref:
                     aggregate_head = await self.run_git(store, "rev-parse", "HEAD")
                     await self.publish(
                         repo,
@@ -1325,44 +1677,56 @@ class DevelopmentIntegration:
                     )
                     parent_heads[parent_id] = aggregate_head
                     await self.run_git(store, "checkout", "--detach", "--force", head)
-                    result = await self.git.arun_git_result(
-                        [
-                            "-c",
-                            "user.name=Agent Queue",
-                            "-c",
-                            "user.email=aq@localhost",
-                            "merge",
-                            "--no-edit",
-                            aggregate_head,
-                        ],
-                        cwd=str(store),
+                    rebuilt = merged.regenerated
+                    merged = await self.merge_member(store, aggregate_head, policy)
+                    merged = MergeOutcome(
+                        merged.ok, merged.detail, merged.conflicting_files,
+                        tuple(sorted({*rebuilt, *merged.regenerated})), merged.regeneration,
                     )
-                if result.returncode:
-                    conflicting_files = (await self.run_git(
-                        store, "diff", "--name-only", "--diff-filter=U"
-                    )).splitlines()
-                    await self.run_git(store, "merge", "--abort")
+                if not merged.ok:
                     await self.run_git(store, "checkout", "--detach", "--force", head)
                     now = time.time()
-                    await self.save(
-                        {
-                            "id": str(uuid4()),
-                            "project_id": project_id,
-                            "repository_id": repo.id,
-                            "target_ref": target,
-                            "expected_sha": base,
-                            "prepared_sha": None,
-                            "state": "parked",
-                            "manifest": [member],
-                            "evidence": {
-                                "kind": "merge_conflict", "detail": result.stdout[-4000:],
-                                "conflicting_files": conflicting_files,
-                            },
-                            "reason": "source conflict; independent work may continue",
-                            "created_at": now,
-                            "updated_at": now,
-                        }
-                    )
+                    conflict = {
+                        "kind": "merge_conflict", "detail": merged.detail[-4000:],
+                        "conflicting_files": list(merged.conflicting_files),
+                        **({"regenerate": policy.regenerate}
+                           if policy.regenerate else {}),
+                        **({"regeneration": merged.regeneration}
+                           if merged.regeneration else {}),
+                    }
+                    # ``--retry`` and ``--recover-child`` merge parked content
+                    # again.  A repeat conflict refreshes the row that already
+                    # names this exact source, whose repair (or its chain) is
+                    # still the one working on it; a second row would only
+                    # look like a new park that nobody was repairing.
+                    reparked = next((
+                        row for row in reversed(history)
+                        if row["state"] == "parked" and row["repository_id"] == repo.id
+                        and row["target_ref"] == target and row["manifest"] == [member]
+                    ), None)
+                    if reparked is not None:
+                        await self.change(
+                            reparked["id"], expected_sha=base,
+                            evidence={**(reparked["evidence"] or {}), **conflict,
+                                      "reconflicted_at": now},
+                        )
+                    else:
+                        await self.save(
+                            {
+                                "id": str(uuid4()),
+                                "project_id": project_id,
+                                "repository_id": repo.id,
+                                "target_ref": target,
+                                "expected_sha": base,
+                                "prepared_sha": None,
+                                "state": "parked",
+                                "manifest": [member],
+                                "evidence": conflict,
+                                "reason": "source conflict; independent work may continue",
+                                "created_at": now,
+                                "updated_at": now,
+                            }
+                        )
                     conflicts.append(member)
                     if parent_id:
                         blocked_parents.add(parent_id)
@@ -1371,6 +1735,8 @@ class DevelopmentIntegration:
                     skipped[task["id"]] = ("merge_conflict", None)
                     continue
                 head = await self.run_git(store, "rev-parse", "HEAD")
+                if merged.regenerated:
+                    regenerated[task["id"]] = list(merged.regenerated)
                 unavailable.discard(task["id"])
                 manifest.append(member)
                 for old_id, old_sha in sorted(replacements.items()):
@@ -1406,6 +1772,8 @@ class DevelopmentIntegration:
                 store, policy, project_id=project_id, operation_id=operation, attempt=attempt
             )
             evidence["head_sha"] = head
+            if regenerated:
+                evidence["regenerated"] = regenerated
             if await self.run_git(store, "rev-parse", "HEAD") != head or await self.run_git(
                 store, "status", "--porcelain", "--untracked-files=no"
             ):
@@ -1516,6 +1884,7 @@ class DevelopmentIntegration:
             raise ValueError(
                 f"{child_id} remains unpublished after sweep: "
                 f"{skip or 'no receipt for the current source'}"
+                + await self._parked_repair_note(repo, target, history, child_id)
             )
         sibling_conflicts = []
         if task.parent_task_id:
@@ -1533,6 +1902,40 @@ class DevelopmentIntegration:
             **result, "recovered_task_id": child_id, "source_sha": source,
             "sibling_conflicts": sorted(set(sibling_conflicts)),
         }
+
+    async def _parked_repair_note(self, repo, target, history, task_id):
+        """Say which repair carries *task_id*'s parked source, or that none does.
+
+        Without it a recovery that re-conflicts answers only ``merge_conflict``,
+        which reads as "nothing is repairing this" even while a repair of the
+        source's first repair is being worked on.
+        """
+        parked = [
+            row for row in reversed(history)
+            if row["state"] == "parked" and row["repository_id"] == repo.id
+            and any(m["task_id"] == task_id for m in _manifest_members(row["manifest"]))
+        ]
+        if not parked:
+            return ""
+        async with self.db._engine.connect() as conn:
+            statuses = await repair_statuses(conn, [repo.project_id])
+        results = [
+            repair_chain(row["manifest"], history, statuses,
+                         repository_id=repo.id, target_ref=target)
+            for row in parked
+        ]
+        found = next((result for result in results if result["open_repair"]), results[0])
+        kind = (parked[results.index(found)]["evidence"] or {}).get("kind") or "parked"
+        if found["open_repair"]:
+            return (
+                f"; its {kind} park is carried by repair {found['open_repair']} "
+                f"({found['state']}; chain: {describe_repair_chain(found)})"
+            )
+        return (
+            f"; its {kind} park has no open repair ({found['detail']}; chain: "
+            f"{describe_repair_chain(found)}): see `aq doctor --check "
+            "integration.development_conflicts_unrepaired`"
+        )
 
     async def reconcile_parked(self, repo, store, accepted_head):
         """Dispatch only failures still unresolved after the whole batch was assembled.
@@ -2034,8 +2437,7 @@ class DevelopmentIntegration:
             try:
                 store = await self.store(repo)
                 heads = await remote_heads(self.run_git, store)
-                async with self.db._engine.connect() as conn:
-                    holds = await live_branch_references(conn)
+                holds = await self.branch_holds(heads)
                 plans = {
                     row["id"]: await self._plan_branch_cleanup(
                         repo, store, row, history, heads, holds
@@ -2279,8 +2681,8 @@ class DevelopmentIntegration:
             raise ValueError("project repository needs a remote URL")
         async with self.exclusion(repo.id):
             store = await self.store(repo)
+            holds = await self.branch_holds(await remote_heads(self.run_git, store))
             async with self.db._engine.connect() as conn:
-                holds = await live_branch_references(conn)
                 released = await released_integration_refs(conn)
                 expired = await expired_task_branches(conn, now=now)
             report = await find_stale_branches(
@@ -3052,8 +3454,21 @@ class DevelopmentIntegration:
             if source.task_id.startswith("development-repair-"):
                 match = re.search(r"Development repair generation: (\d+)", source.description)
                 generation = max(generation, (int(match.group(1)) if match else 1) + 1)
-        if generation > 3:
-            return None  # Keep the candidate parked for operator inspection; no unbounded repair chain.
+        if generation > REPAIR_GENERATIONS:
+            # Keep the candidate parked for operator inspection; no unbounded
+            # repair chain.  Say so: a silent refusal leaves the sources
+            # parked with no open repair and nothing that names why.
+            self._name_diagnostic(
+                diagnostics,
+                kind="repair_generation_exhausted",
+                task_ids=[member["task_id"] for member in manifest],
+                detail=(
+                    f"{REPAIR_GENERATIONS} repair generations did not deliver "
+                    f"{', '.join(sorted(m['task_id'] for m in manifest))}; no further "
+                    "repair is filed and the batch stays parked for an operator"
+                ),
+            )
+            return None
         sources = "\n".join(f"- {m['task_id']}: {m.get('source_sha')}" for m in manifest)
         repo = await self.db.get_repo(repository_id)
         target_branch = repo.default_branch
@@ -3063,12 +3478,16 @@ class DevelopmentIntegration:
         )
         conflict = parked is not None and parked.get("evidence", {}).get("kind") == "merge_conflict"
         recovery = (
-            f"Fetch origin and rebase the listed source changes onto origin/{target_branch} "
-            "in your own task branch. Resolve the named conflicting files and preserve "
-            "the intended source changes. "
+            f"Fetch origin and, in your own task branch (it starts from origin/{target_branch}), "
+            "merge each listed source revision by its exact SHA (`git merge <sha>`). Resolve "
+            "the named conflicting files and preserve the intended source changes; where a "
+            "conflicting file is generated, regenerate it from the merged sources instead of "
+            "hand-merging it. Do not rebase, squash or cherry-pick: every listed source "
+            "revision must stay an ancestor of your branch, so delivering the repair delivers "
+            f"the source too. If origin/{target_branch} moves before you push, merge it again. "
             if conflict else
             f"Preserve their intended changes and resolve against current origin/{target_branch}. "
-        )
+        ) + self._regeneration_text(parked)
         repair = Task(
                 id=identity,
                 project_id=project_id,
@@ -3182,7 +3601,20 @@ class DevelopmentIntegration:
                 evidence.get("detail") if evidence.get("kind") == "merge_conflict" else None
             ),
             "conflicting_files": evidence.get("conflicting_files", []),
+            "regeneration": evidence.get("regeneration"),
         }
+
+    @staticmethod
+    def _regeneration_text(parked):
+        """How a repair treats generated files, when the batch could rebuild them."""
+        command = ((parked or {}).get("evidence") or {}).get("regenerate")
+        if not command:
+            return ""
+        return (
+            f"Files marked merge={GENERATED_MERGE_DRIVER} in .gitattributes are generated: never "
+            "hand-merge them. Take either side (`git checkout --ours -- <path>`), resolve the "
+            f"source files, then run `{command}` and commit what it writes. "
+        )
 
     @staticmethod
     def _repair_failure_text(project_id, parked):
@@ -3201,9 +3633,20 @@ class DevelopmentIntegration:
         if evidence.get("kind") == "merge_conflict":
             detail = str(evidence.get("detail") or "").strip()
             files = evidence.get("conflicting_files") or []
+            regeneration = evidence.get("regeneration")
             if files:
                 lines += ["Conflicting files:", *(f"- {path}" for path in files)]
-            lines += ["Merge conflict:", "```", detail[-REPAIR_OUTPUT_TAIL_CHARS:], "```"]
+            if regeneration:
+                # The merge itself succeeded; rebuilding its generated files did not.
+                lines += [
+                    (
+                        f"Regenerating the generated files with "
+                        f"`{regeneration.get('command')}` failed: {regeneration.get('detail')}."
+                    ),
+                    "Regeneration output:", "```", detail[-REPAIR_OUTPUT_TAIL_CHARS:], "```",
+                ]
+            else:
+                lines += ["Merge conflict:", "```", detail[-REPAIR_OUTPUT_TAIL_CHARS:], "```"]
             return "\n".join(lines)
         tests = validation_outcomes.failing_tests(evidence)
         if tests:

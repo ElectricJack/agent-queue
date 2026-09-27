@@ -67,6 +67,13 @@ vault (playbooks, profiles, memory — all markdown) is `~/.agent-queue/vault/`.
   then `./scripts/regenerate-ts-client.sh --from-file`. Never hand-edit
   `packages/aq-client/`. The script writes tracked files only; `--install` is opt-in and
   refused from a worker slot because it re-points the shared venv.
+- **Generated files are regenerated, never hand-merged.** The paths `.gitattributes`
+  marks `merge=aq-generated` (selection catalogue, CLI inventory, configuration schema,
+  playbook-commands index, playbook schema, `openapi.json`, `packages/aq-client/`) all
+  come from `scripts/regenerate-generated.sh`. On a merge or rebase conflict in one, take
+  either side, resolve the sources, run it and commit what it writes; `--check` is the
+  drift check. The development publisher does the same at merge time
+  ([docs/contributing/codegen.md](docs/contributing/codegen.md#one-command-and-never-a-hand-merge)).
 - **Async first.** Use `GitManager`'s `a`-prefixed API; never `subprocess.run()` in
   production code.
 - The spec `docs/superpowers/specs/2026-09-08-discord-simplification-implementation.md`

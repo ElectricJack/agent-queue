@@ -87,6 +87,8 @@ Options:
 | `--interval-seconds` | Periodic recovery sweep interval. Default 300. Task completion also requests a sweep on the next integration cycle (normally within 5 seconds, once an active batch finishes). |
 | `--timeout-seconds` | Seconds each command may *run*. Default 300, maximum 3600. Time queued for a test slot is not counted. |
 | `--slot-wait-seconds` | Seconds a command may queue for a test slot (via `aq test`) before the batch is deferred to the next tick — never parked, never repaired. Default 600, maximum 3600. |
+| `--regenerate` | Command that rebuilds the repository's generated files — the paths its `.gitattributes` marks `merge=aq-generated` — for example `scripts/regenerate-generated.sh`. Run without a shell in AQ's clone after a merge in which both sides changed a generated file; see [Conflicts confined to generated files](#conflicts-confined-to-generated-files). Unset by default. |
+| `--regenerate-timeout-seconds` | Seconds one regeneration may run before that merge counts as failed. Default 600, maximum 3600. |
 | `--reason` | Required, and kept in the journal. |
 
 > **Note.** Validation commands do not run in a worker's worktree. They run in
@@ -180,6 +182,10 @@ in the strict modes ([`src/prime/sections.py`](../../src/prime/sections.py)):
 > source branches and publishes validated batches to main. Do not push main
 > yourself.
 
+With a `regenerate` policy the section adds one more paragraph: never
+hand-merge generated files; take either side, resolve the sources, run the
+policy's command and commit what it writes.
+
 Two consequences worth knowing as an operator:
 
 * **A closed task is not a delivered task.** Delivery happens on the next
@@ -214,16 +220,40 @@ After the batch is assembled AQ looks at each parked row again:
   marked `adopted` and nothing else happens;
 * otherwise AQ files one ordinary repair task, `development-repair-<digest>`,
   on its own branch, naming the source branches, conflicting files and target.
-  The worker rebases the source changes onto that target in the repair branch.
-  A single-source repair is placed under its completed source when depth
-  permits; at the hierarchy depth cap it is rooted with provenance and a
+  In its branch, which starts from that target, the worker merges each listed
+  source revision by its exact SHA. It never rebases, squashes or
+  cherry-picks, so the source stays an ancestor and delivering the repair
+  delivers the source. A conflicting generated file is regenerated, not
+  hand-merged. A single-source repair is placed under its completed source when
+  depth permits; at the hierarchy depth cap it is rooted with provenance and a
   delivery hold on the source. It is a normal queue task with three retries;
-  waiting for a worker does not expire it. At most three generations of repair
-  are chained before the content is left parked for you.
+  waiting for a worker does not expire it.
 
 Closing the repair does not release the source's dependents. Publication of
 the passing repair to the configured default branch adopts the parked source
-receipt, which releases them even when rebase changed the source commit SHA.
+receipt, which releases them. That holds even for a repair that rewrote the
+source commits anyway.
+
+If `main` moves before the closed repair is published, the repair's own
+publication can park on a new conflict. That row gets the next repair, rooted
+and discovered-from the previous one, and the source is carried by the whole
+chain. At most three generations are chained; past that nothing more is filed,
+the batch records the `repair_generation_exhausted` diagnostic and the content
+is left parked for you. `aq integration sweep demo --retry` or `--recover-child
+<task>` on a parked source that conflicts again refreshes its existing row
+rather than parking it twice. A recovery that leaves the child unpublished
+names the repair carrying it, and the chain, or says that none does.
+
+```bash
+aq doctor --check integration.development_conflicts_unrepaired
+```
+
+lists every completed source parked on a merge conflict whose chain has no open
+repair: none was filed, one ended FAILED or BLOCKED, or the generation budget
+ran out. It names the batch, the conflicting files and the chain. Nothing will
+release those dependents by itself. Reopen the ended repair; or merge the
+source revision onto `main` on a branch that keeps it as an ancestor and record
+it with `aq integration adopt`; or cancel the batch.
 
 Parked content is not re-tried while its sources are unchanged — a worker
 pushing new commits makes it eligible again by itself. To retry unchanged
@@ -232,6 +262,51 @@ parked content under the current policy:
 ```bash
 aq integration sweep demo --retry
 ```
+
+### Conflicts confined to generated files
+
+Most conflicts between parallel branches used to be in generated files: two
+branches that each add a command both rewrite the CLI inventory, the command
+pages index, `openapi.json` and the client models; two that each add a test
+module both rewrite the selection catalogue. Every such conflict parked its
+source and filed a repair whose commit read "regenerate catalogue/inventory".
+
+Declare those files in the repository and give the policy the command that
+rebuilds them:
+
+```text
+# .gitattributes
+tests/selection_catalogue.json merge=aq-generated
+openapi.json merge=aq-generated
+packages/aq-client/** merge=aq-generated
+```
+
+```bash
+aq integration develop demo … --regenerate scripts/regenerate-generated.sh --reason '…'
+```
+
+Then each member merges with the `aq-generated` driver defined as a text merge
+that keeps the candidate's side of every overlapping hunk, so a generated file
+never conflicts. When both sides changed one — or a modify/delete left one
+unmerged — AQ runs the command in its clone, stages what it rewrote and folds
+it into that member's merge commit; the batch evidence lists the files under
+`regenerated`, by task. A conflict in any other file still parks the member,
+and its `conflicting_files` then names only the files a person must resolve.
+The repair task's description tells its worker to regenerate rather than
+hand-merge.
+
+The regeneration is checked, never trusted:
+
+* it runs with this interpreter's `bin` first on `PATH`, a minimal
+  environment and the worker database sentinels, bounded by
+  `regenerate_timeout_seconds`;
+* if it exits non-zero or times out, or writes a file its `.gitattributes`
+  does not mark `merge=aq-generated`, the merge is undone, the clone is
+  cleaned, and the member parks with `evidence.regeneration` holding the
+  command, exit code and output tail.
+
+Rows parked before you set `--regenerate` stay parked until their sources
+change or you retry them with `aq integration sweep demo --retry`.
 
 ## When a candidate keeps being skipped
 
@@ -263,8 +338,9 @@ but one that repeats forever is a stall, so it has a bounded life
   starts a new attempt, which can stall and notify again.
 * A skip waiting on a live repair (its own parked source, or a parked
   dependency's) records `state: waiting` and does not count: the repair is the
-  work in progress. When that repair fails or finishes without releasing the
-  source, counting starts.
+  work in progress. `waiting_on` names the repair actually carrying the source,
+  followed through repairs of repairs. When the chain ends without releasing the
+  source (a repair fails, or the generation budget runs out), counting starts.
 * Idle ticks evaluate nothing and daemon downtime is not counted.
 
 The record holds observations and notification deduplication only. It is
