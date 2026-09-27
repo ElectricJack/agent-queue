@@ -173,6 +173,11 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "test_selections",
         "test_selection_observations",
         "test_selection_promotions",
+        # Collaboration threads shipped after SQLite removal (revisions
+        # a00000000033+): a legacy SQLite file can never contain them.
+        "collaboration_threads",
+        "collaboration_members",
+        "collaboration_messages",
     }
 )
 

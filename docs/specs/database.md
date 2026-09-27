@@ -425,6 +425,7 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `repo_url` | TEXT | DEFAULT '' | Repository URL for the project (added via migration) |
 | `repo_default_branch` | TEXT | DEFAULT 'main' | Default branch name (added via migration) |
 | `default_profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Default agent profile (added via migration) |
+| `preferred_provider` | TEXT | nullable | Operator preference for which provider serves this project's work; NULL defers to global provider selection and failover. Added by Alembic `a00000000037` |
 | `assignment_playbook_id` | TEXT | nullable | Assignment-routing playbook selected for the project; NULL uses the bundled system default. Added by Alembic `a7c91e4d2b63` |
 | `integration_mode` | TEXT | nullable | Project-level integration policy: `'direct'`, `'pull_request'`, or NULL (fall through to config `integration.default_mode`). Added by Alembic `c4d5e6f7a8b9` |
 | `hierarchical_integration_mode` | TEXT | NOT NULL DEFAULT 'disabled' | *Effective* hierarchical-integration rollout mode: one of `disabled`, `observe`, `hierarchy`, `train` (`ck_projects_hierarchical_integration_mode`). Only the orchestrator advances it, via a compare-and-set on `hierarchical_integration_generation`. Added by Alembic `c7a1e5d92f40` |
@@ -437,6 +438,66 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 
 No `updated_at` on projects. The `discord_control_channel_id` column exists for backward compatibility — `_row_to_project` falls back to it when `discord_channel_id` is NULL.
+
+### Table: `collaboration_threads`
+
+Ordered, bounded message threads between two tasks. A thread is created idempotently by its creator with a deadline (never more than two hours after creation) and a hard cap on messages, which closes the thread `budget_exhausted` once spent. `final_result` holds the negotiated outcome recorded at close. Task and profile references are soft so archival preserves collaboration history.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | `thread-<uuid4>` |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
+| `created_by_kind` | TEXT | NOT NULL | Creator's role kind (`agent` / `user` / `supervisor`) |
+| `created_by_id` | TEXT | NOT NULL | Soft reference to the creator (task or user id) |
+| `idempotency_key` | TEXT | NOT NULL, UNIQUE with `project_id`, `created_by_id` (`uq_collaboration_threads_idempotency`) | Retries of one create do not open a second thread |
+| `request_hash` | TEXT | NOT NULL | Hash of the normalized create request; checked against the idempotency key |
+| `goal` | TEXT | nullable | Free-text negotiation goal |
+| `state` | TEXT | NOT NULL DEFAULT 'active', `ck_collaboration_threads_state` | `active`, `closed` or `expired` |
+| `close_reason` | TEXT | nullable, `ck_collaboration_threads_reason` | `closed`, `budget_exhausted`, `expired` or `members_below_two` |
+| `created_at` | FLOAT | NOT NULL | Unix timestamp |
+| `deadline_at` | FLOAT | NOT NULL, `ck_collaboration_threads_deadline` | Strictly after `created_at`, at most `created_at + 7200` |
+| `closed_at` | FLOAT | nullable | Unix timestamp of close |
+| `message_budget` | INTEGER | NOT NULL DEFAULT 40, `ck_collaboration_threads_budget` | 1–40 inclusive |
+| `message_count` | INTEGER | NOT NULL DEFAULT 0, `ck_collaboration_threads_budget` | Never exceeds `message_budget` |
+| `last_seq` | BIGINT | NOT NULL DEFAULT 0 | Last message ordinal issued for this thread |
+| `version` | INTEGER | NOT NULL DEFAULT 1 | Optimistic-concurrency fence on state transitions |
+| `final_result` | JSON | nullable | Negotiated outcome recorded at close |
+
+Indexes: `idx_collaboration_threads_due`, `idx_collaboration_threads_project`.
+
+### Table: `collaboration_members`
+
+Membership of a collaboration thread, one row per task. Invitation is recorded at `invited_at`; a task becomes a speaking member only by accepting with the claim epoch it holds, and removal stamps `removed_at`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `thread_id` | TEXT | PRIMARY KEY, FK → collaboration_threads.id (CASCADE) | Thread the membership belongs to |
+| `task_id` | TEXT | PRIMARY KEY | Member task (soft reference) |
+| `state` | TEXT | NOT NULL DEFAULT 'invited', `ck_collaboration_members_state` | `invited`, `accepted` or `removed` |
+| `invited_at` | FLOAT | NOT NULL | Unix timestamp of the invitation |
+| `accepted_at` | FLOAT | nullable | Unix timestamp of acceptance |
+| `accepted_claim_epoch` | INTEGER | nullable | Claim epoch the accepting task held |
+| `removed_at` | FLOAT | nullable | Unix timestamp of removal |
+
+Index: `idx_collaboration_members_task`.
+
+### Table: `collaboration_messages`
+
+Append-only ordered messages within a collaboration thread, sequenced by `seq` per thread. Senders are identified by task, the claim epoch they held and their session, and one message per (thread, sender, epoch, client key) is enforced by `uq_collaboration_messages_client_key`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `thread_id` | TEXT | PRIMARY KEY, FK → collaboration_threads.id (CASCADE) | Thread the message belongs to |
+| `seq` | BIGINT | PRIMARY KEY | Per-thread ordinal, assigned from `collaboration_threads.last_seq` |
+| `message_id` | TEXT | nullable | The AQ message id that carries the body |
+| `sender_task_id` | TEXT | NOT NULL | Soft reference to the sending task |
+| `sender_claim_epoch` | INTEGER | NOT NULL | Claim epoch the sender held when writing |
+| `sender_session_id` | TEXT | NOT NULL | Session that wrote the message |
+| `client_key` | TEXT | NOT NULL | Client-side deduplication key |
+| `body_bytes` | INTEGER | NOT NULL | Length of the message body in bytes |
+| `created_at` | FLOAT | NOT NULL | Unix timestamp |
+
+Unique: `uq_collaboration_messages_client_key` over (`thread_id`, `sender_task_id`, `sender_claim_epoch`, `client_key`). Index: `idx_collaboration_messages_sender`.
 
 ### Table: `dashboard_state_documents`
 
