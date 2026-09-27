@@ -3697,7 +3697,7 @@ async def test_snapshot_scopes_generation_and_fences_target_movement(setup):
 async def test_snapshot_archived_completion_survives_ref_cleanup(setup):
     from src.integration.delivery_truth import DeliveryState, load_delivery_requests
 
-    db, service, source, _remote, _repo = setup
+    db, _service, source, _remote, _repo = setup
     head = await feature(setup, "archived-source")
     await db.save_task_completion(TaskCompletion(
         id="archived-close", task_id="archived-source", outcome="pass", commits=[head],
