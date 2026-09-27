@@ -1077,6 +1077,14 @@ unchanged; the dashboard joins the two on provider key.
 
 **Dashboard** (`.5`):
 
+The WebSocket forwards `provider.*` events in both live delivery and persisted
+replay. Local operators and global supervisors receive the full payload;
+project supervisors receive provider state and aggregate reroute counts without
+other project identifiers. Allocation invalidations carry only `provider`,
+`vendor`, `request_id`, `actor` and `status`, with `redacted: true`, so their
+scoped status read supplies the authorized detail. Task-scoped worker sockets
+receive no provider events, matching the operator-only provider API.
+
 * **Provider cards** (`dashboard/src/pages/metrics/ProviderUsage.tsx`) gain a
   header per provider: a state pill (green / amber / red / grey for `disabled`),
   the reason, *since*, a countdown to expected recovery, an override badge with
