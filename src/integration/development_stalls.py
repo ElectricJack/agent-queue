@@ -51,13 +51,11 @@ from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
-    archived_tasks,
     messages,
     task_completion_records,
     task_metadata,
     tasks,
 )
-from src.models import TaskStatus
 
 #: The publisher's logger: these lines belong to its sweep.
 logger = logging.getLogger("src.integration.development")
@@ -81,12 +79,6 @@ TARGET_SENSITIVE_REASONS = frozenset({"merge_conflict", "parent_unavailable"})
 #: Reasons a live repair can resolve, and whose task that repair would free:
 #: the candidate itself, or the dependency it waits for.
 _REPAIR_WAITS = {"source_parked": "self", "undelivered_dependency": "related"}
-
-#: A repair still working on a parked source.  A completed repair is live only
-#: while it is itself pending publication (a current candidate).
-_FINISHED_REPAIR_STATUSES = frozenset(
-    {TaskStatus.COMPLETED.value, TaskStatus.FAILED.value, TaskStatus.BLOCKED.value}
-)
 
 #: One line of recovery advice per reason, quoted in the supervisor message.
 _RECOVERY = {
@@ -339,7 +331,16 @@ class PublisherStalls:
         return {task_id: completion_id for task_id, completion_id in rows}
 
     async def _live_repairs(self, observation, skipped):
-        """Map each skipped candidate waiting on a live repair to that repair."""
+        """Map each skipped candidate waiting on a live repair to that repair.
+
+        The repair is found along the whole chain
+        (:func:`src.integration.development.repair_chain`): a closed repair
+        whose own publication parked is carried by the repair of that row, and
+        a chain that ended (a failed repair, the generation budget) leaves
+        nothing to wait on, so the skip counts toward a stall again.
+        """
+        from src.integration.development import repair_chain, repair_statuses
+
         blocking = {}
         for task_id, (kind, related) in skipped.items():
             whose = _REPAIR_WAITS.get(kind)
@@ -348,43 +349,39 @@ class PublisherStalls:
                 blocking[task_id] = holder
         if not blocking:
             return {}
-        repairs = {}
-        for row in observation.history:
+        parked = {}
+        for row in sorted(observation.history, key=lambda row: row.get("created_at") or 0,
+                          reverse=True):
             if (row.get("state") != "parked"
                     or row.get("repository_id") != observation.repository_id):
                 continue
-            members = [m for m in row.get("manifest") or []
-                       if isinstance(m, dict) and m.get("task_id")]
-            if not members:
-                continue
-            identity = self.repair_identity(row["manifest"])
-            for member in members:
-                repairs.setdefault(member["task_id"], []).append(identity)
-        candidates = {r for holder in blocking.values() for r in repairs.get(holder, [])}
-        if not candidates:
+            for member in row.get("manifest") or []:
+                if isinstance(member, dict) and member.get("task_id"):
+                    parked.setdefault(member["task_id"], []).append(row)
+        if not any(holder in parked for holder in blocking.values()):
             return {}
         async with self.db._engine.connect() as conn:
-            statuses = dict((await conn.execute(
-                select(tasks.c.id, tasks.c.status).where(tasks.c.id.in_(candidates))
-            )).all())
-            missing = candidates - statuses.keys()
-            if missing:
-                statuses.update((await conn.execute(
-                    select(archived_tasks.c.id, archived_tasks.c.status)
-                    .where(archived_tasks.c.id.in_(missing))
-                )).all())
+            statuses = await repair_statuses(conn, [observation.project_id])
 
-        def live(repair_id):
-            status = statuses.get(repair_id)
-            if status is None:
-                return False
-            if status not in _FINISHED_REPAIR_STATUSES:
-                return True
-            return status == TaskStatus.COMPLETED.value and repair_id in observation.pending
+        def carrier(holder):
+            for row in parked.get(holder, []):
+                result = repair_chain(
+                    row["manifest"], observation.history, statuses,
+                    repository_id=observation.repository_id,
+                    target_ref=observation.target_ref, identity=self.repair_identity,
+                )
+                repair = result["open_repair"]
+                # A closed repair is live only while it is itself pending
+                # publication (a current candidate).
+                if repair and (
+                    result["state"] != "awaiting_publication" or repair in observation.pending
+                ):
+                    return repair
+            return None
 
         waits = {}
         for task_id, holder in blocking.items():
-            found = next((r for r in sorted(repairs.get(holder, [])) if live(r)), None)
+            found = carrier(holder)
             if found:
                 waits[task_id] = found
         return waits

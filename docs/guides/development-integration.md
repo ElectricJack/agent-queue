@@ -214,16 +214,40 @@ After the batch is assembled AQ looks at each parked row again:
   marked `adopted` and nothing else happens;
 * otherwise AQ files one ordinary repair task, `development-repair-<digest>`,
   on its own branch, naming the source branches, conflicting files and target.
-  The worker rebases the source changes onto that target in the repair branch.
-  A single-source repair is placed under its completed source when depth
-  permits; at the hierarchy depth cap it is rooted with provenance and a
+  In its branch, which starts from that target, the worker merges each listed
+  source revision by its exact SHA. It never rebases, squashes or
+  cherry-picks, so the source stays an ancestor and delivering the repair
+  delivers the source. A conflicting generated file is regenerated, not
+  hand-merged. A single-source repair is placed under its completed source when
+  depth permits; at the hierarchy depth cap it is rooted with provenance and a
   delivery hold on the source. It is a normal queue task with three retries;
-  waiting for a worker does not expire it. At most three generations of repair
-  are chained before the content is left parked for you.
+  waiting for a worker does not expire it.
 
 Closing the repair does not release the source's dependents. Publication of
 the passing repair to the configured default branch adopts the parked source
-receipt, which releases them even when rebase changed the source commit SHA.
+receipt, which releases them. That holds even for a repair that rewrote the
+source commits anyway.
+
+If `main` moves before the closed repair is published, the repair's own
+publication can park on a new conflict. That row gets the next repair, rooted
+and discovered-from the previous one, and the source is carried by the whole
+chain. At most three generations are chained; past that nothing more is filed,
+the batch records the `repair_generation_exhausted` diagnostic and the content
+is left parked for you. `aq integration sweep demo --retry` or `--recover-child
+<task>` on a parked source that conflicts again refreshes its existing row
+rather than parking it twice. A recovery that leaves the child unpublished
+names the repair carrying it, and the chain, or says that none does.
+
+```bash
+aq doctor --check integration.development_conflicts_unrepaired
+```
+
+lists every completed source parked on a merge conflict whose chain has no open
+repair: none was filed, one ended FAILED or BLOCKED, or the generation budget
+ran out. It names the batch, the conflicting files and the chain. Nothing will
+release those dependents by itself. Reopen the ended repair; or merge the
+source revision onto `main` on a branch that keeps it as an ancestor and record
+it with `aq integration adopt`; or cancel the batch.
 
 Parked content is not re-tried while its sources are unchanged — a worker
 pushing new commits makes it eligible again by itself. To retry unchanged
@@ -263,8 +287,9 @@ but one that repeats forever is a stall, so it has a bounded life
   starts a new attempt, which can stall and notify again.
 * A skip waiting on a live repair (its own parked source, or a parked
   dependency's) records `state: waiting` and does not count: the repair is the
-  work in progress. When that repair fails or finishes without releasing the
-  source, counting starts.
+  work in progress. `waiting_on` names the repair actually carrying the source,
+  followed through repairs of repairs. When the chain ends without releasing the
+  source (a repair fails, or the generation budget runs out), counting starts.
 * Idle ticks evaluate nothing and daemon downtime is not counted.
 
 The record holds observations and notification deduplication only. It is

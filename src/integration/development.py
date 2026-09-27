@@ -138,7 +138,7 @@ OPEN_REPAIR_STATUSES = frozenset({
 REPAIR_CHAIN_LIMIT = 8
 
 
-def repair_chain(manifest, history, statuses, *, repository_id, target_ref):
+def repair_chain(manifest, history, statuses, *, repository_id, target_ref, identity=None):
     """Follow a parked batch through its repairs to the one still carrying it.
 
     A parked batch's repair is ``development-repair-<digest of its manifest>``.
@@ -149,7 +149,8 @@ def repair_chain(manifest, history, statuses, *, repository_id, target_ref):
     (``wise-bridge``: fresh-ember.2, nimble-bridge.8).
 
     *statuses* maps repair task ids to their status, the live table first and
-    then the archive.  The result's ``open_repair`` names the repair that
+    then the archive; *identity* names a manifest's repair
+    (:meth:`DevelopmentIntegration._repair_identity` by default).  The result's ``open_repair`` names the repair that
     carries the batch, or is ``None`` when nothing will resolve it by itself:
 
     * ``open``: a repair in the chain is still being worked on;
@@ -176,39 +177,39 @@ def repair_chain(manifest, history, statuses, *, repository_id, target_ref):
                 parked_in.setdefault(member["task_id"], []).append(row)
         elif row.get("state") in {"delivered", "adopted"} and row.get("target_ref") == target_ref:
             delivered.update(member["task_id"] for member in members)
+    identity = identity or DevelopmentIntegration._repair_identity
     seen = set()
 
     def outcome(open_repair, state, chain, detail):
         return {"open_repair": open_repair, "state": state, "chain": chain, "detail": detail}
 
-    def follow(identity, chain):
-        status = statuses.get(identity)
-        chain = [*chain, {"task_id": identity, "status": status}]
-        if identity in seen or len(chain) > REPAIR_CHAIN_LIMIT:
-            return outcome(None, "loop", chain, f"repair chain repeats at {identity}")
-        seen.add(identity)
+    def follow(repair, chain):
+        status = statuses.get(repair)
+        chain = [*chain, {"task_id": repair, "status": status}]
+        if repair in seen or len(chain) > REPAIR_CHAIN_LIMIT:
+            return outcome(None, "loop", chain, f"repair chain repeats at {repair}")
+        seen.add(repair)
         if status is None:
-            return outcome(None, "missing", chain, f"no repair {identity} exists")
+            return outcome(None, "missing", chain, f"no repair {repair} exists")
         if status in OPEN_REPAIR_STATUSES:
-            return outcome(identity, "open", chain, f"repair {identity} is {status}")
+            return outcome(repair, "open", chain, f"repair {repair} is {status}")
         if status != TaskStatus.COMPLETED.value:
-            return outcome(None, "finished", chain, f"repair {identity} ended {status}")
-        if identity in delivered:
-            return outcome(identity, "delivered", chain, f"repair {identity} was delivered")
+            return outcome(None, "finished", chain, f"repair {repair} ended {status}")
+        if repair in delivered:
+            return outcome(repair, "delivered", chain, f"repair {repair} was delivered")
         # Duplicate rows of one manifest share one repair: follow each once.
         successors = list(dict.fromkeys(
-            DevelopmentIntegration._repair_identity(row["manifest"])
-            for row in parked_in.get(identity, [])
+            identity(row["manifest"]) for row in parked_in.get(repair, [])
         ))
         if not successors:
             return outcome(
-                identity, "awaiting_publication", chain,
-                f"repair {identity} closed and awaits publication",
+                repair, "awaiting_publication", chain,
+                f"repair {repair} closed and awaits publication",
             )
         results = [follow(successor, chain) for successor in successors]
         return next((result for result in results if result["open_repair"]), results[0])
 
-    return follow(DevelopmentIntegration._repair_identity(manifest), [])
+    return follow(identity(manifest), [])
 
 
 def describe_repair_chain(result):

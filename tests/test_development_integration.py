@@ -2508,8 +2508,9 @@ async def test_parked_conflict_keeps_one_repair_through_source_parked_sweeps(set
     assert "Do not rebase, squash or cherry-pick" in repair.description
     for _ in range(2):
         await service.sweep("p")
-        assert (await db.get_task_meta("conflicted", PUBLISHER_SKIP_KEY))["reason"] == (
-            "source_parked"
+        skip = await db.get_task_meta("conflicted", PUBLISHER_SKIP_KEY)
+        assert (skip["reason"], skip["state"], skip["waiting_on"]) == (
+            "source_parked", "waiting", identity
         )
     assert [task.id for task in await _repairs(db)] == [identity]
     assert [row["id"] for row in await _parked(service)] == [parked["id"]]
@@ -2530,6 +2531,7 @@ async def test_parked_conflict_keeps_one_repair_through_source_parked_sweeps(set
     await db.update_task(identity, status=TaskStatus.FAILED.value)
     await service.sweep("p")
     assert [task.id for task in await _repairs(db)] == [identity], "never a second repair"
+    assert "waiting_on" not in await db.get_task_meta("conflicted", PUBLISHER_SKIP_KEY)
     result = await run_doctor_check(db, UNREPAIRED)
     assert result.severity == Severity.ERROR
     [finding] = result.data["conflicts"]
@@ -2563,6 +2565,9 @@ async def test_reconflicted_repair_chain_carries_the_source_to_delivery(setup):
     assert second_row["evidence"]["kind"] == "merge_conflict"
     second = service._repair_identity(second_row["manifest"])
     assert "Development repair generation: 2" in (await db.get_task(second)).description
+    # The source waits on the repair actually carrying it, not the closed one.
+    await service.sweep("p")
+    assert (await db.get_task_meta("conflicted", PUBLISHER_SKIP_KEY))["waiting_on"] == second
     await _age_parked_rows(db)
     result = await run_doctor_check(db, UNREPAIRED)
     assert result.severity == Severity.OK, result.detail
