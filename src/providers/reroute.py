@@ -17,9 +17,12 @@ Two halves, in the house style:
   the ``update_task_routing`` guard (a claim that wins after the read is never
   retargeted), records ``task_reroutes`` / ``rerouted_from`` / a task comment
   (D17), emits ``task.rerouted`` and ``provider.reroute_batch`` and sends one
-  notice per batch per project (D19).  It also answers the two derived
-  questions other code asks: why a task is held (D18) and which profile a
-  project's default resolves to while its provider is down (D13).
+  notice per batch per project (D19).  The automatic sweep then runs a
+  second, *capacity spill* pass (D24, :mod:`src.providers.spill`): READY
+  work leaves a pool that cannot serve it for a same-class pool with room.
+  It also answers the two derived questions other code asks: why a task is
+  held (D18) and which profile a project's default resolves to while its
+  provider is down (D13).
 
 The class never changes on an automatic move.  Intent never changes on any
 move (D16).
@@ -33,8 +36,9 @@ import logging
 import math
 import time
 import uuid
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass, field, replace
+from types import SimpleNamespace
 from typing import Any
 
 from src.providers.availability import AVAILABLE, DEGRADED, UNAVAILABLE
@@ -149,6 +153,10 @@ class Decision:
     title: str = ""
     status: str = ""
     provider_generation: int | None = None
+    #: The pass that decided it, as ``task_reroutes.reason_code`` records a
+    #: move: ``provider_unavailable`` (failover), ``operator_forced`` or
+    #: ``capacity_spill`` (D24).  Set by the sweep, not the planners.
+    reason_code: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -469,6 +477,8 @@ class ProviderRerouteService:
         classes_getter: Callable[[], Mapping[str, Any]] | None = None,
         bus: Any = None,
         clock: Callable[[], float] = time.time,
+        pool_measure: Callable[[], Awaitable[Any]] | None = None,
+        pool_global_cap: Callable[[], int | None] | None = None,
     ) -> None:
         self._db_getter = db_getter
         self.availability = availability
@@ -477,6 +487,10 @@ class ProviderRerouteService:
         self._classes_getter = classes_getter or dict
         self._bus = bus
         self._clock = clock
+        #: ``Orchestrator._measure_pools`` and ``_pool_global_cap``: what the
+        #: capacity spill pass reads (D24).  Without them spill never runs.
+        self._pool_measure = pool_measure
+        self._pool_global_cap = pool_global_cap
         self._lock = asyncio.Lock()
         self._active_cache: tuple[float, bool] | None = None
 
@@ -695,12 +709,21 @@ class ProviderRerouteService:
     ) -> dict[str, Any]:
         """Plan one sweep under D12-D16 and, unless *dry_run*, apply it.
 
+        The automatic sweep (no *provider*, no *task_ids*) then runs the
+        capacity spill pass (D24) over the tasks failover did not decide;
+        its decisions join the same ``moved`` / ``held`` / ``skipped``
+        lists, each carrying ``reason_code``.  Both passes are planned
+        before either writes.
+
         Outcomes: ``rerouted`` (moved at least one task), ``held`` (nothing
         moved, something held), ``idle`` (nothing unavailable, or nothing
         queued on it) and ``disabled`` (mode is not ``enforce`` or re-routing
         is off -- the plan is still returned, applied never).  An operator
         call naming tasks is honoured whatever the mode.
         """
+        from src.database.queries.task_reroute_queries import AUTOMATIC_REASON, SPILL_REASON
+        from src.providers.spill import spill_batch_id
+
         cfg = self.config
         explicit = task_ids is not None
         operator = explicit and (force or bool(to_profile))
@@ -713,6 +736,14 @@ class ProviderRerouteService:
                 disabled_reason = f"provider_failover.mode is {cfg.mode} (plan only)"
             elif not cfg.reroute.enabled:
                 disabled_reason = "provider_failover.reroute.enabled is false"
+        # Spill runs only on the automatic call (S1) and only when enabled
+        # (S2); ``disabled_reason`` covers it exactly as it covers failover.
+        spill_on = (
+            provider is None
+            and not explicit
+            and self._pool_measure is not None
+            and bool(getattr(getattr(cfg, "spill", None), "enabled", False))
+        )
         async with self._lock:
             ctx = await self.context()
             providers = [provider] if provider else None
@@ -727,8 +758,15 @@ class ProviderRerouteService:
                 include_paused=include_paused,
                 explicit=explicit,
             )
+            for decision in decisions:
+                decision.reason_code = "operator_forced" if forced_batch else AUTOMATIC_REASON
+            spill: list[Decision] = await self._plan_spill(ctx, decisions) if spill_on else []
+            for decision in spill:
+                decision.reason_code = SPILL_REASON
+            spill_batch = spill_batch_id(ctx.now)
             apply = not dry_run and disabled_reason is None and cfg.mode != "off"
             moved: list[Decision] = []
+            spilled: list[Decision] = []
             lost: list[Decision] = []
             resumed: list[str] = []
             if apply:
@@ -737,26 +775,45 @@ class ProviderRerouteService:
                         resumed.append(decision.task_id)
                     if decision.action != "move":
                         continue
-                    if await self._move(decision, actor=actor, forced_batch=forced_batch):
+                    batch = self._batch(decision, forced_batch)
+                    if await self._move(decision, actor=actor, batch=batch):
                         moved.append(decision)
                     else:
                         lost.append(decision)
-        held = [d for d in decisions if d.action == "hold"]
+                for decision in spill:
+                    if decision.action != "move":
+                        continue
+                    if await self._move(decision, actor=actor, batch=spill_batch):
+                        spilled.append(decision)
+                    else:
+                        lost.append(decision)
+        everything = [*decisions, *spill]
+        held = [d for d in everything if d.action == "hold"]
         unavailable = sorted(p for p, s in ctx.states.items() if s in UNAVAILABLE and p != "llm")
         if disabled_reason is not None:
             outcome = "disabled"
-        elif moved or (not apply and any(d.action == "move" for d in decisions)):
+        elif moved or spilled or (not apply and any(d.action == "move" for d in everything)):
             outcome = "rerouted"
         elif held:
             outcome = "held"
         else:
             outcome = "idle"
         notices: list[str] = []
-        if apply and (moved or held):
-            notices = await self._announce(moved, held, forced_batch=forced_batch)
+        failover_held = [d for d in decisions if d.action == "hold"]
+        if apply and (moved or failover_held):
+            notices = await self._announce(moved, failover_held, forced_batch=forced_batch)
+        if spilled:
+            # One summary per sweep that spilled work, and never a supervisor
+            # message: a sweep runs every five minutes (S7).
+            await self._announce_spill(
+                spill_batch, spilled, [d for d in spill if d.action == "hold"]
+            )
         held_by_kind: dict[str, int] = {}
         for decision in held:
             held_by_kind[decision.kind or "-"] = held_by_kind.get(decision.kind or "-", 0) + 1
+        batch_ids = {self._batch(d, forced_batch) for d in moved}
+        if spilled:
+            batch_ids.add(spill_batch)
         return {
             "success": True,
             "outcome": outcome,
@@ -764,16 +821,101 @@ class ProviderRerouteService:
             "applied": apply,
             "disabled_reason": disabled_reason,
             "unavailable_providers": unavailable,
-            "moved": [d.to_dict() for d in (moved if apply else
-                                            [d for d in decisions if d.action == "move"])],
+            "moved": [d.to_dict() for d in ([*moved, *spilled] if apply else
+                                            [d for d in everything if d.action == "move"])],
             "held": [d.to_dict() for d in held],
             "held_by_kind": held_by_kind,
             "resumed": resumed,
             "lost": [d.task_id for d in lost],
-            "skipped": [d.to_dict() for d in decisions if d.action == "skip"],
-            "batch_ids": sorted({self._batch(d, forced_batch) for d in moved}),
+            "skipped": [d.to_dict() for d in everything if d.action == "skip"],
+            "batch_ids": sorted(batch_ids),
             "notices": notices,
         }
+
+    async def _plan_spill(self, ctx: PlanContext, failover: Sequence[Decision]) -> list[Decision]:
+        """The capacity spill pass (D24 S3-S6) over one pool measurement.
+
+        Candidates are READY frontier tasks on a pool rung whose provider is
+        launchable and which have waited ``spill.after_seconds``, less every
+        task the failover pass decided (so no task is planned twice).  The
+        pool is measured only when there is a candidate, and failover's
+        planned moves are counted on their targets first.  A failure here is
+        logged and plans nothing: spill never breaks a failover sweep.
+        """
+        from src.providers.spill import (
+            SpillCandidate,
+            capacity_view_from_measurement,
+            plan_capacity_spill,
+            with_incoming_moves,
+        )
+
+        try:
+            sources = sorted(
+                pid
+                for pid, rung in ctx.rungs.items()
+                if rung.lifecycle == "pool" and not ctx.unavailable(rung.provider)
+            )
+            if not sources:
+                return []
+            after = float(getattr(ctx.config.spill, "after_seconds", 300) or 0)
+            decided = {d.task_id for d in failover}
+            rows = [
+                row
+                for row in await self.db.list_spill_candidates(
+                    sources, updated_before=ctx.now - after
+                )
+                if row["id"] not in decided
+            ]
+            if not rows:
+                return []
+            measurement = await self._pool_measure()
+            global_cap = self._pool_global_cap() if self._pool_global_cap is not None else None
+            view = with_incoming_moves(
+                capacity_view_from_measurement(
+                    measurement, global_cap, profile_providers=ctx.profile_providers
+                ),
+                failover,
+            )
+            projects = getattr(measurement, "projects", None) or {}
+            preferred = {
+                project_id: str(project.preferred_provider)
+                for project_id, project in projects.items()
+                if getattr(project, "preferred_provider", None)
+            }
+            candidates = [
+                SpillCandidate(
+                    task_id=row["id"],
+                    project_id=row["project_id"],
+                    profile_id=row["profile_id"],
+                    priority=int(row.get("priority") or 100),
+                    created_at=float(row.get("created_at") or 0.0),
+                    status=str(row.get("status") or ""),
+                    title=str(row.get("title") or ""),
+                    intelligence_class=row.get("intelligence_class"),
+                    intent=effective_intent(
+                        SimpleNamespace(
+                            provider_intent=row.get("provider_intent"),
+                            profile_id=row.get("profile_id"),
+                        )
+                    ),
+                    updated_at=float(row.get("updated_at") or 0.0),
+                )
+                for row in rows
+                if row["project_id"] in projects
+            ]
+            if not candidates:
+                return []
+            stats = await self.db.task_reroute_stats([c.task_id for c in candidates])
+            return plan_capacity_spill(
+                candidates,
+                replace(ctx, stats=stats),
+                view,
+                preferred_providers=preferred,
+                now=ctx.now,
+            )
+        except Exception:
+            logger.warning("provider reroute: capacity spill pass failed", exc_info=True)
+            return []
 
     @staticmethod
     def _batch(decision: Decision, forced_batch: str | None) -> str:
@@ -808,12 +950,16 @@ class ProviderRerouteService:
         decision: Decision,
         *,
         actor: str,
-        forced_batch: str | None,
+        batch: str,
     ) -> bool:
+        """Apply one planned move under the routing guard, recorded as *batch*.
+
+        ``decision.reason_code`` is what the sweep set: the failover pass's
+        ``provider_unavailable`` / ``operator_forced`` or ``capacity_spill``.
+        """
         from src.database.queries.task_reroute_queries import AUTOMATIC_REASON
 
-        batch = self._batch(decision, forced_batch)
-        reason_code = "operator_forced" if forced_batch else AUTOMATIC_REASON
+        reason_code = decision.reason_code or AUTOMATIC_REASON
         record = {
             "project_id": decision.project_id,
             "from_profile_id": decision.from_profile_id,
@@ -872,10 +1018,19 @@ class ProviderRerouteService:
         return True
 
     async def _comment(self, decision: Decision, batch: str, reason_code: str, actor: str) -> None:
+        from src.database.queries.task_reroute_queries import SPILL_REASON
+
         if reason_code == "operator_forced":
             body = (
                 f"Re-routed from `{decision.from_profile_id}` to `{decision.to_profile_id}` "
                 f"by {actor} (forced; batch `{batch}`)."
+            )
+        elif reason_code == SPILL_REASON:
+            # The planner's detail names the saturation (D24 S7).
+            body = (
+                f"Re-routed from `{decision.from_profile_id}` to `{decision.to_profile_id}` "
+                f"by capacity spill: {decision.detail} (batch `{batch}`). "
+                f"Undo: `aq provider reroute-undo --task-id {decision.task_id}`."
             )
         else:
             since = ""
@@ -965,6 +1120,34 @@ class ProviderRerouteService:
                     },
                 )
         return sent
+
+    async def _announce_spill(
+        self,
+        batch: str,
+        spilled: Sequence[Decision],
+        held: Sequence[Decision],
+    ) -> None:
+        """The one ``pool.spilled`` summary of a sweep that spilled work (D24 S7)."""
+        routes: dict[tuple[str, str], int] = {}
+        for decision in spilled:
+            key = (decision.from_profile_id, str(decision.to_profile_id))
+            routes[key] = routes.get(key, 0) + 1
+        held_kinds: dict[str, int] = {}
+        for decision in held:
+            held_kinds[decision.kind or "-"] = held_kinds.get(decision.kind or "-", 0) + 1
+        await self._emit(
+            "pool.spilled",
+            {
+                "batch_id": batch,
+                "moved": len(spilled),
+                "routes": [
+                    {"from_profile_id": source, "to_profile_id": target, "count": count}
+                    for (source, target), count in sorted(routes.items())
+                ],
+                "projects": sorted({d.project_id for d in spilled}),
+                "held": held_kinds,
+            },
+        )
 
     async def _notify_project(
         self,

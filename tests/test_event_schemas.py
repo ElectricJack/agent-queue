@@ -398,6 +398,28 @@ class TestPoolEventSchemas:
         )
         assert errors == []
 
+    def test_pool_spilled_payload_validates(self):
+        """provider-failover D24 S7: one summary per sweep that spilled work."""
+        schema = get_schema("pool.spilled")
+        assert schema["required"] == ["batch_id", "moved"]
+        errors = validate_payload(
+            "pool.spilled",
+            {
+                "batch_id": "spill-20260927T1405",
+                "moved": 2,
+                "routes": [
+                    {
+                        "from_profile_id": "standard-high-opencode",
+                        "to_profile_id": "standard-high-claude",
+                        "count": 2,
+                    }
+                ],
+                "projects": ["agent-queue"],
+                "held": {"spill_no_target": 1},
+            },
+        )
+        assert errors == []
+
     def test_new_pool_events_are_registered(self):
-        for event_type in ("pool.placement_starved", "pool.bounds_rescoped"):
+        for event_type in ("pool.placement_starved", "pool.bounds_rescoped", "pool.spilled"):
             assert event_type in registered_event_types()

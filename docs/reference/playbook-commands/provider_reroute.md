@@ -105,6 +105,18 @@ naming tasks, `to_profile` and `force` are operator arguments of
    ([`apply_task_reroute`](../../../src/database/queries/task_reroute_queries.py)):
    `profile_id` changes only while the task is queued, unassigned and has no
    live session, in the same transaction as its `task_reroutes` row.
+6. The automatic call (no `provider`, no `task_id`) then runs the **capacity
+   spill** pass ([D24](../../specs/provider-failover.md)): READY frontier tasks
+   on a pool rung whose provider is launchable, waiting at least
+   `provider_failover.spill.after_seconds`, and not decided by the failover
+   pass. It takes one pool measurement (`Orchestrator._measure_pools`), counts
+   failover's planned moves on their targets, and runs the pure planner
+   [`plan_capacity_spill`](../../../src/providers/spill.py): a task moves from a
+   pool that cannot serve it to a same-class pool with headroom in its project,
+   at most `spill.max_per_sweep` per sweep. Both passes are planned before
+   either writes. Every decision in `moved` / `held` / `skipped` carries
+   `reason_code` (`provider_unavailable`, `operator_forced` or
+   `capacity_spill`). `provider_failover.spill.enabled: false` skips the pass.
 
 ## Side effects and persistence
 
@@ -117,6 +129,14 @@ message to `session:supervisor-<project>` per project, keyed by the message
 `thread_id` `reroute:<batch>:<project>` so a later sweep of the same outage
 never repeats it. Intent and class never change. Everything is durable; a
 restart re-plans from the rows.
+
+Per capacity spill move: the same guarded write, with `reason_code =
+capacity_spill`, `batch_id = spill-<UTC yyyymmddThhmm>` (one per sweep), a
+task comment that names the saturation and the undo command, and a
+`task.rerouted` event. Each sweep that spilled work emits one `pool.spilled`
+event (batch, moved count, `routes` per source and target, projects, holds
+by kind). Spill sends no supervisor message and no `provider.reroute_batch`;
+`aq provider reroute-undo --batch-id spill-...` undoes a sweep's moves.
 
 ## Failure modes and diagnostics
 
