@@ -21,6 +21,7 @@ const api = vi.hoisted(() => ({
   getAgent: vi.fn(), editAgent: vi.fn(), createAgent: vi.fn(), deleteAgent: vi.fn(),
   sessionInput: vi.fn(), startAgentTerminal: vi.fn(),
   poolStatus: vi.fn(), poolScale: vi.fn(), poolSetEnabled: vi.fn(), sessionList: vi.fn(),
+  getProviderAllocationApiProvidersAllocationGet: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
 
@@ -131,6 +132,9 @@ beforeEach(() => {
   api.sessionList.mockResolvedValue({ data: { success: true, sessions: [instance("aaa"), instance("bbb", { task_id: "quick-torrent-39", started_at: 200 })], count: 2 } });
   api.poolScale.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", min_active: 2, max_active: 6, project_caps: [], terminated: [], warnings: [] } });
   api.poolSetEnabled.mockResolvedValue({ data: { success: true, profile_id: "worker-standard", enabled: false, warnings: [] } });
+  api.getProviderAllocationApiProvidersAllocationGet.mockResolvedValue({ data: {
+    success: true, now: 1, providers: [], projects: [], diagnostics: [],
+  } });
 });
 
 afterEach(() => {
@@ -523,6 +527,27 @@ describe("pools in the agent flock", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Open pool worker-idle" }, SLOW));
     expect(await screen.findByRole("region", { name: /worker-idle/ }, SLOW)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Worker pools" })).not.toBeInTheDocument();
+  });
+
+  it("switches the directory to the Providers view and keeps the choice in the URL", async () => {
+    renderAgents("/agents");
+
+    const tabs = await screen.findByRole("tablist", { name: "Agents directory" }, SLOW);
+    expect(within(tabs).getByRole("tab", { name: "Pools" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("region", { name: "Worker pools" }, SLOW)).toBeInTheDocument();
+    expect(api.getProviderAllocationApiProvidersAllocationGet).not.toHaveBeenCalled();
+
+    fireEvent.click(within(tabs).getByRole("tab", { name: "Providers" }));
+    expect(await screen.findByRole("region", { name: "Providers" }, SLOW)).toBeInTheDocument();
+    expect(within(tabs).getByRole("tab", { name: "Providers" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("region", { name: "Worker pools" })).not.toBeInTheDocument();
+    expect(await screen.findByText(/No ordinary worker profiles resolve to a known provider/, undefined, SLOW)).toBeInTheDocument();
+  });
+
+  it("opens straight onto the Providers view from a shared link", async () => {
+    renderAgents("/agents?view=providers");
+    expect(await screen.findByRole("region", { name: "Providers" }, SLOW)).toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Worker pools" })).not.toBeInTheDocument();
   });
 

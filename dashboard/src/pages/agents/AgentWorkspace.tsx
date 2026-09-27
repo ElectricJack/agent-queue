@@ -1,4 +1,5 @@
 import { PlusIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { useSearchParams } from "react-router-dom";
 import { useAgentFlock } from "../../api/agents";
 import { selectionAddress, useAgentSelection } from "./useAgentSelection";
 import AgentWindow from "./AgentWindow";
@@ -7,12 +8,49 @@ import AddPool from "./AddPool";
 import CreateChoice from "./CreateChoice";
 import PoolWindow from "./PoolWindow";
 import PoolDirectory, { PoolDirectoryHint } from "./PoolDirectory";
+import ProvidersView from "./ProvidersView";
 import { usePoolFlock } from "./pools";
+
+/** The directory's two views; ``?view=providers`` addresses the second, so a link can share it. */
+type DirectoryView = "pools" | "providers";
+
+const DIRECTORY_VIEWS: { id: DirectoryView; label: string }[] = [
+  { id: "pools", label: "Pools" },
+  { id: "providers", label: "Providers" },
+];
+
+/**
+ * Pools | Providers, beside each other over the empty workspace.
+ *
+ * The Providers view is mounted only while chosen: it polls its own read and
+ * the pool directory stays the default landing view for the rail's links.
+ */
+function DirectoryTabs({ view, onChange }: { view: DirectoryView; onChange: (view: DirectoryView) => void }) {
+  return (
+    <div role="tablist" aria-label="Agents directory" className="flex shrink-0 gap-1">
+      {DIRECTORY_VIEWS.map((item) => (
+        <button key={item.id} type="button" role="tab" aria-selected={view === item.id} onClick={() => onChange(item.id)}
+          className={"rounded px-2.5 py-1 text-xs " + (view === item.id
+            ? "bg-indigo-500/20 text-indigo-200" : "text-gray-400 hover:bg-gray-800")}>
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export default function AgentWorkspace() {
   const { data: agents = [], isLoading, error, refetch } = useAgentFlock();
   const { selectedIds, selections, select, close, setInstance, resetToken, focusSelection, adding, setAdding } = useAgentSelection();
   const { entries: pools } = usePoolFlock();
+  const [params, setParams] = useSearchParams();
+  const view: DirectoryView = params.get("view") === "providers" ? "providers" : "pools";
+  const setView = (next: DirectoryView) => {
+    const search = new URLSearchParams(params);
+    if (next === "providers") search.set("view", next);
+    else search.delete("view");
+    setParams(search);
+  };
   const columns = selectedIds.length > 1 ? "lg:grid-cols-2" : "grid-cols-1";
   const rows = selectedIds.length > 2 ? "lg:grid-rows-2" : "lg:grid-rows-1";
 
@@ -48,8 +86,13 @@ export default function AgentWorkspace() {
       )}
       {selectedIds.length === 0 ? (
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
-          <PoolDirectory entries={pools} onOpen={(key) => select(key)} />
-          <PoolDirectoryHint />
+          <DirectoryTabs view={view} onChange={setView} />
+          {view === "providers" ? <ProvidersView /> : (
+            <>
+              <PoolDirectory entries={pools} onOpen={(key) => select(key)} />
+              <PoolDirectoryHint />
+            </>
+          )}
         </div>
       ) : (
         <div className={"grid min-h-0 flex-1 auto-rows-[minmax(20rem,1fr)] gap-3 overflow-y-auto lg:auto-rows-auto " + columns + " " + rows}>

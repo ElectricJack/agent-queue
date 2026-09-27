@@ -348,6 +348,8 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
   if (type.startsWith("pool.")) {
     queryClient.invalidateQueries({ queryKey: ["pools"] });
     queryClient.invalidateQueries({ queryKey: ["sessions", "pool"] });
+    // The Providers view groups the same profiles and supply by provider.
+    queryClient.invalidateQueries({ queryKey: ["providers", "allocation"] });
     return;
   }
 
@@ -382,8 +384,10 @@ function applyEventToCache(queryClient: QueryClient, event: NotifyEvent): void {
     queryClient.invalidateQueries({ queryKey: ["sessions"] });
     const sid = (event as { session_id?: string }).session_id;
     if (sid) queryClient.invalidateQueries({ queryKey: ["session", sid] });
-    // A pool's supply is its live sessions; its status row counts them.
+    // A pool's supply is its live sessions; its status row counts them, and
+    // so does each provider's supply in the Providers view.
     scheduleCoalescedInvalidation(queryClient, ["pools"], ROSTER_INVALIDATE_MS);
+    scheduleCoalescedInvalidation(queryClient, ["providers", "allocation"], ROSTER_INVALIDATE_MS);
     return;
   }
   if (type.startsWith("task.")) {
