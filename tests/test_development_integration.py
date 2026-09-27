@@ -2591,6 +2591,60 @@ async def test_reconflicted_repair_chain_carries_the_source_to_delivery(setup):
     assert {task.id for task in await _repairs(db)} == {first, second}
 
 
+@pytest.mark.parametrize("filed_before_fix", [False, True])
+async def test_generation_3_repair_chain_delivers_instead_of_cycling(setup, filed_before_fix):
+    """solid-horizon, 2026-09-27: a three-repair chain must reach main.
+
+    ``development-repair-24d1…`` -> ``-7d44…`` -> ``-9f1a…`` (and ``0d9d…`` ->
+    ``643a…`` -> ``5435…``) each carried the previous repair after main moved
+    twice.  Every earlier repair ``blocks`` on its successor, and every
+    successor's contract names only its predecessor, so each sweep held all
+    three as a dependency cycle: none could land, and fresh-ember.2's and
+    nimble-bridge.7's dependents stayed undelivered for hours.
+
+    A repair no longer blocks on the repair that carries it.  A chain filed
+    before that (``filed_before_fix``: the production edges) is superseded
+    by its newest repair, whose contracts carry every older one.
+    """
+    db, service, source, remote, _repo = setup
+    original = await _conflicted_source(setup)
+    await service.sweep("p")
+    [parked] = await _parked(service)
+    chain = [service._repair_identity(parked["manifest"])]
+    head = await _merge_repair(setup, chain[0], [original], "child, main 1\n")
+    for generation in (2, 3):
+        await _advance_main(source, f"main {generation}\n")
+        await service.sweep("p")
+        [row] = [r for r in await _parked(service) if r["manifest"][0]["task_id"] == chain[-1]]
+        chain.append(service._repair_identity(row["manifest"]))
+        repair = await db.get_task(chain[-1])
+        assert f"Development repair generation: {generation}" in repair.description
+        older, newer = chain[-2:]
+        assert (older, "discovered-from") in await db.get_typed_dependencies(newer)
+        assert (newer, "blocks") not in await db.get_typed_dependencies(older)
+        if filed_before_fix:
+            await db.add_dependency(older, newer, "blocks")
+        head = await _merge_repair(setup, newer, [head], f"child, main {generation}\n")
+
+    result = await service.sweep("p")
+
+    assert result["outcome"] == "delivered"
+    first, second, third = chain
+    delivered = {member["task_id"]: member for member in result["manifest"]}
+    if filed_before_fix:
+        assert {delivered[first]["superseded_by"], delivered[second]["superseded_by"]} == {third}
+    assert "superseded_by" not in delivered[third]
+    for task_id in chain:
+        skip = await db.get_task_meta(task_id, PUBLISHER_SKIP_KEY)
+        assert skip is None or skip["reason"] != "dependency_cycle", (task_id, skip)
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert not await _parked(service)
+    assert not (await db.get_task("next")).is_blocked
+    git(remote, "merge-base", "--is-ancestor", original, "main")
+    assert git(remote, "show", "main:base.txt") == "child, main 3"
+    assert {task.id for task in await _repairs(db)} == set(chain)
+
+
 async def test_exhausted_repair_generations_are_named_and_reported(setup):
     """Past the generation budget the batch stays parked, named, and listed."""
     db, service, _source, _remote, _repo = setup
@@ -2661,6 +2715,26 @@ def test_repair_chain_states_follow_the_journal():
     )
     assert chain(reparked, {first: "COMPLETED", second: "BLOCKED"})["state"] == "finished"
     assert chain(reparked, {first: "COMPLETED"})["state"] == "missing"
+
+
+def test_carried_sources_follow_the_repair_chain():
+    from src.integration.development import _carried_sources
+
+    a, b, c = ("a" * 40, "b" * 40, "c" * 40)
+    contracts = {
+        "gen3": [{"task_id": "gen2", "source_sha": b}],
+        "gen2": [{"task_id": "gen1", "source_sha": a}],
+        "gen1": [{"task_id": "source", "source_sha": c, "parent_task_id": "epic"}],
+    }
+    assert _carried_sources("gen3", contracts) == {"gen2": b, "gen1": a, "source": c}
+    assert _carried_sources("gen2", contracts) == {"gen1": a, "source": c}
+    assert _carried_sources("unknown", contracts) == {}
+    # A task reached with two revisions is unproven, and a looping journal ends.
+    contracts["gen3"].append({"task_id": "gen1", "source_sha": c})
+    contracts["gen1"].append({"task_id": "gen3", "source_sha": c})
+    assert _carried_sources("gen3", contracts) == {
+        "gen2": b, "gen1": None, "source": c, "gen3": c,
+    }
 
 
 def test_development_prime_omits_strict_review_protocol():
@@ -4468,8 +4542,9 @@ async def test_operator_adopted_repair_cycle_is_delivered_not_held(setup, adopti
     """Production shape: three chained repairs adopted after their content landed rebased.
 
     Each repair names its predecessor, and each predecessor waits on its
-    repair, so the newest contract cannot supersede the whole component. Before
-    the adoption bridge every tick held all three as a dependency cycle.
+    repair.  Before the adoption bridge every tick held all three as a
+    dependency cycle; the newest repair now carries the chain through its
+    predecessors' contracts, so the component is superseded, not held.
     """
     db, service, source, remote, _repo = setup
     chain = ["development-repair-a", "development-repair-b", "development-repair-c"]
@@ -4516,14 +4591,20 @@ async def test_operator_adopted_repair_cycle_is_delivered_not_held(setup, adopti
     other = await feature(setup, "independent")
     result = await service.sweep("p")
     assert result["outcome"] == "delivered"
-    assert {m["task_id"] for m in result["manifest"]} == {"independent"}
     assert git(remote, "merge-base", "--is-ancestor", other, "main") == ""
     skips = {task_id: await db.get_task_meta(task_id, PUBLISHER_SKIP_KEY) for task_id in chain}
+    assert skips == dict.fromkeys(chain)
     if adoption == "operator":
-        assert skips == dict.fromkeys(chain)
+        assert {m["task_id"] for m in result["manifest"]} == {"independent"}
         assert (await service.sweep("p"))["outcome"] == "idle"
     else:
-        assert {skip["reason"] for skip in skips.values()} == {"dependency_cycle"}
+        # A bare receipt proves nothing, so the chain is still owed.  It is
+        # re-delivered through its newest repair, whose contracts carry both
+        # older ones (solid-horizon), instead of being held as a cycle.
+        members = {m["task_id"]: m.get("superseded_by") for m in result["manifest"]}
+        assert members == {
+            "independent": None, chain[2]: None, chain[1]: chain[2], chain[0]: chain[2],
+        }
 
 
 # -- generated artifacts: regenerated at merge, never a conflict -------------

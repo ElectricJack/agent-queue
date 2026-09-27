@@ -149,6 +149,33 @@ def _dependency_cycles(dependencies, task_ids):
     return cycles
 
 
+def _carried_sources(repair_id, contracts):
+    """Every exact revision *repair_id* carries, through the repairs it replaced.
+
+    A repair's ``development_repair_sources`` contract names the revisions it
+    replaces.  When one of those is itself a repair, that repair's contract
+    names what *it* replaced, and so on: the newest repair of a chain carries
+    the whole chain, not only its predecessor.  Reading one contract made a
+    generation-3 repair unable to supersede its generation-1 ancestor, so
+    every sweep held the three as a dependency cycle (solid-horizon).
+    *contracts* maps repair ids to their contracts.  A task reached with two
+    different revisions maps to ``None``: which one is carried is unproven.
+    """
+    carried, pending, seen = {}, [repair_id], set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for member in _manifest_members(contracts.get(current)):
+            task_id, source = member["task_id"], member.get("source_sha")
+            if carried.setdefault(task_id, source) != source:
+                carried[task_id] = None
+            if task_id in contracts:
+                pending.append(task_id)
+    return carried
+
+
 #: A repair in one of these is still being worked on (or will be).
 OPEN_REPAIR_STATUSES = frozenset({
     TaskStatus.DEFINED.value, TaskStatus.READY.value, TaskStatus.ASSIGNED.value,
@@ -1425,11 +1452,7 @@ class DevelopmentIntegration:
                 newest = max(component, key=lambda task_id: (
                     candidate_by_id[task_id]["created_at"], task_id
                 ))
-                contract = repair_sources.get(newest)
-                sources = {
-                    member["task_id"]: member.get("source_sha")
-                    for member in _manifest_members(contract)
-                }
+                sources = _carried_sources(newest, repair_sources)
                 older = component - {newest}
                 if (
                     newest.startswith("development-repair-")
@@ -3397,7 +3420,10 @@ class DevelopmentIntegration:
         At the structural depth cap it is deliberately rooted instead, with
         the same source delivery hold as a shared repair.
         A repair-of-repair remains rooted so the bounded recovery chain cannot
-        consume structural hierarchy depth.
+        consume structural hierarchy depth, and no repair ever ``blocks`` on
+        another repair: the repaired repair's parked row is what waits for
+        this one, and a blocking edge back onto a repair whose contract names
+        it would be a dependency cycle.
 
         For a shared repair, the reverse edge is deliberately different: every parked source
         ``blocks`` on the repair.  In development mode that edge is satisfied
@@ -3553,7 +3579,12 @@ class DevelopmentIntegration:
                 # must never be mistaken for a release condition.  The
                 # source's blocking edge supplies that condition without
                 # giving the repair a reverse dependency on any source.
-                if not nest_repair:
+                # A source that is itself a repair gets no such edge: its
+                # parked row already waits for this repair's delivery, and
+                # an edge onto a repair whose contract names it is a cycle.
+                # Three generations of that held every repair of the chain
+                # forever (solid-horizon).
+                if not nest_repair and not source_id.startswith("development-repair-"):
                     await self.db.add_dependency(
                         source_id, identity, DepType.BLOCKS.value,
                         description=f"required development repair: {reason}", conn=conn,
