@@ -1312,12 +1312,11 @@ class TestEndToEndOnFakeProvider:
         # The publisher parks the source; a source closed again later is a
         # newer generation that parked delivery never named.
         parked_at = closed - 1 if failure == "reclosed_after_park" else closed + 1
-        filed = dict(
-            project_id="p1", repository_id="repo", target_ref="refs/heads/main",
-            expected_sha=repair_base, prepared_sha=None,
-            manifest=[{"task_id": source_id, "source_sha": source, "parent_task_id": parent}],
-            created_at=parked_at,
-        )
+        filed = {
+            "project_id": "p1", "repository_id": "repo", "target_ref": "refs/heads/main",
+            "expected_sha": repair_base, "prepared_sha": None, "created_at": parked_at,
+            "manifest": [{"task_id": source_id, "source_sha": source, "parent_task_id": parent}],
+        }
         async with db._engine.begin() as conn:
             if filing == "operation":
                 await conn.execute(DevelopmentIntegration._operation_insert(

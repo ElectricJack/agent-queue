@@ -10,7 +10,7 @@ import os
 import time
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import text
 from unittest.mock import MagicMock
 
 from src.commands.handler import CommandHandler

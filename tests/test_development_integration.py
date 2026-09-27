@@ -5216,16 +5216,16 @@ async def test_provenance_migration_inventories_zero_and_retains_only_real_opera
     ))
     base = git(remote, "rev-parse", "main")
     now = time.time()
+    journal = {
+        "project_id": "p", "repository_id": "r", "target_ref": "refs/heads/main",
+        "expected_sha": base, "prepared_sha": head, "created_at": now, "updated_at": now,
+        "manifest": [{"task_id": "legacy-source", "source_sha": head}],
+    }
     await _retire_journal(db, [
-        dict(id="legacy-prepared", project_id="p", repository_id="r",
-             target_ref="refs/heads/main", expected_sha=base, prepared_sha=head,
-             state="prepared", manifest=[{"task_id": "legacy-source", "source_sha": head}],
-             evidence={"checks": [{"command": "true", "output": "real test result"}]},
-             reason="development batch", created_at=now, updated_at=now),
-        dict(id="legacy-terminal", project_id="p", repository_id="r",
-             target_ref="refs/heads/main", expected_sha=base, prepared_sha=head,
-             state="delivered", manifest=[{"task_id": "legacy-source", "source_sha": head}],
-             evidence={}, reason="historical receipt", created_at=now, updated_at=now),
+        {**journal, "id": "legacy-prepared", "state": "prepared", "reason": "development batch",
+         "evidence": {"checks": [{"command": "true", "output": "real test result"}]}},
+        {**journal, "id": "legacy-terminal", "state": "delivered", "evidence": {},
+         "reason": "historical receipt"},
     ])
     migration = ProvenanceMigration(db, service.git)
     dry = await migration.run("p")
