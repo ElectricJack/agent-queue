@@ -90,9 +90,8 @@ def development_delivery_receipt(task, project, repo):
     True when a ``delivered`` or ``adopted`` development delivery of *project*
     to *repo*'s default branch lists *task* with the source of its latest
     completion (or binds that exact close through ``completion_sources``).
-    That row is the development publisher's delivery receipt: blocked-state
-    readiness releases dependents on it, and integration status accepts it for
-    a child whose terminal parent the train will never collect.  *task*,
+    Transitional helper for consumers awaiting migration. Admission and the
+    graph projection never use receipt state as authority.  *task*,
     *project* and *repo* are tables or aliases correlated by the caller.
     """
     delivery = development_deliveries.alias()
@@ -207,7 +206,7 @@ def _development_delivery_pending(task, *, include_foreign_repos=False):
 
 
 def unmet_dependency_predicate(
-    dependency, depends_on, *, dep_types=None, include_development_delivery=True,
+    dependency, depends_on, *, dep_types=None, include_development_delivery=False,
 ):
     """Return whether one typed dependency edge is currently unsatisfied.
 
@@ -296,8 +295,8 @@ def unmet_dependency_predicate(
     return or_(*clauses) if clauses else false()
 
 
-def _blocks_unsat(*, include_development_delivery=True):
-    """``blocks`` — completion plus development publication when applicable."""
+def _blocks_unsat(*, include_development_delivery=False):
+    """``blocks`` — graph completion; optional legacy delivery for unmigrated readers."""
     bd = task_dependencies.alias()
     bt = tasks.alias()
     return (
@@ -389,7 +388,7 @@ def _gate_open():
     )
 
 
-def blocked_predicate(*, include_development_delivery=True):
+def blocked_predicate(*, include_development_delivery=False):
     """Return the SQL boolean expression for "this ``tasks`` row is blocked".
 
     Correlates against the ``tasks`` table itself, so it can be dropped into
@@ -397,9 +396,9 @@ def blocked_predicate(*, include_development_delivery=True):
     Built from correlated ``EXISTS`` subqueries.
 
     One clause per blocking rule, in the order of design §3.1.
-    Only the development publisher may omit delivery checks: it assembles
-    completed prerequisites in order and publishes them together. Worker
-    readiness always includes delivery.
+    The projection is graph/gate-only. Development delivery is observed
+    asynchronously by integration.admission outside SQL transactions. The
+    explicit compatibility option is only for consumers awaiting migration.
     """
     return or_(
         _blocks_unsat(include_development_delivery=include_development_delivery),
@@ -702,7 +701,10 @@ class BlockedStateMixin:
         labels: list[str] | None = None,
         any_label: list[str] | None = None,
     ) -> list[Task]:
-        """Tasks that would be picked next (design §9.2).
+        """Structurally ready tasks (design §9.2).
+
+        Development callers evaluate dynamic delivery admission separately;
+        this SQL query never treats delivery rows as git authority.
 
         ``status = READY ∧ is_blocked = 0 ∧ no hold:* label``, ordered
         ``(priority, created_at)``.  ``labels`` is all-of, ``any_label`` is

@@ -15,7 +15,7 @@ import time
 
 from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, literal, select, update
 
-from src.database.queries.blocked_state import apply_label_filters
+from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
 from src.database.queries.hierarchy_queries import (
     ProjectIntegrationMode,
     container_flag_exists,
@@ -319,8 +319,12 @@ class ClaimQueryMixin:
         llm_provider=None,
         options_hash=None,
         hierarchy_mode: ProjectIntegrationMode | None = None,
+        allowed_task_ids: set[str] | None = None,
     ) -> str | None:
         """The §10 work query.  Postgres takes the row FOR UPDATE SKIP LOCKED.
+
+        Development callers supply a request-scoped ``allowed_task_ids`` set
+        from async git admission; SQL performs only structural selection.
 
         *hierarchy_mode* is the caller's already-read project row, reduced to
         the two constants the hierarchy predicates need (see
@@ -386,9 +390,12 @@ class ClaimQueryMixin:
                 .order_by(
                     tasks.c.priority.asc(),
                     tasks.c.created_at.asc(),
+                    tasks.c.id.asc(),
                 )
                 .limit(1)
             )
+            if allowed_task_ids is not None:
+                stmt = stmt.where(tasks.c.id.in_(allowed_task_ids))
             if pinned:
                 stmt = stmt.where(tasks.c.affinity_agent_id == agent_id)
             stmt = apply_label_filters(stmt, exclude_hold=True)
@@ -599,6 +606,7 @@ class ClaimQueryMixin:
         self, session_id, task_id, *, epoch: int, now: float, conn=None,
         branch_name: str | None = None,
         clear_preparation_metadata: bool = False,
+        admission=None,
     ) -> SessionRecord | None:
         """Flip ``preparing`` -> ``active``; the updated row, or ``None``.
 
@@ -659,6 +667,13 @@ class ClaimQueryMixin:
                 )
             ).fetchone()
             if claim is None:
+                return None
+            if admission is not None and (
+                not await admission.matches(conn=c, lock=True, task_id=task_id)
+                or (await c.execute(select(blocked_predicate()).where(
+                    tasks.c.id == task_id
+                ))).scalar_one()
+            ):
                 return None
             stmt = (
                 update(sessions)
@@ -1443,12 +1458,17 @@ class ClaimQueryMixin:
         )
         return res.rowcount == 1
 
-    async def count_ready_by_profile(self, project_id: str) -> dict[str | None, int]:
+    async def count_ready_by_profile(
+        self, project_id: str, *, allowed_task_ids=None
+    ) -> dict[str | None, int]:
+        """Count structural work, restricted to verified development admission when supplied."""
         stmt = (
             select(tasks.c.profile_id, func.count())
             .where(_frontier_where(project_id))
             .group_by(tasks.c.profile_id)
         )
+        if allowed_task_ids is not None:
+            stmt = stmt.where(tasks.c.id.in_(allowed_task_ids))
         stmt = apply_label_filters(stmt, exclude_hold=True)
         async with self._engine.connect() as conn:
             rows = (await conn.execute(stmt)).fetchall()

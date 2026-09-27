@@ -123,6 +123,8 @@
         "tests/test_collaboration.py",
         "tests/test_collaboration_commands.py",
         "tests/test_collaboration_lifecycle.py",
+        "tests/test_collaboration_message_wait.py",
+        "tests/test_collaboration_messages.py",
         "tests/test_collaboration_queries.py",
         "tests/test_collaboration_waits.py"
       ]
@@ -1144,6 +1146,7 @@
         "tests/test_terminal_origin_config.py",
         "tests/test_terminal_pty.py",
         "tests/test_terminal_stream.py",
+        "tests/test_tmux_harness_wake.py",
         "tests/test_tmux_integration.py",
         "tests/test_tmux_nudge_confirm.py",
         "tests/test_tmux_nudge_drafts.py",
@@ -1274,7 +1277,7 @@
       ]
     }
   },
-  "digest": "sha256:36d0a5e6b7899b00dec72e55b37da47677c627e583382e1fc26182253dfd223a",
+  "digest": "sha256:abb1f741229daac87192d7b2c7c628bf289b65905c867e6a042f5fe9dc77dda8",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2869,6 +2872,8 @@
         "src.doctor.pool_checks",
         "src.event_bus",
         "src.git.manager",
+        "src.integration.admission",
+        "src.integration.development",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
@@ -3524,6 +3529,51 @@
         "skipif"
       ],
       "summary": "Bounded expiry, retention and daemon-only collaboration reconciliation."
+    },
+    "tests/test_collaboration_message_wait.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.scope",
+        "src.cli.app",
+        "src.cli.client",
+        "src.commands.contracts",
+        "src.database.tables",
+        "src.profiles.parser",
+        "src.tools.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Bounded message long-poll on the same durable wait, with lossless cursors."
+    },
+    "tests/test_collaboration_messages.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.messages",
+        "src.cli.app",
+        "src.database.tables",
+        "src.event_bus",
+        "src.messages.delivery",
+        "src.models",
+        "src.prime.sections",
+        "src.sessions.provider"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Collaboration sends and replies, safe delivery, and rollover prime context."
     },
     "tests/test_collaboration_queries.py": {
       "areas": [
@@ -4513,6 +4563,7 @@
         "src.event_bus",
         "src.git.manager",
         "src.integration",
+        "src.integration.admission",
         "src.integration.controls",
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
@@ -5456,7 +5507,9 @@
         "src.playbooks.artifact_ref",
         "src.scheduler"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Work-graph WG-4: explain + ready frontier."
     },
     "tests/test_factory_policy_instructions.py": {
@@ -9620,9 +9673,12 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.models",
         "src.scheduler"
       ],
-      "markers": [],
+      "markers": [
+        "asyncio"
+      ],
       "summary": "size_pools — desired-state sizing over the global (profile-only) pool key."
     },
     "tests/test_portable_config.py": {
@@ -10424,7 +10480,9 @@
         "src.scheduler",
         "src.sessions.harness_parser"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The re-route engine (provider-failover D11-D17)."
     },
     "tests/test_provider_spill.py": {
@@ -11535,7 +11593,8 @@
         "src.sessions.fake",
         "src.sessions.harness_registry",
         "src.sessions.provider",
-        "src.sessions.spec"
+        "src.sessions.spec",
+        "src.sessions.tmux"
       ],
       "markers": [],
       "summary": "``sessions.stuck_composer`` — the doctor half of the lost-Enter stall."
@@ -12321,7 +12380,9 @@
         "src.orchestrator",
         "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "An explicit intelligence class picks its own lane at creation time."
     },
     "tests/test_task_close_summary_enforcement.py": {
@@ -12875,6 +12936,22 @@
         "asyncio"
       ],
       "summary": "Tests for ``cron.HH:MM`` wall-clock triggers in the timer service."
+    },
+    "tests/test_tmux_harness_wake.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.sessions",
+        "src.sessions.harness_parser",
+        "src.sessions.provider",
+        "src.sessions.tmux"
+      ],
+      "markers": [
+        "tmux"
+      ],
+      "summary": "Waking an idle worker: the real Codex and Claude CLIs in real tmux panes."
     },
     "tests/test_tmux_integration.py": {
       "areas": [

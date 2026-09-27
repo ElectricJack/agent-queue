@@ -120,6 +120,23 @@ def make_state(**kw):
     )
 
 
+@pytest.mark.parametrize("profile_id", [None, "worker"])
+async def test_project_preferred_provider_unavailable_is_explained(handler, db, profile_id):
+    await db.update_project(PROJECT_ID, default_profile_id="worker", preferred_provider="codex")
+    await mktask(db, "preferred-held", status=TaskStatus.READY,
+                 intelligence_class="fast-low", profile_id=profile_id)
+    result = await handler._cmd_explain_task({"task_id": "preferred-held"})
+    reason = next(r for r in result["reasons"] if r["code"] == "preferred_provider_unavailable")
+    assert reason["ref"] == "codex"
+    assert "fast-low" in reason["detail"]
+    assert "codex" in reason["detail"]
+
+    await db.update_task("preferred-held", profile_id="worker", provider_intent="pinned")
+    assert "preferred_provider_unavailable" not in (
+        await handler._cmd_explain_task({"task_id": "preferred-held"})
+    )["reason_codes"]
+
+
 # ── Golden per reason code ───────────────────────────────────────────────
 
 

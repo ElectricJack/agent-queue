@@ -94,6 +94,31 @@ async def test_class_match_prefers_the_implicit_routes_provider(setup):
     assert result["profile_source"] == "class_match"
 
 
+@pytest.mark.parametrize("caller", [None, "supervisor"])
+@pytest.mark.parametrize("default", ["fast-high-claude", "standard-high-claude"])
+async def test_class_match_uses_project_preferred_provider(setup, caller, default):
+    handler, db = setup
+    await db.update_project("p", default_profile_id=default, preferred_provider="codex")
+    result = await _create_as(handler, caller, intelligence_class="standard-high")
+    assert result.get("success") is True, result
+    assert result["profile_source"] == "class_match"
+    task = await db.get_task(result["created"])
+    assert task.profile_id == "standard-high-codex"
+    assert task.provider_intent == "class_only"
+
+
+async def test_class_without_a_preferred_provider_option_waits_for_routing(setup):
+    handler, db = setup
+    await db.update_project("p", preferred_provider="codex")
+    result = await _create_as(handler, None, intelligence_class="fast-high")
+    assert result.get("success") is True, result
+    task = await db.get_task(result["created"])
+    assert task.profile_id is None and task.intelligence_class == "fast-high"
+    assert "preferred_provider_unavailable" in (
+        await handler._cmd_explain_task({"task_id": task.id})
+    )["reason_codes"]
+
+
 async def test_class_the_default_already_runs_keeps_the_default(setup):
     handler, _db = setup
     result = await _create_as(handler, "supervisor", intelligence_class="fast-high")
@@ -188,6 +213,24 @@ async def test_graph_nodes_resolve_their_class_lane(setup):
     assert (await db.get_task(ids["high"])).profile_id == "standard-high-claude"
     assert (await db.get_task(ids["same"])).profile_id is None
     assert (await db.get_task(ids["pinned"])).profile_id == "standard-high-codex"
+
+
+async def test_graph_class_match_respects_project_preference_and_preserves_pins(setup):
+    handler, db = setup
+    await db.update_project("p", preferred_provider="codex")
+    report = await handler._cmd_create_task_graph({
+        "project_id": "p", "graph": {"nodes": [
+            {"key": "automatic", "title": "Automatic", "intelligence_class": "standard-high"},
+            {"key": "unsupported", "title": "Unsupported", "intelligence_class": "fast-high"},
+            {"key": "pin", "title": "Pin", "profile": "standard-high-claude",
+             "intelligence_class": "standard-high"},
+        ]},
+    })
+    assert "error" not in report, report
+    ids = {node["key"]: node["task_id"] for node in report["nodes"]}
+    assert (await db.get_task(ids["automatic"])).profile_id == "standard-high-codex"
+    assert (await db.get_task(ids["unsupported"])).profile_id is None
+    assert (await db.get_task(ids["pin"])).profile_id == "standard-high-claude"
 
 
 async def test_graph_node_class_without_a_worker_fails_the_whole_graph(setup):

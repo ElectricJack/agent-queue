@@ -1393,25 +1393,28 @@ class ProviderRerouteService:
         profiles: Mapping[str, Any],
         *,
         project_id: str | None = None,
+        preferred_provider: str | None = None,
     ) -> str | None:
-        """The project default while its provider is down: its equivalent rung (D13).
+        """The default's equivalent rung for project preference or provider outage.
 
         Derived per call and never persisted, so recovery needs no undo.  A
         default whose provider is launchable, that is not a worker rung, or
         that has no equivalent on an ``available`` provider is returned as is
-        (its tasks then hold).  Synchronous and I/O-free: *profiles* is a
+        (its tasks then hold). A project preference restricts selection to its
+        enabled, launchable same-class workers and returns ``None`` when none
+        exists; it never falls back across providers. Synchronous and I/O-free: *profiles* is a
         snapshot the caller already has.
         """
         from src.profiles.catalog import rung_profile_id, worker_route
 
         availability = self.availability
-        if not default_profile_id or not availability.enforcing:
+        if not default_profile_id or (not preferred_provider and not availability.enforcing):
             return default_profile_id
         profile = profiles.get(default_profile_id)
         if profile is None:
-            return default_profile_id
-        provider = availability.provider_for_profile(profile)
-        if not availability.is_unavailable(provider):
+            return None if preferred_provider else default_profile_id
+        provider = availability.provider_for_profile(profile, project_id=project_id)
+        if not preferred_provider and not availability.is_unavailable(provider):
             return default_profile_id
         route = worker_route(
             profile.id,
@@ -1422,10 +1425,12 @@ class ProviderRerouteService:
             read_only=bool(getattr(profile, "read_only", False)),
         )
         if route is None:
-            return default_profile_id
+            return None if preferred_provider else default_profile_id
         _harness, class_id = route
         classes = self._classes()
         cls = classes.get(class_id)
+        if preferred_provider and cls is None:
+            return None
         order = list(getattr(self.config, "order", None) or []) or list(_worker_provider_order())
         best: tuple | None = None
         for other in profiles.values():
@@ -1441,11 +1446,15 @@ class ProviderRerouteService:
             )
             if other_route is None or other_route[1] != class_id:
                 continue
-            other_provider = availability.provider_for_profile(other)
-            if other_provider == provider:
-                continue
-            if availability.effective_state(other_provider) != AVAILABLE:
-                continue
+            other_provider = availability.provider_for_profile(other, project_id=project_id)
+            if preferred_provider:
+                if other_provider != preferred_provider or availability.suppresses(other_provider):
+                    continue
+            else:
+                if other_provider == provider:
+                    continue
+                if availability.effective_state(other_provider) != AVAILABLE:
+                    continue
             if cls is not None and not _class_has_slice(cls, other, self.harness_registry):
                 continue
             rank = (
@@ -1456,4 +1465,4 @@ class ProviderRerouteService:
             )
             if best is None or rank < best[0]:
                 best = (rank, other.id)
-        return best[1] if best is not None else default_profile_id
+        return best[1] if best is not None else (None if preferred_provider else default_profile_id)
