@@ -1478,3 +1478,135 @@ async def test_project_scoped_read_uses_fallback_instead_of_global_authored_pros
     assert "Private project Q" not in json.dumps(read)
     assert read["report"]["report"]["projects"][0]["manual_checks"] == []
     assert read["report"]["report"]["summary"] == "Morning report for p."
+
+
+# The reviewed artifact end to end: engine, executor round-trip, contract, handler.
+
+REVIEWED_MORNING = Path("src/prompts/reviewed_playbooks/morning-report/artifact.json")
+MINUTE_TICK = {"_event_type": "timer.1m", "tick_time": "2026-09-27T13:00:00+00:00", "interval": "1m"}
+
+
+@pytest.fixture
+async def morning_playbook(command_handler_factory, monkeypatch):
+    from src.commands.contracts import CONTRACTS
+    from src.commands.contracts.builtin import set_handler_provider
+    from src.playbooks.definition import load_definition_json
+    from src.playbooks.engine import PlaybookEngine
+    from src.playbooks.executors.base import EngineServices
+    from tests.playbook_v2_engine_helpers import (
+        InMemoryArtifactStore,
+        RecordingRunRepository,
+        StubActivations,
+        artifact_ref_for,
+    )
+
+    handler = await command_handler_factory()
+    # The operator's shape: zoned 07:00, full fleet, no project selection.
+    reports = handler.orchestrator.config.reports
+    reports.timezone = "America/Los_Angeles"
+    reports.morning.enabled = True
+    reports.morning.full_fleet_visibility = True
+
+    async def collect(*args, **kwargs):
+        return await durable_result(window=kwargs["window"])
+
+    monkeypatch.setattr(
+        "src.reports.morning.collect_morning_evidence", AsyncMock(side_effect=collect)
+    )
+    artifact = load_definition_json(REVIEWED_MORNING.read_text(encoding="utf-8"))
+
+    async def run(now, principal=None):
+        monkeypatch.setattr("src.commands.report_commands.time", SimpleNamespace(time=lambda: now))
+        runs = RecordingRunRepository()
+        engine = PlaybookEngine(
+            services=EngineServices(
+                contracts=CONTRACTS,
+                clock=lambda: now,
+                artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
+                handler=handler,
+                db=handler.db,
+            ),
+            runs=runs,
+            waits=runs,
+            activations=StubActivations([artifact_ref_for(artifact)]),
+        )
+        event = {**MINUTE_TICK, "event_id": f"tick-{now}"}
+        # The runtime dispatches timer events as this service principal.
+        result = await engine.dispatch_event(
+            event, principal or ExecutionPrincipal.service("playbook-dispatch")
+        )
+        assert result.rules_selected == ("reconcile-morning",)
+        (snapshot,) = runs.snapshots.values()
+        tick = next(r for r in runs.receipts if r.step_id == "reconcile-morning--tick"
+                    and r.receipt_kind == "step")
+        return snapshot, tick
+
+    set_handler_provider(lambda: handler)
+    try:
+        yield handler, run
+    finally:
+        set_handler_provider(None)
+
+
+async def test_reviewed_morning_playbook_before_schedule_completes(morning_playbook):
+    _, run = morning_playbook
+    snapshot, tick = await run(utc("2026-09-27T13:00:00"))  # 06:00 in Los Angeles
+    assert snapshot.lifecycle.value == "completed", (snapshot.error_code, snapshot.error)
+    assert tick.outcome == "success" and tick.error_code is None
+    assert snapshot.bindings["report"] == {
+        "report_id": None,
+        "state": "waiting",
+        "reason": "before_schedule",
+        "next_due_at": utc("2026-09-27T14:00:00"),
+        "cancelled": 0,
+    }
+
+
+async def test_reviewed_morning_playbook_disabled_completes(morning_playbook):
+    handler, run = morning_playbook
+    handler.orchestrator.config.reports.morning.enabled = False
+    snapshot, _ = await run(utc("2026-09-27T15:00:00"))
+    assert snapshot.lifecycle.value == "completed", (snapshot.error_code, snapshot.error)
+    assert snapshot.bindings["report"] == {
+        "report_id": None,
+        "state": "disabled",
+        "reason": "disabled",
+        "next_due_at": None,
+        "cancelled": 0,
+    }
+
+
+async def test_reviewed_morning_playbook_authoring_completes_and_wakes_once(morning_playbook):
+    handler, run = morning_playbook
+    handler.orchestrator.config.reports.morning.destination = "discord:123456789012345678"
+    snapshot, _ = await run(utc("2026-09-27T14:00:00"))  # 07:00 in Los Angeles
+    assert snapshot.lifecycle.value == "completed", (snapshot.error_code, snapshot.error)
+    report = snapshot.bindings["report"]
+    assert report["report_id"] == "morning-2026-09-27" and report["state"] == "authoring"
+    assert report["next_due_at"] == utc("2026-09-28T14:00:00")
+    request = await handler.db.get_report_request("report-morning-morning-2026-09-27")
+    assert request["state"] == "requested"
+    again, _ = await run(utc("2026-09-27T14:01:00"))
+    assert again.bindings["report"]["state"] == "authoring"
+    assert await handler.db.get_report_request(request["id"]) == request
+
+
+async def test_reviewed_morning_playbook_refusal_takes_the_rejected_edge(morning_playbook):
+    """A supervisor's manual run is refused by design; it must fail as ``rejected``
+    with the handler's reason, not as a contract violation that hides it."""
+    from src.profiles.capabilities import CapabilityPolicy
+
+    _, run = morning_playbook
+    supervisor = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION,
+        session_id="supervisor-session",
+        profile_id="supervisor",
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["morning_report_tick"]),
+    )
+    snapshot, tick = await run(utc("2026-09-27T13:00:00"), supervisor)
+    assert snapshot.lifecycle.value == "failed"
+    assert snapshot.current_step_id == "reconcile-morning--failed"
+    assert tick.error_code != "contract_violation"
+    assert tick.selected_transition.endswith("::rejected")
+    assert snapshot.bindings["report"]["state"] == "rejected"
+    assert snapshot.bindings["report"]["reason"] == "out_of_scope"

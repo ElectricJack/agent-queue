@@ -131,6 +131,14 @@ class V2PlaybookRuntime:
         )
 
     async def refresh(self) -> None:
+        # Serialized with the routing snapshot publisher.  Every caller reads
+        # after its own activation commit, so the refresh that finishes last
+        # is current; unserialized, a slower refresh holding an older read
+        # could overwrite the trigger map the timer service follows.
+        async with self._routing_activation_refresh_lock:
+            await self._refresh_locked()
+
+    async def _refresh_locked(self) -> None:
         rows = await self._db.list_playbook_activations(enabled_only=False)
         enabled_rows = [row for row in rows if row.get("enabled") is True]
         install_routing_activation_snapshot(self, enabled_rows, artifact_store=self._store)
