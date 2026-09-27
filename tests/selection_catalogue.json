@@ -121,7 +121,8 @@
       "description": "Bounded task collaboration: membership, ordered messages, durable waits and delivery.",
       "modules": [
         "tests/test_collaboration.py",
-        "tests/test_collaboration_queries.py"
+        "tests/test_collaboration_queries.py",
+        "tests/test_collaboration_waits.py"
       ]
     },
     "command-dispatch": {
@@ -1259,7 +1260,7 @@
       ]
     }
   },
-  "digest": "sha256:7335fd6569b6099d4f1db370f68d7feb52bd3e166ef4146b93ac02c8c5fbfec1",
+  "digest": "sha256:b887df2eb9797ede613775810d510fca2f77fc61be8aa5e3d0b06943cc4f78f9",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3473,6 +3474,23 @@
         "parametrize"
       ],
       "summary": "Collaboration ordering and claim fencing on disposable PostgreSQL."
+    },
+    "tests/test_collaboration_waits.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.collaboration",
+        "src.database",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Collaboration thread semantics inside the durable message wait, on PostgreSQL."
     },
     "tests/test_command_capability_authorization.py": {
       "areas": [
