@@ -757,6 +757,8 @@ class ProviderAllocationPlacement(BaseModel):
     skipped: list[dict[str, Any]] = []
     batch_ids: list[str] = []
     detail: str | None = None
+    #: Moves that raised; the apply is then ``partial``.
+    errors: list[str] = []
 
 
 class ProviderAllocationAppliedPreference(ProviderAllocationPreference):

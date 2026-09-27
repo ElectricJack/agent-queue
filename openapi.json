@@ -45467,6 +45467,14 @@
               }
             ],
             "title": "Detail"
+          },
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Errors",
+            "default": []
           }
         },
         "type": "object",

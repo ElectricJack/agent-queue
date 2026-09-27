@@ -31,6 +31,7 @@ class ProviderAllocationPlacement:
             skipped (list[ProviderAllocationPlacementSkippedItem] | Unset):
             batch_ids (list[str] | Unset):
             detail (None | str | Unset):
+            errors (list[str] | Unset):
     """
 
     applied: bool | Unset = False
@@ -39,6 +40,7 @@ class ProviderAllocationPlacement:
     skipped: list[ProviderAllocationPlacementSkippedItem] | Unset = UNSET
     batch_ids: list[str] | Unset = UNSET
     detail: None | str | Unset = UNSET
+    errors: list[str] | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -75,6 +77,10 @@ class ProviderAllocationPlacement:
         else:
             detail = self.detail
 
+        errors: list[str] | Unset = UNSET
+        if not isinstance(self.errors, Unset):
+            errors = self.errors
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update({})
@@ -90,6 +96,8 @@ class ProviderAllocationPlacement:
             field_dict["batch_ids"] = batch_ids
         if detail is not UNSET:
             field_dict["detail"] = detail
+        if errors is not UNSET:
+            field_dict["errors"] = errors
 
         return field_dict
 
@@ -140,6 +148,8 @@ class ProviderAllocationPlacement:
 
         detail = _parse_detail(d.pop("detail", UNSET))
 
+        errors = cast(list[str], d.pop("errors", UNSET))
+
         provider_allocation_placement = cls(
             applied=applied,
             moved=moved,
@@ -147,6 +157,7 @@ class ProviderAllocationPlacement:
             skipped=skipped,
             batch_ids=batch_ids,
             detail=detail,
+            errors=errors,
         )
 
         provider_allocation_placement.additional_properties = d

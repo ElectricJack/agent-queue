@@ -388,6 +388,12 @@ class ProviderAllocationCommandsMixin:
                 preference["placement"] = await self._place_preferred_work(
                     orchestrator, preference["project_id"], preview["provider"], actor
                 )
+                if preference["placement"]["errors"]:
+                    # The preference stands; a move that could not be made is reported.
+                    status = "partial"
+                    error = "re-placing queued work: " + "; ".join(
+                        preference["placement"]["errors"]
+                    )
 
         if failed:
             compensated = await self._compensate(rows, correlation)
@@ -399,7 +405,7 @@ class ProviderAllocationCommandsMixin:
             session_actions.extend(drained)
             if drain_errors:
                 status = "partial"
-                error = "; ".join(drain_errors)
+                error = "; ".join([*([error] if error else []), *drain_errors])
         for entry in rows:
             entry.pop("_restore", None)
 
@@ -613,6 +619,7 @@ class ProviderAllocationCommandsMixin:
 
         placement: dict[str, Any] = {
             "applied": False, "moved": [], "held": [], "skipped": [], "batch_ids": [],
+            "errors": [],
         }
         service = getattr(orchestrator, "provider_reroute", None)
         if service is None:
@@ -624,7 +631,7 @@ class ProviderAllocationCommandsMixin:
             rows = await self.db.list_reroute_candidates(sources) if sources else []
         except Exception as exc:
             logger.warning("provider allocation: queued work unreadable", exc_info=True)
-            placement["detail"] = f"queued work unreadable: {type(exc).__name__}: {exc}"
+            placement["errors"].append(f"queued work unreadable: {type(exc).__name__}: {exc}")
             return placement
         allow_degraded = bool(
             getattr(getattr(ctx.config, "reroute", None), "allow_degraded_target", False)
@@ -664,9 +671,16 @@ class ProviderAllocationCommandsMixin:
         applied = True
         batches: set[str] = set()
         for to_profile in sorted(groups):
-            result = await service.sweep(
-                task_ids=groups[to_profile], to_profile=to_profile, actor=actor
-            )
+            try:
+                result = await service.sweep(
+                    task_ids=groups[to_profile], to_profile=to_profile, actor=actor
+                )
+            except Exception as exc:
+                logger.warning("provider allocation: re-placing onto %s failed", to_profile,
+                               exc_info=True)
+                placement["errors"].append(f"{to_profile}: {type(exc).__name__}: {exc}")
+                applied = False
+                continue
             applied = applied and bool(result.get("applied"))
             placement["moved"].extend(result.get("moved") or [])
             placement["held"].extend(result.get("held") or [])

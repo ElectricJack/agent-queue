@@ -1668,6 +1668,30 @@ async def test_preference_holds_a_class_the_provider_cannot_serve(orch, stops):
     assert (await orch.db.get_task("task-alpha-free")).profile_id == "standard-high-claude"
 
 
+async def test_a_failed_move_leaves_the_preference_and_reports_partial(orch, stops,
+                                                                      monkeypatch):
+    orch.session_spec_builder._intelligence_classes = dict(STANDARD_HIGH)
+    await orch.db.create_task(
+        Task(id="task-alpha-free", project_id=ALPHA, title="t", description="d",
+             status=TaskStatus.READY, profile_id="standard-high-claude",
+             intelligence_class="standard-high", provider_intent=CLASS_ONLY)
+    )
+
+    async def broken(**kwargs):
+        raise RuntimeError("reroute lock poisoned")
+
+    monkeypatch.setattr(orch.provider_reroute, "sweep", broken)
+    preview = await _preview(orch, provider="codex",
+                             receive_new_work={"project_id": ALPHA, "mode": "prefer"})
+    result = await _apply(orch, preview["preview_token"])
+    assert result["success"] is False and result["status"] == "partial"
+    assert "reroute lock poisoned" in result["error"]
+    assert result["preference"]["applied"] is True
+    assert (await orch.db.get_project(ALPHA)).preferred_provider == "codex"
+    assert (await orch.db.get_task("task-alpha-free")).profile_id == "standard-high-claude"
+    assert (await _allocation_events(orch))[0]["status"] == "partial"
+
+
 async def test_project_admin_applies_its_own_preference(orch):
     preview = await _preview(
         orch, provider="codex", receive_new_work={"project_id": ALPHA, "mode": "prefer"},
