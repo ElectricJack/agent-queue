@@ -1172,7 +1172,8 @@ class ProviderAvailabilityService:
             return None
         if not task.profile_id and self.reroute is not None:
             profile_id = self.reroute.resolve_default_profile_id(
-                profile_id, profiles, project_id=task.project_id
+                profile_id, profiles, project_id=task.project_id,
+                preferred_provider=getattr(project, "preferred_provider", None),
             )
         profile = profiles.get(profile_id)
         if profile is None:
