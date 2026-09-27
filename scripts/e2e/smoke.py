@@ -655,23 +655,25 @@ def s1_pool_sizing(state: dict) -> str:
 
     def _pool_at_max():
         row = pool_row()
-        return row if row["running_idle"] + row["running_busy"] + row["starting"] == 2 else None
+        check(row["max_active"] == 2, f"max_active should be 2, got {row['max_active']}")
+        supply = row["running_idle"] + row["running_busy"] + row["starting"]
+        check(supply <= 2, f"pool supply exceeded max_active=2: saw {supply}")
+        sessions = pool_sessions()
+        check(len(sessions) <= 2,
+              f"live pool sessions exceeded max_active=2: saw {len(sessions)}")
+        # `starting` includes reserved launches before their session rows
+        # exist. The batch's scale audit follows the last completed launch.
+        if supply != 2 or len(sessions) != 2:
+            return None
+        events = api("get_recent_events", {"event_type": "pool.scaled", "limit": 10})["events"]
+        scaled = [e for e in events
+                  if e["project_id"] == PROJECT and e["payload"].startswith("start")]
+        return (row, scaled) if scaled else None
 
-    row = wait_for_pool_session(_pool_at_max, what="the pool to reach max_active=2 sessions")
-    check(row["max_active"] == 2, f"max_active should be 2, got {row['max_active']}")
+    row, scaled = wait_for_pool_session(
+        _pool_at_max, what="the pool to reach max_active=2 durable sessions with a scale-up audit",
+    )
     check(row["ready"] >= 3, f"expected >=3 ready tasks, saw {row['ready']}")
-    check(
-        len(pool_sessions()) == 2,
-        f"expected exactly 2 live pool sessions, saw {len(pool_sessions())}",
-    )
-
-    events = api("get_recent_events", {"event_type": "pool.scaled", "limit": 10})["events"]
-    scaled = [e for e in events if e["project_id"] == PROJECT]
-    check(scaled, "no pool.scaled audit row for project 'e2e'")
-    check(
-        any(e["payload"].startswith("start") for e in scaled),
-        f"pool.scaled rows record no scale-up: {[e['payload'] for e in scaled]}",
-    )
     return f"2 sessions for 3 ready tasks; pool.scaled = {scaled[0]['payload']!r}"
 
 

@@ -294,6 +294,85 @@ def test_fresh_workers_quiesces_every_project_in_the_global_profile(monkeypatch)
     assert not any(row["id"] == "s-draining" for row in live)
 
 
+@pytest.fixture
+def s1_surfaces(monkeypatch):
+    smoke = _load_smoke()
+    observed = SimpleNamespace(now=0.0, stages=[], session_reads=0, audit_reads=0)
+
+    def stage():
+        return observed.stages[min(int(observed.now / 2), len(observed.stages) - 1)]
+
+    def pool_row():
+        idle, starting, _sessions, _audit = stage()
+        return {"max_active": 2, "ready": 3, "running_idle": idle,
+                "running_busy": 0, "starting": starting}
+
+    def pool_sessions():
+        observed.session_reads += 1
+        return [{"id": f"session-{n}"} for n in range(stage()[2])]
+
+    def api(command, args):
+        assert command == "get_recent_events"
+        observed.audit_reads += 1
+        return {"events": [{"project_id": smoke.PROJECT, "payload": "start 2 worker"}]
+                if stage()[3] else []}
+
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: observed.now,
+        sleep=lambda seconds: setattr(observed, "now", observed.now + seconds),
+        time=lambda: observed.now,
+    ))
+    monkeypatch.setattr(smoke, "create_task", lambda title, **kwargs: title)
+    monkeypatch.setattr(smoke, "pool_row", pool_row)
+    monkeypatch.setattr(smoke, "pool_sessions", pool_sessions)
+    monkeypatch.setattr(smoke, "api", api)
+    monkeypatch.setattr(smoke, "pool_wait_state", lambda *_: {"enabled": False})
+    original_wait = smoke.wait_for_pool_session
+    monkeypatch.setattr(smoke, "wait_for_pool_session", lambda predicate, **kwargs:
+                        original_wait(predicate, **kwargs, timeout=8))
+    return smoke, observed
+
+
+def test_s1_waits_for_reserved_launches_session_rows_and_scale_audit(s1_surfaces):
+    smoke, observed = s1_surfaces
+    # Reservations already fill max_active before either durable row exists.
+    # The scale audit may also lag the second row while its launch finishes.
+    observed.stages = [(0, 2, 0, False), (1, 1, 1, False),
+                       (2, 0, 2, False), (2, 0, 2, True)]
+    state = {}
+
+    result = smoke.s1_pool_sizing(state)
+
+    assert observed.now == 6
+    assert observed.session_reads == 4
+    assert observed.audit_reads == 2
+    assert len(state["s1_tasks"]) == 3
+    assert "2 sessions for 3 ready tasks" in result
+
+
+@pytest.mark.parametrize("stage, message", [
+    ((2, 1, 2, True), "pool supply exceeded max_active=2: saw 3"),
+    ((0, 0, 3, True), "live pool sessions exceeded max_active=2: saw 3"),
+])
+def test_s1_rejects_oversubscription_without_waiting(s1_surfaces, stage, message):
+    smoke, observed = s1_surfaces
+    observed.stages = [stage]
+
+    with pytest.raises(smoke.Failure, match=message):
+        smoke.s1_pool_sizing({})
+
+    assert observed.now == 0
+
+
+@pytest.mark.parametrize("stage", [(1, 1, 1, False), (2, 0, 2, False)])
+def test_s1_requires_both_durable_sessions_and_scale_audit(s1_surfaces, stage):
+    smoke, observed = s1_surfaces
+    observed.stages = [stage]
+
+    with pytest.raises(smoke.Failure, match="timed out after 8s"):
+        smoke.s1_pool_sizing({})
+
+
 def test_pool_wait_extends_once_while_daemon_has_unplaced_demand(monkeypatch):
     smoke = _load_smoke()
     clock = SimpleNamespace(now=0.0)
