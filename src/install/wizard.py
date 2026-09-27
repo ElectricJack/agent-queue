@@ -36,6 +36,7 @@ from typing import Any
 
 from src.projects.roots import RootFacts, assess_project_roots
 
+from .graft import CAPABILITY_GRAFT, GRAFT_INSTALL_SPEC, GRAFT_PITCH, GraftCli
 from .logins import AuthProbe
 from .onboarding import (
     CAPABILITY_DAEMON,
@@ -84,6 +85,8 @@ def question_plan(
     probes: Sequence[AuthProbe] = (),
     installers: Iterable[ProviderInstaller] | None = None,
     postgres_reachable: bool | None = None,
+    graft: GraftCli | None = None,
+    npm_available: bool = False,
     advanced: bool = False,
 ) -> tuple[Question, ...]:
     """The questions to ask on this machine, in the order to ask them.
@@ -91,7 +94,9 @@ def question_plan(
     Defaults are observations, not opinions: a harness that is already
     installed is offered pre-selected, a machine with no reachable PostgreSQL
     is offered a managed one, and Discord — which AQ does not need — defaults
-    to no and is only asked at all under ``--advanced``.
+    to no and is only asked at all under ``--advanced``.  graft is recommended:
+    it is offered pre-selected when it is installed or npm could install it,
+    and ``graft=None`` (not probed) offers it unselected.
     """
     by_provider = {probe.provider_id: probe for probe in probes}
     catalog = tuple(installers or provider_installers())
@@ -122,6 +127,8 @@ def question_plan(
                 detail=detail,
             )
         )
+
+    questions.append(_graft_question(graft, npm_available=npm_available))
 
     # Decided from the machine, asked only under --advanced.  Answering "yes,
     # install a server" beside one that already answers, or "no" to the daemon
@@ -181,6 +188,41 @@ def question_plan(
     )
     del advanced  # every choice is planned; questions_to_ask decides which are put to a person
     return tuple(questions)
+
+
+def _graft_question(graft: GraftCli | None, *, npm_available: bool) -> Question:
+    """Offer graft: what it is, what AQ would do with it, and whether it can."""
+    where = (
+        "turns its telemetry off and sets it up in each project's main checkout, "
+        "never globally and never in worker worktrees"
+    )
+    if graft is not None and graft.available:
+        default = True
+        detail = (
+            f"graft {graft.version} is installed: {GRAFT_PITCH}. AQ {where}, and never "
+            "upgrades it"
+        )
+    elif graft is not None and npm_available:
+        default = True
+        detail = (
+            f"recommended, not installed: {GRAFT_PITCH}. AQ installs {GRAFT_INSTALL_SPEC} "
+            f"with npm, {where}"
+        )
+    else:
+        default = False
+        detail = (
+            f"optional: {GRAFT_PITCH}. It installs with npm, which is not on this "
+            "machine's PATH; add it later with `aq install --with graft`"
+            if graft is not None
+            else f"optional: {GRAFT_PITCH}"
+        )
+    return Question(
+        id="graft",
+        prompt="Use graft (recommended)?",
+        capability=CAPABILITY_GRAFT,
+        default=default,
+        detail=detail,
+    )
 
 
 def questions_to_ask(questions: Iterable[Question], *, advanced: bool) -> tuple[Question, ...]:
@@ -310,6 +352,10 @@ class OnboardingSummary:
     next_steps: tuple[str, ...] = ()
     #: A measured answer to whether this installation can run the first live task.
     readiness: FirstTaskReadiness | None = None
+    #: Differences from the setup AQ would make that a step reported rather
+    #: than changed (``detail["drift"]``), such as graft wiring found outside
+    #: any repository.
+    drift: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -320,6 +366,7 @@ class OnboardingSummary:
             "skipped": list(self.skipped),
             "next_steps": list(self.next_steps),
             "readiness": self.readiness.to_dict() if self.readiness else None,
+            "drift": list(self.drift),
         }
 
 
@@ -362,6 +409,7 @@ class FirstTaskReadiness:
 
 _CAPABILITY_LABELS: dict[str, str] = {
     CAPABILITY_AUTOSTART: "restarting the daemon after a reboot or a crash",
+    CAPABILITY_GRAFT: f"graft, {GRAFT_PITCH} (recommended)",
     CAPABILITY_DISCORD: "Discord delivery for digests and escalations",
     CAPABILITY_DAEMON: "starting the daemon",
     CAPABILITY_MANAGED: "installing a local PostgreSQL server",
@@ -406,6 +454,19 @@ def _skipped_lines(result: InstallResult) -> tuple[str, ...]:
         line = f"{label} — not selected; add it with `aq install --with {capability}`"
         if line not in lines:
             lines.append(line)
+    return tuple(lines)
+
+
+def _drift_lines(result: InstallResult) -> tuple[str, ...]:
+    """Every drift finding the steps of this run reported, once each."""
+    lines: list[str] = []
+    for step in result.steps:
+        findings = step.detail.get("drift")
+        if not isinstance(findings, list):
+            continue
+        for finding in findings:
+            if isinstance(finding, str) and finding not in lines:
+                lines.append(finding)
     return tuple(lines)
 
 
@@ -648,6 +709,7 @@ def summarize(
         skipped=_skipped_lines(result),
         next_steps=_next_steps(result, dashboard, readiness),
         readiness=readiness,
+        drift=_drift_lines(result),
     )
 
 

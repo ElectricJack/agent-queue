@@ -520,7 +520,9 @@ If `output.tokens_used > 0`: `db.record_token_usage(project_id, agent_id, task_i
   instructions; this phase only *checks* the resulting git state against the
   task's **effective integration mode** (`_effective_integration_mode`: plan-
   subtask parent's task-level override → task override → project policy →
-  config `integration.default_mode`) and reopens the task with feedback when
+  config `integration.default_mode`, where a `pull_request` default resolves
+  to `direct` on a repository on disk —
+  `src/integration/delivery_path.py`) and reopens the task with feedback when
   something is off. On pipeline success the task always transitions to
   `COMPLETED`: in `pull_request` mode it completes **unmerged** with `pr_url`
   recorded on the row (the review pipeline's `pr-merged` gates own the

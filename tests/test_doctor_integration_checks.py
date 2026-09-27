@@ -1217,3 +1217,108 @@ async def test_publisher_stalled_is_quiet_without_a_development_project(db):
 def test_publisher_stalled_is_registered():
     registry = default_registry()
     assert "integration.development_publisher_stalled" in registry.ids()
+
+
+# ── integration.delivery_path ────────────────────────────────────────────────
+
+
+def _delivery_config(default_mode="pull_request"):
+    return SimpleNamespace(integration=SimpleNamespace(default_mode=default_mode))
+
+
+async def test_delivery_path_is_registered_in_the_default_registry():
+    ids = {c.id for c in default_registry().checks()}
+    assert "integration.delivery_path" in ids
+
+
+async def test_delivery_path_ok_for_github_and_inherited_local_remotes(db, tmp_path):
+    """The agile-flare shape is no longer a stranded project: a local remote
+    that inherits the pull_request default delivers directly."""
+    bare = tmp_path / "site.git"
+    bare.mkdir()
+    await db.create_project(Project(id="site", name="site", repo_url=str(bare)))
+
+    result = await run_check(db, "integration.delivery_path", config=_delivery_config())
+
+    assert result.severity == Severity.OK, result.detail
+
+
+async def test_delivery_path_flags_explicit_pull_request_on_a_local_remote(db, tmp_path):
+    bare = tmp_path / "site.git"
+    bare.mkdir()
+    await db.create_project(Project(
+        id="site", name="site", repo_url=str(bare), integration_mode="pull_request",
+    ))
+
+    result = await run_check(db, "integration.delivery_path", config=_delivery_config())
+
+    assert result.severity == Severity.ERROR
+    [finding] = result.data["projects"]
+    assert finding["project_id"] == "site"
+    assert "cannot host a pull request" in finding["problems"][0]
+    assert "aq task deliver" in result.detail
+
+
+async def test_delivery_path_flags_a_hosted_remote_off_github(db):
+    await db.create_project(Project(
+        id="lab", name="lab", repo_url="https://gitlab.com/org/lab.git",
+    ))
+
+    result = await run_check(db, "integration.delivery_path", config=_delivery_config())
+
+    assert result.severity == Severity.ERROR
+    [finding] = result.data["projects"]
+    assert finding["project_id"] == "lab"
+    assert "(from default)" in finding["problems"][0]
+
+
+async def test_delivery_path_flags_a_missing_repository_on_disk(db, tmp_path):
+    await db.create_project(Project(
+        id="gone", name="gone", repo_url=str(tmp_path / "gone.git"),
+    ))
+
+    result = await run_check(db, "integration.delivery_path", config=_delivery_config())
+
+    assert result.severity == Severity.ERROR
+    [finding] = result.data["projects"]
+    assert finding["project_id"] == "gone"
+    assert "does not exist on disk" in finding["problems"][0]
+
+
+async def test_delivery_path_flags_a_managed_mode_without_a_repository(db):
+    import sqlalchemy as sa
+
+    await db.create_project(Project(id="dev", name="dev", repo_url="https://github.com/o/d"))
+    async with db._engine.begin() as conn:
+        await conn.execute(sa.text(
+            "UPDATE projects SET hierarchical_integration_mode = 'development' WHERE id = 'dev'"
+        ))
+
+    result = await run_check(db, "integration.delivery_path", config=_delivery_config())
+
+    assert result.severity == Severity.ERROR
+    assert result.data["projects"] == [{
+        "project_id": "dev",
+        "problems": ["development integration has no integration repository"],
+    }]
+
+
+async def test_delivery_path_skips_archived_projects(db, tmp_path):
+    from src.models import ProjectStatus
+
+    await db.create_project(Project(
+        id="old", name="old", repo_url=str(tmp_path / "gone.git"),
+        status=ProjectStatus.ARCHIVED,
+    ))
+
+    result = await run_check(db, "integration.delivery_path", config=_delivery_config())
+
+    assert result.severity == Severity.OK
+
+
+async def test_delivery_path_without_database_is_info():
+    from src.doctor.integration_checks import _check_delivery_path
+
+    result = await _check_delivery_path(DoctorContext(config=None, db=None))
+
+    assert result.severity == Severity.INFO

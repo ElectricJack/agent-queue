@@ -601,23 +601,61 @@ class ReviewCommandsMixin:
         review, error = await self._review_for_caller(args.get("review_id"))
         if error:
             return error
-        if self._is_worker():
+        by_author = self._is_worker()
+        if by_author:
             held, error = await self._worker_held_task()
             if error:
                 return error
             if review["author_task_id"] != held.id:
                 return _error("not_decider", "only the author task may withdraw this review")
+        principal = current_principal() or TRUSTED_LOCAL
+        by = (
+            "human:local-operator"
+            if principal.kind is PrincipalKind.LOCAL
+            else principal.describe()
+        )
+        reason = str(args.get("reason") or "").strip()
         try:
-            return {
-                "success": True,
-                **await self._review_service().withdraw(
-                    review_id=review["id"],
-                    reason=str(args.get("reason") or ""),
-                    by=(current_principal() or TRUSTED_LOCAL).describe(),
-                ),
-            }
+            result = await self._review_service().withdraw(
+                review_id=review["id"], reason=reason, by=by
+            )
         except ReviewError as error:
             return _error(error.code, error.message)
+        if not by_author:
+            await self._tell_author_review_withdrawn(review, reason, by)
+        return {"success": True, **result}
+
+    async def _tell_author_review_withdrawn(self, review: dict, reason: str, by: str) -> None:
+        """Comment on the authoring task, which also wakes its live session.
+
+        The withdrawal is already committed, so a failure here is logged and
+        never reported as a failed withdrawal.
+        """
+        author_id = review.get("author_task_id")
+        if not author_id or await self.db.get_task(author_id) is None:
+            return
+        body = "\n".join([
+            f"Review {review['id']} ({review['title']}) was withdrawn by {by}.",
+            f"Reason: {reason or '(none given)'}",
+            (
+                "Its gate stays open, so nothing waiting on it is released, and the waiting "
+                "tasks are flagged needs_attention=review_withdrawn. The review cannot be "
+                "resubmitted; a replacement document is a new `aq review submit`."
+            ),
+        ])
+        try:
+            result = await self._cmd_task_comment({"task_id": author_id, "body": body})
+        except Exception:
+            logger.warning(
+                "review %s: telling author task %s about the withdrawal failed",
+                review["id"], author_id, exc_info=True,
+            )
+            return
+        if "error" in result:
+            logger.warning(
+                "review %s: telling author task %s about the withdrawal failed: %s",
+                review["id"], author_id, result["error"],
+            )
 
     async def _cmd_review_decide(self, args: dict) -> dict:
         review, error = await self._review_for_caller(args.get("review_id"))

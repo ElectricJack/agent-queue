@@ -70,6 +70,7 @@ Go ahead? [Y/n]:
 | Choice | Asked? | How it is decided |
 | --- | --- | --- |
 | Use Claude Code / Codex / Gemini? | **yes** | defaults to the ones already installed (a read-only `PATH` and `--version` probe). At least one is required: a machine with no coding agent cannot run a task, so the questions are asked again. |
+| Use graft (recommended)? | **yes** | graft is a per-repo code graph whose MCP tools and hooks cut file reads. Defaults to yes when graft is installed, or when it is missing and `npm` is on PATH to install it; otherwise no. See [graft](#graft-graftcli-graftrepos). |
 | Where do your code projects live? | **yes**, unless a project root is already configured | defaults to the folder the install was started from when it is a normal folder under your home, else `~/Projects`. The home folder itself, the filesystem root and AQ's own directories are refused. Recorded by `config.project-root`, which creates the folder if needed. |
 | Install and run a local PostgreSQL server? | only under `--advanced` | installed when nothing answers on the configured host and port, reused when a server does. |
 | Start the AQ daemon? | only under `--advanced` | yes — it runs every task, and the dashboard server beside it serves the dashboard. |
@@ -269,6 +270,35 @@ mechanism at all (no systemd user manager and no `crontab`) records the step as
 `needs_user` with what to install. The full behaviour is in
 [Install AQ](../../tutorials/install.md#keep-aq-running-after-a-reboot-or-a-crash).
 
+## graft (`graft.cli`, `graft.repos`)
+
+graft (`@nanonets/graft` on npm) builds a code graph of one repository and
+gives Claude Code MCP tools and hooks that answer from it, so an agent reads
+fewer files. It is optional and recommended: the wizard offers it, and
+`--with graft` selects it. Both steps are **advisory** — a graft step that fails
+is reported with its remediation and never changes the outcome or exit code.
+
+| Step | Mutating | Capability | What it does |
+| --- | --- | --- | --- |
+| `graft.cli` | yes | `graft` | Runs `graft --version`. A graft already on PATH is reused whatever its version and **never upgraded or downgraded**; a version outside the cleared `0.18.x` series is reported as drift. A missing graft is installed with `npm install -g @nanonets/graft@0.18.x` (npm must be on PATH; a root-owned global prefix needs `npm config set prefix ~/.local`). Then runs `graft telemetry disable` unless `~/.graft/telemetry.json` already records it off. Graft wiring found outside any repository — graft hooks in `~/.claude/settings.json`, a graft MCP server in `~/.claude.json`, `~/.codex/config.toml`, `~/.codex/hooks.json`, the OpenCode or Gemini configuration — is reported as drift and never edited. `aq uninstall` reports an npm package AQ installed; it never removes it. |
+| `graft.repos` | yes | `graft` | Runs after `daemon.start` and asks the daemon for every project's workspaces. In each **main checkout** — a project's base workspace (a non-slot row whose kind runs in worktree mode) that is a git repository — graft has not wired yet, runs `graft init --no-global --no-statusline --no-agents`: repository files only, Claude Code wiring only (`--no-agents` keeps graft's section out of `AGENTS.md`, which worker slots read). Then makes sure `graft/` is ignored and sets `env.DO_NOT_TRACK="1"` in the checkout's `.claude/settings.local.json`, which Claude Code hands to graft's hooks and MCP server. Worker slots, linked git worktrees, job snapshots and anything inside the vault are never touched. |
+
+The installer never installs a shim an npm upgrade would replace and never
+writes machine-wide configuration. Its own writes are local to the machine:
+`DO_NOT_TRACK` goes in the git-ignored `.claude/settings.local.json`, and a
+path nothing ignores yet is added to the repository's `.git/info/exclude`,
+never to a tracked `.gitignore` (`graft init` itself appends `/graft/` there;
+committing that is the project's own delivery). Worker sessions keep graft off
+through their launch environment — `GRAFT_NO_SEED=1`, `GRAFT_NO_REFRESH=1` and
+`DO_NOT_TRACK=1` (see [terminals and claims](../terminals-and-claims.md)).
+
+A rerun reports instead of re-wiring. A checkout graft already wired (its
+`.claude/helpers/graft-hooks.cjs`, its wiring stamp, graft hooks in
+`.claude/settings.json` or a graft server in `.mcp.json`) is never initialised
+again; a wiring stamp that records `global: true` or graft's statusLine is
+reported as drift in `onboarding.drift`. A project registered since the last
+run is set up on the next `aq install`.
+
 ### Where AQ stores your data
 
 `config.check` reports these, and so does the closing summary — they are
@@ -417,7 +447,8 @@ view and a script are told the same things:
       ]
     },
     "skipped": ["Discord delivery for digests and escalations — not selected; add it with `aq install --with discord`"],
-    "next_steps": ["Open the dashboard at http://127.0.0.1:8082/."]
+    "next_steps": ["Open the dashboard at http://127.0.0.1:8082/."],
+    "drift": []
   }
 }
 ```
@@ -437,8 +468,13 @@ view and a script are told the same things:
   therefore reports `needs_attention` here with the Settings → Project Roots
   remediation, which is also what the closing `next_steps` names.
 * **`onboarding.skipped`** lists the *optional* things this run did not do and
-  the flag that would add each one. A skipped capability is a finished install,
-  not a partial one.
+  how to add each one. A skipped capability is a finished install, not a partial
+  one; an unselected graft appears here once, with `aq install --with graft`.
+* **`onboarding.drift`** lists what a step found different from the setup AQ
+  would make and reported without changing it — graft wiring outside any
+  repository, a graft version outside the cleared series, a wiring stamp that
+  would re-wire globally. The human view prints the same lines under **Drift
+  (reported, not changed)**. Drift never changes the outcome or exit code.
 * **`onboarding.dashboard.source`** is `dashboard-server` (the dashboard
   server answers at `url`; `reachable` says whether its page did), `unbuilt` (no
   bundle is installed: a source checkout whose `dashboard.build` has not

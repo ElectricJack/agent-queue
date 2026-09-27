@@ -953,3 +953,87 @@ async def test_approval_notifies_only_supervisor_once_for_each_author_state(env)
         assert len(messages) == 1
         assert kind in messages[0].body
         assert review["vault_path"] in messages[0].body
+
+
+async def test_dashboard_close_withdraws_over_http_and_tells_the_author(env, monkeypatch):
+    """The dashboard's Close button is ``POST /api/review/withdraw`` with no session token."""
+    import httpx
+    from fastapi import FastAPI
+
+    from src.api import dependencies as deps
+    from src.api.codegen import build_category_routers
+    from src.api.middleware import TokenAuthMiddleware
+
+    handler, db = env
+    submitted = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Old design", "content": "# Old\n",
+    })
+    review_id = submitted["review_id"]
+    gate_id = (await db.get_review(review_id))["gate_id"]
+    await db.create_task(Task(
+        id="impl", project_id="p", title="Implement", description="Build it",
+        status=TaskStatus.DEFINED,
+    ))
+    async with db.immediate() as conn:
+        await db.attach_gate_waiters(gate_id, ["impl"], conn=conn)
+
+    monkeypatch.setattr(deps, "_command_handler", handler)
+    monkeypatch.setattr(deps, "_orchestrator", handler.orchestrator)
+    monkeypatch.setattr(deps, "_require_session_token", False)
+    app = FastAPI()
+    for router in build_category_routers():
+        if router.prefix == "/api/review":
+            app.include_router(router)
+    app.add_middleware(TokenAuthMiddleware)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/review/withdraw", json={"review_id": review_id, "reason": " superseded by v2 "},
+        )
+        again = await client.post(
+            "/api/review/withdraw", json={"review_id": review_id, "reason": ""},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "success": True, "review_id": review_id, "flagged_task_ids": ["impl"],
+    }
+    review = await db.get_review(review_id)
+    assert (review["state"], review["decided_by"], review["decision_note"]) == (
+        "withdrawn", "human:local-operator", "superseded by v2",
+    )
+    # Exactly the CLI's withdrawal: the gate stays open and its waiter is flagged.
+    assert (await db.get_gate(gate_id))["status"] == "open"
+    assert await db.get_task_meta("impl", "needs_attention") == "review_withdrawn"
+
+    [comment] = (await db.list_task_comments("author"))["comments"]
+    assert (comment["author_kind"], comment["author_id"]) == ("user", "local")
+    assert review_id in comment["body"]
+    assert "Reason: superseded by v2" in comment["body"]
+    # The author task is held by a running session, so the comment wakes it.
+    [message] = await db.get_pending_messages("task", "author")
+    assert review_id in message.body
+
+    assert again.status_code == 422
+    assert "withdrawn" in again.json()["error"]
+
+
+async def test_author_withdrawing_its_own_review_is_not_told_about_it(env):
+    handler, db = env
+    submitted = await _scoped(
+        handler, "review_submit",
+        {"task_id": "author", "kind": "spec", "title": "Mine", "content": "# Mine\n"},
+        session_id="worker",
+    )
+    withdrawn = await _scoped(
+        handler, "review_withdraw",
+        {"review_id": submitted["review_id"], "reason": ""}, session_id="worker",
+    )
+    assert withdrawn["success"], withdrawn
+    review = await db.get_review(submitted["review_id"])
+    assert (review["state"], review["decided_by"], review["decision_note"]) == (
+        "withdrawn", "session:worker", None,
+    )
+    assert (await db.list_task_comments("author"))["comments"] == []
+    assert await db.get_pending_messages("task", "author") == []

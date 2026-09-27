@@ -336,6 +336,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_route": "task",
     # review policy — dv2 phase 2
     "pr_merge": "git",
+    # manual delivery of a passed branch (agile-ridge) — `aq task deliver`
+    "task_deliver": "task",
     "ci_baseline_status": "git",
     "ci_repair_adopt": "git",
     # provider availability — state, overrides, recheck (provider-failover D20)
@@ -6074,6 +6076,50 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": [],
+        },
+    },
+    {
+        "name": "task_deliver",
+        "description": (
+            "Deliver a BLOCKED task's pushed branch into its repository's default "
+            "branch by hand, then complete the task.  For work whose worker closed "
+            "pass and pushed but whose close stopped at delivery, e.g. a project "
+            "that pushes to a bare repository on disk, where no pull request can "
+            "exist.  "
+            "Merges (or fast-forwards) in a private repository, never in a worker "
+            "slot or operator checkout, and pushes with a lease on the default "
+            "branch as fetched.  Refuses a task that is not BLOCKED, whose last "
+            "close was not a pass, has open children, belongs to a "
+            "development/hierarchy/train project, integrates "
+            "by pull request on a repository that can host one (merge the PR "
+            "instead), was never pushed, or conflicts.  Local operator or the "
+            "project's live supervisor only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The BLOCKED task whose recorded branch is delivered.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Audit reason; recorded on the task and in the merge commit.",
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Report the delivery plan without pushing or completing.",
+                    "default": False,
+                },
+                "expected_head": {
+                    "type": "string",
+                    "description": (
+                        "The branch head you inspected (head_sha from a dry run, full or "
+                        "7+ characters); a branch that moved since is refused."
+                    ),
+                },
+            },
+            "required": ["task_id", "reason"],
         },
     },
     {

@@ -81,6 +81,7 @@ there — `tmux` is AQ's prerequisite and somebody else's terminal multiplexer.
 | --- | --- |
 | `provider-cli` | "Remove it with the provider's own uninstaller if you no longer want it." |
 | `brew-formula` | `brew uninstall <formula>`, once you are sure nothing else needs it. |
+| `npm-package` | `npm uninstall -g <package>` (graft: `@nanonets/graft`), once you are sure nothing else needs it. |
 | `postgres-server` | The package your platform's package manager installed, once you have confirmed no other database on it is in use. |
 
 ## Exit codes

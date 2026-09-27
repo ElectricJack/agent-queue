@@ -514,17 +514,29 @@ class ReviewService:
     # -- withdraw ------------------------------------------------------------
 
     async def withdraw(self, *, review_id: str, reason: str, by: str) -> dict:
-        """Close the review unapproved; its gate stays open and waiters are flagged."""
+        """Close the review unapproved; its gate stays open and waiters are flagged.
+
+        The withdrawal is the review's last decision, so ``by`` and ``reason``
+        are recorded as ``decided_by`` / ``decision_note``.
+        """
         review = await self._get(review_id)
         if review["state"] not in OPEN_STATES:
             raise self._closed(review)
         current = review["current_revision"]
+        reason = (reason or "").strip()
+        now = self._clock()
         async with self.db.immediate() as conn:
             moved = await self.db.transition_review(
                 review_id,
                 from_states=set(OPEN_STATES),
                 expected_revision=current,
-                values={"state": "withdrawn", "updated_at": self._clock()},
+                values={
+                    "state": "withdrawn",
+                    "decided_by": by,
+                    "decided_at": now,
+                    "decision_note": reason or None,
+                    "updated_at": now,
+                },
                 conn=conn,
             )
         if not moved:

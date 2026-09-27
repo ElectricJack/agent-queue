@@ -533,6 +533,53 @@ class TestPhaseIntegrateHappyPath:
             await o.shutdown()
 
 
+class TestLocalRemoteDelivery:
+    async def test_inherited_default_delivers_to_a_local_remote_without_touching_the_base(
+        self, tmp_path, base_repo_for_integrate,
+    ):
+        """agile-ridge: a project whose origin is a bare repository on disk.
+
+        The task inherits the system default (``pull_request``), which cannot
+        apply to a repository with no pull-request host, so it integrates
+        directly -- and the base checkout, the operator's own working tree
+        with edits of its own, is neither switched, reset nor merged into.
+        """
+        base_repo = base_repo_for_integrate
+        origin = tmp_path / "origin.git"
+        o = await _make_worktree_orch(tmp_path)
+        try:
+            await _seed_wt_project(o, base_repo)
+            await o.db.update_project("p1", repo_url=str(origin))
+            task = Task(id="tsk-local", project_id="p1", title="local", description="")
+            await o.db.create_task(task)
+            await o.db.create_agent(Agent(id="a-1", name="a-1", profile_id="test-profile"))
+            agent = await o.db.get_agent("a-1")
+            slot = await o._prepare_workspace(await o.db.get_task(task.id), agent)
+            task = await o.db.get_task(task.id)
+            assert await o._effective_integration_mode(task) == "direct"
+
+            (Path(slot) / "work.txt").write_text("hello\n")
+            _git(["add", "-A"], cwd=slot)
+            _git(["commit", "-m", "local work"], cwd=slot)
+            # Operator edits in the base, as on matter-engine's checkout.
+            (base_repo / "README.md").write_text("operator edit\n")
+            (base_repo / ".ignore").write_text("graft/\n")
+            base_head = _git(["rev-parse", "HEAD"], cwd=base_repo)
+
+            ws = await o.db.get_workspace_for_task(task.id)
+            result = await o._phase_integrate(_make_pipeline_ctx(task, agent, slot, ws.id))
+
+            assert result == PhaseResult.CONTINUE
+            subjects = _git(["log", "--format=%s", "main"], cwd=origin).splitlines()
+            assert "local work" in subjects
+            assert (base_repo / "README.md").read_text() == "operator edit\n"
+            assert (base_repo / ".ignore").read_text() == "graft/\n"
+            assert _git(["rev-parse", "HEAD"], cwd=base_repo) == base_head
+            assert await o.db.get_task_meta(task.id, "merged_at") is not None
+        finally:
+            await o.shutdown()
+
+
 class TestPhaseIntegrateConflict:
     async def test_rebase_conflict_blocks_task_and_never_force_pushes(
         self, tmp_path, base_repo_for_integrate,

@@ -732,6 +732,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Vibecop plugin configuration."),
     (".mcp.json", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "MCP servers offered to agents working in this repository."),
+    (".claude/**", "contributing", "docs/contributing/setup.md", SUPPORTING,
+     "Claude Code settings for sessions in this repository (hooks and permissions)."),
     (".gitignore", "contributing", "docs/contributing/setup.md", SUPPORTING,
      "Ignore rules."),
     (".ignore", "contributing", "docs/contributing/setup.md", SUPPORTING,

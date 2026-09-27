@@ -12,11 +12,13 @@ import {
   reviewImportEdits,
   reviewList,
   reviewShow,
+  reviewWithdraw,
   type ReviewCommentResponse,
   type ReviewDecideResponse,
   type ReviewImportEditsResponse,
   type ReviewListResponse,
   type ReviewShowResponse,
+  type ReviewWithdrawResponse,
 } from "./client";
 
 type ReviewFilters = { projectId?: string; state?: string; kind?: string; taskId?: string };
@@ -79,6 +81,29 @@ export function useDecideReview(): UseMutationResult<ReviewDecideResponse, Error
       body: input,
       throwOnError: true,
     })).data as ReviewDecideResponse,
+    onSuccess: (_data, input) => {
+      void queryClient.invalidateQueries({ queryKey: ["reviews"] });
+      void queryClient.invalidateQueries({ queryKey: ["review", input.review_id] });
+      void queryClient.invalidateQueries({ queryKey: ["tasks"] });
+      void queryClient.invalidateQueries({ queryKey: ["gates"] });
+    },
+  });
+}
+
+type WithdrawInput = { review_id: string; reason: string };
+
+/** Close an open review with no decision, exactly as `aq review withdraw` does. */
+export function useWithdrawReview(): UseMutationResult<
+  ReviewWithdrawResponse,
+  Error,
+  WithdrawInput
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: WithdrawInput) => (await reviewWithdraw({
+      body: input,
+      throwOnError: true,
+    })).data as ReviewWithdrawResponse,
     onSuccess: (_data, input) => {
       void queryClient.invalidateQueries({ queryKey: ["reviews"] });
       void queryClient.invalidateQueries({ queryKey: ["review", input.review_id] });

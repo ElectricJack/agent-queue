@@ -6,6 +6,7 @@ See docs/specs/implementation/session-runtime.md §3.4 and §8.
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, asdict, dataclass, replace
+from typing import ClassVar
 
 import pytest
 
@@ -13,6 +14,7 @@ from src.intelligence_classes import IntelligenceClass
 from src.sessions.env import AQ_MARKER_KEYS, STARTUP_PROMPT_DELIVERED, build_session_env
 from src.sessions.harness_parser import Harness, ResumeSpec
 from src.sessions.spec import (
+    WORKER_TOOL_ENV,
     SessionSpecBuilder,
     named_session_name,
     sanitize_name,
@@ -893,6 +895,78 @@ class TestEnvMarkers:
 
         source = inspect.getsource(spec_mod.SessionSpecBuilder._build)
         assert "config=self.config" in source
+
+
+class TestWorkerToolEnv:
+    """graft must not seed or refresh its index in a worker slot (2026-09-27).
+
+    The operator's shim and hook guard do this today; the launch env is the
+    copy an ``npm i -g`` or ``graft init`` cannot overwrite.
+    """
+
+    EXPECTED: ClassVar[dict[str, str]] = {
+        "GRAFT_NO_SEED": "1",
+        "GRAFT_NO_REFRESH": "1",
+        "DO_NOT_TRACK": "1",
+    }
+
+    @pytest.fixture(autouse=True)
+    def _clean_daemon_env(self, monkeypatch):
+        for key in self.EXPECTED:
+            monkeypatch.delenv(key, raising=False)
+
+    def _pool(self, builder, harness=CLAUDE):
+        return builder.build_pool_spec(
+            profile=_Profile(id="standard-high-claude"),
+            project=_Task(id="proj-1"),
+            agent_id="agent-1",
+            harness=harness,
+            work_dir="/wd/.aq/worktrees/slot-1",
+            session_id="sess-pool",
+            session_name="p-standard-high-claude--proj-1--n1",
+            instance_token="tok-1",
+        )
+
+    def test_the_constant_is_what_the_task_asked_for(self):
+        assert WORKER_TOOL_ENV == self.EXPECTED
+
+    def test_a_task_session_carries_it(self, builder):
+        env = _build(builder).env
+        assert {k: env.get(k) for k in self.EXPECTED} == self.EXPECTED
+
+    def test_a_pool_session_carries_it(self, builder):
+        spec = self._pool(builder)
+        assert spec.lifecycle == "pool"
+        assert {k: spec.env.get(k) for k in self.EXPECTED} == self.EXPECTED
+        # Alongside, not instead of, the pool's own markers.
+        assert spec.env["AQ_SESSION_KIND"] == "pool"
+        assert spec.env["AQ_AGENT_ID"] == "agent-1"
+
+    def test_a_named_session_does_not(self, builder):
+        spec = builder.build_named_spec(
+            profile=_Profile(id="supervisor"),
+            harness=CLAUDE,
+            project_id="proj-1",
+            work_dir="/vault",
+            session_id="s1",
+            instance_token="t1",
+        )
+        assert not set(self.EXPECTED) & set(spec.env)
+
+    @pytest.mark.parametrize("lifecycle", ["task", "pool"])
+    def test_a_harness_pin_wins(self, builder, lifecycle):
+        harness = replace(CLAUDE, env=(("GRAFT_NO_REFRESH", "0"),))
+        spec = _build(builder, harness=harness) if lifecycle == "task" else self._pool(
+            builder, harness=harness
+        )
+        assert spec.env["GRAFT_NO_REFRESH"] == "0"
+        assert spec.env["GRAFT_NO_SEED"] == "1"
+
+    def test_caller_extra_env_wins(self, builder):
+        env = _build(builder, extra_env={"DO_NOT_TRACK": "0", "AQ_CLAIM_EPOCH": "3"}).env
+        assert env["DO_NOT_TRACK"] == "0"
+        assert env["AQ_CLAIM_EPOCH"] == "3"
+        assert env["GRAFT_NO_SEED"] == "1"
 
 
 class TestHookMaterial:

@@ -209,12 +209,13 @@
       ]
     },
     "development-delivery": {
-      "description": "Development delivery: the development integration path on real git, validation outcomes, delivery preconditions and end-to-end delivery, branch discard and the push-before-close rule for unpushed work.",
+      "description": "Development delivery: the development integration path on real git, validation outcomes, delivery preconditions and end-to-end delivery, delivering a blocked task's pushed branch by hand, branch discard and the push-before-close rule for unpushed work.",
       "modules": [
         "tests/test_branch_discard.py",
         "tests/test_close_unpushed_work.py",
         "tests/test_delivery_consumers.py",
         "tests/test_delivery_integration.py",
+        "tests/test_delivery_manual.py",
         "tests/test_delivery_precondition_refusals.py",
         "tests/test_development_integration.py",
         "tests/test_development_validation.py",
@@ -469,6 +470,7 @@
         "tests/test_install_cli.py",
         "tests/test_install_dashboard.py",
         "tests/test_install_engine.py",
+        "tests/test_install_graft.py",
         "tests/test_install_integration.py",
         "tests/test_install_lifecycle.py",
         "tests/test_install_logins.py",
@@ -1280,7 +1282,7 @@
       ]
     }
   },
-  "digest": "sha256:2060cb512e552e516bfc33ea635c320059a75b78f0df3086347ad64705b88273",
+  "digest": "sha256:1c3ba1873e1072de02adc64497b31e98e258a3e1d6c84f3c43c0601b896e675f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4537,6 +4539,27 @@
       "markers": [],
       "summary": "P3 end-to-end delivery integration test — supervisor-agent §5/§7/§8."
     },
+    "tests/test_delivery_manual.py": {
+      "areas": [
+        "development-delivery"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.commands",
+        "src.commands.git_commands",
+        "src.commands.supervisor_authority",
+        "src.database",
+        "src.git.manager",
+        "src.integration.manual_delivery",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "``task_deliver`` — delivering a passed task's pushed branch by hand."
+    },
     "tests/test_delivery_precondition_refusals.py": {
       "areas": [
         "development-delivery"
@@ -6360,13 +6383,17 @@
         "src.cli",
         "src.cli.app",
         "src.cli.install",
+        "src.install.command",
+        "src.install.graft",
         "src.install.onboarding",
         "src.install.prerequisites",
         "src.install.results",
         "src.install.steps",
         "src.install.wizard"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``aq install`` — flags, exit codes, JSON payload and the documented contract."
     },
     "tests/test_install_dashboard.py": {
@@ -6406,6 +6433,26 @@
       ],
       "markers": [],
       "summary": "The installer engine: ordering, idempotent reruns, resume and secrecy."
+    },
+    "tests/test_install_graft.py": {
+      "areas": [
+        "install"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.install.command",
+        "src.install.engine",
+        "src.install.graft",
+        "src.install.platform",
+        "src.install.prerequisites",
+        "src.install.results",
+        "src.install.steps",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "graft in ``aq install``: offered, pinned, per repository, never global."
     },
     "tests/test_install_integration.py": {
       "areas": [
@@ -6483,6 +6530,7 @@
       "imports": [
         "src.install.command",
         "src.install.engine",
+        "src.install.graft",
         "src.install.logins",
         "src.install.macos",
         "src.install.onboarding",
@@ -6628,6 +6676,7 @@
       "default_arm": true,
       "imports": [
         "src.install",
+        "src.install.graft",
         "src.install.logins",
         "src.install.onboarding",
         "src.install.pools",
@@ -7023,8 +7072,10 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration.delivery_path",
         "src.models",
         "src.orchestrator",
+        "src.orchestrator.context",
         "src.orchestrator.git_ops"
       ],
       "markers": [

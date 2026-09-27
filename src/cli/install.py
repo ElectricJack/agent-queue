@@ -22,6 +22,7 @@ from typing import Any
 
 import click
 from rich.console import Console
+from rich.markup import escape
 
 from src.install import (
     InstallEngine,
@@ -248,18 +249,27 @@ def ask_questions(questions: Sequence[Question], target: Console) -> dict[str, b
 def wizard_questions() -> tuple[Question, ...]:
     """Build every choice the install makes from what this machine already has.
 
-    The probes are read-only: which harness executables exist and whether a
-    PostgreSQL server answers.  They decide the *defaults*, never the answers;
+    The probes are read-only: which harness executables exist, whether a
+    PostgreSQL server answers, and whether graft (or npm to install it) is
+    here.  They decide the *defaults*, never the answers;
     :func:`src.install.wizard.questions_to_ask` decides which are put to a person.
     """
+    import shutil
+
+    from src.install.graft import probe_graft
     from src.install.logins import probe_all
     from src.install.postgres import PostgresSettings, tcp_open
+    from src.install.providers import user_bin_aware_which
     from src.install.wizard import question_plan
 
     settings = PostgresSettings()
+    # The same lookup the graft steps use: npm's user prefix is ~/.local/bin.
+    which = user_bin_aware_which(shutil.which)
     return question_plan(
         probes=probe_all(),
         postgres_reachable=tcp_open(settings.host, settings.port, timeout=1.0),
+        graft=probe_graft(which=which),
+        npm_available=which("npm") is not None,
     )
 
 
@@ -367,6 +377,12 @@ def describe_plan(
         f"Settings tuned for this machine ({machine.cores} cores, {machine.memory_gb:.0f} GiB)",
         "Start AQ in the background, build the dashboard and open it in your browser",
     ]
+    graft = next((q for q in questions if q.id == "graft"), None)
+    if graft is not None and graft.capability in selected:
+        lines.append(
+            "graft in each project's main checkout, telemetry off (never global, never in "
+            "worker worktrees)"
+        )
     if project_folder is not None:
         home = Path.home()
         shown = (
@@ -409,6 +425,11 @@ def render_summary(summary: OnboardingSummary, target: Console) -> None:
             target.print(f"  [{check_style}]{mark}[/{check_style}] {check.label}: {check.detail}")
             if check.remediation:
                 target.print(f"     [dim]next: {check.remediation}[/dim]")
+
+    if summary.drift:
+        target.print("\n[bold]Drift (reported, not changed)[/bold]")
+        for line in summary.drift:
+            target.print(f"  [yellow]![/yellow] {escape(line)}")
 
     if summary.skipped:
         target.print("\n[bold]Not installed (optional)[/bold]")

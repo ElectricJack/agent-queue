@@ -43,6 +43,7 @@ __all__ = [
     "BOOTSTRAP_PROMPT",
     "BYPASS_PERMISSION_MODE",
     "POOL_BOOTSTRAP_PROMPT",
+    "WORKER_TOOL_ENV",
     "SessionSpecBuilder",
     "named_session_name",
     "pool_session_name",
@@ -67,6 +68,22 @@ BYPASS_PERMISSION_MODE = "bypassPermissions"
 #: composition adds derived flags idempotently.
 CODEX_FULL_AUTO_FLAG = "--full-auto"
 CLAUDE_DANGEROUSLY_SKIP_PERMISSIONS_FLAG = "--dangerously-skip-permissions"
+
+#: Launch env for worker sessions (``lifecycle`` ``task`` and ``pool``).
+#: graft copies its ~360 MB code index into every checkout it sees, and every
+#: ``.aq/worktrees`` slot is one: 8.5 GB of copies on 2026-09-27.  The
+#: operator's ``~/.local/bin/graft`` shim and the ``graft-hooks.cjs`` guard
+#: already set these, but an ``npm i -g`` or ``graft init`` replaces both, so
+#: the launch sets them as well.  ``DO_NOT_TRACK`` is the telemetry opt-out
+#: the shim also sets.  Named sessions are left alone.  A key the harness's
+#: own ``env`` map names wins, as with the resource caps.
+WORKER_TOOL_ENV: dict[str, str] = {
+    "GRAFT_NO_SEED": "1",
+    "GRAFT_NO_REFRESH": "1",
+    "DO_NOT_TRACK": "1",
+}
+
+_WORKER_LIFECYCLES = frozenset({"task", "pool"})
 
 #: The bootstrap prompt.  Deliberately tiny — see the module docstring.
 #: ``{}`` fields: task_id, work_dir.
@@ -307,7 +324,8 @@ class SessionSpecBuilder:
         *extra_env* is applied after the ``AQ_*`` markers, before scrubbing
         (see :func:`~src.sessions.env.build_session_env`) — e.g.
         ``AQ_CLAIM_EPOCH`` for a push launch that joins the claim fence
-        (swarm-work-model §10).
+        (swarm-work-model §10).  :data:`WORKER_TOOL_ENV` fills in underneath
+        it.
         """
         name = task_session_name(task.id)
         bootstrap = prompt if prompt is not None else BOOTSTRAP_PROMPT.format(
@@ -428,7 +446,8 @@ class SessionSpecBuilder:
         while *session_name* is the readable provider-facing name from
         :func:`pool_session_name`. The bootstrap prompt and env markers
         identify the launch as a pool worker rather than a one-task or
-        persistent session, per §11.2/§11.3.
+        persistent session, per §11.2/§11.3.  Like a task launch it also
+        carries :data:`WORKER_TOOL_ENV`.
         """
         profile_id = getattr(profile, "id", "") or ""
         project_id = getattr(project, "id", "") or ""
@@ -524,6 +543,11 @@ class SessionSpecBuilder:
         )
 
         launch_env = dict(extra_env or {})
+        if lifecycle in _WORKER_LIFECYCLES:
+            harness_env = getattr(harness, "env_map", None) or {}
+            for key, value in WORKER_TOOL_ENV.items():
+                if key not in harness_env:
+                    launch_env.setdefault(key, value)
         provider = getattr(harness, "provider", "") or _infer_provider_from_harness(harness)
         thinking = str(class_config.get("thinking") or "").strip()
         if provider == "anthropic":

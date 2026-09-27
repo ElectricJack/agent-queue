@@ -125,6 +125,9 @@ TASK_TYPE_VALUES = frozenset(t.value for t in TaskType)
 # The value is resolved through a policy chain — task override → project
 # policy → config ``integration.default_mode`` — via
 # :func:`resolve_integration_mode`.  ``None`` at any level means "inherit".
+# A ``pull_request`` default does not reach a repository on disk, where no
+# pull request can exist: a project whose origin is a bare repository there
+# inherits ``direct`` instead (:mod:`src.integration.delivery_path`).
 INTEGRATION_MODE_DIRECT = "direct"
 INTEGRATION_MODE_PULL_REQUEST = "pull_request"
 INTEGRATION_MODES = frozenset({INTEGRATION_MODE_DIRECT, INTEGRATION_MODE_PULL_REQUEST})
@@ -136,6 +139,7 @@ def resolve_integration_mode_with_source(
     parent_task_mode: str | None = None,
     project_mode: str | None = None,
     default_mode: str = INTEGRATION_MODE_PULL_REQUEST,
+    pull_requests_available: bool = True,
 ) -> tuple[str, str]:
     """Resolve the effective integration mode and where it came from.
 
@@ -144,8 +148,16 @@ def resolve_integration_mode_with_source(
     system default.  Unknown values fall through to the next level so a
     corrupted row degrades to policy rather than crashing the pipeline.
 
+    ``pull_requests_available=False`` says the task's repository cannot host
+    a pull request (callers pass it for a bare repository on disk).  A
+    ``pull_request`` mode that only the system default chose then resolves to
+    ``direct`` with source ``"repository"``: the default must not route work
+    to a PR that can never exist.  An explicit ``pull_request`` at any level
+    is kept -- that is the operator's word, and ``integration.delivery_path``
+    in doctor reports it.
+
     Returns ``(mode, source)`` where source is one of ``"parent"``,
-    ``"task"``, ``"project"``, ``"default"``.
+    ``"task"``, ``"project"``, ``"default"``, ``"repository"``.
     """
     for candidate, source in (
         (parent_task_mode, "parent"),
@@ -154,9 +166,10 @@ def resolve_integration_mode_with_source(
     ):
         if candidate in INTEGRATION_MODES:
             return candidate, source
-    if default_mode in INTEGRATION_MODES:
-        return default_mode, "default"
-    return INTEGRATION_MODE_PULL_REQUEST, "default"
+    mode = default_mode if default_mode in INTEGRATION_MODES else INTEGRATION_MODE_PULL_REQUEST
+    if mode == INTEGRATION_MODE_PULL_REQUEST and not pull_requests_available:
+        return INTEGRATION_MODE_DIRECT, "repository"
+    return mode, "default"
 
 
 def resolve_integration_mode(
@@ -165,6 +178,7 @@ def resolve_integration_mode(
     parent_task_mode: str | None = None,
     project_mode: str | None = None,
     default_mode: str = INTEGRATION_MODE_PULL_REQUEST,
+    pull_requests_available: bool = True,
 ) -> str:
     """Resolve the effective integration mode for a task (see above)."""
     mode, _ = resolve_integration_mode_with_source(
@@ -172,6 +186,7 @@ def resolve_integration_mode(
         parent_task_mode=parent_task_mode,
         project_mode=project_mode,
         default_mode=default_mode,
+        pull_requests_available=pull_requests_available,
     )
     return mode
 

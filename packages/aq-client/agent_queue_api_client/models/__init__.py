@@ -1395,6 +1395,9 @@ from .task_comments_response_422 import TaskCommentsResponse422
 from .task_completion_detail import TaskCompletionDetail
 from .task_completion_detail_deliverables_item import TaskCompletionDetailDeliverablesItem
 from .task_control_response import TaskControlResponse
+from .task_deliver_request import TaskDeliverRequest
+from .task_deliver_response import TaskDeliverResponse
+from .task_deliver_response_422 import TaskDeliverResponse422
 from .task_deps_request import TaskDepsRequest
 from .task_deps_response import TaskDepsResponse
 from .task_deps_response_422 import TaskDepsResponse422
@@ -2934,6 +2937,9 @@ __all__ = (
     "TaskCompletionDetail",
     "TaskCompletionDetailDeliverablesItem",
     "TaskControlResponse",
+    "TaskDeliverRequest",
+    "TaskDeliverResponse",
+    "TaskDeliverResponse422",
     "TaskDepsRequest",
     "TaskDepsResponse",
     "TaskDepsResponse422",

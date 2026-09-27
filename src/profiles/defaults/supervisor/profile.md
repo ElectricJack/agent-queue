@@ -197,6 +197,7 @@ its outbox; transport failures never need a new author turn.
     "task_close",
     "task_comment",
     "task_comments",
+    "task_deliver",
     "task_handoff",
     "task_heartbeat",
     "task_claim",

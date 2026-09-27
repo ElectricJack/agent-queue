@@ -334,6 +334,11 @@ MANUAL_KINDS: Mapping[str, str] = {
         "Installed with Homebrew and probably shared with the rest of this machine: "
         "`brew uninstall {id}` removes it once you are sure nothing else needs it."
     ),
+    # graft (src/install/graft.py): a global npm package other tools may use.
+    "npm-package": (
+        "Installed with `npm install -g` and on this machine's PATH for every tool: "
+        "`npm uninstall -g {id}` removes it once you are sure nothing else needs it."
+    ),
     "postgres-server": (
         "A PostgreSQL server serves more than AQ. Remove the package with your platform's "
         "package manager once you have confirmed no other database on it is in use."

@@ -19,7 +19,6 @@ from src.models import (
     RepoConfig,
     Task,
     TaskStatus,
-    resolve_integration_mode,
 )
 from src.orchestrator.merge_slot import (
     acquire_merge_slot,
@@ -963,18 +962,16 @@ class GitOpsMixin:
         ``integration.default_mode``.  Every git-pipeline decision that used
         to read the ``requires_approval`` flag goes through here, so a task
         in ``pull_request`` mode can never fall into a direct-merge path.
+        A repository that cannot host a pull request (a bare local remote)
+        does not inherit ``pull_request`` from the system default
+        (:mod:`src.integration.delivery_path`).
         """
-        parent_mode: str | None = None
-        if task.is_plan_subtask and task.parent_task_id:
-            parent = await self.db.get_task(task.parent_task_id)
-            parent_mode = parent.integration_mode if parent else None
-        project = await self.db.get_project(task.project_id)
-        return resolve_integration_mode(
-            task.integration_mode,
-            parent_task_mode=parent_mode,
-            project_mode=project.integration_mode if project else None,
-            default_mode=self.config.integration.default_mode,
+        from src.integration.delivery_path import effective_integration_mode
+
+        mode, _source = await effective_integration_mode(
+            self.db, task, default_mode=self.config.integration.default_mode
         )
+        return mode
 
     async def _run_completion_pipeline(self, ctx: PipelineContext) -> tuple[str | None, bool]:
         """Run the post-completion pipeline. Returns (pr_url, completed_ok).
@@ -1514,7 +1511,21 @@ class GitOpsMixin:
                     try:
                         repository = await self.git.bind_github_repository(repository_url)
                     except Exception as exc:
-                        failures.append((f"Could not authorize PR repository: {exc}", False))
+                        from src.integration.delivery_path import lacks_pull_request_host
+
+                        message = f"Could not authorize PR repository: {exc}"
+                        if lacks_pull_request_host(repository_url):
+                            # An inherited default resolves to direct on a
+                            # repository on disk; an explicit pull_request, or
+                            # a hosted remote other than github.com, gets here.
+                            message += (
+                                f". {repository_url} cannot host a pull request, but this "
+                                "task's integration mode is pull_request. Enable the "
+                                "development publisher for the project (`aq integration "
+                                "develop`), then deliver the pushed branch with "
+                                f"`aq task deliver --task-id {task.id} --reason ...`."
+                            )
+                        failures.append((message, False))
                         repository = None
                     pr_url = confirmed_merged_pr_url
                     if repository is not None and not pr_url:
@@ -1995,7 +2006,11 @@ class GitOpsMixin:
     # ── worktree-mode integration ─────────────────────────────────────────
 
     async def _task_is_worktree_mode(self, ctx: PipelineContext) -> bool:
-        """True when the task's workspace kind is in worktree mode.
+        """True when the task's workspace kind is in worktree mode."""
+        return await self._workspace_is_worktree_mode(getattr(ctx, "workspace_id", None))
+
+    async def _workspace_is_worktree_mode(self, ws_id: str | None) -> bool:
+        """Shared worktree-mode detection for prompts and the completion pipeline.
 
         Worktree-execution spec §6.5: the integrate phase runs whenever
         the task's project-repo kind is configured as worktree mode —
@@ -2008,7 +2023,6 @@ class GitOpsMixin:
 
         if not getattr(self.config, "worktrees", None) or not self.config.worktrees.enabled:
             return False
-        ws_id = getattr(ctx, "workspace_id", None)
         if not ws_id:
             return False
         try:
@@ -2051,9 +2065,14 @@ class GitOpsMixin:
            release the slot, return STOP.
         3. Push the merged branch — a plain push, since nothing was
            rewritten; never ``--force`` to *default*.
-        4. In the base: merge the task branch into default and push
-           (skipped in ``pull_request`` mode — the agent opens a PR
-           on the pushed branch).
+        4. ``direct`` mode: push the merged slot tip to default as a
+           fast-forward; without a remote, merge the task branch into
+           default in the base instead.  The base is never reset while a
+           remote exists — it may be the operator's own working tree.  A
+           default that someone outside AQ moved after step 2's fetch is
+           refused (``push_failed``), not merged again.
+           Skipped in ``pull_request`` mode — the agent opens a PR on the
+           pushed branch.
         5. Emit ``merge.succeeded``, record ``merged_at`` metadata,
            release the slot, return CONTINUE.
 
@@ -2303,10 +2322,52 @@ class GitOpsMixin:
                     )
                     return PhaseResult.STOP
 
-            # ── Step 4: local merge in the base (skip for PR workflow) ─
+            # ── Step 4: deliver to default (skip for PR workflow) ──────
             merged_at: float | None = None
             pr_url = ctx.pr_url
-            if not pr_mode:
+            if not pr_mode and has_remote:
+                # Step 2 merged origin/<default> into the slot branch, so its
+                # tip is a fast-forward of the remote default: push that exact
+                # tip.  The base checkout is never switched, reset or merged
+                # into -- for a linked project it is the operator's own working
+                # tree (agile-ridge: local-remote projects deliver this way).
+                # Lease-guarded (finding #1): another task may own the slot
+                # once the lease expires, so renew immediately before pushing.
+                if not await renew_merge_slot(self.db, task.project_id, task.id, ttl):
+                    logger.warning(
+                        "Task %s: merge slot lease lost before pushing to %s; aborting",
+                        task.id, default_branch,
+                    )
+                    return PhaseResult.STOP
+                try:
+                    # No force: a remote default that moved since the fetch is
+                    # not an ancestor of the tip, and the push is refused.
+                    await self.git.apush_validated_delivery(
+                        workspace,
+                        f"refs/remotes/origin/{default_branch}",
+                        "HEAD",
+                        default_branch,
+                        event_bus=self.bus,
+                        project_id=task.project_id,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Task %s: push %s failed: %s", task.id, default_branch, e
+                    )
+                    reason = f"push_failed: {default_branch}: {e}"
+                    try:
+                        await self.db.set_task_meta(
+                            task.id, "rejection_reason", reason
+                        )
+                    except Exception as meta_err:
+                        logger.warning(
+                            "Task %s: failed to record push_failed meta: %s",
+                            task.id, meta_err,
+                        )
+                    return PhaseResult.STOP
+            elif not pr_mode:
+                # No remote: the base checkout's default branch *is* the
+                # delivery target, so the merge happens there.
                 base_ws = None
                 if ctx.workspace_id:
                     try:
@@ -2326,10 +2387,7 @@ class GitOpsMixin:
                     )
                     return PhaseResult.STOP
 
-                merged = await self.git.amerge_branch(
-                    base_path, branch, default_branch,
-                    repository_url=repository_url if has_remote else None,
-                )
+                merged = await self.git.amerge_branch(base_path, branch, default_branch)
                 if not merged:
                     # Should be rare after a successful merge, but treat
                     # like a conflict rather than force-anything.
@@ -2360,47 +2418,7 @@ class GitOpsMixin:
                     )
                     return PhaseResult.STOP
 
-                if has_remote:
-                    # Lease-guarded push (finding #1): renew immediately
-                    # before pushing to default — if the local merge took
-                    # long enough for the lease to expire, another task
-                    # may now own the slot and be about to push too.
-                    if not await renew_merge_slot(
-                        self.db, task.project_id, task.id, ttl
-                    ):
-                        logger.warning(
-                            "Task %s: merge slot lease lost before pushing to %s; aborting",
-                            task.id, default_branch,
-                        )
-                        return PhaseResult.STOP
-                    try:
-                        # Regular push — no force here. The base has just
-                        # merged origin/<default> forward, and the manager
-                        # pushes the exact revalidated merge tip.
-                        await self.git.apush_validated_delivery(
-                            base_path,
-                            f"refs/remotes/origin/{default_branch}",
-                            "HEAD",
-                            default_branch,
-                            event_bus=self.bus,
-                            project_id=task.project_id,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Task %s: push %s failed: %s", task.id, default_branch, e
-                        )
-                        reason = f"push_failed: {default_branch}: {e}"
-                        try:
-                            await self.db.set_task_meta(
-                                task.id, "rejection_reason", reason
-                            )
-                        except Exception as meta_err:
-                            logger.warning(
-                                "Task %s: failed to record push_failed meta: %s",
-                                task.id, meta_err,
-                            )
-                        return PhaseResult.STOP
-
+            if not pr_mode:
                 import time as _time
 
                 merged_at = _time.time()
