@@ -369,6 +369,16 @@ the reconciler logs it at **WARNING** with the session name and task id, and emi
 the `sessions.stuck_composer` doctor check, whose `--fix` presses the same Enter an
 operator would send by hand.
 
+**Recognising an empty composer.** The guard accepts only layouts it knows: a bare
+prompt with nothing after it, Claude's prompt between its two borders, or Codex's
+dim `Ask Codex to do anything` placeholder with its status row (and, from
+codex-cli 0.157, a `? for shortcuts` hint row that may carry right-aligned notices)
+followed by padding. Everything else defers — which also means an unrecognised
+*idle* layout silently blocks delivery to that worker, so every refusal's reason is
+logged and surfaced by `messages.idle_worker_backlog`. Claude's prompt suggestions
+are disabled in AQ's `--settings` file (`promptSuggestionEnabled: false`): a
+suggestion is ghost text that, with `NO_COLOR`, cannot be told apart from a draft.
+
 **Kill:** pane pid → descendants (`pgrep -P` + process group) → SIGTERM, 2 s grace
 (100 ms orphans Claude), SIGKILL survivors → `kill-session`. Every kill checks
 `AQ_INSTANCE_TOKEN` before signaling so a name-reusing successor is never hit.

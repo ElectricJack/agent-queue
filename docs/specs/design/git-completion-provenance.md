@@ -61,6 +61,18 @@ uses the daemon-authored `development_repair_sources` contract, naming every
 original current completion/source. A legacy original with a full matching
 completion OID can be retained during that close; ambiguous ones require migration.
 
+An invalid repair contract, a missing passing immutable source completion, or
+an unlabelled source without that matching final OID refuses close as an
+operator blocker (`precondition:provenance_migration`). Completion recording
+uses the same delivery-refusal path as pipeline verification: it retains the
+live task, claim, session and workspace, sets
+`needs_attention:delivery_provenance_migration`, and emits `task.needs_attention`.
+The refusal names the operator remedy
+`aq integration migrate-provenance <project-id> --apply`; inventory can report
+ambiguous evidence that still needs operator resolution. Empty legacy commit
+lists, including those with delivery-row source bindings, require that migration
+instead of expanding the automatic bridge's authority.
+
 `authority:operator` additionally requires an authorized operator/equivalence
 operation and a reason. Git cannot establish semantic equivalence of arbitrary
 rewrites: the authority explicitly attests that the entire original work is

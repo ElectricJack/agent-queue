@@ -303,6 +303,20 @@ class TestHookSettingsWiring:
             "claude declares hook_files but no settings_flag — the payload is inert"
         )
 
+    def test_claude_settings_disable_prompt_suggestions(self, builder):
+        """A suggestion is ghost text in the composer; under NO_COLOR it is
+        indistinguishable from a draft, so every idle-worker nudge deferred."""
+        import json as _json
+
+        harness = replace(
+            CLAUDE,
+            supports_hooks=True,
+            hook_files=((".aq/hooks/claude.json", "hooks/claude.json"),),
+            settings_flag="--settings",
+        )
+        settings = _json.loads(dict(_build(builder, harness=harness).files)[".aq/hooks/claude.json"])
+        assert settings["promptSuggestionEnabled"] is False
+
 
 class TestCodexHookTrust:
     """Codex discovers its hook file by path and refuses to run it untrusted."""

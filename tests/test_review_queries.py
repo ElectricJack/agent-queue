@@ -89,6 +89,8 @@ def _revision(review_id="rev-bright-harbor", revision=1, content="# Body\n", **o
         "responder_class": None,
         "responder_profile": None,
         "responder_profile_source": None,
+        "playbook": None,
+        "playbook_artifact": None,
     }
     row.update(overrides)
     return row
@@ -250,6 +252,21 @@ class TestRevisions:
         assert revisions[1]["content_sha256"] == hashlib.sha256(b"# Body v2\n").hexdigest()
         full = await db.get_review_revision("rev-bright-harbor", 2)
         assert full["content"] == "# Body v2\n"
+
+    async def test_a_playbook_pin_round_trips_but_its_bytes_stay_out_of_listings(self, db):
+        pin = {"playbook_id": "demo", "artifact_sha256": "sha256:" + "a" * 64}
+        await _submit(db)
+        async with db.immediate() as conn:
+            await db.insert_review_revision(
+                revision=_revision(revision=2, playbook=pin, playbook_artifact='{"id":"demo"}'),
+                conn=conn,
+            )
+        full = await db.get_review_revision("rev-bright-harbor", 2)
+        assert full["playbook"] == pin
+        assert full["playbook_artifact"] == '{"id":"demo"}'
+        listed = await db.list_review_revisions("rev-bright-harbor")
+        assert [r["playbook"] for r in listed] == [None, pin]
+        assert all("playbook_artifact" not in r for r in listed)
 
     async def test_duplicate_revision_number_is_refused(self, db):
         await _submit(db)

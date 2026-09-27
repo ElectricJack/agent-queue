@@ -87,6 +87,22 @@ their existing wake path. A manual pause never automatically resumes.
 
 Task-addressed results route to the session currently holding the task,
 including pool workers whose session names do not contain the task id.
+Plain messages to `task:<id>` or `session:<id>` use the same idle delivery:
+an idle holder has ``Handle `aq message status <id> --json`.`` typed into its
+terminal.
+
+A message wait (`--kind message --ref <thread> --after-seq <n>`) resolves on
+the first later message on that thread addressed to the waiting session or its
+task. An answer only satisfies it when it lands on the thread: answer with
+`aq message reply <message-id>`, or as a supervisor with
+`aq agent message <task-id> BODY --reply-to <message-id>`. Guidance sent
+without `--reply-to` has no thread; it still wakes an idle worker through the
+ordinary message nudge, but the wait stays active until its deadline.
+
+For mail that has waited more than five minutes for an idle live worker, run
+`aq doctor --check messages.idle_worker_backlog`. It uses the delivery engine's
+session lens and reports each message with the last refused-nudge reason for
+its session.
 For unresolved task waits whose targets have already settled, operators can run
 `aq doctor --check waits.pending_terminal_tasks`. The read-only check includes
 live and archived COMPLETED, FAILED and BLOCKED targets and reports the wait,

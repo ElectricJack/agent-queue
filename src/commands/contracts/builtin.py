@@ -51,6 +51,9 @@ class CreateTaskArgs(CommandArgs):
     # with ``parent_id``/``root`` and refused for worker sessions.
     parent_key: str | None = None
     parent_title: str | None = None
+    # Created as an epic container: flagged in the creation transaction so
+    # it never reaches the claim frontier (bold-flare-35).
+    container: bool | None = None
     labels: list[str] | None = None
     reason: str | None = None
     discovered_from: str | None = None

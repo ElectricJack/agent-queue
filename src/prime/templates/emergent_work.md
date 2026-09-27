@@ -4,7 +4,10 @@ When you discover work while executing the current task that is outside its scop
 example, a bug, missing documentation, follow-up, or spec divergence — file it instead of
 silently expanding your own scope. Then keep moving on the task you hold.
 
-File one task per distinct, confirmed finding; do not create speculative epics. Your
+File one task per distinct, confirmed finding; do not create speculative epics. When
+your task *is* to file an epic, file it with its children in one graph whose `parent:`
+block creates it (`--root` places it at the project root), never as a plain task: a
+plain one is claimable before its children are moved under it. Your
 session token cannot read the project's queue (`list_tasks` is off the agent surface), so
 do not try to deduplicate by listing — a worker-filed task lands DEFINED with a routing
 gate for triage, which is where dedup and routing happen. Write the title so that

@@ -1380,6 +1380,18 @@ _ALL_TOOL_DEFINITIONS = [
                         "one. Defaults to the key, title-cased."
                     ),
                 },
+                "container": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Create the task as a container (an epic whose children are "
+                        "filed or reparented under it afterwards). It is flagged in the "
+                        "creation transaction, so no worker ever claims it, and it stays "
+                        "open until its children finish. Refused for worker sessions, "
+                        "which file an epic with its children through create_task_graph "
+                        "and a document-level parent block."
+                    ),
+                },
                 "depends_on": {
                     "type": "array",
                     "items": {
@@ -5346,6 +5358,13 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Optional profile filter for broadcast",
                 },
                 "wait": {"type": "integer", "description": "Wait up to 60 seconds for delivery"},
+                "reply_to": {
+                    "type": "string",
+                    "description": (
+                        "Message id this guidance answers; it joins that message's thread, "
+                        "so a worker waiting on the thread resumes"
+                    ),
+                },
             },
             "required": ["body"],
         },
@@ -5431,6 +5450,18 @@ _ALL_TOOL_DEFINITIONS = [
                     "default": False,
                 },
                 "parent_id": {"type": "string"},
+                "root": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "For a worker-filed graph that declares a document-level parent: "
+                        "create that new container at the project root instead of under "
+                        "the held task. It carries a discovered-from edge to the held task "
+                        "and the routing gate every worker root filing gets, and its "
+                        "children wait behind it until the gate is resolved. Mutually "
+                        "exclusive with parent_id."
+                    ),
+                },
                 "reason": {
                     "type": "string",
                     "description": (
@@ -6462,7 +6493,14 @@ _ALL_TOOL_DEFINITIONS.extend(
     [
         {
             "name": "review_submit",
-            "description": "Submit markdown for review, or submit a revision to an open review.",
+            "description": (
+                "Submit markdown for review, or submit a revision to an open review. "
+                "A playbook review (kind other) also names playbook_id and its semantic "
+                "body: the daemon compiles the vault source and refuses the submission "
+                "unless the Playbook V2 artifact is activatable, then pins its exact hash "
+                "to the revision. Approval stores that artifact (and activates it when "
+                "activate_on_approval is set); a revision recompiles it."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -6474,6 +6512,32 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "content": {"type": "string", "maxLength": 262144},
                     "changes": {"type": "string"},
                     "resolves": {"type": "array", "items": {"type": "string"}},
+                    "playbook_id": {
+                        "type": "string",
+                        "description": (
+                            "The playbook this review asks approval for; its Markdown "
+                            "source must already be in the vault."
+                        ),
+                    },
+                    "semantic_body": {
+                        "type": "string",
+                        "maxLength": 1048576,
+                        "description": (
+                            "JSON text with exactly the proposal's rules and steps. "
+                            "Omitted on a revision, the previous artifact's are reused."
+                        ),
+                    },
+                    "semantic_body_path": {
+                        "type": "string",
+                        "description": "Vault path of the semantic body, instead of semantic_body.",
+                    },
+                    "activate_on_approval": {
+                        "type": "boolean",
+                        "description": (
+                            "Activate the pinned artifact when the review is approved "
+                            "(default: store it and tell the supervisor)."
+                        ),
+                    },
                 },
                 "required": ["content"],
                 "additionalProperties": False,

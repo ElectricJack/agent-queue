@@ -198,7 +198,9 @@ emits after commit. Nothing in this spec writes `tasks.status` with raw SQL.
 
 **Containers are marked, not inferred.** `task_metadata.container = true` is written in the
 same transaction that gives a task its first child — by `set_parent` (any path),
-`create_task_graph`, `formula_cook`, `approve_plan`. It is never cleared: a container
+`create_task_graph`, `formula_cook`, `approve_plan` — or, for a container declared before
+its children exist (`create_task` with `container: true`), in the transaction that
+creates it (work-graph §13a). It is never cleared: a container
 whose children were all moved away is still a container, which is what lets settlement
 handle the empty case without guessing whether an `IN_PROGRESS` leaf is mid-launch.
 
@@ -882,7 +884,11 @@ the filing path's own scope, decided under the same `lock_filing_scope` locks:
 - the new parent is constrained exactly as a filing's: `T`, a descendant of `T`, `T`'s
   own immediate parent, or root (`hierarchy.parent_out_of_scope` otherwise);
 - a move **to root attaches the routing gate** a root filing is born with (deduplicated
-  against an open one), so the finding still waits for triage rather than running;
+  against an open one), so the finding still waits for triage rather than running. A
+  task that already carries a profile gets no gate: `task.route_needed` never fires for
+  a routed task, so nothing would resolve it, and on an epic it would withhold every
+  child after the epic's last blocker cleared (clear-orbit). This is the `unrouted_only`
+  rule `gate_create` applies. A gate the move does attach is announced with `gate.created`;
 - a filing whose only provenance was the parent-child edge to `T` (a filing under `T`
   writes no separate `discovered-from`, above) gets a `discovered-from` edge to that
   former parent written in the same transaction as the move, so placement and provenance

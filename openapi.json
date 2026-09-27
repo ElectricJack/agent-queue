@@ -11695,8 +11695,8 @@
         "tags": [
           "review"
         ],
-        "summary": "Submit markdown for review, or submit a revision to an open review.",
-        "description": "Submit markdown for review, or submit a revision to an open review.",
+        "summary": "Submit markdown for review, or submit a revision to an open review. A playbook review (kind other) also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision. Approval stores that artifact (and activates it when activate_on_approval is set); a revision recompiles it.",
+        "description": "Submit markdown for review, or submit a revision to an open review. A playbook review (kind other) also names playbook_id and its semantic body: the daemon compiles the vault source and refuses the submission unless the Playbook V2 artifact is activatable, then pins its exact hash to the revision. Approval stores that artifact (and activates it when activate_on_approval is set); a revision recompiles it.",
         "operationId": "review_submit",
         "requestBody": {
           "content": {
@@ -17666,6 +17666,18 @@
             ],
             "title": "Wait",
             "description": "Wait up to 60 seconds for delivery"
+          },
+          "reply_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply To",
+            "description": "Message id this guidance answers; it joins that message's thread, so a worker waiting on the thread resumes"
           }
         },
         "type": "object",
@@ -22769,6 +22781,12 @@
             "title": "Parent Id",
             "description": ""
           },
+          "root": {
+            "type": "boolean",
+            "title": "Root",
+            "description": "For a worker-filed graph that declares a document-level parent: create that new container at the project root instead of under the held task. It carries a discovered-from edge to the held task and the routing gate every worker root filing gets, and its children wait behind it until the gate is resolved. Mutually exclusive with parent_id.",
+            "default": false
+          },
           "reason": {
             "anyOf": [
               {
@@ -23028,6 +23046,12 @@
             ],
             "title": "Parent Title",
             "description": "Title for the standing container when parent_key has to create one. Defaults to the key, title-cased."
+          },
+          "container": {
+            "type": "boolean",
+            "title": "Container",
+            "description": "Create the task as a container (an epic whose children are filed or reparented under it afterwards). It is flagged in the creation transaction, so no worker ever claims it, and it stays open until its children finish. Refused for worker sessions, which file an epic with its children through create_task_graph and a document-level parent block.",
+            "default": false
           },
           "depends_on": {
             "anyOf": [
@@ -47989,6 +48013,18 @@
             "type": "array",
             "title": "Unblocked Task Ids",
             "default": []
+          },
+          "playbook": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook"
           }
         },
         "type": "object",
@@ -48621,6 +48657,54 @@
             ],
             "title": "Resolves",
             "description": ""
+          },
+          "playbook_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook Id",
+            "description": "The playbook this review asks approval for; its Markdown source must already be in the vault."
+          },
+          "semantic_body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Body",
+            "description": "JSON text with exactly the proposal's rules and steps. Omitted on a revision, the previous artifact's are reused."
+          },
+          "semantic_body_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Semantic Body Path",
+            "description": "Vault path of the semantic body, instead of semantic_body."
+          },
+          "activate_on_approval": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Activate On Approval",
+            "description": "Activate the pinned artifact when the review is approved (default: store it and tell the supervisor)."
           }
         },
         "type": "object",
@@ -48647,6 +48731,18 @@
           "vault_path": {
             "type": "string",
             "title": "Vault Path"
+          },
+          "playbook": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Playbook"
           }
         },
         "additionalProperties": true,

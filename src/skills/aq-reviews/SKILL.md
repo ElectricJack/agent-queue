@@ -48,6 +48,33 @@ aq review show --review-id <id> --diff-from 1        # block diff against an ear
 A rejection never reopens your task. The daemon files a separate revision
 task, which may land on another worker.
 
+### A playbook review
+
+A review that asks approval for a Playbook V2 policy is kind `other` and names
+the playbook, so that approval can store the exact artifact it approved:
+
+1. Write the playbook's Markdown source into the vault first
+   (`projects/<pid>/playbooks/<id>.md` or `system/playbooks/<id>.md`), and
+   draft its semantic body — JSON with exactly `rules` and `steps` — iterating
+   with `aq playbook v2-propose` until it is activatable.
+2. Submit the document with the playbook attached:
+
+   ```bash
+   aq review submit --task-id <task> --file <draft> --kind other --title "Playbook V2: <id> (<what it does>)" --playbook-id <id> --playbook-body <body.json> [--activate-on-approval]
+   ```
+
+   The daemon compiles the vault source with that body and refuses the
+   submission (`playbook_invalid`, with the diagnostics) unless the artifact is
+   activatable. The result's `playbook.artifact_sha256` is the exact hash
+   approval will store; put it in your close summary.
+3. A revision recompiles: resubmit with `--review-id` and a new
+   `--playbook-body`, or omit it to reuse the previous rules and steps against
+   the current source.
+
+Nothing is imported or activated before approval. Approval stores the
+artifact and sends the supervisor the `aq playbook activate` command, or
+activates it when you passed `--activate-on-approval`.
+
 ## Reviser
 
 The daemon files one *Revise \<title> (review \<id>)* task per

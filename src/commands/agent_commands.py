@@ -33,6 +33,11 @@ class AgentCommandsMixin(FlockCommandsMixin):
         wait = args.get("wait")
         if wait is not None and (type(wait) is not int or not 0 <= wait <= 60):
             return {"error": "wait must be an integer from 0 to 60"}
+        reply_to = args.get("reply_to")
+        if reply_to is not None and (not isinstance(reply_to, str) or not reply_to.strip()):
+            return {"error": "reply_to must be a message id"}
+        if reply_to and args.get("all_running"):
+            return {"error": "reply_to answers one worker's message; it cannot use all_running"}
 
         project_id = args.get("project_id")
         if args.get("all_running"):
@@ -54,7 +59,14 @@ class AgentCommandsMixin(FlockCommandsMixin):
         )
         if error:
             return {"error": error}
-        result = await self._queue_supervisor_message(session, body, wait)
+        original = None
+        if reply_to:
+            # Answering on the worker's thread is what satisfies a durable
+            # message wait it registered there; a threadless answer cannot.
+            original = await self.db.get_message(reply_to.strip())
+            if original is None or original.project_id != session.project_id:
+                return {"error": f"Message '{reply_to}' not found"}
+        result = await self._queue_supervisor_message(session, body, wait, reply_to=original)
         if "error" not in result:
             result["target"] = {"task_id": task_id, "session_id": session.id}
         return result
@@ -101,19 +113,26 @@ class AgentCommandsMixin(FlockCommandsMixin):
             return None, None, f"Agent '{target}' has no unique live worker session"
         return sessions[0], sessions[0].task_id, None
 
-    async def _queue_supervisor_message(self, session, body: str, wait: int | None) -> dict:
-        queued = await self._cmd_message_send(
-            {
-                "project_id": session.project_id,
-                "to_kind": "session",
-                "to_id": session.id,
-                "from_kind": "system",
-                "from_id": "supervisor",
-                "body": body,
-            }
-        )
+    async def _queue_supervisor_message(
+        self, session, body: str, wait: int | None, *, reply_to=None
+    ) -> dict:
+        send = {
+            "project_id": session.project_id,
+            "to_kind": "session",
+            "to_id": session.id,
+            "from_kind": "system",
+            "from_id": "supervisor",
+            "body": body,
+        }
+        if reply_to is not None:
+            send["thread_id"] = reply_to.thread_id
+            send["reply_to_id"] = reply_to.id
+        queued = await self._cmd_message_send(send)
         if "error" in queued:
             return queued
+        if reply_to is not None:
+            # Same acknowledgement ``message_reply`` records on its original.
+            await self.db.mark_read(reply_to.id)
         if session.task_id:
             await self.db.add_task_comment(
                 session.task_id, body, author_kind="supervisor", author_id="supervisor"
