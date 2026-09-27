@@ -26,13 +26,16 @@ the designated repository it proves each against the current default-branch
 tip:
 
 * ``development_delivery`` -- git proves the child's current completion on
-  the tip (:mod:`src.integration.delivery_truth`);
+  the tip (:mod:`src.integration.delivery_truth`); a retired development
+  journal row (kept as a ``development.legacy_provenance`` event) may only
+  *locate* a source, which is then tested like any other;
 * ``branch_tip`` -- the child's branch tip on origin is an ancestor of the
   tip;
 * ``content_equivalent`` -- the work reached the default branch under other
-  commits (cherry-picked, squashed or re-delivered): merging the current
-  completion's retained source, the branch tip or the latest completion commit
-  into the tip changes nothing (``git merge-tree --write-tree``).
+  commits (cherry-picked, squashed or re-delivered): merging a located legacy
+  source, the current completion's retained source, the branch tip or the
+  latest completion commit into the tip changes nothing
+  (``git merge-tree --write-tree``).
 
 Anything it cannot prove is listed with its cause and left alone: a child of
 a parent that is still open (its completion still needs bound train receipts),
@@ -48,9 +51,8 @@ bulk:
   (``abandoned``);
 * ``--accept TASK_ID`` -- accepted without proof (``operator_accepted``).
 
-A result's ``development_delivery_id`` is always ``null``: it named the
-retired ``development_deliveries`` row a proof located its source through.
-Historical ``integration_legacy_deliveries`` rows keep the id they recorded.
+A result's ``development_delivery_id`` names the retired journal row that
+located the proven source, or ``null``; the row's state never proved anything.
 
 A dry run fetches but writes nothing.  Rows are keyed by task id and inserted
 with ``ON CONFLICT DO NOTHING``, and an adopted child is no longer flagged, so
@@ -274,6 +276,7 @@ class LegacyDeliveryAdoption:
                             ),
                         )
                     replacements[task_id] = commit
+                deliveries = await self._deliveries_by_task(project_id, set(flagged))
                 completions = await self._completion_commits(set(flagged))
                 target = _Target(target_sha, await self._tree(store, target_sha))
                 results = [
@@ -282,6 +285,7 @@ class LegacyDeliveryAdoption:
                         target,
                         repo.id,
                         flagged[task_id],
+                        deliveries.get(task_id, []),
                         completions.get(task_id),
                         view.get(task_id) if view is not None else None,
                     )
@@ -378,6 +382,44 @@ class LegacyDeliveryAdoption:
             item["parent_status"] = state[item["parent_task_id"]]["status"]
         return flagged
 
+    async def _deliveries_by_task(
+        self, project_id: str, task_ids: set[str]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """Sources retired development journal rows located, by listed task.
+
+        Read from the ``development.legacy_provenance`` events the retirement
+        revision kept; they carry no state, and a source proves nothing until
+        git tests it against the target.
+        """
+        from src.database.tables import events
+        from src.integration.provenance import LEGACY_PROVENANCE_EVENT
+
+        async with self.db._engine.connect() as conn:
+            payloads = (
+                await conn.execute(
+                    select(events.c.payload)
+                    .where(
+                        events.c.event_type == LEGACY_PROVENANCE_EVENT,
+                        events.c.project_id == project_id,
+                    )
+                    .order_by(events.c.id)
+                )
+            ).scalars().all()
+        by_task: dict[str, list[dict[str, Any]]] = {}
+        for payload in payloads:
+            row = json.loads(payload)
+            for member in row.get("manifest") or ():
+                task_id = member.get("task_id") if isinstance(member, dict) else None
+                if task_id in task_ids:
+                    by_task.setdefault(task_id, []).append(
+                        {
+                            "id": row["legacy_id"],
+                            "repository_id": row.get("repository_id"),
+                            "source_sha": member.get("source_sha"),
+                        }
+                    )
+        return by_task
+
     async def _completion_commits(self, task_ids: set[str]) -> dict[str, str]:
         """The last commit each task's latest completion reported, by task."""
         latest = (
@@ -411,13 +453,15 @@ class LegacyDeliveryAdoption:
         target: _Target,
         repository_id: str,
         child: dict[str, Any],
+        deliveries: list[dict[str, Any]],
         completion_sha: str | None = None,
         evidence: Any = None,
     ) -> dict[str, Any]:
         """Adopt *child* on the first proof that reaches *target*; else say why not.
 
         ``development_delivery`` is git's answer for the child's current
-        completion (*evidence*), re-proved against *target*.
+        completion (*evidence*), re-proved against *target*.  A retired journal
+        row only locates a source to test.
         """
         item = {"task_id": child["task_id"], "parent_task_id": child["parent_task_id"]}
         if child["parent_status"] not in TERMINAL_TASK_STATES:
@@ -438,6 +482,12 @@ class LegacyDeliveryAdoption:
                 "detail": f"child is {child['status']}: no delivered commit to prove",
             }
         retained = evidence.source_oid if evidence is not None else None
+        # Retired journal rows locate the child's own sources; an assembly's
+        # prepared commit reaching the tip says nothing about which work it carried.
+        delivered: dict[str, str] = {}
+        for delivery in deliveries:
+            if delivery["repository_id"] == repository_id and delivery["source_sha"]:
+                delivered.setdefault(delivery["source_sha"], delivery["id"])
         if (
             evidence is not None
             and evidence.state is DeliveryState.CONTAINED
@@ -448,7 +498,7 @@ class LegacyDeliveryAdoption:
                 "outcome": ADOPTED,
                 "proof": DEVELOPMENT_DELIVERY,
                 "delivered_sha": evidence.source_oid,
-                "development_delivery_id": None,
+                "development_delivery_id": delivered.get(evidence.source_oid),
             }
         tip = None
         branch = (child["branch_name"] or "").removeprefix("refs/heads/")
@@ -468,7 +518,9 @@ class LegacyDeliveryAdoption:
         # The work may have reached the default branch under other commits
         # (cherry-picked, squashed, re-delivered): then merging it changes
         # nothing.  The first examinable candidate also shows what is left.
-        candidates = list(dict.fromkeys(c for c in (tip, completion_sha, retained) if c))
+        candidates = list(
+            dict.fromkeys(c for c in (tip, completion_sha, retained, *delivered) if c)
+        )
         undelivered = None
         for sha in candidates:
             merge = await self._merge(store, target, sha)
@@ -480,11 +532,12 @@ class LegacyDeliveryAdoption:
                     "outcome": ADOPTED,
                     "proof": CONTENT_EQUIVALENT,
                     "delivered_sha": merge["sha"],
-                    "development_delivery_id": None,
+                    "development_delivery_id": delivered.get(sha),
                 }
             if undelivered is None:
                 undelivered = await self._undelivered(store, target, merge)
-        examined = [f"branch {branch} at {tip}" if tip else f"branch {branch or '-'} absent"]
+        examined = [f"{len(deliveries)} retired development journal sources"]
+        examined.append(f"branch {branch} at {tip}" if tip else f"branch {branch or '-'} absent")
         examined.append(
             f"completion commit {completion_sha}" if completion_sha else "no completion commit"
         )

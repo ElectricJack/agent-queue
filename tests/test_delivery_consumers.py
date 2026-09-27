@@ -2,12 +2,12 @@
 
 Stale-container settlement, integration status, task explanations, doctor,
 archive and branch cleanup read development delivery through
-:class:`~src.integration.delivery_observer.DeliveryObserver`, never a
-``development_deliveries`` row.  Real PostgreSQL and a real bare ``origin``:
-one development epic holds a child for each shape that must never read as
-delivered (a wrong repository, a missing ref, a reopened task) beside one that
-is, plus a misleading ``delivered`` row, and every surface is checked against
-the same fixture.
+:class:`~src.integration.delivery_observer.DeliveryObserver`, never a delivery
+record.  Real PostgreSQL and a real bare ``origin``: one development epic holds
+a child for each shape that must never read as delivered (a wrong repository,
+an unlabelled close whose ref is missing, a reopened task) beside one that is,
+plus misleading finished-operation and retired-journal history, and every
+surface is checked against the same fixture.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ import pytest
 from sqlalchemy import insert, update
 
 from src.database.queries.hierarchy_queries import HierarchyError
-from src.database.tables import development_deliveries, projects, tasks
+from src.database.tables import events, projects, tasks
 from src.doctor.integration_checks import run_check
 from src.doctor.models import Severity
 from src.git.manager import GitManager
@@ -73,11 +73,21 @@ class Origin:
         git(self.clone, "push", "-q", "origin", "main")
 
 
-async def close(db, tid: str, commits: list[str], *, close_id: str | None = None) -> None:
+async def close(db, tid: str, commits: list[str], *, close_id: str | None = None,
+                origin: Origin | None = None) -> None:
+    """Close *tid*; with *origin*, retain the final source in git as a worker close does."""
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    close_id = close_id or f"close-{tid}"
     await db.save_task_completion(
-        TaskCompletion(id=close_id or f"close-{tid}", task_id=tid, outcome="pass",
+        TaskCompletion(id=close_id, task_id=tid, outcome="pass",
                        commits=commits, completed_at=time.time())
     )
+    if origin is not None and commits:
+        await GitProvenance(GitManager(), str(origin.clone), repository_url=origin.url
+                            ).write_completion(
+            CompletedSource(CompletionIdentity("p", "r", tid, close_id), commits[-1])
+        )
     await db.transition_task(tid, TaskStatus.COMPLETED)
 
 
@@ -118,35 +128,42 @@ async def world(tmp_path):
     await db.transition_task("epic", TaskStatus.BLOCKED, context="restart_recovery", force=True)
 
     # done: its work is on main.
-    await close(db, "done", [origin.work("done")])
+    await close(db, "done", [origin.work("done")], origin=origin)
     origin.land("done")
     # wrong: its work is on main, but it names another project's repository.
-    await close(db, "wrong", [origin.work("wrong")])
+    await close(db, "wrong", [origin.work("wrong")], origin=origin)
     origin.land("wrong")
     async with db._engine.begin() as conn:
         await conn.execute(update(tasks).where(tasks.c.id == "wrong").values(repo_id="web"))
-    # missing: closed without commits, and its branch was never pushed.
+    # missing: an unlabelled close (no generation retained in git) whose
+    # branch was never pushed: nothing can stand in for its provenance.
     await close(db, "missing", [])
     # reopened: delivered once, then reopened and closed again on new work.
     old = origin.work("reopened")
-    await close(db, "reopened", [old], close_id="close-reopened-1")
+    await close(db, "reopened", [old], close_id="close-reopened-1", origin=origin)
     origin.land("reopened")
     await db.transition_task("reopened", TaskStatus.IN_PROGRESS, force=True)
-    await close(db, "reopened", [origin.work("reopened", "again")], close_id="close-reopened-2")
-    # A row that claims the recorded work delivered; its state changes nothing.
-    # (A commits-less close is left out: until operations migrates it into
-    # git, the evaluator's documented legacy bridge may *locate* such a
-    # task's source in a manifest, and then git still proves that source.)
+    await close(db, "reopened", [origin.work("reopened", "again")], close_id="close-reopened-2",
+                origin=origin)
+    # History that claims the recorded work delivered: a finished publisher
+    # action and a retired journal row.  Neither answers delivery.
     now = time.time()
+    history = {
+        "project_id": "p", "repository_id": "r", "target_ref": "refs/heads/main",
+        "expected_sha": None, "prepared_sha": None, "created_at": now, "updated_at": now,
+        "manifest": [{"task_id": tid, "source_sha": old} for tid in CHILDREN],
+        "evidence": {}, "reason": "misleading history",
+    }
     async with db._engine.begin() as conn:
-        await conn.execute(insert(development_deliveries).values(
-            id="misleading", project_id="p", repository_id="r", target_ref="refs/heads/main",
-            expected_sha=None, prepared_sha=None, state="delivered",
-            manifest=[
-                {"task_id": tid, "source_sha": old} for tid in CHILDREN if tid != "missing"
-            ],
-            evidence={}, reason="misleading row", created_at=now, updated_at=now,
-        ))
+        for event_type, payload in (
+            ("development.operation", {**history, "id": "misleading", "state": "finished"}),
+            ("development.legacy_provenance",
+             {**history, "id": "legacy-provenance:old", "legacy_id": "old"}),
+        ):
+            await conn.execute(insert(events).values(
+                event_type=event_type, project_id="p", payload=json.dumps(payload),
+                timestamp=now,
+            ))
     service = DevelopmentIntegration(db, data_dir=tmp_path / "data", git=GitManager())
     yield db, origin, observer, service
     await db.close()
@@ -154,7 +171,7 @@ async def world(tmp_path):
 
 UNDELIVERED = {
     "wrong": ("delivery_unknown", "scope_mismatch"),
-    "missing": ("delivery_unknown", "missing_ref"),
+    "missing": ("delivery_unknown", "missing_git_provenance"),
     "reopened": ("development_delivery_pending", None),
 }
 
@@ -163,12 +180,11 @@ async def test_git_answers_each_shape_once(world):
     _db, _origin, observer, _service = world
     view = await observer.observe(CHILDREN)
     assert {tid: (view.get(tid).state, view.get(tid).reason) for tid in CHILDREN} == {
-        # These closes carry no git completion label, so git proves the
-        # recorded legacy source rather than an immutable generation.
-        "done": (DeliveryState.CONTAINED, "legacy_reported_source"),
+        "done": (DeliveryState.CONTAINED, "git_completion"),
         "wrong": (DeliveryState.UNKNOWN, "scope_mismatch"),
-        "missing": (DeliveryState.UNKNOWN, "missing_ref"),
-        "reopened": (DeliveryState.PENDING, "legacy_reported_source"),
+        # Unlabelled: no branch head, reported commit or history stands in.
+        "missing": (DeliveryState.UNKNOWN, "missing_git_provenance"),
+        "reopened": (DeliveryState.PENDING, "git_completion"),
     }
 
 
@@ -179,12 +195,12 @@ async def test_status_and_explanations_agree_with_git(world):
     assert delivery["available"] and delivery["evaluated"] == 4
     assert delivery["pending"] == ["reopened"]
     assert {item["task_id"]: item["reason"] for item in delivery["unknown"]} == {
-        "wrong": "scope_mismatch", "missing": "missing_ref",
+        "wrong": "scope_mismatch", "missing": "missing_git_provenance",
     }
     assert {
         (item["ref"], item["cause"]) for item in status["blockers"]
         if item["code"] == "delivery_unknown"
-    } == {("wrong", "scope_mismatch"), ("missing", "missing_ref")}
+    } == {("wrong", "scope_mismatch"), ("missing", "missing_git_provenance")}
     # Readiness still means "no publication in flight"; nothing is persisted.
     assert status["ready"] is True
 
@@ -222,7 +238,7 @@ async def test_branch_cleanup_holds_what_git_cannot_prove(world):
     )
     assert "aq/done" not in holds
     assert holds["aq/wrong"] == "task wrong delivery is unknown (scope_mismatch)"
-    assert holds["aq/missing"] == "task missing delivery is unknown (missing_ref)"
+    assert holds["aq/missing"] == "task missing delivery is unknown (missing_git_provenance)"
     assert holds["aq/reopened"] == "task reopened is not delivered yet"
 
     report = await service.stale_branches("p")
@@ -251,7 +267,7 @@ async def test_settlement_and_archive_refuse_what_git_cannot_prove(world):
         ]
     assert holders == {
         "wrong": [("delivery_unknown", "scope_mismatch")],
-        "missing": [("delivery_unknown", "missing_ref")],
+        "missing": [("delivery_unknown", "missing_git_provenance")],
         "reopened": [("awaiting_publication", "not yet published")],
     }
     # What git proves archives, and archiving changes no answer about it.

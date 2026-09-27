@@ -241,9 +241,18 @@ async def db():
     for task_id in ("t1", "t2", "t3"):
         await database.create_task(Task(id=task_id, project_id="p", title=task_id, description=""))
     async with database._engine.begin() as conn:
+        # Publisher operations are development.operation event revisions.
+        for row in frozen("deliveries"):
+            await conn.execute(
+                insert(tables.events).values(
+                    event_type="development.operation",
+                    project_id=row["project_id"],
+                    payload=json.dumps(row),
+                    timestamp=row["updated_at"],
+                )
+            )
         for name, table in (
             ("completions", tables.task_completion_records),
-            ("deliveries", tables.development_deliveries),
             ("escalations", tables.escalations),
             ("attempts", tables.task_session_attempts),
             ("providers", tables.provider_availability_transitions),
@@ -308,7 +317,6 @@ async def test_preview_executes_no_database_writes_and_never_wakes_an_author(db,
         tables.messages,
         tables.digest_windows,
         tables.task_completion_records,
-        tables.development_deliveries,
     )
     async with db._engine.connect() as conn:
         for table in watched:

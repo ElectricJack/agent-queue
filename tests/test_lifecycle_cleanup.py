@@ -18,8 +18,13 @@ from sqlalchemy import insert, select, update
 
 from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
-from src.database.tables import development_deliveries, events, projects, tasks
+from src.database.tables import events, projects, tasks
 from src.git.manager import GitManager
+from src.integration.development import (
+    DevelopmentIntegration,
+    operation_rows_on,
+    revise_operation_on,
+)
 from src.models import (
     Project,
     RepoConfig,
@@ -107,13 +112,22 @@ async def dev_project(db, url="https://example.test/dev.git") -> None:
         )
 
 
-async def close_with_commit(db, tid, sha=SHA, *, close_id=None):
+async def close_with_commit(db, tid, sha=SHA, *, close_id=None, origin=None):
+    """Close *tid* on *sha*; with *origin*, retain the source in git as a worker close does."""
+    close_id = close_id or f"close-{tid}"
     await db.save_task_completion(
         TaskCompletion(
-            id=close_id or f"close-{tid}", task_id=tid, outcome="pass", commits=[sha],
+            id=close_id, task_id=tid, outcome="pass", commits=[sha],
             completed_at=time.time(),
         )
     )
+    if origin is not None:
+        from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+        await GitProvenance(GitManager(), str(origin.clone), repository_url=origin.url
+                            ).write_completion(
+            CompletedSource(CompletionIdentity(DEV_PROJECT, "dev-repo", tid, close_id), sha)
+        )
     await db.transition_task(tid, TaskStatus.COMPLETED)
 
 
@@ -181,8 +195,11 @@ async def git_epic(db, origin, *, status, kids=1):
 
 
 async def receipts(db):
+    """Publisher operation or retained journal events: settlement writes neither."""
     async with db._engine.connect() as conn:
-        return len((await conn.execute(select(development_deliveries.c.id))).all())
+        return len((await conn.execute(select(events.c.id).where(events.c.event_type.in_(
+            ("development.operation", "development.legacy_provenance")
+        )))).all())
 
 
 async def stale_audit(db, tid):
@@ -198,10 +215,11 @@ async def stale_audit(db, tid):
 
 
 async def delivery(db, row_id, *, state, members, target_ref="refs/heads/main"):
+    """One publisher operation (``development.operation`` event) naming *members*."""
     now = time.time()
     async with db._engine.begin() as conn:
         await conn.execute(
-            insert(development_deliveries).values(
+            DevelopmentIntegration._operation_insert(
                 id=row_id, project_id=DEV_PROJECT, repository_id="dev-repo",
                 target_ref=target_ref, expected_sha=None, prepared_sha=None, state=state,
                 manifest=[{"task_id": tid, "source_sha": sha} for tid, sha in members],
@@ -288,7 +306,7 @@ class TestStaleContainerSettlement:
     ):
         kids = await git_epic(db, origin, status=TaskStatus.BLOCKED)
         head = origin.work(kids[0])
-        await close_with_commit(db, kids[0], head)
+        await close_with_commit(db, kids[0], head, origin=origin)
         # COMPLETED is not delivered: the publisher has not landed it on main.
         assert await status(db, "e") == TaskStatus.BLOCKED
         assert await orch.reconcile_stale_containers() == []
@@ -307,7 +325,7 @@ class TestStaleContainerSettlement:
 
     async def test_delivery_to_another_ref_is_not_delivery(self, db, orch, origin):
         kids = await git_epic(db, origin, status=TaskStatus.PAUSED)
-        await close_with_commit(db, kids[0], origin.work(kids[0]))
+        await close_with_commit(db, kids[0], origin.work(kids[0]), origin=origin)
         origin.land(kids[0], onto="release")
         assert await orch.reconcile_stale_containers() == []
         assert await status(db, "e") == TaskStatus.PAUSED
@@ -317,7 +335,7 @@ class TestStaleContainerSettlement:
     ):
         kids = await git_epic(db, origin, status=TaskStatus.PAUSED, kids=2)
         for kid in kids:
-            await close_with_commit(db, kid, origin.work(kid))
+            await close_with_commit(db, kid, origin.work(kid), origin=origin)
             origin.land(kid)
 
         assert await orch.reconcile_stale_containers() == ["e"]
@@ -332,7 +350,7 @@ class TestStaleContainerSettlement:
     ):
         kids = await git_epic(db, origin, status=TaskStatus.BLOCKED)
         head = origin.work(kids[0])
-        await close_with_commit(db, kids[0], head)
+        await close_with_commit(db, kids[0], head, origin=origin)
         await delivery(db, "lie", state="delivered", members=[(kids[0], head)])
         assert await orch.reconcile_stale_containers() == []
         assert await status(db, "e") == TaskStatus.BLOCKED
@@ -341,13 +359,12 @@ class TestStaleContainerSettlement:
         self, db, orch, origin
     ):
         kids = await git_epic(db, origin, status=TaskStatus.BLOCKED)
-        await close_with_commit(db, kids[0], origin.work(kids[0]), close_id="close-1")
+        await close_with_commit(db, kids[0], origin.work(kids[0]), close_id="close-1", origin=origin)
         origin.land(kids[0])
         # Reopened and re-completed with new work that has not landed.
         await db.transition_task(kids[0], TaskStatus.IN_PROGRESS, force=True)
         await close_with_commit(
-            db, kids[0], origin.work(kids[0], name="second"), close_id="close-2",
-        )
+            db, kids[0], origin.work(kids[0], name="second"), close_id="close-2", origin=origin)
         assert await orch.reconcile_stale_containers() == []
         assert await status(db, "e") == TaskStatus.BLOCKED
 
@@ -364,7 +381,7 @@ class TestStaleContainerSettlement:
         )
         await db.transition_task(kids[0], TaskStatus.COMPLETED)
         # e.1: delivered work, but the task names another project's repository.
-        await close_with_commit(db, kids[1], origin.work(kids[1]))
+        await close_with_commit(db, kids[1], origin.work(kids[1]), origin=origin)
         origin.land(kids[1])
         await db.create_project(Project(id="p-web", name="Web"))
         await db.create_repo(
@@ -378,7 +395,7 @@ class TestStaleContainerSettlement:
         assert await status(db, "e") == TaskStatus.BLOCKED
         view = await orch.delivery_observer.observe(kids)
         assert {kid: (view.get(kid).state, view.get(kid).reason) for kid in kids} == {
-            kids[0]: (DeliveryState.UNKNOWN, "missing_ref"),
+            kids[0]: (DeliveryState.UNKNOWN, "missing_git_provenance"),
             kids[1]: (DeliveryState.UNKNOWN, "scope_mismatch"),
         }
 
@@ -386,14 +403,14 @@ class TestStaleContainerSettlement:
         self, db, orch, origin
     ):
         kids = await git_epic(db, origin, status=TaskStatus.BLOCKED)
-        await close_with_commit(db, kids[0], origin.work(kids[0]))
+        await close_with_commit(db, kids[0], origin.work(kids[0]), origin=origin)
         origin.land(kids[0])
         view = await orch.delivery_observer.observe(kids)
         assert view.satisfied(kids[0]) and await view.fresh()
         # Reopened and re-completed between the observation and the write.
         await db.transition_task(kids[0], TaskStatus.IN_PROGRESS, force=True)
         await close_with_commit(db, kids[0], origin.work(kids[0], name="again"),
-                                close_id="close-again")
+                                close_id="close-again", origin=origin)
 
         assert await orch._settle_seeds({"e"}, delivery=view) == []
         assert await status(db, "e") == TaskStatus.BLOCKED
@@ -414,7 +431,7 @@ class TestStaleContainerSettlement:
             await db.transition_task(tid, TaskStatus.BLOCKED, context="restart_recovery",
                                      force=True)
         for tid in ("g.1.1", "g.2"):
-            await close_with_commit(db, tid, origin.work(tid))
+            await close_with_commit(db, tid, origin.work(tid), origin=origin)
             origin.land(tid)
 
         # The stale parent needs its own child's proof once g.1 has settled.
@@ -425,7 +442,7 @@ class TestStaleContainerSettlement:
         self, db, orch, origin
     ):
         kids = await git_epic(db, origin, status=TaskStatus.BLOCKED)
-        await close_with_commit(db, kids[0], origin.work(kids[0]))
+        await close_with_commit(db, kids[0], origin.work(kids[0]), origin=origin)
         origin.land(kids[0])
         now = time.time()
         await db.create_session(
@@ -641,12 +658,10 @@ async def owner_state(db, row_id="own-1"):
 
 
 async def batch_row(db, row_id):
+    """The latest revision of publisher operation *row_id*."""
     async with db._engine.connect() as conn:
-        return (
-            await conn.execute(
-                select(development_deliveries).where(development_deliveries.c.id == row_id)
-            )
-        ).mappings().one()
+        (row,) = [r for r in await operation_rows_on(conn, [DEV_PROJECT]) if r["id"] == row_id]
+    return row
 
 
 def fake_release(db, *, outcome="released", reason=None):
@@ -760,11 +775,7 @@ class TestObsoleteClose:
         assert (await closer.retry_pending())[0]["state"] == "pending"
 
         async with db._engine.begin() as conn:
-            await conn.execute(
-                update(development_deliveries)
-                .where(development_deliveries.c.id == "batch-p")
-                .values(state="parked")
-            )
+            await revise_operation_on(conn, "batch-p", lambda _current: {"state": "parked"})
         retried = await closer.retry_pending()
 
         assert retried[0]["state"] == "done"

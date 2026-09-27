@@ -1727,14 +1727,12 @@ async def _seed_development_delivery(
     project_id: str = "p-1",
     created_at: float = 1.0,
 ) -> None:
-    """Insert one ``development_deliveries`` row naming *task_ids*."""
-    from sqlalchemy import insert
-
-    from src.database.tables import development_deliveries
+    """Append one publisher operation (``development.operation``) naming *task_ids*."""
+    from src.integration.development import DevelopmentIntegration
 
     async with db._engine.begin() as conn:
         await conn.execute(
-            insert(development_deliveries).values(
+            DevelopmentIntegration._operation_insert(
                 id=delivery_id,
                 project_id=project_id,
                 repository_id="repo",
@@ -1752,16 +1750,11 @@ async def _seed_development_delivery(
 
 
 async def _set_delivery_state(db: Database, delivery_id: str, state: str) -> None:
-    from sqlalchemy import update
-
-    from src.database.tables import development_deliveries
+    """Append the operation's next revision; ``delivered`` is recorded as ``finished``."""
+    from src.integration.development import revise_operation_on
 
     async with db._engine.begin() as conn:
-        await conn.execute(
-            update(development_deliveries)
-            .where(development_deliveries.c.id == delivery_id)
-            .values(state=state)
-        )
+        await revise_operation_on(conn, delivery_id, lambda _current: {"state": state})
 
 
 async def _backdate(db: Database, *task_ids: str, seconds: float = 86400) -> None:
@@ -1979,8 +1972,14 @@ async def _seed_development_project(
 
 
 async def _completed_with_close(
-    db: Database, tid: str, *, repo_id: str, commit: str, pid: str = "p-dev", **kwargs
+    db: Database, tid: str, *, repo_id: str, commit: str, pid: str = "p-dev", origin=None,
+    **kwargs,
 ) -> None:
+    """A COMPLETED task and its close; with *origin*, its source retained in git.
+
+    The retained identity names the project's designated ``dev-repo``: a task
+    on a foreign repository id is unknown until rebound, whatever git holds.
+    """
     await _seed_task(
         db, tid, pid=pid, status=TaskStatus.COMPLETED, repo_id=repo_id,
         branch_name=f"aq/{tid}", **kwargs,
@@ -1991,20 +1990,30 @@ async def _completed_with_close(
             completed_at=time.time(),
         )
     )
+    if origin is not None:
+        from src.git.manager import GitManager
+        from src.integration.provenance import (
+            CompletedSource,
+            CompletionIdentity,
+            GitProvenance,
+        )
+
+        await GitProvenance(GitManager(), str(origin.clone), repository_url=origin.url
+                            ).write_completion(
+            CompletedSource(CompletionIdentity(pid, "dev-repo", tid, f"close-{tid}"), commit)
+        )
 
 
 async def _journal(
     db: Database, row_id: str, *, state: str, target_ref: str, members: list[tuple[str, str]],
     pid: str = "p-dev", parent_task_id: str | None = None,
 ) -> None:
-    from sqlalchemy import insert
-
-    from src.database.tables import development_deliveries
+    from src.integration.development import DevelopmentIntegration
 
     now = time.time()
     async with db._engine.begin() as conn:
         await conn.execute(
-            insert(development_deliveries).values(
+            DevelopmentIntegration._operation_insert(
                 id=row_id, project_id=pid, repository_id="dev-repo", target_ref=target_ref,
                 expected_sha=None, prepared_sha=None, state=state,
                 manifest=[
@@ -2092,19 +2101,13 @@ class TestUndeliveredDevelopmentWorkIsNotSwept:
         await _backdate(db, "fleet-meadow")
 
     async def test_fleet_meadow_shape_is_held_by_the_auto_archive_sweep(self, db):
-        from src.database.queries.blocked_state import _development_delivery_pending
-        from src.database.tables import tasks as tasks_table
+        from src.integration.delivery_observer import delivery_sensitive_ids
 
         await self._seed_fleet_meadow(db)
-        # Readiness is unchanged: the publisher does not collect a foreign
-        # repository id, which is exactly why nothing ever delivered it.
+        # The publisher never collects a foreign repository id, which is
+        # exactly why nothing ever delivered it; the archive guard still asks.
         async with db._engine.connect() as conn:
-            pending = await conn.scalar(
-                select(_development_delivery_pending(tasks_table)).where(
-                    tasks_table.c.id == "fleet-meadow"
-                )
-            )
-        assert pending is False
+            assert await delivery_sensitive_ids(conn, ["fleet-meadow"]) == {"fleet-meadow"}
 
         archived = await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600)
 
@@ -2125,7 +2128,7 @@ class TestUndeliveredDevelopmentWorkIsNotSwept:
         await _seed_development_project(db, url=dev_origin.url)
         sha = dev_origin.work("fleet-meadow")
         await _completed_with_close(
-            db, "fleet-meadow", repo_id="web-repo", commit=sha,
+            db, "fleet-meadow", repo_id="web-repo", commit=sha, origin=dev_origin,
         )
         await _backdate(db, "fleet-meadow")
         assert await db.archive_old_terminal_tasks(["COMPLETED"], older_than_seconds=3600) == []
@@ -2205,10 +2208,11 @@ class TestUndeliveredDevelopmentWorkIsNotSwept:
         repair = "development-repair-2bfd84c0ad9f434c18e3"
         await _completed_with_close(
             db, "nimble-nexus", repo_id="dev-repo", commit=dev_origin.work("nimble-nexus"),
+            origin=dev_origin,
         )
         await _completed_with_close(
             db, repair, repo_id="dev-repo", commit=dev_origin.work(repair),
-            parent_task_id="nimble-nexus",
+            parent_task_id="nimble-nexus", origin=dev_origin,
         )
         # Rows that claim delivery prove nothing: the work is not on main.
         await _journal(
