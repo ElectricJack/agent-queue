@@ -21,7 +21,10 @@ A pool launch (§11.2) adds its own ``extra_env`` markers instead:
 ``AQ_SESSION_KIND=pool``, ``AQ_AGENT_ID``, ``AQ_PROFILE_ID``, and
 ``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*`` so commits made by a long-lived pool
 worker attribute to its profile rather than the operator's own git identity.
-See :func:`src.sessions.spec.SessionSpecBuilder.build_pool_spec`.
+See :func:`src.sessions.spec.SessionSpecBuilder.build_pool_spec`.  Task and
+pool launches both also carry :data:`src.sessions.spec.WORKER_TOOL_ENV`
+(``GRAFT_NO_SEED``, ``GRAFT_NO_REFRESH``, ``DO_NOT_TRACK``), so graft never
+copies its index into a worker slot.
 
 Scrubbing is **not** implemented here.  :func:`src.env_scrub.scrub_env` owns
 the policy (trust-and-ops R6); this module supplies the ``explicit`` map it

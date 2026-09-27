@@ -346,6 +346,11 @@ Every session's child environment is built explicitly rather than inherited
 4. the nine `AQ_*` identity markers;
 5. `extra_env` — for example `AQ_CLAIM_EPOCH` on a push launch, or the
    `GIT_AUTHOR_*` / `GIT_COMMITTER_*` identity a pool worker commits under.
+   Task and pool launches also get
+   [`WORKER_TOOL_ENV`](../../src/sessions/spec.py) here: `GRAFT_NO_SEED=1`,
+   `GRAFT_NO_REFRESH=1` and `DO_NOT_TRACK=1`, so graft never seeds or
+   refreshes its index inside a worker slot. A key the harness `env` map
+   names keeps the harness's value.
 
 Everything from layer 2 inward is *explicit* as far as the scrub is concerned:
 naming a key in a harness file is operator intent and outranks a denylist
