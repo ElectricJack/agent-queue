@@ -426,18 +426,21 @@ def reply_args(first, **overrides):
     }
 
 
+LAUNCH_UUID = "22f503aa-d483-47bc-aeb2-a867e800a529"
+
+
 async def live_supervisor(db, **overrides):
     from src.models import SessionRecord
     from src.profiles.capabilities import CapabilityPolicy
 
     await db.create_session(
         SessionRecord(
-            id="global-launch",
+            id=LAUNCH_UUID,
             project_id=None,
             profile_id="supervisor",
             harness="codex",
             provider="openai",
-            name="supervisor-global",
+            name="n-supervisor--global",
             lifecycle="named",
             work_dir="/tmp",
             epoch="epoch",
@@ -449,7 +452,7 @@ async def live_supervisor(db, **overrides):
     return ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
         policy=CapabilityPolicy.from_namespaces(aq_commands=["supervisor_inbox_reply"]),
-        session_id="global-launch",
+        session_id=LAUNCH_UUID,
         session_instance_token="live-token",
         elevated=True,
         **overrides,
@@ -539,9 +542,9 @@ async def test_reply_requires_live_global_supervisor_launch(env, mode):
     elif mode == "playbook":
         principal = replace(principal, kind=PrincipalKind.PLAYBOOK)
     elif mode == "stopped":
-        await db.update_session("global-launch", state="stopped")
+        await db.update_session(LAUNCH_UUID, state="stopped")
     elif mode == "absent":
-        await db.update_session("global-launch", name="other")
+        await db.update_session(LAUNCH_UUID, name="other")
     with principal_context(principal):
         result = await handler._cmd_supervisor_inbox_reply(reply_args(first))
     assert result["error_code"] == "out_of_scope"

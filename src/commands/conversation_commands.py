@@ -35,6 +35,7 @@ from src.database.queries.conversation_queries import (
     ConversationRateLimited,
     ConversationStateError,
 )
+from src.sessions.spec import named_session_name
 
 _LIVE_SESSION_STATES = frozenset({"starting", "running", "draining"})
 _FORBIDDEN_AUTHORITY_ARGS = frozenset(
@@ -201,16 +202,24 @@ class ConversationCommandsMixin:
             return _error("spoofed_identity", "caller identity and destination are server-derived")
         principal = current_principal() or TRUSTED_LOCAL
         if principal.kind is not PrincipalKind.LOCAL:
+            # The global supervisor's messaging address is ``supervisor-global``;
+            # every real launch is a separate session row (a UUID) whose name is
+            # ``n-supervisor--global``, adopted with its instance token across
+            # restarts. The live launch holding that row's token is the sender.
             live = None
             if (
                 principal.kind is PrincipalKind.SESSION
                 and principal.elevated
                 and principal.project_id is None
             ):
-                live = await self.db.get_session_by_name("supervisor-global")
+                live = await self.db.get_session(principal.session_id)
+            expected_name = named_session_name("supervisor", "global")
             if (
                 live is None
                 or live.state not in _LIVE_SESSION_STATES
+                or live.name != expected_name
+                or live.profile_id != "supervisor"
+                or live.lifecycle != "named"
                 or live.project_id is not None
                 or principal.session_id != live.id
                 or not matches_session_instance(principal, live.instance_token)
