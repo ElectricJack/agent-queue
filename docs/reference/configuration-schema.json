@@ -599,6 +599,7 @@
         "merge_require_up_to_date": true,
         "merge_required_checks": [],
         "owner_recovery_sweep": false,
+        "publisher_stall_after": 5,
         "scratch_probe": null
       },
       "properties": {
@@ -668,6 +669,10 @@
         "owner_recovery_sweep": {
           "default": false,
           "type": "boolean"
+        },
+        "publisher_stall_after": {
+          "default": 5,
+          "type": "integer"
         },
         "scratch_probe": {
           "additionalProperties": false,

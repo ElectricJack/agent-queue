@@ -39,6 +39,9 @@ from src.integration.delivery_branches import (
     released_integration_refs,
     remote_heads,
 )
+from src.integration.development_stalls import (
+    DEFAULT_STALL_AFTER, PUBLISHER_SKIP_KEY, PublisherStalls, SweepObservation,
+)
 from src.integration.development_validation import run_check as run_validation_check
 from src.integration.publishable_artifact import (
     EMPTY_SOURCE_KEY, development_empty_source, has_publishable_artifact,
@@ -66,7 +69,6 @@ BRANCH_CLEANUP_RETRY_SECONDS = 300.0
 BRANCH_CLEANUP_RETRY_MAX_SECONDS = 6 * 3600.0
 #: Journal rows cleaned per project per tick; a backlog drains over ticks.
 BRANCH_CLEANUP_ROWS_PER_TICK = 10
-PUBLISHER_SKIP_KEY = "development_publisher_skip"
 #: Runs whose full evidence a deferral streak row keeps (the count is kept
 #: for every run; older runs' output is dropped).
 DEFERRAL_RUNS_KEPT = 5
@@ -200,6 +202,7 @@ class DevelopmentIntegration:
         confirm_stopped=None,
         owner_recovery: Any | None = None,
         job_client=None,
+        stall_after: int = DEFAULT_STALL_AFTER,
     ):
         self.db = db
         self.data_dir = Path(data_dir) / "development-integration"
@@ -213,6 +216,10 @@ class DevelopmentIntegration:
         self.job_client = job_client
         #: Poll durable completion; the runner owns all execution budgets.
         self.validation_poll_seconds = 1.0
+        #: Skip observations and their bounded stall (``integration.publisher_stall_after``).
+        self.stalls = PublisherStalls(
+            db, stall_after=stall_after, repair_identity=self._repair_identity
+        )
 
     async def on_task_completed(self, event):
         """Wake delivery without doing Git or validation in the completion path.
@@ -924,8 +931,7 @@ class DevelopmentIntegration:
             if not (retry or recover_child_id) and not await self._has_pending_work(
                 project_id, repo, now=time.time()
             ):
-                # Nothing is left to evaluate, so no skip record is current.
-                await self._clear_stale_skips(project_id, keep=set())
+                await self.stalls.clear(project_id)
                 return {"outcome": "idle", "parked": []}
             store = await self.store(repo)
             await self.reconcile(repo, store)
@@ -1443,9 +1449,18 @@ class DevelopmentIntegration:
                     processed.add(old_id)
                 if len(manifest) >= policy.max_batch_size:
                     break
-            if not recover_child_id:
-                await self._clear_stale_skips(project_id, keep=candidate_ids)
-            await self._record_candidate_skips(processed, skipped)
+            await self.stalls.observe(
+                SweepObservation(
+                    project_id=project_id, repository_id=repo.id, target_ref=target,
+                    target_sha=base,
+                    branches={t: candidate_by_id[t]["branch_name"] for t in processed},
+                    source_heads=source_heads, history=history,
+                    pending=frozenset(candidate_ids),
+                ),
+                processed, skipped,
+                keep=None if recover_child_id else candidate_ids,
+                fresh=processed if (retry or recover_child_id) else (),
+            )
             await self.run_git(store, "checkout", "--detach", "--force", head)
             if not manifest:
                 await self.reconcile_parked(repo, store, base)
@@ -1522,60 +1537,6 @@ class DevelopmentIntegration:
                 repo, store, head if result["outcome"] == "delivered" else base
             )
             return result
-
-    async def _clear_stale_skips(self, project_id, *, keep):
-        """Drop skip records of tasks the publisher no longer evaluates.
-
-        A record describes the task's last evaluation.  Once the task is
-        delivered, adopted, obsolete, reopened or archived it is not a
-        candidate, so ``_record_candidate_skips`` never sees it again and the
-        record would otherwise claim a skip that no longer happens.
-        """
-        async with self.db._engine.begin() as conn:
-            stale = [
-                task_id
-                for task_id in (
-                    await conn.execute(
-                        select(task_metadata.c.task_id)
-                        .join(tasks, tasks.c.id == task_metadata.c.task_id)
-                        .where(
-                            tasks.c.project_id == project_id,
-                            task_metadata.c.key == PUBLISHER_SKIP_KEY,
-                        )
-                    )
-                ).scalars()
-                if task_id not in keep
-            ]
-            if stale:
-                await conn.execute(
-                    delete(task_metadata).where(
-                        task_metadata.c.task_id.in_(stale),
-                        task_metadata.c.key == PUBLISHER_SKIP_KEY,
-                    )
-                )
-
-    async def _record_candidate_skips(self, processed, skipped):
-        """Keep consecutive skip evidence across ticks and daemon restarts."""
-        previous = await self.db.get_task_meta_bulk(sorted(processed), PUBLISHER_SKIP_KEY)
-        now = time.time()
-        for task_id in sorted(processed):
-            reason = skipped.get(task_id)
-            old = previous.get(task_id)
-            if reason is None:
-                if old is not None:
-                    await self.db.delete_task_meta(task_id, PUBLISHER_SKIP_KEY)
-                continue
-            kind, dependency_id = reason
-            same = isinstance(old, dict) and (
-                old.get("reason") == kind and old.get("dependency_id") == dependency_id
-            )
-            await self.db.set_task_meta(task_id, PUBLISHER_SKIP_KEY, {
-                "reason": kind,
-                "dependency_id": dependency_id,
-                "consecutive_ticks": old.get("consecutive_ticks", 0) + 1 if same else 1,
-                "first_skipped_at": old.get("first_skipped_at", now) if same else now,
-                "last_skipped_at": now,
-            })
 
     async def recover_child(self, project_id, child_id, *, retry=False):
         """Run a supervised sweep and prove the named child's delivery."""
