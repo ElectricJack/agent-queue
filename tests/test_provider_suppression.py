@@ -76,6 +76,9 @@ async def _startup_exits(orch: Orchestrator) -> int:
 @pytest.fixture
 async def push_orch(tmp_path):
     orch = await make_session_orch(tmp_path)
+    # Outage notices can launch a global supervisor once message delivery is
+    # due. Keep this fixture's launches scoped to provider suppression.
+    orch.config.messages.enabled = False
     orch.session_spec_builder._intelligence_classes = dict(BOTH_VENDORS)
     orch.harness_registry.upsert(codex_harness())
     orch.provider_availability._probe_impl = Probe("cannot_tell")
@@ -104,7 +107,10 @@ async def test_login_required_on_every_codex_launch_trips_within_two_and_stops(p
     fake = fake_provider(orch)
     fake.script_startup_dialog("codex", "login-required")  # no signal: name-map fallback
 
+    # Make message delivery due on every cycle, even on a fast machine: outage
+    # notices must not launch an unrelated supervisor in this isolated fixture.
     for _ in range(8):
+        orch._last_delivery_pass = 0
         await _cycle(orch)
 
     availability = orch.provider_availability
@@ -114,6 +120,7 @@ async def test_login_required_on_every_codex_launch_trips_within_two_and_stops(p
     assert len(fake.dialog_deaths) <= 2
     assert await _startup_exits(orch) == len(fake.dialog_deaths)
     for _ in range(3):
+        orch._last_delivery_pass = 0
         await _cycle(orch)
     assert await _startup_exits(orch) == len(fake.dialog_deaths)
     assert fake.starts == []
