@@ -5358,6 +5358,13 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Optional profile filter for broadcast",
                 },
                 "wait": {"type": "integer", "description": "Wait up to 60 seconds for delivery"},
+                "reply_to": {
+                    "type": "string",
+                    "description": (
+                        "Message id this guidance answers; it joins that message's thread, "
+                        "so a worker waiting on the thread resumes"
+                    ),
+                },
             },
             "required": ["body"],
         },

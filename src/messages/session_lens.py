@@ -38,6 +38,7 @@ from src.models import SessionRecord, TaskStatus
 from src.sessions.provider import (
     CapabilityUnsupported,
     NotSubmitted,
+    NudgeDeferred,
     SessionHandle,
     SessionExecutableNotFound,
 )
@@ -200,6 +201,9 @@ class SessionLens:
         self._token_store = token_store
         self._start_locks: dict[str, asyncio.Lock] = {}
         self._activity_cursors: dict[str, _ActivityCursor] = {}
+        #: Latest refused nudge per session id, cleared by the next success.
+        #: Doctor reads it to say *why* a live idle worker still has mail.
+        self._nudge_failures: dict[str, dict] = {}
 
     # -- SessionManagerProto ------------------------------------------------
 
@@ -536,11 +540,15 @@ class SessionLens:
             # The delivery engine deliberately leaves its rows pending until
             # the provider confirms Enter took.  Keep this visible: a
             # terminal that accepted the paste but not the submit otherwise
-            # looks exactly like an ordinary, transient delivery retry.
+            # looks exactly like an ordinary, transient delivery retry.  The
+            # reason is what separates a transient race from a composer
+            # guard that refuses this terminal on every pass.
+            self._record_nudge_failure(row.id, exc)
             logger.warning(
-                "message nudge to %s (%s) was not submitted; delivery remains pending%s",
+                "message nudge to %s (%s) was not submitted (%s); delivery remains pending%s",
                 row.name,
                 row.id,
+                exc,
                 "; AQ text remains in the composer" if exc.composer_dirty else "",
             )
             return False
@@ -550,7 +558,29 @@ class SessionLens:
         except Exception:
             logger.exception("nudge failed for %s", row.name)
             return False
+        self._nudge_failures.pop(row.id, None)
         return True
+
+    async def session_for(
+        self, *, kind: str, target_id: str, project_id: str | None
+    ) -> SessionRecord | None:
+        """The session row a recipient resolves to, exactly as delivery resolves it."""
+        row, _handle = await self._resolve(kind=kind, target_id=target_id, project_id=project_id)
+        return row
+
+    def nudge_failure(self, session_id: str) -> dict | None:
+        """The latest refused nudge for *session_id* since its last success."""
+        return self._nudge_failures.get(session_id)
+
+    def _record_nudge_failure(self, session_id: str, exc: NotSubmitted) -> None:
+        if session_id not in self._nudge_failures and len(self._nudge_failures) >= 256:
+            self._nudge_failures.pop(next(iter(self._nudge_failures)))
+        self._nudge_failures[session_id] = {
+            "at": time.time(),
+            "reason": str(exc),
+            "deferred": isinstance(exc, NudgeDeferred),
+            "composer_dirty": exc.composer_dirty,
+        }
 
     async def tail_assistant_turn(
         self,

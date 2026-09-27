@@ -281,6 +281,53 @@ class TestSupervisorAgentMessage:
         assert len(await db.list_messages(project_id="p1")) == 1
         assert await db.list_messages(project_id="p2") == []
 
+    async def test_reply_to_threads_guidance_onto_the_workers_message(self, setup):
+        """2026-09-27 noble-crest: guidance answering a threaded worker message
+        lacked the thread, so the worker's message-thread wait expired."""
+        handler, db, _bus = setup
+        session = await _create_live_worker(db, project_id="p1", suffix="w")
+        asked = await handler._cmd_message_send(
+            _send_args(
+                from_kind="session",
+                from_id=session.id,
+                to_kind="session",
+                to_id="supervisor-p1",
+                thread_id="task-w:graph-filing",
+            )
+        )
+
+        result = await handler._cmd_agent_message(
+            {"target": "task-w", "body": "filed", "reply_to": asked["message_id"]}
+        )
+
+        message = await db.get_message(result["message_id"])
+        assert (message.to_kind, message.to_id) == ("session", session.id)
+        assert message.thread_id == "task-w:graph-filing"
+        assert message.reply_to_id == asked["message_id"]
+        assert (await db.get_message(asked["message_id"])).read_at is not None
+
+    async def test_reply_to_must_name_a_message_in_the_workers_project(self, setup):
+        handler, db, _bus = setup
+        await _create_live_worker(db, project_id="p1", suffix="w")
+        await db.create_project(Project(id="p2", name="other"))
+        foreign = await handler._cmd_message_send(_send_args(project_id="p2", thread_id="t"))
+
+        for reply_to in ("msg-missing", foreign["message_id"]):
+            result = await handler._cmd_agent_message(
+                {"target": "task-w", "body": "filed", "reply_to": reply_to}
+            )
+            assert result == {"error": f"Message '{reply_to}' not found"}
+        assert await db.list_messages(to_kind="session", to_id="session-w") == []
+
+    async def test_reply_to_cannot_broadcast(self, setup):
+        handler, db, _bus = setup
+        await _create_live_worker(db, project_id="p1", suffix="w")
+        result = await handler._cmd_agent_message(
+            {"all_running": True, "body": "filed", "reply_to": "msg-1"}
+        )
+        assert "error" in result and "all_running" in result["error"]
+        assert await db.list_messages(to_kind="session", to_id="session-w") == []
+
     async def test_status_reports_queued_delivered_and_acknowledged(self, setup):
         handler, db, _bus = setup
         sent = await handler._cmd_message_send(_send_args())

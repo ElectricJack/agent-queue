@@ -113,6 +113,36 @@ marker and is never touched.
 Attaching a dashboard terminal and resizing the pane is the reliable way to
 *cause* this, because the resize repaints the composer under the Enter.
 
+## An idle worker that never picks up its mail
+
+**Symptom.** A worker finished its turn and sits idle, but a message or wait
+result addressed to its task or session stays queued; an operator has to type
+into the pane by hand.
+
+**Cause.** The delivery cascade nudges an idle recipient on every pass, but the
+terminal guard only types into a composer it recognises as empty. Anything it
+cannot recognise — a draft, an unknown footer, ghost text — defers every pass.
+On 2026-09-27 two such layouts stalled workers for 15-30 minutes: Codex 0.157's
+idle footer (a model row plus a `? for shortcuts` row, now recognised) and
+Claude Code's prompt suggestion, which renders as uncoloured ghost text under
+`NO_COLOR` and is indistinguishable from a draft. AQ's Claude settings file
+(`src/prime/templates/hooks/claude.json`) now sets
+`promptSuggestionEnabled: false`; sessions started before that change keep
+their suggestions until they restart.
+
+**Diagnose.**
+
+```bash
+aq doctor --check messages.idle_worker_backlog
+```
+
+The check lists task and session messages older than five minutes whose live
+worker the delivery engine's session lens reads as idle, with the lens's last
+refused-nudge reason for that session. The daemon log carries the same reason
+on each `message nudge to <session> (<id>) was not submitted (<reason>)`
+warning. A reason such as `has a draft or its input is unknown` on an empty
+composer means a harness layout the guard does not know yet.
+
 ## A session that quarantines at startup
 
 **Symptom.** A session dies within seconds of `starting`, over and over, each
