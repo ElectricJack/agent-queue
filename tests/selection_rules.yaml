@@ -44,6 +44,7 @@ non_behavioral:                 # never forces fallback, adds nothing; no test r
   - ".mcp.json"
   - ".pre-commit-config.yaml"
   - ".vibecop.yml"
+  - ".claude/**"
   - "docker-compose.yml"
   - "goals.md"
   - "notes.md"
