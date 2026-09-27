@@ -1251,7 +1251,7 @@
       ]
     }
   },
-  "digest": "sha256:224c0a9870de24027eb5ce8840d71b98e2cacafa7acc29a363fdcf8508952fb8",
+  "digest": "sha256:2c5e0006a64e45fe072287de6207afe4bc5e3323df29d70b59ef317aeff7244d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2154,6 +2154,7 @@
         "src.api.app",
         "src.api.codegen",
         "src.api.dependencies",
+        "src.api.models.task",
         "src.api.spec",
         "src.config",
         "src.database",
@@ -4097,6 +4098,8 @@
       "imports": [
         "src.database",
         "src.database.engine",
+        "src.database.queries",
+        "src.database.queries.task_queries",
         "src.database.schema_key",
         "src.database.tables",
         "src.models"
@@ -4372,6 +4375,7 @@
         "src.integration.controls",
         "src.integration.delivery_branches",
         "src.integration.development",
+        "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
         "src.integration.status",
@@ -8468,6 +8472,8 @@
       "default_arm": true,
       "imports": [
         "src.cli.app",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.commands.report_commands",
         "src.config",
@@ -8478,6 +8484,8 @@
         "src.git.manager",
         "src.models",
         "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
         "src.playbooks.required",
         "src.profiles.capabilities",
         "src.remote_links",
@@ -10468,6 +10476,7 @@
       "default_arm": true,
       "imports": [
         "src.commands.playbook_v2_commands",
+        "src.config",
         "src.database",
         "src.doctor",
         "src.doctor.models",
@@ -10480,7 +10489,8 @@
         "src.playbooks.profiles",
         "src.playbooks.required",
         "src.playbooks.runtime",
-        "src.playbooks.validation"
+        "src.playbooks.validation",
+        "src.timer_service"
       ],
       "markers": [],
       "summary": "Required V2 playbooks survive daemon restarts and activation gaps."
