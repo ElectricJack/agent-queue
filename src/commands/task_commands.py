@@ -2236,6 +2236,18 @@ class TaskCommandsMixin:
         after_create_on = args.pop("_after_create_on", None)
         if after_create_on is not None and not callable(after_create_on):
             return {"success": False, "error": "_after_create_on is internal-only"}
+        if args.get("container"):
+            # A declared container (an epic filed before its children) is
+            # flagged in the transaction that inserts it.  Flagged later, it
+            # would sit on the claim frontier until its first child linked,
+            # and a pool worker leases it in that window (bold-flare-35).
+            inner_after_create_on = after_create_on
+
+            async def after_create_on(conn, task_id, parent_id):
+                await self.db.declare_container(task_id, conn=conn)
+                if inner_after_create_on is not None:
+                    await inner_after_create_on(conn, task_id, parent_id)
+
         parent_was_supplied = "parent_id" in args
         # An explicit API null is semantically the same deliberate root
         # choice as CLI ``--root``.  Presence, rather than truthiness, is

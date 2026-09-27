@@ -1375,6 +1375,16 @@ _ALL_TOOL_DEFINITIONS = [
                         "one. Defaults to the key, title-cased."
                     ),
                 },
+                "container": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Create the task as a container (an epic whose children are "
+                        "filed or reparented under it afterwards). It is flagged in the "
+                        "creation transaction, so no worker ever claims it, and it stays "
+                        "open until its children finish."
+                    ),
+                },
                 "depends_on": {
                     "type": "array",
                     "items": {

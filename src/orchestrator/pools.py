@@ -423,6 +423,8 @@ class PoolsMixin:
         if not (self.config.swarm.enabled and self.config.sessions.enabled):
             return
 
+        # Before measuring, so a seat freed here is counted this tick.
+        await self._release_container_claims()
         measurement = await self._measure_pools()
         now = time.time()
         await self._announce_bounds_rescoped(measurement)
@@ -462,6 +464,59 @@ class PoolsMixin:
                 await self.db.update_session(sid, desired_state="stopped")
                 executed += 1
             await self._emit_pool_scaled(drain.key, drain.project_id, "drain", executed)
+
+    async def _release_container_claims(self) -> list[str]:
+        """Take back every pool claim on a container its holder did not fill.
+
+        The frontier never offers a container, but a plain task claimed a
+        moment before a planner reparents its children under it becomes one
+        while held (prime-glacier.1, bold-flare-35).  Its worker can do
+        nothing with it and holds a pool seat until the whole epic finishes.
+        ``list_container_claims`` owns the rule — children, none filed by the
+        holding session — so a worker's own emergent filings never count.
+        Only pool sessions are released here; ``aq doctor --check
+        claims.container_held`` reports any other holder and repairs on
+        request.  Returns the released task ids.
+        """
+        released: list[str] = []
+        try:
+            claims = await self.db.list_container_claims()
+        except Exception:
+            logger.exception("Could not list claims on containers")
+            return released
+        for claim in claims:
+            if claim.get("lifecycle") != "pool":
+                continue
+            try:
+                out = await self.db.release_container_claim(claim, now=time.time())
+            except Exception:
+                logger.exception(
+                    "Could not release container %s from session %s",
+                    claim["task_id"],
+                    claim["session_id"],
+                )
+                continue
+            if not out.released:
+                continue
+            released.append(claim["task_id"])
+            logger.warning(
+                "Released container %s from pool session %s (agent %s): its children "
+                "were filed by someone else, so its holder had nothing to do",
+                claim["task_id"],
+                claim["session_id"],
+                claim["agent_id"],
+            )
+            try:
+                await self.db.log_event(
+                    "task.container_claim_released",
+                    project_id=claim["project_id"],
+                    task_id=claim["task_id"],
+                    agent_id=claim["agent_id"],
+                    payload=json.dumps({"session_id": claim["session_id"]}),
+                )
+            except Exception:
+                logger.debug("container claim release audit failed", exc_info=True)
+        return released
 
     def _queue_pool_starts(self, start, measurement) -> None:
         launches = self.__dict__.setdefault("_pool_launches", {})

@@ -1026,6 +1026,9 @@ def _cli_client(captured_args: dict):
         if command == "create_task":
             captured_args.update(args or {})
             return {"created": "root-task", "title": (args or {}).get("title", "")}
+        if command == "create_task_graph":
+            captured_args.update(args or {})
+            return {"parent_id": "root-epic", "parent_title": "Epic", "nodes": []}
         return {}
 
     client.execute = AsyncMock(side_effect=execute)
@@ -1065,7 +1068,8 @@ class TestRootFilingCLI:
         assert "mutually exclusive" in result.output
         client.execute.assert_not_awaited()
 
-    def test_root_is_rejected_for_graph_creation(self):
+    def test_root_reaches_graph_creation(self):
+        # A worker graph's new container may go to the project root (bold-flare-35).
         from src.cli.app import cli
 
         captured_args: dict = {}
@@ -1074,12 +1078,43 @@ class TestRootFilingCLI:
         with patch("src.cli.tasks._get_client", return_value=client):
             result = CliRunner().invoke(cli, [
                 "task", "create", "--project", PROJECT_ID, "--from-spec", "spec.md",
-                "--root",
+                "--root", "--reason", "the plan's epic",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert captured_args["root"] is True
+        assert captured_args["spec_path"] == "spec.md"
+
+    def test_container_is_rejected_for_graph_creation(self):
+        from src.cli.app import cli
+
+        captured_args: dict = {}
+        client = _cli_client(captured_args)
+
+        with patch("src.cli.tasks._get_client", return_value=client):
+            result = CliRunner().invoke(cli, [
+                "task", "create", "--project", PROJECT_ID, "--from-spec", "spec.md",
+                "--container",
             ])
 
         assert result.exit_code == 2
-        assert "--root only applies to single-task creation" in result.output
+        assert "document-level 'parent:'" in result.output
         client.execute.assert_not_awaited()
+
+    def test_container_flag_reaches_single_task_creation(self):
+        from src.cli.app import cli
+
+        captured_args: dict = {}
+        client = _cli_client(captured_args)
+
+        with patch("src.cli.tasks._get_client", return_value=client):
+            result = CliRunner().invoke(cli, [
+                "task", "create", "--project", PROJECT_ID, "--title", "Epic",
+                "--description", "D", "--container",
+            ])
+
+        assert result.exit_code == 0, result.output
+        assert captured_args["container"] is True
 
 
 class TestWorkerReparent:

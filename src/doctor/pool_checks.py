@@ -1390,6 +1390,65 @@ async def _fix_agents_dangling_current_task(ctx: DoctorContext) -> CheckResult:
     )
 
 
+# ---------------------------------------------------------------------------
+# claims.container_held
+# ---------------------------------------------------------------------------
+
+
+async def _check_claims_container_held(ctx: DoctorContext) -> CheckResult:
+    """Agents whose current task is a container they did not fill (bold-flare-35).
+
+    ``list_container_claims`` owns the rule: the task has children and none
+    of them was filed by the session holding it, so a worker's own emergent
+    filings never count.  The pool reconcile step releases pool holders on
+    its own; this reports every holder (a push-launched session, an agent
+    row BUSY with no session behind it) and ``--fix`` releases them all.
+    """
+    if ctx.db is None:
+        return _no_db_result("claims.container_held")
+    held = await ctx.db.list_container_claims()
+    if not held:
+        return CheckResult(
+            id="claims.container_held",
+            severity=Severity.OK,
+            detail="no agent holds a container",
+        )
+    return CheckResult(
+        id="claims.container_held",
+        severity=Severity.WARN,
+        detail=(
+            f"{len(held)} agent(s) hold a container whose children they did not file; "
+            "the work is in the children, so the holder can only wait"
+        ),
+        data={
+            "count": len(held),
+            "agents": [
+                {
+                    "agent_id": claim["agent_id"],
+                    "task_id": claim["task_id"],
+                    "session_id": claim["session_id"],
+                    "lifecycle": claim["lifecycle"],
+                }
+                for claim in held[:50]
+            ],
+        },
+    )
+
+
+async def _fix_claims_container_held(ctx: DoctorContext) -> CheckResult:
+    if ctx.db is None:
+        return _no_db_result("claims.container_held")
+    released = 0
+    for claim in await ctx.db.list_container_claims():
+        out = await ctx.db.release_container_claim(claim, now=time.time())
+        released += int(out.released)
+    return CheckResult(
+        id="claims.container_held",
+        severity=Severity.OK,
+        detail=f"released {released} container claim(s)",
+    )
+
+
 def pool_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(
@@ -1463,6 +1522,12 @@ def pool_checks() -> list[DoctorCheck]:
             id="agents.dangling_current_task",
             run=_check_agents_dangling_current_task,
             fix=_fix_agents_dangling_current_task,
+            owner=OWNER,
+        ),
+        DoctorCheck(
+            id="claims.container_held",
+            run=_check_claims_container_held,
+            fix=_fix_claims_container_held,
             owner=OWNER,
         ),
     ]

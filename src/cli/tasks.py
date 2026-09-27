@@ -133,6 +133,7 @@ def _create_task_graph(
     profile_id: str | None = None,
     intelligence_class: str | None = None,
     reason: str | None = None,
+    root: bool = False,
 ) -> None:
     """Back ``aq task create --graph|--from-spec|--dry-run``."""
     if graph_file and from_spec:
@@ -154,6 +155,8 @@ def _create_task_graph(
         params["intelligence_class"] = intelligence_class
     if reason:
         params["reason"] = reason
+    if root:
+        params["root"] = True
 
     async def _create():
         async with _get_client(api_url) as client:
@@ -272,7 +275,19 @@ def _create_task_graph(
     "--root",
     is_flag=True,
     default=False,
-    help="For a worker filing: create at project root instead of under the held task",
+    help=(
+        "For a worker filing: create at project root instead of under the held task. "
+        "With --graph/--from-spec, the graph's new container goes to the root"
+    ),
+)
+@click.option(
+    "--container",
+    is_flag=True,
+    default=False,
+    help=(
+        "Create the task as an epic container for children filed or reparented under "
+        "it later; it is never claimed by a worker and settles when its children finish"
+    ),
 )
 @click.option(
     "--reason",
@@ -338,6 +353,7 @@ def task_create(
     parent_id: str | None,
     after_review: str | None,
     root: bool,
+    container: bool,
     reason: str | None,
     deliverables: tuple[str, ...],
     requires_kinds: tuple[str, ...],
@@ -384,8 +400,11 @@ def task_create(
 
     if root and parent_id:
         raise click.UsageError("--root and --parent are mutually exclusive")
-    if root and (graph_file or from_spec):
-        raise click.UsageError("--root only applies to single-task creation")
+    if container and (graph_file or from_spec):
+        raise click.UsageError(
+            "--container applies to single-task creation; a graph declares its new "
+            "container with a document-level 'parent:' block"
+        )
     # Parse before the graph branch so a malformed value is reported even on a
     # path that would go on to reject the option outright.
     parsed_requires_kinds = _parse_requires_kinds(requires_kinds)
@@ -413,6 +432,7 @@ def task_create(
             profile_id=profile_id,
             intelligence_class=intelligence_class,
             reason=reason,
+            root=root,
         )
         return
     if dry_run:
@@ -497,6 +517,8 @@ def task_create(
         params["after_review"] = after_review
     if root:
         params["root"] = True
+    if container:
+        params["container"] = True
     if reason and "reason" not in params:
         params["reason"] = reason
     if parsed_requires_kinds:

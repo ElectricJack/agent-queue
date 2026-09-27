@@ -77,6 +77,7 @@ def test_check_names():
         "pools.placement_starved",
         "pools.session_awaiting_input",
         "agents.dangling_current_task",
+        "claims.container_held",
     }
     assert all(c.owner == "swarm-work-model" for c in pool_checks.CHECKS)
 
@@ -1117,4 +1118,85 @@ async def test_reset_stale_busy_agent_keeps_the_state_when_asked(db):
 
 def test_dangling_current_task_is_fixable():
     check = next(c for c in pool_checks.CHECKS if c.id == "agents.dangling_current_task")
+    assert check.fix is not None
+
+
+# ---------------------------------------------------------------------------
+# claims.container_held (bold-flare-35)
+# ---------------------------------------------------------------------------
+
+
+async def _epic_held_by(db, *, session: bool, filed_by: str = "planner-session"):
+    """An epic claimed as a plain task, whose children arrived afterwards."""
+    await _stale_agent(db, "a1", state=AgentState.BUSY)
+    await db.create_task(Task(
+        id="epic", project_id=PROJECT_ID, title="Epic", description="",
+        status=TaskStatus.IN_PROGRESS, assigned_agent_id="a1",
+    ))
+    await db.create_task(Task(
+        id="epic.1", project_id=PROJECT_ID, title="child", description="",
+        status=TaskStatus.DEFINED, created_by_kind="session", created_by_id=filed_by,
+    ))
+    async with db.immediate() as conn:
+        await db.set_parent("epic.1", "epic", conn=conn)
+    await db.update_agent("a1", current_task_id="epic")
+    if session:
+        await db.create_session(SessionRecord(
+            id="s1", project_id=PROJECT_ID, profile_id="worker", harness="claude",
+            provider="fake", name="s1", lifecycle="pool", work_dir="/w", epoch="e",
+            instance_token="t", started_at=time.time(), state="running", agent_id="a1",
+            task_id="epic", claim_phase="active", last_claim_epoch=0,
+        ))
+
+
+async def test_container_held_ok_when_clean(db):
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.severity is Severity.OK
+
+
+async def test_container_held_flags_the_agent_and_fix_releases_its_session(db):
+    await _epic_held_by(db, session=True)
+
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.severity is Severity.WARN
+    assert finding.data["count"] == 1
+    assert finding.data["agents"] == [{
+        "agent_id": "a1", "task_id": "epic", "session_id": "s1", "lifecycle": "pool",
+    }]
+
+    repaired = await pool_checks.run_check(
+        db, "claims.container_held", config=None, repair=True
+    )
+    assert repaired.severity is Severity.OK
+    task = await db.get_task("epic")
+    assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, None)
+    session = await db.get_session("s1")
+    assert (session.task_id, session.desired_state) == (None, "stopped")
+    agent = await db.get_agent("a1")
+    assert (agent.state, agent.current_task_id) == (AgentState.IDLE, None)
+    assert (await pool_checks.run_check(db, "claims.container_held", config=None)).severity \
+        is Severity.OK
+
+
+async def test_container_held_fix_resets_an_orphaned_busy_agent(db):
+    await _epic_held_by(db, session=False)
+
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.data["agents"][0]["session_id"] is None
+
+    await pool_checks.run_check(db, "claims.container_held", config=None, repair=True)
+    task = await db.get_task("epic")
+    assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, None)
+    agent = await db.get_agent("a1")
+    assert (agent.state, agent.current_task_id) == (AgentState.IDLE, None)
+
+
+async def test_container_held_ignores_the_holders_own_emergent_work(db):
+    await _epic_held_by(db, session=True, filed_by="s1")
+    finding = await pool_checks.run_check(db, "claims.container_held", config=None)
+    assert finding.severity is Severity.OK
+
+
+def test_container_held_is_fixable():
+    check = next(c for c in pool_checks.CHECKS if c.id == "claims.container_held")
     assert check.fix is not None
