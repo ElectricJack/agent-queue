@@ -1277,7 +1277,7 @@
       ]
     }
   },
-  "digest": "sha256:b850d1caaa5425dd582f14ee75e07ef16e68d56cf65487dc44fcdda9f0a43b47",
+  "digest": "sha256:463bdfd490e53f7db5794f8aea03f6337b3c3e06068e171a9945ea3a742f3f28",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4963,6 +4963,7 @@
         "src.doctor.models",
         "src.doctor.runner",
         "src.git.github_contracts",
+        "src.integration.development",
         "src.models"
       ],
       "markers": [
