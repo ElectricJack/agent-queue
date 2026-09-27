@@ -1016,11 +1016,15 @@ class TestEndToEndOnFakeProvider:
         """
         from src.orchestrator.execution import ExecutionMixin
         from src.orchestrator.git_ops import GitOpsMixin
+        from src.orchestrator.pools import PoolsMixin
         from src.orchestrator.workspace import WorkspaceMixin
 
         class _Orch(ExecutionMixin, WorkspaceMixin, GitOpsMixin, _StubOrchestrator):
             #: Pipeline verdict the next close should see: (pr_url, ok).
             pipeline_result = (None, True)
+            #: Development tests install a real GitManager; admission only
+            #: touches git for a task with development prerequisites.
+            git = None
 
             async def _emit_text_notify(self, *a, **k):
                 self.text_notifies = getattr(self, "text_notifies", [])
@@ -1048,6 +1052,9 @@ class TestEndToEndOnFakeProvider:
                 ExecutionMixin.release_session_task_resources
             )
             _release_workspaces_for_task = WorkspaceMixin._release_workspaces_for_task
+            # Launch and assignment re-check development admission, which
+            # PoolsMixin supplies on the real Orchestrator.
+            _delivery_admission = PoolsMixin._delivery_admission
 
         orch = _Orch(db, config, providers, harnesses)
         orch.session_reconciler.orchestrator = orch
