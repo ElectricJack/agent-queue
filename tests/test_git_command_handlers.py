@@ -376,6 +376,12 @@ class TestLegacyGitProvenanceMigration:
         handler.orchestrator.git = git
         result = await handler.execute("integration_migrate_provenance", {"project_id": "p"})
         assert result["success"] and result["outcome"] == "inventory"
+        scoped = await handler.execute("integration_migrate_provenance",
+                                       {"project_id": "p", "task_id": "task"})
+        assert scoped["success"] and [i["task_id"] for i in scoped["inventory"]] == ["task"]
+        missing = await handler.execute("integration_migrate_provenance",
+                                        {"project_id": "p", "task_id": "absent"})
+        assert missing["outcome"] == "blocked" and "does not belong" in missing["error"]
 
     async def test_complete_legacy_repair_is_retained_and_incomplete_evidence_reported(self, provenance_repo, db):
         from sqlalchemy import insert

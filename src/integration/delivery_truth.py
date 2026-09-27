@@ -274,10 +274,11 @@ class DeliverySnapshot:
             )
             if float(row.get("created_at", 0)) < boundary or not any(
                 member.get("task_id") == request.task_id and member.get("source_sha") == source
-                for member in row.get("manifest", [])
+                for member in row.get("manifest") or []
             ):
                 continue
-            bound = {proof.get("completion_id") for proof in evidence.get("completion_sources", [])
+            proofs = evidence.get("completion_sources") or []
+            bound = {proof.get("completion_id") for proof in proofs
                      if proof.get("task_id") == request.task_id}
             if bound and request.completion_id not in bound:
                 continue

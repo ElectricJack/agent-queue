@@ -290,7 +290,7 @@ def _binding_key(binding):
 def _names(row, task_ids):
     """Whether a legacy delivery row locates or supersedes any of *task_ids*."""
     members = [m for m in row["manifest"] or [] if isinstance(m, dict)]
-    proofs = (row["evidence"] or {}).get("completion_sources", [])
+    proofs = (row["evidence"] or {}).get("completion_sources") or []
     return any(
         m.get("task_id") in task_ids or m.get("superseded_by") in task_ids for m in members
     ) or any(isinstance(p, dict) and p.get("task_id") in task_ids for p in proofs)

@@ -373,11 +373,14 @@ async def legacy_repair_source(db, store, project_id, repair_id, member, complet
     if (
         row is None or row["project_id"] != project_id
         or float(row["created_at"]) < completion.completed_at
-        or not any(item.get("task_id") == member["task_id"] and item.get("source_sha") == source
-                   for item in row["manifest"] or [])
+        or not any(isinstance(item, dict) and item.get("task_id") == member["task_id"]
+                   and item.get("source_sha") == source for item in row["manifest"] or [])
     ):
         return None
-    await store.exact(source)
-    if repair_head is not None and not await store.ancestor(source, repair_head):
-        return None
+    try:
+        await store.exact(source)
+        if repair_head is not None and not await store.ancestor(source, repair_head):
+            return None
+    except GitError:
+        return None  # a source this checkout lacks is not in the repair either
     return source
