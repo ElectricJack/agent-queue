@@ -34,6 +34,12 @@ message or lose the reservation. The supervisor has only the existing
 Its profile documents evidence, length and deadline discipline. No inline model
 or worker task authors the report.
 
+A request names the `supervisor-global` address, never a session. Both commands
+accept the elevated token of whichever `n-supervisor--global` launch is live and
+still holds its row's instance token, so a daemon restart (which adopts the
+launch) or a relaunch needs no rebinding. Every other caller, a per-project
+supervisor included, is refused as `out_of_scope`.
+
 ## Delivery library for report consumers
 
 `src/delivery/message.py` owns stable markers, history reconciliation and bounded
