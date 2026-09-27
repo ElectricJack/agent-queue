@@ -686,18 +686,28 @@ async def profile_allows_create_task(db: Any, profile_id: str | None) -> bool:
 
 def build_completion_protocol_section(
     task_id: str, *, lifecycle: str | None = None, allow_emergent_work: bool = True,
-    development: bool = False
+    development: bool = False, regenerate: str | None = None
 ) -> PrimeSection:
+    """The completion protocol; *regenerate* is the development policy's command
+    for rebuilding generated files, when the project has one."""
     body = _load_template("completion_protocol.md").replace("{task_id}", task_id)
     if development:
         start = body.index("## Prepare feature history before review")
         end = body.index("## Never close over unpushed commits")
+        generated = (
+            "Never hand-merge generated files (the paths `.gitattributes` marks "
+            "`merge=aq-generated`). When a merge or rebase conflicts in one, take either side "
+            f"(`git checkout --ours -- <path>`), resolve the source files, run `{regenerate}` "
+            "and commit what it writes. The publisher does the same when it merges your "
+            "branch, so a conflict confined to generated files never parks it.\n\n"
+            if regenerate else ""
+        )
         body = body[:start] + ("## Development delivery\n\n"
             "Commit locally and publish your task branch with `aq git push`, run focused local checks, "
             "and close with actual evidence. "
             "Ordinary commits and merges are accepted; no squash, PR, hosted CI, or parent verifier is required. "
             "The daemon collects completed source branches and publishes validated batches to main. "
-            "Do not push main yourself.\n\n") + body[end:]
+            "Do not push main yourself.\n\n") + generated + body[end:]
         stacked = body.find("## Stacked branches")
         if stacked >= 0:
             body = body[:stacked] + "Declare dependencies for stacked work so failed prerequisites park their dependents.\n"

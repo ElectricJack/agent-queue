@@ -384,6 +384,12 @@
         "tests/test_formulas_resolve.py"
       ]
     },
+    "generated-artifacts": {
+      "description": "Generated artifacts: the one regeneration command and its drift check, the .gitattributes merge=aq-generated set kept in step with it, and the merge driver under which those files never conflict.",
+      "modules": [
+        "tests/test_generated_artifacts.py"
+      ]
+    },
     "git-manager": {
       "description": "GitManager and local git: the async API, event emission, mutex serialization, sync-and-merge, rebase before merge, force-with-lease pushes, merge slots, merge-conflict detection and git command handlers.",
       "modules": [
@@ -1269,7 +1275,7 @@
       ]
     }
   },
-  "digest": "sha256:2b676ae6ed659cfd1bd900cf3086cce230433ee448b76441392f26234c382533",
+  "digest": "sha256:12fa1a15473d3908727a79b312eb0395c1949b862ecf8cda8087d8d2b11e6641",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5716,6 +5722,19 @@
       ],
       "markers": [],
       "summary": "Work-graph WG-3: gate query layer."
+    },
+    "tests/test_generated_artifacts.py": {
+      "areas": [
+        "generated-artifacts"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration.development"
+      ],
+      "markers": [
+        "slow"
+      ],
+      "summary": "Generated artifacts: one regeneration command, a drift check, merges that never conflict."
     },
     "tests/test_get_downstream_tasks.py": {
       "areas": [
