@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 430,
+    "leaf_commands": 431,
     "registration": {
       "generated": 283,
-      "handwritten": 147
+      "handwritten": 148
     },
     "ownership": {
-      "core": 391,
+      "core": 392,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 429
+      "supported": 430
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 283,
-      "registration": 133
+      "registration": 134
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 370
+      "untested": 371
     }
   },
   "commands": [
@@ -3614,6 +3614,39 @@
           "project_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration migrate-provenance",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_migrate_provenance",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id"
+        ],
+        "optional": [
+          "--apply",
+          "--limit",
+          "--offset",
           "--json",
           "--brief",
           "--api-url"
@@ -12478,11 +12511,12 @@
         "disposable-daemon:S2/S4"
       ],
       "parameters": {
-        "required": [
-          "--outcome"
-        ],
+        "required": [],
         "optional": [
           "task_id",
+          "--outcome",
+          "--obsolete",
+          "--reason",
           "--summary",
           "--failure-class",
           "--work-outcome",

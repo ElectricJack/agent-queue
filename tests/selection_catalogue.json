@@ -1261,7 +1261,7 @@
       ]
     }
   },
-  "digest": "sha256:8cef1ecd38f5a55a5a319c91ae6be8f35646623afc37d363175a90306a8140dc",
+  "digest": "sha256:60e164b95028f84d3dffd974d9f321879173f050f5fa0ac68f5945dfba8cea6f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5672,10 +5672,16 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.claim_file",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration.provenance",
+        "src.integration.provenance_migration",
         "src.models"
       ],
       "markers": [],
@@ -11310,6 +11316,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.parent_completion",
+        "src.integration.provenance",
         "src.intelligence_classes",
         "src.mcp_registration",
         "src.models",
