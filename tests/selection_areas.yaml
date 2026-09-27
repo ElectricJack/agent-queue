@@ -467,7 +467,7 @@ areas:
 
   # ------------------------------------------------------------ providers
   - id: provider-failover
-    description: "Provider availability and failover: the reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and capacity-spill planner, in-flight failures, escalations, availability API and doctor checks, and the provider allocation status read."
+    description: "Provider availability and failover: the reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and capacity-spill planner, in-flight failures, escalations, availability API and doctor checks, and the provider allocation status read and preview."
     match:
       - tests/test_provider_availability*.py
       - tests/test_provider_commands.py

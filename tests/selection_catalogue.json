@@ -874,7 +874,7 @@
       ]
     },
     "provider-failover": {
-      "description": "Provider availability and failover: the reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and capacity-spill planner, in-flight failures, escalations, availability API and doctor checks, and the provider allocation status read.",
+      "description": "Provider availability and failover: the reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and capacity-spill planner, in-flight failures, escalations, availability API and doctor checks, and the provider allocation status read and preview.",
       "modules": [
         "tests/test_fake_session_script.py",
         "tests/test_provider_allocation.py",
@@ -1266,7 +1266,7 @@
       ]
     }
   },
-  "digest": "sha256:d332cf706320b9b4669202cf25d3930a91813fbba0756cca30e6b27c17cdba5b",
+  "digest": "sha256:a7084efd34778de8682043339e6ebee85d154dea015dbf73431433eb6f78de6a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10152,8 +10152,10 @@
         "src.providers.intent",
         "src.sessions.harness_parser"
       ],
-      "markers": [],
-      "summary": "Provider allocation status (provider-worker-allocation-controls, plan Task 6)."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Provider allocation status and preview (provider-worker-allocation-controls, Tasks 6, 8)."
     },
     "tests/test_provider_availability.py": {
       "areas": [

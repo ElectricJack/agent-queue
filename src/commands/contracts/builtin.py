@@ -638,6 +638,58 @@ class ProviderAllocationStatusValue(CommandValue):
     diagnostics: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ProviderAllocationBoundsArgs(CommandArgs):
+    """Per-profile pool bounds; an explicit ``max: None`` is an unbounded pool."""
+
+    min: int | None = None
+    max: int | None = None
+
+
+class ProviderAllocationReceiveNewWorkArgs(CommandArgs):
+    """One project's preferred provider for unpinned work: ``prefer`` or ``clear``."""
+
+    project_id: str
+    mode: str
+
+
+class ProviderAllocationPreviewArgs(CommandArgs):
+    """``provider_allocation_preview``: what one allocation request would change.
+
+    Read-only.  The request is the spec's; the result carries the token apply
+    consumes.
+    """
+
+    provider: str
+    profile_ids: list[str] | None = None
+    participation: str | None = None
+    bounds: ProviderAllocationBoundsArgs | None = None
+    receive_new_work: ProviderAllocationReceiveNewWorkArgs | None = None
+    drain: str | None = None
+    allow_pinned_wait: bool | None = None
+
+
+class ProviderAllocationPreviewValue(CommandValue):
+    provider: str
+    vendor: str = ""
+    state: str | None = None
+    now: float | None = None
+    request: dict[str, Any] = Field(default_factory=dict)
+    required_scope: str
+    global_max_active: int | None = None
+    selected: list[str] = Field(default_factory=list)
+    profiles: list[dict[str, Any]] = Field(default_factory=list)
+    ceiling: dict[str, Any] = Field(default_factory=dict)
+    project_limits: list[dict[str, Any]] = Field(default_factory=list)
+    sessions: list[dict[str, Any]] = Field(default_factory=list)
+    busy: dict[str, Any] = Field(default_factory=dict)
+    pinned: list[dict[str, Any]] = Field(default_factory=list)
+    manual_agents: list[dict[str, Any]] = Field(default_factory=list)
+    preference: dict[str, Any] | None = None
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
+    blocked: bool = False
+    preview_token: str
+
+
 class ProviderAvailabilityNotifyValue(CommandValue):
     outcome: str
     provider: str
@@ -770,6 +822,7 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         "stop_task": "stopped",
         "message_send": "queued",
         "provider_allocation_status": "read",
+        "provider_allocation_preview": "previewed",
     }[name]
 
 
@@ -1390,6 +1443,34 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         subject_labels={},
     ),
+    "provider_allocation_preview": CommandPresentation(
+        title="Preview a provider worker allocation",
+        summary=(
+            "Show what one provider allocation would change -- the selected profiles before "
+            "and after, the provider-wide ceiling, the sessions it drains and the busy set an "
+            "interrupt would need, the pins and manual agents it leaves alone -- with the "
+            "token apply consumes, without changing anything."
+        ),
+        arg_labels={
+            "provider": "Provider",
+            "profile_ids": "Profiles",
+            "participation": "Lifecycle",
+            "bounds": "Per-profile bounds",
+            "receive_new_work": "Project routing preference",
+            "drain": "Drain",
+            "allow_pinned_wait": "Pinned work may wait",
+        },
+        outcome_labels={"previewed": "Previewed", "rejected": "Rejected"},
+        result_labels={
+            "profiles": "Profiles before and after",
+            "ceiling": "Provider ceiling before and after",
+            "busy": "Busy sessions stopped",
+            "warnings": "Warnings",
+            "blocked": "Blocked until acknowledged",
+            "preview_token": "Preview token",
+        },
+        subject_labels={},
+    ),
     "task_route_options": CommandPresentation(
         title="Read a task's routing options",
         summary=(
@@ -1765,6 +1846,16 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             ProviderAllocationStatusArgs,
             ProviderAllocationStatusValue,
             _outcomes("read"),
+            SideEffectClass.READ,
+            (),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "provider_allocation_preview",
+            ProviderAllocationPreviewArgs,
+            ProviderAllocationPreviewValue,
+            _outcomes("previewed"),
             SideEffectClass.READ,
             (),
             IdempotencySpec(mode="natural"),

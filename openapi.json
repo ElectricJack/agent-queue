@@ -1437,6 +1437,53 @@
         }
       }
     },
+    "/api/providers/allocation/preview": {
+      "post": {
+        "summary": "Post Provider Allocation Preview",
+        "operationId": "post_provider_allocation_preview_api_providers_allocation_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderAllocationPreviewBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderAllocationPreviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid request"
+          },
+          "403": {
+            "description": "out of scope"
+          },
+          "404": {
+            "description": "unknown provider"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/providers/{provider}/state": {
       "post": {
         "summary": "Post Provider State",
@@ -10706,6 +10753,53 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/provider/allocation-preview": {
+      "post": {
+        "tags": [
+          "provider"
+        ],
+        "summary": "Preview one provider-level worker allocation without changing anything: select a provider's ordinary worker profiles (all of them, or the named ones -- another provider's or a control profile is refused), give them a lifecycle (pool or task) and/or per-profile pool bounds, and/or set or clear one project's preferred provider for unpinned work.  Returns the profiles before and after, the provider-wide configured ceiling before and after, each project's effective limit, every affected live session with what the drain does to it and the busy set an interrupt must authorize, pinned tasks and manual agent definitions the change leaves alone, warnings (pinned READY work on a profile leaving the pool blocks until allow_pinned_wait), and the preview_token apply consumes.  A lifecycle or bounds change and interrupt-busy need operator scope; a preference-only change needs project-admin scope for that project.",
+        "description": "Preview one provider-level worker allocation without changing anything: select a provider's ordinary worker profiles (all of them, or the named ones -- another provider's or a control profile is refused), give them a lifecycle (pool or task) and/or per-profile pool bounds, and/or set or clear one project's preferred provider for unpinned work.  Returns the profiles before and after, the provider-wide configured ceiling before and after, each project's effective limit, every affected live session with what the drain does to it and the busy set an interrupt must authorize, pinned tasks and manual agent definitions the change leaves alone, warnings (pinned READY work on a profile leaving the pool blocks until allow_pinned_wait), and the preview_token apply consumes.  A lifecycle or bounds change and interrupt-busy need operator scope; a preference-only change needs project-admin scope for that project.",
+        "operationId": "provider_allocation_preview",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderAllocationPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderAllocationPreviewResponse"
+                }
               }
             }
           },
@@ -43973,6 +44067,61 @@
         ],
         "title": "ProvideInputResponse"
       },
+      "ProviderAllocationBoundsBody": {
+        "properties": {
+          "min": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min"
+          },
+          "max": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max"
+          }
+        },
+        "type": "object",
+        "title": "ProviderAllocationBoundsBody",
+        "description": "Per selected pool profile; an explicit ``max: null`` removes the ceiling."
+      },
+      "ProviderAllocationBusySet": {
+        "properties": {
+          "session_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Session Ids",
+            "default": []
+          },
+          "task_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Task Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ProviderAllocationBusySet",
+        "description": "The busy sessions (and their tasks) the request stops."
+      },
       "ProviderAllocationCeiling": {
         "properties": {
           "min_active": {
@@ -44006,6 +44155,23 @@
         "type": "object",
         "title": "ProviderAllocationCeiling",
         "description": "The provider-wide configured ceiling over its enabled pool profiles.\n\n``max_active`` is ``None`` (and ``unbounded`` true) when any of them is\nunbounded.  Bounds stay per profile; this total is for reading only."
+      },
+      "ProviderAllocationCeilingChange": {
+        "properties": {
+          "before": {
+            "$ref": "#/components/schemas/ProviderAllocationCeiling"
+          },
+          "after": {
+            "$ref": "#/components/schemas/ProviderAllocationCeiling"
+          }
+        },
+        "type": "object",
+        "required": [
+          "before",
+          "after"
+        ],
+        "title": "ProviderAllocationCeilingChange",
+        "description": "The provider-wide configured ceiling before and after."
       },
       "ProviderAllocationDiagnostic": {
         "properties": {
@@ -44377,6 +44543,551 @@
         "title": "ProviderAllocationManualAgent",
         "description": "A durable agent definition no live pool session owns.\n\n``harness`` / ``intelligence_class`` / ``model`` are the agent's own\noverrides; ``effective_*`` is what a launch would use.  Allocation never\nrewrites any of them."
       },
+      "ProviderAllocationPinnedTask": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "waits": {
+            "type": "boolean",
+            "title": "Waits",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "profile_id",
+          "status"
+        ],
+        "title": "ProviderAllocationPinnedTask",
+        "description": "An explicit pin on a changed profile; allocation never rewrites it."
+      },
+      "ProviderAllocationPreference": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Before"
+          },
+          "after": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "After"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "mode"
+        ],
+        "title": "ProviderAllocationPreference",
+        "description": "A project's preferred provider for unpinned work, before and after."
+      },
+      "ProviderAllocationPreviewBody": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "profile_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Ids"
+          },
+          "participation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Participation"
+          },
+          "bounds": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAllocationBoundsBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "receive_new_work": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAllocationReceiveNewWorkBody"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "drain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drain"
+          },
+          "allow_pinned_wait": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Pinned Wait"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "ProviderAllocationPreviewBody",
+        "description": "``POST /api/providers/allocation/preview``: one allocation request (spec \u00a7Backend commands)."
+      },
+      "ProviderAllocationPreviewProfile": {
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
+          },
+          "selected": {
+            "type": "boolean",
+            "title": "Selected",
+            "default": false
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "changed_fields": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Changed Fields",
+            "default": []
+          },
+          "before": {
+            "$ref": "#/components/schemas/ProviderAllocationProfileState"
+          },
+          "after": {
+            "$ref": "#/components/schemas/ProviderAllocationProfileState"
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile_id",
+          "before",
+          "after"
+        ],
+        "title": "ProviderAllocationPreviewProfile",
+        "description": "One eligible profile of the provider, before and after the request."
+      },
+      "ProviderAllocationPreviewRequest": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider",
+            "description": "The provider: a key (codex) or vendor (openai)."
+          },
+          "profile_ids": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Ids",
+            "description": "Narrow to these ordinary worker profiles of the provider; omit to select all of them."
+          },
+          "participation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Participation",
+            "description": "The lifecycle every selected profile gets."
+          },
+          "bounds": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bounds",
+            "description": "Per selected pool profile: {\"min\": N, \"max\": N}; \"max\": null (or \"unbounded\") removes the ceiling.  Validated as pool_scale validates."
+          },
+          "receive_new_work": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receive New Work",
+            "description": "One project's preferred provider for unpinned work: {\"project_id\": \"...\", \"mode\": \"prefer\" | \"clear\"}."
+          },
+          "drain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Drain",
+            "description": "How displaced sessions stop: graceful (default; busy work finishes), idle-now (idle workers terminate now) or interrupt-busy (operator only; busy work is interrupted)."
+          },
+          "allow_pinned_wait": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allow Pinned Wait",
+            "description": "Acknowledge pinned READY tasks left on profiles leaving the pool."
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "ProviderAllocationPreviewRequest"
+      },
+      "ProviderAllocationPreviewResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "now": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Now"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "vendor": {
+            "type": "string",
+            "title": "Vendor",
+            "default": ""
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "request": {
+            "$ref": "#/components/schemas/ProviderAllocationRequest"
+          },
+          "required_scope": {
+            "type": "string",
+            "title": "Required Scope"
+          },
+          "global_max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Global Max Active"
+          },
+          "selected": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Selected",
+            "default": []
+          },
+          "profiles": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationPreviewProfile"
+            },
+            "type": "array",
+            "title": "Profiles",
+            "default": []
+          },
+          "ceiling": {
+            "$ref": "#/components/schemas/ProviderAllocationCeilingChange"
+          },
+          "project_limits": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationProjectLimit"
+            },
+            "type": "array",
+            "title": "Project Limits",
+            "default": []
+          },
+          "sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationPreviewSession"
+            },
+            "type": "array",
+            "title": "Sessions",
+            "default": []
+          },
+          "busy": {
+            "$ref": "#/components/schemas/ProviderAllocationBusySet"
+          },
+          "pinned": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationPinnedTask"
+            },
+            "type": "array",
+            "title": "Pinned",
+            "default": []
+          },
+          "manual_agents": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationPushChange"
+            },
+            "type": "array",
+            "title": "Manual Agents",
+            "default": []
+          },
+          "preference": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAllocationPreference"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderAllocationWarning"
+            },
+            "type": "array",
+            "title": "Warnings",
+            "default": []
+          },
+          "blocked": {
+            "type": "boolean",
+            "title": "Blocked",
+            "default": false
+          },
+          "preview_token": {
+            "type": "string",
+            "title": "Preview Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "request",
+          "required_scope",
+          "ceiling",
+          "busy",
+          "preview_token"
+        ],
+        "title": "ProviderAllocationPreviewResponse",
+        "description": "``provider_allocation_preview`` and ``POST /api/providers/allocation/preview``."
+      },
+      "ProviderAllocationPreviewSession": {
+        "properties": {
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "activity": {
+            "type": "string",
+            "title": "Activity"
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Id"
+          },
+          "task_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Title"
+          },
+          "action": {
+            "type": "string",
+            "title": "Action"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "profile_id",
+          "lifecycle",
+          "state",
+          "activity",
+          "action"
+        ],
+        "title": "ProviderAllocationPreviewSession",
+        "description": "A live session of a changed profile and what the request does to it.\n\n``action``: ``none``, ``stop`` (marked stopped, reconciler teardown),\n``terminate`` (idle, now), ``stop_after_task`` (busy, finishes first) or\n``interrupt`` (busy, only under an authorized ``interrupt-busy``)."
+      },
       "ProviderAllocationProfile": {
         "properties": {
           "profile_id": {
@@ -44481,6 +45192,58 @@
         "title": "ProviderAllocationProfile",
         "description": "One ordinary worker profile: its bounds, supply, sessions and pins."
       },
+      "ProviderAllocationProfileState": {
+        "properties": {
+          "lifecycle": {
+            "type": "string",
+            "title": "Lifecycle"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "min_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Active"
+          },
+          "max_active": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Active"
+          },
+          "min_per_project": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Per Project"
+          }
+        },
+        "type": "object",
+        "required": [
+          "lifecycle"
+        ],
+        "title": "ProviderAllocationProfileState",
+        "description": "The fields an allocation compares on one profile."
+      },
       "ProviderAllocationProject": {
         "properties": {
           "project_id": {
@@ -44538,6 +45301,68 @@
         "title": "ProviderAllocationProject",
         "description": "A project's routing preference and effective limit."
       },
+      "ProviderAllocationProjectLimit": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "max_concurrent_agents": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Concurrent Agents"
+          },
+          "lifecycle_before": {
+            "type": "string",
+            "title": "Lifecycle Before"
+          },
+          "lifecycle_after": {
+            "type": "string",
+            "title": "Lifecycle After"
+          },
+          "effective_max_before": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Max Before"
+          },
+          "effective_max_after": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Max After"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "profile_id",
+          "lifecycle_before",
+          "lifecycle_after"
+        ],
+        "title": "ProviderAllocationProjectLimit",
+        "description": "One project's effective max for one changed pool profile (``aq pool scale``)."
+      },
       "ProviderAllocationProjectSupply": {
         "properties": {
           "ready": {
@@ -44592,6 +45417,187 @@
         "type": "object",
         "title": "ProviderAllocationProjectSupply",
         "description": "One project's share of a profile's supply."
+      },
+      "ProviderAllocationPushChange": {
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "title": "Agent Id"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "effective_harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Effective Harness"
+          },
+          "state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "State"
+          },
+          "current_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Task Id"
+          },
+          "push_before": {
+            "type": "boolean",
+            "title": "Push Before"
+          },
+          "push_after": {
+            "type": "boolean",
+            "title": "Push After"
+          }
+        },
+        "type": "object",
+        "required": [
+          "agent_id",
+          "profile_id",
+          "provider",
+          "push_before",
+          "push_after"
+        ],
+        "title": "ProviderAllocationPushChange",
+        "description": "A manual agent definition whose push eligibility the request changes."
+      },
+      "ProviderAllocationReceiveNewWorkBody": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "mode"
+        ],
+        "title": "ProviderAllocationReceiveNewWorkBody",
+        "description": "One project's preferred provider for unpinned work."
+      },
+      "ProviderAllocationRequest": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "profile_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Ids"
+          },
+          "participation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Participation"
+          },
+          "bounds": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bounds"
+          },
+          "receive_new_work": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Receive New Work"
+          },
+          "drain": {
+            "type": "string",
+            "title": "Drain",
+            "default": "graceful"
+          },
+          "allow_pinned_wait": {
+            "type": "boolean",
+            "title": "Allow Pinned Wait",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider"
+        ],
+        "title": "ProviderAllocationRequest",
+        "description": "The canonical request a preview token was issued for.\n\n``bounds`` keeps only the keys the caller gave, so ``{\"max\": null}``\n(unbounded) stays distinct from an omitted ``max``."
       },
       "ProviderAllocationSession": {
         "properties": {
@@ -44831,6 +45837,43 @@
         "type": "object",
         "title": "ProviderAllocationSupply",
         "description": "Supply counters as the pool sizer reads them.\n\n``ready`` is pool demand and is ``None`` for a task-lifecycle profile,\nwhich has live sessions but no pool."
+      },
+      "ProviderAllocationWarning": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "blocking": {
+            "type": "boolean",
+            "title": "Blocking",
+            "default": false
+          },
+          "acknowledged": {
+            "type": "boolean",
+            "title": "Acknowledged",
+            "default": false
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "subjects": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Subjects",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ProviderAllocationWarning",
+        "description": "``pinned_ready_wait`` (blocking), ``manual_agent_push_changes``, ``bounds_skipped``,\n``no_change``."
       },
       "ProviderAvailabilityStatus": {
         "properties": {
