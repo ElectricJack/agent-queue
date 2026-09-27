@@ -1210,6 +1210,7 @@
       "description": "Worker pools: global per-profile sizing, per-project placement, the pool reconciler and session carve-outs, pool doctor checks, pool API endpoints, default install pools and the swarm config and surface.",
       "modules": [
         "tests/test_install_pools.py",
+        "tests/test_pool_admin.py",
         "tests/test_pool_agent_routing.py",
         "tests/test_pool_api_postgres.py",
         "tests/test_pool_doctor.py",
@@ -1266,7 +1267,7 @@
       ]
     }
   },
-  "digest": "sha256:cd1da10ddcb6e9eb3887d1aec63bb657238db2d0fe1e5e7b3e8d5af8dd220aec",
+  "digest": "sha256:bd2ee94773140b5f56f5c917cc0ddbe3acb303ea0d4912bd2a28f05ba5b2636c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5712,6 +5713,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"
@@ -9406,6 +9408,28 @@
         "asyncio"
       ],
       "summary": "Tests for the plugin system: base classes, loader, registry, and DB queries."
+    },
+    "tests/test_pool_admin.py": {
+      "areas": [
+        "worker-pools"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.pool_admin",
+        "src.config",
+        "src.database",
+        "src.event_bus",
+        "src.event_schemas",
+        "src.models",
+        "src.orchestrator",
+        "src.profiles.parser",
+        "src.profiles.sync"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Reusable pool edits preserve single-profile command semantics and audit data."
     },
     "tests/test_pool_agent_routing.py": {
       "areas": [
@@ -13488,8 +13512,10 @@
         "src.database.queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.hierarchy",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.vault"
       ],
       "markers": [
         "parametrize",
