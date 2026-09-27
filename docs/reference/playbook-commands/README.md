@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-125 commands are registered.
+126 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -154,6 +154,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`list_projects`](list_projects.md) | List projects | Read the configured projects without changing them. |
 | [`morning_report_preview`](morning_report_preview.md) | Morning Report Preview | Read bounded overnight evidence without writes or model calls. |
 | [`morning_report_tick`](morning_report_tick.md) | Morning Report Tick | Reserve and recover the zoned daily report and deadline fallback. |
+| [`provider_allocation_status`](provider_allocation_status.md) | Read provider worker allocation | Group every ordinary worker profile by provider with its pool supply, live sessions, pinned tasks, manual agents, project preferences and the provider-wide configured ceiling, without changing anything. |
 | [`provider_availability_notify`](provider_availability_notify.md) | Announce a provider's availability change | Message the global supervisor and the human once when a provider moves between launchable and unavailable; a repeat for the same change sends nothing. |
 | [`provider_reroute`](provider_reroute.md) | Re-route work off an unavailable provider | Move queued work whose provider is unavailable to the same intelligence class on an available provider, a few tasks at a time; pinned tasks and single-provider classes hold. |
 | [`provider_usage_probe`](provider_usage_probe.md) | Probe a provider's remaining quota | Ask a provider's own CLI what is left of the account's limit windows and record the reading. Free to run and never billed against the quota it reports. |

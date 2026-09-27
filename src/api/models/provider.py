@@ -331,7 +331,187 @@ class ProviderRerouteUndoBody(BaseModel):
     force: bool | None = None
 
 
+class ProviderAllocationSupply(BaseModel):
+    """Supply counters as the pool sizer reads them.
+
+    ``ready`` is pool demand and is ``None`` for a task-lifecycle profile,
+    which has live sessions but no pool.
+    """
+
+    ready: int | None = 0
+    idle: int = 0
+    busy: int = 0
+    starting: int = 0
+    draining: int = 0
+    unresponsive: int = 0
+
+
+class ProviderAllocationProjectSupply(ProviderAllocationSupply):
+    """One project's share of a profile's supply."""
+
+    project_id: str | None = None
+
+
+class ProviderAllocationSession(BaseModel):
+    """One live session of an ordinary worker profile."""
+
+    session_id: str
+    project_id: str | None = None
+    lifecycle: str
+    state: str
+    #: The supply bucket it counts in: idle, busy, starting, draining, unresponsive.
+    activity: str
+    agent_id: str | None = None
+    task_id: str | None = None
+    task_title: str | None = None
+    idle_seconds: float | None = None
+    started_at: float | None = None
+
+
+class ProviderAllocationIntent(BaseModel):
+    """READY/ASSIGNED/IN_PROGRESS tasks carrying one explicit provider intent.
+
+    ``count`` and ``by_status`` are fleet-wide; ``task_ids`` holds only the
+    ones inside the caller's view.
+    """
+
+    count: int = 0
+    by_status: dict[str, int] = Field(default_factory=dict)
+    task_ids: list[str] = []
+
+
+class ProviderAllocationHidden(BaseModel):
+    """What the caller's view left out of one profile."""
+
+    projects: int = 0
+    sessions: int = 0
+    tasks: int = 0
+
+
+class ProviderAllocationProfile(BaseModel):
+    """One ordinary worker profile: its bounds, supply, sessions and pins."""
+
+    profile_id: str
+    name: str = ""
+    harness: str
+    lifecycle: str
+    enabled: bool = True
+    intelligence_class: str = ""
+    min_active: int | None = None
+    max_active: int | None = None
+    min_per_project: int | None = None
+    supply: ProviderAllocationSupply
+    projects: list[ProviderAllocationProjectSupply] = []
+    sessions: list[ProviderAllocationSession] = []
+    pinned: ProviderAllocationIntent
+    preferred: ProviderAllocationIntent
+    hidden: ProviderAllocationHidden
+
+
+class ProviderAllocationCeiling(BaseModel):
+    """The provider-wide configured ceiling over its enabled pool profiles.
+
+    ``max_active`` is ``None`` (and ``unbounded`` true) when any of them is
+    unbounded.  Bounds stay per profile; this total is for reading only.
+    """
+
+    min_active: int = 0
+    max_active: int | None = 0
+    unbounded: bool = False
+    pool_profiles: int = 0
+
+
+class ProviderAllocationManualAgent(BaseModel):
+    """A durable agent definition no live pool session owns.
+
+    ``harness`` / ``intelligence_class`` / ``model`` are the agent's own
+    overrides; ``effective_*`` is what a launch would use.  Allocation never
+    rewrites any of them.
+    """
+
+    agent_id: str
+    name: str
+    profile_id: str
+    enabled: bool = True
+    state: str
+    harness: str | None = None
+    intelligence_class: str | None = None
+    model: str | None = None
+    has_overrides: bool = False
+    effective_harness: str = ""
+    effective_class: str | None = None
+    current_task_id: str | None = None
+    current_task_title: str | None = None
+    current_project_id: str | None = None
+    #: True when the current task lies outside the caller's view.
+    redacted: bool = False
+
+
+class ProviderAllocationEvent(BaseModel):
+    """The newest ``provider.allocation_changed`` event for a provider."""
+
+    event_id: int | None = None
+    at: float | None = None
+    request_id: str | None = None
+    status: str | None = None
+    actor: str | None = None
+
+
+class ProviderAllocationGroup(BaseModel):
+    """One provider: its ordinary worker profiles and what runs on them."""
+
+    provider: str
+    vendor: str = ""
+    state: str = "available"
+    harnesses: list[str] = []
+    supply: ProviderAllocationSupply
+    ceiling: ProviderAllocationCeiling
+    profiles: list[ProviderAllocationProfile] = []
+    manual_agents: list[ProviderAllocationManualAgent] = []
+    pinned_tasks: int = 0
+    preferred_tasks: int = 0
+    last_allocation: ProviderAllocationEvent | None = None
+
+
+class ProviderAllocationProject(BaseModel):
+    """A project's routing preference and effective limit."""
+
+    project_id: str
+    name: str = ""
+    status: str = ""
+    preferred_provider: str | None = None
+    default_profile_id: str | None = None
+    max_concurrent_agents: int | None = None
+
+
+class ProviderAllocationDiagnostic(BaseModel):
+    """A profile (or agent) bulk allocation never selects, and why."""
+
+    kind: str
+    id: str
+    harness: str | None = None
+    lifecycle: str | None = None
+    provider: str | None = None
+    #: retired_project_scoped, template, named, role, malformed or unknown_provider.
+    reason: str
+
+
+class ProviderAllocationStatusResponse(BaseModel):
+    """``provider_allocation_status`` and ``GET /api/providers/allocation``."""
+
+    success: bool = True
+    now: float
+    project_id: str | None = None
+    #: True when the caller's scope hid other projects' detail.
+    redacted: bool = False
+    global_max_active: int | None = None
+    providers: list[ProviderAllocationGroup] = []
+    projects: list[ProviderAllocationProject] = []
+    diagnostics: list[ProviderAllocationDiagnostic] = []
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "provider_allocation_status": ProviderAllocationStatusResponse,
     "provider_status": ProviderStatusResponse,
     "provider_history": ProviderHistoryResponse,
     "provider_held_tasks": ProviderHeldTasksResponse,

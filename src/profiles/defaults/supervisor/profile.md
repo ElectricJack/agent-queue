@@ -158,6 +158,7 @@ its outbox; transport failures never need a new author turn.
     "phase_list",
     "pool_status",
     "prime",
+    "provider_allocation_status",
     "provider_held_tasks",
     "provider_history",
     "provider_recheck",
