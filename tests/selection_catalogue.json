@@ -1276,7 +1276,7 @@
       ]
     }
   },
-  "digest": "sha256:47fac71d5b76bcbcb1b447b410252ec3c2cd487599067a4ec71132f35bf2e55d",
+  "digest": "sha256:bfdf94ff2970c09286f4f99efb7b3f13d4e0ca066f713c479bdd78988f4ff39c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5506,7 +5506,9 @@
         "src.playbooks.artifact_ref",
         "src.scheduler"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Work-graph WG-4: explain + ready frontier."
     },
     "tests/test_factory_policy_instructions.py": {
@@ -9670,9 +9672,12 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.models",
         "src.scheduler"
       ],
-      "markers": [],
+      "markers": [
+        "asyncio"
+      ],
       "summary": "size_pools — desired-state sizing over the global (profile-only) pool key."
     },
     "tests/test_portable_config.py": {
@@ -10472,7 +10477,9 @@
         "src.providers.reroute",
         "src.sessions.harness_parser"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "The re-route engine (provider-failover D11-D17)."
     },
     "tests/test_provider_spill.py": {
@@ -12370,7 +12377,9 @@
         "src.orchestrator",
         "src.vault"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "An explicit intelligence class picks its own lane at creation time."
     },
     "tests/test_task_close_summary_enforcement.py": {

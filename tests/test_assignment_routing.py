@@ -267,6 +267,49 @@ async def test_route_options_already_routed_and_no_options(handler, orch):
     assert res["success"] is False
 
 
+@pytest.mark.parametrize("profile_id", [None, "deep-low-claude"])
+async def test_project_preferred_provider_narrows_automatic_routes(handler, orch, profile_id):
+    await orch.db.update_project("p", preferred_provider="codex")
+    await _create(orch.db, "preferred", intelligence_class="deep-low", profile_id=profile_id)
+    result = await handler._cmd_task_route_options({"task_id": "preferred"})
+    assert result["outcome"] == "explicit"
+    assert result["explicit_profile_id"] == "deep-low-codex"
+    assert {row["profile_id"] for row in result["options"]} == {"deep-low-codex"}
+    assert (await orch.db.get_task("preferred")).profile_id == profile_id  # read only
+
+    await _create(orch.db, "undecided")
+    undecided = await handler._cmd_task_route_options({"task_id": "undecided"})
+    assert undecided["outcome"] == "undecided"
+    assert {row["profile_id"] for row in undecided["options"]} == {"deep-low-codex"}
+
+
+@pytest.mark.parametrize("intent", ["preferred", "pinned"])
+async def test_project_preference_preserves_explicit_task_routes(handler, orch, intent):
+    await orch.db.update_project("p", preferred_provider="codex")
+    await _create(orch.db, "explicit", intelligence_class="deep-low",
+                  profile_id="deep-low-claude", provider_intent=intent)
+    result = await handler._cmd_task_route_options({"task_id": "explicit"})
+    assert result["outcome"] == "already_routed"
+    assert result["explicit_profile_id"] == "deep-low-claude"
+    assert {row["profile_id"] for row in result["options"]} == {"deep-low-claude"}
+
+
+@pytest.mark.parametrize("cause", ["disabled", "unavailable", "no_mapping"])
+async def test_project_preference_never_offers_another_provider(handler, orch, cause):
+    await orch.db.update_project("p", preferred_provider="codex")
+    if cause == "disabled":
+        await orch.db.update_profile("deep-low-codex", enabled=False)
+    elif cause == "unavailable":
+        await orch.provider_availability.set_state("codex", "disabled", by="human:test")
+    await _create(orch.db, "held", intelligence_class=(
+        "fast-low" if cause == "no_mapping" else "deep-low"
+    ), profile_id="deep-low-claude")
+    result = await handler._cmd_task_route_options({"task_id": "held"})
+    assert result["outcome"] == ("held" if cause == "unavailable" else "no_options")
+    assert result["explicit_profile_id"] is None
+    assert all(row["profile_id"] == "deep-low-codex" for row in result["options"])
+
+
 async def test_task_route_writes_class_profile_and_reason(handler, orch):
     await _create(orch.db, "t")
     res = await handler._cmd_task_route({

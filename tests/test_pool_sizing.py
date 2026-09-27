@@ -8,10 +8,52 @@ in is ``place_pool_actions``' problem — see ``tests/test_pool_placement.py``.
 
 from __future__ import annotations
 
+import pytest
+
 from src.scheduler import PoolKey, PoolProjectSupply, PoolSupply, size_pools
 
 K = PoolKey("worker")
 K2 = PoolKey("reviewer")
+
+
+@pytest.mark.asyncio
+async def test_unrouted_demand_follows_project_preferred_provider(tmp_path):
+    from copy import deepcopy
+    from src.models import AgentProfile, Task, TaskStatus
+    from tests.session_dispatch_helpers import create_session_project, make_session_orch
+
+    orch = await make_session_orch(tmp_path)
+    try:
+        await create_session_project(orch)
+        for profile in await orch.db.list_profiles():
+            if profile.default_class == "standard-medium":
+                await orch.db.update_profile(profile.id, enabled=False)
+        for provider in ("claude", "codex"):
+            await orch.db.create_profile(AgentProfile(
+                id=f"preferred-test-{provider}", name=provider, harness=provider,
+                lifecycle="pool", default_class="standard-medium", max_active=2,
+            ))
+        # The fixture class is Claude-only unless this test adds the Codex slice.
+        cls = deepcopy(orch.session_spec_builder._intelligence_classes["standard-medium"])
+        cls.mapping["codex"] = {
+            "model": "gpt-6",
+        }
+        orch.session_spec_builder._intelligence_classes["standard-medium"] = cls
+        await orch.db.update_project("p-1", default_profile_id="preferred-test-claude",
+                                     preferred_provider="codex")
+        await orch.db.create_task(Task(
+            id="unrouted", project_id="p-1", title="Unrouted", description="",
+            status=TaskStatus.READY,
+        ))
+        measurement = await orch._measure_pools()
+        assert measurement.demand[PoolKey("preferred-test-codex")] == 1
+        assert measurement.demand[PoolKey("preferred-test-claude")] == 0
+        await orch.db.update_profile("preferred-test-codex", enabled=False)
+        measurement = await orch._measure_pools()
+        assert measurement.demand[PoolKey("preferred-test-claude")] == 0
+    finally:
+        await orch.provider_availability.close()
+        await orch.db.close()
 
 
 def run(**over):
