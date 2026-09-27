@@ -208,6 +208,15 @@ class PoolsMixin:
     ) -> set[str]:
         return set(await self._pool_profiles(project_id, system_profiles=system_profiles))
 
+    async def _delivery_admission(self, task_ids):
+        from src.integration.admission import observe_admission
+        from src.integration.development import DevelopmentIntegration
+
+        service = getattr(self, "development_integration", None)
+        if service is None:
+            service = DevelopmentIntegration(self.db, data_dir=self.config.data_dir, git=self.git)
+        return await observe_admission(self.db, task_ids, service)
+
     async def _measure_pools(self, project_ids: set[str] | None = None) -> PoolMeasurement:
         """One :class:`PoolMeasurement` for every pool profile, this tick.
 
@@ -264,7 +273,16 @@ class PoolsMixin:
                 continue
 
             measurement.projects[project.id] = project
-            ready_by_profile = await self.db.count_ready_by_profile(project.id)
+            allowed = None
+            if project.hierarchical_integration_mode == "development":
+                from src.integration.admission import structural_candidates
+                batch = await self._delivery_admission(
+                    await structural_candidates(self.db, project.id)
+                )
+                allowed = batch.allowed
+            ready_by_profile = await self.db.count_ready_by_profile(
+                project.id, allowed_task_ids=allowed
+            )
             unrouted_ready = ready_by_profile.get(None, 0)
             default_profile_id = await self._effective_default_profile_id(
                 project, system_profiles=system_profiles

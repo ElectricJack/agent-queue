@@ -5446,6 +5446,18 @@ class TaskCommandsMixin:
         # snapshots do not include hierarchy receipt/origin fences.
         reasons.extend(await self.db.claim_frontier_exclusions(str(task_id)))
 
+        from src.integration.admission import observe_admission
+        admission = await observe_admission(
+            self.db, [str(task_id)], self._development_integration()
+        )
+        reasons.extend(admission.reasons.get(str(task_id), []))
+        if str(task_id) not in admission.allowed and not admission.reasons.get(str(task_id)):
+            reasons.append(Reason(
+                code="development_snapshot_changed",
+                detail="Development git/graph snapshot changed; admission will retry",
+                ref=str(task_id),
+            ))
+
         # A phase is deliberately stricter than a normal container: a failed
         # direct child never settles it, and every later phase stays closed.
         # Keep this computed from the same child/status data settlement reads;
@@ -5862,6 +5874,13 @@ class TaskCommandsMixin:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
+        from src.integration.admission import observe_admission
+        admission = await observe_admission(
+            self.db, [task.id for task in frontier], self._development_integration()
+        )
+        delivery_withheld = {task.id for task in frontier if task.id not in admission.allowed}
+        frontier = [task for task in frontier if task.id in admission.allowed]
+
         if profile_id:
             project = await self.db.get_project(str(project_id))
             default_profile_id = getattr(project, "default_profile_id", None) if project else None
@@ -5900,7 +5919,10 @@ class TaskCommandsMixin:
         withheld: list[dict] = []
         for status in (TaskStatus.DEFINED, TaskStatus.BLOCKED, TaskStatus.READY):
             for task in await self.db.list_tasks(project_id=str(project_id), status=status):
-                if status == TaskStatus.READY and not task.is_blocked:
+                if (
+                    status == TaskStatus.READY and not task.is_blocked
+                    and task.id not in delivery_withheld
+                ):
                     # Might still be withheld by a hold:* label.
                     lbls = await self.db.get_task_labels(task.id)
                     if not any(x.startswith("hold:") for x in lbls):
