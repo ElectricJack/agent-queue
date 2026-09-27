@@ -347,6 +347,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "provider_reroute": "provider",
     "provider_reroute_undo": "provider",
     "provider_allocation_status": "provider",
+    "provider_allocation_preview": "provider",
     # worker pools — sizing and bounds (swarm-work-model §11)
     "pool_status": "pool",
     "pool_scale": "pool",
@@ -5788,6 +5789,85 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": [],
+        },
+    },
+    {
+        "name": "provider_allocation_preview",
+        "description": (
+            "Preview one provider-level worker allocation without changing anything: "
+            "select a provider's ordinary worker profiles (all of them, or the named "
+            "ones -- another provider's or a control profile is refused), give them a "
+            "lifecycle (pool or task) and/or per-profile pool bounds, and/or set or "
+            "clear one project's preferred provider for unpinned work.  Returns the "
+            "profiles before and after, the provider-wide configured ceiling before and "
+            "after, each project's effective limit, every affected live session with "
+            "what the drain does to it and the busy set an interrupt must authorize, "
+            "pinned tasks and manual agent definitions the change leaves alone, "
+            "warnings (pinned READY work on a profile leaving the pool blocks until "
+            "allow_pinned_wait), and the preview_token apply consumes.  A lifecycle or "
+            "bounds change and interrupt-busy need operator scope; a preference-only "
+            "change needs project-admin scope for that project."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {
+                    "type": "string",
+                    "description": "The provider: a key (codex) or vendor (openai).",
+                },
+                "profile_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Narrow to these ordinary worker profiles of the provider; "
+                        "omit to select all of them."
+                    ),
+                },
+                "participation": {
+                    "type": "string",
+                    "enum": ["pool", "task"],
+                    "description": "The lifecycle every selected profile gets.",
+                },
+                "bounds": {
+                    "type": "object",
+                    "description": (
+                        'Per selected pool profile: {"min": N, "max": N}; "max": null '
+                        '(or "unbounded") removes the ceiling.  Validated as pool_scale '
+                        "validates."
+                    ),
+                    "properties": {
+                        "min": {"type": "integer"},
+                        "max": {"type": ["integer", "null"]},
+                    },
+                },
+                "receive_new_work": {
+                    "type": "object",
+                    "description": (
+                        'One project\'s preferred provider for unpinned work: '
+                        '{"project_id": "...", "mode": "prefer" | "clear"}.'
+                    ),
+                    "properties": {
+                        "project_id": {"type": "string"},
+                        "mode": {"type": "string", "enum": ["prefer", "clear"]},
+                    },
+                },
+                "drain": {
+                    "type": "string",
+                    "enum": ["graceful", "idle-now", "interrupt-busy"],
+                    "description": (
+                        "How displaced sessions stop: graceful (default; busy work "
+                        "finishes), idle-now (idle workers terminate now) or "
+                        "interrupt-busy (operator only; busy work is interrupted)."
+                    ),
+                },
+                "allow_pinned_wait": {
+                    "type": "boolean",
+                    "description": (
+                        "Acknowledge pinned READY tasks left on profiles leaving the pool."
+                    ),
+                },
+            },
+            "required": ["provider"],
         },
     },
     {

@@ -1,4 +1,4 @@
-"""Provider allocation status (provider-worker-allocation-controls, plan Task 6).
+"""Provider allocation status and preview (provider-worker-allocation-controls, Tasks 6, 8).
 
 ``provider_allocation_status`` is the read half of the provider allocation
 surface: every ordinary worker profile grouped by the *harness* provider key,
@@ -6,6 +6,8 @@ with its pool supply, live sessions, explicit pins, the manual agents that
 bulk controls never rewrite, each project's routing preference and the
 provider-wide configured ceiling.  Non-worker profiles are diagnostics, and
 a project-scoped caller sees other projects' sessions and tasks redacted.
+``provider_allocation_preview`` is what one allocation request would change,
+with the SHA-256 token apply consumes, and its scope rules.
 
 The fixture is the spec's mixed fleet on real PostgreSQL: Claude and Codex
 worker rungs at two classes, pool and task lifecycles, idle / busy /
@@ -554,3 +556,629 @@ def test_aggregate_ceiling_counts_enabled_pools_only():
     assert aggregate_ceiling([]) == {
         "min_active": 0, "max_active": 0, "unbounded": False, "pool_profiles": 0,
     }
+
+
+# == provider_allocation_preview (plan Task 8) =====================================
+#
+# The preview is a pure function of one snapshot and one request: it selects
+# the eligible profiles of one provider, reports before and after rows, the
+# project-effective limits and the provider-wide ceiling, the sessions the
+# request touches (and the busy set an interrupt would need), the pins and
+# manual agents it leaves alone, and a SHA-256 token over the request and
+# everything it observed.  It writes nothing.
+
+
+def _global_supervisor() -> dict:
+    return {"kind": "session", "session_id": "supervisor-global", "project_id": None,
+            "elevated": True}
+
+
+def _worker_scope() -> dict:
+    return {"kind": "session", "session_id": "s1", "task_id": "t1", "project_id": ALPHA,
+            "elevated": False}
+
+
+@pytest.fixture
+def swarm_on(orch):
+    """``participation: pool`` is refused while the swarm is off, as ``pool set-lifecycle`` is."""
+    enabled = orch.config.swarm.enabled
+    orch.config.swarm.enabled = True
+    yield orch
+    orch.config.swarm.enabled = enabled
+
+
+async def _preview(orch, **request):
+    return await _handler(orch).execute("provider_allocation_preview", request)
+
+
+def _rows(preview) -> dict[str, dict]:
+    return {row["profile_id"]: row for row in preview["profiles"]}
+
+
+def _warnings(preview) -> dict[str, dict]:
+    return {row["code"]: row for row in preview["warnings"]}
+
+
+async def _snapshot(orch):
+    from src.providers.allocation import build_allocation_snapshot
+
+    return await build_allocation_snapshot(orch)
+
+
+# -- selection --------------------------------------------------------------------
+
+
+async def test_preview_selects_every_eligible_profile_of_the_provider(swarm_on):
+    orch = swarm_on
+    preview = await _preview(orch, provider="openai", participation="pool")
+    assert preview["success"] is True, preview
+    # A vendor resolves to the harness provider key, and the canonical request says so.
+    assert preview["provider"] == "codex" and preview["request"]["provider"] == "codex"
+    assert preview["request"]["profile_ids"] is None
+    codex = [
+        "astra-high-codex", "astra-low-codex", "deep-high-codex", "deep-low-codex",
+        "fast-high-codex", "fast-low-codex", "standard-high-codex",
+    ]
+    assert preview["selected"] == codex
+    rows = _rows(preview)
+    assert list(rows) == codex
+    assert all(row["selected"] for row in rows.values())
+    # Already-pool rungs are unchanged; task rungs join the pool.
+    assert rows["standard-high-codex"]["changed"] is False
+    assert rows["deep-high-codex"]["changed_fields"] == ["lifecycle"]
+    assert rows["deep-high-codex"]["before"]["lifecycle"] == "task"
+    assert rows["deep-high-codex"]["after"]["lifecycle"] == "pool"
+    # Nothing Claude-side is selected or even listed.
+    assert not any(pid.endswith("-claude") for pid in rows)
+
+
+async def test_preview_narrows_to_named_profiles_of_the_same_provider(swarm_on):
+    orch = swarm_on
+    preview = await _preview(
+        orch, provider="codex", profile_ids=["deep-high-codex", "deep-high-codex"],
+        participation="pool",
+    )
+    assert preview["success"] is True, preview
+    assert preview["selected"] == ["deep-high-codex"]
+    assert preview["request"]["profile_ids"] == ["deep-high-codex"]
+    rows = _rows(preview)
+    assert rows["deep-high-codex"]["selected"] is True
+    assert rows["deep-low-codex"]["selected"] is False
+    assert rows["deep-low-codex"]["changed"] is False
+
+
+@pytest.mark.parametrize(
+    ("profile_ids", "fragment"),
+    [
+        (["standard-high-claude"], "belongs to provider claude, not codex"),
+        (["standard-high-codex", "standard-high-claude"], "belongs to provider claude"),
+        (["reviewer"], "not an ordinary worker profile (role)"),
+        (["supervisor"], "not an ordinary worker profile (named)"),
+        (["mystery-worker"], "not an ordinary worker profile (unknown_provider)"),
+        (["nope"], "unknown profile 'nope'"),
+        ([], "empty selection"),
+        ([" "], "empty selection"),
+    ],
+)
+async def test_preview_refuses_foreign_control_unknown_and_empty_selections(
+    orch, profile_ids, fragment
+):
+    preview = await _preview(
+        orch, provider="codex", profile_ids=profile_ids, participation="task"
+    )
+    assert preview["success"] is False
+    assert fragment in preview["error"], preview["error"]
+
+
+async def test_preview_refuses_an_unknown_provider_and_an_empty_request(orch):
+    unknown = await _preview(orch, provider="mystery", participation="pool")
+    assert unknown["success"] is False and unknown["error"].startswith("unknown provider")
+    nothing = await _preview(orch, provider="codex")
+    assert nothing["success"] is False and nothing["error"].startswith("nothing to change")
+    missing = await _preview(orch, participation="pool")
+    assert missing["success"] is False and "provider is required" in missing["error"]
+
+
+@pytest.mark.parametrize(
+    ("request_fields", "fragment"),
+    [
+        ({"participation": "named"}, "participation must be pool or task"),
+        ({"participation": "pool", "drain": "kill"}, "drain must be one of"),
+        ({"bounds": {}}, "pass bounds.min and/or bounds.max"),
+        ({"bounds": {"min": -1}}, "min must be >= 0"),
+        ({"bounds": {"max": 0}}, "max must be >= 1"),
+        ({"bounds": {"min": 3, "max": 2}}, "max must be >= min"),
+        ({"bounds": {"min": "one"}}, "bounds.min must be an integer"),
+        ({"bounds": {"min": 0, "cap": 2}}, "bounds accepts only min and max"),
+        ({"participation": "task", "bounds": {"max": 2}}, "participation task clears them"),
+        ({"receive_new_work": {"project_id": ALPHA}}, "mode must be prefer or clear"),
+        ({"receive_new_work": {"mode": "prefer"}}, "project_id is required"),
+        ({"receive_new_work": {"project_id": "nope", "mode": "prefer"}}, "not found"),
+        ({"participation": "pool", "allow_pinned_wait": "yes"}, "must be a boolean"),
+    ],
+)
+async def test_preview_validates_the_request(orch, request_fields, fragment):
+    preview = await _preview(orch, provider="codex", **request_fields)
+    assert preview["success"] is False
+    assert fragment in preview["error"], preview["error"]
+
+
+async def test_bounds_follow_the_pool_scale_validation_per_profile(orch):
+    # ``deep-high-claude`` has no min_active, and ``aq pool scale --max`` alone
+    # refuses exactly that; the preview names the profile.
+    refused = await _preview(orch, provider="claude", bounds={"max": 1})
+    assert refused["success"] is False
+    assert refused["error"].startswith("deep-high-claude: min must be >= 0")
+    # A named task-lifecycle profile is no pool profile, as for ``pool scale``.
+    named = await _preview(
+        orch, provider="claude", profile_ids=["fast-low-claude"], bounds={"min": 0, "max": 1}
+    )
+    assert named["success"] is False and "no pool profile 'fast-low-claude'" in named["error"]
+
+
+async def test_pool_participation_is_refused_while_the_swarm_is_off(orch):
+    assert orch.config.swarm.enabled is False
+    preview = await _preview(orch, provider="codex", participation="pool")
+    assert preview["success"] is False
+    assert "swarm.enabled is false" in preview["error"]
+    # Leaving the pool is always allowed.
+    assert (await _preview(orch, provider="codex", participation="task"))["success"] is True
+
+
+# -- rows, limits and the ceiling -------------------------------------------------
+
+
+async def test_preview_reports_the_ceiling_beside_per_profile_bounds(orch):
+    preview = await _preview(orch, provider="claude", bounds={"min": 0, "max": 1})
+    assert preview["success"] is True, preview
+    rows = _rows(preview)
+    rung = rows["standard-high-claude"]
+    assert rung["before"] == {
+        "lifecycle": "pool", "enabled": True, "min_active": 1, "max_active": 2,
+        "min_per_project": None,
+    }
+    assert rung["after"] == {**rung["before"], "min_active": 0, "max_active": 1}
+    assert rung["changed_fields"] == ["min_active", "max_active"]
+    assert rows["deep-high-claude"]["after"]["max_active"] == 1
+    assert rows["deep-low-claude"]["after"]["max_active"] == 1
+    # Bounds are per pool profile: task rungs keep theirs and are named.
+    assert rows["fast-low-claude"]["changed"] is False
+    assert _warnings(preview)["bounds_skipped"]["subjects"] == [
+        "fast-high-claude", "fast-low-claude",
+    ]
+    # The disabled pool adds nothing to the ceiling before or after.
+    assert preview["ceiling"] == {
+        "before": {"min_active": 1, "max_active": 3, "unbounded": False, "pool_profiles": 2},
+        "after": {"min_active": 0, "max_active": 2, "unbounded": False, "pool_profiles": 2},
+    }
+    limits = {
+        (row["project_id"], row["profile_id"]): row for row in preview["project_limits"]
+    }
+    assert limits[(ALPHA, "standard-high-claude")] == {
+        "project_id": ALPHA,
+        "profile_id": "standard-high-claude",
+        "max_concurrent_agents": 2,
+        "lifecycle_before": "pool",
+        "lifecycle_after": "pool",
+        "effective_max_before": 2,
+        "effective_max_after": 1,
+    }
+    assert (ALPHA, "fast-low-claude") not in limits
+
+
+async def test_unbounded_max_makes_the_ceiling_unbounded(orch):
+    preview = await _preview(
+        orch, provider="codex", profile_ids=["standard-high-codex"],
+        bounds={"min": 0, "max": "unbounded"},
+    )
+    assert preview["success"] is True, preview
+    assert preview["request"]["bounds"] == {"min": 0, "max": None}
+    assert _rows(preview)["standard-high-codex"]["after"]["max_active"] is None
+    limits = {
+        (row["project_id"], row["profile_id"]): row for row in preview["project_limits"]
+    }
+    # The project cap still bounds an unbounded pool.
+    assert limits[(BRAVO, "standard-high-codex")]["effective_max_after"] == 2
+
+
+# -- sessions, the busy set, pins and manual agents --------------------------------
+
+
+async def test_leaving_the_pool_drains_by_mode_and_names_the_busy_set(orch):
+    graceful = await _preview(orch, provider="claude", participation="task")
+    assert graceful["success"] is True, graceful
+    assert {row["profile_id"] for row in graceful["profiles"] if row["changed"]} == {
+        "deep-high-claude", "deep-low-claude", "standard-high-claude",
+    }
+    actions = {row["session_id"]: row["action"] for row in graceful["sessions"]}
+    assert actions == {
+        "sess-alpha-busy": "stop_after_task",
+        "sess-alpha-idle": "stop",
+        "sess-bravo-start": "stop",
+    }
+    assert graceful["busy"] == {"session_ids": ["sess-alpha-busy"],
+                                "task_ids": ["task-alpha-busy"]}
+    assert _rows(graceful)["standard-high-claude"]["after"] == {
+        "lifecycle": "task", "enabled": True, "min_active": None, "max_active": None,
+        "min_per_project": None,
+    }
+    assert graceful["ceiling"]["after"] == {
+        "min_active": 0, "max_active": 0, "unbounded": False, "pool_profiles": 0,
+    }
+
+    idle_now = await _preview(orch, provider="claude", participation="task", drain="idle-now")
+    actions = {row["session_id"]: row["action"] for row in idle_now["sessions"]}
+    assert actions["sess-alpha-idle"] == "terminate"
+    assert actions["sess-alpha-busy"] == "stop_after_task"
+    assert idle_now["busy"] == graceful["busy"]
+
+    interrupt = await _preview(
+        orch, provider="claude", participation="task", drain="interrupt_busy"
+    )
+    assert interrupt["request"]["drain"] == "interrupt-busy"
+    actions = {row["session_id"]: row["action"] for row in interrupt["sessions"]}
+    assert actions["sess-alpha-busy"] == "interrupt"
+    assert actions["sess-bravo-start"] == "stop"
+    assert interrupt["busy"] == graceful["busy"]
+
+
+async def test_lowering_bounds_terminates_idle_excess_only_when_asked(orch):
+    graceful = await _preview(
+        orch, provider="claude", profile_ids=["standard-high-claude"],
+        bounds={"min": 0, "max": 1},
+    )
+    assert {row["action"] for row in graceful["sessions"]} == {"none"}
+    assert graceful["busy"] == {"session_ids": [], "task_ids": []}
+
+    idle_now = await _preview(
+        orch, provider="claude", profile_ids=["standard-high-claude"],
+        bounds={"min": 0, "max": 1}, drain="idle-now",
+    )
+    actions = {row["session_id"]: row["action"] for row in idle_now["sessions"]}
+    # ``aq pool scale --now``: alpha runs two against an effective max of one,
+    # so its oldest idle worker goes; busy work is never cut short.
+    assert actions == {
+        "sess-alpha-busy": "none",
+        "sess-alpha-idle": "terminate",
+        "sess-bravo-start": "none",
+    }
+    assert idle_now["busy"] == {"session_ids": [], "task_ids": []}
+
+
+async def test_pinned_ready_work_on_a_drained_profile_blocks_until_acknowledged(orch):
+    preview = await _preview(orch, provider="claude", participation="task")
+    pinned = {row["task_id"]: row for row in preview["pinned"]}
+    assert set(pinned) == {"task-alpha-busy", "task-alpha-pin"}
+    assert pinned["task-alpha-pin"]["waits"] is True
+    assert pinned["task-alpha-busy"]["waits"] is False
+    warning = _warnings(preview)["pinned_ready_wait"]
+    assert warning["blocking"] is True and warning["acknowledged"] is False
+    assert warning["subjects"] == ["task-alpha-pin"]
+    assert preview["blocked"] is True
+
+    acknowledged = await _preview(
+        orch, provider="claude", participation="task", allow_pinned_wait=True
+    )
+    warning = _warnings(acknowledged)["pinned_ready_wait"]
+    assert warning["acknowledged"] is True
+    assert acknowledged["blocked"] is False
+    assert acknowledged["preview_token"] != preview["preview_token"]
+
+
+async def test_manual_agents_whose_push_eligibility_changes_are_named(orch):
+    preview = await _preview(orch, provider="claude", participation="task")
+    # Both definitions draw on standard-high-claude, whichever harness they run.
+    agents = {row["agent_id"]: row for row in preview["manual_agents"]}
+    assert list(agents) == ["ag-manual-override", "ag-manual-plain"]
+    assert agents["ag-manual-override"]["provider"] == "codex"
+    assert (agents["ag-manual-plain"]["push_before"], agents["ag-manual-plain"]["push_after"]) == (
+        False, True,
+    )
+    warning = _warnings(preview)["manual_agent_push_changes"]
+    assert warning["blocking"] is False
+    assert warning["subjects"] == ["ag-manual-override", "ag-manual-plain"]
+
+    # A Codex lifecycle change touches no manual agent: none draws on a Codex rung.
+    codex = await _preview(orch, provider="codex", participation="task")
+    assert codex["manual_agents"] == []
+    assert "manual_agent_push_changes" not in _warnings(codex)
+
+
+async def test_preference_only_preview_touches_no_session(orch):
+    preview = await _preview(
+        orch, provider="codex", receive_new_work={"project_id": ALPHA, "mode": "prefer"}
+    )
+    assert preview["success"] is True, preview
+    assert preview["required_scope"] == "project_admin"
+    assert preview["preference"] == {
+        "project_id": ALPHA, "mode": "prefer", "before": None, "after": "codex",
+        "changed": True,
+    }
+    assert not any(row["changed"] for row in preview["profiles"])
+    assert (preview["sessions"], preview["pinned"], preview["manual_agents"]) == ([], [], [])
+    assert preview["project_limits"] == []
+    assert preview["blocked"] is False
+
+    clear = await _preview(
+        orch, provider="codex", receive_new_work={"project_id": ALPHA, "mode": "clear"}
+    )
+    assert clear["preference"]["changed"] is False
+    assert "no_change" in _warnings(clear)
+
+
+# -- the token -------------------------------------------------------------------
+
+
+async def test_token_is_stable_for_an_identical_snapshot(orch):
+    request = {"provider": "claude", "participation": "task", "drain": "idle-now"}
+    first = await _preview(orch, **request)
+    second = await _preview(orch, **request)
+    assert first["success"] is True, first
+    assert len(first["preview_token"]) == 64
+    assert first["preview_token"] == second["preview_token"]
+    # Equivalent spellings of one request are one request.
+    alias = await _preview(orch, provider="Anthropic", participation="task", drain="idle_now")
+    assert alias["preview_token"] == first["preview_token"]
+
+
+def _mutations():
+    """``(name, mutate)`` pairs; each changes one fingerprinted input of the snapshot."""
+
+    def group(snapshot, provider):
+        return next(row for row in snapshot["providers"] if row["provider"] == provider)
+
+    def rung(snapshot, profile_id="standard-high-claude"):
+        return next(
+            row for row in group(snapshot, "claude")["profiles"]
+            if row["profile_id"] == profile_id
+        )
+
+    def session(snapshot, session_id):
+        return next(row for row in rung(snapshot)["sessions"] if row["session_id"] == session_id)
+
+    def project(snapshot, project_id):
+        return next(row for row in snapshot["projects"] if row["project_id"] == project_id)
+
+    return [
+        ("profile lifecycle", lambda s: rung(s, "fast-low-claude").update(lifecycle="pool")),
+        ("profile max", lambda s: rung(s).update(max_active=4)),
+        ("profile min", lambda s: rung(s).update(min_active=0)),
+        ("profile enabled", lambda s: rung(s, "deep-low-claude").update(enabled=True)),
+        ("session state", lambda s: session(s, "sess-bravo-start").update(
+            state="running", activity="idle")),
+        ("session task", lambda s: session(s, "sess-alpha-idle").update(
+            task_id="task-bravo-free", activity="busy")),
+        ("new session", lambda s: rung(s)["sessions"].append(
+            {**session(s, "sess-alpha-idle"), "session_id": "sess-alpha-new"})),
+        ("project preference", lambda s: project(s, BRAVO).update(preferred_provider="codex")),
+        ("project cap", lambda s: project(s, ALPHA).update(max_concurrent_agents=5)),
+        ("pinned task", lambda s: rung(s)["pinned"].append(
+            {"task_id": "task-new-pin", "project_id": ALPHA, "status": "READY"})),
+        ("pinned status", lambda s: rung(s)["pinned"][1].update(status="ASSIGNED")),
+        ("manual agent", lambda s: group(s, "claude")["manual_agents"].pop()),
+        ("global cap", lambda s: s.update(global_max_active=3)),
+    ]
+
+
+@pytest.mark.parametrize("name", [name for name, _ in _mutations()])
+async def test_token_changes_with_every_fingerprinted_input(orch, name):
+    import copy
+
+    from src.providers.allocation import plan_allocation_preview
+
+    snapshot = await _snapshot(orch)
+    request = {"provider": "claude", "participation": "task"}
+    base = plan_allocation_preview(snapshot, request)
+    assert base["success"] is True, base
+    mutate = dict(_mutations())[name]
+    changed = copy.deepcopy(snapshot)
+    mutate(changed)
+    assert plan_allocation_preview(changed, request)["preview_token"] != base["preview_token"]
+
+
+async def test_token_ignores_the_clock_and_pool_demand(orch):
+    import copy
+
+    from src.providers.allocation import plan_allocation_preview
+
+    snapshot = await _snapshot(orch)
+    request = {"provider": "claude", "participation": "task"}
+    base = plan_allocation_preview(snapshot, request)["preview_token"]
+    drifted = copy.deepcopy(snapshot)
+    drifted["now"] += 600
+    for provider in drifted["providers"]:
+        for row in provider["profiles"]:
+            if row["supply"].get("ready") is not None:
+                row["supply"]["ready"] += 7
+            for session in row["sessions"]:
+                if session["idle_seconds"] is not None:
+                    session["idle_seconds"] += 600
+                if session["activity"] == "idle":
+                    # An idle worker whose claim loop looks stalled is the same worker.
+                    session["activity"] = "unresponsive"
+    assert plan_allocation_preview(drifted, request)["preview_token"] == base
+
+
+async def test_token_changes_with_the_request(orch):
+    from src.providers.allocation import plan_allocation_preview
+
+    snapshot = await _snapshot(orch)
+    tokens = {
+        plan_allocation_preview(snapshot, request)["preview_token"]
+        for request in (
+            {"provider": "claude", "participation": "task"},
+            {"provider": "claude", "participation": "task", "drain": "idle-now"},
+            {"provider": "claude", "participation": "task",
+             "profile_ids": ["standard-high-claude"]},
+            {"provider": "claude", "bounds": {"min": 0, "max": 1}},
+            {"provider": "claude", "bounds": {"min": 0, "max": 2}},
+            {"provider": "claude", "receive_new_work": {"project_id": ALPHA, "mode": "prefer"}},
+        )
+    }
+    assert len(tokens) == 6
+
+
+async def test_preference_only_token_ignores_session_churn(orch):
+    import copy
+
+    from src.providers.allocation import plan_allocation_preview
+
+    snapshot = await _snapshot(orch)
+    request = {"provider": "claude", "receive_new_work": {"project_id": ALPHA, "mode": "prefer"}}
+    base = plan_allocation_preview(snapshot, request)["preview_token"]
+    churned = copy.deepcopy(snapshot)
+    rung = next(
+        row for row in churned["providers"][0]["profiles"]
+        if row["profile_id"] == "standard-high-claude"
+    )
+    rung["sessions"][0].update(task_id="task-bravo-free", activity="busy")
+    assert plan_allocation_preview(churned, request)["preview_token"] == base
+    for row in churned["projects"]:
+        if row["project_id"] == ALPHA:
+            row["preferred_provider"] = "claude"
+    assert plan_allocation_preview(churned, request)["preview_token"] != base
+
+
+async def test_preview_writes_nothing(orch):
+    before = await orch.db.get_profile("standard-high-claude")
+    sessions = await orch.db.list_sessions(lifecycle="pool", live_only=True)
+    await _preview(orch, provider="claude", participation="task", drain="interrupt-busy")
+    after = await orch.db.get_profile("standard-high-claude")
+    assert (after.lifecycle, after.min_active, after.max_active) == (
+        before.lifecycle, before.min_active, before.max_active,
+    )
+    assert [
+        (s.id, s.desired_state) for s in await orch.db.list_sessions(lifecycle="pool",
+                                                                      live_only=True)
+    ] == [(s.id, s.desired_state) for s in sessions]
+
+
+# -- scope ------------------------------------------------------------------------
+
+
+async def test_operator_and_global_supervisor_may_preview_anything(orch):
+    request = {"provider": "claude", "participation": "task", "drain": "interrupt-busy"}
+    local = await _preview(orch, **request)
+    assert local["success"] is True, local
+    assert local["required_scope"] == "operator"
+    global_admin = await _preview(orch, **request, _scope=_global_supervisor())
+    assert global_admin["success"] is True, global_admin
+    assert global_admin["preview_token"] == local["preview_token"]
+
+
+@pytest.mark.parametrize(
+    ("request_fields", "fragment"),
+    [
+        ({"participation": "task"}, "requires operator scope"),
+        ({"bounds": {"min": 0, "max": 1}}, "requires operator scope"),
+        (
+            {"receive_new_work": {"project_id": ALPHA, "mode": "prefer"},
+             "drain": "interrupt-busy"},
+            "interrupt-busy requires operator scope",
+        ),
+        (
+            {"receive_new_work": {"project_id": BRAVO, "mode": "prefer"}},
+            "only its own project's preference",
+        ),
+    ],
+)
+async def test_project_admin_may_preview_only_its_own_preference(
+    orch, request_fields, fragment
+):
+    refused = await _preview(
+        orch, provider="codex", **request_fields, _scope=_alpha_supervisor()
+    )
+    assert refused["success"] is False
+    assert refused["error"].startswith("out of scope"), refused["error"]
+    assert fragment in refused["error"]
+
+
+async def test_project_admin_previews_its_own_preference(orch):
+    preview = await _preview(
+        orch, provider="codex", receive_new_work={"project_id": ALPHA, "mode": "prefer"},
+        project_id=ALPHA, _scope=_alpha_supervisor(),
+    )
+    assert preview["success"] is True, preview
+    assert preview["preference"]["after"] == "codex"
+
+
+async def test_worker_token_cannot_preview(orch):
+    refused = await _preview(
+        orch, provider="codex", receive_new_work={"project_id": ALPHA, "mode": "prefer"},
+        _scope=_worker_scope(),
+    )
+    assert refused["success"] is False and refused["error"].startswith("out of scope")
+    worker = RequestScope(kind="session", session_id="s1", task_id="t1", project_id=ALPHA)
+    assert "provider_allocation_preview" not in AGENT_COMMAND_SET
+    assert check_command_scope("provider_allocation_preview", {}, worker) == (
+        "out of scope: provider_allocation_preview"
+    )
+
+
+# -- API and contract ---------------------------------------------------------------
+
+
+async def test_api_previews_and_maps_refusals(orch):
+    body = {"provider": "claude", "profile_ids": ["standard-high-claude"],
+            "bounds": {"min": 0, "max": None}, "drain": "idle-now"}
+    async with _client(orch) as client:
+        response = await client.post("/api/providers/allocation/preview", json=body)
+        unknown = await client.post(
+            "/api/providers/allocation/preview", json={"provider": "nope", "participation": "pool"}
+        )
+        invalid = await client.post(
+            "/api/providers/allocation/preview", json={"provider": "claude"}
+        )
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    # An explicit ``max: null`` is an unbounded pool, not an omitted bound.
+    assert preview["request"]["bounds"] == {"min": 0, "max": None}
+    assert _rows(preview)["standard-high-claude"]["after"]["max_active"] is None
+    assert len(preview["preview_token"]) == 64
+    assert unknown.status_code == 404
+    assert invalid.status_code == 400
+
+    supervisor = RequestScope(kind="session", session_id="sup", project_id=ALPHA, elevated=True)
+    async with _client(orch, supervisor) as client:
+        refused = await client.post(
+            "/api/providers/allocation/preview",
+            json={"provider": "claude", "participation": "task"},
+        )
+        allowed = await client.post(
+            "/api/providers/allocation/preview",
+            json={"provider": "claude",
+                  "receive_new_work": {"project_id": ALPHA, "mode": "prefer"}},
+        )
+    assert refused.status_code == 403
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["preference"]["after"] == "claude"
+
+
+async def test_the_preview_contract_is_a_read(orch):
+    from src.commands.contracts import CONTRACTS
+    from src.commands.contracts.builtin import (
+        ProviderAllocationPreviewArgs,
+        set_handler_provider,
+    )
+
+    set_handler_provider(lambda: _handler(orch))
+    try:
+        registration = CONTRACTS.get("provider_allocation_preview")
+        result = await registration.invoke(
+            ProviderAllocationPreviewArgs(
+                provider="codex",
+                profile_ids=["standard-high-codex"],
+                bounds={"min": 0, "max": None},
+            ),
+            None,
+        )
+        refused = await registration.invoke(
+            ProviderAllocationPreviewArgs(provider="codex"), None
+        )
+    finally:
+        set_handler_provider(None)
+    assert registration.contract.execution.side_effect.value == "read"
+    assert result.outcome == "previewed", result.summary
+    assert result.value.request["bounds"] == {"min": 0, "max": None}
+    assert len(result.value.preview_token) == 64
+    assert refused.outcome == "rejected"
