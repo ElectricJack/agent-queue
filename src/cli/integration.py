@@ -646,6 +646,20 @@ def integration_development_sweep(ctx, project_id, retry, recover_child):
     })
 
 
+@integration.command("migrate-provenance")
+@click.argument("project_id")
+@click.option("--apply", is_flag=True, help="Publish verified evidence; default is read-only inventory.")
+@click.option("--limit", type=click.IntRange(1, 1000), default=500)
+@click.option("--offset", type=click.IntRange(min=0), default=0)
+@click.pass_context
+@_handle_errors
+def integration_migrate_provenance(ctx, project_id, apply, limit, offset):
+    """Inventory legacy completion generations and exact repair bindings in Git."""
+    _execute(ctx, "integration_migrate_provenance", {
+        "project_id": project_id, "apply": apply, "limit": limit, "offset": offset,
+    })
+
+
 @integration.command("cancel-preserving")
 @click.argument("operation_id")
 @click.option("--reason", required=True)
