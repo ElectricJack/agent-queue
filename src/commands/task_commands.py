@@ -1351,7 +1351,10 @@ class TaskCommandsMixin:
                     )
                     if refusal is not None:
                         return refusal
-                result = await self.db.set_parent(task_id, new_parent, conn=conn)
+                result = await self.db.set_parent(
+                    task_id, new_parent, conn=conn,
+                    reject_live_parent=new_parent != held_id,
+                )
                 if provenance is not None and provenance != new_parent:
                     # The filing's only provenance was the parent-child edge
                     # it just lost (a filing under the held task writes no

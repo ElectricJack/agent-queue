@@ -421,6 +421,36 @@ class TestHierarchyCommands:
         res = await handler._cmd_reparent_task({"task_id": "a", "parent_id": "a"})
         assert res["code"] == "hierarchy.self_parent"
 
+    @pytest.mark.parametrize("state", ["starting", "running", "draining"])
+    async def test_reparent_refuses_live_parent_session_without_agent_pointer(
+        self, handler, db, state
+    ):
+        await mktask(db, "parent", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "child")
+        await mksession(db, "holder", "parent", state=state)
+        res = await handler._cmd_reparent_task({"task_id": "child", "parent_id": "parent"})
+        assert res["code"] == "hierarchy.live_parent"
+        assert (await db.get_task("child")).parent_task_id is None
+        assert await db.get_typed_dependencies("child") == []
+        async with db.immediate() as conn:
+            assert not await db.is_container("parent", conn=conn)
+
+    async def test_reparent_allows_stopped_parent_session(self, handler, db):
+        await mktask(db, "parent", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "child")
+        await mksession(db, "holder", "parent", state="stopped")
+        res = await handler._cmd_reparent_task({"task_id": "child", "parent_id": "parent"})
+        assert res["success"] is True
+
+    async def test_reparent_to_current_live_parent_is_idempotent(self, handler, db):
+        await mktask(db, "parent", status=TaskStatus.IN_PROGRESS)
+        await mktask(db, "child")
+        await db.add_dependency("child", "parent", "parent-child")
+        await mksession(db, "holder", "parent")
+        res = await handler._cmd_reparent_task({"task_id": "child", "parent_id": "parent"})
+        assert res["success"] is True
+        assert (await db.get_session("holder")).task_id == "parent"
+
     async def test_reparent_to_current_parent_is_idempotent(self, handler, db):
         await mktask(db, "p1", status=TaskStatus.IN_PROGRESS)
         await mktask(db, "c")
@@ -434,6 +464,7 @@ class TestHierarchyCommands:
     async def test_schema_lists_hierarchy_codes(self, handler):
         res = await handler._cmd_get_schema({})
         assert "container_closed" in res["enums"]["hierarchy_error"]
+        assert "live_parent" in res["enums"]["hierarchy_error"]
 
     async def test_agent_scope_includes_reads(self):
         from src.api.scope import AGENT_COMMAND_SET

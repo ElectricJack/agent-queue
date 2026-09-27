@@ -452,6 +452,7 @@ class ClaimQueryMixin:
                 tasks.c.status == TaskStatus.READY.value,
                 tasks.c.is_blocked == 0,
                 tasks.c.assigned_agent_id.is_(None),
+                ~container_flag_exists(),
                 ~exists(
                     select(literal(1)).where(
                         integration_repair_stages.c.repair_task_id == tasks.c.id,
