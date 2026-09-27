@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
+import os
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -67,7 +69,20 @@ def _tests(row: dict) -> list[str]:
     )
 
 
-def _repository(project: dict, sources: dict) -> tuple[str, str, str] | None:
+def _repository(project: dict, sources: dict) -> tuple[tuple[str, ...], str, str] | None:
+    """Checkout paths to try, default branch and repository id for *project*.
+
+    The configured repository's own path comes first. Development clone rows
+    carry no path and a linked source can move, so the project's one
+    project-repo base workspace, which its worktrees come from, follows.
+    """
+    bases = [
+        row["workspace_path"]
+        for row in sources.get("workspaces", [])
+        if row["project_id"] == project["id"]
+        and (row.get("kind_id") or "project-repo") == "project-repo"
+    ]
+    base = tuple(bases) if len(bases) == 1 else ()
     candidates = [row for row in sources.get("repos", []) if row["project_id"] == project["id"]]
     selected_id = project.get("integration_repository_id")
     if selected_id:
@@ -77,14 +92,21 @@ def _repository(project: dict, sources: dict) -> tuple[str, str, str] | None:
     if len(candidates) == 1:
         repo = candidates[0]
         path = repo["source_path"] if repo["source_type"] == "link" else repo["checkout_base_path"]
-        if path:
-            return path, repo["default_branch"], repo["id"]
+        paths = tuple(dict.fromkeys(item for item in (path, *base) if item))
+        return (paths, repo["default_branch"], repo["id"]) if paths else None
     if candidates:
         return None
-    bases = [row for row in sources.get("workspaces", []) if row["project_id"] == project["id"]]
-    if len(bases) == 1:
-        return bases[0]["workspace_path"], project.get("repo_default_branch") or "main", ""
+    if base:
+        return base, project.get("repo_default_branch") or "main", ""
     return None
+
+
+async def _checkout(paths: tuple[str, ...]) -> str:
+    """The first existing directory, else the configured path to report on."""
+    for path in paths:
+        if await asyncio.to_thread(os.path.isdir, path):
+            return path
+    return paths[0]
 
 
 async def collect_morning_evidence(
@@ -127,7 +149,8 @@ async def collect_morning_evidence(
                 "warnings": [],
             }
         else:
-            path, branch, repository_id = repo
+            paths, branch, repository_id = repo
+            path = await _checkout(paths)
             proof_commits = {
                 commit
                 for row in sources.get("completions", [])
