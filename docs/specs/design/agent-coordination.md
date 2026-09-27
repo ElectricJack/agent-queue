@@ -546,3 +546,23 @@ in the [vault](vault.md) — per
 6. **Visualization.** The dashboard should show workflows as pipelines — stages
    with tasks in each, agent assignments, and current progress. How does this
    relate to the playbook graph visualization in `playbooks.md`?
+
+## Collaboration threads
+
+Coordination between agents is normally asynchronous through the task graph:
+one task's output feeds another's input, and the scheduler decides ordering.
+The exception is work where the same goal needs to be settled *now*, while
+both agents are running on their own branches — e.g. two writers reconciling
+the ordering they will commit in, or a reviewer tailing a writer's push. For
+that case there is a bounded, ordered collaboration thread between 2–4 members,
+each on its own worktree and claim. The thread carries small, ordered
+messages (40 max, 4 KiB each), a shared deadline (default and max 120 minutes),
+and typed terminal reasons (`thread_closed`, `peer_failed`, `peer_gone`,
+`partner_not_running`) that let a waiting agent stop waiting without
+re-registering.
+
+The thread is an *additional* coordination surface, not a replacement for the
+queue: scheduling still makes the ordering decision, and every member keeps
+its own claim and workspace. For the worker-facing CLI, limits, and the loop
+pattern (accept → show → send → wait → read), see
+[agent-collaboration.md](../../guides/agent-collaboration.md).

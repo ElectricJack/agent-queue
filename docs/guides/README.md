@@ -29,6 +29,7 @@ New to AQ? Start with [Install](../tutorials/install.md) and
 | [End-to-end testing the swarm](e2e-swarm.md) | Proving claims, pools, formulas or the task hierarchy still compose, against a real daemon. |
 | [Feature history and integration merges](feature-merge-history.md) | Reading ancestry in the **optional strict** integration modes. |
 | [Hierarchical integration trains](hierarchical-integration-trains.md) | Rolling out the **optional, off-by-default** train mode for a project. |
+| [Agent collaboration threads](agent-collaboration.md) | Settling a shared goal *now*, between 2-4 running agents: creating a thread, exchanging the small ordered messages it carries, and waiting on a reply or a typed end reason. |
 
 Guides for the dashboard, plugins and MCP, and day-to-day operations are part of
 this documentation overhaul and are added here by the tickets that own them; the
