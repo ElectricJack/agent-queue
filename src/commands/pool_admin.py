@@ -406,3 +406,58 @@ async def set_pool_bounds(
             },
         )
     return _with_audit(response, before, profile, session_actions)
+
+
+async def restore_pool_profile(
+    handler,
+    before: Mapping[str, object],
+    *,
+    correlation: Mapping[str, object] | None = None,
+) -> dict:
+    """Put a profile back to *before* (a helper's ``before`` row).  Compensates an allocation.
+
+    Built from the same helpers, so the vault, the database row and the
+    ``pool.*`` events land exactly as the single-profile commands would
+    write them: the lifecycle first (``set_pool_lifecycle``), then the pool
+    bounds (``set_pool_bounds``), then the pool-only keys a move to ``task``
+    cleared.  Only fields that differ are written, so restoring an unchanged
+    profile is a no-op.  Sessions a lifecycle change already marked stopped
+    stay stopped: a drain is not undone, and the caller reports it.
+    """
+    profile_id = str(before["id"])
+    current = await handler.db.get_profile(profile_id)
+    if current is None:
+        return {"success": False, "error": f"no profile '{profile_id}'"}
+    lifecycle = before.get("lifecycle") or "task"
+    if getattr(current, "lifecycle", "task") != lifecycle:
+        result = await set_pool_lifecycle(
+            handler, {"profile_id": profile_id, "lifecycle": lifecycle}, correlation=correlation
+        )
+        if not result.get("success"):
+            return result
+        current = await handler.db.get_profile(profile_id)
+    if lifecycle == "pool":
+        bounds: dict[str, object] = {}
+        if current.max_active != before.get("max_active"):
+            bounds["max"] = before.get("max_active")
+        restore_min = current.min_active != before.get("min_active")
+        if restore_min and before.get("min_active") is not None:
+            bounds["min"] = before.get("min_active")
+        if bounds:
+            result = await set_pool_bounds(
+                handler, {"profile_id": profile_id, **bounds}, correlation=correlation
+            )
+            if not result.get("success"):
+                return result
+        rest = {
+            field: before.get(field)
+            for field in ("min_per_project", "max_claims_per_session")
+            if field in before and getattr(current, field, None) != before.get(field)
+        }
+        if restore_min and before.get("min_active") is None:
+            # ``pool scale`` refuses an unset min; the row had none, so write it back as it was.
+            rest["min_active"] = None
+        if rest:
+            await _write_pool_profile_config(handler, profile_id, rest, require_pool=True)
+    restored = await handler.db.get_profile(profile_id)
+    return {"success": True, "profile_id": profile_id, "after": _profile_row(restored)}

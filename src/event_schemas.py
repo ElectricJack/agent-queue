@@ -1307,6 +1307,28 @@ _PROVIDER_SCHEMAS: dict[str, EventSchema] = {
         "required": ["batch_id", "moved"],
         "optional": ["routes", "projects", "held"],
     },
+    # provider-worker-allocation-controls §Audit: once per applied allocation,
+    # whatever its outcome.  ``status`` is ``applied``, ``rolled_back`` or
+    # ``partial``; ``profiles`` carries each changed profile's before and after
+    # rows and what happened to it; ``request_id`` is also on every underlying
+    # ``pool.*`` event.  ``provider_allocation_status`` reports the newest one
+    # per provider.
+    "provider.allocation_changed": {
+        "required": ["provider", "request_id", "actor", "status"],
+        "optional": [
+            "vendor",
+            "preview_token",
+            "request",
+            "profiles",
+            "ceiling",
+            "preference",
+            "session_actions",
+            "pinned",
+            "manual_agents",
+            "warnings",
+            "error",
+        ],
+    },
 }
 
 _SWARM_SCHEMAS: dict[str, EventSchema] = {

@@ -963,6 +963,12 @@ from .provenance_ref import ProvenanceRef
 from .provide_input_request import ProvideInputRequest
 from .provide_input_response import ProvideInputResponse
 from .provide_input_response_422 import ProvideInputResponse422
+from .provider_allocation_applied_preference import ProviderAllocationAppliedPreference
+from .provider_allocation_applied_profile import ProviderAllocationAppliedProfile
+from .provider_allocation_apply_body import ProviderAllocationApplyBody
+from .provider_allocation_apply_request import ProviderAllocationApplyRequest
+from .provider_allocation_apply_response import ProviderAllocationApplyResponse
+from .provider_allocation_apply_response_422 import ProviderAllocationApplyResponse422
 from .provider_allocation_bounds_body import ProviderAllocationBoundsBody
 from .provider_allocation_busy_set import ProviderAllocationBusySet
 from .provider_allocation_ceiling import ProviderAllocationCeiling
@@ -975,6 +981,10 @@ from .provider_allocation_intent import ProviderAllocationIntent
 from .provider_allocation_intent_by_status import ProviderAllocationIntentByStatus
 from .provider_allocation_manual_agent import ProviderAllocationManualAgent
 from .provider_allocation_pinned_task import ProviderAllocationPinnedTask
+from .provider_allocation_placement import ProviderAllocationPlacement
+from .provider_allocation_placement_held_item import ProviderAllocationPlacementHeldItem
+from .provider_allocation_placement_moved_item import ProviderAllocationPlacementMovedItem
+from .provider_allocation_placement_skipped_item import ProviderAllocationPlacementSkippedItem
 from .provider_allocation_preference import ProviderAllocationPreference
 from .provider_allocation_preview_body import ProviderAllocationPreviewBody
 from .provider_allocation_preview_profile import ProviderAllocationPreviewProfile
@@ -997,6 +1007,7 @@ from .provider_allocation_request import ProviderAllocationRequest
 from .provider_allocation_request_bounds_type_0 import ProviderAllocationRequestBoundsType0
 from .provider_allocation_request_receive_new_work_type_0 import ProviderAllocationRequestReceiveNewWorkType0
 from .provider_allocation_session import ProviderAllocationSession
+from .provider_allocation_session_action import ProviderAllocationSessionAction
 from .provider_allocation_status_request import ProviderAllocationStatusRequest
 from .provider_allocation_status_response import ProviderAllocationStatusResponse
 from .provider_allocation_status_response_422 import ProviderAllocationStatusResponse422
@@ -2495,6 +2506,12 @@ __all__ = (
     "ProvideInputRequest",
     "ProvideInputResponse",
     "ProvideInputResponse422",
+    "ProviderAllocationAppliedPreference",
+    "ProviderAllocationAppliedProfile",
+    "ProviderAllocationApplyBody",
+    "ProviderAllocationApplyRequest",
+    "ProviderAllocationApplyResponse",
+    "ProviderAllocationApplyResponse422",
     "ProviderAllocationBoundsBody",
     "ProviderAllocationBusySet",
     "ProviderAllocationCeiling",
@@ -2507,6 +2524,10 @@ __all__ = (
     "ProviderAllocationIntentByStatus",
     "ProviderAllocationManualAgent",
     "ProviderAllocationPinnedTask",
+    "ProviderAllocationPlacement",
+    "ProviderAllocationPlacementHeldItem",
+    "ProviderAllocationPlacementMovedItem",
+    "ProviderAllocationPlacementSkippedItem",
     "ProviderAllocationPreference",
     "ProviderAllocationPreviewBody",
     "ProviderAllocationPreviewProfile",
@@ -2527,6 +2548,7 @@ __all__ = (
     "ProviderAllocationRequestBoundsType0",
     "ProviderAllocationRequestReceiveNewWorkType0",
     "ProviderAllocationSession",
+    "ProviderAllocationSessionAction",
     "ProviderAllocationStatusRequest",
     "ProviderAllocationStatusResponse",
     "ProviderAllocationStatusResponse422",

@@ -17,6 +17,8 @@ would report a healthy account as stale (spec amendment A3).
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -704,7 +706,103 @@ class ProviderAllocationPreviewResponse(BaseModel):
     preview_token: str
 
 
+class ProviderAllocationApplyBody(BaseModel):
+    """``POST /api/providers/allocation/apply``: apply a reviewed preview by its token."""
+
+    preview_token: str
+    #: For ``drain: interrupt-busy``: exactly the preview's busy set (session or task ids).
+    authorize_busy_interrupt: list[str] | None = None
+    allow_pinned_wait: bool | None = None
+
+
+class ProviderAllocationAppliedProfile(BaseModel):
+    """One changed profile and what apply did to it.
+
+    ``status``: ``applied``, ``failed``, ``rolled_back`` (applied, then
+    compensated), ``rollback_failed`` or ``skipped`` (never reached after an
+    earlier failure).  ``before`` / ``after`` are the previewed rows.
+    """
+
+    profile_id: str
+    status: str
+    changed_fields: list[str] = []
+    before: ProviderAllocationProfileState
+    after: ProviderAllocationProfileState
+    error: str | None = None
+    compensated: bool | None = None
+    compensation_error: str | None = None
+
+
+class ProviderAllocationSessionAction(BaseModel):
+    """One thing apply did to a live session (``drain``, ``terminate``, ``interrupt`` ...)."""
+
+    project_id: str | None = None
+    profile_id: str | None = None
+    session_id: str
+    action: str
+    reason: str | None = None
+    error: str | None = None
+
+
+class ProviderAllocationPlacement(BaseModel):
+    """The queued ``class_only`` READY tasks a ``prefer`` moved to the provider.
+
+    ``moved`` / ``held`` / ``skipped`` are ``provider_reroute`` decisions;
+    ``batch_ids`` undo with ``provider_reroute_undo``.
+    """
+
+    applied: bool = False
+    moved: list[dict[str, Any]] = []
+    held: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    batch_ids: list[str] = []
+    detail: str | None = None
+    #: Moves that raised; the apply is then ``partial``.
+    errors: list[str] = []
+
+
+class ProviderAllocationAppliedPreference(ProviderAllocationPreference):
+    """The project preference apply wrote, and the queued work it re-placed."""
+
+    applied: bool | None = None
+    placement: ProviderAllocationPlacement | None = None
+
+
+class ProviderAllocationApplyResponse(BaseModel):
+    """``provider_allocation_apply`` and ``POST /api/providers/allocation/apply``.
+
+    ``success`` only when ``status`` is ``applied``.  A refusal before any
+    change carries ``error_code`` (``preview_unknown``, ``preview_stale``,
+    ``pinned_wait_unacknowledged``, ``busy_authorization_required`` /
+    ``_mismatch`` / ``_unexpected``) and the current ``preview`` when there
+    is one; an apply that failed part-way carries ``status`` ``rolled_back``
+    or ``partial`` with every row.
+    """
+
+    success: bool = True
+    status: str | None = None
+    error: str | None = None
+    error_code: str | None = None
+    #: A refusal's current preview (``preview_stale``: apply its token after review).
+    preview: ProviderAllocationPreviewResponse | None = None
+    request_id: str | None = None
+    event_id: int | None = None
+    provider: str | None = None
+    vendor: str = ""
+    actor: str | None = None
+    preview_token: str | None = None
+    request: ProviderAllocationRequest | None = None
+    profiles: list[ProviderAllocationAppliedProfile] = []
+    ceiling: ProviderAllocationCeilingChange | None = None
+    preference: ProviderAllocationAppliedPreference | None = None
+    session_actions: list[ProviderAllocationSessionAction] = []
+    pinned: list[ProviderAllocationPinnedTask] = []
+    manual_agents: list[ProviderAllocationPushChange] = []
+    warnings: list[ProviderAllocationWarning] = []
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "provider_allocation_apply": ProviderAllocationApplyResponse,
     "provider_allocation_preview": ProviderAllocationPreviewResponse,
     "provider_allocation_status": ProviderAllocationStatusResponse,
     "provider_status": ProviderStatusResponse,
