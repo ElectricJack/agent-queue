@@ -29,8 +29,9 @@ REROUTABLE_STATUSES = (
     TaskStatus.BLOCKED.value,
     TaskStatus.PAUSED.value,
 )
-#: The automatic reason code; the others are an operator's.
+#: Automatic reasons share the per-task move limit and cooldown.
 AUTOMATIC_REASON = "provider_unavailable"
+SPILL_REASON = "capacity_spill"
 UNDO_REASON = "operator_undo"
 
 _UNSET = object()
@@ -249,7 +250,8 @@ class TaskRerouteQueryMixin:
 
         What the sweep's per-task limits read (D15: ``max_auto_per_task``,
         ``task_cooldown_seconds``; D12: "skipping any provider it already
-        left").  Tasks with no re-route are absent.
+        left"). Capacity spills share automatic limits but do not mark a
+        provider as left. Tasks with no re-route are absent.
         """
         ids = sorted(set(task_ids))
         if not ids:
@@ -270,11 +272,11 @@ class TaskRerouteQueryMixin:
             )
             if reason == UNDO_REASON:
                 continue
-            if reason == AUTOMATIC_REASON:
+            if reason in (AUTOMATIC_REASON, SPILL_REASON):
                 entry["auto_count"] += 1
                 if entry["last_auto_at"] is None or at > entry["last_auto_at"]:
                     entry["last_auto_at"] = at
-            if undone_at is None and from_provider:
+            if reason != SPILL_REASON and undone_at is None and from_provider:
                 entry["left_providers"].add(from_provider)
         return stats
 

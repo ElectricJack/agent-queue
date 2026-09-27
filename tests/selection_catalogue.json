@@ -670,6 +670,7 @@
         "tests/test_migration_boolean_defaults.py",
         "tests/test_migration_candidate_authority.py",
         "tests/test_migration_candidate_mutation_claims.py",
+        "tests/test_migration_capacity_spill.py",
         "tests/test_migration_collaboration_threads.py",
         "tests/test_migration_conflict_resolution.py",
         "tests/test_migration_epic_pull_requests.py",
@@ -1266,7 +1267,7 @@
       ]
     }
   },
-  "digest": "sha256:cd1da10ddcb6e9eb3887d1aec63bb657238db2d0fe1e5e7b3e8d5af8dd220aec",
+  "digest": "sha256:c9c74bcacbf3fef21bae114376d3a3fdae9b993f1ece21cebd3e10ca9990df66",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5712,6 +5713,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"
@@ -8197,6 +8199,21 @@
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
     },
+    "tests/test_migration_capacity_spill.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine",
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Capacity-spill schema upgrades and rollback on owned disposable PostgreSQL."
+    },
     "tests/test_migration_collaboration_threads.py": {
       "areas": [
         "migrations"
@@ -10343,6 +10360,8 @@
         "src.config",
         "src.database.queries",
         "src.database.queries.claim_queries",
+        "src.database.queries.task_reroute_queries",
+        "src.database.tables",
         "src.intelligence_classes",
         "src.llm.client",
         "src.llm.fake",
@@ -13488,8 +13507,10 @@
         "src.database.queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.hierarchy",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.vault"
       ],
       "markers": [
         "parametrize",
