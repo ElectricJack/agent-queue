@@ -774,6 +774,11 @@ areas:
     description: "Daemon control from the CLI: start failure reporting, stop ending agent sessions versus restart keeping them, and the daemon start/stop contract."
     match: [tests/test_cli_daemon.py, tests/test_cli_stop_sessions.py, tests/test_main_lifecycle.py]
 
+  # ------------------------------------------------------------ generated artifacts
+  - id: generated-artifacts
+    description: "Generated artifacts: the one regeneration command and its drift check, the .gitattributes merge=aq-generated set kept in step with it, and the merge driver under which those files never conflict."
+    match: [tests/test_generated_artifacts.py]
+
   # ------------------------------------------------------------ documentation guards
   - id: docs-guards
     description: "Documentation guards: docs/code sync, the dependency-free docs checker and coverage, command reference drift, guidance docs naming commands that parse, Discord docs, factory-policy instructions and the CLI module map."

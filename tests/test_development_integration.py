@@ -3798,3 +3798,225 @@ async def test_legacy_repair_bridge_checks_exact_current_replacement_and_git(set
         requests.values()
     )
     assert results[older].state is DeliveryState.PENDING
+
+
+# -- generated artifacts: regenerated at merge, never a conflict -------------
+
+#: A miniature scripts/regenerate-generated.sh: the inventory and catalogue are
+#: pure functions of commands/ and tests/, with a count line that every added
+#: command changes on both sides of a merge.
+GENERATOR = """#!/bin/sh
+set -e
+render() {
+    printf 'count: %s\\n#\\n#\\n#\\n' "$(ls "$1" | wc -l | tr -d ' ')"
+    ls "$1" | LC_ALL=C sort
+}
+if [ "$1" = "--check" ]; then
+    render commands | cmp -s - inventory.txt && render tests | cmp -s - catalogue.txt
+    exit $?
+fi
+render commands > inventory.txt
+render tests > catalogue.txt
+"""
+GENERATED_ATTRIBUTES = (
+    "inventory.txt merge=aq-generated\n"
+    "catalogue.txt merge=aq-generated\n"
+    "areas.txt merge=union\n"
+)
+CHECK_GENERATED = "./regenerate.sh --check"
+
+
+def _rendered(*names):
+    return f"count: {len(names)}\n#\n#\n#\n" + "".join(f"{n}\n" for n in sorted(names))
+
+
+def _regenerate(source):
+    subprocess.run(["sh", "regenerate.sh"], cwd=source, check=True)
+
+
+def _publish_generator(source):
+    git(source, "checkout", "main")
+    (source / "regenerate.sh").write_text(GENERATOR)
+    (source / "regenerate.sh").chmod(0o755)
+    (source / ".gitattributes").write_text(GENERATED_ATTRIBUTES)
+    for directory, name in (("commands", "base"), ("tests", "test_base.py")):
+        (source / directory).mkdir()
+        (source / directory / name).write_text("")
+    (source / "areas.txt").write_text("area:\n  - tests/test_base.py\n")
+    _regenerate(source)
+    git(source, "add", "-A")
+    git(source, "commit", "-m", "generated artifacts")
+    git(source, "push", "origin", "main")
+
+
+async def command_feature(setup, task_id, *, source_edit=None):
+    """A branch adding one command and its test, regenerated like a worker would."""
+    db, _service, source, _remote, _repo = setup
+    git(source, "checkout", "-B", task_id, "main")
+    (source / "commands" / task_id).write_text("")
+    (source / "tests" / f"test_{task_id}.py").write_text("")
+    with (source / "areas.txt").open("a") as areas:
+        areas.write(f"  - tests/test_{task_id}.py\n")
+    if source_edit:
+        (source / "base.txt").write_text(source_edit)
+    _regenerate(source)
+    git(source, "add", "-A")
+    git(source, "commit", "-m", task_id)
+    head = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", task_id)
+    await db.create_task(Task(
+        id=task_id, project_id="p", repo_id="r", title=task_id, description="",
+        branch_name=task_id, status=TaskStatus.COMPLETED,
+    ))
+    return head
+
+
+def _batch_evidence(rows):
+    return next(r for r in rows if r["reason"] == "development batch")["evidence"]
+
+
+async def test_generated_only_conflict_parks_without_a_regenerate_policy(setup):
+    _db, service, source, _remote, _repo = setup
+    _publish_generator(source)
+    await command_feature(setup, "one")
+    await command_feature(setup, "two")
+    await _policy(service, commands=[CHECK_GENERATED])
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered"
+    assert len(result["manifest"]) == 1
+    parked = next(r for r in await service.rows("p") if r["state"] == "parked")
+    assert sorted(parked["evidence"]["conflicting_files"]) == ["catalogue.txt", "inventory.txt"]
+    assert "regenerate" not in parked["evidence"]
+
+
+async def test_branches_that_both_add_commands_merge_with_regenerated_artifacts(setup):
+    """Two branches each regenerate the inventory and catalogue for their own command.
+
+    Both generated files conflict, and only in generated files; the union
+    attribute merges the hand-maintained area list.  The publisher rebuilds the
+    generated files from the merged sources instead of parking the second branch.
+    """
+    _db, service, source, remote, _repo = setup
+    _publish_generator(source)
+    one = await command_feature(setup, "one")
+    two = await command_feature(setup, "two")
+    await _policy(service, commands=[CHECK_GENERATED], regenerate="./regenerate.sh")
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered", result
+    assert {m["task_id"] for m in result["manifest"]} == {"one", "two"}
+    for head in (one, two):
+        assert git(remote, "merge-base", "--is-ancestor", head, "main") == ""
+    assert git(remote, "show", "main:inventory.txt") + "\n" == _rendered("base", "one", "two")
+    assert git(remote, "show", "main:catalogue.txt") + "\n" == _rendered(
+        "test_base.py", "test_one.py", "test_two.py"
+    )
+    areas = git(remote, "show", "main:areas.txt")
+    assert "tests/test_one.py" in areas and "tests/test_two.py" in areas
+    rows = await service.rows("p")
+    assert not [r for r in rows if r["state"] == "parked"]
+    regenerated = _batch_evidence(rows)["regenerated"]
+    assert list(regenerated.values()) == [["catalogue.txt", "inventory.txt"]]
+    # The rebuilt files are folded into the member's merge commit.
+    merge = git(remote, "log", "-1", "--format=%P", "main").split()
+    assert len(merge) == 2
+
+
+async def test_a_clean_but_stale_generated_merge_is_regenerated(setup):
+    """Both sides changed the count identically, so the text merge is clean and wrong."""
+    _db, service, source, remote, _repo = setup
+    _publish_generator(source)
+    await command_feature(setup, "aaa")
+    await command_feature(setup, "zzz")
+    await _policy(service, commands=[CHECK_GENERATED], regenerate="./regenerate.sh")
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered", result
+    assert git(remote, "show", "main:inventory.txt") + "\n" == _rendered("aaa", "base", "zzz")
+
+
+async def test_a_source_conflict_still_parks_naming_only_the_source(setup):
+    db, service, source, remote, _repo = setup
+    _publish_generator(source)
+    await command_feature(setup, "one", source_edit="one\n")
+    await command_feature(setup, "two", source_edit="two\n")
+    await _policy(service, commands=[CHECK_GENERATED], regenerate="./regenerate.sh")
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered"
+    (delivered,) = result["manifest"]
+    parked = next(r for r in await service.rows("p") if r["state"] == "parked")
+    assert parked["evidence"]["conflicting_files"] == ["base.txt"]
+    assert parked["evidence"]["regenerate"] == "./regenerate.sh"
+    assert "regeneration" not in parked["evidence"]
+    assert git(remote, "show", "main:inventory.txt") + "\n" == _rendered(
+        "base", delivered["task_id"]
+    )
+    (repair,) = await _repairs(db)
+    assert "never hand-merge them" in repair.description
+    assert "run `./regenerate.sh`" in repair.description
+    assert "- base.txt" in repair.description
+
+
+async def test_a_failed_regeneration_parks_and_restores_the_candidate(setup):
+    db, service, source, remote, _repo = setup
+    _publish_generator(source)
+    await command_feature(setup, "one")
+    await command_feature(setup, "two")
+    await feature(setup, "three")
+    await _policy(
+        service, commands=["test -f three.txt"], regenerate="sh -c 'echo boom; exit 3'"
+    )
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered", result
+    delivered = {m["task_id"] for m in result["manifest"]}
+    assert "three" in delivered and len(delivered) == 2
+    parked = next(r for r in await service.rows("p") if r["state"] == "parked")
+    regeneration = parked["evidence"]["regeneration"]
+    assert regeneration["exit_code"] == 3
+    assert regeneration["detail"] == "`sh -c 'echo boom; exit 3'` exited 3"
+    assert "boom" in parked["evidence"]["detail"]
+    assert parked["evidence"]["conflicting_files"] == []
+    (repair,) = await _repairs(db)
+    assert "Regenerating the generated files with `sh -c 'echo boom; exit 3'` failed" in (
+        repair.description
+    )
+    assert "boom" in repair.description
+    evidence = await db.get_task_meta(repair.id, "development_repair_evidence")
+    assert evidence["regeneration"]["exit_code"] == 3
+    # Nothing the failed merge wrote reached the published tree.
+    assert git(remote, "show", "main:three.txt") == "new"
+
+
+async def test_a_regeneration_that_writes_a_source_file_is_refused(setup):
+    _db, service, source, remote, _repo = setup
+    _publish_generator(source)
+    await command_feature(setup, "one")
+    await command_feature(setup, "two")
+    await _policy(
+        service, commands=[CHECK_GENERATED],
+        regenerate="sh -c './regenerate.sh && echo rewritten > base.txt'",
+    )
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered"
+    parked = next(r for r in await service.rows("p") if r["state"] == "parked")
+    assert parked["evidence"]["regeneration"]["detail"] == (
+        "the regeneration changed files that are not generated: base.txt"
+    )
+    assert git(remote, "show", "main:base.txt") == "base"
+
+
+@pytest.mark.parametrize("command", ["", "  ", "'unterminated"])
+def test_regenerate_policy_must_be_a_command_line(command):
+    with pytest.raises(ValueError, match="regenerate"):
+        DevelopmentPolicy(commands=["true"], regenerate=command).checked()
+
+
+def test_development_prime_names_the_regenerate_command_only_when_configured():
+    from src.prime.sections import build_completion_protocol_section
+
+    plain = build_completion_protocol_section("example", development=True).body
+    assert "hand-merge" not in plain
+    body = build_completion_protocol_section(
+        "example", development=True, regenerate="scripts/regenerate-generated.sh"
+    ).body
+    assert "Never hand-merge generated files" in body
+    assert "run `scripts/regenerate-generated.sh`" in body
+    assert "merge=aq-generated" in body

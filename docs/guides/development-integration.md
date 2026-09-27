@@ -87,6 +87,8 @@ Options:
 | `--interval-seconds` | Periodic recovery sweep interval. Default 300. Task completion also requests a sweep on the next integration cycle (normally within 5 seconds, once an active batch finishes). |
 | `--timeout-seconds` | Seconds each command may *run*. Default 300, maximum 3600. Time queued for a test slot is not counted. |
 | `--slot-wait-seconds` | Seconds a command may queue for a test slot (via `aq test`) before the batch is deferred to the next tick — never parked, never repaired. Default 600, maximum 3600. |
+| `--regenerate` | Command that rebuilds the repository's generated files — the paths its `.gitattributes` marks `merge=aq-generated` — for example `scripts/regenerate-generated.sh`. Run without a shell in AQ's clone after a merge in which both sides changed a generated file; see [Conflicts confined to generated files](#conflicts-confined-to-generated-files). Unset by default. |
+| `--regenerate-timeout-seconds` | Seconds one regeneration may run before that merge counts as failed. Default 600, maximum 3600. |
 | `--reason` | Required, and kept in the journal. |
 
 > **Note.** Validation commands do not run in a worker's worktree. They run in
@@ -180,6 +182,10 @@ in the strict modes ([`src/prime/sections.py`](../../src/prime/sections.py)):
 > source branches and publishes validated batches to main. Do not push main
 > yourself.
 
+With a `regenerate` policy the section adds one more paragraph: never
+hand-merge generated files; take either side, resolve the sources, run the
+policy's command and commit what it writes.
+
 Two consequences worth knowing as an operator:
 
 * **A closed task is not a delivered task.** Delivery happens on the next
@@ -232,6 +238,51 @@ parked content under the current policy:
 ```bash
 aq integration sweep demo --retry
 ```
+
+### Conflicts confined to generated files
+
+Most conflicts between parallel branches used to be in generated files: two
+branches that each add a command both rewrite the CLI inventory, the command
+pages index, `openapi.json` and the client models; two that each add a test
+module both rewrite the selection catalogue. Every such conflict parked its
+source and filed a repair whose commit read "regenerate catalogue/inventory".
+
+Declare those files in the repository and give the policy the command that
+rebuilds them:
+
+```text
+# .gitattributes
+tests/selection_catalogue.json merge=aq-generated
+openapi.json merge=aq-generated
+packages/aq-client/** merge=aq-generated
+```
+
+```bash
+aq integration develop demo … --regenerate scripts/regenerate-generated.sh --reason '…'
+```
+
+Then each member merges with the `aq-generated` driver defined as a text merge
+that keeps the candidate's side of every overlapping hunk, so a generated file
+never conflicts. When both sides changed one — or a modify/delete left one
+unmerged — AQ runs the command in its clone, stages what it rewrote and folds
+it into that member's merge commit; the batch evidence lists the files under
+`regenerated`, by task. A conflict in any other file still parks the member,
+and its `conflicting_files` then names only the files a person must resolve.
+The repair task's description tells its worker to regenerate rather than
+hand-merge.
+
+The regeneration is checked, never trusted:
+
+* it runs with this interpreter's `bin` first on `PATH`, a minimal
+  environment and the worker database sentinels, bounded by
+  `regenerate_timeout_seconds`;
+* if it exits non-zero or times out, or writes a file its `.gitattributes`
+  does not mark `merge=aq-generated`, the merge is undone, the clone is
+  cleaned, and the member parks with `evidence.regeneration` holding the
+  command, exit code and output tail.
+
+Rows parked before you set `--regenerate` stay parked until their sources
+change or you retry them with `aq integration sweep demo --retry`.
 
 ## Record work you delivered by hand
 
