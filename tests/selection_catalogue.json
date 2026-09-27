@@ -117,6 +117,14 @@
         "tests/test_resource_semaphore.py"
       ]
     },
+    "collaboration": {
+      "description": "Bounded task collaboration: membership, ordered messages, durable waits and delivery.",
+      "modules": [
+        "tests/test_collaboration.py",
+        "tests/test_collaboration_lifecycle.py",
+        "tests/test_collaboration_queries.py"
+      ]
+    },
     "command-dispatch": {
       "description": "Command dispatch: CommandHandler.execute, the placement of every command on the surface, per-call scope isolation, the scope matrix, surface and system commands, prompt path validation and command.invoked events.",
       "modules": [
@@ -659,6 +667,7 @@
         "tests/test_migration_boolean_defaults.py",
         "tests/test_migration_candidate_authority.py",
         "tests/test_migration_candidate_mutation_claims.py",
+        "tests/test_migration_collaboration_threads.py",
         "tests/test_migration_conflict_resolution.py",
         "tests/test_migration_epic_pull_requests.py",
         "tests/test_migration_escalation_actions.py",
@@ -1251,7 +1260,7 @@
       ]
     }
   },
-  "digest": "sha256:224c0a9870de24027eb5ce8840d71b98e2cacafa7acc29a363fdcf8508952fb8",
+  "digest": "sha256:6f67963f887a920864d547cba4d77b8d5f0dbf8f01ed5ee39a5abe10a8fd96d8",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2154,6 +2163,7 @@
         "src.api.app",
         "src.api.codegen",
         "src.api.dependencies",
+        "src.api.models.task",
         "src.api.spec",
         "src.config",
         "src.database",
@@ -3438,6 +3448,58 @@
       ],
       "summary": "Codex tiers launch the requested current model families at the class effort."
     },
+    "tests/test_collaboration.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.collaboration"
+      ],
+      "markers": [],
+      "summary": "Pure collaboration limits, identifiers and pointer bodies."
+    },
+    "tests/test_collaboration_lifecycle.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.agent_waits",
+        "src.api.codegen",
+        "src.collaboration",
+        "src.commands",
+        "src.commands.collaboration_lifecycle",
+        "src.commands.principal",
+        "src.config",
+        "src.database.tables",
+        "src.mcp_registration",
+        "src.orchestrator",
+        "src.profiles.capabilities",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize",
+        "skipif"
+      ],
+      "summary": "Bounded expiry, retention and daemon-only collaboration reconciliation."
+    },
+    "tests/test_collaboration_queries.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.collaboration",
+        "src.database",
+        "src.database.tables",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Collaboration ordering and claim fencing on disposable PostgreSQL."
+    },
     "tests/test_command_capability_authorization.py": {
       "areas": [
         "capabilities"
@@ -4097,6 +4159,8 @@
       "imports": [
         "src.database",
         "src.database.engine",
+        "src.database.queries",
+        "src.database.queries.task_queries",
         "src.database.schema_key",
         "src.database.tables",
         "src.models"
@@ -8075,6 +8139,20 @@
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
     },
+    "tests/test_migration_collaboration_threads.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The collaboration revision creates its schema and preserves it on rollback."
+    },
     "tests/test_migration_conflict_resolution.py": {
       "areas": [
         "migrations"
@@ -8468,6 +8546,8 @@
       "default_arm": true,
       "imports": [
         "src.cli.app",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.commands.report_commands",
         "src.config",
@@ -8478,6 +8558,8 @@
         "src.git.manager",
         "src.models",
         "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
         "src.playbooks.required",
         "src.profiles.capabilities",
         "src.remote_links",
@@ -10468,6 +10550,7 @@
       "default_arm": true,
       "imports": [
         "src.commands.playbook_v2_commands",
+        "src.config",
         "src.database",
         "src.doctor",
         "src.doctor.models",
@@ -10480,7 +10563,8 @@
         "src.playbooks.profiles",
         "src.playbooks.required",
         "src.playbooks.runtime",
-        "src.playbooks.validation"
+        "src.playbooks.validation",
+        "src.timer_service"
       ],
       "markers": [],
       "summary": "Required V2 playbooks survive daemon restarts and activation gaps."

@@ -4734,6 +4734,101 @@ agent_waits = Table(
 )
 
 
+# Task identities are soft references so archival preserves collaboration history.
+collaboration_threads = Table(
+    "collaboration_threads",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    Column("created_by_kind", Text, nullable=False),
+    Column("created_by_id", Text, nullable=False),
+    Column("idempotency_key", Text, nullable=False),
+    Column("request_hash", Text, nullable=False),
+    Column("goal", Text, nullable=True),
+    Column("state", Text, nullable=False, server_default="active"),
+    Column("close_reason", Text, nullable=True),
+    Column("created_at", Float, nullable=False),
+    Column("deadline_at", Float, nullable=False),
+    Column("closed_at", Float, nullable=True),
+    Column("message_budget", Integer, nullable=False, server_default="40"),
+    Column("message_count", Integer, nullable=False, server_default="0"),
+    Column("last_seq", BigInteger, nullable=False, server_default="0"),
+    Column("version", Integer, nullable=False, server_default="1"),
+    Column("final_result", JSON, nullable=True),
+    CheckConstraint(
+        "state IN ('active','closed','expired')", name="ck_collaboration_threads_state"
+    ),
+    CheckConstraint(
+        "close_reason IS NULL OR close_reason IN "
+        "('closed','budget_exhausted','expired','members_below_two')",
+        name="ck_collaboration_threads_reason",
+    ),
+    CheckConstraint(
+        "deadline_at > created_at AND deadline_at <= created_at + 7200",
+        name="ck_collaboration_threads_deadline",
+    ),
+    CheckConstraint(
+        "message_budget BETWEEN 1 AND 40 AND message_count BETWEEN 0 AND message_budget",
+        name="ck_collaboration_threads_budget",
+    ),
+    UniqueConstraint(
+        "project_id",
+        "created_by_id",
+        "idempotency_key",
+        name="uq_collaboration_threads_idempotency",
+    ),
+    Index("idx_collaboration_threads_due", "state", "deadline_at"),
+    Index("idx_collaboration_threads_project", "project_id", "created_at"),
+)
+
+collaboration_members = Table(
+    "collaboration_members",
+    metadata,
+    Column(
+        "thread_id",
+        Text,
+        ForeignKey("collaboration_threads.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("task_id", Text, primary_key=True),
+    Column("state", Text, nullable=False, server_default="invited"),
+    Column("invited_at", Float, nullable=False),
+    Column("accepted_at", Float, nullable=True),
+    Column("accepted_claim_epoch", Integer, nullable=True),
+    Column("removed_at", Float, nullable=True),
+    CheckConstraint(
+        "state IN ('invited','accepted','removed')", name="ck_collaboration_members_state"
+    ),
+    Index("idx_collaboration_members_task", "task_id", "state"),
+)
+
+collaboration_messages = Table(
+    "collaboration_messages",
+    metadata,
+    Column(
+        "thread_id",
+        Text,
+        ForeignKey("collaboration_threads.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("seq", BigInteger, primary_key=True),
+    Column("message_id", Text, nullable=True),
+    Column("sender_task_id", Text, nullable=False),
+    Column("sender_claim_epoch", Integer, nullable=False),
+    Column("sender_session_id", Text, nullable=False),
+    Column("client_key", Text, nullable=False),
+    Column("body_bytes", Integer, nullable=False),
+    Column("created_at", Float, nullable=False),
+    UniqueConstraint(
+        "thread_id",
+        "sender_task_id",
+        "sender_claim_epoch",
+        "client_key",
+        name="uq_collaboration_messages_client_key",
+    ),
+    Index("idx_collaboration_messages_sender", "thread_id", "sender_task_id", "created_at"),
+)
+
 # Managed jobs are independent of harness sessions. Pins have no expiry: only
 # verified process cleanup may release them, including after a lost receipt.
 jobs = Table(

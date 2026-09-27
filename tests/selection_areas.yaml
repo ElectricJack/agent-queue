@@ -113,6 +113,9 @@ areas:
       - tests/test_stranded_feature_branches.py
 
   # ------------------------------------------------------------ agents
+  - id: collaboration
+    description: "Bounded task collaboration: membership, ordered messages, durable waits and delivery."
+    match: [tests/test_collaboration*.py]
   - id: agent-waits
     description: "Durable typed agent waits: ownership and claim fencing, producer snapshots, deadlines, CAS results, outbox retries and wait commands."
     match: [tests/test_agent_waits.py, tests/test_agent_wait_queries.py, tests/test_agent_wait_commands.py]
