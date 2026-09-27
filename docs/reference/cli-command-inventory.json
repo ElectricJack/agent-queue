@@ -3811,6 +3811,7 @@
           "--apply",
           "--limit",
           "--offset",
+          "--task-id",
           "--json",
           "--brief",
           "--api-url"

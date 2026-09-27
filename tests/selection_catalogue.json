@@ -1266,7 +1266,7 @@
       ]
     }
   },
-  "digest": "sha256:2beeda50ac81b01f8ca374b7cbb7a9b1af56f3198613b71ebaa7692eb738981e",
+  "digest": "sha256:8aa892bc247b48e55db28faab118970d1c710fe447f356dd5563e20c604dbe0c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5715,6 +5715,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"

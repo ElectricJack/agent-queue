@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:cf2680be7b07751815d71feab1441685011f312d01740bbd55d2fbada0360d77` |
+| Contract fingerprint | `sha256:b187ce6981f5db61d7f78ff56e58effe66ee0337d42c753964932d5f6ec0fedd` |
 
 ## Parameters
 
@@ -24,6 +24,7 @@
 | `apply` | `boolean` | no | `false` | — |
 | `limit` | `integer` | no | `500` | — |
 | `offset` | `integer` | no | `0` | — |
+| `task_id` | `string \| null` | no | `null` | — |
 
 ## Result
 
@@ -70,9 +71,12 @@ delivery rollout. Start with the default inventory and review `ambiguous`.
 
 The typed integration contract dispatches to
 `GitCommandsMixin._cmd_integration_migrate_provenance`, which checks operator
-authority and invokes `ProvenanceMigration`. The migration reads a bounded page
-of active/archived completion identities and legacy source bindings, clones an
-isolated temporary Git repository, and verifies exact objects and repair ancestry.
+authority and invokes `ProvenanceMigration`. The migration reads a page of
+active/archived completion identities, pages through the delivery journal to
+keep only the rows naming that page's tasks, clones an isolated temporary Git
+repository, and verifies exact objects and repair ancestry. `task_id` instead
+scopes the run to the source generations that task's close needs (its repair
+contract members, fenced by the delivery that filed the repair).
 
 ## Side effects and persistence
 
@@ -102,4 +106,5 @@ args:
 ```
 
 CLI: `aq integration migrate-provenance agent-queue`; add `--apply` to publish
-the verified evidence.
+the verified evidence, or `--task-id <held-task>` to migrate only the sources a
+refused repair close names.
