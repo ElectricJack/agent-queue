@@ -257,6 +257,11 @@ the window still ends at the planned instant, while the full author deadline
 starts at reservation. Interrupted builds recover their stored window and
 source context; ready briefs and their hashes are never rebuilt.
 
+Git evidence reads the configured repository's checkout, else the project's single
+`project-repo` base workspace. Reads never fetch: a remote-tracking head whose
+`FETCH_HEAD` is over an hour old is a `stale_remote_tracking_head` gap, a missing
+checkout is `checkout_unavailable`, and a project with no or several candidate
+checkouts is `configured_repository_unavailable`.
 Per-source coverage and default-branch heads advance on finalization, separately
 from transport receipts. Failed sources retain their cursor for recovery;
 lookback caps disclose the omitted interval. Morning fact membership deduplicates
@@ -283,7 +288,9 @@ use the deterministic report without waking the global supervisor. The author
 reads `aq report brief ID` and submits version 1 JSON with
 `aq report submit ID --file FILE --brief-hash HASH --expected-version VERSION`.
 The server validates project/evidence references, caps manual checks at ten
-grounded landed changes with known surfaces, and owns coverage and links.
+grounded landed changes with known surfaces, and owns coverage and links. Only
+the live global supervisor launch may read or submit the brief
+([supervisor hourly reports](../guides/supervisor-hourly-reports.md)).
 
 Final reports reserve one immutable summary in `outbound_deliveries`; the shared
 dispatcher sends at most 1,500 characters including a stable marker and a link
