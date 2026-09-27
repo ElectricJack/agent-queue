@@ -634,6 +634,35 @@ class TestNudge:
         assert row.name in caplog.text
         assert "AQ text remains in the composer" in caplog.text
 
+    async def test_deferred_nudge_logs_and_remembers_its_reason(
+        self, db, providers, lens, caplog, monkeypatch
+    ):
+        # 2026-09-27: thousands of "was not submitted" warnings never said
+        # the composer guard was refusing an idle Codex footer.
+        from src.sessions.provider import NudgeDeferred
+
+        row, _handle = await _seed_running_task(db, providers)
+        fake = providers.create("fake")
+
+        async def refuse(h, text):
+            raise NudgeDeferred(f"terminal {h.name!r} has a draft or its input is unknown")
+
+        monkeypatch.setattr(fake, "nudge", refuse)
+        with caplog.at_level(logging.WARNING, logger="src.messages.session_lens"):
+            ok = await lens.nudge(kind="task", target_id=row.task_id, project_id="proj1", text="hi")
+        assert ok is False
+        assert "has a draft or its input is unknown" in caplog.text
+        failure = lens.nudge_failure(row.id)
+        assert failure["reason"].endswith("has a draft or its input is unknown")
+        assert failure["deferred"] is True
+        assert failure["at"] <= time.time()
+
+        monkeypatch.undo()
+        assert await lens.nudge(
+            kind="task", target_id=row.task_id, project_id="proj1", text="hi"
+        ) is True
+        assert lens.nudge_failure(row.id) is None
+
     async def test_nudge_returns_false_when_no_session(self, lens):
         ok = await lens.nudge(kind="task", target_id="never-existed", project_id="proj1", text="hi")
         assert ok is False

@@ -17666,6 +17666,18 @@
             ],
             "title": "Wait",
             "description": "Wait up to 60 seconds for delivery"
+          },
+          "reply_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply To",
+            "description": "Message id this guidance answers; it joins that message's thread, so a worker waiting on the thread resumes"
           }
         },
         "type": "object",
