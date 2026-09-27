@@ -1084,24 +1084,35 @@ async def test_only_current_global_supervisor_launch_can_read_and_submit_morning
     now = utc("2026-09-25T07:00:00")
     command, _, request = await author_request(scheduled, now)
     monkeypatch.setattr("src.commands.report_commands.time.time", lambda: now + 60)
+    # Production shape: the request names the ``supervisor-global`` address,
+    # while the launch reading it is a UUID row named ``n-supervisor--global``.
+    launch = "22f503aa-d483-47bc-aeb2-a867e800a529"
     monkeypatch.setattr(
         command.db,
         "get_session",
         AsyncMock(
             return_value=SimpleNamespace(
-                id="supervisor-global", lifecycle="named", instance_token="current-launch"
+                id=launch,
+                name="n-supervisor--global",
+                profile_id="supervisor",
+                project_id=None,
+                lifecycle="named",
+                state="running",
+                instance_token="current-launch",
             )
         ),
     )
     for session_id, instance_token in [
-        ("supervisor-global", "replaced-launch"),
+        (launch, "replaced-launch"),
         ("other-supervisor", "current-launch"),
+        ("supervisor-global", "current-launch"),
     ]:
         principal = ExecutionPrincipal(
             kind=PrincipalKind.SESSION,
             policy=DENY_ALL,
             session_id=session_id,
             session_instance_token=instance_token,
+            elevated=True,
         )
         with principal_context(principal):
             assert (await command._cmd_report_brief({"request_id": request["id"]}))[
@@ -1113,8 +1124,9 @@ async def test_only_current_global_supervisor_launch_can_read_and_submit_morning
     principal = ExecutionPrincipal(
         kind=PrincipalKind.SESSION,
         policy=DENY_ALL,
-        session_id="supervisor-global",
+        session_id=launch,
         session_instance_token="current-launch",
+        elevated=True,
     )
     with principal_context(principal):
         brief = await command._cmd_report_brief({"request_id": request["id"], "limit": 1})

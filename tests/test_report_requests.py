@@ -379,22 +379,92 @@ def test_bounded_brief_keeps_delivery_truth_active_work_and_omission_count():
     assert len(digest) == 64
 
 
-async def test_replaced_supervisor_token_cannot_read_or_submit():
-    class StubDb:
-        async def get_report_request(self, _request_id):
-            return {"author_session_id": "supervisor-global", "brief": {}}
+# Requests bind the global supervisor's messaging address; every launch of it is
+# a UUID session row named ``n-supervisor--global`` with its own instance token.
+GLOBAL_LAUNCH = "22f503aa-d483-47bc-aeb2-a867e800a529"
+PROJECT_LAUNCH = "26e0b1a7-6671-472a-94cc-e1b5d71bae7f"
 
-        async def get_session(self, _session_id):
-            return SimpleNamespace(
-                id="supervisor-global", lifecycle="named", instance_token="current-launch"
-            )
 
-    stale = ExecutionPrincipal(
-        kind=PrincipalKind.SESSION,
-        policy=DENY_ALL,
-        session_id="supervisor-global",
-        session_instance_token="replaced-launch",
+def launch_row(**fields):
+    row = {
+        "id": GLOBAL_LAUNCH,
+        "name": "n-supervisor--global",
+        "profile_id": "supervisor",
+        "project_id": None,
+        "lifecycle": "named",
+        "state": "running",
+        "instance_token": "current-launch",
+    }
+    return SimpleNamespace(**{**row, **fields})
+
+
+def launch_principal(**fields):
+    principal = {
+        "session_id": GLOBAL_LAUNCH,
+        "session_instance_token": "current-launch",
+        "elevated": True,
+        "project_id": None,
+    }
+    return ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=DENY_ALL, **{**principal, **fields}
     )
-    with principal_context(stale):
-        result = await Commands(StubDb())._cmd_report_brief({"request_id": "r"})
-    assert result["error_code"] == "out_of_scope"
+
+
+class LaunchDb:
+    def __init__(self, session) -> None:
+        self.session = session
+
+    async def get_report_request(self, _request_id):
+        return {
+            "author_session_id": "supervisor-global",
+            "state": "requested",
+            "deadline": BASE + HOUR,
+            "version": 2,
+            "brief_hash": "hash",
+            "brief": {"facts": [], "active": []},
+        }
+
+    async def get_session(self, session_id):
+        return self.session if self.session and self.session.id == session_id else None
+
+
+async def test_live_global_supervisor_launch_reads_its_brief():
+    with principal_context(launch_principal()):
+        result = await Commands(LaunchDb(launch_row()))._cmd_report_brief({"request_id": "r"})
+    assert result["success"] and result["version"] == 2
+
+
+@pytest.mark.parametrize(
+    ("principal", "session"),
+    [
+        pytest.param(
+            launch_principal(session_instance_token="replaced-launch"),
+            launch_row(),
+            id="replaced-launch",
+        ),
+        pytest.param(launch_principal(elevated=False), launch_row(), id="not-elevated"),
+        pytest.param(
+            launch_principal(session_id=PROJECT_LAUNCH, project_id="agent-queue"),
+            launch_row(id=PROJECT_LAUNCH, name="n-supervisor--agent-queue", project_id="agent-queue"),
+            id="project-supervisor",
+        ),
+        pytest.param(
+            launch_principal(),
+            launch_row(name="n-supervisor--agent-queue"),
+            id="other-named-session",
+        ),
+        pytest.param(launch_principal(), launch_row(state="stopped"), id="stopped-launch"),
+        pytest.param(launch_principal(), None, id="unknown-session"),
+        pytest.param(
+            launch_principal(session_id="supervisor-global"),
+            launch_row(),
+            id="address-is-not-a-session",
+        ),
+    ],
+)
+async def test_only_the_live_global_supervisor_launch_reads_or_submits(principal, session):
+    commands = Commands(LaunchDb(session))
+    with principal_context(principal):
+        brief = await commands._cmd_report_brief({"request_id": "r"})
+        submitted = await commands._cmd_report_submit({"request_id": "r"})
+    assert brief["error_code"] == submitted["error_code"] == "out_of_scope"
