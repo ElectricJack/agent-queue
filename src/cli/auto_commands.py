@@ -94,6 +94,12 @@ HANDCRAFTED_COVERAGE = {
     "wait_get",
     "wait_list",
     "wait_cancel",
+    # collaboration.py — positional THREAD ids and --claim-epoch resolution.
+    "collaboration_create",
+    "collaboration_accept",
+    "collaboration_get",
+    "collaboration_list",
+    "collaboration_close",
     "question_list",
     "question_answer",
     "question_escalate",
