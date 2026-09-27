@@ -1261,6 +1261,58 @@ _SPEC_SCHEMAS: dict[str, EventSchema] = {
 }
 
 # ---------------------------------------------------------------------------
+# Project lifecycle
+#
+# ``project.created`` is emitted once per new project (``src/projects/events.py``):
+# by ``ProjectOnboardingService`` on a request's first success -- a replayed
+# request returns the stored result and emits nothing -- and by
+# ``_cmd_create_project``.  Onboarding registers the primary workspace in the
+# same step, so its event carries the workspace fields; ``create_project``
+# registers none and omits them.  ``workspace_in_vault`` is a path fact, not a
+# policy: whether the workspace is the AQ vault or lies beneath it.
+# ---------------------------------------------------------------------------
+
+_PROJECT_SCHEMAS: dict[str, EventSchema] = {
+    "project.created": {
+        "required": ["project_id", "source"],
+        "optional": [
+            "name",
+            "source_type",
+            "workspace_id",
+            "workspace_path",
+            "workspace_in_vault",
+        ],
+        "types": {
+            "project_id": str,
+            "source": str,
+            "name": str,
+            "source_type": str,
+            "workspace_id": str,
+            "workspace_path": str,
+            "workspace_in_vault": bool,
+        },
+        "fields": {
+            "project_id": {"type": "string", "description": "project"},
+            "source": {
+                "type": "string",
+                "description": "creation path (onboarding or command)",
+            },
+            "name": {"type": "string", "description": "project name"},
+            "source_type": {
+                "type": "string",
+                "description": "onboarding source (link, init or clone)",
+            },
+            "workspace_id": {"type": "string", "description": "primary workspace"},
+            "workspace_path": {"type": "string", "description": "primary workspace path"},
+            "workspace_in_vault": {
+                "type": "boolean",
+                "description": "flag set when the primary workspace lies inside the AQ vault",
+            },
+        },
+    },
+}
+
+# ---------------------------------------------------------------------------
 # Swarm claims (swarm-work-model §10) — admission events a blocked
 # ``task_claim`` long-poll wakes on, plus the scheduler-tick heartbeat.
 # ---------------------------------------------------------------------------
@@ -1846,6 +1898,7 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
     **_TIMER_SCHEMAS,
     **_CRON_SCHEMAS,
     **_SPEC_SCHEMAS,
+    **_PROJECT_SCHEMAS,
     **_SWARM_SCHEMAS,
     **_PROVIDER_SCHEMAS,
     **_COMMAND_SCHEMAS,

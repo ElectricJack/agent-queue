@@ -141,6 +141,20 @@ class ProjectCommandsMixin:
 
         ensure_project_storage(self.config.data_dir, project_id)
 
+        # No workspace yet (``add_workspace`` registers one later), so the
+        # event carries no workspace fields.
+        from src.projects.events import emit_project_created, project_created_payload
+
+        await emit_project_created(
+            getattr(self.orchestrator, "bus", None),
+            project_created_payload(
+                project_id=project_id,
+                name=project.name,
+                source="command",
+                vault_root=self.config.vault_root,
+            ),
+        )
+
         return {
             "created": project_id,
             "name": project.name,

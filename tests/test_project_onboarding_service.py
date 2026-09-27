@@ -20,6 +20,7 @@ from src.commands.contracts.project_onboarding import (
 from src.commands.handler import CommandHandler
 from src.config import DatabaseConfig, AppConfig, ProjectRoot
 from src.database import Database
+from src.event_schemas import validate_event
 from src.git.manager import GitError, GitManager
 from src.models import Project, RepoSourceType, Workspace
 from src.orchestrator import Orchestrator
@@ -386,6 +387,88 @@ async def test_terminal_replay_and_conflicting_fingerprint(onboarding):
     assert conflict.value.code == "request_conflict"
 
 
+class _RecordingBus:
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    async def emit(self, event_type: str, payload: dict) -> None:
+        self.events.append((event_type, dict(payload)))
+
+
+async def test_first_success_emits_project_created_and_replay_does_not(onboarding):
+    _, database, config, root, _ = onboarding
+    repo = _make_repo(root / "repo")
+    bus = _RecordingBus()
+    service = ProjectOnboardingService(database, config, GitManager(), event_bus=bus)
+
+    result = await service.onboard_project(_request())
+    replay = await ProjectOnboardingService(
+        database, config, GitManager(), event_bus=bus
+    ).onboard_project(_request())
+
+    assert replay == result
+    assert bus.events == [
+        (
+            "project.created",
+            {
+                "project_id": "example-project",
+                "name": "Example Project",
+                "source": "onboarding",
+                "source_type": "link",
+                "workspace_id": result.workspace_id,
+                "workspace_path": str(repo.resolve()),
+                "workspace_in_vault": False,
+            },
+        )
+    ]
+    assert validate_event("project.created", bus.events[0][1], strict_extras=True) == []
+
+
+async def test_project_created_flags_a_workspace_inside_the_vault(onboarding):
+    _, database, config, _, data_dir = onboarding
+    vault_projects = data_dir / "vault" / "projects"
+    repo = _make_repo(vault_projects / "notes-repo")
+    vault_config = AppConfig(
+        project_roots=[ProjectRoot(id="vault", label="Vault", path=str(vault_projects))],
+        data_dir=config.data_dir,
+        database=config.database,
+    )
+    bus = _RecordingBus()
+    service = ProjectOnboardingService(database, vault_config, GitManager(), event_bus=bus)
+
+    await service.onboard_project(_request(root_id="vault", relative_path="notes-repo"))
+
+    [(event_type, payload)] = bus.events
+    assert event_type == "project.created"
+    assert payload["workspace_path"] == str(repo.resolve())
+    assert payload["workspace_in_vault"] is True
+
+
+async def test_failed_onboarding_emits_no_project_created(onboarding):
+    _, database, config, _, _ = onboarding
+    bus = _RecordingBus()
+    service = ProjectOnboardingService(database, config, GitManager(), event_bus=bus)
+
+    with pytest.raises(ProjectOnboardingError):
+        await service.onboard_project(_request(relative_path="missing"))
+
+    assert bus.events == []
+
+
+async def test_bus_failure_does_not_fail_or_roll_back_onboarding(onboarding):
+    _, database, config, root, _ = onboarding
+    _make_repo(root / "repo")
+    bus = SimpleNamespace(emit=AsyncMock(side_effect=RuntimeError("bus down")))
+    service = ProjectOnboardingService(database, config, GitManager(), event_bus=bus)
+
+    result = await service.onboard_project(_request())
+
+    assert result.project_id == "example-project"
+    assert await database.get_project("example-project") is not None
+    assert len(await database.list_workspaces("example-project")) == 1
+    bus.emit.assert_awaited_once()
+
+
 class _PausingGitManager(GitManager):
     def __init__(self) -> None:
         super().__init__()
@@ -557,6 +640,8 @@ async def test_command_handler_delegates_onboard_and_status_to_service(onboardin
     orchestrator = Orchestrator(config)
     orchestrator.db = database
     handler = CommandHandler(orchestrator, config)
+    created: list[dict] = []
+    orchestrator.bus.subscribe("project.created", created.append)
     payload = _request().model_dump(mode="json")
 
     result = await handler.execute("onboard_project", payload)
@@ -567,6 +652,29 @@ async def test_command_handler_delegates_onboard_and_status_to_service(onboardin
     assert status["success"] is True
     assert status["status"] == "completed"
     assert status["result"]["workspace_id"] == result["workspace_id"]
+    assert [(event["project_id"], event["source"]) for event in created] == [
+        ("example-project", "onboarding")
+    ]
+
+
+async def test_create_project_command_emits_project_created_without_workspace(onboarding):
+    _, database, config, _, _ = onboarding
+    orchestrator = Orchestrator(config)
+    orchestrator.db = database
+    handler = CommandHandler(orchestrator, config)
+    created: list[dict] = []
+    orchestrator.bus.subscribe("project.created", created.append)
+
+    result = await handler.execute("create_project", {"name": "Bare Project"})
+
+    assert result["created"] == "bare-project"
+    [event] = created
+    assert {key: event[key] for key in ("project_id", "name", "source")} == {
+        "project_id": "bare-project",
+        "name": "Bare Project",
+        "source": "command",
+    }
+    assert not {"workspace_id", "workspace_path", "workspace_in_vault"} & set(event)
 
 
 @pytest.mark.parametrize(
