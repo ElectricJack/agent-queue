@@ -80,6 +80,7 @@ from src.commands.integration_commands import IntegrationCommandsMixin
 # touching this file.  See docs/analysis/execution-plan.md §1.1.
 from src.commands.gate_commands import GateCommandsMixin
 from src.commands.message_commands import MessageCommandsMixin
+from src.commands.message_wait_commands import MessageWaitCommandsMixin
 from src.commands.session_commands import SessionCommandsMixin
 from src.commands.surface_commands import SurfaceCommandsMixin
 from src.commands.ops_commands import OpsCommandsMixin
@@ -367,6 +368,7 @@ class CommandHandler(
     # -- Framework-overhaul substrate mixins (empty until their lane) ----
     GateCommandsMixin,
     MessageCommandsMixin,
+    MessageWaitCommandsMixin,
     SessionCommandsMixin,
     SurfaceCommandsMixin,
     OpsCommandsMixin,

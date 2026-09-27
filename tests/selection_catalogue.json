@@ -123,6 +123,8 @@
         "tests/test_collaboration.py",
         "tests/test_collaboration_commands.py",
         "tests/test_collaboration_lifecycle.py",
+        "tests/test_collaboration_message_wait.py",
+        "tests/test_collaboration_messages.py",
         "tests/test_collaboration_queries.py",
         "tests/test_collaboration_waits.py"
       ]
@@ -1274,7 +1276,7 @@
       ]
     }
   },
-  "digest": "sha256:fda90aed089e44b9849aa0e5a2ddda151111dc95ba374becd7d6a1a62e18e9d7",
+  "digest": "sha256:9b9411335060cbe0364d6e3920fab055cdcbe85fe5d9efa1df9d8be28d4b2060",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3524,6 +3526,51 @@
         "skipif"
       ],
       "summary": "Bounded expiry, retention and daemon-only collaboration reconciliation."
+    },
+    "tests/test_collaboration_message_wait.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.scope",
+        "src.cli.app",
+        "src.cli.client",
+        "src.commands.contracts",
+        "src.database.tables",
+        "src.profiles.parser",
+        "src.tools.registry"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Bounded message long-poll on the same durable wait, with lossless cursors."
+    },
+    "tests/test_collaboration_messages.py": {
+      "areas": [
+        "collaboration"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.messages",
+        "src.cli.app",
+        "src.database.tables",
+        "src.event_bus",
+        "src.messages.delivery",
+        "src.models",
+        "src.prime.sections",
+        "src.sessions.provider"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Collaboration sends and replies, safe delivery, and rollover prime context."
     },
     "tests/test_collaboration_queries.py": {
       "areas": [

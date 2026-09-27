@@ -20,28 +20,32 @@ class MessageSendRequest:
     """Body of POST /api/messages/send for non-session recipients.
 
     Attributes:
-        to_kind (str): Recipient kind: session | task | profile | user
-        to_id (str): Recipient id
         body (str): Markdown message body
         project_id (None | str | Unset): Owning project id
+        to_kind (None | str | Unset): Recipient kind; omit for collaboration fanout
+        to_id (None | str | Unset): Recipient id
         from_id (str | Unset): Sender id Default: 'cli'.
         from_kind (str | Unset): Sender kind Default: 'user'.
         subject (None | str | Unset):
         thread_id (None | str | Unset):
+        client_key (None | str | Unset):
+        claim_epoch (int | None | Unset):
         priority (int | Unset):  Default: 100.
         archive_after_inject (bool | Unset):  Default: False.
         pane_open (MessageSendRequestPaneOpenType0 | None | Unset):
         system_only (bool | Unset): Request projectless system scope Default: False.
     """
 
-    to_kind: str
-    to_id: str
     body: str
     project_id: None | str | Unset = UNSET
+    to_kind: None | str | Unset = UNSET
+    to_id: None | str | Unset = UNSET
     from_id: str | Unset = "cli"
     from_kind: str | Unset = "user"
     subject: None | str | Unset = UNSET
     thread_id: None | str | Unset = UNSET
+    client_key: None | str | Unset = UNSET
+    claim_epoch: int | None | Unset = UNSET
     priority: int | Unset = 100
     archive_after_inject: bool | Unset = False
     pane_open: MessageSendRequestPaneOpenType0 | None | Unset = UNSET
@@ -51,10 +55,6 @@ class MessageSendRequest:
     def to_dict(self) -> dict[str, Any]:
         from ..models.message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenType0
 
-        to_kind = self.to_kind
-
-        to_id = self.to_id
-
         body = self.body
 
         project_id: None | str | Unset
@@ -62,6 +62,18 @@ class MessageSendRequest:
             project_id = UNSET
         else:
             project_id = self.project_id
+
+        to_kind: None | str | Unset
+        if isinstance(self.to_kind, Unset):
+            to_kind = UNSET
+        else:
+            to_kind = self.to_kind
+
+        to_id: None | str | Unset
+        if isinstance(self.to_id, Unset):
+            to_id = UNSET
+        else:
+            to_id = self.to_id
 
         from_id = self.from_id
 
@@ -78,6 +90,18 @@ class MessageSendRequest:
             thread_id = UNSET
         else:
             thread_id = self.thread_id
+
+        client_key: None | str | Unset
+        if isinstance(self.client_key, Unset):
+            client_key = UNSET
+        else:
+            client_key = self.client_key
+
+        claim_epoch: int | None | Unset
+        if isinstance(self.claim_epoch, Unset):
+            claim_epoch = UNSET
+        else:
+            claim_epoch = self.claim_epoch
 
         priority = self.priority
 
@@ -97,13 +121,15 @@ class MessageSendRequest:
         field_dict.update(self.additional_properties)
         field_dict.update(
             {
-                "to_kind": to_kind,
-                "to_id": to_id,
                 "body": body,
             }
         )
         if project_id is not UNSET:
             field_dict["project_id"] = project_id
+        if to_kind is not UNSET:
+            field_dict["to_kind"] = to_kind
+        if to_id is not UNSET:
+            field_dict["to_id"] = to_id
         if from_id is not UNSET:
             field_dict["from_id"] = from_id
         if from_kind is not UNSET:
@@ -112,6 +138,10 @@ class MessageSendRequest:
             field_dict["subject"] = subject
         if thread_id is not UNSET:
             field_dict["thread_id"] = thread_id
+        if client_key is not UNSET:
+            field_dict["client_key"] = client_key
+        if claim_epoch is not UNSET:
+            field_dict["claim_epoch"] = claim_epoch
         if priority is not UNSET:
             field_dict["priority"] = priority
         if archive_after_inject is not UNSET:
@@ -128,10 +158,6 @@ class MessageSendRequest:
         from ..models.message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenType0
 
         d = dict(src_dict)
-        to_kind = d.pop("to_kind")
-
-        to_id = d.pop("to_id")
-
         body = d.pop("body")
 
         def _parse_project_id(data: object) -> None | str | Unset:
@@ -142,6 +168,24 @@ class MessageSendRequest:
             return cast(None | str | Unset, data)
 
         project_id = _parse_project_id(d.pop("project_id", UNSET))
+
+        def _parse_to_kind(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        to_kind = _parse_to_kind(d.pop("to_kind", UNSET))
+
+        def _parse_to_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        to_id = _parse_to_id(d.pop("to_id", UNSET))
 
         from_id = d.pop("from_id", UNSET)
 
@@ -164,6 +208,24 @@ class MessageSendRequest:
             return cast(None | str | Unset, data)
 
         thread_id = _parse_thread_id(d.pop("thread_id", UNSET))
+
+        def _parse_client_key(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        client_key = _parse_client_key(d.pop("client_key", UNSET))
+
+        def _parse_claim_epoch(data: object) -> int | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(int | None | Unset, data)
+
+        claim_epoch = _parse_claim_epoch(d.pop("claim_epoch", UNSET))
 
         priority = d.pop("priority", UNSET)
 
@@ -189,14 +251,16 @@ class MessageSendRequest:
         system_only = d.pop("system_only", UNSET)
 
         message_send_request = cls(
-            to_kind=to_kind,
-            to_id=to_id,
             body=body,
             project_id=project_id,
+            to_kind=to_kind,
+            to_id=to_id,
             from_id=from_id,
             from_kind=from_kind,
             subject=subject,
             thread_id=thread_id,
+            client_key=client_key,
+            claim_epoch=claim_epoch,
             priority=priority,
             archive_after_inject=archive_after_inject,
             pane_open=pane_open,
