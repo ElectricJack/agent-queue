@@ -667,6 +667,7 @@
         "tests/test_migration_boolean_defaults.py",
         "tests/test_migration_candidate_authority.py",
         "tests/test_migration_candidate_mutation_claims.py",
+        "tests/test_migration_capacity_spill.py",
         "tests/test_migration_collaboration_threads.py",
         "tests/test_migration_conflict_resolution.py",
         "tests/test_migration_epic_pull_requests.py",
@@ -1260,7 +1261,7 @@
       ]
     }
   },
-  "digest": "sha256:6f67963f887a920864d547cba4d77b8d5f0dbf8f01ed5ee39a5abe10a8fd96d8",
+  "digest": "sha256:2cb35a38dd0c20fedccdd333256ddfd4a44d9c0eb01ef65f1bfa0107768409e6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6019,7 +6020,9 @@
         "src.orchestrator",
         "src.tools"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Container-close semantics and the hierarchy command surface — spec §7, §14."
     },
     "tests/test_hierarchy_doctor.py": {
@@ -8139,6 +8142,21 @@
       ],
       "summary": "Current PostgreSQL schema contracts retained after migration squashing."
     },
+    "tests/test_migration_capacity_spill.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine",
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Capacity-spill schema upgrades and rollback on owned disposable PostgreSQL."
+    },
     "tests/test_migration_collaboration_threads.py": {
       "areas": [
         "migrations"
@@ -10248,6 +10266,8 @@
         "src.config",
         "src.database.queries",
         "src.database.queries.claim_queries",
+        "src.database.queries.task_reroute_queries",
+        "src.database.tables",
         "src.intelligence_classes",
         "src.llm.client",
         "src.llm.fake",
