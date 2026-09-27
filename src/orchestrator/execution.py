@@ -6,6 +6,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 import time
+import uuid
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.orchestrator.base_workspace import base_checkout_refusal
@@ -1279,6 +1280,7 @@ class ExecutionMixin:
         work_outcome: str = "",
         failure_class: str = "",
         commit: str = "",
+        completion_id: str | None = None,
         notes: str = "",
         expect_claim_epoch: int | None = None,
         pool: bool = False,
@@ -1670,6 +1672,34 @@ class ExecutionMixin:
         # branches are terminal and must not bump the counter.
         new_retry: int | None = None
         verification_reopened = outcome == "pass" and ctx.verification_reopened
+        development_completion = bool(
+            outcome == "pass" and completed_ok
+            and getattr(project, "hierarchical_integration_mode", None) == "development"
+        )
+        completion_source = None
+        if development_completion and commit and (not workspace_path or not task.branch_name):
+            feedback = "A completion with a recorded code artifact requires its exact published task branch."
+            return {
+                "status": task.status.value, "pr_url": None, "pipeline_ok": False,
+                "verification_retry": True, "issues": [feedback], "feedback": feedback,
+            }
+        if development_completion and workspace_path and task.branch_name:
+            try:
+                if not await self._vault_only_delivery(ctx) and await self._task_uses_git(ctx):
+                    from src.integration.provenance import record_worker_completion
+
+                    completion_source = await record_worker_completion(
+                        self.db, self.git, task, project, workspace_path,
+                        completion_id or str(uuid.uuid4()), commit=commit,
+                        no_code_intent=await self._task_produces_no_code(ctx),
+                    )
+            except Exception as exc:
+                # Publication failures leave the same claim/worktree live.
+                # No successful close can precede verified complete evidence.
+                return {
+                    "status": task.status.value, "pr_url": None, "pipeline_ok": False,
+                    "verification_retry": True, "issues": [str(exc)], "feedback": str(exc),
+                }
         if managed_parent_suspended:
             new_status = TaskStatus.PAUSED
             context = "integration_parent_suspended"
@@ -2107,6 +2137,8 @@ class ExecutionMixin:
             # archive path for nothing.
             "slot_restored": slot_restored,
         }
+        if development_completion:
+            response["completion_source"] = completion_source
         if handoff_unproven:
             # ``_cmd_task_close`` reads this to skip the pool teardown
             # (``restore_slot_after_task`` / ``release_claim`` / claim file).

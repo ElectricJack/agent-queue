@@ -1128,12 +1128,14 @@ class SessionCommandsMixin:
                 }
         try:
             expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
+            completion_id = str(uuid.uuid4())
             result = await self.orchestrator.complete_session_task(
                 task,
                 outcome=outcome,
                 work_outcome=work_outcome,
                 failure_class=failure_class,
                 commit=str(args.get("commit") or ""),
+                completion_id=completion_id,
                 notes=str(args.get("notes") or ""),
                 expect_claim_epoch=expect_claim_epoch,
                 pool=is_pool,
@@ -1237,7 +1239,10 @@ class SessionCommandsMixin:
         # Capture the final branch tip after verification/integration. The
         # pipeline may auto-commit dirty work, so a pre-pipeline SHA describes
         # the input state rather than the commit that actually closed the task.
-        if needs_ws and not args.get("commit") and final_task and final_task.branch_name:
+        if (
+            "completion_source" not in result and needs_ws and not args.get("commit")
+            and final_task and final_task.branch_name
+        ):
             checkout = await self.db.get_project_workspace_path(task.project_id)
             if checkout:
                 sha = await self.orchestrator.git.arev_parse(
@@ -1267,12 +1272,14 @@ class SessionCommandsMixin:
         explicit_commit = str(args.get("commit") or "").strip()
         auto_commit = await self.db.get_task_meta(task_id, "work_commit_auto")
         commit = explicit_commit or str(auto_commit or "").strip()
+        if "completion_source" in result:
+            commit = result["completion_source"] or ""
 
         # Append only: a reopened task may be closed again, and both accounts
         # remain available while task detail shows the latest one.
         await self.db.save_task_completion(
             TaskCompletion(
-                id=str(uuid.uuid4()),
+                id=completion_id,
                 task_id=task_id,
                 outcome=outcome,
                 work_outcome=work_outcome or None,

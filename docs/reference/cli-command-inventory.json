@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 437,
+    "leaf_commands": 438,
     "registration": {
       "generated": 284,
-      "handwritten": 153
+      "handwritten": 154
     },
     "ownership": {
-      "core": 398,
+      "core": 399,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 436
+      "supported": 437
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 284,
-      "registration": 139
+      "registration": 140
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 377
+      "untested": 378
     }
   },
   "commands": [
@@ -3777,6 +3777,39 @@
           "project_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration migrate-provenance",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_migrate_provenance",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id"
+        ],
+        "optional": [
+          "--apply",
+          "--limit",
+          "--offset",
           "--json",
           "--brief",
           "--api-url"
