@@ -27,15 +27,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, insert, select, text, update
 
 from src.database.queries.blocked_state import (
-    _development_delivery_pending,
     blocked_predicate,
     obsolete_marker,
 )
 from src.database.tables import (
-    projects, sessions, task_completion_records,
+    events, projects, sessions, task_completion_records,
     tasks,
 )
-from src.database.tables import development_deliveries as deliveries
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration import development_validation as validation_outcomes
 from src.integration.delegate_release import release_delegates_on
@@ -58,6 +56,7 @@ from src.integration.development_validation import run_check as run_validation_c
 from src.integration.delivery_truth import (
     DeliveryState, delivery_snapshot, load_delivery_requests,
 )
+from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.publishable_artifact import (
     EMPTY_SOURCE_KEY as EMPTY_SOURCE_KEY, has_publishable_artifact,
 )
@@ -110,6 +109,19 @@ REGENERATION_OUTPUT_TAIL_CHARS = 4000
 def armed_for_branch_cleanup(evidence):
     """*evidence* with branch cleanup armed, for a row that just landed on main."""
     return {**evidence, BRANCH_CLEANUP_KEY: {"state": "pending", "attempts": 0}}
+
+
+async def operation_rows_on(conn, project_ids):
+    """Latest event revisions of real publisher actions, independent of git truth."""
+    from sqlalchemy import cast
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    identity = cast(events.c.payload, JSONB)["id"].as_string()
+    payloads = (await conn.execute(select(events.c.payload).where(
+        events.c.event_type == "development.operation", events.c.project_id.in_(project_ids),
+    ).distinct(identity).order_by(identity, events.c.id.desc()))).scalars()
+    return sorted((json.loads(payload) for payload in payloads),
+                  key=lambda row: (row["created_at"], row["id"]))
 
 
 def _manifest_members(manifest):
@@ -188,7 +200,8 @@ OPEN_REPAIR_STATUSES = frozenset({
 REPAIR_CHAIN_LIMIT = 8
 
 
-def repair_chain(manifest, history, statuses, *, repository_id, target_ref, identity=None):
+def repair_chain(manifest, history, statuses, *, repository_id, target_ref, identity=None,
+                 verified=()):
     """Follow a parked batch through its repairs to the one still carrying it.
 
     A parked batch's repair is ``development-repair-<digest of its manifest>``.
@@ -219,14 +232,12 @@ def repair_chain(manifest, history, statuses, *, repository_id, target_ref, iden
         reverse=True,
     )
     parked_in = {}
-    delivered = set()
+    delivered = set(verified)
     for row in rows:
         members = _manifest_members(row.get("manifest"))
         if row.get("state") == "parked":
             for member in members:
                 parked_in.setdefault(member["task_id"], []).append(row)
-        elif row.get("state") in {"delivered", "adopted"} and row.get("target_ref") == target_ref:
-            delivered.update(member["task_id"] for member in members)
     identity = identity or DevelopmentIntegration._repair_identity
     seen = set()
 
@@ -697,44 +708,49 @@ class DevelopmentIntegration:
         finally:
             await asyncio.to_thread(shutil.rmtree, root, True)
 
+    @staticmethod
+    def _operation_insert(**row):
+        """Append genuine operation intent/evidence to the existing event log.
+
+        ``finished`` means this action ended, never that a task is delivered.
+        The retained manifest is the input to a push/test/repair attempt. Every
+        delivery-sensitive reader must independently inspect current git.
+        """
+        row = {"expected_sha": None, "prepared_sha": None, **row}
+        if row["state"] in {"delivered", "adopted"}:
+            row["state"] = "finished"
+        return insert(events).values(
+            event_type="development.operation", project_id=row["project_id"],
+            payload=json.dumps(row), timestamp=time.time(),
+        )
+
     async def save(self, row):
         async with self.db._engine.begin() as conn:
-            await conn.execute(insert(deliveries).values(**row))
-            flipped = await self.db.recompute_blocked(
-                {member["task_id"] for member in row["manifest"]}, conn=conn
-            )
-            ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
-        await self.db.log_blocked_flips(flipped)
-        await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
+            await conn.execute(self._operation_insert(**row))
 
     async def change(self, identity, **values):
+        from sqlalchemy import cast
+        from sqlalchemy.dialects.postgresql import JSONB
+
         async with self.db._engine.begin() as conn:
-            result = await conn.execute(
-                update(deliveries)
-                .where(deliveries.c.id == identity)
-                .values(**values, updated_at=time.time())
-                .returning(deliveries.c.manifest)
-            )
-            manifest = result.scalar_one_or_none() or []
-            flipped = await self.db.recompute_blocked(
-                {member["task_id"] for member in manifest}, conn=conn
-            )
-            ready = await self.db._note_frontier_entry(conn, flipped, reason="unblocked")
-        await self.db.log_blocked_flips(flipped)
-        await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
+            # Serialize patches of this operation, including lock-free adoption
+            # and cleanup, so evidence never overwrites a concurrent revision.
+            await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:id, 0))"),
+                               {"id": "development-operation:" + identity})
+            payload = await conn.scalar(select(events.c.payload).where(
+                events.c.event_type == "development.operation",
+                cast(events.c.payload, JSONB)["id"].as_string() == identity,
+            ).order_by(events.c.id.desc()).limit(1))
+            if payload is None:
+                raise ValueError(f"unknown development operation {identity}")
+            await conn.execute(self._operation_insert(
+                **{**json.loads(payload), **values, "updated_at": time.time()}
+            ))
 
     async def rows(self, project_id):
+        """Latest operation revisions; no delivery receipts are read."""
         async with self.db._engine.connect() as conn:
-            return [
-                dict(r)
-                for r in (
-                    await conn.execute(
-                        select(deliveries)
-                        .where(deliveries.c.project_id == project_id)
-                        .order_by(deliveries.c.created_at)
-                    )
-                ).mappings()
-            ]
+            return await operation_rows_on(conn, [project_id])
 
     async def _has_pending_work(self, project_id, repo, *, now):
         """Check durable work before opening the authenticated Git transport.
@@ -744,25 +760,16 @@ class DevelopmentIntegration:
         skip git. Branch cleanup is included when its retry deadline has passed.
         """
         target = "refs/heads/" + repo.default_branch
-        cleanup = deliveries.c.evidence[BRANCH_CLEANUP_KEY]
-        async with self.db._engine.connect() as conn:
-            journal_work = await conn.scalar(
-                select(deliveries.c.id).where(
-                    deliveries.c.project_id == project_id,
-                    deliveries.c.repository_id == repo.id,
-                    (
-                        deliveries.c.state.in_(("prepared", "publishing", "parked"))
-                        | (
-                            deliveries.c.state.in_(("delivered", "adopted"))
-                            & (deliveries.c.target_ref == target)
-                            & (cleanup["state"].as_string() == "pending")
-                            & (func.coalesce(cleanup["next_attempt_at"].as_float(), 0.0) <= now)
-                        )
-                    ),
-                ).limit(1)
+        history = await self.rows(project_id)
+        if any(row["repository_id"] == repo.id and (
+            row["state"] in {"prepared", "publishing", "parked"} or (
+                row["target_ref"] == target and
+                (row["evidence"].get(BRANCH_CLEANUP_KEY) or {}).get("state") == "pending" and
+                float((row["evidence"].get(BRANCH_CLEANUP_KEY) or {}).get("next_attempt_at") or 0) <= now
             )
-            if journal_work is not None:
-                return True
+        ) for row in history):
+            return True
+        async with self.db._engine.connect() as conn:
             candidate = await conn.scalar(
                 select(tasks.c.id).where(
                     tasks.c.project_id == project_id,
@@ -772,7 +779,6 @@ class DevelopmentIntegration:
                         task_completion_records.c.id
                     ).where(
                         task_completion_records.c.task_id == tasks.c.id,
-                        task_completion_records.c.commits != "[]",
                     ).exists(),
                     ~obsolete_marker(tasks),
                 ).limit(1)
@@ -849,23 +855,26 @@ class DevelopmentIntegration:
         await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
 
     async def reconcile(self, repo, store):
-        for row in await self.rows(repo.project_id):
-            if row["repository_id"] != repo.id or row["state"] != "publishing":
-                continue
+        pending = [row for row in await self.rows(repo.project_id)
+                   if row["repository_id"] == repo.id and row["state"] in {"prepared", "publishing"}]
+        if not pending:
+            return
+        await self.git.afetch_origin(str(store), repository_url=repo.url, all_heads=True)
+        for row in pending:
             actual = await self.remote(store, row["target_ref"])
             prepared = row["prepared_sha"]
-            if actual == prepared or (
+            if prepared and actual == prepared or (
                 actual and prepared and await self.git.ais_ancestor(str(store), prepared, actual)
             ):
                 evidence = row["evidence"] | {"reconciled_remote": actual}
                 if row["target_ref"] == "refs/heads/" + repo.default_branch and row["manifest"]:
                     evidence = armed_for_branch_cleanup(evidence)
-                await self.change(row["id"], state="delivered", evidence=evidence)
+                await self.change(row["id"], state="finished", evidence=evidence)
             elif actual == row["expected_sha"]:
                 # Caller holds publication exclusion; no daemon publisher survived.
                 await self.change(
                     row["id"],
-                    state="parked",
+                    state="cancelled",
                     evidence=row["evidence"] | {"reconciled": "not_applied"},
                 )
             elif actual and prepared and await self.git.ais_ancestor(
@@ -1164,13 +1173,17 @@ class DevelopmentIntegration:
                 raise
         confirmed = await self.remote(store, target_ref)
         if confirmed != head:
-            raise DevelopmentBusy("published ref could not be confirmed; journal retained")
+            await self.git.afetch_origin(str(store), repository_url=repo.url, all_heads=True)
+            if not confirmed or await self.git.ais_ancestor(
+                str(store), head, confirmed, strict=True
+            ) is not True:
+                raise DevelopmentBusy("published ref could not be confirmed; operation retained")
         if arm_branch_cleanup:
             await self.change(
-                row["id"], state="delivered", evidence=armed_for_branch_cleanup(evidence)
+                row["id"], state="finished", evidence=armed_for_branch_cleanup(evidence)
             )
         else:
-            await self.change(row["id"], state="delivered")
+            await self.change(row["id"], state="finished")
         return {"outcome": "delivered", "id": row["id"], "head_sha": head, "manifest": manifest}
 
     async def adopt(
@@ -1184,7 +1197,7 @@ class DevelopmentIntegration:
         operator_id,
         accept_equivalent=False,
     ):
-        """Record the delivery of work that *head_sha* on the target carries.
+        """Record a fenced operator completion/equivalence decision in git.
 
         Ancestry is observed in a private read snapshot, so an ancestry-only
         adoption succeeds while a sweep holds the publisher lock. Accepting a
@@ -1259,11 +1272,19 @@ class DevelopmentIntegration:
                 raise ValueError(f"target could not be observed: {truth.error}")
             if truth.target_oid != head_sha:
                 raise ValueError("target ref is no longer at the supplied SHA")
+            requests = await load_delivery_requests(
+                self.db, identities, repository_id=repo.id, target_ref=target_ref,
+            )
             manifest = []
             for task_id, (_status, branch, _epoch, _generation) in identities.items():
                 source = truth.source_heads.get(
                     "refs/remotes/origin/" + branch.removeprefix("refs/heads/")
                 ) if branch else None
+                request = requests.get(task_id)
+                if request and request.completion_id and _status == "COMPLETED":
+                    proof = await truth.evaluate(request)
+                    if proof.source_oid:
+                        source = proof.source_oid
                 contained = bool(source) and await self.git.ais_ancestor(
                     truth.store, source, head_sha, strict=True
                 ) is True
@@ -1317,9 +1338,6 @@ class DevelopmentIntegration:
                 raise ValueError(f"required child {outside} is still open")
             now = time.time()
             identity = str(uuid4())
-            # The completion recorded below reports the adopted head, while
-            # the manifest names each task by its branch head, so readiness
-            # cannot match the two on its own. Bind them in the same row.
             recorded = {t["id"]: str(uuid4()) for t in selected if t["status"] != "COMPLETED"}
             sources = {member["task_id"]: member["source_sha"] for member in manifest}
             evidence = {
@@ -1328,22 +1346,50 @@ class DevelopmentIntegration:
                 "validation": "operator_decision",
                 "conclusion": "not_ci_attested",
             }
-            if recorded:
-                evidence["completion_sources"] = [
-                    self._completion_proof(task_id, completion_id, head_sha, sources[task_id])
-                    for task_id, completion_id in sorted(recorded.items())
-                ]
+            async with self.read_snapshot(repo, target_ref) as truth:
+                if truth.target_oid != head_sha:
+                    raise DevelopmentBusy("target moved before adoption; observe again")
+                provenance = GitProvenance(self.git, truth.store, repository_url=repo.url)
+                for member in manifest:
+                    task_id = member["task_id"]
+                    source = sources[task_id]
+                    if not is_valid_git_oid(source):
+                        raise ValueError(f"{task_id}: missing exact completion source")
+                    completion_row = (await conn.execute(select(task_completion_records).where(
+                        task_completion_records.c.task_id == task_id,
+                    ).order_by(task_completion_records.c.completed_at.desc(),
+                               task_completion_records.c.id.desc()).limit(1))).mappings().first()
+                    completion = self.db._row_to_task_completion(completion_row) if completion_row else None
+                    generation = recorded.get(task_id) or (completion and completion.id)
+                    if generation is None:
+                        raise ValueError(f"{task_id}: completion generation requires provenance migration")
+                    original = CompletedSource(
+                        CompletionIdentity(project_id, repo.id, task_id, generation), source,
+                    )
+                    retained = await provenance.read_completion(original.identity)
+                    if retained is None:
+                        await provenance.write_completion(original)
+                    elif retained["source_oid"] != source:
+                        raise ValueError(f"{task_id}: observed source differs from immutable completion")
+                    if member["acceptance"] == "operator_equivalent":
+                        replacement_base = await provenance.run("merge-base", source, head_sha)
+                        await provenance.write_replacement(
+                            source_oid=head_sha, base_oid=replacement_base,
+                            replaces=[original], authority="operator", reason=reason,
+                        )
+                if not await truth.is_fresh():
+                    raise DevelopmentBusy("target moved during adoption; observe again")
             if target_ref == "refs/heads/" + repo.default_branch:
                 evidence = armed_for_branch_cleanup(evidence)
             await conn.execute(
-                insert(deliveries).values(
+                self._operation_insert(
                     id=identity,
                     project_id=project_id,
                     repository_id=repo.id,
                     target_ref=target_ref,
                     expected_sha=head_sha,
                     prepared_sha=head_sha,
-                    state="adopted",
+                    state="finished",
                     manifest=manifest,
                     evidence=evidence,
                     reason=reason,
@@ -1373,9 +1419,9 @@ class DevelopmentIntegration:
                             outcome="pass",
                             summary=reason,
                             verification="Operator adoption; not CI attested",
-                            commits=json.dumps([head_sha]),
+                            commits=json.dumps([sources[task_id]]),
                             completed_at=now,
-                            notes=f"Delivery journal {identity}; operator {operator_id}",
+                            notes=f"Adoption operation {identity}; operator {operator_id}",
                         )
                     )
                 results.append(
@@ -1431,15 +1477,7 @@ class DevelopmentIntegration:
             await self.reconcile(repo, store)
             await self.run_git(store, "checkout", "--detach", "--force", base)
             history = await self._release_unverified_parks(repo, await self.rows(project_id))
-            truth = truth.with_legacy_rows(history)  # Temporary source-location bridge only.
             source_heads = truth.source_heads
-            done = {
-                (m["task_id"], m.get("source_sha"))
-                for r in history
-                if r["state"] in {"delivered", "adopted"}
-                and r["repository_id"] == repo.id and r["target_ref"] == target
-                for m in r["manifest"]
-            }
             parked = (
                 {
                     (m["task_id"], m.get("source_sha"))
@@ -1480,11 +1518,7 @@ class DevelopmentIntegration:
             # Inspect every completion independently before gates, sorting,
             # cycles or repair parking. SQL receipts never decide candidacy.
             requests = await load_delivery_requests(
-                self.db, {task["id"] for task in candidates} | {
-                    proof["task_id"] for row in history
-                    if (proof := (row.get("evidence") or {}).get("resolved_by_delivered_repair"))
-                    and proof.get("task_id")
-                },
+                self.db, {task["id"] for task in candidates},
                 repository_id=repo.id, target_ref=target,
             )
             evaluated = await truth.evaluate_many(requests.values())
@@ -1497,26 +1531,6 @@ class DevelopmentIntegration:
                 task_id for task_id, evidence in own_truth.items()
                 if evidence.state is DeliveryState.NO_ARTIFACT
             }
-            # Temporary compatibility writer: backfill existing bindings only
-            # after independent git proof, avoiding redundant publication for an
-            # adopted aggregate close. Operations/retire removes this journal.
-            await self.reconcile_completion_sources(repo, store, [
-                row for row in history if any(
-                    member["task_id"] in contained for member in _manifest_members(row["manifest"])
-                )
-            ])
-            async with self.db._engine.connect() as conn:
-                bridge_pending_ids = set((await conn.execute(
-                    select(tasks.c.id).where(
-                        tasks.c.id.in_(contained), _development_delivery_pending(tasks),
-                    )
-                )).scalars())
-            # Until admission/consumers migrate, retain the existing publication
-            # journal for newly observed exact sources. They are already removed
-            # from dependency evaluation, regardless of their ancestor graph.
-            for task_id, evidence in contained.items():
-                if task_id in bridge_pending_ids:
-                    manifest.append({"task_id": task_id, "source_sha": evidence.source_oid})
             await self.stalls.observe(
                 SweepObservation(
                     project_id=project_id, repository_id=repo.id, target_ref=target,
@@ -1669,12 +1683,6 @@ class DevelopmentIntegration:
                 evidence = all_truth.get(task_id)
                 return evidence is None or not evidence.satisfied
 
-            for dependency_id in sorted(artifact_ids):
-                evidence = all_truth.get(dependency_id)
-                if evidence and evidence.state is DeliveryState.CONTAINED and (
-                    dependency_id, evidence.source_oid
-                ) not in done and dependency_id not in contained:
-                    manifest.append({"task_id": dependency_id, "source_sha": evidence.source_oid})
             head = base
             # Only what this batch publishes releases a dependent. A skipped
             # candidate holds its own dependents and nothing else: no sibling,
@@ -1749,12 +1757,9 @@ class DevelopmentIntegration:
                     )
                     continue
                 evidence = own_truth[task["id"]]
-                source_ref = "refs/remotes/origin/" + (task["branch_name"] or "").removeprefix(
-                    "refs/heads/"
-                )
                 # PENDING already proves the source is absent from this base.
                 source = evidence.source_oid if (
-                    evidence.state is DeliveryState.PENDING and source_ref in source_heads
+                    evidence.state is DeliveryState.PENDING
                 ) else None
                 if not source:
                     skipped[task["id"]] = (
@@ -1930,7 +1935,6 @@ class DevelopmentIntegration:
                 )
                 await self.reconcile_parked(repo, store, base)
                 return {"outcome": "parked", "head_sha": head, "evidence": evidence}
-            evidence = await self._bind_commitsless_completion_sources(evidence, manifest)
             result = await self.publish(
                 repo, store, target, head, base, manifest, evidence, "development batch",
                 arm_branch_cleanup=True,
@@ -1969,30 +1973,16 @@ class DevelopmentIntegration:
         repo = await self.db.get_repo(project.integration_repository_id)
         target = "refs/heads/" + repo.default_branch
         history = await self.rows(project_id)
-        completion = await self.db.get_task_completion(child_id)
-        # A private snapshot: the proof neither waits for nor disturbs a sweep.
+        # A private snapshot proves the current immutable generation, including
+        # exact replacement evidence, independently of past operation outcomes.
         async with self.read_snapshot(repo, target) as truth:
-            if truth.error:
-                raise ValueError(f"{child_id}: target could not be observed: {truth.error}")
-            source = await self._delivered_source(
-                truth.store, history, child_id, truth.target_oid, repository_id=repo.id,
+            requests = await load_delivery_requests(
+                self.db, [child_id], repository_id=repo.id, target_ref=target,
             )
-            latest = await self._completion_source(truth.store, completion, history=history)
-            branch = truth.source_heads.get(
-                "refs/remotes/origin/" + task.branch_name.removeprefix("refs/heads/")
-            )
-        bound_to_main = any(
-            row["state"] in {"delivered", "adopted"}
-            and row["repository_id"] == repo.id
-            and row["target_ref"] == target
-            and any(
-                member["task_id"] == child_id and member.get("source_sha") == source
-                for member in _manifest_members(row["manifest"])
-            )
-            for row in history
-        )
-        if (source is None or not bound_to_main or (latest and latest != source)
-                or (branch and branch != source)):
+            evidence = await truth.evaluate(requests[child_id])
+            source = evidence.source_oid
+            verified = evidence.state is DeliveryState.CONTAINED and await truth.is_fresh()
+        if not verified:
             skip = await self.db.get_task_meta(child_id, PUBLISHER_SKIP_KEY)
             if result.get("outcome") == "deferred":
                 skip = (
@@ -2001,7 +1991,7 @@ class DevelopmentIntegration:
                 )
             raise ValueError(
                 f"{child_id} remains unpublished after sweep: "
-                f"{skip or 'no receipt for the current source'}"
+                f"{skip or evidence.reason}"
                 + await self._parked_repair_note(repo, target, history, child_id)
             )
         # Only a pair proven by its own merge is reported; a conflict against
@@ -2067,33 +2057,32 @@ class DevelopmentIntegration:
         history = await self._release_unverified_parks(repo, await self.rows(repo.project_id))
         pending = {r["id"]: r for r in history if r["state"] == "parked" and r["manifest"]
                    and r["repository_id"] == repo.id}
-        # Resolve repair-of-repair chains before dispatching any more work.
-        # Each successful pass removes at least one row, so this is bounded.
-        while pending:
-            progress = False
-            for identity, row in list(pending.items()):
-                contained = True
-                for member in row["manifest"]:
-                    source = member.get("source_sha")
-                    if not source or not await self.git.ais_ancestor(str(store), source, accepted_head):
-                        contained = False
-                        break
-                proof = None if contained else await self._delivered_repair(
-                    repo, store, accepted_head, row["manifest"], history,
-                )
-                if not contained and proof is None:
-                    continue
-                evidence = armed_for_branch_cleanup({**row["evidence"], **(
-                    {"resolved_by_main_ancestry": accepted_head} if contained else
-                    {"resolved_by_delivered_repair": proof}
-                )})
-                await self.change(identity, state="adopted", prepared_sha=accepted_head, evidence=evidence)
-                history.append({**row, "state": "adopted", "prepared_sha": accepted_head,
-                                "evidence": evidence, "updated_at": time.time()})
-                del pending[identity]
-                progress = True
-            if not progress:
-                break
+        if not pending:
+            return
+        target = "refs/heads/" + repo.default_branch
+        truth = await delivery_snapshot(
+            self.git, store, project_id=repo.project_id, repository_id=repo.id,
+            repository_url=repo.url, target_ref=target,
+        )
+        requests = await load_delivery_requests(
+            self.db, {member["task_id"] for row in pending.values() for member in row["manifest"]},
+            repository_id=repo.id, target_ref=target,
+        )
+        evaluated = await truth.evaluate_many(requests.values())
+        if not await truth.is_fresh():
+            raise DevelopmentBusy("target changed during parked operation reconciliation")
+        for identity, row in list(pending.items()):
+            if not all(
+                (proof := evaluated.get(member["task_id"])) is not None
+                and proof.state is DeliveryState.CONTAINED
+                and proof.source_oid == member.get("source_sha")
+                for member in row["manifest"]
+            ):
+                continue
+            evidence = armed_for_branch_cleanup({**row["evidence"],
+                "resolved_at_target": truth.target_oid})
+            await self.change(identity, state="finished", evidence=evidence)
+            del pending[identity]
         for row in pending.values():
             # Each parked row is dispatched on its own.  A row the publisher
             # cannot resolve records a named diagnostic and the sweep moves to
@@ -2115,199 +2104,6 @@ class DevelopmentIntegration:
                     }
                 )
             await self._record_batch_diagnostic(row, diagnostics)
-        await self.reconcile_completion_sources(repo, store, history)
-
-    async def _completion_source(self, store, completion, *, history=()):
-        """Resolve a worker-reported source or its durable delivery binding."""
-        if completion is None:
-            return None
-        if completion.commits:
-            reported = completion.commits[-1]
-            if is_valid_git_oid(reported):
-                return reported
-            if isinstance(reported, str) and re.fullmatch(r"[0-9a-f]{7,39}", reported):
-                try:
-                    return await self.run_git(
-                        store,
-                        "rev-parse",
-                        "--verify",
-                        "--end-of-options",
-                        reported + "^{commit}",
-                    )
-                except GitError:
-                    pass
-        # A delivery receipt binds the exact completion record to the source
-        # the publisher actually delivered. It is essential for legitimate
-        # commits-less closes after branch cleanup has deleted the source ref.
-        for row in reversed(history):
-            if row["state"] not in {"delivered", "adopted"}:
-                continue
-            for proof in (row.get("evidence") or {}).get("completion_sources", []):
-                if (
-                    proof.get("task_id") == completion.task_id
-                    and proof.get("completion_id") == completion.id
-                    and is_valid_git_oid(proof.get("source_sha"))
-                ):
-                    return proof["source_sha"]
-        return None
-
-    async def _delivered_source(self, store, history, task_id, base, *, repository_id):
-        """Return a receipted source contained in or superseded on *base*.
-
-        A candidate or parent assembly may have been delivered to a temporary
-        ref and later merged into the target. Its manifest and target ancestry
-        remain proof after normal branch cleanup removes the source ref.
-        """
-        for row in reversed(history):
-            if (
-                row["state"] not in {"delivered", "adopted"}
-                or row["repository_id"] != repository_id
-            ):
-                continue
-            for member in reversed(_manifest_members(row["manifest"])):
-                source = member.get("source_sha")
-                if (
-                    member["task_id"] == task_id
-                    and is_valid_git_oid(source)
-                    and (
-                        await self.git.ais_ancestor(str(store), source, base)
-                        or (
-                            member.get("superseded_by")
-                            and row["target_ref"].startswith("refs/heads/")
-                            and is_valid_git_oid(row.get("prepared_sha"))
-                            and await self.git.ais_ancestor(
-                                str(store), row["prepared_sha"], base
-                            )
-                        )
-                    )
-                ):
-                    return source
-        return None
-
-    @staticmethod
-    def _completion_proof(task_id, completion_id, reported_sha, source_sha):
-        """One ``completion_sources`` entry, the shape readiness matches on."""
-        return {"task_id": task_id, "completion_id": completion_id,
-                "reported_sha": reported_sha, "source_sha": source_sha}
-
-    async def _bind_commitsless_completion_sources(self, evidence, manifest):
-        """Bind empty worker close payloads before their delivery is recorded.
-
-        The publisher, unlike an eventual branch cleanup, still holds the
-        exact manifest source at this point. Store that fact on the delivered
-        receipt rather than inventing commits in the worker's immutable close.
-        """
-        proofs = list(evidence.get("completion_sources", []))
-        for member in _manifest_members(manifest):
-            source = member.get("source_sha")
-            if not is_valid_git_oid(source):
-                continue
-            completion = await self.db.get_task_completion(member["task_id"])
-            if completion is None or completion.commits:
-                continue
-            proof = self._completion_proof(member["task_id"], completion.id, None, source)
-            if proof not in proofs:
-                proofs.append(proof)
-        return {**evidence, **({"completion_sources": proofs} if proofs else {})}
-
-    async def reconcile_completion_sources(self, repo, store, history):
-        """Bind completions to delivered revisions the manifest does not name.
-
-        Three cases: a unique abbreviated completion ID that Git resolves to
-        the member's source, a completion that reports the row's own prepared
-        head (which :meth:`adopt` writes), and a commits-less completion. The
-        latter is bound directly to the publisher's delivered member so a
-        later branch cleanup cannot make the close unresolvable.
-
-        Keep the original completion evidence intact. Readiness consumes this
-        publisher proof, never a SQL prefix match that could accept ambiguity.
-        """
-        completions = {}
-        for row in history:
-            if (row["repository_id"] != repo.id
-                    or row["target_ref"] != "refs/heads/" + repo.default_branch
-                    or row["state"] not in {"delivered", "adopted"}):
-                continue
-            proofs = list(row["evidence"].get("completion_sources", []))
-            changed = False
-            for member in row["manifest"]:
-                identity = member["task_id"]
-                if identity not in completions:
-                    completion = await self.db.get_task_completion(identity)
-                    canonical = await self._completion_source(store, completion, history=history)
-                    completions[identity] = completion, canonical
-                completion, canonical = completions[identity]
-                source = member.get("source_sha")
-                if completion is None or not is_valid_git_oid(source):
-                    continue
-                reported = completion.commits[-1] if completion.commits else None
-                if not completion.commits:
-                    # There is no worker-reported source to compare. The
-                    # delivered manifest is the authoritative binding.
-                    pass
-                elif canonical == source:
-                    if canonical == reported:
-                        continue  # The manifest itself names this close.
-                elif canonical != row["prepared_sha"]:
-                    continue
-                proof = self._completion_proof(
-                    identity, completion.id, reported, source
-                )
-                if proof not in proofs:
-                    proofs.append(proof)
-                    changed = True
-            if changed:
-                await self.change(row["id"], evidence={**row["evidence"], "completion_sources": proofs})
-
-    async def _delivered_repair(self, repo, store, accepted_head, manifest, history):
-        """A passing resolution delivered to main can replace the original source.
-
-        A cherry-pick or rewritten conflict resolution need not retain source
-        ancestry. Its exact repair contract, completion and publication are
-        the evidence; a task merely marked completed is insufficient.
-        """
-        identity = self._repair_identity(manifest)
-        # Through the archive as well: a repair that completed and was then
-        # archived is still the proof that resolves its parked row.  Reading
-        # only ``tasks`` made the publisher re-file an archived repair as a
-        # fresh READY task on every tick.
-        task = await self.resolve_task(identity)
-        if (
-            task is None or task.status != TaskStatus.COMPLETED.value
-            or task.project_id != repo.project_id or task.repo_id != repo.id
-            or task.branch_name != "aq/" + identity
-        ):
-            return None
-        contract = await self.db.get_task_meta(identity, "development_repair_sources")
-        if contract != manifest:
-            # Compatibility for existing server-created repair tasks. Require
-            # the exact generated source block, not just a repair-looking ID.
-            sources = "\n".join(f"- {m['task_id']}: {m.get('source_sha')}" for m in manifest)
-            if contract is not None or (
-                f"The development batch parked these source revisions:\n{sources}\nCandidate/base: "
-                not in task.description
-            ):
-                return None
-        completion = await self.db.get_task_completion(identity)
-        if completion is None or completion.outcome != "pass":
-            return None
-        source = await self._completion_source(store, completion)
-        for delivery in history:
-            if (
-                delivery["state"] not in {"delivered", "adopted"}
-                or delivery["repository_id"] != repo.id
-                or delivery["target_ref"] != "refs/heads/" + repo.default_branch
-                or float(delivery["created_at"]) < completion.completed_at
-                or not any(m["task_id"] == identity and (
-                    not completion.commits or (source and m.get("source_sha") == source)
-                ) for m in delivery["manifest"])
-            ):
-                continue
-            head = delivery.get("prepared_sha")
-            if head and await self.git.ais_ancestor(str(store), head, accepted_head):
-                return {"task_id": identity, "completion_id": completion.id,
-                        "delivery_id": delivery["id"], "accepted_head": accepted_head}
-        return None
 
     @staticmethod
     def _name_diagnostic(diagnostics, *, kind, task_ids, detail):
@@ -2600,7 +2396,7 @@ class DevelopmentIntegration:
             return (
                 row["repository_id"] == repo.id
                 and row["target_ref"] == target
-                and row["state"] in {"delivered", "adopted"}
+                and row["state"] == "finished"
                 and isinstance(record, dict)
                 and record.get("state") == "pending"
                 and float(record.get("next_attempt_at") or 0) <= now
@@ -2693,6 +2489,23 @@ class DevelopmentIntegration:
                 )
 
         members = _manifest_members(row["manifest"])
+        requests = await load_delivery_requests(
+            self.db, {m["task_id"] for other in history for m in _manifest_members(other["manifest"])},
+            repository_id=repo.id, target_ref=target,
+        )
+        truth = await delivery_snapshot(
+            self.git, store, project_id=repo.project_id, repository_id=repo.id,
+            repository_url=repo.url, target_ref=target,
+        )
+        if truth.target_oid != main_head:
+            raise DevelopmentBusy("cleanup target changed; retry with a fresh snapshot")
+        evaluated = await truth.evaluate_many(requests.values())
+
+        def proven(member):
+            proof = evaluated.get(member["task_id"])
+            return (proof is not None and proof.state is DeliveryState.CONTAINED
+                    and proof.source_oid == member.get("source_sha"))
+
         for member in members:
             task = await self.resolve_task(member["task_id"])
             if task is None:
@@ -2706,6 +2519,9 @@ class DevelopmentIntegration:
             if task.status != TaskStatus.COMPLETED.value:
                 kept.append({"branch": branch, "reason": f"task is {task.status}"})
                 continue
+            if not proven(member):
+                kept.append({"branch": branch, "reason": "current completion is not proven on target"})
+                continue
             await consider(branch, kind="task", delivered=member.get("source_sha"))
             # A fail-close sibling holds a failed attempt: only its ancestry
             # proves that work is on main.
@@ -2715,14 +2531,8 @@ class DevelopmentIntegration:
             return member["task_id"], member.get("source_sha")
 
         landed = {key(member) for member in members}
-        done = {
-            key(member)
-            for other in history
-            if other["repository_id"] == repo.id
-            and other["target_ref"] == target
-            and other["state"] in {"delivered", "adopted"}
-            for member in _manifest_members(other["manifest"])
-        }
+        done = {key(member) for other in history
+                for member in _manifest_members(other["manifest"]) if proven(member)}
         assemblies = {}
         for other in history:
             branch = branch_of(other["target_ref"])
@@ -2732,7 +2542,7 @@ class DevelopmentIntegration:
             carried = {key(m) for other in rows for m in _manifest_members(other["manifest"])}
             if not carried & landed:
                 continue
-            if any(other["state"] != "delivered" for other in rows):
+            if any(other["state"] != "finished" for other in rows):
                 kept.append({"branch": branch, "reason": "assembly publication is unsettled"})
             elif not carried <= done:
                 kept.append({"branch": branch, "reason": "carries work not delivered yet"})
@@ -2741,7 +2551,9 @@ class DevelopmentIntegration:
                 await consider(branch, kind="assembly", delivered=latest["prepared_sha"])
 
         evidence = row["evidence"] or {}
-        if "resolved_by_main_ancestry" in evidence:
+        if ("resolved_at_target" in evidence or "resolved_by_main_ancestry" in evidence) and all(
+            proven(member) for member in members
+        ):
             # The batch parked, a repair was filed, then the sources reached
             # main on their own.  A repair that ended without delivering is
             # moot; one still able to run or deliver is held (or will be
@@ -2763,6 +2575,8 @@ class DevelopmentIntegration:
                             "reason": f"repair {repair.task_id} {repair.status}; its sources "
                                       f"reached {repo.default_branch} ({row['id']})",
                         }
+        if not await truth.is_fresh():
+            raise DevelopmentBusy("cleanup target moved; retry")
         return {"delete": delete, "kept": kept, "missing": missing}
 
     async def _record_branch_cleanup(self, row, now, *, plan=None, deletion=None, error=None):
@@ -2812,14 +2626,7 @@ class DevelopmentIntegration:
             "log": (deletion or {}).get("log") or previous.get("log"),
             "updated_at": now,
         }
-        # Annotation only: it changes nothing readiness reads, so no
-        # projection recompute and no ``updated_at`` bump on the row.
-        async with self.db._engine.begin() as conn:
-            await conn.execute(
-                update(deliveries)
-                .where(deliveries.c.id == row["id"])
-                .values(evidence={**evidence, BRANCH_CLEANUP_KEY: record})
-            )
+        await self.change(row["id"], evidence={**evidence, BRANCH_CLEANUP_KEY: record})
         if fresh:
             await self.db.log_event(
                 "development.branches_deleted",
@@ -3079,12 +2886,12 @@ class DevelopmentIntegration:
                 .on_conflict_do_update(index_elements=["project_id"], set_=suppression)
             )
             await conn.execute(
-                insert(deliveries).values(
+                self._operation_insert(
                     id=str(uuid4()),
                     project_id=project_id,
                     repository_id=repo.id,
                     target_ref="refs/heads/" + repo.default_branch,
-                    state="adopted",
+                    state="finished",
                     manifest=[],
                     evidence={
                         "kind": "configuration",
@@ -3308,7 +3115,7 @@ class DevelopmentIntegration:
                 project_id, repository_id = batch["project_id"], batch["repository_id"]
                 target_ref = batch["integration_branch"]
             await conn.execute(
-                insert(deliveries).values(
+                self._operation_insert(
                     id=str(uuid4()),
                     project_id=project_id,
                     repository_id=repository_id,
@@ -3533,7 +3340,7 @@ class DevelopmentIntegration:
                     )
                 )
                 await conn.execute(
-                    insert(deliveries).values(
+                    self._operation_insert(
                         id=str(uuid4()),
                         project_id=project_id,
                         repository_id=project.integration_repository_id,

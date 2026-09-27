@@ -1683,7 +1683,7 @@ def s15_development_delivery(state: dict) -> str:
           f"publication did not release the successor: {released}")
     status = aq("integration", "status", "e2e-development")
     delivery = next((row for row in status.get("deliveries", []) if row["id"] == result["id"]), None)
-    check(delivery is not None, f"missing delivery receipt: {status}")
+    check(delivery is not None, f"missing publisher operation evidence: {status}")
     evidence = delivery["evidence"]
     checks = evidence.get("checks", [])
     check(evidence.get("conclusion") == "passed" and len(checks) == 1,
@@ -1694,6 +1694,22 @@ def s15_development_delivery(state: dict) -> str:
           and validation.get("exit_code") == 0 and validation.get("outcome") == "passed"
           and validation.get("input_ref") == head and validation.get("input_mode") == "snapshot",
           f"validation receipt does not attest the published snapshot: {validation}")
+    # set-status deliberately models an old task without an immutable close.
+    # Neither a finished push operation nor ancestry invents that generation.
+    inventory = aq("integration", "migrate-provenance", "e2e-development")
+    check(not inventory.get("zero_fallback") and any(
+        entry["task_id"] == task_id and entry.get("generation") is None
+        for entry in inventory.get("fallback_generations", [])
+    ), f"unlabelled generation was not named: {inventory}")
+    refused = aq("integration", "adopt", "e2e-development", "--task", task_id,
+                 "--head-sha", head, "--reason", "unlabelled legacy generation", check_ok=False)
+    check("provenance migration" in str(refused.get("_error")),
+          f"adoption invented legacy completion identity: {refused}")
+    aq("task", "set-status", "--task-id", task_id, "--status", "READY")
+    api("pause_task", {"task_id": task_id})
+    adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
+                 "--head-sha", head, "--reason", "operator creates an exact completion generation")
+    check(adopted.get("outcome") == "adopted", str(adopted))
     adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
                  "--head-sha", head, "--reason", "prove repeatable operator reconciliation")
     check(adopted.get("outcome") == "adopted", str(adopted))

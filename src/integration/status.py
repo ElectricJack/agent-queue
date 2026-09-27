@@ -246,12 +246,11 @@ class IntegrationStatusService:
                 return None
 
             if project["hierarchical_integration_mode"] == "development":
-                from src.database.tables import development_deliveries, sessions
+                from src.database.tables import sessions
+                from src.integration.development import operation_rows_on
                 from src.integration.live_operations import live_operations_on
 
-                rows = await self._all(conn, select(development_deliveries).where(
-                    development_deliveries.c.project_id == project_id).order_by(
-                    development_deliveries.c.created_at.desc()).limit(100))
+                rows = list(reversed(await operation_rows_on(conn, [project_id])))[:100]
                 live_operations = await live_operations_on(conn, project_id)
                 owner_rows = await self._all(conn, select(integration_branch_owners,
                     sessions.c.state.label("session_state"),

@@ -1277,7 +1277,7 @@
       ]
     }
   },
-  "digest": "sha256:61a08b295f28ae77ef61115bdcfc9d2b7211ba349426aef13a51aa9e1509f13a",
+  "digest": "sha256:b850d1caaa5425dd582f14ee75e07ef16e68d56cf65487dc44fcdda9f0a43b47",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4553,7 +4553,6 @@
         "src.commands.principal",
         "src.config",
         "src.database",
-        "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.doctor.git_checks",
@@ -4571,6 +4570,8 @@
         "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
+        "src.integration.provenance",
+        "src.integration.provenance_migration",
         "src.integration.status",
         "src.jobs.adapters",
         "src.jobs.policy",
@@ -5815,7 +5816,9 @@
         "src.integration.provenance_migration",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Unit tests for git-related command handler methods."
     },
     "tests/test_git_events.py": {
