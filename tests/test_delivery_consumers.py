@@ -163,10 +163,12 @@ async def test_git_answers_each_shape_once(world):
     _db, _origin, observer, _service = world
     view = await observer.observe(CHILDREN)
     assert {tid: (view.get(tid).state, view.get(tid).reason) for tid in CHILDREN} == {
-        "done": (DeliveryState.CONTAINED, "completion"),
+        # These closes carry no git completion label, so git proves the
+        # recorded legacy source rather than an immutable generation.
+        "done": (DeliveryState.CONTAINED, "legacy_reported_source"),
         "wrong": (DeliveryState.UNKNOWN, "scope_mismatch"),
         "missing": (DeliveryState.UNKNOWN, "missing_ref"),
-        "reopened": (DeliveryState.PENDING, "completion"),
+        "reopened": (DeliveryState.PENDING, "legacy_reported_source"),
     }
 
 

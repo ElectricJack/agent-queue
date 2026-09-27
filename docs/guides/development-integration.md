@@ -9,13 +9,15 @@ daemon collects finished branches, merges them, validates the result once, and
 publishes it. There is no pull request, no hosted-CI receipt chain, no
 per-parent verifier and no squash in this path.
 
-A `blocks` dependency on a completed code task stays blocked until the delivery
-journal confirms its completion revision on the configured default branch.
+A `blocks` dependency on a completed code task requires fresh git proof of its
+current completion revision on the configured default branch.
 Preserving a batch candidate does not release the successor. Each clean source
 merges directly into the batch, and a conflicting member holds only its own
-dependents; independent siblings can still publish. Publication updates
-dependency state automatically; a later completion at a different revision
-needs its own delivery. Branchless tasks have no code artifact to publish.
+dependents; independent siblings can still publish. The shared evaluator uses
+exact source ancestry or explicit git replacement evidence bound to the
+immutable completion generation. A later completion at a different revision
+needs its own proof. Branchless organizational tasks have no artifact of their
+own; recorded code remains an artifact after branch cleanup.
 
 The publisher can assemble an already-completed dependency chain in one batch,
 in dependency order. It does not spend a separate batch interval on each link.
@@ -53,7 +55,7 @@ with `aq integration status agent-queue`:
 
 ```text
 {
-  "state": "adopted",
+  "state": "finished",
   "target_ref": "refs/heads/main",
   "manifest": [],
   "evidence": {
@@ -68,7 +70,7 @@ with `aq integration status agent-queue`:
 ```
 
 (A configuration row carries an empty manifest and is journaled in state
-`adopted`: it records a decision, not a publication.)
+`finished`: it records a configuration action, not delivery.)
 
 What that did, all in one transaction
 ([`DevelopmentIntegration.configure`](../../src/integration/development.py)):
@@ -107,8 +109,8 @@ Policy changes take effect on the next batch. There is no drain to wait for.
 
 ## Watch a batch happen
 
-`aq integration status <project>` reports development publication receipts and
-pending writes. It does not require GitHub App bindings or strict train rollout
+`aq integration status <project>` reports git delivery evidence and publisher
+operations, including pending writes. It does not require GitHub App bindings or strict train rollout
 configuration: development mode uses ordinary Git, including local origins.
 
 Let the interval fire, or ask for a sweep now:
@@ -126,7 +128,7 @@ to `main`:
 {
   "id": "fb0f1204-41c2-45e8-8489-7c0c860b28db",
   "target_ref": "refs/heads/main",
-  "state": "delivered",
+  "state": "finished",
   "expected_sha": "a62833d5819ca10179a0ea8f9b793dc6e7bcd7c1",
   "prepared_sha": "a9a10b3183d13f0b0fdec44ab6bbe3b6c4fbdd37",
   "manifest": [{"task_id": "solid-grove.12", "source_sha": "0e9f949f…", "parent_task_id": "solid-grove"}, …],
@@ -167,10 +169,29 @@ The interesting fields:
   blocker and clears itself on the next sweep.
 * `parked` — deliveries waiting for a retry, a repair or a human.
 
-Journal row states are `prepared`, `publishing`, `delivered`, `parked`,
-`adopted` and `cancelled` (`development_deliveries` in
-[`src/database/tables.py`](../../src/database/tables.py)). Rows are never
-deleted: the journal is the audit trail for what reached your default branch.
+Publisher operation states are `prepared`, `publishing`, `finished`, `parked`
+and `cancelled`. Their revisions are stored as `development.operation` events
+in the existing event log. `finished` says an action ended; it never establishes
+that a task is delivered. Validation checks and infrastructure streaks remain
+actual execution evidence. After a restart or an uncertain push, the publisher
+fetches and inspects git before its next action. Status retains the compatibility
+field `deliveries` for this operation history until the legacy adapters retire.
+
+Before retiring legacy source locators, inventory and migrate completion
+provenance through the authorized command:
+
+```bash
+aq integration migrate-provenance demo
+aq integration migrate-provenance demo --apply
+```
+
+The result names `fallback_generations`, `fallback_count`, `zero_fallback`, and
+unresolved identities in `ambiguous`. Follow `next_offset` through all pages;
+a zero count on one page does not prove the entire project migrated. Exact
+completion and repair mappings are retained in git. Missing generations,
+ambiguous sources and incomplete equivalence evidence are reported rather than
+guessed. Only outstanding push, validation, repair or cleanup actions are
+retained in the event log; terminal delivery receipts are not copied.
 
 ## What a worker sees
 
@@ -243,7 +264,7 @@ After the batch is assembled AQ looks at each parked row again:
 
 Closing the repair does not release the source's dependents. Publication of
 the passing repair to the configured default branch adopts the parked source
-receipt, which releases them. That holds even for a repair that rewrote the
+git replacement evidence, which releases them after fresh evaluation. That holds even for a repair that rewrote the
 source commits anyway.
 
 If `main` moves before the closed repair is published, the repair's own

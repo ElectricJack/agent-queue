@@ -250,11 +250,34 @@ class GitProvenance:
             "refs/heads/" + PREFIX + "replacements/")).splitlines()
         if len(refs) > MAX_REPLACEMENTS:
             raise ValueError("replacement inventory exceeds bounded evaluation limit")
+        replacements = []
         for ref in refs:
             replacement = await self._read(ref)
-            if replacement and replacement["kind"] == "replacement" and asdict(completed) in replacement["replaces"]:
-                if await self.ancestor(replacement["source_oid"], target_oid):
+            if replacement and replacement["kind"] == "replacement":
+                replacements.append(replacement)
+        # Repairs may themselves be replaced. Traverse only exact immutable
+        # bindings, with a visited set and the same bounded ref inventory.
+        pending = [completed]
+        seen = set()
+        while pending:
+            binding = pending.pop()
+            key = _json(asdict(binding))
+            if key in seen:
+                continue
+            seen.add(key)
+            for replacement in replacements:
+                if asdict(binding) not in replacement["replaces"]:
+                    continue
+                source = replacement["source_oid"]
+                if await self.ancestor(source, target_oid):
                     return True
+                for next_replacement in replacements:
+                    for item in next_replacement["replaces"]:
+                        if item["source_oid"] == source:
+                            identity = CompletionIdentity(**item["identity"])
+                            original = await self.read_completion(identity)
+                            if original and original["artifact"] and original["source_oid"] == source:
+                                pending.append(CompletedSource(identity, source))
         return False
 
 
