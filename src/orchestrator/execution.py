@@ -280,6 +280,9 @@ class ExecutionMixin:
         if task is not None:
             if task.is_blocked:
                 return "task has unresolved gates or dependencies"
+            batch = await self._delivery_admission([task.id])
+            if task.id not in batch.allowed:
+                return "development prerequisite delivery is pending or unknown"
             agent = await self.db.get_agent(action.agent_id)
             mismatch = await self._check_agent_routing(task, agent)
             if mismatch:
@@ -763,6 +766,9 @@ class ExecutionMixin:
         agent = await self.db.get_agent(action.agent_id)
         routed_task, effective_route = await self._effective_assignment_task(task)
         mismatch = "task has unresolved gates or dependencies" if task.is_blocked else None
+        batch = await self._delivery_admission([task.id])
+        if task.id not in batch.allowed:
+            mismatch = "development prerequisite delivery is pending or unknown"
         if mismatch is None and routed_task is None:
             mismatch = "awaiting intelligence route"
         if mismatch is None:

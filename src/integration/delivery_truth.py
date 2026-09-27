@@ -209,14 +209,21 @@ class DeliverySnapshot:
         except (GitError, OSError):
             return result(DeliveryState.UNKNOWN, "missing_or_ambiguous_source")
 
-    async def _legacy_replacement(self, request, source):
+    async def _legacy_replacement(self, request, source, *, visited=frozenset()):
         """TEMPORARY operations/retire bridge for exact validated repair maps.
 
         A resolved repair event identifies the original source and the exact
         replacement completion. Both generation fences and git ancestry of
         the replacement are required. Neither adopted state nor an arbitrary
-        superseded_by member is accepted as equivalence evidence.
+        superseded_by member is accepted as equivalence evidence. A repair
+        can itself have an exact replacement; follow at most the publisher's
+        three repair generations, with cycle protection and the same fences
+        and fresh target ancestry proof at every hop.
         """
+        identity = (request.task_id, request.completion_id, source)
+        if identity in visited or len(visited) >= 3:
+            return False
+        visited = visited | {identity}
         for row in self.legacy_rows:
             if (row.get("project_id"), row.get("repository_id"), row.get("target_ref")) != (
                 request.project_id, request.repository_id, request.target_ref
@@ -243,10 +250,14 @@ class DeliverySnapshot:
             # The recovery writer already checked the exact repair contract;
             # independently prove its current final source remains on our target.
             if await self.git.ais_ancestor(
-                self.store, repair.reported_source, head, strict=True
-            ) is True and await self.git.ais_ancestor(
                 self.store, head, self.target_oid, strict=True
-            ) is True:
+            ) is not True:
+                continue
+            if await self.git.ais_ancestor(
+                self.store, repair.reported_source, head, strict=True
+            ) is True or await self._legacy_replacement(
+                repair, repair.reported_source, visited=visited
+            ):
                 return True
         return False
 

@@ -1902,3 +1902,328 @@ async def test_prepare_timeout_waits_for_live_reset(handler, db, config, tmp_pat
         if not request.done():
             request.cancel()
         await asyncio.gather(request, return_exceptions=True)
+
+
+@pytest.fixture
+async def development_admission(handler, db, tmp_path):
+    """Actual remote ancestry, no publisher receipt or live incident tasks."""
+    import subprocess
+    from src.git.manager import GitManager
+    from src.integration.development import DevelopmentIntegration
+    from src.models import TaskCompletion
+
+    def git(path, *args):
+        return subprocess.check_output(
+            ["git", "-C", str(path), *args], text=True, stderr=subprocess.PIPE
+        ).strip()
+
+    remote, source = tmp_path / "remote.git", tmp_path / "source"
+    git(tmp_path, "init", "--bare", "--initial-branch=main", str(remote))
+    git(tmp_path, "clone", str(remote), str(source))
+    git(source, "config", "user.name", "Test")
+    git(source, "config", "user.email", "test@example.test")
+    (source / "base").write_text("base")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "base")
+    base = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", "main")
+    git(source, "checkout", "-b", "prerequisite")
+    (source / "work").write_text("complete source")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "prerequisite")
+    head = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", "prerequisite")
+    await db.create_repo(
+        RepoConfig(
+            id="repo",
+            project_id=PROJECT_ID,
+            url=str(remote),
+            source_type=RepoSourceType.CLONE,
+        )
+    )
+    await db.update_project(
+        PROJECT_ID, hierarchical_integration_mode="development", integration_repository_id="repo"
+    )
+    await mktask(
+        db, "prerequisite", status=TaskStatus.COMPLETED, repo_id="repo", branch_name="prerequisite"
+    )
+    await db.save_task_completion(
+        TaskCompletion(
+            id="close-1",
+            task_id="prerequisite",
+            outcome="pass",
+            commits=[head],
+            completed_at=time.time(),
+        )
+    )
+    handler.orchestrator.git = GitManager()
+    service = DevelopmentIntegration(db, data_dir=tmp_path / "truth", git=handler.orchestrator.git)
+    handler.orchestrator.development_integration = service
+    await mktask(db, "dependent", profile_id="worker", repo_id="repo")
+    await db.add_dependency("dependent", "prerequisite")
+    return SimpleNamespace(
+        git=git, source=source, remote=remote, base=base, head=head, service=service
+    )
+
+
+@pytest.mark.parametrize("misleading_receipt", [False, True])
+async def test_development_readiness_pool_and_claim_follow_git(
+    handler, db, tmp_path, development_admission, misleading_receipt
+):
+    from sqlalchemy import insert
+    from src.database.tables import development_deliveries
+    from src.integration.admission import observe_admission
+
+    env = development_admission
+    if misleading_receipt:
+        async with db.immediate() as conn:
+            await conn.execute(
+                insert(development_deliveries).values(
+                    id="misleading",
+                    project_id=PROJECT_ID,
+                    repository_id="repo",
+                    state="delivered",
+                    target_ref="refs/heads/main",
+                    created_at=time.time(),
+                    updated_at=time.time(),
+                    manifest=[{"task_id": "prerequisite", "source_sha": env.head}],
+                    evidence={},
+                    reason="deliberately misleading fixture",
+                )
+            )
+    assert not (await db.get_task("dependent")).is_blocked
+    batch = await observe_admission(db, ["dependent"], env.service)
+    assert batch.allowed == set()
+    assert await db.count_ready_by_profile(PROJECT_ID, allowed_task_ids=batch.allowed) == {}
+    from src.scheduler import PoolKey
+
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 0
+    ready = await handler._cmd_project_ready({"project_id": PROJECT_ID})
+    assert not ready["ready"]
+    assert any(item["task_id"] == "dependent" for item in ready["withheld"])
+    sid, _ = await pool_session(db, tmp_path)
+    assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["result"] == "no_ready_work"
+    # An external ancestry-preserving merge releases work on the next snapshot,
+    # even if no journal was ever written or its state is deliberately wrong.
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    batch = await observe_admission(db, ["dependent"], env.service)
+    assert batch.allowed == {"dependent"}
+    assert await db.count_ready_by_profile(PROJECT_ID, allowed_task_ids=batch.allowed) == {
+        "worker": 1
+    }
+    assert (await handler.orchestrator._measure_pools()).demand[PoolKey("worker")] == 1
+    ready = await handler._cmd_project_ready({"project_id": PROJECT_ID})
+    assert [r["task_id"] for r in ready["ready"]] == ["dependent"]
+    assert (await scoped(handler, sid)._cmd_task_claim({"next": True}))["task"]["id"] == "dependent"
+
+
+@pytest.mark.parametrize("movement", ["reopen", "completion", "edge", "gate", "hold", "target", "config"])
+async def test_development_preparation_invalidates_old_admission(
+    handler, db, tmp_path, development_admission, movement
+):
+    from src.models import TaskCompletion
+    from src.database.tables import gates, task_gates
+    from sqlalchemy import insert
+
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    sid, work_dir = await pool_session(db, tmp_path)
+    resets = 0
+
+    async def reset(*args, **kwargs):
+        nonlocal resets
+        resets += 1
+        if resets == 1:
+            if movement == "reopen":
+                await db.update_task("prerequisite", status=TaskStatus.READY)
+            elif movement == "completion":
+                # Latest generation's missing source never borrows the old close.
+                await db.save_task_completion(
+                    TaskCompletion(
+                        id="close-2",
+                        task_id="prerequisite",
+                        outcome="pass",
+                        commits=["a" * 40],
+                        completed_at=time.time(),
+                    )
+                )
+            elif movement == "edge":
+                await mktask(db, "new-dep", status=TaskStatus.DEFINED)
+                await db.add_dependency("dependent", "new-dep")
+            elif movement == "gate":
+                async with db.immediate() as conn:
+                    await conn.execute(
+                        insert(gates).values(
+                            id="new-gate",
+                            project_id=PROJECT_ID,
+                            gate_type="human",
+                            status="open",
+                            title="new admission gate",
+                            created_at=time.time(),
+                        )
+                    )
+                    await conn.execute(
+                        insert(task_gates).values(task_id="dependent", gate_id="new-gate")
+                    )
+                    await db.recompute_blocked({"dependent"}, conn=conn)
+            elif movement == "hold":
+                await db.add_task_label("dependent", "hold:operator")
+            elif movement == "target":
+                env.git(env.source, "push", "--force", "origin", env.base + ":main")
+            else:
+                await db.update_repo("repo", default_branch="missing-target")
+        return "aq/dependent"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+        side_effect=reset
+    )
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert result["result"] == "no_ready_work"
+    assert (await db.get_session(sid)).claims == 0
+    assert (await db.get_session(sid)).claim_phase is None
+    assert not (work_dir / ".aq" / "claim.json").exists()
+
+
+async def test_development_moving_target_retries_and_claims_new_snapshot(
+    handler, db, tmp_path, development_admission
+):
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    sid, _ = await pool_session(db, tmp_path)
+    resets = 0
+
+    async def reset(*args, **kwargs):
+        nonlocal resets
+        resets += 1
+        if resets == 1:
+            (env.source / "advance").write_text("advanced target")
+            env.git(env.source, "add", ".")
+            env.git(env.source, "commit", "-m", "advance")
+            env.git(env.source, "push", "origin", "HEAD:main")
+        return "aq/dependent"
+
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task = AsyncMock(
+        side_effect=reset
+    )
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert result["result"] == "claimed"
+    assert resets == 2
+    assert (await db.get_session(sid)).claims == 1
+
+
+async def test_development_withheld_page_does_not_starve_ready_work(
+    handler, db, tmp_path, development_admission
+):
+    from src.integration.admission import structural_candidates
+
+    for i in range(130):
+        tid = f"withheld-{i:03}"
+        await mktask(db, tid, profile_id="worker", priority=1)
+        await db.add_dependency(tid, "prerequisite")
+    await mktask(db, "clean", profile_id="worker", priority=100)
+    assert len(await structural_candidates(db, PROJECT_ID)) == 132
+    sid, _ = await pool_session(db, tmp_path)
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert result["task"]["id"] == "clean"
+
+
+async def test_development_parallel_claims_remain_exclusive(
+    handler, db, tmp_path, development_admission
+):
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    sid1, _ = await pool_session(db, tmp_path, "parallel-1", "agent-p1")
+    sid2, _ = await pool_session(db, tmp_path, "parallel-2", "agent-p2")
+    # Operator-scoped explicit session IDs avoid sharing mutable worker scope.
+    handler._current_scope = None
+    results = await asyncio.gather(
+        *[handler._cmd_task_claim({"session_id": sid, "next": True}) for sid in [sid1, sid2]]
+    )
+    assert sorted(r["result"] for r in results) == ["claimed", "no_ready_work"]
+    assert sum([(await db.get_session(sid)).claims for sid in [sid1, sid2]]) == 1
+
+
+async def test_development_unknown_git_withholds_only_sensitive_work(
+    handler, db, tmp_path, development_admission
+):
+    from src.git.manager import GitError
+
+    env = development_admission
+    env.service.git.afetch_origin = AsyncMock(side_effect=GitError("fetch failed"))
+    await mktask(db, "independent", profile_id="worker")
+    sid, _ = await pool_session(db, tmp_path)
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert result["task"]["id"] == "independent"
+
+
+async def test_development_parallel_claims_can_skip_locked_peer(
+    handler, db, tmp_path, development_admission
+):
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    await mktask(db, "second", profile_id="worker")
+    await db.add_dependency("second", "prerequisite")
+    sid1, _ = await pool_session(db, tmp_path, "peer-1", "peer-agent-1")
+    sid2, _ = await pool_session(db, tmp_path, "peer-2", "peer-agent-2")
+    handler._current_scope = None
+    results = await asyncio.gather(
+        *[handler._cmd_task_claim({"session_id": sid, "next": True}) for sid in [sid1, sid2]]
+    )
+    assert [r["result"] for r in results] == ["claimed", "claimed"]
+    assert {r["task"]["id"] for r in results} == {"dependent", "second"}
+
+
+async def test_development_waits_for_requires_current_child_delivery(
+    handler, db, tmp_path, development_admission
+):
+    from src.integration.admission import observe_admission
+
+    env = development_admission
+    await db.remove_dependency("dependent", "prerequisite")
+    await mktask(db, "group", status=TaskStatus.READY)
+    await db.add_dependency("prerequisite", "group", dep_type="parent-child")
+    await db.add_dependency("dependent", "group", dep_type="waits-for")
+    assert not (await db.get_task("dependent")).is_blocked
+    assert not (await observe_admission(db, ["dependent"], env.service)).allowed
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    assert (await observe_admission(db, ["dependent"], env.service)).allowed == {"dependent"}
+
+
+async def test_development_long_poll_observes_external_merge_without_event(
+    handler, db, tmp_path, development_admission
+):
+    env = development_admission
+    sid, _ = await pool_session(db, tmp_path)
+    claim = asyncio.create_task(scoped(handler, sid)._cmd_task_claim({"next": True, "wait": 1}))
+    await asyncio.sleep(0.5)
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    result = await asyncio.wait_for(claim, timeout=10)
+    assert result["result"] == "claimed"
+    assert result["task"]["id"] == "dependent"
+
+
+async def test_development_initial_snapshot_movement_retries_before_preparation(
+    handler, db, tmp_path, development_admission
+):
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    sid, _ = await pool_session(db, tmp_path)
+    fetch = env.service.git.afetch_origin
+    moved = False
+
+    async def moving_fetch(*args, **kwargs):
+        nonlocal moved
+        await fetch(*args, **kwargs)
+        if not moved:
+            moved = True
+            (env.source / "initial-advance").write_text("move after fetch")
+            env.git(env.source, "add", ".")
+            env.git(env.source, "commit", "-m", "move between fetch and admission")
+            env.git(env.source, "push", "origin", "HEAD:main")
+
+    env.service.git.afetch_origin = AsyncMock(side_effect=moving_fetch)
+    result = await scoped(handler, sid)._cmd_task_claim({"next": True})
+    assert result["result"] == "claimed"
+    assert result["claim_epoch"] == 1
+    assert env.service.git.afetch_origin.await_count == 2
+    handler.orchestrator._worktree_slots.return_value.reset_slot_for_task.assert_awaited_once()
