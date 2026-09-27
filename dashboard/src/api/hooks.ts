@@ -1573,3 +1573,12 @@ export function useReloadSystemConfig() {
 // this broad legacy hook collection do not have to learn about provider usage.
 export { useProviderUsage } from "./providerUsage";
 export type { ProviderUsageResponse, ProviderUsageSnapshot } from "./providerUsage";
+
+// Provider-level worker allocation lives in its own module for the same reason;
+// the Providers view on the agents page is its caller.
+export {
+  PROVIDER_ALLOCATION_KEY,
+  useProviderAllocation,
+  useProviderAllocationApply,
+  useProviderAllocationPreview,
+} from "./providerAllocation";
