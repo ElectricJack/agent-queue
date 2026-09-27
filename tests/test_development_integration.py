@@ -430,19 +430,21 @@ async def test_docs_only_plan_dependency_stays_satisfied_after_branch_cleanup(se
     ))
     await db.create_task(Task(id="waiting", project_id="p", title="waiting", description=""))
     await db.add_dependency("waiting", "plan")
-    assert (await db.get_task("waiting")).is_blocked
+    # The plan's branch is its base, so fresh ancestry already admits the dependent.
+    assert not (await _admission_blocked(setup, "waiting"))
 
     assert (await service.sweep("p"))["outcome"] == "delivered"
-    assert not (await db.get_task("waiting")).is_blocked
+    assert not (await _admission_blocked(setup, "waiting"))
 
     await service.collect_delivered_branches("p")
     assert "aq/plan" not in remote_branches(remote)
     assert not await _delivery_pending(db, "plan")
     assert await db.get_blocking_dependencies("waiting") == []
+    assert not (await _admission_blocked(setup, "waiting"))
     # An edge written after cleanup recomputes against the receipt, not the branch.
     await db.create_task(Task(id="filed-later", project_id="p", title="f", description=""))
     await db.add_dependency("filed-later", "plan")
-    assert not (await db.get_task("filed-later")).is_blocked
+    assert not (await _admission_blocked(setup, "filed-later"))
 
     head = await aq_feature(setup, "implementation")
     await db.add_dependency("implementation", "plan")
