@@ -326,6 +326,12 @@ Rules ([`DevelopmentIntegration.adopt`](../../src/integration/development.py)):
   `evidence.completion_sources`. The adopted tasks therefore count as
   delivered at once, and their `blocks` dependents are released. An adoption
   journaled before this binding existed gets it on the next sweep.
+* The publisher's git check honours the adoption as well. An
+  `operator_accepted` row that names the task's exact current source, and was
+  written after that completion, counts as delivered while its adopted head
+  stays on the target — including content that landed rebased, so a chain of
+  adopted repairs is never re-held as a dependency cycle. A bare `adopted`
+  state without that operator evidence never counts.
 
 ## Cancel repair scheduling you no longer want
 

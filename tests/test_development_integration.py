@@ -1,5 +1,6 @@
 """Real Git + private PostgreSQL coverage for the development delivery path."""
 
+import itertools
 import subprocess
 import time
 from pathlib import Path
@@ -4391,3 +4392,117 @@ async def test_legacy_repair_bridge_checks_exact_current_replacement_and_git(set
         requests.values()
     )
     assert results[older].state is DeliveryState.PENDING
+
+
+async def test_operator_adoption_bridge_is_exact_generation_fenced_and_requires_git(setup):
+    """An operator adoption of content that landed rebased is delivered, and nothing more."""
+    from dataclasses import replace
+
+    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+
+    db, service, source, remote, _repo = setup
+    head = await feature(setup, "rebased")
+    await db.save_task_completion(TaskCompletion(
+        id="rebased-close", task_id="rebased", outcome="pass", commits=[head],
+        completed_at=time.time(),
+    ))
+    # The same content lands on main as a different commit.
+    git(source, "checkout", "main")
+    (source / "rebased.txt").write_text("new\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "rebased content")
+    git(source, "push", "origin", "main")
+    main = git(remote, "rev-parse", "main")
+    requests = await load_delivery_requests(
+        db, ["rebased"], repository_id="r", target_ref="refs/heads/main",
+    )
+    request = requests["rebased"]
+    assert (await (await truth_snapshot(setup)).evaluate(request)).state is DeliveryState.PENDING
+    await service.adopt(
+        project_id="p", task_ids=["rebased"], target_ref="refs/heads/main", head_sha=main,
+        reason="content landed rebased", operator_id="supervisor", accept_equivalent=True,
+    )
+    rows = await service.rows("p")
+    evidence = await (await truth_snapshot(setup, legacy_rows=rows)).evaluate(request)
+    assert evidence.state is DeliveryState.CONTAINED
+    assert evidence.reason == "legacy_operator_adoption" and evidence.source_oid == head
+    # A bare adopted state, another target, a head git no longer contains, a
+    # later generation, or a proof bound to another generation never suffices.
+    adopted = rows[-1]
+    for wrong in (
+        {**adopted, "evidence": {}},
+        {**adopted, "target_ref": "refs/heads/elsewhere"},
+        {**adopted, "prepared_sha": head},
+        {**adopted, "manifest": [{**adopted["manifest"][0], "source_sha": main}]},
+        {**adopted, "evidence": {**adopted["evidence"], "completion_sources": [
+            {"task_id": "rebased", "completion_id": "other-close", "source_sha": head}
+        ]}},
+    ):
+        snapshot = await truth_snapshot(setup, legacy_rows=[wrong])
+        assert (await snapshot.evaluate(request)).state is DeliveryState.PENDING
+    reopened = replace(request, completion_id="new-close", completed_at=time.time())
+    snapshot = await truth_snapshot(setup, legacy_rows=rows)
+    assert (await snapshot.evaluate(reopened)).state is DeliveryState.PENDING
+
+
+@pytest.mark.parametrize("adoption", ["operator", "bare_receipt"])
+async def test_operator_adopted_repair_cycle_is_delivered_not_held(setup, adoption):
+    """Production shape: three chained repairs adopted after their content landed rebased.
+
+    Each repair names its predecessor, and each predecessor waits on its
+    repair, so the newest contract cannot supersede the whole component. Before
+    the adoption bridge every tick held all three as a dependency cycle.
+    """
+    db, service, source, remote, _repo = setup
+    chain = ["development-repair-a", "development-repair-b", "development-repair-c"]
+    heads = {}
+    for task_id in chain:
+        heads[task_id] = await feature(setup, task_id)
+        git(source, "push", "origin", f"{task_id}:aq/{task_id}")
+        await db.update_task(task_id, branch_name=f"aq/{task_id}")
+        # Legacy closes: two report nothing, as the adopted production repairs did.
+        await db.save_task_completion(TaskCompletion(
+            id=f"{task_id}-close", task_id=task_id, outcome="pass",
+            commits=[heads[task_id]] if task_id.endswith("b") else [], completed_at=time.time(),
+        ))
+    for older, newer in itertools.pairwise(chain):
+        await db.set_task_meta(newer, "development_repair_sources",
+                               [{"task_id": older, "source_sha": heads[older]}])
+        async with db.immediate() as conn:
+            await conn.execute(insert(task_dependencies).values(
+                task_id=older, depends_on_task_id=newer, dep_type="blocks",
+            ))
+    git(source, "checkout", "main")
+    for task_id in chain:
+        (source / f"{task_id}.txt").write_text("new\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "chain content, rebased")
+    git(source, "push", "origin", "main")
+    main = git(remote, "rev-parse", "main")
+    if adoption == "operator":
+        for task_id in chain:
+            await service.adopt(
+                project_id="p", task_ids=[task_id], target_ref="refs/heads/main", head_sha=main,
+                reason="content landed rebased", operator_id="supervisor", accept_equivalent=True,
+            )
+    else:
+        now = time.time()
+        for task_id in chain:
+            await service.save({
+                "id": f"bare-{task_id}", "project_id": "p", "repository_id": "r",
+                "target_ref": "refs/heads/main", "expected_sha": main, "prepared_sha": main,
+                "state": "adopted", "manifest": [{"task_id": task_id, "source_sha": heads[task_id]}],
+                "evidence": {}, "reason": "receipt state is not authority",
+                "created_at": now, "updated_at": now,
+            })
+    other = await feature(setup, "independent")
+    result = await service.sweep("p")
+    assert result["outcome"] == "delivered"
+    assert {m["task_id"] for m in result["manifest"]} == {"independent"}
+    assert git(remote, "merge-base", "--is-ancestor", other, "main") == ""
+    skips = {task_id: await db.get_task_meta(task_id, PUBLISHER_SKIP_KEY) for task_id in chain}
+    if adoption == "operator":
+        assert skips == dict.fromkeys(chain)
+        assert (await service.sweep("p"))["outcome"] == "idle"
+    else:
+        assert {skip["reason"] for skip in skips.values()} == {"dependency_cycle"}
