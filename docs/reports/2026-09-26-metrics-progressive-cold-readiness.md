@@ -313,3 +313,21 @@ rerun without a source change; `git diff --check` is repeated for publication.
 The required idle/loaded commands completed, Metrics readiness passes locally,
 and overall acceptance remains unmet. Preserve the published patch for follow-on
 work; close fail rather than waive Tasks/Agents/pane limits or claim a LAN result.
+
+## Delivery onto main — 2026-09-27 (clear-delta)
+
+Tasks/Agents limits are still unmet, but the Metrics change passes its local
+readiness limits. It ships on `aq/clear-delta`, which is `aq/wise-ember.17`
+(`3ab190f10`) with `origin/main` (`488c19b75`) merged in. The merge was clean,
+and all three wise-ember.17 commits are ancestors of the delivery head. The
+source diff against main is unchanged. The Tasks-page graph prefetch in
+`routeData.ts` ships with it: it shares the mounted query and adds no new failure
+path, but it did not bring Tasks within its limit. Checks rerun on the merged tree:
+
+- `aq test tests/test_api_metrics.py` — 22 passed.
+- `npx vitest run src/api/__tests__/graph.test.tsx src/pages/metrics/__tests__ src/pages/command-center/__tests__/Tasks.test.tsx src/pages/command-center/__tests__/useGraphLive.test.tsx src/ws/__tests__/useEventStream.wire.test.tsx src/ws/__tests__/useEventStream.agents.test.tsx` — 143 passed across nine files.
+- `npm run typecheck` — pass. `npm run lint` — zero errors, 37 existing warnings.
+- `ruff check src/api/metrics.py` — pass. `git diff --check origin/main` — pass.
+
+The browser timings above were not rerun. The merge adds no dashboard or metrics
+source change, so the matched idle/loaded pair still describes the candidate.
