@@ -4,6 +4,7 @@ status: approved
 date: 2026-09-27
 project: agent-queue
 author_task: noble-crest
+implementation_epic: fresh-ember
 approval: Jack approved the spec and implementation in chat on 2026-09-27, as recorded in the assigned task; no additional human review gate.
 spec: projects/agent-queue/specs/2026-09-23-development-publisher-delivery-truth-design.md
 review: rev-vivid-forge
@@ -23,6 +24,29 @@ Canonical vault artifact:
 The repository copy and adjacent `.graph.json` preserve the reviewed work for
 workers and delivery. The graph creates a new epic, not children of the planning
 task. No review gate or phase-wide serialization is attached.
+
+## Filing receipt
+
+The supervisor completed a clean dry-run and filed the canonical graph as
+`fresh-ember`, confirming the following mapping in message
+`msg-75a5cb6a49db465ab31cb11d8f821ca6` on 2026-09-27. Routing matches this graph.
+This graph is already filed; do not run creation again.
+
+| Graph key | Filed task |
+| --- | --- |
+| truth | fresh-ember.1 |
+| stalls | fresh-ember.2 |
+| provenance | fresh-ember.3 |
+| isolate | fresh-ember.4 |
+| admission | fresh-ember.5 |
+| consumers | fresh-ember.6 |
+| operations | fresh-ember.7 |
+| retire | fresh-ember.8 |
+| acceptance | fresh-ember.9 |
+
+The worker prepared and validated the artifacts; the supervisor performed
+creation because the worker scope forbids a document-level parent. This did
+not introduce another human review gate.
 
 ## Approval and review reconciliation
 
