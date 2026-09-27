@@ -18,6 +18,15 @@ def _execute(ctx: click.Context, command: str, params: dict) -> dict:
     return _run(run())
 
 
+def _read_text(file_path: Path) -> str:
+    try:
+        return file_path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise click.UsageError(f"not_utf8: {file_path} is not valid UTF-8 ({exc.reason})") from None
+    except OSError as exc:
+        raise click.UsageError(str(exc)) from None
+
+
 @cli.group("review")
 def review() -> None:
     """Document reviews: submit specs and plans for Jack's approval."""
@@ -32,6 +41,23 @@ def review() -> None:
 @click.option("--title", default=None)
 @click.option("--changes", default=None)
 @click.option("--resolves", multiple=True)
+@click.option(
+    "--playbook-id",
+    default=None,
+    help="Make this a playbook review: the playbook whose vault source the daemon compiles.",
+)
+@click.option(
+    "--playbook-body",
+    "playbook_body",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Local JSON file with the proposal's rules and steps (a revision may omit it).",
+)
+@click.option(
+    "--activate-on-approval/--no-activate-on-approval",
+    default=None,
+    help="Activate the pinned artifact when approved (default: store it only).",
+)
 @click.pass_context
 @_handle_errors
 def review_submit(
@@ -44,14 +70,18 @@ def review_submit(
     title: str | None,
     changes: str | None,
     resolves: tuple[str, ...],
+    playbook_id: str | None,
+    playbook_body: Path | None,
+    activate_on_approval: bool | None,
 ) -> None:
-    """Submit FILE as a new review or a new revision of --review-id."""
-    try:
-        content = file_path.read_bytes().decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise click.UsageError(f"not_utf8: {file_path} is not valid UTF-8 ({exc.reason})") from None
-    except OSError as exc:
-        raise click.UsageError(str(exc)) from None
+    """Submit FILE as a new review or a new revision of --review-id.
+
+    With --playbook-id the review is a playbook review (kind other): the daemon
+    compiles the playbook's vault source with the --playbook-body rules and
+    steps, refuses the submission unless the artifact is activatable, and pins
+    its hash so approval stores exactly that artifact.
+    """
+    content = _read_text(file_path)
     params = {
         "content": content,
         "task_id": task_id,
@@ -61,6 +91,9 @@ def review_submit(
         "title": title,
         "changes": changes,
         "resolves": list(resolves),
+        "playbook_id": playbook_id,
+        "semantic_body": _read_text(playbook_body) if playbook_body is not None else None,
+        "activate_on_approval": activate_on_approval,
     }
     emit(ctx, _execute(ctx, "review_submit", {key: value for key, value in params.items() if value is not None}))
 

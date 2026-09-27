@@ -298,6 +298,7 @@
         "tests/test_review_gating.py",
         "tests/test_review_keys.py",
         "tests/test_review_notifier.py",
+        "tests/test_review_playbooks.py",
         "tests/test_review_profile_rules.py",
         "tests/test_review_queries.py",
         "tests/test_review_reopen_cascade.py",
@@ -689,6 +690,7 @@
         "tests/test_migration_postgres_upgrade_head.py",
         "tests/test_migration_repair_stages.py",
         "tests/test_migration_retired_intelligence_classes.py",
+        "tests/test_migration_review_playbook_pin.py",
         "tests/test_migration_root_main_promotion.py",
         "tests/test_migration_session_hooks_provisioned.py",
         "tests/test_migration_single_head.py",
@@ -1263,7 +1265,7 @@
       ]
     }
   },
-  "digest": "sha256:3a430ee42ac272ee2784358d47a16e524ad112915966749ae4a2195a527c1091",
+  "digest": "sha256:3e1f791922f13b40106dabc2d51bfefe4423f2b0cbabbab607d87e0c59bcc02f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4480,6 +4482,7 @@
         "src.integration",
         "src.integration.controls",
         "src.integration.delivery_branches",
+        "src.integration.delivery_truth",
         "src.integration.development",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
@@ -5699,10 +5702,16 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.claim_file",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.registry",
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration.provenance",
+        "src.integration.provenance_migration",
         "src.models"
       ],
       "markers": [],
@@ -8455,6 +8464,20 @@
       ],
       "summary": "The retired-class revision repoints live pins and spares the evidence rows."
     },
+    "tests/test_migration_review_playbook_pin.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [
+        "integration",
+        "migration"
+      ],
+      "summary": "The review-playbook-pin revision adds its columns once and keeps them on rollback."
+    },
     "tests/test_migration_root_main_promotion.py": {
       "areas": [
         "migrations"
@@ -9226,6 +9249,9 @@
         "src.api.auth",
         "src.api.models",
         "src.api.scope",
+        "src.cli",
+        "src.cli.app",
+        "src.cli.playbook",
         "src.commands.handler",
         "src.commands.playbook_v2_commands",
         "src.commands.principal",
@@ -10876,6 +10902,29 @@
       ],
       "summary": "Discord delivery behavior for the durable document-review outbox."
     },
+    "tests/test_review_playbooks.py": {
+      "areas": [
+        "document-reviews"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli",
+        "src.cli.app",
+        "src.cli.reviews",
+        "src.database.tables",
+        "src.doctor",
+        "src.doctor.models",
+        "src.doctor.review_checks",
+        "src.event_bus",
+        "src.models",
+        "src.playbooks.definition",
+        "src.reviews.vault"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Playbook reviews: submission pins a compiled artifact, approval stores it."
+    },
     "tests/test_review_profile_rules.py": {
       "areas": [
         "document-reviews",
@@ -11357,6 +11406,7 @@
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.parent_completion",
+        "src.integration.provenance",
         "src.intelligence_classes",
         "src.mcp_registration",
         "src.models",

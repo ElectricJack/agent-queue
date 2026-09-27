@@ -391,7 +391,8 @@ Playbooks V2 — the event-triggered markdown workflows that carry policy.
 The lifecycle is: author markdown in the vault, `v2-propose` or
 `update-source` to turn it into an immutable artifact, `v2-validate` it
 against the strict model and the live command contracts, then `activate` one
-validated artifact hash. Runs are inspected with `list-runs` /
+validated artifact hash. A reviewed bundle in the vault (`reviewed-playbooks/<id>`)
+is imported with `import`. Runs are inspected with `list-runs` /
 `inspect-run` / `run-overlay`, and a paused human-in-the-loop run is continued
 with `resume`. `pending-events` lists events held because no artifact could
 run them, which is the first place to look when a trigger appears to do
@@ -412,6 +413,7 @@ nothing.
 | `aq playbook graph-layout-save` | `playbook_graph_layout_save` | gen | Persist user-arranged grid coordinates for the nodes of one immutable playbook artifact. |
 | `aq playbook graph-view` | `playbook_graph_view` | gen | Get structured graph view data for dashboard rendering of a playbook. |
 | `aq playbook health` | `playbook_health` | gen | Compute health metrics for playbook runs: tokens per node, run duration statistics, transition paths, and failure rates. |
+| `aq playbook import --path reviewed-playbooks/<id> [--activate]` | — | hand | Import a reviewed bundle from the vault (`playbook_v2_import`); with `--activate`, also activate the exact hash it stored (`playbook_activate`). Otherwise prints the activate command. |
 | `aq playbook inspect-run` | `inspect_playbook_run` | gen | Inspect a playbook run in detail. |
 | `aq playbook list` | `list_playbooks` | gen | List all playbooks across scopes with status, triggers, and last run info. |
 | `aq playbook list-runs` | `list_playbook_runs` | gen | List recent playbook runs with status and path taken through the graph. |

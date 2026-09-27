@@ -9,11 +9,13 @@ body the same way the database stores it.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import io
 import os
 import re
 import tempfile
+import time
 import unicodedata
 from collections.abc import Iterator
 from pathlib import Path
@@ -60,6 +62,34 @@ def split_frontmatter(text: str) -> tuple[str | None, str]:
 def body_sha256(body: str) -> str:
     """The ``content_sha256`` of a revision body: sha256 of its UTF-8 bytes."""
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def frontmatter_for(review: dict, playbook: dict | None = None) -> dict:
+    """The frontmatter of *review*'s vault file at its current revision.
+
+    *playbook* is the current revision's playbook pin, if any: the file then
+    names the exact artifact an approval stores, so the reader approves a
+    hash and not only prose.
+    """
+    # The submission's local date, as in the path ``candidate_paths`` chose.
+    created = datetime.date.fromisoformat(
+        time.strftime("%Y-%m-%d", time.localtime(review["created_at"]))
+    )
+    frontmatter = {
+        "title": review["title"],
+        "status": review["state"],
+        "kind": review["kind"],
+        "review": review["id"],
+        "revision": review["current_revision"],
+        "project": review["project_id"],
+        "author_task": review["author_task_id"] or "",
+        "date": created,
+    }
+    if playbook:
+        frontmatter["playbook"] = playbook.get("playbook_id", "")
+        frontmatter["artifact_sha256"] = playbook.get("artifact_sha256", "")
+        frontmatter["activate_on_approval"] = bool(playbook.get("activate_on_approval"))
+    return frontmatter
 
 
 def render(frontmatter: dict, body: str) -> str:

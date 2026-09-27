@@ -23,6 +23,13 @@ class ReviewSubmitRequest:
         title (None | str | Unset):
         changes (None | str | Unset):
         resolves (list[Any] | None | Unset):
+        playbook_id (None | str | Unset): The playbook this review asks approval for; its Markdown source must already
+            be in the vault.
+        semantic_body (None | str | Unset): JSON text with exactly the proposal's rules and steps. Omitted on a
+            revision, the previous artifact's are reused.
+        semantic_body_path (None | str | Unset): Vault path of the semantic body, instead of semantic_body.
+        activate_on_approval (bool | None | Unset): Activate the pinned artifact when the review is approved (default:
+            store it and tell the supervisor).
     """
 
     content: str
@@ -33,6 +40,10 @@ class ReviewSubmitRequest:
     title: None | str | Unset = UNSET
     changes: None | str | Unset = UNSET
     resolves: list[Any] | None | Unset = UNSET
+    playbook_id: None | str | Unset = UNSET
+    semantic_body: None | str | Unset = UNSET
+    semantic_body_path: None | str | Unset = UNSET
+    activate_on_approval: bool | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,6 +94,30 @@ class ReviewSubmitRequest:
         else:
             resolves = self.resolves
 
+        playbook_id: None | str | Unset
+        if isinstance(self.playbook_id, Unset):
+            playbook_id = UNSET
+        else:
+            playbook_id = self.playbook_id
+
+        semantic_body: None | str | Unset
+        if isinstance(self.semantic_body, Unset):
+            semantic_body = UNSET
+        else:
+            semantic_body = self.semantic_body
+
+        semantic_body_path: None | str | Unset
+        if isinstance(self.semantic_body_path, Unset):
+            semantic_body_path = UNSET
+        else:
+            semantic_body_path = self.semantic_body_path
+
+        activate_on_approval: bool | None | Unset
+        if isinstance(self.activate_on_approval, Unset):
+            activate_on_approval = UNSET
+        else:
+            activate_on_approval = self.activate_on_approval
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -104,6 +139,14 @@ class ReviewSubmitRequest:
             field_dict["changes"] = changes
         if resolves is not UNSET:
             field_dict["resolves"] = resolves
+        if playbook_id is not UNSET:
+            field_dict["playbook_id"] = playbook_id
+        if semantic_body is not UNSET:
+            field_dict["semantic_body"] = semantic_body
+        if semantic_body_path is not UNSET:
+            field_dict["semantic_body_path"] = semantic_body_path
+        if activate_on_approval is not UNSET:
+            field_dict["activate_on_approval"] = activate_on_approval
 
         return field_dict
 
@@ -183,6 +226,42 @@ class ReviewSubmitRequest:
 
         resolves = _parse_resolves(d.pop("resolves", UNSET))
 
+        def _parse_playbook_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        playbook_id = _parse_playbook_id(d.pop("playbook_id", UNSET))
+
+        def _parse_semantic_body(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        semantic_body = _parse_semantic_body(d.pop("semantic_body", UNSET))
+
+        def _parse_semantic_body_path(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        semantic_body_path = _parse_semantic_body_path(d.pop("semantic_body_path", UNSET))
+
+        def _parse_activate_on_approval(data: object) -> bool | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(bool | None | Unset, data)
+
+        activate_on_approval = _parse_activate_on_approval(d.pop("activate_on_approval", UNSET))
+
         review_submit_request = cls(
             content=content,
             project_id=project_id,
@@ -192,6 +271,10 @@ class ReviewSubmitRequest:
             title=title,
             changes=changes,
             resolves=resolves,
+            playbook_id=playbook_id,
+            semantic_body=semantic_body,
+            semantic_body_path=semantic_body_path,
+            activate_on_approval=activate_on_approval,
         )
 
         review_submit_request.additional_properties = d

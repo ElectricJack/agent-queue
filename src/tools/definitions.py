@@ -6469,7 +6469,14 @@ _ALL_TOOL_DEFINITIONS.extend(
     [
         {
             "name": "review_submit",
-            "description": "Submit markdown for review, or submit a revision to an open review.",
+            "description": (
+                "Submit markdown for review, or submit a revision to an open review. "
+                "A playbook review (kind other) also names playbook_id and its semantic "
+                "body: the daemon compiles the vault source and refuses the submission "
+                "unless the Playbook V2 artifact is activatable, then pins its exact hash "
+                "to the revision. Approval stores that artifact (and activates it when "
+                "activate_on_approval is set); a revision recompiles it."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -6481,6 +6488,32 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "content": {"type": "string", "maxLength": 262144},
                     "changes": {"type": "string"},
                     "resolves": {"type": "array", "items": {"type": "string"}},
+                    "playbook_id": {
+                        "type": "string",
+                        "description": (
+                            "The playbook this review asks approval for; its Markdown "
+                            "source must already be in the vault."
+                        ),
+                    },
+                    "semantic_body": {
+                        "type": "string",
+                        "maxLength": 1048576,
+                        "description": (
+                            "JSON text with exactly the proposal's rules and steps. "
+                            "Omitted on a revision, the previous artifact's are reused."
+                        ),
+                    },
+                    "semantic_body_path": {
+                        "type": "string",
+                        "description": "Vault path of the semantic body, instead of semantic_body.",
+                    },
+                    "activate_on_approval": {
+                        "type": "boolean",
+                        "description": (
+                            "Activate the pinned artifact when the review is approved "
+                            "(default: store it and tell the supervisor)."
+                        ),
+                    },
                 },
                 "required": ["content"],
                 "additionalProperties": False,
