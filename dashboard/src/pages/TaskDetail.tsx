@@ -4,6 +4,7 @@ import { ArrowLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/ou
 import { useTask, type TaskRef } from "../api/hooks";
 import StatusBadge from "../components/StatusBadge";
 import TaskActions from "../components/TaskActions";
+import TaskCollaboration from "../components/TaskCollaboration";
 import TaskComments from "../components/TaskComments";
 import TaskSubtaskList from "../components/TaskSubtaskList";
 import TaskSessions from "../components/TaskSessions";
@@ -110,6 +111,8 @@ function TaskDetailContent({ taskId }: { taskId: string }) {
       <TaskSessions taskId={task.id} />
 
       <TaskSubtaskList taskId={task.id} />
+
+      <TaskCollaboration taskId={task.id} />
 
       <TaskComments taskId={task.id} />
 
