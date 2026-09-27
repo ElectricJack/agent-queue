@@ -1274,7 +1274,7 @@
       ]
     }
   },
-  "digest": "sha256:ab9e5336213ce991c019f2fb7d5acb54060d76ac227d2b6631620b5c8befc471",
+  "digest": "sha256:48a5393021794a568357f5998f7d59b0bb780365cda734e97108583d0c01bb07",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5766,7 +5766,9 @@
         "src.integration.provenance_migration",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Unit tests for git-related command handler methods."
     },
     "tests/test_git_events.py": {

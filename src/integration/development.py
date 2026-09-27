@@ -828,10 +828,12 @@ class DevelopmentIntegration:
         await self.db._notify_ready([(task_id, "unblocked") for task_id in ready])
 
     async def reconcile(self, repo, store):
+        pending = [row for row in await self.rows(repo.project_id)
+                   if row["repository_id"] == repo.id and row["state"] in {"prepared", "publishing"}]
+        if not pending:
+            return
         await self.git.afetch_origin(str(store), repository_url=repo.url, all_heads=True)
-        for row in await self.rows(repo.project_id):
-            if row["repository_id"] != repo.id or row["state"] not in {"prepared", "publishing"}:
-                continue
+        for row in pending:
             actual = await self.remote(store, row["target_ref"])
             prepared = row["prepared_sha"]
             if prepared and actual == prepared or (
@@ -2029,6 +2031,8 @@ class DevelopmentIntegration:
         history = await self._release_unverified_parks(repo, await self.rows(repo.project_id))
         pending = {r["id"]: r for r in history if r["state"] == "parked" and r["manifest"]
                    and r["repository_id"] == repo.id}
+        if not pending:
+            return
         target = "refs/heads/" + repo.default_branch
         truth = await delivery_snapshot(
             self.git, store, project_id=repo.project_id, repository_id=repo.id,

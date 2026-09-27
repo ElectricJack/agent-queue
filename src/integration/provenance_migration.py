@@ -153,7 +153,7 @@ class ProvenanceMigration:
                     "inventory": inventory, "repairs": repairs[0], "ambiguous": ambiguous,
                     "fallback_generations": fallback,
                     "fallback_count": len(fallback),
-                    "zero_fallback": not fallback and not more and not unheld,
+                    "zero_fallback": not fallback and not ambiguous and not more,
                     "operations": operations,
                     "legacy_heads": [{"id": r["id"], "target_ref": r["target_ref"],
                         "prepared_sha": r["prepared_sha"], "manifest": r["manifest"]} for r in history],
@@ -326,7 +326,9 @@ class ProvenanceMigration:
                     exact = {(m["task_id"], m.get("source_sha")) for m in sources}
                     if not contract or exact != {(m["task_id"], m.get("source_sha")) for m in contract}:
                         raise ValueError("legacy replacement does not name the complete exact repair contract")
-                    repairs = [bindings[r["id"]] for r in rows if r["task_id"] == repair_id and r["id"] in bindings]
+                    generation = proof.get("completion_id") if proof.get("task_id") == repair_id else None
+                    repairs = [bindings[r["id"]] for r in rows if r["task_id"] == repair_id
+                               and r["id"] in bindings and (generation is None or r["id"] == generation)]
                     if len(repairs) != 1:
                         raise ValueError("repair generation is missing or ambiguous in this inventory page")
                     repair = repairs[0]
