@@ -2899,6 +2899,12 @@ class GitManager:
         ``["reset", "HEAD", "--", pattern]`` call below is the template for
         pathspec arguments.  See ``docs/specs/design/trust-and-ops.md`` §2.4.
         """
+        from src.claim_file import read_claim_file
+        from src.integration.provenance import task_message
+
+        claim = read_claim_file(checkout_path)
+        if claim and claim.get("task_id"):
+            message = task_message(message, claim["task_id"])
         await self._arun(["add", "-A"], cwd=checkout_path)
         if exclude_plans:
             for pattern in self._PLAN_FILE_EXCLUDES:

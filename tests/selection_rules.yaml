@@ -324,6 +324,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/integration/child_delivery.py"], areas: ["integration-promotion"] }
   - { paths: ["src/integration/epic_*.py", "src/integration/candidate_ci.py", "src/integration/candidates.py"], areas: ["epic-trains"] }
   - { paths: ["src/integration/development*.py", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
+  - { paths: ["src/integration/provenance*.py"], areas: ["development-delivery", "git-manager", "session-runtime"] }
 
   - { paths: ["src/integrations/**"], areas: ["plugins"] }
   - { paths: ["src/intelligence_classes/**"], areas: ["intelligence-classes"] }
