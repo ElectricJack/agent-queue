@@ -186,6 +186,104 @@ def emitted(handler):
 
 
 class TestClaim:
+    async def test_reparent_cannot_turn_a_claimed_leaf_into_a_container(
+        self, handler, db, tmp_path
+    ):
+        await mktask(db, "epic", profile_id="worker")
+        await mktask(db, "child", status=TaskStatus.DEFINED)
+        await mktask(db, "old-parent", status=TaskStatus.IN_PROGRESS)
+        await db.add_dependency("child", "old-parent", "parent-child")
+        sid, work_dir = await pool_session(db, tmp_path)
+        scoped(handler, sid)
+        claim = await handler._cmd_task_claim({"next": True})
+        assert claim["result"] == "claimed"
+        before = await db.get_task("epic")
+        claim_file = (work_dir / ".aq" / "claim.json").read_text()
+
+        handler._current_scope = None
+        result = await handler._cmd_reparent_task({"task_id": "child", "parent_id": "epic"})
+
+        assert result["code"] == "hierarchy.live_parent"
+        assert (await db.get_task("child")).parent_task_id == "old-parent"
+        assert await db.get_typed_dependencies("child") == [("old-parent", "parent-child")]
+        after = await db.get_task("epic")
+        assert (after.status, after.assigned_agent_id, after.claim_epoch) == (
+            before.status, before.assigned_agent_id, before.claim_epoch
+        )
+        assert (await db.get_session(sid)).task_id == "epic"
+        assert (work_dir / ".aq" / "claim.json").read_text() == claim_file
+        async with db.immediate() as conn:
+            assert not await db.is_container("epic", conn=conn)
+
+    async def test_claim_cas_rechecks_the_container_flag(self, db, tmp_path):
+        await mktask(db, "epic", profile_id="worker")
+        await pool_session(db, tmp_path)
+        async with db.immediate() as conn:
+            candidate = await db.select_ready_for_profile(
+                conn, project_id=PROJECT_ID, profile_id="worker",
+                default_profile_id="worker", agent_id="agent-1",
+            )
+            assert candidate == "epic"
+            await db.mark_container("epic", conn=conn)
+            assert await db.take_task(conn, candidate, agent_id="agent-1", now=NOW) is None
+        task = await db.get_task("epic")
+        assert task.status == TaskStatus.READY
+        assert task.assigned_agent_id is None and task.claim_epoch == 0
+        agent = await db.get_agent("agent-1")
+        assert agent.state == AgentState.IDLE and agent.current_task_id is None
+
+    async def test_reparent_destination_is_unclaimable_during_and_after_the_move(
+        self, db, tmp_path
+    ):
+        await mktask(db, "epic", profile_id="worker")
+        await mktask(db, "child", status=TaskStatus.DEFINED)
+        await pool_session(db, tmp_path)
+
+        async def candidate():
+            async with db.immediate() as other:
+                return await db.select_ready_for_profile(
+                    other, project_id=PROJECT_ID, profile_id="worker",
+                    default_profile_id="worker", agent_id="agent-1",
+                )
+
+        async with db.immediate() as conn:
+            await db.set_parent("child", "epic", conn=conn, reject_live_parent=True)
+            # SKIP LOCKED bypasses the destination even while the other
+            # connection's snapshot cannot yet see its container metadata.
+            assert await asyncio.wait_for(candidate(), timeout=5) is None
+        assert await candidate() is None
+        assert (await db.get_task("epic")).claim_epoch == 0
+
+    async def test_reparent_waits_for_concurrent_claim_before_checking_holder(
+        self, handler, db, tmp_path
+    ):
+        await mktask(db, "epic", profile_id="worker")
+        await mktask(db, "child", status=TaskStatus.DEFINED)
+        await pool_session(db, tmp_path)
+        started = asyncio.Event()
+
+        async def reparent():
+            started.set()
+            return await handler._cmd_reparent_task({"task_id": "child", "parent_id": "epic"})
+
+        racer = None
+        try:
+            async with db.immediate() as conn:
+                assert await db.take_task(conn, "epic", agent_id="agent-1", now=NOW)
+                racer = asyncio.create_task(reparent())
+                await asyncio.wait_for(started.wait(), timeout=5)
+                with pytest.raises(asyncio.TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(racer), timeout=0.2)
+            result = await asyncio.wait_for(racer, timeout=5)
+            assert result["code"] == "hierarchy.live_parent"
+            assert (await db.get_task("child")).parent_task_id is None
+            async with db.immediate() as conn:
+                assert not await db.is_container("epic", conn=conn)
+        finally:
+            if racer is not None and not racer.done():
+                racer.cancel()
+                await asyncio.gather(racer, return_exceptions=True)
+
     async def _hierarchy_task(self, db, tmp_path, task_id="child"):
         await db.create_repo(
             RepoConfig(

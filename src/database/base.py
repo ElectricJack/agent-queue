@@ -344,6 +344,7 @@ class DatabaseBackend(Protocol):
         description: str | None = None,
         integration_authorized: bool = False,
         completed_parent_for_repair: bool = False,
+        reject_live_parent: bool = False,
     ) -> TransitionResult: ...
     async def set_parent_bulk(
         self, child_ids: list[str], parent_id: str, *, conn
@@ -1083,6 +1084,97 @@ class DatabaseBackend(Protocol):
     async def reconcile_agent_waits(
         self, *, now: float, limit: int = 100, wait_id: str | None = None
     ) -> dict: ...
+    # Bounded collaboration records, claims and ordered transcripts.
+    async def reconcile_collaborations(self, *, now: float) -> dict: ...
+
+    async def create_collaboration_thread(
+        self,
+        *,
+        project_id: str,
+        created_by_kind: str,
+        created_by_id: str,
+        idempotency_key: str,
+        task_ids: list[str],
+        goal: str | None = None,
+        deadline_seconds: float = 7200,
+        message_budget: int = 40,
+        now: float,
+    ) -> dict: ...
+
+    async def accept_collaboration(
+        self,
+        *,
+        thread_id: str,
+        project_id: str,
+        task_id: str,
+        claim_epoch: int,
+        now: float,
+    ) -> dict: ...
+
+    async def get_collaboration_thread(
+        self,
+        thread_id: str,
+        *,
+        project_id: str,
+        conn: AsyncConnection | None = None,
+    ) -> dict | None: ...
+
+    async def list_collaboration_threads(
+        self,
+        *,
+        project_id: str,
+        task_id: str | None = None,
+        state: str | None = None,
+        limit: int = 20,
+    ) -> list[dict]: ...
+
+    async def read_collaboration_messages(
+        self,
+        thread_id: str,
+        *,
+        project_id: str,
+        after_seq: int | None = None,
+        limit: int = 20,
+        max_bytes: int = 32768,
+        conn: AsyncConnection | None = None,
+    ) -> dict | None: ...
+
+    async def append_collaboration_message(
+        self,
+        *,
+        thread_id: str,
+        project_id: str,
+        sender_task_id: str,
+        sender_claim_epoch: int,
+        sender_session_id: str,
+        client_key: str | None = None,
+        body: str,
+        subject: str | None = None,
+        reply_to_id: str | None = None,
+        to_task_id: str | None = None,
+        now: float,
+    ) -> dict: ...
+
+    async def close_collaboration_thread(
+        self,
+        *,
+        thread_id: str,
+        project_id: str,
+        reason: str,
+        note: str | None = None,
+        now: float,
+        conn: AsyncConnection | None = None,
+    ) -> dict: ...
+
+    async def remove_collaboration_member(
+        self,
+        *,
+        thread_id: str,
+        project_id: str,
+        task_id: str,
+        now: float,
+    ) -> dict: ...
+
     async def collect_morning_report_sources(
         self, *, since: float, until: float, project_ids: tuple[str, ...] | None = None
     ) -> dict[str, Any]: ...

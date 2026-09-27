@@ -29,6 +29,7 @@ def get_surface_schema() -> dict:
                 "open_children",
                 "open_descendants",
                 "live_descendants",
+                "live_parent",
                 "manually_paused_descendants",
                 "cycle_check_skipped",
             ],

@@ -1,0 +1,572 @@
+{
+  "version": 1,
+  "spec": "projects/agent-queue/specs/2026-09-23-development-publisher-delivery-truth-design.md",
+  "defaults": {
+    "labels": [
+      "publisher-delivery-truth"
+    ]
+  },
+  "parent": {
+    "title": "Development publisher: git delivery truth and bounded recovery",
+    "description": "Approved implementation planned by noble-crest. Jack approved in chat on 2026-09-27; no further human review gate. Follow projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md. Remove duplicate DB delivery truth, ship ancestry-first and bounded stall slices early, preserve existing bright-flare and azure-lantern fixes. This is the implementation epic, separate from the completed planning task.",
+    "profile": "standard-high-claude",
+    "priority": 100
+  },
+  "nodes": [
+    {
+      "key": "truth",
+      "title": "Use shared git delivery truth before publisher dependency evaluation",
+      "profile": "standard-high-codex",
+      "intelligence_class": "standard-high",
+      "priority": 100,
+      "description": "Approved implementation from noble-crest; Jack approved spec and implementation in chat on 2026-09-27. Read projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md before editing; its Shared contract and resolved choices control over the older cache wording in the spec. No new human review gate. Keep development mode. Every mutation uses CommandHandler and production git I/O uses async GitManager. Preserve bright-flare 23c6fe844 and azure-lantern 86338d77b already in main; do not duplicate or manipulate their live incident tasks. Publish your assigned branch before closing. Run focused and area checks with aq test and baseline failure comparison; no whole suite. Add selection ownership and regenerate the catalogue for any new test module or unowned source path. \n\nScope: Add src/integration/delivery_truth.py with async repository/target/current-completion-scoped evidence, then call it before development.py candidate sorting, cycles and ancestor checks. Results distinguish contained, no artifact, pending and unknown. Pin fetched target OID; unknown/fetch failure is not delivered. Branchless organizational containers have no own artifact, while a missing ref or branchless code completion with a recorded source is not automatically empty. Inspect all completed candidates independently so misleading receipt rows cannot exclude undelivered work. Legacy source heads may locate commits temporarily but every result requires git proof; centralize this bridge and label it for operations/retire removal. Preserve adopted-repair pruning and clear diagnostics when actual containment makes work leave evaluation. Define reusable batch snapshot and freshness interface for admission/consumers without writing git facts into DB. Own candidate preflight only; isolate owns merge assembly and recovery, stalls owns diagnostics.\n\nVerification commands:\n- aq test tests/test_development_integration.py\n- aq test tests/test_development_integration.py tests/test_integration_controls.py tests/test_blocked_state.py\n- ruff check <changed paths>",
+      "acceptance": [
+        "Eleven-way missing-ancestor and contained-candidate regressions pass with missing refs and misleading receipt states.",
+        "Wrong repo/target, archived identities, new completion generation and git errors are covered; no persisted delivered flag added.",
+        "Publisher uses one evaluator and exports its request-scoped snapshot contract for later consumers. First slice can ship independently."
+      ],
+      "needs": [],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md",
+          "section": "Shared contract and resolved choices"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/development.py"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/publishable_artifact.py"
+        },
+        {
+          "type": "file",
+          "path": "src/database/queries/blocked_state.py"
+        },
+        {
+          "type": "file",
+          "path": "tests/test_development_integration.py"
+        }
+      ],
+      "deliverables": [
+        {
+          "id": "truth-checks-1",
+          "kind": "test",
+          "target": "aq test tests/test_development_integration.py"
+        },
+        {
+          "id": "truth-checks-2",
+          "kind": "test",
+          "target": "aq test tests/test_development_integration.py tests/test_integration_controls.py tests/test_blocked_state.py"
+        },
+        {
+          "id": "truth-checks-3",
+          "kind": "command",
+          "target": "ruff check <changed paths>"
+        }
+      ]
+    },
+    {
+      "key": "stalls",
+      "title": "Bound repeated publisher skips and notify once at ERROR severity",
+      "profile": "standard-high-claude",
+      "intelligence_class": "standard-high",
+      "priority": 100,
+      "description": "Approved implementation from noble-crest; Jack approved spec and implementation in chat on 2026-09-27. Read projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md before editing; its Shared contract and resolved choices control over the older cache wording in the spec. No new human review gate. Keep development mode. Every mutation uses CommandHandler and production git I/O uses async GitManager. Preserve bright-flare 23c6fe844 and azure-lantern 86338d77b already in main; do not duplicate or manipulate their live incident tasks. Publish your assigned branch before closing. Run focused and area checks with aq test and baseline failure comparison; no whole suite. Add selection ownership and regenerate the catalogue for any new test module or unowned source path. \n\nScope: Extract publisher observational diagnostics from candidate assembly. Add positive configurable identical-evaluation threshold default five. Fingerprint candidate, completion generation, reason and relevant git evidence; count unsuccessful evaluations, not idle ticks or elapsed downtime. On crossing threshold, end that attempt as stalled, surface doctor ERROR and queue one supervisor inbox message containing task/repo/source/target/reason/recovery evidence. Persist only observations and deduplication, not delivery truth. A stalled attempt stops blind retries but still permits fresh containment checks; changed evidence or explicit recovery starts a new attempt. Restart retains count/dedupe, delivery clears stale diagnostics. Coordinate development.py diagnostic symbols with truth/isolate without serializing unrelated work. Own config/docs and doctor severity.\n\nVerification commands:\n- aq test tests/test_doctor_integration_checks.py\n- aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_development_validation.py\n- ruff check <changed paths>",
+      "acceptance": [
+        "Fifth identical skip produces one ERROR diagnostic and one supervisor message; earlier ticks remain bounded progress observations.",
+        "Restart and further unchanged ticks do not spam; changed generation or target and proven delivery recover correctly.",
+        "No new delivery eligibility authority or delivery-receipt row is introduced."
+      ],
+      "needs": [],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md",
+          "section": "Shared contract and resolved choices"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/development.py"
+        },
+        {
+          "type": "file",
+          "path": "src/doctor/integration_checks.py"
+        },
+        {
+          "type": "file",
+          "path": "src/config.py"
+        },
+        {
+          "type": "file",
+          "path": "tests/test_doctor_integration_checks.py"
+        }
+      ],
+      "deliverables": [
+        {
+          "id": "stalls-checks-1",
+          "kind": "test",
+          "target": "aq test tests/test_doctor_integration_checks.py"
+        },
+        {
+          "id": "stalls-checks-2",
+          "kind": "test",
+          "target": "aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_development_validation.py"
+        },
+        {
+          "id": "stalls-checks-3",
+          "kind": "command",
+          "target": "ruff check <changed paths>"
+        }
+      ]
+    },
+    {
+      "key": "provenance",
+      "title": "Record exact task completion and repair provenance in git",
+      "profile": "standard-high-codex",
+      "intelligence_class": "standard-high",
+      "priority": 100,
+      "description": "Approved implementation from noble-crest; Jack approved spec and implementation in chat on 2026-09-27. Read projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md before editing; its Shared contract and resolved choices control over the older cache wording in the spec. No new human review gate. Keep development mode. Every mutation uses CommandHandler and production git I/O uses async GitManager. Preserve bright-flare 23c6fe844 and azure-lantern 86338d77b already in main; do not duplicate or manipulate their live incident tasks. Publish your assigned branch before closing. Run focused and area checks with aq test and baseline failure comparison; no whole suite. Add selection ownership and regenerate the catalogue for any new test module or unowned source path. \n\nScope: Implement a bounded provenance module and worker commit/close integration. AQ-Task identifies the task; completion evidence must identify the current immutable generation and exact final source, not any matching historical commit. Use existing claim/completion identity as workflow identity; keep the mapping in git. Preserve existing hooks and other workers worktrees, never rewrite pushed history, and retain provenance after source-branch cleanup/archive. Verify published complete evidence before successful close; ordinary commits carry task trailers. Define git-carried explicit replacement evidence naming every replaced task/generation/source for rebased repairs and operator equivalence. A partial cherry-pick or an empty marker alone must not prove delivery. Include a dry-run/apply migration command through CommandHandler that inventories legacy heads and exact repair bindings, writes only verified git provenance, reports ambiguous task ids and is idempotent. This task defines the representation and migration primitive; operations wires it into the publisher, retire removes the compatibility reader. Preserve valid code-free outcomes. Document which external rewrite evidence is required rather than promising automatic equivalence.\n\nVerification commands:\n- aq test tests/test_git_command_handlers.py tests/test_session_commands.py\n- aq test tests/test_git_manager.py tests/test_git_manager_async.py tests/test_git_command_handlers.py tests/test_session_commands.py\n- ruff check <changed paths>",
+      "acceptance": [
+        "Real Git tests cover multiple commits, repeated close, reopened task, archived task, removed source branch, partial cherry-pick and complete repair replacement.",
+        "No DB git mapping or delivered boolean added; final source and generation are unambiguous and cannot be satisfied by an old AQ-Task trailer.",
+        "Legacy migration dry-run performs no writes; apply verifies git and preserves unmigratable evidence with explicit reasons."
+      ],
+      "needs": [],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md",
+          "section": "Shared contract and resolved choices"
+        },
+        {
+          "type": "file",
+          "path": "src/commands/git_commands.py"
+        },
+        {
+          "type": "file",
+          "path": "src/commands/session_commands.py"
+        },
+        {
+          "type": "file",
+          "path": "src/claim_file.py"
+        },
+        {
+          "type": "file",
+          "path": "tests/test_session_commands.py"
+        }
+      ],
+      "deliverables": [
+        {
+          "id": "provenance-checks-1",
+          "kind": "test",
+          "target": "aq test tests/test_git_command_handlers.py tests/test_session_commands.py"
+        },
+        {
+          "id": "provenance-checks-2",
+          "kind": "test",
+          "target": "aq test tests/test_git_manager.py tests/test_git_manager_async.py tests/test_git_command_handlers.py tests/test_session_commands.py"
+        },
+        {
+          "id": "provenance-checks-3",
+          "kind": "command",
+          "target": "ruff check <changed paths>"
+        }
+      ]
+    },
+    {
+      "key": "isolate",
+      "title": "Publish clean siblings and allow ancestry recovery during sweeps",
+      "profile": "standard-high-claude",
+      "intelligence_class": "standard-high",
+      "priority": 100,
+      "description": "Approved implementation from noble-crest; Jack approved spec and implementation in chat on 2026-09-27. Read projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md before editing; its Shared contract and resolved choices control over the older cache wording in the spec. No new human review gate. Keep development mode. Every mutation uses CommandHandler and production git I/O uses async GitManager. Preserve bright-flare 23c6fe844 and azure-lantern 86338d77b already in main; do not duplicate or manipulate their live incident tasks. Publish your assigned branch before closing. Run focused and area checks with aq test and baseline failure comparison; no whole suite. Add selection ownership and regenerate the catalogue for any new test module or unowned source path. \n\nScope: Use the shared evaluator to remove unavailable/blocked_parents as cross-candidate truth and publish clean candidates without mandatory parent assembly. Preserve dependency ordering only for pending work. Report exact source/target/conflicting paths and sibling pair only when proven. Retain bright-flare repair placement, idempotency and generation bounds. Make ancestry-only adopt use isolated git reads and succeed while the long sweep lock is held; keep reasoned explicit equivalence, live-writer protection and task/generation fences on actual mutations. recover-child stays scoped and independent of unrelated ancestor poisoning. Preserve expected-old-OID push and fast-forward ancestry checks; target movement before publication refetches/retries without forcing stale history. Do not duplicate diagnostics or scheduler work.\n\nVerification commands:\n- aq test tests/test_development_integration.py\n- aq test tests/test_development_integration.py tests/test_integration_controls.py tests/test_git_manager_async.py\n- ruff check <changed paths>",
+      "acceptance": [
+        "A conflicting sibling does not stop unrelated siblings; agile-torrent.9/wise-ember.12 depth-two/depth-three shapes still dispatch exactly one repair.",
+        "Adopted repair cycles disappear and recovery of one child does not batch unrelated work.",
+        "Ancestry adopt succeeds with sweep lock held; mid-sweep target movement cannot overwrite concurrent work."
+      ],
+      "needs": [
+        {
+          "on": "truth",
+          "dep_type": "blocks"
+        }
+      ],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md",
+          "section": "Shared contract and resolved choices"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/development.py"
+        },
+        {
+          "type": "file",
+          "path": "tests/test_development_integration.py"
+        },
+        {
+          "type": "file",
+          "path": "tests/test_integration_controls.py"
+        }
+      ],
+      "deliverables": [
+        {
+          "id": "isolate-checks-1",
+          "kind": "test",
+          "target": "aq test tests/test_development_integration.py"
+        },
+        {
+          "id": "isolate-checks-2",
+          "kind": "test",
+          "target": "aq test tests/test_development_integration.py tests/test_integration_controls.py tests/test_git_manager_async.py"
+        },
+        {
+          "id": "isolate-checks-3",
+          "kind": "command",
+          "target": "ruff check <changed paths>"
+        }
+      ]
+    },
+    {
+      "key": "admission",
+      "title": "Use fresh git evidence for development readiness and claims",
+      "profile": "standard-high-codex",
+      "intelligence_class": "standard-high",
+      "priority": 100,
+      "description": "Approved implementation from noble-crest; Jack approved spec and implementation in chat on 2026-09-27. Read projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md before editing; its Shared contract and resolved choices control over the older cache wording in the spec. No new human review gate. Keep development mode. Every mutation uses CommandHandler and production git I/O uses async GitManager. Preserve bright-flare 23c6fe844 and azure-lantern 86338d77b already in main; do not duplicate or manipulate their live incident tasks. Publish your assigned branch before closing. Run focused and area checks with aq test and baseline failure comparison; no whole suite. Add selection ownership and regenerate the catalogue for any new test module or unowned source path. \n\nScope: Migrate scheduler/pool demand and claim admission from SQL development_delivery_receipt authority to shared async batch snapshots. Keep tasks.is_blocked graph/gate-only. Select structurally ready candidates, evaluate delivery dependencies outside row-lock transactions, pass a request-scoped allowed set to claim selection, and recheck task completion generation, graph inputs and target freshness before activation. Retry on movement and fail closed on unknown git; page past withheld candidates and preserve fairness and SKIP LOCKED duplicate-claim safety. Apply only in development mode; hierarchy/train behavior stays intact. Migrate readiness explanation used by admission to the same evaluator. Keep transitional SQL helper available only for consumers not yet migrated; retire owns deleting it. Do not persist a replacement delivered projection. Update specs for the graph-vs-dynamic-delivery distinction.\n\nVerification commands:\n- aq test tests/test_claim_commands.py tests/test_blocked_state.py\n- aq test tests/test_claim_commands.py tests/test_blocked_state.py tests/test_scheduler.py tests/test_pool_reconciler.py\n- scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh\n- ruff check <changed paths>",
+      "acceptance": [
+        "Readiness, pool demand and actual claims agree with git despite absent or misleading delivery rows.",
+        "A completion reopen, graph mutation or target move invalidates old eligibility; parallel claims remain exclusive and blocked candidates do not starve ready work.",
+        "Focused/area checks and required disposable swarm smoke pass, with baseline failures reported."
+      ],
+      "needs": [
+        {
+          "on": "truth",
+          "dep_type": "blocks"
+        }
+      ],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md",
+          "section": "Shared contract and resolved choices"
+        },
+        {
+          "type": "file",
+          "path": "src/commands/claim_commands.py"
+        },
+        {
+          "type": "file",
+          "path": "src/database/queries/claim_queries.py"
+        },
+        {
+          "type": "file",
+          "path": "src/database/queries/blocked_state.py"
+        },
+        {
+          "type": "file",
+          "path": "src/orchestrator/pools.py"
+        }
+      ],
+      "deliverables": [
+        {
+          "id": "admission-checks-1",
+          "kind": "test",
+          "target": "aq test tests/test_claim_commands.py tests/test_blocked_state.py"
+        },
+        {
+          "id": "admission-checks-2",
+          "kind": "test",
+          "target": "aq test tests/test_claim_commands.py tests/test_blocked_state.py tests/test_scheduler.py tests/test_pool_reconciler.py"
+        },
+        {
+          "id": "admission-checks-3",
+          "kind": "command",
+          "target": "scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh"
+        },
+        {
+          "id": "admission-checks-4",
+          "kind": "command",
+          "target": "ruff check <changed paths>"
+        }
+      ]
+    },
+    {
+      "key": "consumers",
+      "title": "Use git truth for settlement, status and delivery safety checks",
+      "profile": "standard-high-claude",
+      "intelligence_class": "standard-high",
+      "priority": 100,
+      "description": "Approved implementation from noble-crest; Jack approved spec and implementation in chat on 2026-09-27. Read projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md before editing; its Shared contract and resolved choices control over the older cache wording in the spec. No new human review gate. Keep development mode. Every mutation uses CommandHandler and production git I/O uses async GitManager. Preserve bright-flare 23c6fe844 and azure-lantern 86338d77b already in main; do not duplicate or manipulate their live incident tasks. Publish your assigned branch before closing. Run focused and area checks with aq test and baseline failure comparison; no whole suite. Add selection ownership and regenerate the catalogue for any new test module or unowned source path. \n\nScope: Migrate non-admission receipt consumers to shared git snapshots: stale-container settlement, integration status/task blockers, doctor delivery proof, archive/removal safety, branch cleanup and legacy diagnostic readers. Inventory all development_delivery_receipt and _development_delivery_pending callers before editing. Preserve azure-lantern settlement policies, startup/backstop triggers, live-session guards, established stale-hold behavior and task.stale_container_settled audit events; change only how current child delivery is proven. Prepare git evidence outside DB transactions and revalidate graph/completion identity and target before guarded transitions. Branchless organizational parents have no independent artifact but unfinished child work still prevents settlement. Guard removal and cleanup from unknown/moved sources with the same evaluator. Do not alter claim selection or publisher assembly. Include scheduler-compatible status explanations without persisting delivery truth.\n\nVerification commands:\n- aq test tests/test_lifecycle_cleanup.py tests/test_hierarchy_settlement.py\n- aq test tests/test_lifecycle_cleanup.py tests/test_hierarchy_settlement.py tests/test_integration_controls.py tests/test_doctor_integration_checks.py tests/test_archive.py tests/test_integration_cleanup.py\n- scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh\n- ruff check <changed paths>",
+      "acceptance": [
+        "BLOCKED and PAUSED containers settle once when every required current child is delivered in git even with no receipt; undelivered child/live session/train ownership guard remains.",
+        "Status, doctor, archive and cleanup agree on wrong-repo, missing-ref, archived and reopened cases; no git-derived safety decision trusts a row.",
+        "Existing azure-lantern lifecycle coverage and required disposable hierarchy smoke pass."
+      ],
+      "needs": [
+        {
+          "on": "truth",
+          "dep_type": "blocks"
+        }
+      ],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md",
+          "section": "Shared contract and resolved choices"
+        },
+        {
+          "type": "file",
+          "path": "src/database/queries/hierarchy_queries.py"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/status.py"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/removal_guard.py"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/delivery_branches.py"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/legacy_deliveries.py"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/legacy_repositories.py"
+        }
+      ],
+      "deliverables": [
+        {
+          "id": "consumers-checks-1",
+          "kind": "test",
+          "target": "aq test tests/test_lifecycle_cleanup.py tests/test_hierarchy_settlement.py"
+        },
+        {
+          "id": "consumers-checks-2",
+          "kind": "test",
+          "target": "aq test tests/test_lifecycle_cleanup.py tests/test_hierarchy_settlement.py tests/test_integration_controls.py tests/test_doctor_integration_checks.py tests/test_archive.py tests/test_integration_cleanup.py"
+        },
+        {
+          "id": "consumers-checks-3",
+          "kind": "command",
+          "target": "scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh"
+        },
+        {
+          "id": "consumers-checks-4",
+          "kind": "command",
+          "target": "ruff check <changed paths>"
+        }
+      ]
+    },
+    {
+      "key": "operations",
+      "title": "Replace publisher receipt writes with git and operation evidence",
+      "profile": "standard-high-codex",
+      "intelligence_class": "standard-high",
+      "priority": 100,
+      "description": "Approved implementation from noble-crest; Jack approved spec and implementation in chat on 2026-09-27. Read projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md before editing; its Shared contract and resolved choices control over the older cache wording in the spec. No new human review gate. Keep development mode. Every mutation uses CommandHandler and production git I/O uses async GitManager. Preserve bright-flare 23c6fe844 and azure-lantern 86338d77b already in main; do not duplicate or manipulate their live incident tasks. Publish your assigned branch before closing. Run focused and area checks with aq test and baseline failure comparison; no whole suite. Add selection ownership and regenerate the catalogue for any new test module or unowned source path. \n\nScope: Wire git completion/replacement provenance into delivery_truth and publisher/recovery lifecycle. Migrate old exact-source and adopted repair mappings with the provenance command; unknowns stay named and safe. Remove delivery-row reads and writes from candidate selection, adoption, parked resolution, reconcile_completion_sources and publication result truth. Retain only operation intent, validation executions, repair work contracts and bounded diagnostics needed for recovery, using existing event/job/operation infrastructure where possible. An operation record may describe an attempted push, never decide that a task is delivered. Inspect git after crash/uncertain push and before next action. Do not rename the delivery table into another receipt model. Keep validation results, infrastructure deferrals, repair generation budgets, expected-head push and cleanup safety. This task migrates runtime publisher writes; retire removes schema and remaining compatibility. Add an explicit inventory/zero check for fallback generations.\n\nVerification commands:\n- aq test tests/test_development_integration.py tests/test_development_validation.py\n- aq test tests/test_development_integration.py tests/test_development_validation.py tests/test_integration_controls.py tests/test_integration_legacy_deliveries.py tests/test_integration_legacy_repositories.py\n- ruff check <changed paths>",
+      "acceptance": [
+        "Publisher works without delivery receipts for ordinary and externally merged work and recognizes exact repair replacement evidence.",
+        "Restart at prepared/publishing/post-push boundaries reconciles actual git, without duplicate repairs or silent loss of validation evidence.",
+        "Migration reports unresolved identities; fully migrated fixtures have zero legacy fallback generations and no receipt writes."
+      ],
+      "needs": [
+        {
+          "on": "provenance",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "isolate",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "stalls",
+          "dep_type": "blocks"
+        }
+      ],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md",
+          "section": "Shared contract and resolved choices"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/development.py"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/development_validation.py"
+        },
+        {
+          "type": "file",
+          "path": "src/database/tables.py"
+        },
+        {
+          "type": "file",
+          "path": "tests/test_development_integration.py"
+        }
+      ],
+      "deliverables": [
+        {
+          "id": "operations-checks-1",
+          "kind": "test",
+          "target": "aq test tests/test_development_integration.py tests/test_development_validation.py"
+        },
+        {
+          "id": "operations-checks-2",
+          "kind": "test",
+          "target": "aq test tests/test_development_integration.py tests/test_development_validation.py tests/test_integration_controls.py tests/test_integration_legacy_deliveries.py tests/test_integration_legacy_repositories.py"
+        },
+        {
+          "id": "operations-checks-3",
+          "kind": "command",
+          "target": "ruff check <changed paths>"
+        }
+      ]
+    },
+    {
+      "key": "retire",
+      "title": "Remove the legacy development delivery receipt schema and adapters",
+      "profile": "standard-high-claude",
+      "intelligence_class": "standard-high",
+      "priority": 100,
+      "description": "Approved implementation from noble-crest; Jack approved spec and implementation in chat on 2026-09-27. Read projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md before editing; its Shared contract and resolved choices control over the older cache wording in the spec. No new human review gate. Keep development mode. Every mutation uses CommandHandler and production git I/O uses async GitManager. Preserve bright-flare 23c6fe844 and azure-lantern 86338d77b already in main; do not duplicate or manipulate their live incident tasks. Publish your assigned branch before closing. Run focused and area checks with aq test and baseline failure comparison; no whole suite. Add selection ownership and regenerate the catalogue for any new test module or unowned source path. \n\nScope: After all readers/writers migrate, remove development_deliveries table/model/query authority and legacy completion locator adapters. Audit all callers/imports including cleanup, cancellation, obsolete close, legacy repositories, status/API/CLI and scheduler. Add a guarded idempotent Alembic revision; preserve genuine operation/test/repair events using the migration primitive, never discard unresolved historical provenance or recreate a receipt table under a new name. Explain retained event fields and prove none determine delivery. Define clear failure/reporting for ambiguous legacy migrations. Retire completion-head fallback after zero unlabelled open generations; no indefinite enabled fallback. Update public docs to describe git-derived delivery and preserve compatible command results or document field changes. Regenerate both clients offline if model/router changes. Do not run operator migrations; use disposable test DBs.\n\nVerification commands:\n- aq test tests/test_migration_integration_service.py tests/test_migration_integration_controls.py\n- aq test tests/test_development_integration.py tests/test_blocked_state.py tests/test_lifecycle_cleanup.py tests/test_integration_controls.py tests/test_cli_integration.py tests/test_api_client_contract.py\n- ruff check <changed paths>",
+      "acceptance": [
+        "No production eligibility path reads delivery records; schema no longer defines development_deliveries, and runtime imports contain no stale reader/writer.",
+        "Migration from representative pending/adopted/archived history preserves true events, is idempotent, and exposes unknown provenance instead of fabricating delivery.",
+        "No replacement DB receipt model; generated API clients and docs match changed contracts."
+      ],
+      "needs": [
+        {
+          "on": "admission",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "consumers",
+          "dep_type": "blocks"
+        },
+        {
+          "on": "operations",
+          "dep_type": "blocks"
+        }
+      ],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md",
+          "section": "Shared contract and resolved choices"
+        },
+        {
+          "type": "file",
+          "path": "src/database/tables.py"
+        },
+        {
+          "type": "file",
+          "path": "src/database/queries/blocked_state.py"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/obsolete_close.py"
+        },
+        {
+          "type": "file",
+          "path": "src/integration/legacy_deliveries.py"
+        },
+        {
+          "type": "file",
+          "path": "docs/guides/development-integration.md"
+        }
+      ],
+      "deliverables": [
+        {
+          "id": "retire-checks-1",
+          "kind": "test",
+          "target": "aq test tests/test_migration_integration_service.py tests/test_migration_integration_controls.py"
+        },
+        {
+          "id": "retire-checks-2",
+          "kind": "test",
+          "target": "aq test tests/test_development_integration.py tests/test_blocked_state.py tests/test_lifecycle_cleanup.py tests/test_integration_controls.py tests/test_cli_integration.py tests/test_api_client_contract.py"
+        },
+        {
+          "id": "retire-checks-3",
+          "kind": "command",
+          "target": "ruff check <changed paths>"
+        }
+      ]
+    },
+    {
+      "key": "acceptance",
+      "title": "Verify combined delivery-truth incidents and document operator checks",
+      "profile": "standard-high-opencode",
+      "intelligence_class": "standard-high",
+      "priority": 100,
+      "description": "Approved implementation from noble-crest; Jack approved spec and implementation in chat on 2026-09-27. Read projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md before editing; its Shared contract and resolved choices control over the older cache wording in the spec. No new human review gate. Keep development mode. Every mutation uses CommandHandler and production git I/O uses async GitManager. Preserve bright-flare 23c6fe844 and azure-lantern 86338d77b already in main; do not duplicate or manipulate their live incident tasks. Publish your assigned branch before closing. Run focused and area checks with aq test and baseline failure comparison; no whole suite. Add selection ownership and regenerate the catalogue for any new test module or unowned source path. \n\nScope: Test-only acceptance of the approved plan Verification contracts. Extend existing real-Git/private-PostgreSQL fixtures for the eleven-way stall, depth-two/depth-three completed-source conflict dispatch, adopted repair cycles, missing refs and archived tasks, partial/reopened completion provenance, fifth-tick escalation, concurrent adopt/publish, receipt-free admission and stale container settlement. Preserve earlier assertions; add deterministic cases only where coverage is missing. Add the operator acceptance guide with read-only commands and expected outcomes for agile-torrent.9, wise-ember.12, adopted repair diagnostics and epics. Do not touch those live tasks or restart/migrate the daemon. Run focused and combined area checks plus the disposable swarm smoke, report baseline failures exactly, and record the commit tested. This is regression verification and documentation, not another approval/review gate. If an implementation defect prevents acceptance, record exact reproduction for supervisor repair rather than weakening tests.\n\nVerification commands:\n- aq test tests/test_development_integration.py tests/test_lifecycle_cleanup.py\n- aq test tests/test_development_integration.py tests/test_development_validation.py tests/test_doctor_integration_checks.py tests/test_integration_controls.py tests/test_blocked_state.py tests/test_claim_commands.py tests/test_lifecycle_cleanup.py tests/test_hierarchy_settlement.py\n- scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh\n- ruff check <changed paths>",
+      "acceptance": [
+        "Every plan verification scenario is mapped to an existing or new deterministic regression with result evidence.",
+        "Combined migrated fixtures need no delivery receipt table and have zero legacy fallback inventory.",
+        "Operator guide distinguishes source checkpoint from actual target containment and gives concrete read-only checks; area checks and swarm smoke results recorded."
+      ],
+      "needs": [
+        {
+          "on": "retire",
+          "dep_type": "blocks"
+        }
+      ],
+      "context": [
+        {
+          "type": "spec_ref",
+          "path": "projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md",
+          "section": "Shared contract and resolved choices"
+        },
+        {
+          "type": "file",
+          "path": "tests/test_development_integration.py"
+        },
+        {
+          "type": "file",
+          "path": "tests/test_lifecycle_cleanup.py"
+        },
+        {
+          "type": "file",
+          "path": "tests/test_claim_commands.py"
+        },
+        {
+          "type": "file",
+          "path": "docs/guides/development-integration.md"
+        }
+      ],
+      "deliverables": [
+        {
+          "id": "acceptance-checks-1",
+          "kind": "test",
+          "target": "aq test tests/test_development_integration.py tests/test_lifecycle_cleanup.py"
+        },
+        {
+          "id": "acceptance-checks-2",
+          "kind": "test",
+          "target": "aq test tests/test_development_integration.py tests/test_development_validation.py tests/test_doctor_integration_checks.py tests/test_integration_controls.py tests/test_blocked_state.py tests/test_claim_commands.py tests/test_lifecycle_cleanup.py tests/test_hierarchy_settlement.py"
+        },
+        {
+          "id": "acceptance-checks-3",
+          "kind": "command",
+          "target": "scripts/e2e-env.sh --reset && scripts/e2e-smoke.sh"
+        },
+        {
+          "id": "acceptance-checks-4",
+          "kind": "command",
+          "target": "ruff check <changed paths>"
+        }
+      ]
+    }
+  ]
+}

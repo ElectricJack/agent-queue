@@ -1313,6 +1313,7 @@ class HierarchyQueryMixin:
         description: str | None = None,
         integration_authorized: bool = False,
         completed_parent_for_repair: bool = False,
+        reject_live_parent: bool = False,
     ) -> TransitionResult:
         """Move *task_id* under *parent_id* (``None`` = root).  Spec §5.
 
@@ -1325,6 +1326,10 @@ class HierarchyQueryMixin:
         only notes ids in ``flipped`` that settlement did not already
         cover.  Returns a ``TransitionResult`` (``flipped``, ``settled``,
         ``ready``).
+
+        ``reject_live_parent`` protects a reparent destination from acquiring
+        children while another worker holds it. Creation paths leave it off:
+        workers deliberately creating subtasks must retain their ownership.
         """
         task_row = (
             await conn.execute(
@@ -1366,13 +1371,15 @@ class HierarchyQueryMixin:
         if parent_id is not None:
             if parent_id == task_id:
                 raise HierarchyError("self_parent", task_id)
-            parent_row = (
-                await conn.execute(
-                    select(tasks.c.id, tasks.c.project_id, tasks.c.status).where(
-                        tasks.c.id == parent_id
-                    )
-                )
-            ).fetchone()
+            parent_stmt = select(
+                tasks.c.id, tasks.c.project_id, tasks.c.status, tasks.c.assigned_agent_id
+            ).where(tasks.c.id == parent_id)
+            if reject_live_parent:
+                # Claims lock the task before recording their holder. Wait
+                # for that transaction, then inspect its committed ownership.
+                # Do not lock sessions here: claims lock session before task.
+                parent_stmt = parent_stmt.with_for_update()
+            parent_row = (await conn.execute(parent_stmt)).fetchone()
             if parent_row is None:
                 raise HierarchyError("not_found", parent_id)
             if parent_row.project_id != task_row.project_id:
@@ -1410,6 +1417,21 @@ class HierarchyQueryMixin:
                     "depth",
                     f"parent depth {depth} + subtree height {height} > {MAX_STRUCTURAL_DEPTH}",
                 )
+            if reject_live_parent and old_parent != parent_id:
+                live_holder = (
+                    await conn.execute(
+                        select(sessions.c.id).where(
+                            sessions.c.task_id == parent_id,
+                            sessions.c.state.in_(LIVE_SESSION_STATES),
+                        ).limit(1)
+                    )
+                ).scalar_one_or_none()
+                if parent_row.assigned_agent_id is not None or live_holder is not None:
+                    raise HierarchyError(
+                        "live_parent",
+                        f"cannot reparent under '{parent_id}' while it has a live holder; "
+                        "leave the task in its current placement or use an unclaimed container",
+                    )
 
         affected = await self._collect_affected({task_id}, conn)
         if old_parent:
