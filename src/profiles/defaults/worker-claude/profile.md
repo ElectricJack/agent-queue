@@ -74,6 +74,7 @@ somehow declares none.
     "message_inbox",
     "message_reply",
     "message_send",
+    "message_wait",
     "message_status",
     "job_submit",
     "job_get",

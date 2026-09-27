@@ -702,6 +702,10 @@ from .message_send_request_pane_open_type_0 import MessageSendRequestPaneOpenTyp
 from .message_status_request import MessageStatusRequest
 from .message_status_response import MessageStatusResponse
 from .message_status_response_422 import MessageStatusResponse422
+from .message_wait_args import MessageWaitArgs
+from .message_wait_response import MessageWaitResponse
+from .message_wait_response_422 import MessageWaitResponse422
+from .message_wait_response_state import MessageWaitResponseState
 from .metrics_sample import MetricsSample
 from .metrics_series_response import MetricsSeriesResponse
 from .model_tokens import ModelTokens
@@ -2209,6 +2213,10 @@ __all__ = (
     "MessageStatusRequest",
     "MessageStatusResponse",
     "MessageStatusResponse422",
+    "MessageWaitArgs",
+    "MessageWaitResponse",
+    "MessageWaitResponse422",
+    "MessageWaitResponseState",
     "MetricsSample",
     "MetricsSeriesResponse",
     "ModelTokens",
