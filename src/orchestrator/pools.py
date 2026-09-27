@@ -31,6 +31,7 @@ import json
 import logging
 import time
 import uuid
+from collections.abc import Mapping
 
 from dataclasses import dataclass, field
 
@@ -1116,6 +1117,7 @@ class PoolsMixin:
         task_status=TaskStatus.READY,
         resume_after: float | None = None,
         task_meta: dict | None = None,
+        correlation: Mapping[str, object] | None = None,
     ) -> None:
         """Serialize teardown so late callers cannot clear a reused worker.
 
@@ -1124,12 +1126,14 @@ class PoolsMixin:
         provider-failover D13); by default it simply goes back to READY.
         """
         async with self._pool_teardown_lock(session.id):
+            event_kwargs = {"correlation": correlation} if correlation else {}
             await self._terminate_pool_session_locked(
                 session,
                 reason=reason,
                 task_status=task_status,
                 resume_after=resume_after,
                 task_meta=task_meta,
+                **event_kwargs,
             )
 
     async def _terminate_pool_session_locked(
@@ -1140,6 +1144,7 @@ class PoolsMixin:
         task_status=TaskStatus.READY,
         resume_after: float | None = None,
         task_meta: dict | None = None,
+        correlation: Mapping[str, object] | None = None,
     ) -> None:
         """Stop the process before making its durable worker or workspace reusable.
 
@@ -1255,6 +1260,7 @@ class PoolsMixin:
         await self.bus.emit(
             "pool.session_drained",
             {
+                **(correlation or {}),
                 "project_id": session.project_id,
                 "profile_id": session.profile_id,
                 "session_id": session.id,
