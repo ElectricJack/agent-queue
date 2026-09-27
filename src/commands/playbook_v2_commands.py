@@ -909,6 +909,28 @@ class PlaybookV2CommandsMixin:
                 return exact[0]
         return matches[0] if matches else None
 
+    async def _v2_publish_activation(self) -> None:
+        """Publish an activation write to the live runtime.
+
+        Refreshing only the routing snapshot left the runtime's trigger map
+        stale, and the timer service reads that map: a playbook activated at
+        runtime on a ``timer.*`` interval nothing else used never fired until
+        the daemon restarted.  The routing snapshot is still published last,
+        through its own serialized publisher.
+        """
+        manager = getattr(getattr(self, "orchestrator", None), "playbook_manager", None)
+        if manager is None:
+            return
+        refresh = getattr(manager, "refresh", None)
+        if inspect.iscoroutinefunction(refresh):
+            try:
+                await refresh()
+            except Exception:
+                logger.warning("Could not refresh the playbook runtime", exc_info=True)
+        from src.playbooks.routing import refresh_routing_activation_snapshot
+
+        await refresh_routing_activation_snapshot(manager, self.db)
+
     async def _v2_refresh_required_status(self) -> None:
         """Publish required-playbook readiness after an activation write.
 
@@ -1594,11 +1616,7 @@ class PlaybookV2CommandsMixin:
             health="ready" if enabled else "disabled",
             reasons="[]",
         )
-        manager = getattr(getattr(self, "orchestrator", None), "playbook_manager", None)
-        if manager is not None:
-            from src.playbooks.routing import refresh_routing_activation_snapshot
-
-            await refresh_routing_activation_snapshot(manager, self.db)
+        await self._v2_publish_activation()
         refreshed, _contracts, _profiles = await self._v2_health_records()
         activation = self._v2_activation_for(refreshed, playbook_id, artifact_sha256)
         replay = await self._v2_replay_on_activation(playbook_id, activation)
@@ -1758,11 +1776,7 @@ class PlaybookV2CommandsMixin:
             health="ready" if enabled else "disabled",
             reasons="[]",
         )
-        manager = getattr(getattr(self, "orchestrator", None), "playbook_manager", None)
-        if manager is not None:
-            from src.playbooks.routing import refresh_routing_activation_snapshot
-
-            await refresh_routing_activation_snapshot(manager, self.db)
+        await self._v2_publish_activation()
         await self._v2_refresh_required_status()
         return {"success": True, "playbook_id": playbook_id, "enabled": enabled, "noop": False}
 

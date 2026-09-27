@@ -97,7 +97,10 @@ the stored rows.
 ## Failure modes and diagnostics
 
 `out_of_scope` means the caller is not the report service or an unscoped system
-playbook. `report.invalid` reports a config validation error or a non-finite
+playbook. That includes a supervisor's manual `aq playbook run --playbook-id
+morning-report`: the run executes as the supervisor session and fails on the
+`rejected` edge with the bound result `state: rejected, reason: out_of_scope`.
+The `timer.1m` dispatch runs as the service principal and is accepted. `report.invalid` reports a config validation error or a non-finite
 `now`. A collection failure does not fail the tick: the row moves to
 `failed:snapshot_unavailable` and the next tick retries it. `state: waiting` with
 `reason` `before_schedule`, `timezone_guard` or `covered` means nothing was due.
