@@ -120,6 +120,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_abort",
     "integration_develop",
     "integration_adopt",
+    "integration_migrate_provenance",
     "integration_development_sweep",
     "integration_cancel_preserving",
     "integration_retry_cleanup",

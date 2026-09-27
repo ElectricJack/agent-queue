@@ -950,6 +950,7 @@ class GitPlugin(InternalPlugin):
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
+        message = await self._task_commit_message(message, args)
         project_id = args.get("project_id", "")
         agent_id = args.get("agent_id")
         try:
@@ -1248,6 +1249,7 @@ class GitPlugin(InternalPlugin):
         checkout_path, project, err = await self._resolve(args)
         if err:
             return err
+        message = await self._task_commit_message(message, args)
         try:
             committed = await self._git.acommit_all(
                 checkout_path,
@@ -1273,6 +1275,17 @@ class GitPlugin(InternalPlugin):
         if warning:
             result["warning"] = warning
         return result
+
+    async def _task_commit_message(self, message: str, args: dict) -> str:
+        from src.integration.provenance import task_message
+
+        principal = _worker_principal()
+        session_id = principal.session_id if principal else args.get("session_id")
+        if session_id:
+            session = await self._db._db.get_session(session_id)
+            if session and session.task_id:
+                return task_message(message, session.task_id)
+        return message
 
     async def cmd_push_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
@@ -1394,9 +1407,10 @@ class GitPlugin(InternalPlugin):
 
         git = self._git
         try:
+            message = await self._task_commit_message("Add generated README.md", args)
             committed = await git.acommit_all(
                 checkout_path,
-                "Add generated README.md",
+                message,
                 event_bus=self._ctx._bus,
                 project_id=args.get("project_id") or None,
                 agent_id=args.get("agent_id"),

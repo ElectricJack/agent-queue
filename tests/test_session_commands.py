@@ -1058,6 +1058,119 @@ class TestEndToEndOnFakeProvider:
         real_orch._command_handler = handler
         return handler
 
+    async def _setup_development_git(self, db, real_orch, tmp_path, *, artifact=True):
+        from src.git.manager import GitManager
+
+        wd = await self._setup(db, tmp_path)
+        git = GitManager()
+        remote = tmp_path / "remote.git"
+        await git._arun(["init", "--bare", str(remote)], cwd=str(tmp_path))
+        await git._arun(["init", "-b", "main"], cwd=wd)
+        await git._arun(["config", "user.name", "Tester"], cwd=wd)
+        await git._arun(["config", "user.email", "test@example.com"], cwd=wd)
+        from pathlib import Path
+
+        (Path(wd) / "base").write_text("base")
+        await git.acommit_all(wd, "base")
+        await git._arun(["remote", "add", "origin", str(remote)], cwd=wd)
+        await git.apush_branch(wd, "main")
+        await git._arun(["checkout", "-b", "aq/t1"], cwd=wd)
+        base = await git.arev_parse(wd, "HEAD")
+        if artifact:
+            (Path(wd) / "one").write_text("one")
+            await git.acommit_all(wd, "one\n\nAQ-Task: t1")
+            (Path(wd) / "two").write_text("two")
+            await git.acommit_all(wd, "two\n\nAQ-Task: t1")
+        await git.apush_branch(wd, "aq/t1")
+        await db.create_repo(RepoConfig(id="repo", project_id="p1", source_type=RepoSourceType.CLONE,
+                                        url=str(remote)))
+        await db.update_project("p1", hierarchical_integration_mode="development",
+                                integration_repository_id="repo")
+        await db.update_task("t1", repo_id="repo", branch_name="aq/t1")
+        real_orch.git = git
+        return wd, git, base
+
+    async def test_development_close_binds_final_source_and_reopen_gets_new_generation(
+        self, db, real_orch, real_handler, tmp_path
+    ):
+        from pathlib import Path
+        from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+        wd, git, _base = await self._setup_development_git(db, real_orch, tmp_path)
+        args = {"task_id": "t1", "outcome": "pass", "summary": "all changes"}
+        final = await git.arev_parse(wd, "HEAD")
+        close = await real_handler.execute("task_close", args)
+        assert close["success"] and close["status"] == "COMPLETED"
+        first = await db.get_task_completion("t1")
+        assert first.commits == [final]
+        repo = await db.get_repo("repo")
+        store = GitProvenance(git, wd, repository_url=repo.url)
+        identity = CompletionIdentity("p1", "repo", "t1", first.id)
+        assert (await store.read_completion(identity))["source_oid"] == final
+        repeated = await real_handler.execute("task_close", args)
+        assert not repeated["success"]
+        assert len(await db.get_task_completions("t1")) == 1
+        await db.transition_task("t1", TaskStatus.IN_PROGRESS, assigned_agent_id="a1")
+        await db.update_workspace("ws1", locked_by_task_id="t1", locked_by_agent_id="a1")
+        (Path(wd) / "three").write_text("three")
+        await git.acommit_all(wd, "reopened work\n\nAQ-Task: t1")
+        await git.apush_branch(wd, "aq/t1")
+        close = await real_handler.execute("task_close", args)
+        assert close["success"]
+        second = await db.get_task_completion("t1")
+        assert second.id != first.id and second.commits != first.commits
+        assert not await store.contained(CompletedSource(
+            CompletionIdentity("p1", "repo", "t1", second.id), second.commits[0]), final)
+
+    @pytest.mark.parametrize("failure", ["old_commit", "unpublished_provenance", "moved_source", "branchless_artifact"])
+    async def test_development_provenance_refusal_retains_claim_and_completion_history(
+        self, db, real_orch, real_handler, tmp_path, monkeypatch, failure
+    ):
+        from src.git.manager import GitError
+        from src.integration.provenance import GitProvenance
+
+        wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
+        session = await _make_session(db, real_orch.session_providers.create("fake"))
+        args = {"task_id": "t1", "session_id": session.id, "outcome": "pass", "summary": "work"}
+        if failure == "old_commit":
+            args["commit"] = base
+        elif failure == "branchless_artifact":
+            await db.update_task("t1", branch_name=None)
+            args["commit"] = await git.arev_parse(wd, "HEAD")
+        elif failure == "unpublished_provenance":
+            async def failed(*args, **kwargs):
+                raise GitError("provenance publication failed")
+            monkeypatch.setattr(GitProvenance, "write_completion", failed)
+        else:
+            original = GitProvenance.write_completion
+            async def moved(store, *args, **kwargs):
+                result = await original(store, *args, **kwargs)
+                await git._arun(["commit", "--allow-empty", "-m", "racing commit"], cwd=wd)
+                await git.apush_branch(wd, "aq/t1")
+                return result
+            monkeypatch.setattr(GitProvenance, "write_completion", moved)
+        close = await real_handler.execute("task_close", args)
+        assert close["result"] == "verification_failed"
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+        assert await db.get_task_completion("t1") is None
+
+    async def test_development_code_free_close_keeps_exact_generation_without_false_artifact(
+        self, db, real_orch, real_handler, tmp_path
+    ):
+        from src.integration.provenance import CompletionIdentity, GitProvenance
+
+        wd, git, base = await self._setup_development_git(db, real_orch, tmp_path, artifact=False)
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "work_outcome": "no-op", "summary": "no changes",
+        })
+        assert close["success"]
+        completion = await db.get_task_completion("t1")
+        repo = await db.get_repo("repo")
+        record = await GitProvenance(git, wd, repository_url=repo.url).read_completion(
+            CompletionIdentity("p1", "repo", "t1", completion.id))
+        assert record["source_oid"] == base and record["artifact"] is False
+
     async def _setup(self, db, tmp_path, *, ready=False):
         """Profile + agent + task + a locked workspace row.
 
