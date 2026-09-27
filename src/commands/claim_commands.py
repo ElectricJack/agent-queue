@@ -45,7 +45,7 @@ _ADMISSION_EVENTS = (
     "constraint.released",
     "snapshot.refreshed",
 ) + _POOL_EVENTS
-_FRONTIER_EVENTS = ("task.ready", "gate.resolved", "task.restarted") + _POOL_EVENTS
+_FRONTIER_EVENTS = ("task.ready", "gate.resolved", "task.restarted", "task.completed") + _POOL_EVENTS
 
 
 def _task_block(task) -> dict:
@@ -370,7 +370,14 @@ class ClaimCommandsMixin:
                     ):
                         await asyncio.sleep(0)
                         continue
-                    if await waiter.wait(remaining) is None:
+                    # Git can move without a daemon event (an external merge).
+                    # Development long polls refresh at a bounded interval.
+                    interval = min(remaining, 5.0) if (
+                        project.hierarchical_integration_mode == "development"
+                    ) else remaining
+                    if await waiter.wait(interval) is None and (
+                        project.hierarchical_integration_mode != "development"
+                    ):
                         return outcome
                     continue
                 if result == ClaimResult.CLAIM_IN_PROGRESS.value and wait:
@@ -474,7 +481,19 @@ class ClaimCommandsMixin:
             return default_profile
         return resolved if isinstance(resolved, str) and resolved else default_profile
 
-    async def _attempt_claim(
+    async def _attempt_claim(self, session, want_id, cap, project, *, routing=None, repaired=False):
+        # A moved admission retries from new git/graph inputs, with a bounded
+        # request budget so a continuously moving target cannot monopolize it.
+        for _ in range(3):
+            project = await self.db.get_project(session.project_id)
+            outcome = await self._attempt_claim_once(
+                session, want_id, cap, project, routing=routing, repaired=repaired
+            )
+            if outcome.get("reason") != "delivery_snapshot_changed":
+                return outcome
+        return self._simple(ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", session, cap)
+
+    async def _attempt_claim_once(
         self, session, want_id, cap, project, *, routing=None, repaired=False
     ) -> dict:
         """Decide the outcome on one ``immediate()`` transaction, on *conn* only.
@@ -504,6 +523,11 @@ class ClaimCommandsMixin:
         # on its mode, so a mode edit landing inside a long ``--wait`` window
         # is never acted on from here.
         hierarchy_mode = ProjectIntegrationMode.of(project)
+        admission = None
+        if getattr(project, "hierarchical_integration_mode", None) == "development":
+            from src.integration.admission import observe_admission, structural_candidates
+            ids = [want_id] if want_id else await structural_candidates(self.db, project.id)
+            admission = await observe_admission(self.db, ids, self._development_integration())
         # What to do once the transaction has committed — set inside the
         # block, acted on outside it.
         active_claim: tuple | None = None  # (task, epoch, row) — already active
@@ -574,6 +598,11 @@ class ClaimCommandsMixin:
             elif kind != "slot":
                 return self._simple(ClaimResult.OUT_OF_SCOPE, kind, row, cap)
             else:
+                if admission is not None and admission.changed and not admission.allowed:
+                    await self.db.release_claim_slot(conn, session.id)
+                    return self._simple(
+                        ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", row, cap
+                    )
                 tid = await self.db.select_ready_for_profile(
                     conn,
                     project_id=session.project_id,
@@ -586,8 +615,16 @@ class ClaimCommandsMixin:
                     intelligence_class=routing[0] if routing else None,
                     llm_provider=routing[1] if routing else None,
                     options_hash=routing[2] if routing else None,
+                    allowed_task_ids=admission.allowed if admission is not None else None,
                 )
                 task = None
+                if tid is not None and admission is not None and not await admission.matches(
+                    conn=conn, lock=True, task_id=tid
+                ):
+                    await self.db.release_claim_slot(conn, session.id)
+                    return self._simple(
+                        ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", row, cap
+                    )
                 if tid is not None:
                     task = await self.db.take_task(conn, tid, agent_id=row.agent_id, now=now)
                 if task is None:
@@ -624,6 +661,14 @@ class ClaimCommandsMixin:
             return await self._claimed_response(task, epoch, row, cap)
         if new_claim is not None:
             row, task, slot = new_claim
+            if admission is not None and task.id not in admission.candidate_ids:
+                # A resumed preparation is already IN_PROGRESS, so it is not
+                # in the READY frontier. Observe this held generation directly
+                # and retain its existing claim fence when it is still usable.
+                from src.integration.admission import observe_admission
+                admission = await observe_admission(
+                    self.db, [task.id], self._development_integration()
+                )
             # A concurrent ``claim_in_progress`` caller (``_await_attempt``)
             # can await this instead of polling once the row settles.
             key = (session.id, task.claim_epoch)
@@ -632,7 +677,9 @@ class ClaimCommandsMixin:
             preparation = asyncio.current_task()
             self.orchestrator.claim_preparations[preparation_key] = preparation
             try:
-                return await self._prepare_and_activate(session, row, task, cap, slot=slot)
+                return await self._prepare_and_activate(
+                    session, row, task, cap, slot=slot, admission=admission
+                )
             finally:
                 if self.orchestrator.claim_preparations.get(preparation_key) is preparation:
                     self.orchestrator.claim_preparations.pop(preparation_key, None)
@@ -749,7 +796,9 @@ class ClaimCommandsMixin:
             fresh, want_id, cap, project, routing=routing, repaired=True
         )
 
-    async def _prepare_and_activate(self, session, row, task, cap=None, *, slot=None) -> dict:
+    async def _prepare_and_activate(
+        self, session, row, task, cap=None, *, slot=None, admission=None
+    ) -> dict:
         async with self.orchestrator._task_control_lock(task.id):
             # The fence read and the project re-read run back to back with
             # nothing awaited between them, so they share one checkout.  The
@@ -771,11 +820,11 @@ class ClaimCommandsMixin:
                     ClaimResult.PREPARE_FAILED, "claim changed before preparation", row, cap
                 )
             return await self._prepare_and_activate_locked(
-                session, row, task, cap, slot=slot, project=project
+                session, row, task, cap, slot=slot, project=project, admission=admission
             )
 
     async def _prepare_and_activate_locked(
-        self, session, row, task, cap=None, *, slot=None, project=_UNSET
+        self, session, row, task, cap=None, *, slot=None, project=_UNSET, admission=None
     ) -> dict:
         """Reset the slot, write the claim file, activate.
 
@@ -798,6 +847,12 @@ class ClaimCommandsMixin:
                 raise RuntimeError("session holds no workspace slot")
             if project is _UNSET:
                 project = await self.db.get_project(task.project_id)
+            if (admission is None
+                    and getattr(project, "hierarchical_integration_mode", None) == "development"):
+                from src.integration.admission import observe_admission
+                admission = await observe_admission(
+                    self.db, [task.id], self._development_integration()
+                )
             hierarchy_enabled = getattr(project, "hierarchical_integration_mode", "disabled") in {
                 "hierarchy",
                 "train",
@@ -832,6 +887,10 @@ class ClaimCommandsMixin:
                 # named on the task row, or neither happens.  Discarding it
                 # here is what left development-mode pool tasks with a NULL
                 # ``branch_name`` and an unclosable completion pipeline.
+                if admission is not None and (
+                    task.id not in admission.allowed or not await admission.is_fresh(task.id)
+                ):
+                    return None
                 return await self.db.activate_claim(
                     session.id,
                     task.id,
@@ -845,6 +904,7 @@ class ClaimCommandsMixin:
                     # transaction rather than after it: same guards, same
                     # table, one fewer pooled checkout.
                     clear_preparation_metadata=True,
+                    admission=admission,
                 )
 
             if hierarchy_enabled:
@@ -965,6 +1025,15 @@ class ClaimCommandsMixin:
             return self._simple(ClaimResult.PREPARE_FAILED, str(exc), row, cap)
         if not fresh:
             remove_claim_file(row.work_dir)
+            if admission is not None:
+                await self.db.release_claim(
+                    session.id, task_status=TaskStatus.READY,
+                    context="delivery_snapshot_changed", now=time.time(), result="prepare_failed",
+                )
+                self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
+                return self._simple(
+                    ClaimResult.NO_READY_WORK, "delivery_snapshot_changed", row, cap
+                )
             self._resolve_claim_waiters(session.id, epoch, "prepare_failed")
             return self._simple(ClaimResult.PREPARE_FAILED, "released before activation", row, cap)
         if prepared_branch:

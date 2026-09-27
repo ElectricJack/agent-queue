@@ -1273,7 +1273,7 @@
       ]
     }
   },
-  "digest": "sha256:10cb0a51ee48857b0f3a567eef3a9e14fa0b030d4fc48d771f271ac52d08d439",
+  "digest": "sha256:b01070373e677ed99ca682487467ddefccd30312cf54f5812f28ff40bc7e280d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2868,6 +2868,8 @@
         "src.doctor.pool_checks",
         "src.event_bus",
         "src.git.manager",
+        "src.integration.admission",
+        "src.integration.development",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
@@ -4512,6 +4514,7 @@
         "src.event_bus",
         "src.git.manager",
         "src.integration",
+        "src.integration.admission",
         "src.integration.controls",
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
