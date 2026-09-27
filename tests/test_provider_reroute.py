@@ -403,6 +403,64 @@ def _handler(orch):
     return CommandHandler(orch, orch.config)
 
 
+async def test_capacity_spill_counts_as_automatic_without_blacklisting_source(orch):
+    from sqlalchemy import insert, update
+
+    from src.database.queries.task_reroute_queries import (
+        AUTOMATIC_REASON,
+        SPILL_REASON,
+        UNDO_REASON,
+    )
+    from src.database.tables import task_reroutes
+
+    await _task(orch, "spill", "standard-high-codex")
+    record = {
+        "project_id": "p-1",
+        "from_profile_id": "standard-high-codex",
+        "to_profile_id": "standard-high-claude",
+        "from_provider": "codex",
+        "to_provider": "claude",
+        "reason_code": SPILL_REASON,
+        "at": 100.0,
+    }
+    reroute_id = await orch.db.apply_task_reroute(
+        "spill",
+        expected_profile_id="standard-high-codex",
+        to_profile_id="standard-high-claude",
+        record=record,
+    )
+    assert reroute_id is not None
+    assert (await orch.db.get_task("spill")).profile_id == "standard-high-claude"
+    assert (await orch.db.list_task_reroutes(task_id="spill"))[0]["reason_code"] == SPILL_REASON
+    assert await orch.db.task_reroute_stats(["spill", "missing"]) == {
+        "spill": {"auto_count": 1, "last_auto_at": 100.0, "left_providers": set()}
+    }
+
+    # Undo keeps automatic history for cooldown/counting. Only active non-spill
+    # moves add a provider to the failover loop-prevention set.
+    async with orch.db._engine.begin() as conn:
+        await conn.execute(
+            update(task_reroutes).where(task_reroutes.c.id == reroute_id).values(undone_at=150.0)
+        )
+        for reason, source, at, undone_at in (
+            (AUTOMATIC_REASON, "claude", 200.0, None),
+            (SPILL_REASON, "codex", 300.0, None),
+            ("operator_forced", "claude", 400.0, None),
+            (AUTOMATIC_REASON, "codex", 500.0, 550.0),
+            (UNDO_REASON, "codex", 600.0, None),
+        ):
+            await conn.execute(
+                insert(task_reroutes).values(
+                    task_id="spill", project_id="p-1", reason_code=reason,
+                    from_provider=source, at=at, undone_at=undone_at,
+                )
+            )
+    assert await orch.db.task_reroute_stats(["spill", "spill"]) == {
+        "spill": {"auto_count": 4, "last_auto_at": 500.0, "left_providers": {"claude"}}
+    }
+    assert await orch.db.task_reroute_stats([]) == {}
+
+
 async def test_acceptance_codex_unavailable(orch):
     """The epic's criterion: preferred moves, pinned holds with a reason, astra
     holds, and every move is recorded and reversible."""
