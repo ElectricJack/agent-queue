@@ -31,6 +31,7 @@ from src.database.queries.assignment_route_queries import AssignmentRouteQueryMi
 from src.database.queries.blocked_state import BlockedStateMixin
 from src.database.queries.chat_queries import ChatQueryMixin
 from src.database.queries.claim_queries import ClaimQueryMixin
+from src.database.queries.collaboration_queries import CollaborationQueriesMixin
 from src.database.queries.conversation_queries import ConversationQueriesMixin
 from src.database.queries.dashboard_state_queries import DashboardStateQueriesMixin
 from src.database.queries.dependency_queries import DependencyQueryMixin
@@ -113,6 +114,7 @@ class PostgreSQLDatabaseAdapter(
     AgentQueryMixin,
     AgentQuestionQueriesMixin,
     AgentWaitQueriesMixin,
+    CollaborationQueriesMixin,
     WorkspaceQueryMixin,
     WorkspaceKindQueryMixin,
     TaskRequirementsQueryMixin,
