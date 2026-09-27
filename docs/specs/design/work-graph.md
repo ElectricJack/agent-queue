@@ -90,6 +90,24 @@ Cross-project dependencies are **allowed, explicitly** (todo §3b, decision 9). 
 
 It is *graph* blockedness only. Transient capacity reasons — no idle agent, workspace locked, budget, cooldown — are **not** persisted; they change per-tick and belong to explain (§9), not the row.
 
+Development delivery is a separate dynamic admission condition. In development
+mode, completed `blocks` prerequisites and completed children consumed by
+`waits-for` must be contained in the configured repository target, or have no
+artifact. `src/integration/admission.py` gathers these identities in a batch and
+uses `delivery_truth` to fetch and inspect git outside row-lock transactions.
+Readiness, scheduler supply, pool demand, claim selection and explain share that
+request-scoped answer. Unknown git evidence withholds work; absent or misleading
+SQL delivery rows never establish containment. Branchless organizational tasks
+have no own artifact; a missing worker ref is unknown.
+
+Claim selection receives an ephemeral allowed set and retains priority, age,
+affinity and `SKIP LOCKED` exclusivity. Keyset paging continues past withheld
+candidates. Activation rechecks prerequisite completion generation, dependency
+and gate inputs, integration configuration and target freshness after workspace
+preparation. Movement retries admission without persisting a delivery projection.
+The receipt-based SQL helper exists temporarily only for consumers still awaiting
+migration; it is not part of `tasks.is_blocked` or development admission.
+
 ### 4.2 Recompute triggers
 
 Recomputed **in the same transaction** as the mutation, Beads-style (`issueops/blocked_state.py` semantics):
@@ -390,7 +408,7 @@ A phase may sit at the project root or nest one level under an epic (the existin
 
 **Declared in the graph grammar.** An `aq-graph` document may declare top-level `phases: [{key, title, label?}]` — document order is phase order 1..N — and each node may name one with `phase: <key>`; a node that names none stays a direct child of the container. `create_task_graph` / `formula_cook` then create the epic, the phase containers (`<epic>.<i>`), their work (`<epic>.<i>.<j>`, unphased nodes numbered after the phases as `<epic>.<k>`), the container flags, the `phase` metadata, the inter-phase `blocks` edges and every node's subtasks inside `write_plan`'s **one** transaction — where `phase_create` needs three transactions plus one per gate edge, between which a phase exists first unflagged and then ungated. The ordering inside that transaction is load-bearing: phase rows are linked to the epic, then node rows to their phase, and only then are the `blocks` edges written, because `set_parent_bulk` asserts freshly inserted childless leaves with no blocking out-edges; `mark_container` plus the `phase` metadata run for **every** phase including a childless one, and `recompute_blocked` covers the phases as well as the nodes. Findings: errors `duplicate_phase_key`, `unknown_phase` and `inverted_phase_edge`; warnings `phase_without_nodes` and `redundant_phase_edge`. Both cross-phase rules read gating edges only (`blocks`/`waits-for`/`conditional-blocks`/`parent-child`); a `related` or `discovered-from` edge schedules nothing and is reported as neither. **Backward, per edge:** a need onto an *earlier* phase is `redundant_phase_edge`, a warning — the phase gate already orders them. **Within one phase:** nothing, that is ordinary intra-stage ordering. **Forward, transitively:** a gating path from a phased node that reaches a phased node in a *later* phase — directly or through any number of **unphased** intermediates — is `inverted_phase_edge`. It must be transitive: an unphased node is a direct child of the epic, so no phase withholds it through the `parent-child` rule, but it is still gated by its own edges, so `phase1.A needs U needs phase2.B` deadlocks exactly as the direct edge does (B is withheld under DEFINED phase 2, so U never satisfies, so A never completes, so phase 1 never settles). The loop runs through the phase containers, which are not edges in the document, so neither the document's own cycle check nor a per-edge test can see it. Propagation stops at a phased intermediate, which answers for its own outgoing edge. **Every** gating type is an error, `waits-for` included: `_waits_for_unsat` is vacuously satisfied only while the target has no `parent-child` children, and a document *can* give a node children — `needs: [{on: X, dep_type: parent-child}]` is legal and the creator writes it — so an in-document `waits-for` into a later phase deadlocks for real; ranking it below the hard types also let a farther soft reach mask a nearer hard one, since one finding is emitted per node. The traversal is iterative (Kahn over the reversed gating edges, linear, and safe on the thousands-of-nodes chain the 2,000,000-character document cap permits); a node inside a gating cycle keeps only what its settled targets gave it, which is harmless because the cycle check already errors. A long route is folded in the reported detail. A document that declares phases must be created at the project root (`graph.phases_need_root` when combined with `parent_id`): epic → phase → task already spends the whole `MAX_STRUCTURAL_DEPTH` budget. Spec: `docs/superpowers/specs/2026-09-20-planning-emits-phases-and-subtasks-design.md` §7.3.
 
-**Refused in `hierarchy`/`train`.** One check (`phase_mode_refusal`, `src/database/queries/hierarchy_queries.py`) and one code, `hierarchy.phases_unsupported_mode`, behind both doors — `phase_create` and a graph declaring `phases:`. In those modes a phase container owns a branch and its children deliver *to it*, so phase *N+1* can open on a base that lacks phase *N*'s work and one FAILED child strands the whole stage's delivery: the hazard `hierarchy.parent_key_unsupported_mode` (§13d) already bars for standing parents. `disabled`, `observe` and `development` are unaffected — a container there is a plain task row with no branch, and in `development` an inter-phase gate releases on COMPLETED alone precisely because `_development_delivery_pending` requires a `branch_name` the container does not have.
+**Refused in `hierarchy`/`train`.** One check (`phase_mode_refusal`, `src/database/queries/hierarchy_queries.py`) and one code, `hierarchy.phases_unsupported_mode`, behind both doors — `phase_create` and a graph declaring `phases:`. In those modes a phase container owns a branch and its children deliver *to it*, so phase *N+1* can open on a base that lacks phase *N*'s work and one FAILED child strands the whole stage's delivery: the hazard `hierarchy.parent_key_unsupported_mode` (§13d) already bars for standing parents. `disabled`, `observe` and `development` are unaffected — a container there is a plain task row with no branch, and in `development` an inter-phase graph gate releases on COMPLETED. Dynamic admission treats a branchless organizational container as having no own artifact.
 
 **Empty missing sources in development (2026-09-26).** Historical completed containers
 and ordinary tasks can retain a branch name that was never published to origin. After
@@ -400,8 +418,9 @@ with no completion record), and no delivery journal manifest names the task. Bra
 identities, including canonical integration checkpoints, remain intact. The observation
 is kept in `task_metadata.development_empty_source`, bound to the repository, branch,
 task update timestamp and latest completion id; reopening, editing the task or recording
-another completion invalidates it. Both readiness and candidate collection treat the
-observed revision as branchless. The stale `development_publisher_skip` is removed.
+another completion invalidates it. Legacy candidate collection treats the observed revision as branchless. Fresh
+admission uses `delivery_truth` and does not infer no artifact from an absent
+worker ref or a stored observation. The stale `development_publisher_skip` is removed.
 Retirement and dependent blocked-state recomputation commit together, before the batch
 orders dependencies.
 The task stays COMPLETED, requires no synthetic delivery receipt, and no longer keeps an

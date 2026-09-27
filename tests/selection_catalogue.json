@@ -1274,7 +1274,7 @@
       ]
     }
   },
-  "digest": "sha256:fda90aed089e44b9849aa0e5a2ddda151111dc95ba374becd7d6a1a62e18e9d7",
+  "digest": "sha256:ab9e5336213ce991c019f2fb7d5acb54060d76ac227d2b6631620b5c8befc471",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2869,6 +2869,8 @@
         "src.doctor.pool_checks",
         "src.event_bus",
         "src.git.manager",
+        "src.integration.admission",
+        "src.integration.development",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
@@ -4503,7 +4505,6 @@
         "src.commands.principal",
         "src.config",
         "src.database",
-        "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.doctor.git_checks",
@@ -4513,6 +4514,7 @@
         "src.event_bus",
         "src.git.manager",
         "src.integration",
+        "src.integration.admission",
         "src.integration.controls",
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
@@ -4520,6 +4522,8 @@
         "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
+        "src.integration.provenance",
+        "src.integration.provenance_migration",
         "src.integration.status",
         "src.jobs.adapters",
         "src.jobs.policy",
