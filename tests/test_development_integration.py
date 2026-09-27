@@ -600,36 +600,46 @@ async def test_non_default_receipt_releases_deleted_dependency_ref(setup, receip
 
 
 async def test_recover_child_isolated_from_conflicting_sibling(setup):
+    """Neither a sibling's conflict nor an unresolvable parent holds a clean child.
+
+    The sibling conflicts with the target itself, so no sibling pair is named,
+    and recovering the delivered child is a repeatable, scoped proof.
+    """
     db, service, _source, remote, _repo = setup
     await feature(setup, "main-change", filename="base.txt", content="on main\n")
     await service.sweep("p")
+    base = git(remote, "rev-parse", "main")
     await db.create_task(Task(
         id="epic", project_id="p", title="epic", description="", status=TaskStatus.PAUSED,
-        branch_name="epic-source",
+        branch_name="epic-source",  # never pushed: the ancestor cannot be resolved
     ))
-    await feature(setup, "conflict", filename="base.txt", content="conflicts\n")
+    conflict = await feature(setup, "conflict", filename="base.txt", content="conflicts\n")
     clean = await feature(setup, "clean")
     async with db.immediate() as conn:
         await db.set_parent("conflict", "epic", conn=conn)
         await db.set_parent("clean", "epic", conn=conn)
 
-    assert (await service.sweep("p"))["outcome"] == "idle"
-    assert (await db.get_task_meta("clean", PUBLISHER_SKIP_KEY))["reason"] == (
-        "parent_unavailable"
-    )
-
-    result = await service.recover_child("p", "clean")
+    result = await service.sweep("p")
 
     assert result["outcome"] == "delivered"
-    assert result["source_sha"] == clean
-    assert result["sibling_conflicts"] == ["conflict"]
+    assert [member["task_id"] for member in result["manifest"]] == ["clean"]
     assert git(remote, "merge-base", "--is-ancestor", clean, "main") == ""
     assert await db.get_task_meta("clean", PUBLISHER_SKIP_KEY) is None
-    assert any(
-        row["state"] == "parked" and any(
-            member["task_id"] == "conflict" for member in row["manifest"]
-        ) for row in await service.rows("p")
+    parked = next(
+        row for row in await service.rows("p") if row["state"] == "parked"
+        and [member["task_id"] for member in row["manifest"]] == ["conflict"]
     )
+    evidence = parked["evidence"]
+    assert (evidence["conflict_with"], evidence["conflicting_members"]) == ("target", [])
+    assert (evidence["source_sha"], evidence["target_sha"]) == (conflict, base)
+    assert evidence["target_ref"] == "refs/heads/main"
+    assert evidence["conflicting_files"] == ["base.txt"]
+
+    for _attempt in range(2):
+        recovered = await service.recover_child("p", "clean")
+        assert recovered["outcome"] == "idle"
+        assert recovered["source_sha"] == clean
+        assert recovered["sibling_conflicts"] == []
 
 
 async def test_branchless_parent_does_not_skip_clean_child_after_sibling_conflict(setup):
@@ -1424,6 +1434,289 @@ async def test_conflicting_member_does_not_block_independent_work(setup):
     )
 
 
+async def test_sibling_conflict_names_only_the_proven_pair(setup):
+    """Two siblings that edit one file park one of them, naming the other.
+
+    A sibling merged earlier that touched no conflicting path is not blamed,
+    and unrelated siblings publish in the same batch.
+    """
+    db, service, _source, _remote, _repo = setup
+    await db.create_task(
+        Task(id="epic", project_id="p", title="epic", description="", status=TaskStatus.PAUSED)
+    )
+    shas = {
+        "first": await feature(setup, "first", filename="shared.txt", content="first\n"),
+        "toucher": await feature(setup, "toucher", filename="other.txt"),
+        "second": await feature(setup, "second", filename="shared.txt", content="second\n"),
+        "unrelated": await feature(setup, "unrelated"),
+    }
+    async with db.immediate() as conn:
+        for task_id in shas:
+            await db.set_parent(task_id, "epic", conn=conn)
+
+    result = await service.sweep("p")
+
+    assert result["outcome"] == "delivered"
+    [parked] = [row for row in await service.rows("p") if row["state"] == "parked"]
+    [loser] = [member["task_id"] for member in parked["manifest"]]
+    winner = ({"first", "second"} - {loser}).pop()
+    assert {m["task_id"] for m in result["manifest"]} == {winner, "toucher", "unrelated"}
+    evidence = parked["evidence"]
+    assert evidence["conflict_with"] == "members"
+    assert evidence["conflicting_members"] == [
+        {"task_id": winner, "source_sha": shas[winner], "paths": ["shared.txt"]}
+    ]
+    assert (evidence["source_sha"], evidence["conflicting_files"]) == (
+        shas[loser], ["shared.txt"]
+    )
+    repair = await db.get_task(service._repair_identity(parked["manifest"]))
+    assert f"- {winner} ({shas[winner]}): shared.txt" in repair.description
+    dossier = await db.get_task_meta(repair.id, "development_repair_evidence")
+    assert dossier["conflict_with"] == "members"
+    assert (await service.recover_child("p", winner))["sibling_conflicts"] == [loser]
+
+
+@pytest.mark.parametrize("source_depth", [2, 3])
+async def test_conflicted_child_at_depth_spares_its_clean_sibling_with_one_repair(
+    setup, source_depth,
+):
+    """agile-torrent.9 / wise-ember.12 shapes, now with a clean sibling beside them."""
+    db, service, source, remote, _repo = setup
+    parents = ["epic", "epic.1"][:source_depth - 1]
+    for parent_id in parents:
+        # Paused so that completing both children does not settle the parent.
+        await db.create_task(Task(
+            id=parent_id, project_id="p", title=parent_id, description="",
+            status=TaskStatus.PAUSED,
+        ))
+    original = await feature(setup, "conflicted-child", filename="base.txt", content="child\n")
+    clean = await feature(setup, "clean-child")
+    async with db.immediate() as conn:
+        if len(parents) > 1:
+            await db.set_parent(parents[1], parents[0], conn=conn)
+        for child_id in ("conflicted-child", "clean-child"):
+            await db.set_parent(child_id, parents[-1], conn=conn)
+    await db.save_task_completion(TaskCompletion(
+        id="child-close", task_id="conflicted-child", outcome="pass",
+        commits=[original], completed_at=time.time(),
+    ))
+    git(source, "checkout", "main")
+    (source / "base.txt").write_text("main\n")
+    git(source, "commit", "-am", "advance target with conflicting change")
+    git(source, "push", "origin", "main")
+
+    result = await service.sweep("p")
+
+    assert result["outcome"] == "delivered"
+    assert [member["task_id"] for member in result["manifest"]] == ["clean-child"]
+    assert git(remote, "merge-base", "--is-ancestor", clean, "main") == ""
+    for _tick in range(2):
+        await service.sweep("p")
+    parked = next(row for row in await service.rows("p") if row["state"] == "parked")
+    assert parked["evidence"]["conflict_with"] == "target"
+    async with db._engine.connect() as conn:
+        repairs = (await conn.execute(select(tasks.c.id).where(
+            tasks.c.id.like("development-repair-%")
+        ))).scalars().all()
+    assert repairs == [service._repair_identity(parked["manifest"])]
+    repair = await db.get_task(repairs[0])
+    assert repair.parent_task_id == ("conflicted-child" if source_depth == 2 else None)
+    assert "Conflicts with the target itself: refs/heads/main" in repair.description
+
+
+async def _merge_on_main(source, *branches):
+    git(source, "checkout", "main")
+    git(source, "pull", "--ff-only", "origin", "main")
+    for branch in branches:
+        git(source, "merge", "--no-ff", "--no-edit", branch)
+    git(source, "push", "origin", "main")
+    return git(source, "rev-parse", "HEAD")
+
+
+async def test_ancestry_adopt_succeeds_while_a_sweep_holds_the_publisher_lock(setup):
+    db, service, source, _remote, repo = setup
+    branch_head = await feature(setup, "merged-by-hand")
+    await feature(setup, "not-merged")
+    for task_id in ("merged-by-hand", "not-merged"):
+        await db.transition_task(task_id, TaskStatus.READY, context="test")
+    store = await service.store(repo)
+    before = git(store, "for-each-ref", "refs/remotes/origin/")
+    main = await _merge_on_main(source, "merged-by-hand")
+
+    async with service.exclusion("r"):  # a sweep is running
+        with pytest.raises(DevelopmentBusy):
+            await service.sweep("p")
+        result = await service.adopt(
+            project_id="p", task_ids=["merged-by-hand"], target_ref="refs/heads/main",
+            head_sha=main, reason="merged by hand", operator_id="local",
+        )
+        # Accepting equivalence stays a separate decision under the publisher lock.
+        with pytest.raises(DevelopmentBusy):
+            await service.adopt(
+                project_id="p", task_ids=["not-merged"], target_ref="refs/heads/main",
+                head_sha=main, reason="equivalent by hand", operator_id="local",
+                accept_equivalent=True,
+            )
+
+    assert result["outcome"] == "adopted"
+    assert result["manifest"] == [
+        {"task_id": "merged-by-hand", "source_sha": branch_head, "acceptance": "ancestry"}
+    ]
+    assert (await db.get_task("merged-by-hand")).status == TaskStatus.COMPLETED
+    assert (await db.get_task("not-merged")).status == TaskStatus.READY
+    # Observation happened elsewhere: the sweep's store and refs were not moved.
+    assert git(store, "for-each-ref", "refs/remotes/origin/") == before
+    assert not list(store.parent.glob("reads-*"))
+
+
+async def test_adopt_refuses_a_task_that_changed_after_its_source_was_observed(setup):
+    db, service, source, _remote, _repo = setup
+    await feature(setup, "racing")
+    await db.transition_task("racing", TaskStatus.READY, context="test")
+    main = await _merge_on_main(source, "racing")
+    observe = service._observe_adoption
+
+    async def observe_then_close(*args):
+        manifest = await observe(*args)
+        await db.save_task_completion(TaskCompletion(
+            id="racing-close", task_id="racing", outcome="pass", commits=[main],
+            completed_at=time.time(),
+        ))
+        return manifest
+
+    with (
+        patch.object(service, "_observe_adoption", observe_then_close),
+        pytest.raises(DevelopmentBusy, match="changed after its source was observed"),
+    ):
+        await service.adopt(
+            project_id="p", task_ids=["racing"], target_ref="refs/heads/main",
+            head_sha=main, reason="merged by hand", operator_id="local",
+        )
+
+    assert (await db.get_task("racing")).status == TaskStatus.READY
+    assert not any(
+        member["task_id"] == "racing" for row in await service.rows("p")
+        if row["state"] == "adopted" for member in row["manifest"]
+    )
+
+
+async def test_adopting_a_merged_repair_cycle_during_a_sweep_ends_its_skips(setup, caplog):
+    """The cycle leaves candidate evaluation once git carries it; adopt records
+    that under a held sweep lock, and unrelated work publishes next tick."""
+    import logging
+
+    db, service, source, remote, _repo = setup
+    older, newer, _older_sha, _newer_sha = await repair_cycle(setup, source_contract=False)
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert (await db.get_task_meta(older, PUBLISHER_SKIP_KEY))["reason"] == "dependency_cycle"
+    git(source, "checkout", newer)
+    git(source, "merge", "--no-edit", older)
+    git(source, "push", "origin", "HEAD:main")
+    main = git(remote, "rev-parse", "main")
+
+    async with service.exclusion("r"):
+        result = await service.adopt(
+            project_id="p", task_ids=[older, newer], target_ref="refs/heads/main",
+            head_sha=main, reason="repair cycle merged by hand", operator_id="local",
+        )
+
+    assert {member["acceptance"] for member in result["manifest"]} == {"ancestry"}
+    unrelated = await feature(setup, "unrelated")
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="src.integration.development"):
+        assert (await service.sweep("p"))["outcome"] == "delivered"
+    assert git(remote, "merge-base", "--is-ancestor", unrelated, "main") == ""
+    assert not any("cycle" in record.getMessage() for record in caplog.records)
+    assert await db.get_task_meta(older, PUBLISHER_SKIP_KEY) is None
+    assert await db.get_task_meta(newer, PUBLISHER_SKIP_KEY) is None
+
+
+def _concurrent_commit(source, name):
+    git(source, "checkout", "main")
+    git(source, "pull", "--ff-only", "origin", "main")
+    (source / name).write_text("concurrent\n")
+    git(source, "add", name)
+    git(source, "commit", "-m", name)
+    git(source, "push", "origin", "main")
+    return git(source, "rev-parse", "HEAD")
+
+
+async def _assert_reassembled_over(service, db, remote, member, concurrent):
+    assert git(remote, "merge-base", "--is-ancestor", concurrent, "main") == ""
+    assert git(remote, "merge-base", "--is-ancestor", member, "main") == ""
+    rows = [row for row in await service.rows("p") if row["target_ref"] == "refs/heads/main"]
+    [moved] = [row for row in rows if row["state"] == "cancelled"]
+    assert (moved["evidence"]["reason"], moved["evidence"]["observed_sha"]) == (
+        "base_moved", concurrent
+    )
+    assert not any(row["state"] in {"parked", "publishing"} for row in rows)
+    async with db._engine.connect() as conn:
+        assert not (await conn.execute(select(tasks.c.id).where(
+            tasks.c.id.like("development-repair-%")
+        ))).scalars().all()
+    return moved
+
+
+async def test_target_moved_before_publication_reassembles_without_overwrite(setup):
+    db, service, source, remote, _repo = setup
+    member = await feature(setup, "member")
+    validate, moves = service.validate, []
+
+    async def validate_while_someone_pushes(*args, **kwargs):
+        if not moves:
+            moves.append(_concurrent_commit(source, "concurrent.txt"))
+        return await validate(*args, **kwargs)
+
+    with patch.object(service, "validate", validate_while_someone_pushes):
+        result = await service.sweep("p")
+
+    assert result["outcome"] == "delivered"
+    await _assert_reassembled_over(service, db, remote, member, moves[0])
+
+
+async def test_refused_lease_after_a_concurrent_push_retries_without_overwrite(setup):
+    db, service, source, remote, _repo = setup
+    member = await feature(setup, "member")
+    push, moves = service.git.apush_validated_ref, []
+
+    async def push_after_someone_else(store, head, branch, **kwargs):
+        if branch == "main" and not moves:
+            moves.append(_concurrent_commit(source, "concurrent.txt"))
+        return await push(store, head, branch, **kwargs)
+
+    with patch.object(service.git, "apush_validated_ref", push_after_someone_else):
+        result = await service.sweep("p")
+
+    assert result["outcome"] == "delivered"
+    moved = await _assert_reassembled_over(service, db, remote, member, moves[0])
+    assert "expected target" in moved["evidence"]["error"]
+
+
+async def test_publishing_row_the_target_moved_past_settles_as_not_delivered(setup):
+    """A crash mid-push, then the target moved on: git says not applied."""
+    _db, service, source, remote, _repo = setup
+    stale_base = git(remote, "rev-parse", "main")
+    member = await feature(setup, "member")
+    now = time.time()
+    await service.save({
+        "id": "interrupted", "project_id": "p", "repository_id": "r",
+        "target_ref": "refs/heads/main", "expected_sha": stale_base, "prepared_sha": member,
+        "state": "publishing", "manifest": [{"task_id": "member", "source_sha": member}],
+        "evidence": {"kind": "local"}, "reason": "development batch",
+        "created_at": now, "updated_at": now,
+    })
+    concurrent = _concurrent_commit(source, "concurrent.txt")
+
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+
+    row = next(row for row in await service.rows("p") if row["id"] == "interrupted")
+    assert row["state"] == "cancelled"
+    assert (row["evidence"]["reconciled"], row["evidence"]["observed_sha"]) == (
+        "target_moved", concurrent
+    )
+    assert git(remote, "merge-base", "--is-ancestor", concurrent, "main") == ""
+    assert git(remote, "merge-base", "--is-ancestor", member, "main") == ""
+
 async def test_adopt_requires_ancestry_or_explicit_operator_equivalence(setup):
     db, service, _source, remote, _repo = setup
     await feature(setup, "one")
@@ -1582,17 +1875,19 @@ def test_focused_policy_requires_commands():
         DevelopmentPolicy().checked()
 
 
-async def test_parent_assembly_does_not_require_parent_verifier(setup):
+async def test_child_publishes_directly_without_parent_assembly_or_verifier(setup):
+    """Parent grouping is optional: the member records its parent, nothing gates on it."""
     db, service, _source, remote, _repo = setup
     await db.create_task(
         Task(id="epic", project_id="p", title="epic", description="", status=TaskStatus.PAUSED)
     )
-    await feature(setup, "child")
+    child = await feature(setup, "child")
     async with db.immediate() as conn:
         await db.set_parent("child", "epic", conn=conn)
     result = await service.sweep("p")
     assert result["outcome"] == "delivered"
-    assert "refs/heads/aq/development/parent/" in git(remote, "show-ref")
+    assert git(remote, "merge-base", "--is-ancestor", child, "main") == ""
+    assert "refs/heads/aq/development/parent/" not in git(remote, "show-ref")
     assert result["manifest"][0]["parent_task_id"] == "epic"
 
 
@@ -3149,20 +3444,33 @@ async def journal_row(service, identity):
 
 
 async def test_delivery_deletes_task_candidate_and_parent_branches(setup):
-    db, service, _source, remote, _repo = setup
+    db, service, source, remote, _repo = setup
     await db.create_task(
         Task(id="epic", project_id="p", title="epic", description="", status=TaskStatus.PAUSED)
     )
     await aq_feature(setup, "one")
-    await aq_feature(setup, "child")
+    child = await aq_feature(setup, "child")
     async with db.immediate() as conn:
         await db.set_parent("child", "epic", conn=conn)
+    # Publication no longer assembles parents; one left by an earlier
+    # publisher is still collected once everything it carries has landed.
+    legacy_parent = "aq/development/parent/0123456789abcdef/legacy"
+    git(source, "push", "origin", f"{child}:refs/heads/{legacy_parent}")
+    now = time.time()
+    await service.save({
+        "id": "legacy-parent-assembly", "project_id": "p", "repository_id": "r",
+        "target_ref": "refs/heads/" + legacy_parent, "expected_sha": None,
+        "prepared_sha": child, "state": "delivered",
+        "manifest": [{"task_id": "child", "source_sha": child, "parent_task_id": "epic"}],
+        "evidence": {"kind": "assembly", "conclusion": "not_run"},
+        "reason": "parent assembly", "created_at": now, "updated_at": now,
+    })
     result = await service.sweep("p")
     assert result["outcome"] == "delivered"
     before = remote_branches(remote)
     parents = {b for b in before if b.startswith("aq/development/parent/")}
     assert {"aq/one", "aq/child", candidate_branch(result["head_sha"])} <= before
-    assert len(parents) == 1
+    assert parents == {legacy_parent}
     armed = await journal_row(service, result["id"])
     assert armed["evidence"]["branch_cleanup"] == {"state": "pending", "attempts": 0}
 

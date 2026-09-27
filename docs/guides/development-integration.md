@@ -190,9 +190,12 @@ Two consequences worth knowing as an operator:
 
 ## When something conflicts
 
-A member that will not merge is parked with its conflict output as evidence,
-and the rest of the batch continues. A real parked row — two documentation
-tickets editing the same generated manifest:
+Every clean member merges straight into the batch; there is no per-parent
+assembly. A member that will not merge is parked with its conflict output as
+evidence, and the rest of the batch continues: its siblings, its parent and
+unrelated work are never held by it. Only a dependent that declared an edge on
+it waits. A real parked row — two documentation tickets editing the same
+generated manifest:
 
 ```text
 {
@@ -207,6 +210,14 @@ tickets editing the same generated manifest:
   "reason": "source conflict; independent work may continue"
 }
 ```
+
+Newer rows also name `source_sha`, `target_ref`, `target_sha` and the batch
+`aggregate_sha`, and say what the source conflicts with, each claim proven by a
+separate merge: `conflict_with` is `target` when it conflicts with the target
+alone (no sibling is blamed), `members` when a pair merged onto the target
+conflicts on its own (`conflicting_members` names each partner, its source and
+the paths), `batch` when only the combined batch conflicts, or `unproven`. The
+repair description repeats it.
 
 After the batch is assembled AQ looks at each parked row again:
 
@@ -312,12 +323,16 @@ Rules ([`DevelopmentIntegration.adopt`](../../src/integration/development.py)):
 
 * `--head-sha` must be **exactly** where the ref is right now, or the command
   refuses. `--target-ref` defaults to `refs/heads/main`.
-* Each task's branch must be an ancestor of that SHA. For a squashed or
-  hand-rewritten equivalent, add `--accept-equivalent` after reviewing the
-  content; the manifest then records `"acceptance": "operator_equivalent"`
-  instead of `"ancestry"`.
+* Each task's branch must be an ancestor of that SHA. This is observed in a
+  private read snapshot, so an ancestry-only adoption succeeds while a sweep is
+  running and never moves the publisher's checkout.
+* For a squashed or hand-rewritten equivalent, add `--accept-equivalent` after
+  reviewing the content; the manifest then records
+  `"acceptance": "operator_equivalent"` instead of `"ancestry"`. That decision
+  takes the publisher lock, so it is refused while a sweep runs; run it again.
 * No selected task may still have a worker or a live session, and no child of a
-  selected task may still be open.
+  selected task may still be open. A task whose status, branch, claim or
+  completions changed after its branch was observed is refused; adopt again.
 * Tasks are closed leaf-first, with a completion record whose verification
   reads *"Operator adoption; not CI attested"*. The evidence is recorded as
   `operator_accepted` — never as a CI result.
