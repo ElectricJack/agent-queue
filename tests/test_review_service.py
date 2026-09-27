@@ -612,10 +612,14 @@ async def test_withdraw_keeps_the_gate_and_flags_waiters(svc, db, hooks, tmp_pat
     await mktask(db, "impl-2")
     await attach(db, gate_id, "impl", "impl-2")
 
-    withdrawn = await svc.withdraw(review_id=review_id, reason="superseded", by=OPERATOR)
+    withdrawn = await svc.withdraw(review_id=review_id, reason=" superseded ", by=OPERATOR)
     assert withdrawn == {"review_id": review_id, "flagged_task_ids": ["impl", "impl-2"]}
 
-    assert (await db.get_review(review_id))["state"] == "withdrawn"
+    review = await db.get_review(review_id)
+    assert (review["state"], review["decided_by"], review["decision_note"]) == (
+        "withdrawn", OPERATOR, "superseded",
+    )
+    assert review["decided_at"] == review["updated_at"]
     assert (await db.get_gate(gate_id))["status"] == "open"
     assert hooks.resolved == []
     assert (await db.get_task("impl")).is_blocked is True
@@ -641,7 +645,11 @@ async def test_withdraw_from_changes_requested(svc, db):
     assert (await svc.withdraw(review_id=review_id, reason="", by=OPERATOR))[
         "flagged_task_ids"
     ] == []
-    assert (await db.get_review(review_id))["state"] == "withdrawn"
+    review = await db.get_review(review_id)
+    # A blank reason clears the earlier decision's note rather than keeping it.
+    assert (review["state"], review["decided_by"], review["decision_note"]) == (
+        "withdrawn", OPERATOR, None,
+    )
 
 
 # ── 10. comment ───────────────────────────────────────────────────────────

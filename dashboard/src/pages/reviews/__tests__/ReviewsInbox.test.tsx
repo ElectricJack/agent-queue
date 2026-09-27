@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,11 +10,14 @@ const reviewsApi = vi.hoisted(() => ({
   pullRequests: [] as Array<Record<string, unknown>>,
 }));
 
+const withdrawApi = vi.hoisted(() => ({ mutateAsync: vi.fn(), isPending: false }));
+
 vi.mock("../../../api/reviews", () => ({
   useReviews: (filters: Record<string, string | undefined>) => {
     reviewsApi.filters.push(filters);
     return { data: { reviews: reviewsApi.reviews }, isLoading: false, error: null };
   },
+  useWithdrawReview: () => withdrawApi,
 }));
 
 vi.mock("../../../api/pullRequests", () => ({
@@ -28,16 +31,22 @@ function Location() {
   return <output aria-label="Current location">{location.pathname}{location.search}</output>;
 }
 
-function renderInbox(path = "/reviews") {
-  return render(
+function inbox(path = "/reviews") {
+  return (
     <MemoryRouter initialEntries={[path]}>
       <ReviewsInbox />
       <Location />
-    </MemoryRouter>,
+    </MemoryRouter>
   );
 }
 
+function renderInbox(path = "/reviews") {
+  return render(inbox(path));
+}
+
 beforeEach(() => {
+  withdrawApi.mutateAsync.mockReset();
+  withdrawApi.mutateAsync.mockResolvedValue({ success: true, flagged_task_ids: [] });
   reviewsApi.filters = [];
   reviewsApi.pullRequests = [];
   reviewsApi.reviews = [
@@ -152,5 +161,72 @@ describe("ReviewsInbox", () => {
       kind: "plan",
       projectId: "agent-queue",
     });
+  });
+
+  it("offers Close only on open reviews", () => {
+    reviewsApi.reviews = [
+      ...reviewsApi.reviews,
+      { id: "review-changes", title: "Needs changes", kind: "spec", project_id: "p", state: "changes_requested", current_revision: 1 },
+      { id: "review-rejected", title: "Rejected once", kind: "spec", project_id: "p", state: "rejected", current_revision: 1 },
+      { id: "review-withdrawn", title: "Pulled", kind: "spec", project_id: "p", state: "withdrawn", current_revision: 1 },
+    ];
+    // An explicit state skips the waiting-for-you filter, so every mocked row renders.
+    renderInbox("/reviews?state=in_review");
+
+    for (const title of ["Architecture proposal", "Supervisor only", "Needs changes", "Rejected once"]) {
+      expect(screen.getByRole("button", { name: `Close review ${title}` })).toBeInTheDocument();
+    }
+    for (const title of ["Already approved", "Pulled"]) {
+      expect(screen.getByText(title)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: `Close review ${title}` })).not.toBeInTheDocument();
+    }
+  });
+
+  it("confirms with an optional reason, then shows the row withdrawn in place", async () => {
+    const { rerender } = renderInbox();
+    fireEvent.click(screen.getByRole("button", { name: "Close review Architecture proposal" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Close review" });
+    expect(within(dialog).getByText("Architecture proposal")).toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText("Reason"), { target: { value: "  superseded by v2 " } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close review" }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(withdrawApi.mutateAsync).toHaveBeenCalledWith({
+      review_id: "review-waiting", reason: "superseded by v2",
+    });
+    const row = screen.getByRole("link", { name: "Architecture proposal" }).closest("tr")!;
+    expect(within(row).getByText("withdrawn")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Close review Architecture proposal" }))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Close review Delegated design" })).toBeInTheDocument();
+
+    // The refetch drops it from the waiting list; the row stays where it was.
+    reviewsApi.reviews = reviewsApi.reviews.filter((review) => review.id !== "review-waiting");
+    rerender(inbox());
+    const [, first, second] = screen.getAllByRole("row");
+    expect(within(first!).getByText("Architecture proposal")).toBeInTheDocument();
+    expect(within(first!).getByText("withdrawn")).toBeInTheDocument();
+    expect(within(second!).getByText("Delegated design")).toBeInTheDocument();
+
+    // A filter change clears the kept row: withdrawn reviews live under their own filter.
+    fireEvent.change(screen.getByLabelText("Review state"), { target: { value: "withdrawn" } });
+    expect(screen.queryByText("Architecture proposal")).not.toBeInTheDocument();
+  });
+
+  it("sends an empty reason, and keeps the row open when the withdrawal fails", async () => {
+    withdrawApi.mutateAsync.mockRejectedValueOnce(new Error("API 422: review is already approved"));
+    renderInbox();
+    fireEvent.click(screen.getByRole("button", { name: "Close review Architecture proposal" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close review" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("review is already approved");
+    expect(withdrawApi.mutateAsync).toHaveBeenCalledWith({ review_id: "review-waiting", reason: "" });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const row = screen.getByRole("link", { name: "Architecture proposal" }).closest("tr")!;
+    expect(within(row).getByText("in review")).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: "Close review Architecture proposal" }))
+      .toBeInTheDocument();
   });
 });

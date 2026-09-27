@@ -1091,9 +1091,9 @@ Queries: `src/database/queries/review_queries.py`. Added by Alembic
 | `state` | TEXT | NOT NULL (`ck_doc_reviews_state`) | One of: in_review, changes_requested, approved, withdrawn |
 | `gate_id` | TEXT | nullable | The review's `review` gate; only an approval resolves it |
 | `decider` | TEXT | NOT NULL DEFAULT 'user' (`ck_doc_reviews_decider`) | One of: user, user_or_supervisor |
-| `decided_by` | TEXT | nullable | Principal label of the latest decision |
-| `decided_at` | REAL | nullable | Unix timestamp of the latest decision |
-| `decision_note` | TEXT | nullable | Note on the latest decision |
+| `decided_by` | TEXT | nullable | Principal label of the latest decision or withdrawal |
+| `decided_at` | REAL | nullable | Unix timestamp of the latest decision or withdrawal |
+| `decision_note` | TEXT | nullable | Note on the latest decision, or the withdrawal reason |
 | `notified_revision` | INTEGER | NOT NULL DEFAULT 0 | Last revision announced on Discord; the outbox is every row with `notified_revision < current_revision` |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 | `updated_at` | REAL | NOT NULL | Unix timestamp, bumped on every transition |

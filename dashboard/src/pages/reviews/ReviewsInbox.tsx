@@ -1,9 +1,13 @@
+import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
 import { useReviews } from "../../api/reviews";
 import PullRequestsSection from "./PullRequestsSection";
+import WithdrawReviewModal from "./WithdrawReviewModal";
 
-const STATES = ["in_review", "changes_requested", "approved", "withdrawn"];
+const STATES = ["in_review", "changes_requested", "rejected", "approved", "withdrawn"];
+/** States a review can still be withdrawn from (`OPEN_STATES` in src/reviews/service.py). */
+const OPEN_STATES = new Set(["in_review", "changes_requested", "rejected"]);
 const KINDS = ["spec", "plan", "other"];
 
 type InboxReview = {
@@ -38,6 +42,35 @@ function isWaitingForUser(review: InboxReview): boolean {
     && (review.decider === "user" || review.decider === "user_or_supervisor");
 }
 
+type ClosedRow = { review: InboxReview; index: number };
+type ClosedRows = { filters: string; rows: Map<string, ClosedRow> };
+
+/**
+ * Keep the rows closed on this page where they were, now withdrawn, even after
+ * the refetch drops them from an open-state list. Changing a filter clears them.
+ */
+function withClosedRows(rows: InboxReview[], closed: Map<string, ClosedRow>): InboxReview[] {
+  const merged = rows.map((row) => (
+    OPEN_STATES.has(row.state) ? closed.get(row.id)?.review ?? row : row
+  ));
+  const present = new Set(rows.map((row) => row.id));
+  [...closed.values()]
+    .filter(({ review }) => !present.has(review.id))
+    .sort((a, b) => a.index - b.index)
+    .forEach(({ review, index }) => merged.splice(Math.min(index, merged.length), 0, review));
+  return merged;
+}
+
+const STATE_TONES: Record<string, string> = {
+  approved: "bg-emerald-500/15 text-emerald-200",
+  withdrawn: "bg-gray-700/60 text-gray-300",
+};
+
+function StateBadge({ state }: { state: string }) {
+  const tone = STATE_TONES[state] ?? "bg-indigo-500/15 text-indigo-200";
+  return <span className={`rounded px-1.5 py-0.5 text-xs ${tone}`}>{state.replace(/_/g, " ")}</span>;
+}
+
 /** URL-addressable inbox for local-operator document decisions. */
 export default function ReviewsInbox() {
   const [params, setParams] = useSearchParams();
@@ -51,6 +84,9 @@ export default function ReviewsInbox() {
     ...(kind ? { kind } : {}),
     ...(projectId ? { projectId } : {}),
   });
+  const filters = `${stateParam ?? ""}|${kind}|${projectId}`;
+  const [closed, setClosed] = useState<ClosedRows>({ filters, rows: new Map() });
+  const [closing, setClosing] = useState<InboxReview | null>(null);
 
   const update = (key: "state" | "kind" | "project", value: string) => {
     const next = new URLSearchParams(params);
@@ -59,9 +95,22 @@ export default function ReviewsInbox() {
     setParams(next);
   };
 
-  const visible = ((reviews.data?.reviews ?? []) as InboxReview[]).filter(
-    (review) => !waiting || isWaitingForUser(review),
+  const visible = withClosedRows(
+    ((reviews.data?.reviews ?? []) as InboxReview[]).filter(
+      (review) => !waiting || isWaitingForUser(review),
+    ),
+    closed.filters === filters ? closed.rows : new Map<string, ClosedRow>(),
   );
+
+  const markWithdrawn = (review: InboxReview) => {
+    const index = Math.max(0, visible.findIndex((row) => row.id === review.id));
+    setClosed((current) => ({
+      filters,
+      rows: new Map<string, ClosedRow>(current.filters === filters ? current.rows : [])
+        .set(review.id, { review: { ...review, state: "withdrawn" }, index }),
+    }));
+    setClosing(null);
+  };
 
   return (
     <div className="dashboard-scrollbar h-full space-y-5 overflow-y-auto p-5">
@@ -122,18 +171,23 @@ export default function ReviewsInbox() {
 
       {visible.length > 0 && (
         <div className="overflow-x-auto rounded-lg border border-gray-800">
-          <table className="w-full min-w-[760px] text-left text-sm">
+          <table className="w-full min-w-[880px] text-left text-sm">
             <thead className="bg-gray-900 text-xs uppercase tracking-wide text-gray-500">
               <tr>
-                <th className="px-3 py-2">Title</th><th className="px-3 py-2">Kind</th>
+                <th className="px-3 py-2">Title</th><th className="px-3 py-2">State</th>
+                <th className="px-3 py-2">Kind</th>
                 <th className="px-3 py-2">Project</th><th className="px-3 py-2">Author task</th>
                 <th className="px-3 py-2">Revision</th><th className="px-3 py-2">Waiting</th>
                 <th className="px-3 py-2">Comments</th>
+                <th className="px-3 py-2"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800">
               {visible.map((review) => (
-                <tr key={review.id} className="hover:bg-gray-900/60">
+                <tr
+                  key={review.id}
+                  className={`hover:bg-gray-900/60 ${review.state === "withdrawn" ? "opacity-60" : ""}`}
+                >
                   <td className="px-3 py-2.5">
                     <Link className="font-medium text-indigo-300 hover:underline" to={`/reviews/${encodeURIComponent(review.id)}`}>
                       {review.title}
@@ -142,17 +196,38 @@ export default function ReviewsInbox() {
                       <span className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-200">delegated</span>
                     )}
                   </td>
+                  <td className="px-3 py-2.5"><StateBadge state={review.state} /></td>
                   <td className="px-3 py-2.5 text-gray-300">{review.kind}</td>
                   <td className="px-3 py-2.5 font-mono text-xs text-gray-400">{review.project_id}</td>
                   <td className="px-3 py-2.5 font-mono text-xs text-gray-400">{review.author_task_id ?? "—"}</td>
                   <td className="px-3 py-2.5 text-gray-300">rev {review.current_revision}</td>
                   <td className="px-3 py-2.5 text-xs text-gray-400">{waitingTime(review)}</td>
                   <td className="px-3 py-2.5 text-gray-300">{openComments(review)}</td>
+                  <td className="px-3 py-2.5 text-right">
+                    {OPEN_STATES.has(review.state) && (
+                      <button
+                        type="button"
+                        aria-label={`Close review ${review.title}`}
+                        onClick={() => setClosing(review)}
+                        className="rounded border border-gray-700 px-2 py-1 text-xs text-gray-300 hover:border-red-500/60 hover:text-red-200"
+                      >
+                        Close
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+
+      {closing && (
+        <WithdrawReviewModal
+          review={closing}
+          onClose={() => setClosing(null)}
+          onWithdrawn={() => markWithdrawn(closing)}
+        />
       )}
     </div>
   );
