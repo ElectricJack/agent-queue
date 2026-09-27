@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 440,
+    "leaf_commands": 441,
     "registration": {
-      "generated": 285,
+      "generated": 286,
       "handwritten": 155
     },
     "ownership": {
-      "core": 401,
+      "core": 402,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 439
+      "supported": 440
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 285,
+      "dispatch": 286,
       "registration": 141
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 380
+      "untested": 381
     }
   },
   "commands": [
@@ -7973,6 +7973,49 @@
           "--api-url"
         ],
         "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq provider allocation-preview",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "provider_allocation_preview",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--provider"
+        ],
+        "optional": [
+          "--profile-ids",
+          "--participation",
+          "--bounds",
+          "--receive-new-work",
+          "--drain",
+          "--allow-pinned-wait",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--profile-ids",
+          "--bounds",
+          "--receive-new-work"
+        ],
         "nullable": []
       }
     },

@@ -4,12 +4,13 @@
 (``GET /api/providers/availability``, ``POST /api/providers/{provider}/state``,
 ``POST /api/providers/{provider}/recheck``, ``POST /api/providers/reroute`` and
 ``POST /api/providers/reroute/undo``, provider-failover D20) and the provider
-allocation read (``GET /api/providers/allocation``) hold no logic of their own:
-each runs the ``provider_status`` / ``provider_set_state`` /
-``provider_recheck`` / ``provider_reroute`` / ``provider_reroute_undo`` /
-``provider_allocation_status`` command through the CommandHandler under the request's
-scope, exactly as a generated command route does, so the CLI, the typed API
-and these paths can never disagree.  The dashboard joins the two families on
+allocation routes (``GET /api/providers/allocation``, ``POST
+/api/providers/allocation/preview``) hold no logic of their own: each runs the
+``provider_status`` / ``provider_set_state`` / ``provider_recheck`` /
+``provider_reroute`` / ``provider_reroute_undo`` / ``provider_allocation_status``
+/ ``provider_allocation_preview`` command through the CommandHandler under the
+request's scope, exactly as a generated command route does, so the CLI, the
+typed API and these paths can never disagree.  The dashboard joins the two families on
 the provider key.
 
 ``/usage`` is the read side of the provider-usage feature: the writers (the Codex
@@ -37,6 +38,8 @@ from fastapi.responses import JSONResponse
 
 from src.api.auth import LOCAL_SCOPE, RequestScope
 from src.api.models.provider import (
+    ProviderAllocationPreviewBody,
+    ProviderAllocationPreviewResponse,
     ProviderAllocationStatusResponse,
     ProviderRecheckResponse,
     ProviderRerouteBody,
@@ -237,6 +240,24 @@ def _add_availability_routes(router: APIRouter, resolve) -> None:
         if provider:
             args["provider"] = provider
         return await _run_command(handler, db, "provider_allocation_status", args, request)
+
+    @router.post(
+        "/api/providers/allocation/preview",
+        response_model=ProviderAllocationPreviewResponse,
+        responses={
+            400: {"description": "invalid request"},
+            403: {"description": "out of scope"},
+            404: {"description": "unknown provider"},
+        },
+    )
+    async def post_provider_allocation_preview(
+        body: ProviderAllocationPreviewBody, request: Request
+    ):
+        db, handler = resolve()
+        # ``exclude_unset`` keeps an explicit ``bounds.max: null`` (an unbounded
+        # pool) distinct from an omitted bound.
+        args = body.model_dump(exclude_unset=True)
+        return await _run_command(handler, db, "provider_allocation_preview", args, request)
 
     @router.post(
         "/api/providers/{provider}/state",

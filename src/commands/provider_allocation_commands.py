@@ -5,8 +5,10 @@ The operator surface of provider-level worker allocation
 ``provider_allocation_status`` is the read: every ordinary worker profile
 grouped by harness provider key, with pool supply, live sessions, explicit
 pins, manual agents, project preferences and the provider-wide configured
-ceiling.  The snapshot and its redaction live in
-:mod:`src.providers.allocation`; this mixin only resolves the caller's scope.
+ceiling.  ``provider_allocation_preview`` answers what one allocation request
+would do, with the token apply consumes.  The snapshot, its redaction and the
+pure preview live in :mod:`src.providers.allocation`; this mixin only resolves
+the caller's scope.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from typing import Any
 
 
 class ProviderAllocationCommandsMixin:
-    """Mixin that adds provider allocation reads to CommandHandler."""
+    """Mixin that adds provider allocation reads and previews to CommandHandler."""
 
     def _allocation_scope_project(self) -> tuple[bool, str | None]:
         """``(scoped, project)``: whether the caller is limited to one project.
@@ -91,3 +93,103 @@ class ProviderAllocationCommandsMixin:
             project_id=view,
             redacted=scoped,
         )
+
+    def _allocation_worker_refusal(self, command: str) -> dict | None:
+        """Refuse a task-scoped worker token before it learns anything about the request.
+
+        The HTTP scope layer already refuses it (the command is not in
+        ``AGENT_COMMAND_SET``); this repeats the rule for any other caller.
+        """
+        scope = self._current_scope or {}
+        if scope.get("kind") == "session" and not scope.get("elevated"):
+            return {
+                "success": False,
+                "error": f"out of scope: {command} requires an operator or supervisor",
+            }
+        return None
+
+    def _allocation_scope_refusal(self, request: dict) -> dict | None:
+        """Refuse *request* unless the caller holds the scope it needs (spec §Authorization).
+
+        The local operator and the global admin may preview anything.  A
+        per-project supervisor is a project admin: it may change only its own
+        project's preference, never a global profile, and never interrupt busy
+        work.  Worker tokens are :meth:`_allocation_worker_refusal`'s.
+        """
+        from src.providers.allocation import OPERATOR_SCOPE, allocation_scope
+
+        scoped, project = self._allocation_scope_project()
+        if not scoped:
+            return None
+        if allocation_scope(request) == OPERATOR_SCOPE:
+            if request["drain"] == "interrupt-busy":
+                reason = "drain interrupt-busy requires operator scope"
+            else:
+                reason = (
+                    "a lifecycle or bounds change edits global profiles and requires "
+                    "operator scope"
+                )
+            return {"success": False, "error": f"out of scope: {reason}"}
+        receive = request["receive_new_work"]
+        if receive is None or project is None or receive["project_id"] != project:
+            return {
+                "success": False,
+                "error": "out of scope: a project-scoped caller may change only its own "
+                "project's preference",
+            }
+        return None
+
+    async def _cmd_provider_allocation_preview(self, args: dict) -> dict[str, Any]:
+        """What one provider allocation request would change, and its preview token.
+
+        Read-only: nothing is written.  Apply consumes the token and refuses it
+        once anything the preview observed has changed.
+
+        Args:
+            provider: A provider key (``codex``) or vendor (``openai``).
+            profile_ids: Narrow the selection to these ordinary worker
+                profiles of the provider; omitted or null selects all of them.
+                A profile of another provider, a control profile or an empty
+                list is refused.
+            participation: ``pool`` or ``task`` -- the lifecycle every
+                selected profile gets.
+            bounds: ``{"min": N, "max": N | null}`` per selected pool
+                profile, validated as ``aq pool scale`` validates;
+                ``max: null`` (or ``"unbounded"``) removes the ceiling.
+            receive_new_work: ``{"project_id": ..., "mode": "prefer" |
+                "clear"}`` -- the project's preferred provider for unpinned work.
+            drain: ``graceful`` (default), ``idle-now`` or ``interrupt-busy``.
+            allow_pinned_wait: Acknowledge pinned READY work left on profiles
+                leaving the pool.
+
+        Returns:
+            The canonical ``request``, ``required_scope``, before and after
+            ``profiles``, the provider ``ceiling`` before and after,
+            ``project_limits``, ``sessions`` with their action, the ``busy``
+            set, ``pinned`` tasks, ``manual_agents``, the ``preference``
+            change, ``warnings``, ``blocked`` and ``preview_token``.  A lifecycle
+            or bounds change and ``interrupt-busy`` need operator scope; a
+            preference-only change needs project-admin scope for that project.
+        """
+        from src.providers.allocation import (
+            AllocationRequestError,
+            build_allocation_snapshot,
+            normalize_allocation_request,
+            plan_allocation_preview,
+        )
+
+        orchestrator = getattr(self, "orchestrator", None)
+        if orchestrator is None or not hasattr(orchestrator, "_measure_pools"):
+            return {"success": False, "error": "orchestrator is not running"}
+        refusal = self._allocation_worker_refusal("provider_allocation_preview")
+        if refusal is not None:
+            return refusal
+        try:
+            request = normalize_allocation_request(args)
+        except AllocationRequestError as exc:
+            return {"success": False, "error": str(exc)}
+        refusal = self._allocation_scope_refusal(request)
+        if refusal is not None:
+            return refusal
+        snapshot = await build_allocation_snapshot(orchestrator)
+        return plan_allocation_preview(snapshot, request)

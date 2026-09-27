@@ -963,7 +963,10 @@ from .provenance_ref import ProvenanceRef
 from .provide_input_request import ProvideInputRequest
 from .provide_input_response import ProvideInputResponse
 from .provide_input_response_422 import ProvideInputResponse422
+from .provider_allocation_bounds_body import ProviderAllocationBoundsBody
+from .provider_allocation_busy_set import ProviderAllocationBusySet
 from .provider_allocation_ceiling import ProviderAllocationCeiling
+from .provider_allocation_ceiling_change import ProviderAllocationCeilingChange
 from .provider_allocation_diagnostic import ProviderAllocationDiagnostic
 from .provider_allocation_event import ProviderAllocationEvent
 from .provider_allocation_group import ProviderAllocationGroup
@@ -971,14 +974,34 @@ from .provider_allocation_hidden import ProviderAllocationHidden
 from .provider_allocation_intent import ProviderAllocationIntent
 from .provider_allocation_intent_by_status import ProviderAllocationIntentByStatus
 from .provider_allocation_manual_agent import ProviderAllocationManualAgent
+from .provider_allocation_pinned_task import ProviderAllocationPinnedTask
+from .provider_allocation_preference import ProviderAllocationPreference
+from .provider_allocation_preview_body import ProviderAllocationPreviewBody
+from .provider_allocation_preview_profile import ProviderAllocationPreviewProfile
+from .provider_allocation_preview_request import ProviderAllocationPreviewRequest
+from .provider_allocation_preview_request_bounds_type_0 import ProviderAllocationPreviewRequestBoundsType0
+from .provider_allocation_preview_request_receive_new_work_type_0 import (
+    ProviderAllocationPreviewRequestReceiveNewWorkType0,
+)
+from .provider_allocation_preview_response import ProviderAllocationPreviewResponse
+from .provider_allocation_preview_response_422 import ProviderAllocationPreviewResponse422
+from .provider_allocation_preview_session import ProviderAllocationPreviewSession
 from .provider_allocation_profile import ProviderAllocationProfile
+from .provider_allocation_profile_state import ProviderAllocationProfileState
 from .provider_allocation_project import ProviderAllocationProject
+from .provider_allocation_project_limit import ProviderAllocationProjectLimit
 from .provider_allocation_project_supply import ProviderAllocationProjectSupply
+from .provider_allocation_push_change import ProviderAllocationPushChange
+from .provider_allocation_receive_new_work_body import ProviderAllocationReceiveNewWorkBody
+from .provider_allocation_request import ProviderAllocationRequest
+from .provider_allocation_request_bounds_type_0 import ProviderAllocationRequestBoundsType0
+from .provider_allocation_request_receive_new_work_type_0 import ProviderAllocationRequestReceiveNewWorkType0
 from .provider_allocation_session import ProviderAllocationSession
 from .provider_allocation_status_request import ProviderAllocationStatusRequest
 from .provider_allocation_status_response import ProviderAllocationStatusResponse
 from .provider_allocation_status_response_422 import ProviderAllocationStatusResponse422
 from .provider_allocation_supply import ProviderAllocationSupply
+from .provider_allocation_warning import ProviderAllocationWarning
 from .provider_availability_status import ProviderAvailabilityStatus
 from .provider_availability_status_evidence_item import ProviderAvailabilityStatusEvidenceItem
 from .provider_held_task import ProviderHeldTask
@@ -2472,7 +2495,10 @@ __all__ = (
     "ProvideInputRequest",
     "ProvideInputResponse",
     "ProvideInputResponse422",
+    "ProviderAllocationBoundsBody",
+    "ProviderAllocationBusySet",
     "ProviderAllocationCeiling",
+    "ProviderAllocationCeilingChange",
     "ProviderAllocationDiagnostic",
     "ProviderAllocationEvent",
     "ProviderAllocationGroup",
@@ -2480,14 +2506,32 @@ __all__ = (
     "ProviderAllocationIntent",
     "ProviderAllocationIntentByStatus",
     "ProviderAllocationManualAgent",
+    "ProviderAllocationPinnedTask",
+    "ProviderAllocationPreference",
+    "ProviderAllocationPreviewBody",
+    "ProviderAllocationPreviewProfile",
+    "ProviderAllocationPreviewRequest",
+    "ProviderAllocationPreviewRequestBoundsType0",
+    "ProviderAllocationPreviewRequestReceiveNewWorkType0",
+    "ProviderAllocationPreviewResponse",
+    "ProviderAllocationPreviewResponse422",
+    "ProviderAllocationPreviewSession",
     "ProviderAllocationProfile",
+    "ProviderAllocationProfileState",
     "ProviderAllocationProject",
+    "ProviderAllocationProjectLimit",
     "ProviderAllocationProjectSupply",
+    "ProviderAllocationPushChange",
+    "ProviderAllocationReceiveNewWorkBody",
+    "ProviderAllocationRequest",
+    "ProviderAllocationRequestBoundsType0",
+    "ProviderAllocationRequestReceiveNewWorkType0",
     "ProviderAllocationSession",
     "ProviderAllocationStatusRequest",
     "ProviderAllocationStatusResponse",
     "ProviderAllocationStatusResponse422",
     "ProviderAllocationSupply",
+    "ProviderAllocationWarning",
     "ProviderAvailabilityStatus",
     "ProviderAvailabilityStatusEvidenceItem",
     "ProviderHeldTask",
