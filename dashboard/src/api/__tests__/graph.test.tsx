@@ -4,19 +4,16 @@ import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { useProjectGraphs } from "../graph";
 import { useMetricsSeries } from "../metrics";
-import { usePoolStatus } from "../hooks";
 import { prefetchInitialRoute } from "../../routeData";
 
 const mockGet = vi.fn();
 const mockMetrics = vi.fn();
-const mockPools = vi.fn();
 vi.mock("@aq/ts-client", async () => {
   const actual = await vi.importActual<typeof import("@aq/ts-client")>("@aq/ts-client");
   return {
     ...actual,
     getProjectGraphApiProjectsProjectIdGraphGet: (...args: unknown[]) => mockGet(...args),
     getMetricsSeriesApiMetricsSeriesGet: (...args: unknown[]) => mockMetrics(...args),
-    poolStatus: (...args: unknown[]) => mockPools(...args),
   };
 });
 
@@ -33,7 +30,6 @@ const emptyGraph = { tasks: [], edges: [], gates: [], agents: [] };
 beforeEach(() => {
   mockGet.mockReset();
   mockMetrics.mockReset();
-  mockPools.mockReset();
 });
 
 describe("initial-route reads", () => {
@@ -68,24 +64,6 @@ describe("initial-route reads", () => {
     qc.clear();
   });
 
-  it("shares a cold /agents pool directory read with the mounted flock", async () => {
-    const pools = [{ profile_id: "worker-a", min_active: 0, desired: 0, running_idle: 0, running_busy: 0, starting: 0, draining: 0, ready: 0 }];
-    let finish!: (response: { data: { pools: typeof pools } }) => void;
-    mockPools.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
-    const qc = new QueryClient();
-    const prefetch = prefetchInitialRoute(qc, "/agents");
-    expect(mockPools).toHaveBeenCalledTimes(1);
-    expect(mockPools.mock.calls[0]![0].body).toEqual({});
-    const { result } = renderHook(() => usePoolStatus(), { wrapper: makeWrapper(qc) });
-    finish({ data: { pools } });
-    await prefetch;
-    await waitFor(() => expect(result.current.data).toEqual(pools));
-    expect(mockPools).toHaveBeenCalledTimes(1);
-    expect(mockGet).not.toHaveBeenCalled();
-    expect(mockMetrics).not.toHaveBeenCalled();
-    qc.clear();
-  });
-
   it("leaves errors on the normal query without rejecting startup", async () => {
     mockGet.mockRejectedValue(new Error("missing project"));
     const qc = new QueryClient();
@@ -94,13 +72,12 @@ describe("initial-route reads", () => {
     qc.clear();
   });
 
-  it.each(["/agents/x", "/projects/p/overview", "/command-center/tasks", "/projects/%/tasks"])(
+  it.each(["/agents", "/projects/p/overview", "/command-center/tasks", "/projects/%/tasks"])(
     "does not start unrelated or malformed reads for %s", async (pathname) => {
       const qc = new QueryClient();
       await prefetchInitialRoute(qc, pathname);
       expect(mockGet).not.toHaveBeenCalled();
       expect(mockMetrics).not.toHaveBeenCalled();
-      expect(mockPools).not.toHaveBeenCalled();
       qc.clear();
     },
   );

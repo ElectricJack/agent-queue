@@ -1,7 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { matchPath } from "react-router-dom";
 import { projectGraphQuery } from "./api/graph";
-import { poolStatusQuery } from "./api/hooks";
 import { metricsSeriesQuery } from "./api/metrics";
 
 /**
@@ -13,12 +12,6 @@ import { metricsSeriesQuery } from "./api/metrics";
 export function prefetchInitialRoute(queryClient: QueryClient, pathname: string): Promise<void> {
   if (matchPath("/metrics", pathname)) {
     return queryClient.prefetchQuery(metricsSeriesQuery("1h"));
-  }
-  if (matchPath("/agents", pathname)) {
-    // The pool directory is what the page shows first; without this its read
-    // left with the shell's roster, sessions and review reads, queued behind
-    // them for the browser's connection slots and the daemon's loop.
-    return queryClient.prefetchQuery(poolStatusQuery());
   }
   const project = matchPath("/projects/:projectId/tasks", pathname);
   if (project?.params.projectId) {

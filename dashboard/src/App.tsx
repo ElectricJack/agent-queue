@@ -4,18 +4,18 @@ import { ShellPaneProvider, useShellPaneStore } from "./panes/store";
 import { projectNavigation, workspaceHref } from "./shell/projectNavigation";
 import { useProjects } from "./api/hooks";
 import { useShellPreferences } from "./shell/useShellPreferences";
-import { loadAgentWorkspace, loadAppShell, loadCommandCenter, loadMetrics, loadWorkspaceGraph, loadWorkspaceTasks } from "./routeChunks";
+import { loadWorkspaceGraph, loadWorkspaceTasks } from "./routeChunks";
 import { isFocusPath } from "./pages/focus/routes";
 import { isCompactViewport } from "./hooks/useCompactViewport";
 
-const AppShellV2 = lazy(loadAppShell);
-const AgentWorkspace = lazy(loadAgentWorkspace);
+const AppShellV2 = lazy(() => import("./shell/AppShellV2"));
+const AgentWorkspace = lazy(() => import("./pages/agents/AgentWorkspace"));
 const GlobalChat = lazy(() => import("./pages/GlobalChat"));
 const CommandCenterGraph = lazy(loadWorkspaceGraph);
 const CommandCenterTasks = lazy(loadWorkspaceTasks);
 
-const CommandCenter = lazy(loadCommandCenter);
-const Metrics = lazy(loadMetrics);
+const CommandCenter = lazy(() => import("./pages/CommandCenter"));
+const Metrics = lazy(() => import("./pages/metrics/Metrics"));
 const ReviewsInbox = lazy(() => import("./pages/reviews/ReviewsInbox"));
 const ReviewPage = lazy(() => import("./pages/reviews/ReviewPage"));
 
