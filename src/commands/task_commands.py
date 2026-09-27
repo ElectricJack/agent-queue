@@ -1941,7 +1941,9 @@ class TaskCommandsMixin:
             and self._task_execution_profile_error(profile) is None
         ]
 
-    async def _resolve_class_route(self, class_id, implicit):
+    async def _resolve_class_route(
+        self, class_id, implicit, *, preferred_provider=None, project_id=None,
+    ):
         """Pick the worker for an explicit class the implicit route does not run.
 
         *implicit* is the profile creation would otherwise use without being
@@ -1956,15 +1958,34 @@ class TaskCommandsMixin:
         storing the class on the implicit route would hand the task to a
         worker of another tier or provider.
         """
-        if not class_id or implicit is None or self._profile_runs_class(implicit, class_id):
+        if not class_id:
             return None, None
-        preferred = _harness_provider(implicit.harness)
+        if not preferred_provider and (
+            implicit is None or self._profile_runs_class(implicit, class_id)
+        ):
+            return None, None
+        preferred = _harness_provider(implicit.harness) if implicit is not None else ""
         workers = await self._eligible_worker_profiles()
         matches = [
             profile for profile in workers
             if str(profile.default_class or "").strip() == class_id
             and self._validate_routing_class(class_id, profile) is None
         ]
+        if preferred_provider:
+            from src.commands.routing_commands import profile_provider_key
+
+            availability = getattr(self.orchestrator, "provider_availability", None)
+            matches = [
+                profile for profile in matches
+                if profile_provider_key(
+                    profile, getattr(self.orchestrator, "harness_registry", None), project_id,
+                ) == preferred_provider
+                and (availability is None or not availability.suppresses(preferred_provider))
+            ]
+            # No substitute provider: leave the row unrouted so routing and
+            # explain can report the unavailable project preference.
+            if not matches:
+                return None, None
         if matches:
             def rank(profile):
                 provider = _harness_provider(profile.harness)
@@ -2620,6 +2641,24 @@ class TaskCommandsMixin:
                         )
                     }
             profile_source = "explicit"
+        elif getattr(project, "preferred_provider", None) and class_id and filing_session is None:
+            implicit = profile or await self.db.get_profile(project.default_profile_id)
+            routed, error = await self._resolve_class_route(
+                class_id, implicit, preferred_provider=project.preferred_provider,
+                project_id=project.id,
+            )
+            if error:
+                return {"success": False, "error": error}
+            if routed is not None and caller_profile is not None and not caller_is_control_plane:
+                escalation = _check_capability_escalation(caller_profile, routed)
+                if escalation:
+                    return {"error": (
+                        f"Capability escalation rejected: child profile '{routed.id}' "
+                        f"is not a subset of caller profile '{caller_profile.id}'. {escalation}"
+                    )}
+            profile = routed
+            profile_id = routed.id if routed is not None else None
+            profile_source = "class_match"
         elif caller_is_control_plane:
             profile, error = await self._supervisor_default_worker_profile(project)
             if error:
@@ -3714,7 +3753,11 @@ class TaskCommandsMixin:
                     # An unknown class is reported by the class check below.
                     routes[class_id] = (
                         (None, None) if self._validate_routing_class(class_id)
-                        else await self._resolve_class_route(class_id, implicit)
+                        else await self._resolve_class_route(
+                            class_id, implicit,
+                            preferred_provider=getattr(project, "preferred_provider", None),
+                            project_id=project.id,
+                        )
                     )
                 routed, error = routes[class_id]
                 if error:
@@ -5679,6 +5722,24 @@ class TaskCommandsMixin:
             TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.DEFINED
         ):
             return detail, None
+        from src.providers.intent import narrows_catalog
+
+        if not narrows_catalog(task):
+            project = await self.db.get_project(task.project_id)
+            preferred_provider = getattr(project, "preferred_provider", None)
+            if preferred_provider:
+                routing = await self._cmd_task_route_options({"task_id": task.id})
+                if routing.get("outcome") in {"held", "no_options"}:
+                    return detail, Reason(
+                        code="preferred_provider_unavailable",
+                        detail=(
+                            f"project prefers provider '{preferred_provider}', which has no "
+                            "enabled, launchable worker option for "
+                            + (f"intelligence class '{explicit}'" if explicit else "any class")
+                            + "; waiting for that provider or a change to the project preference"
+                        ),
+                        ref=preferred_provider,
+                    )
         if not explicit:
             return None, Reason(
                 code="awaiting_intelligence_route",

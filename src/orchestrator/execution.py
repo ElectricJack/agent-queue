@@ -238,7 +238,12 @@ class ExecutionMixin:
         ):
             # An unrouted task follows the project default's equivalent rung
             # while the default's provider is unavailable (provider-failover D13).
-            effective = await resolver(project.default_profile_id, project.id)
+            effective = await resolver(
+                project.default_profile_id, project.id,
+                preferred_provider=getattr(project, "preferred_provider", None),
+            )
+            if effective is None and getattr(project, "preferred_provider", None):
+                return "preferred_provider_unavailable"
             if isinstance(effective, str) and effective != project.default_profile_id:
                 project = replace(project, default_profile_id=effective)
         task_profile = resolve_task_profile(task, project, profiles)
