@@ -955,6 +955,12 @@ _CANONICAL_PAYLOADS["provider.reroute_batch"] = {
     "provider": "codex",
     "moved": 1,
 }
+_CANONICAL_PAYLOADS["provider.allocation_changed"] = {
+    "provider": "codex",
+    "request_id": "alloc-0123456789ab",
+    "actor": "human:local-operator",
+    "status": "applied",
+}
 _CANONICAL_PAYLOADS["notify.provider_state"] = {
     "event_type": "notify.provider_state",
     "severity": "warning",

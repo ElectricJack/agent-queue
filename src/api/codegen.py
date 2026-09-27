@@ -161,6 +161,7 @@ DETAILED_ERROR_COMMANDS: frozenset[str] = (
             "delete_task",
             "archive_task",
             "delete_project",
+            "provider_allocation_apply",
         }
     )
     | DASHBOARD_STATE_COMMANDS
@@ -179,6 +180,18 @@ ERROR_STATUS: dict[tuple[str, str], int] = {
     ("delete_intelligence_class", "class_referenced"): 409,
     **{(command, "human_required"): 403 for command in DASHBOARD_STATE_COMMANDS},
     ("dashboard_state_put", "revision_conflict"): 409,
+    # Re-preview (or review what landed) rather than resend: the body carries
+    # the fresh preview or every row of the failed apply.
+    **{
+        ("provider_allocation_apply", code): 409
+        for code in (
+            "preview_unknown",
+            "preview_stale",
+            "pinned_wait_unacknowledged",
+            "allocation_rolled_back",
+            "allocation_partial",
+        )
+    },
 }
 
 
