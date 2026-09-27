@@ -26,6 +26,7 @@ import { integrationRemovalRefusal } from "../../api/deleteRefusals";
 import BranchDiscardPrompt from "../../components/BranchDiscardPrompt";
 import StatusBadge from "../../components/StatusBadge";
 import TaskActions from "../../components/TaskActions";
+import TaskCollaboration from "../../components/TaskCollaboration";
 import TaskComments from "../../components/TaskComments";
 import TaskSubtaskList from "../../components/TaskSubtaskList";
 import TaskSessions from "../../components/TaskSessions";
@@ -350,6 +351,8 @@ export default function TaskDetailBody({ taskId, onOpenTask, onClose, fromTaskPa
       {task && <TaskSessions taskId={taskId} onOpenSession={onClose} fromTaskPane={fromTaskPane} />}
 
       {task && <TaskSubtaskList taskId={taskId} />}
+
+      {task && <TaskCollaboration taskId={taskId} />}
 
       {task && <TaskComments taskId={taskId} />}
 
