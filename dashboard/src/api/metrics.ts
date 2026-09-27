@@ -41,15 +41,21 @@ export function maxPoints(range: RangeKey): number {
   return Math.min(span, 4000) + 120;
 }
 
-export function useMetricsSeries(range: RangeKey) {
-  return useQuery({
-    queryKey: metricsSeriesKey(range),
-    queryFn: async ({ signal }): Promise<MetricsSeriesResponse> => {
+/**
+ * Shared by the initial-route prefetch and the live page. The hour opens
+ * with stored minute averages, then the page requests second-level detail
+ * after painting. Separate keys keep the overview and detail truthful.
+ */
+export function metricsSeriesQuery(range: RangeKey, detail = false) {
+  const overview = range === "1h" && !detail;
+  return {
+    queryKey: detail ? [...metricsSeriesKey(range), "detail"] : metricsSeriesKey(range),
+    queryFn: async ({ signal }: { signal: AbortSignal }): Promise<MetricsSeriesResponse> => {
       const now = Date.now() / 1000;
       const response = await getMetricsSeriesApiMetricsSeriesGet({
         client,
         signal,
-        query: { from: now - RANGES[range], to: now, step: "auto" },
+        query: { from: now - RANGES[range], to: now, step: overview ? "1m" : "auto" },
         throwOnError: true,
       });
       return response.data as MetricsSeriesResponse;
@@ -58,7 +64,14 @@ export function useMetricsSeries(range: RangeKey) {
     // not a failure worth three backoff retries.
     retry: 1,
     staleTime: 30_000,
-  });
+  };
+}
+
+export function useMetricsSeries(
+  range: RangeKey,
+  options: { detail?: boolean; enabled?: boolean } = {},
+) {
+  return useQuery({ ...metricsSeriesQuery(range, options.detail), enabled: options.enabled });
 }
 
 export type { MetricsSample, MetricsSeriesResponse };
