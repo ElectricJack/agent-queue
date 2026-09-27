@@ -26,14 +26,16 @@ the designated repository it proves each against the current default-branch
 tip:
 
 * ``development_delivery`` -- git proves the child's current completion on
-  the tip (:mod:`src.integration.delivery_truth`); a historical development
-  manifest may only *locate* a source, which is then tested like any other;
+  the tip (:mod:`src.integration.delivery_truth`); a retired development
+  journal row (kept as a ``development.legacy_provenance`` event) may only
+  *locate* a source, which is then tested like any other;
 * ``branch_tip`` -- the child's branch tip on origin is an ancestor of the
   tip;
 * ``content_equivalent`` -- the work reached the default branch under other
-  commits (cherry-picked, squashed or re-delivered): merging a development
-  delivery's commit, the branch tip or the latest completion commit into the
-  tip changes nothing (``git merge-tree --write-tree``).
+  commits (cherry-picked, squashed or re-delivered): merging a located legacy
+  source, the current completion's retained source, the branch tip or the
+  latest completion commit into the tip changes nothing
+  (``git merge-tree --write-tree``).
 
 Anything it cannot prove is listed with its cause and left alone: a child of
 a parent that is still open (its completion still needs bound train receipts),
@@ -48,6 +50,9 @@ bulk:
 * ``--retire TASK_ID`` -- the work was abandoned; nothing is deleted
   (``abandoned``);
 * ``--accept TASK_ID`` -- accepted without proof (``operator_accepted``).
+
+A result's ``development_delivery_id`` names the retired journal row that
+located the proven source, or ``null``; the row's state never proved anything.
 
 A dry run fetches but writes nothing.  Rows are keyed by task id and inserted
 with ``ON CONFLICT DO NOTHING``, and an adopted child is no longer flagged, so
@@ -67,7 +72,6 @@ from sqlalchemy import and_, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
-    development_deliveries,
     integration_legacy_deliveries,
     task_completion_records,
     tasks,
@@ -381,30 +385,36 @@ class LegacyDeliveryAdoption:
     async def _deliveries_by_task(
         self, project_id: str, task_ids: set[str]
     ) -> dict[str, list[dict[str, Any]]]:
-        """Delivered or adopted development deliveries of the project, by listed task."""
+        """Sources retired development journal rows located, by listed task.
+
+        Read from the ``development.legacy_provenance`` events the retirement
+        revision kept; they carry no state, and a source proves nothing until
+        git tests it against the target.
+        """
+        from src.database.tables import events
+        from src.integration.provenance import LEGACY_PROVENANCE_EVENT
+
         async with self.db._engine.connect() as conn:
-            rows = (
+            payloads = (
                 await conn.execute(
-                    select(development_deliveries)
+                    select(events.c.payload)
                     .where(
-                        development_deliveries.c.project_id == project_id,
-                        development_deliveries.c.state.in_(("delivered", "adopted")),
+                        events.c.event_type == LEGACY_PROVENANCE_EVENT,
+                        events.c.project_id == project_id,
                     )
-                    .order_by(
-                        development_deliveries.c.created_at, development_deliveries.c.id
-                    )
+                    .order_by(events.c.id)
                 )
-            ).mappings().all()
+            ).scalars().all()
         by_task: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            for member in row["manifest"] or ():
+        for payload in payloads:
+            row = json.loads(payload)
+            for member in row.get("manifest") or ():
                 task_id = member.get("task_id") if isinstance(member, dict) else None
                 if task_id in task_ids:
                     by_task.setdefault(task_id, []).append(
                         {
-                            "id": row["id"],
-                            "repository_id": row["repository_id"],
-                            "prepared_sha": row["prepared_sha"],
+                            "id": row["legacy_id"],
+                            "repository_id": row.get("repository_id"),
                             "source_sha": member.get("source_sha"),
                         }
                     )
@@ -450,8 +460,8 @@ class LegacyDeliveryAdoption:
         """Adopt *child* on the first proof that reaches *target*; else say why not.
 
         ``development_delivery`` is git's answer for the child's current
-        completion (*evidence*), re-proved against *target*.  A historical
-        manifest only locates a source to test; its state proves nothing.
+        completion (*evidence*), re-proved against *target*.  A retired journal
+        row only locates a source to test.
         """
         item = {"task_id": child["task_id"], "parent_task_id": child["parent_task_id"]}
         if child["parent_status"] not in TERMINAL_TASK_STATES:
@@ -471,8 +481,9 @@ class LegacyDeliveryAdoption:
                 "cause": CHILD_NOT_COMPLETED,
                 "detail": f"child is {child['status']}: no delivered commit to prove",
             }
-        # Manifests locate the child's own sources; an assembly's prepared
-        # commit reaching the tip says nothing about which work it carried.
+        retained = evidence.source_oid if evidence is not None else None
+        # Retired journal rows locate the child's own sources; an assembly's
+        # prepared commit reaching the tip says nothing about which work it carried.
         delivered: dict[str, str] = {}
         for delivery in deliveries:
             if delivery["repository_id"] == repository_id and delivery["source_sha"]:
@@ -507,7 +518,9 @@ class LegacyDeliveryAdoption:
         # The work may have reached the default branch under other commits
         # (cherry-picked, squashed, re-delivered): then merging it changes
         # nothing.  The first examinable candidate also shows what is left.
-        candidates = list(dict.fromkeys(c for c in (tip, completion_sha, *delivered) if c))
+        candidates = list(
+            dict.fromkeys(c for c in (tip, completion_sha, retained, *delivered) if c)
+        )
         undelivered = None
         for sha in candidates:
             merge = await self._merge(store, target, sha)
@@ -523,11 +536,13 @@ class LegacyDeliveryAdoption:
                 }
             if undelivered is None:
                 undelivered = await self._undelivered(store, target, merge)
-        examined = [f"{len(deliveries)} development deliveries"]
+        examined = [f"{len(deliveries)} retired development journal sources"]
         examined.append(f"branch {branch} at {tip}" if tip else f"branch {branch or '-'} absent")
         examined.append(
             f"completion commit {completion_sha}" if completion_sha else "no completion commit"
         )
+        if retained:
+            examined.append(f"retained completion source {retained}")
         return {
             **item,
             "outcome": UNPROVEN,

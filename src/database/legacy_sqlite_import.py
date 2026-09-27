@@ -33,7 +33,6 @@ from src.database.tables import (
     conversation_inputs,
     conversation_intake_gaps,
     dashboard_state_documents,
-    development_deliveries,
     digest_windows,
     doc_review_comments,
     doc_review_dispatches,
@@ -313,7 +312,6 @@ _ORDERED_TABLES = [
     # --- Hierarchical integration trains (topologically sorted by FK; no
     # --- pre-existing table references any of these and none is self-referential)
     # No FK dependencies
-    development_deliveries,
     integration_batches,
     integration_legacy_deliveries,
     integration_branch_owners,

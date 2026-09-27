@@ -736,7 +736,9 @@ unless their delivery is proven another way.
 
 Status already accepts a child whose latest completion git finds on the
 default branch (the shared delivery evaluator, fetched outside the status
-snapshot); no delivery row is consulted. Run the control for the rest, as a
+snapshot); no delivery row is consulted. A child closed before completions
+retained their exact source in git is unknown to that evaluator, so it is
+flagged until this control proves it. Run the control for the rest, as a
 local operator or the project's supervisor:
 
 ```bash
@@ -747,9 +749,10 @@ aq integration adopt-legacy-deliveries --project-id <project>
 It fetches the designated repository once. It adopts a child when git proves
 its latest completion on the default branch (`development_delivery`), when the
 child's branch tip is (`branch_tip`), or when merging the branch tip, the
-latest completion commit or a source a historical manifest names into the
-default branch changes nothing, because the work landed under other commits
-(`content_equivalent`). A manifest only locates a source; its state, and an
+latest completion commit or a source a retired development journal row names
+(kept as a `development.legacy_provenance` event) into the default branch
+changes nothing, because the work landed under other commits
+(`content_equivalent`). A retired row only locates a source; its state, and an
 assembly's published commit, prove nothing.
 It writes one `integration_legacy_deliveries` row per adopted child, and it is
 safe to repeat.
@@ -857,8 +860,10 @@ aq doctor --check integration.development_publisher_stalled
   — twelve sweeps at the default interval — with the branch in no batch
   manifest at all, the publisher is not collecting.
 * **A candidate's skip stalled.** A completed task the sweep skips (an
-  undelivered dependency, a missing source ref, a cycle, a parked source with
-  no live repair) is counted per identical evaluation. At
+  undelivered dependency, a missing source ref, a completion without retained
+  git provenance — `missing_provenance`, fixed with `aq integration
+  migrate-provenance <project> --apply` — a cycle, a parked source with no live
+  repair) is counted per identical evaluation. At
   `integration.publisher_stall_after` (default 5) the attempt ends as
   `candidate_stalled`: doctor reports ERROR and `supervisor-<project>` gets one
   message with the task, repository, target and source OIDs, completion,
@@ -942,8 +947,8 @@ An `aq/` branch is stale by exactly one rule:
 
 A stale branch stays when anything still references it: a task that can still
 run or has a live session, COMPLETED development work git does not prove on
-the target (not delivered yet, or unknown: a missing ref, another project's
-repository, a git failure), an unsettled batch
+the target (not delivered yet, or unknown: a completion without retained git
+provenance, another project's repository, a git failure), an unsettled batch
 (and every assembly carrying one of its members), an open repair's sources, an
 `integration_branch_owners` row that is not `released`, a live legacy
 operation, batch or promotion intent, a live hierarchy branch origin, or a

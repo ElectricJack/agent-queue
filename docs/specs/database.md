@@ -2740,38 +2740,40 @@ Playbook artifacts an outbox event pins until it is delivered.
 | `event_id` | TEXT | PK, REFERENCES integration_outbox(id) ON DELETE CASCADE | Outbox row |
 | `artifact_sha256` | TEXT | PK, REFERENCES playbook_artifacts(artifact_sha256) ON DELETE RESTRICT | Pinned artifact; indexed |
 
-### Table: `development_deliveries`
+### Retired: `development_deliveries`
 
-The development-mode delivery journal: one row per Git fact the daemon
-executed (or decided) against a repository's target ref, kept separate from
-the task episode tables so a publication that outlives a batch is still
-auditable.  `src/integration/development.py` writes a row *before* it touches
-the remote and reconciles it afterwards, so a process death leaves an
-ambiguous `publishing` row to resolve rather than a silent gap.  Configuration
-decisions and preserved-workspace cancellations are journaled here too, with
-an empty `manifest`.
+The development-mode receipt journal is gone: revision `a00000000038` dropped
+it once every reader asked git instead (`src/integration/delivery_truth.py`).
+No table records that a task is delivered.  What the journal held that was not
+a delivery answer lives in the existing `events` table:
 
-| Column | Type | Constraints | Notes |
-|---|---|---|---|
-| `id` | TEXT | PRIMARY KEY | Delivery id |
-| `project_id` | TEXT | NOT NULL | Project; indexed with `state` (`idx_development_delivery_project`) |
-| `repository_id` | TEXT | NOT NULL | Repository the ref lives in |
-| `target_ref` | TEXT | NOT NULL | Fully-qualified ref written (e.g. `refs/heads/main`) |
-| `expected_sha` | TEXT | nullable | Remote head the write was leased against; NULL means the ref must not exist |
-| `prepared_sha` | TEXT | nullable | Head that was (or would be) published |
-| `state` | TEXT | NOT NULL | One of: prepared, publishing, delivered, parked, adopted, cancelled (`ck_development_delivery_state`) |
-| `manifest` | JSON | NOT NULL | Tasks the delivery carries: `task_id`, `source_sha`, `acceptance`. Empty for configuration and cancellation rows |
-| `evidence` | JSON | NOT NULL | What the decision rested on — local validation output, `operator_accepted` adoption, `configuration`, or reconciliation facts |
-| `reason` | TEXT | NOT NULL | Operator- or daemon-supplied why, retained for audit |
-| `created_at` | REAL | NOT NULL | Unix timestamp |
-| `updated_at` | REAL | NOT NULL | Unix timestamp |
+* `development.operation` — one event per revision of a publisher action
+  (`prepared` → `publishing` → `finished`, or `parked`/`cancelled`); the payload
+  is `id`, `project_id`, `repository_id`, `target_ref`, `expected_sha`,
+  `prepared_sha`, `state`, `manifest`, `evidence`, `reason`, `created_at`,
+  `updated_at`.  `finished` means the action ended, never that work is
+  delivered.  An outstanding legacy row was retained as `legacy-operation:<id>`.
+* `development.legacy_provenance` — one immutable event per retired row that
+  named a source: `legacy_id`, `project_id`, `repository_id`, `target_ref`,
+  `expected_sha`, `prepared_sha`, `created_at`, `kind`, the `manifest` members
+  (`task_id`, `source_sha`, `parent_task_id`, `superseded_by`, `acceptance`),
+  `completion_sources`, `resolved_by_delivered_repair`, and the recorded
+  `tests` (`validation`, `conclusion`, `checks`, `failing_tests`, `head_sha`) or
+  merge `conflict` evidence.  It carries no `state` and no delivery conclusion;
+  only the operator provenance migration, a legacy repair close's filing fence
+  and train-mode legacy adoption read it, and each re-proves every source in
+  git.
+* `development.legacy_retirement` — one summary per project: row count,
+  retained actions, marked tasks, archived tasks of the same shape, malformed
+  rows.
 
-States move `prepared` → `publishing` → `delivered`.  `parked` is a write that
-was abandoned before it landed (the base moved, or reconciliation proved the
-push never applied); `adopted` records an operator accepting a ref that is
-already at the wanted SHA, as well as a configuration decision; `cancelled`
-records a preserved workspace whose writer was stopped.  Downgrading the
-`a0000000000c` revision refuses to drop the table while any row survives.
+A live branchless COMPLETED task a retired manifest named with a source its
+current completion never recorded carries the `task_metadata` key
+`development_legacy_artifact` (`legacy_id`, `source_sha`, `completion_id`,
+`reason`).  Fenced to that completion generation, it keeps the task's delivery
+unknown until an exact generation is retained in git.  The revision is
+idempotent and its downgrade recreates an empty journal; the events and markers
+remain.
 
 ### Table: `integration_legacy_deliveries`
 
@@ -2799,7 +2801,7 @@ values.
 | `target_sha` | TEXT | NOT NULL | Default-branch tip the proof was checked against |
 | `delivered_sha` | TEXT | nullable | Commit whose work is proven on `target_sha`: an ancestor of it, a commit whose merge into it changes nothing (`content_equivalent`), or the operator-named re-delivering commit on the default branch (`superseded`); NULL only for `operator_accepted` and `abandoned` (`ck_integration_legacy_deliveries_delivered_sha`) |
 | `proof` | TEXT | NOT NULL | One of: development_delivery, branch_tip, content_equivalent, superseded, operator_accepted, abandoned (`ck_integration_legacy_deliveries_proof`) |
-| `development_delivery_id` | TEXT | nullable | The `development_deliveries` row a `development_delivery` (or `content_equivalent`) proof used |
+| `development_delivery_id` | TEXT | nullable | The retired development journal row (kept as a `development.legacy_provenance` event) that located the proven source; its state never proved anything |
 | `operator_id` | TEXT | NOT NULL | Audit label of the local operator or supervisor session that ran the command |
  | `reason` | TEXT | NOT NULL | The supplied reason, or `legacy delivery proven by <proof>` |
  | `created_at` | REAL | NOT NULL | Unix timestamp |

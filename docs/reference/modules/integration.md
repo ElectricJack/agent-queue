@@ -98,7 +98,7 @@ These are not integration modules, but you will land in them from here.
 | [`src/commands/integration_commands.py`](../../../src/commands/integration_commands.py) | `cli` | The command handlers behind every `aq integration …` call, including the authority checks. |
 | [`src/cli/integration.py`](../../../src/cli/integration.py) | `cli` | Flags, defaults and choices for the CLI group. |
 | [`src/doctor/integration_checks.py`](../../../src/doctor/integration_checks.py) | `operations` | `integration.operational`, `integration.stranded_fences`, `integration.stranded_delegates`, `integration.stale_schedule`, `integration.finished_branch_owners`, `integration.branch_discards`, `integration.unreviewed_prs`. |
-| [`src/database/tables.py`](../../../src/database/tables.py) | `database` | Every `integration_*` table plus `development_deliveries` and `task_branch_origins`. |
+| [`src/database/tables.py`](../../../src/database/tables.py) | `database` | Every `integration_*` table plus `task_branch_origins` (development delivery has no table; see `delivery_truth.py`). |
 | [`src/git/manager.py`](../../../src/git/manager.py) | `workspaces` | The async Git API every module here uses. |
 
 ## Documentation in this shard

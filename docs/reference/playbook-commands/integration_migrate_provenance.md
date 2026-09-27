@@ -63,21 +63,25 @@ Projected into the run receipt: `project_id`, `repository_id`, `inventory`, `rep
 
 ## Purpose
 
-Retain exact legacy completion generations and complete repair bindings in Git
-before retiring the development delivery receipt reader.
+Retain exact legacy completion generations and complete repair bindings in Git.
+Since revision `a00000000038` retired the development delivery receipt table
+and every compatibility locator, a generation without a retained record is
+`unknown` wherever delivery matters; this command is how an operator labels it.
 
 ## When a playbook uses it
 
-A local operator or live project supervisor runs this during the development
-delivery rollout. Start with the default inventory and review `ambiguous`.
+A local operator or live project supervisor runs this before and after the
+retirement upgrade, and whenever a stall names `missing_provenance`. Start with
+the default inventory and review `ambiguous`.
 
 ## How it works internally
 
 The typed integration contract dispatches to
 `GitCommandsMixin._cmd_integration_migrate_provenance`, which checks operator
 authority and invokes `ProvenanceMigration`. The migration reads a page of
-active/archived completion identities, pages through the delivery journal to
-keep only the rows naming that page's tasks, clones an isolated temporary Git
+active/archived completion identities, pages through the retired journal (the
+`development.legacy_provenance` events the retirement kept) to keep only the
+rows naming that page's tasks, clones an isolated temporary Git
 repository, and verifies exact objects and repair ancestry. `task_id` instead
 scopes the run to the source generations that task's close needs (its repair
 contract members, fenced by the delivery that filed the repair).
@@ -95,7 +99,9 @@ cleanup. It writes no DB rows and preserves all old evidence. See
 bounded inventory precondition failed. An `inventory`/`migrated` result may
 still contain `ambiguous` entries: each names the task/generation and why no
 evidence was written. Follow `next_offset` with another page; zero unresolved
-entries is required before retiring the compatibility reader. External rewrite
+entries across every page (`zero_fallback`) means no generation is left unknown
+for lack of provenance. `operations` reports the outstanding legacy actions the
+retirement kept as `legacy-operation:<id>` events. External rewrite
 equivalence needs explicit complete source/generation/base evidence.
 
 ## Example step

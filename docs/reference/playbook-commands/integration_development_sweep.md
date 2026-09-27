@@ -148,12 +148,17 @@ those conflict" — which is why it lives behind `aq integration sweep PROJECT_I
    ([`src/integration/development.py:413`](../../../src/integration/development.py))
    requires the project to be in `development` mode, validates its stored policy,
    and refreshes task dependencies.
-3. Under the repository exclusion lock it reconciles the journal against the
-   remote, reads the current default-branch head as the base, and detaches a
-   working checkout there.
-4. It computes what is already done from the journal — every `(task_id,
-   source_sha)` in a `delivered` or `adopted` row for this target — and, unless
-   `retry` was passed, also excludes pairs sitting in `parked` rows.
+3. Under the repository exclusion lock it reconciles its unfinished
+   `development.operation` events against the remote (an uncertain push is
+   resolved by inspecting git), reads the current default-branch head as the
+   base, and detaches a working checkout there.
+4. It asks git what is already done
+   ([`delivery_truth.py`](../../../src/integration/delivery_truth.py)): a
+   candidate whose current completion's retained exact source is an ancestor of
+   the base is delivered and drops out, whatever any journal says. A generation
+   without retained provenance is unknown and skipped as `missing_provenance`.
+   Unless `retry` was passed, it also excludes sources sitting in `parked`
+   operations.
 5. Candidates are completed tasks in this repository with a branch and no blocking
    dependency, ordered so a task never precedes something it depends on. Its own
    earlier development publication does not count as a blocker, so completion
@@ -172,10 +177,11 @@ those conflict" — which is why it lives behind `aq integration sweep PROJECT_I
    digest>/<head>`) so the candidate survives regardless of the verdict.
 9. If validation failed, the whole candidate is journaled `parked` with its
    evidence and the sweep answers `parked`. If it passed, `publish` (line 220)
-   writes a `prepared` journal row, re-reads the remote, and refuses with
+   appends a `prepared` operation event, re-reads the remote, and refuses with
    `base_moved` if the target moved under it; otherwise it pushes with
    `--force-with-lease` bound to the exact expected SHA, confirms the remote now
-   reads the new head, and marks the row `delivered`.
+   reads the new head, and records the operation `finished` (an action outcome;
+   delivery stays git's answer).
 10. Either way `reconcile_parked` (line 691) then dispatches repair work for
     sources still unresolved after the whole batch was assembled — deliberately
     after, so a later merge that already fixed an earlier conflict does not spend
@@ -183,16 +189,17 @@ those conflict" — which is why it lives behind `aq integration sweep PROJECT_I
 
 ## Side effects and persistence
 
-Rows in `development_deliveries`
-([`src/database/tables.py:3839`](../../../src/database/tables.py)): one per parked
-source, one for a parked candidate, one for the preserved snapshot, and one that
-moves `prepared → publishing → delivered` for a successful publication. On the
+`development.operation` events in `events` (the `development_deliveries` table
+was retired by revision `a00000000038`): one operation per parked source, one
+for a parked candidate, one for the preserved snapshot, and one whose revisions
+move `prepared → publishing → finished` for a successful publication. On the
 remote: the snapshot ref always, and the default branch on success. Plus whatever
 `reconcile_parked` files as repair work for unresolved conflicts.
 
 A crash is recoverable because every step is journaled before it is attempted: the
-`prepared` row exists before the push, and an unconfirmed push raises
-`DevelopmentBusy` with the journal retained rather than declaring success.
+`prepared` operation exists before the push, and an unconfirmed push raises
+`DevelopmentBusy` with the operation retained rather than declaring success; the
+next sweep resolves it from git.
 
 ## Failure modes and diagnostics
 

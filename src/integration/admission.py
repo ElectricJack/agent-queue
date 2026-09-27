@@ -27,9 +27,10 @@ from src.database.tables import (
 )
 from src.git.manager import GitError
 from src.integration.delivery_truth import DeliveryRequest, delivery_snapshot
+from src.integration.publishable_artifact import legacy_artifact
 
 
-async def _inputs(db, candidate_ids, conn, *, extra_ids=()):
+async def _inputs(db, candidate_ids, conn):
     """Read graph inputs and immutable completion identities on one connection."""
     candidate_ids = set(candidate_ids)
     candidates = (
@@ -91,7 +92,7 @@ async def _inputs(db, candidate_ids, conn, *, extra_ids=()):
                 for child in children
                 if child["depends_on_task_id"] == edge["depends_on_task_id"]
             )
-    source_ids = (set().union(*required.values()) if required else set()) | set(extra_ids)
+    source_ids = set().union(*required.values()) if required else set()
     source_rows = (
         (await conn.execute(select(tasks).where(tasks.c.id.in_(source_ids)))).mappings().all()
         if source_ids
@@ -133,6 +134,14 @@ async def _inputs(db, candidate_ids, conn, *, extra_ids=()):
                         task_completion_records.c.task_id.in_(source_ids),
                         task_completion_records.c.commits != "[]",
                     )
+                )
+            ).scalars()
+        )
+        # A retired manifest's unresolved source keeps the generation unknown.
+        | set(
+            (
+                await conn.execute(
+                    select(tasks.c.id).where(tasks.c.id.in_(source_ids), legacy_artifact(tasks))
                 )
             ).scalars()
         )
@@ -258,7 +267,6 @@ class AdmissionSnapshot:
     reasons: dict[str, list[dict]] = field(default_factory=dict)
     lock_ids: set[str] = field(default_factory=set)
     required: dict[str, set[str]] = field(default_factory=dict)
-    extra_ids: set[str] = field(default_factory=set)
     changed: bool = False
 
     async def is_fresh(self, task_id=None):
@@ -308,7 +316,7 @@ class AdmissionSnapshot:
                 if getattr(exc.orig, "sqlstate", None) == "55P03":
                     return False
                 raise
-        current = await _inputs(self.db, self.candidate_ids, conn, extra_ids=self.extra_ids)
+        current = await _inputs(self.db, self.candidate_ids, conn)
         return self.inputs == current[-1]
 
 
@@ -319,28 +327,9 @@ async def observe_admission(db, candidate_ids, service):
         dev_ids, required, requests, obsolete, repo_rows, inputs = await _inputs(
             db, candidate_ids, conn
         )
-    # Exact repair equivalence needs the repair's current immutable generation,
-    # as the shared evaluator requires. These legacy rows only locate proof;
-    # their state is neither admission authority nor a persisted projection.
-    history = {}
-    for project_id in {r.project_id for r in requests.values()}:
-        history[project_id] = await service.rows(project_id)
-    extra_ids = {
-        proof["task_id"]
-        for rows in history.values()
-        for row in rows
-        if (proof := (row.get("evidence") or {}).get("resolved_by_delivered_repair"))
-        and proof.get("task_id")
-    }
-    if extra_ids:
-        async with db._engine.connect() as conn:
-            dev_ids, required, requests, obsolete, repo_rows, inputs = await _inputs(
-                db, candidate_ids, conn, extra_ids=extra_ids
-            )
     batch = AdmissionSnapshot(db, candidate_ids, candidate_ids - dev_ids, inputs)
     batch.lock_ids = set(requests)
     batch.required = required
-    batch.extra_ids = extra_ids
     evidence = {}
     scopes = {
         (r.project_id, r.repository_id, r.target_ref)
@@ -353,8 +342,6 @@ async def observe_admission(db, candidate_ids, service):
             continue  # Missing/wrong configuration withholds the prerequisite.
         try:
             store = await service.store(db._row_to_repo(repo), fetch=False)
-            # Transitional rows are source locators only; the evaluator ignores
-            # their delivered/adopted state and verifies exact ancestry in git.
             snapshot = await delivery_snapshot(
                 service.git,
                 store,
@@ -362,7 +349,6 @@ async def observe_admission(db, candidate_ids, service):
                 repository_id=repo_id,
                 repository_url=repo["url"],
                 target_ref=target,
-                legacy_rows=history.get(project_id, ()),
             )
             batch.snapshots.append(snapshot)
             scoped = [
@@ -371,19 +357,6 @@ async def observe_admission(db, candidate_ids, service):
                 if (r.project_id, r.repository_id, r.target_ref) == (project_id, repo_id, target)
             ]
             observed = await snapshot.evaluate_many(scoped)
-            # Legacy repair contracts bind the current repair completion, whose
-            # reported OID can be abbreviated. Resolve through the evaluator,
-            # then evaluate equivalence with exact OIDs for every peer. DB
-            # generation fencing still compares the original reported inputs.
-            resolved = [
-                replace(request, reported_source=observed[request.task_id].source_oid)
-                if request.reported_source is not None
-                and observed[request.task_id].source_oid is not None
-                else request
-                for request in scoped
-            ]
-            if resolved != scoped:
-                observed = await snapshot.evaluate_many(resolved)
             evidence.update(observed)
         except (GitError, OSError, ValueError):
             continue  # Diagnostic unknown; never treat failed git as no artifact.
@@ -431,8 +404,9 @@ async def observe_admission(db, candidate_ids, service):
 async def structural_candidates(db, project_id, *, page_size=128):
     """Keyset page past withheld candidates in the existing fairness order."""
     from sqlalchemy import tuple_
-    from src.database.queries.claim_queries import _frontier_where
+
     from src.database.queries.blocked_state import apply_label_filters
+    from src.database.queries.claim_queries import _frontier_where
 
     ids, cursor = [], None
     async with db._engine.connect() as conn:

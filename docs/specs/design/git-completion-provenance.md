@@ -2,8 +2,10 @@
 
 Implements shared-contract items 4–6 of the approved
 `projects/agent-queue/plans/2026-09-27-development-publisher-delivery-truth.md`.
-This is a development-mode primitive. Publisher/consumer integration and the
-removal of the legacy reader belong to the plan's later operations/retire tasks.
+This is a development-mode primitive. The publisher and every delivery
+consumer read it through `src/integration/delivery_truth.py`; the legacy
+receipt table and every compatibility locator were retired by revision
+`a00000000038` (see [Legacy migration primitive](#legacy-migration-primitive)).
 
 ## Identity and retention
 
@@ -102,19 +104,25 @@ CommandHandler. The command clones into a temporary isolated read repository;
 dry-run changes no durable local/remote refs, indexes, configuration or DB rows.
 
 Pages use `--limit` (1–1000, default 500), `--offset` and `next_offset`. The
-delivery journal is read in keyset chunks, and a page retains only the rows that
-name its own tasks, so a long history never refuses a page; those rows are
+retired journal — the immutable `development.legacy_provenance` events revision
+`a00000000038` kept, one per `development_deliveries` row that named a source,
+without its state — is read in keyset chunks, and a page retains only the rows
+that name its own tasks, so a long history never refuses a page; those rows are
 bounded (5000), with a smaller `--limit` or `--task-id` as the remedy.
 `--task-id <id>` migrates only what that (held) task's close needs: the current
 completion of each `development_repair_sources` member, bound from the contract
 under the same fence the close applies, or the task's own passing generations
 when it has no contract; `next_offset` is then `null`. Apply never modifies or
-deletes old rows. It expands only unique Git OID prefixes, binds explicit legacy
+deletes retained history. It expands only unique Git OID prefixes, binds explicit legacy
 `completion_sources` to their exact completion ID, and verifies all objects.
 A generation already retained in Git is reported `present`. Receipt state is
 never containment authority. Missing sources, conflicting bindings, multiple
 matching generations and incomplete repair contracts are reported in `ambiguous`
-with task IDs, generations and reasons.
+with task IDs, generations and reasons. A COMPLETED task with a branch, or with
+the retirement's `development_legacy_artifact` marker, but no completion
+generation at all is reported the same way. `operations` lists the outstanding
+legacy actions the retirement kept as `legacy-operation:<id>` events; terminal
+receipts were not copied anywhere.
 
 Repair migration requires the full explicit source contract, unique original
 and repair generations, a nonempty base/source pair, and current target ancestry
@@ -123,5 +131,16 @@ instead of guessed. Repeating apply produces the same immutable objects/refs.
 Legacy operator equivalence without an exact source generation or a nonempty
 replacement base/source pair remains unmigratable and needs explicit new
 operator evidence. Missing branch refs are never interpreted as empty work.
-After all pages are reconciled, operations/retire can verify that their remaining
-unlabelled inventory is empty before removing the compatibility reader.
+
+The compatibility reader is gone. A generation without a retained record now
+evaluates `unknown` (`missing_git_provenance`) wherever delivery matters, instead
+of borrowing a branch head, a reported commit or a journal manifest, so the
+inventory's `fallback_generations` are exactly the generations that stay unknown
+until migrated or resolved. `zero_fallback` across every page is the operator's
+acceptance check that nothing is left behind. The retirement revision cannot
+consult git, so it reports rather than decides: it keeps source provenance as
+events, marks live branchless tasks a manifest named with an unrecorded source
+(`development_legacy_artifact`, fenced to their generation, so they read unknown
+rather than organizational), and records a `development.legacy_retirement`
+summary per project naming those tasks, archived tasks of the same shape and
+malformed rows.

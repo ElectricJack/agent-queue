@@ -1269,17 +1269,22 @@ class TestEndToEndOnFakeProvider:
         assert record["source_oid"] == base and record["artifact"] is False
 
     async def _setup_development_repair(self, db, real_orch, tmp_path, source_id, *,
-                                        parent=None, failure=None):
+                                        parent=None, failure=None, filing="legacy"):
         """A development repair (t1) of a legacy, commits-less source close.
 
         The repair merges the parked source onto main; main then advances
-        again before the repair closes, as it does in production.
+        again before the repair closes, as it does in production.  *filing*
+        is how the parked attempt that filed it survives: a retired journal
+        row kept as ``development.legacy_provenance`` or a current
+        ``development.operation`` event.
         """
+        import json
         from pathlib import Path
 
         from sqlalchemy import insert
 
-        from src.database.tables import development_deliveries
+        from src.database.tables import events
+        from src.integration.development import DevelopmentIntegration
 
         wd, git, base = await self._setup_development_git(db, real_orch, tmp_path, artifact=False)
         await git._arun(["checkout", "-b", "aq/" + source_id, base], cwd=wd)
@@ -1307,14 +1312,24 @@ class TestEndToEndOnFakeProvider:
         # The publisher parks the source; a source closed again later is a
         # newer generation that parked delivery never named.
         parked_at = closed - 1 if failure == "reclosed_after_park" else closed + 1
+        filed = {
+            "project_id": "p1", "repository_id": "repo", "target_ref": "refs/heads/main",
+            "expected_sha": repair_base, "prepared_sha": None, "created_at": parked_at,
+            "manifest": [{"task_id": source_id, "source_sha": source, "parent_task_id": parent}],
+        }
         async with db._engine.begin() as conn:
-            await conn.execute(insert(development_deliveries).values(
-                id="parked", project_id="p1", repository_id="repo", target_ref="refs/heads/main",
-                expected_sha=repair_base, prepared_sha=None, state="parked",
-                manifest=[{"task_id": source_id, "source_sha": source, "parent_task_id": parent}],
-                evidence={"kind": "merge_conflict"}, reason="source conflict",
-                created_at=parked_at, updated_at=parked_at,
-            ))
+            if filing == "operation":
+                await conn.execute(DevelopmentIntegration._operation_insert(
+                    id="parked", state="parked", evidence={"kind": "merge_conflict"},
+                    reason="source conflict", updated_at=parked_at, **filed,
+                ))
+            else:
+                await conn.execute(insert(events).values(
+                    event_type="development.legacy_provenance", project_id="p1",
+                    payload=json.dumps({"id": "legacy-provenance:parked", "legacy_id": "parked",
+                                        "kind": "merge_conflict", **filed}),
+                    timestamp=parked_at,
+                ))
         await db.set_task_meta("t1", "development_repair_sources",
                                [{"task_id": source_id, "source_sha": source, "parent_task_id": parent}])
         await db.set_task_meta("t1", "development_repair_evidence",
@@ -1336,13 +1351,13 @@ class TestEndToEndOnFakeProvider:
         await git._arun(["checkout", "aq/t1"], cwd=wd)
         return wd, git, source, repair_base, repair
 
-    @pytest.mark.parametrize("source_id,parent", [
-        ("nimble-bridge.3", "nimble-bridge.2"),
-        ("development-repair-24d1d5e707519a49c3fc", "fresh-ember.2"),
-        ("prime-glacier.6", "prime-glacier.1"),
+    @pytest.mark.parametrize("source_id,parent,filing", [
+        ("nimble-bridge.3", "nimble-bridge.2", "legacy"),
+        ("development-repair-24d1d5e707519a49c3fc", "fresh-ember.2", "operation"),
+        ("prime-glacier.6", "prime-glacier.1", "legacy"),
     ])
     async def test_development_repair_of_unlabelled_source_closes_by_ancestry(
-        self, db, real_orch, real_handler, tmp_path, source_id, parent
+        self, db, real_orch, real_handler, tmp_path, source_id, parent, filing
     ):
         """keen-quest: the three repairs refused as 'unlabelled repair source'."""
         from src.integration.provenance import (
@@ -1354,7 +1369,7 @@ class TestEndToEndOnFakeProvider:
 
 
         wd, git, source, repair_base, repair = await self._setup_development_repair(
-            db, real_orch, tmp_path, source_id, parent=parent
+            db, real_orch, tmp_path, source_id, parent=parent, filing=filing
         )
         close = await real_handler.execute(
             "task_close", {"task_id": "t1", "outcome": "pass", "summary": "resolved"}

@@ -119,14 +119,17 @@ Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_s
 `integration_adopt` records work that has *already* been delivered. Sometimes a
 change reaches the default branch by a route the daemon did not drive — an
 operator merged it by hand, a hotfix went straight in, work was rebased or
-squashed by someone else. Those tasks are done, but the system has no delivery
-journal entry for them, so they look undelivered forever and every later sweep
-tries to carry them again.
+squashed by someone else. Ancestry-preserving merges need nothing: git proves
+them on the next snapshot. A rewrite, or a task whose completion never retained
+its exact source, is unknown to git, so it looks undelivered and every later
+sweep holds it.
 
 Adoption closes that gap honestly. It proves the named ref really is at the SHA
-the operator claims, checks each task's own source branch against that SHA, writes
-one delivery journal row that says *an operator accepted this and it was not CI
-attested*, and completes the tasks in child-before-parent order. It never replays
+the operator claims, checks each task's own source branch against that SHA,
+retains each task's exact completion generation in git (plus, for an accepted
+equivalent, an explicit operator replacement record), appends one journal event
+that says *an operator accepted this and it was not CI attested*, and completes
+the tasks in child-before-parent order. It never replays
 a repair, never re-pushes anything, and never pretends there was evidence there
 was not. See [development integration](../../guides/development-integration.md).
 
@@ -171,9 +174,11 @@ tell which tasks were proven and which were asserted.
    refuses when any selected task still has a live session or an assigned agent
    (`DevelopmentBusy`), and when any child of a selected task is still open
    outside the selection.
-7. It writes one `development_deliveries` row in state `adopted` carrying the
-   manifest, the operator id, and evidence marked `operator_accepted` /
-   `not_ci_attested`.
+7. It retains each task's exact completion generation in git and, for an
+   `operator_equivalent` member, an operator replacement record naming that
+   generation, its source and the adopted base; then it appends one
+   `development.operation` event in state `finished` carrying the manifest, the
+   operator id, and evidence marked `operator_accepted` / `not_ci_attested`.
 8. It orders the selection child-before-parent — failing on a cycle rather than
    guessing — and for each not-already-completed task writes a
    `task_completion_records` row (outcome `pass`, verification "Operator
@@ -183,17 +188,17 @@ tell which tasks were proven and which were asserted.
 
 ## Side effects and persistence
 
-One row in `development_deliveries`
-([`src/database/tables.py:3839`](../../../src/database/tables.py)); one
-`task_completion_records` row per task that was not already complete; and the
-tasks themselves moved to `COMPLETED`, with their dependents unblocked by the
-normal transition machinery.
+One `development.operation` event in `events` (the `development_deliveries`
+table was retired by revision `a00000000038`); one `task_completion_records`
+row per task that was not already complete; immutable provenance refs under
+`refs/heads/aq-provenance/`; and the tasks themselves moved to `COMPLETED`, with
+their dependents unblocked by the normal transition machinery.
 
-No Git write happens at all. Adoption is a recording operation: the remote is
-read to verify the claim and is never pushed to. Later sweeps then skip these
-`(task_id, source_sha)` pairs, because a sweep treats `delivered` and `adopted`
-journal rows identically when computing what is already done
-([`src/integration/development.py:429`](../../../src/integration/development.py)).
+The target ref is only read, never pushed to; the only git writes are the
+provenance refs. Later sweeps then skip these tasks because git proves their
+retained generation (or its recorded replacement) on the target — the event is
+history and is never consulted for delivery
+([`src/integration/delivery_truth.py`](../../../src/integration/delivery_truth.py)).
 
 ## Failure modes and diagnostics
 

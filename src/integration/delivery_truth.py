@@ -3,21 +3,26 @@
 This module observes git; it never persists a delivery answer. Callers gather
 task/completion identities outside row locks, then recheck those identities and
 graph inputs plus ``snapshot.is_fresh`` before a delivery-sensitive mutation.
-Legacy source locators are an explicit bridge for operations/retire to remove
-once exact completion provenance is retained in git. Receipt *state* is never
-proof, and an absent ref is never an empty artifact.
+A completion generation's exact source is located only by the immutable record
+retained in git (:mod:`src.integration.provenance`). A generation without one is
+unlabelled: no branch head, reported commit or historical manifest stands in
+for it, so it is unknown until an operator retains it
+(``aq integration migrate-provenance``). An absent ref is never an empty artifact.
 """
 
 from __future__ import annotations
 
-import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Mapping
 
 from src.git.manager import GitError, GitManager, RemoteRefState, is_valid_git_oid
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+#: A generation that recorded an artifact (a branch or reported commits) but
+#: has no exact source retained in git. Unknown, never delivered or empty.
+MISSING_PROVENANCE = "missing_git_provenance"
 
 
 class DeliveryState(StrEnum):
@@ -96,13 +101,12 @@ class DeliverySnapshot:
     target_oid: str | None
     source_heads: Mapping[str, str]
     error: str | None = None
-    legacy_rows: tuple = ()
     _cache: dict[DeliveryRequest, DeliveryEvidence] = field(default_factory=dict, repr=False)
     _identities: dict[str, DeliveryRequest] = field(default_factory=dict, repr=False)
 
-    def with_legacy_rows(self, rows):
-        """Attach a source-location inventory without retaining cached answers."""
-        return replace(self, legacy_rows=tuple(rows), _cache={}, _identities={})
+    def for_request(self):
+        """The same fetched observation without another request's cached answers."""
+        return replace(self, _cache={}, _identities={})
 
     def matches(self, requests, *, graph_inputs=None, current_graph_inputs=None):
         """Caller must reload the same task set and relevant graph inputs."""
@@ -169,112 +173,22 @@ class DeliverySnapshot:
                     if await provenance.contained(CompletedSource(identity, source), self.target_oid):
                         return result(DeliveryState.CONTAINED, "git_completion", source)
                     return result(DeliveryState.PENDING, "git_completion", source)
-            source = request.reported_source
-            locator = "legacy_reported_source"
-            if source is not None:
-                # Resolve a unique legacy abbreviation, but never accept a ref
-                # name, revision expression, missing object or old generation.
-                if not isinstance(source, str) or not re.fullmatch(r"[0-9a-f]{7,40}", source):
-                    return result(DeliveryState.UNKNOWN, "invalid_completion_source")
-                source = await _run(
-                    self.git, self.store, "rev-parse", "--verify", "--end-of-options",
-                    source + "^{commit}",
-                )
-            else:
-                # TEMPORARY LEGACY BRIDGE: scope every locator to repository,
-                # target and current completion. Operations migrates these
-                # mappings to git; retire removes this entire reader.
-                located = self._legacy_sources(request, bound_only=True)
-                if len(located) > 1:
-                    return result(DeliveryState.UNKNOWN, "ambiguous_legacy_sources")
-                source = next(iter(located), None)
-                locator = "legacy_completion_source"
-                if source is None and request.branch_name:
-                    source = self.source_heads.get(
-                        "refs/remotes/origin/" + request.branch_name.removeprefix("refs/heads/")
-                    )
-                    locator = "legacy_unlabelled_branch_head"
-                if source is None:
-                    located = self._legacy_sources(request)
-                    if len(located) > 1:
-                        return result(DeliveryState.UNKNOWN, "ambiguous_legacy_sources")
-                    source = next(iter(located), None)
-                    locator = "legacy_completion_source"
-                if source is None:
-                    if request.branch_name:
-                        return result(DeliveryState.UNKNOWN, "missing_ref")
-                    if request.has_recorded_source or any(
-                        row.get("project_id") == request.project_id
-                        and row.get("repository_id") == request.repository_id
-                        and any(member.get("task_id") == request.task_id and
-                                is_valid_git_oid(member.get("source_sha"))
-                                for member in row.get("manifest", []))
-                        for row in self.legacy_rows
-                    ):
-                        return result(DeliveryState.UNKNOWN, "unresolved_completion_source")
-                    return result(DeliveryState.NO_ARTIFACT, "branchless_organization")
-            if not is_valid_git_oid(source):
-                return result(DeliveryState.UNKNOWN, "invalid_source")
-            contained = await self.git.ais_ancestor(self.store, source, self.target_oid, strict=True)
-            if contained is None:
-                return result(DeliveryState.UNKNOWN, "git_error", source)
-            if contained:
-                return result(DeliveryState.CONTAINED, locator, source)
-            return result(DeliveryState.PENDING, locator, source)
+            # Without its retained record, a branch head, a reported commit or
+            # a historical manifest could at best locate *a* commit, never the
+            # complete final artifact of this generation.
+            if request.branch_name or request.has_recorded_source:
+                return result(DeliveryState.UNKNOWN, MISSING_PROVENANCE)
+            return result(DeliveryState.NO_ARTIFACT, "branchless_organization")
         except (GitError, OSError, ValueError, KeyError, TypeError):
             return result(DeliveryState.UNKNOWN, "missing_or_ambiguous_source")
 
-    def _legacy_sources(self, request, *, bound_only=False):
-        sources = set()
-        for row in self.legacy_rows:
-            if (row.get("project_id"), row.get("repository_id")) != (
-                request.project_id, request.repository_id
-            ):
-                continue
-            # Historical assembly refs locate sources too. They never establish
-            # containment: every located source is tested against our exact
-            # configured target, rather than the assembly target or row state.
-            row_target = row.get("target_ref") or ""
-            if row_target != request.target_ref and not row_target.startswith(
-                "refs/heads/aq/development/"
-            ):
-                continue
-            proofs = (row.get("evidence") or {}).get("completion_sources", [])
-            exact = [proof.get("source_sha") for proof in proofs if (
-                proof.get("task_id") == request.task_id
-                and request.completion_id is not None
-                and proof.get("completion_id") == request.completion_id
-            )]
-            if exact:
-                sources.update(source for source in exact if is_valid_git_oid(source))
-                continue
-            if bound_only:
-                continue
-            # Unlabelled manifest fallback has a bounded generation fence.
-            # It is an inventory item, not delivery authority. Never borrow a
-            # manifest explicitly bound to a different completion generation.
-            if any(proof.get("task_id") == request.task_id for proof in proofs):
-                continue
-            boundary = request.completed_at if request.completed_at is not None else (
-                request.task_version
-            )
-            if float(row.get("created_at", 0)) < boundary:
-                continue
-            sources.update(member["source_sha"] for member in row.get("manifest", []) if (
-                member.get("task_id") == request.task_id
-                and is_valid_git_oid(member.get("source_sha"))
-            ))
-        return sources
-
     @property
-    def legacy_inventory(self):
-        """Exact identities operations must migrate before bridge retirement."""
+    def unlabelled_inventory(self):
+        """Evaluated generations with an artifact but no exact source in git."""
         return tuple(sorted((
-            (request.task_id, request.completion_id, evidence.source_oid, evidence.reason)
+            (request.task_id, request.completion_id)
             for request, evidence in self._cache.items()
-            if evidence.reason.startswith("legacy_") or (
-                request.completion_id and evidence.state is DeliveryState.UNKNOWN
-            )
+            if evidence.reason == MISSING_PROVENANCE
         ), key=lambda item: (item[0], item[1] or "")))
 
 
@@ -298,6 +212,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
     from sqlalchemy import select
 
     from src.database.tables import archived_tasks, task_completion_records, tasks
+    from src.integration.publishable_artifact import legacy_artifact
 
     task_ids = set(task_ids)
     opened = nullcontext(conn) if conn is not None else db._engine.connect()
@@ -323,6 +238,11 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 task_completion_records.c.commits != "[]",
             )
         )).scalars())
+        # A retired historical manifest named a source this generation never
+        # recorded; its provenance stays unknown rather than organizational.
+        recorded_ids |= set((await reader.execute(
+            select(tasks.c.id).where(tasks.c.id.in_(task_ids), legacy_artifact(tasks))
+        )).scalars())
     completion_by_id = {
         row["task_id"]: db._row_to_task_completion(row) for row in completions
     }
@@ -339,7 +259,7 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
 
 
 async def delivery_snapshot(git, store, *, project_id, repository_id, repository_url,
-                            target_ref, legacy_rows=()):
+                            target_ref):
     """Fetch once and pin all batch observations to its exact target OID.
 
     Git failure yields an unknown snapshot even if stale tracking refs exist.
@@ -365,5 +285,5 @@ async def delivery_snapshot(git, store, *, project_id, repository_id, repository
         error = f"snapshot_git_error: {exc}"
     return DeliverySnapshot(
         git, str(store), project_id, repository_id, repository_url, target_ref,
-        target_oid, MappingProxyType(heads), error, tuple(legacy_rows),
+        target_oid, MappingProxyType(heads), error,
     )

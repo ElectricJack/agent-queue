@@ -1278,7 +1278,7 @@
       ]
     }
   },
-  "digest": "sha256:863c8d8fe623e571103c1c820fe3507d11b14871f2cd8fdbebdaa8f280501cde",
+  "digest": "sha256:5f6f8737959a171309dc8f43e51027b5569d9fc91a8dbb6fd85222cddcfcc18b",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2459,11 +2459,12 @@
         "src.config",
         "src.database",
         "src.database.queries.archive_queries",
-        "src.database.queries.blocked_state",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
         "src.integration.delivery_observer",
+        "src.integration.development",
+        "src.integration.provenance",
         "src.models",
         "src.orchestrator"
       ],
@@ -2878,6 +2879,7 @@
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
+        "src.integration.provenance",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
@@ -4492,6 +4494,8 @@
         "src.integration.delivery_observer",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.provenance",
+        "src.integration.publishable_artifact",
         "src.integration.status",
         "src.models"
       ],
@@ -4573,6 +4577,7 @@
         "src.integration.owner_recovery",
         "src.integration.provenance",
         "src.integration.provenance_migration",
+        "src.integration.publishable_artifact",
         "src.integration.status",
         "src.jobs.adapters",
         "src.jobs.policy",
@@ -6928,6 +6933,7 @@
         "src.integration.legacy_deliveries",
         "src.integration.legacy_repositories",
         "src.integration.parent_completion",
+        "src.integration.provenance",
         "src.integration.status",
         "src.models"
       ],
@@ -6947,7 +6953,9 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.delivery_observer",
+        "src.integration.development",
         "src.integration.legacy_repositories",
+        "src.integration.provenance",
         "src.integration.status",
         "src.models"
       ],
@@ -7708,6 +7716,7 @@
         "src.integration.development",
         "src.integration.obsolete_close",
         "src.integration.owner_recovery",
+        "src.integration.provenance",
         "src.models",
         "src.orchestrator",
         "src.profiles.capabilities"
@@ -8495,12 +8504,18 @@
       ],
       "default_arm": false,
       "imports": [
-        "src.database"
+        "src.database",
+        "src.database.engine",
+        "src.database.tables",
+        "src.integration.delivery_truth",
+        "src.integration.development",
+        "src.integration.provenance",
+        "src.integration.publishable_artifact"
       ],
       "markers": [
         "migration"
       ],
-      "summary": "Catch-up schedule state in the current baseline."
+      "summary": "Integration service schema: catch-up state and the retired delivery journal."
     },
     "tests/test_migration_metadata.py": {
       "areas": [
@@ -11560,6 +11575,7 @@
         "src.database",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.development",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
