@@ -663,13 +663,23 @@ def integration_development_sweep(ctx, project_id, retry, recover_child):
 @click.option("--offset", type=click.IntRange(min=0), default=0)
 @click.option("--task-id", default=None,
               help="Only the sources this held task's close needs; ignores --limit/--offset.")
+@click.option("--source", default=None,
+              help="With --task-id: attest the exact 40-hex final source of that COMPLETED "
+                   "task's current completion, for a legacy close that recorded none.")
 @click.pass_context
 @_handle_errors
-def integration_migrate_provenance(ctx, project_id, apply, limit, offset, task_id):
-    """Inventory legacy completion generations and exact repair bindings in Git."""
+def integration_migrate_provenance(ctx, project_id, apply, limit, offset, task_id, source):
+    """Inventory legacy completion generations and exact repair bindings in Git.
+
+    Each page is bounded in time: follow next_offset (and budget_exhausted);
+    counts summarises the page.
+    """
+    if source and not task_id:
+        raise click.UsageError("--source attests one task's completion; pass --task-id")
     _execute(ctx, "integration_migrate_provenance", {
         "project_id": project_id, "apply": apply, "limit": limit, "offset": offset,
         **({"task_id": task_id} if task_id else {}),
+        **({"source": source} if source else {}),
     })
 
 

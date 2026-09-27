@@ -25,6 +25,7 @@ from src.git.manager import (
     GitError,
     GitManager,
     PullRequestIdentity,
+    RemoteRefResult,
     RemoteRefState,
 )
 from src.integration.development import DevelopmentIntegration
@@ -1938,6 +1939,73 @@ async def test_isolated_app_delete_refuses_moved_remote(tmp_path):
         cwd=target,
         capture_output=True,
     ).returncode == 0
+
+
+@pytest.mark.asyncio
+async def test_isolated_app_push_of_several_heads_imports_once_and_leases_each(
+    tmp_path, monkeypatch
+):
+    """noble-horizon: provenance batches share one import and one transfer."""
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    _git(["push", str(target), f"{base}:refs/heads/taken"], checkout)
+    manager = GitManager()
+    fetches = []
+    real_import = manager._run_isolated_import_git
+
+    async def watched(args, **kwargs):
+        if "fetch" in args:
+            fetches.append(args)
+        return await real_import(args, **kwargs)
+
+    monkeypatch.setattr(manager, "_run_isolated_import_git", watched)
+    absent = "0" * 40
+    # Not atomic: a head whose lease fails is reported, the others still land.
+    with pytest.raises(GitError, match="authenticated Git push failed"):
+        await manager._apush_refs_with_app_auth_to_url(
+            str(checkout),
+            destination_url=target.as_uri(),
+            token="installation-token-sentinel",
+            updates=((tip, "new/one", absent), (base, "new/two", absent), (tip, "taken", absent)),
+        )
+    assert len(fetches) == 1
+    assert _git(["rev-parse", "refs/heads/new/one"], target) == tip
+    assert _git(["rev-parse", "refs/heads/new/two"], target) == base
+    assert _git(["rev-parse", "refs/heads/taken"], target) == base
+    with pytest.raises(GitError, match="names a head twice"):
+        await manager._apush_refs_with_app_auth_to_url(
+            str(checkout),
+            destination_url=target.as_uri(),
+            token="installation-token-sentinel",
+            updates=((tip, "again", absent), (base, "again", absent)),
+        )
+
+
+@pytest.mark.asyncio
+async def test_new_heads_report_a_failed_transfer_per_head_and_never_move_one(
+    tmp_path, monkeypatch
+):
+    checkout, target, _, base, tip = _git_push_case(tmp_path)
+    _git(["remote", "add", "origin", str(target)], checkout)
+    _git(["push", str(target), f"{base}:refs/heads/taken"], checkout)
+    manager = GitManager()
+    observed = await manager.apush_new_refs(
+        str(checkout), {"fresh": tip, "taken": tip}, repository_url=str(target)
+    )
+    assert observed["fresh"] == RemoteRefResult(RemoteRefState.PRESENT, oid=tip)
+    assert observed["taken"] == RemoteRefResult(RemoteRefState.PRESENT, oid=base)
+    assert await manager.als_remote_refs(
+        str(checkout), ["fresh", "missing"], repository_url=str(target)
+    ) == {
+        "fresh": RemoteRefResult(RemoteRefState.PRESENT, oid=tip),
+        "missing": RemoteRefResult(RemoteRefState.ABSENT),
+    }
+
+    monkeypatch.setattr(manager, "arun_git_result", AsyncMock(
+        side_effect=[subprocess.CompletedProcess([], 1, "", "remote unreachable"),
+                     subprocess.CompletedProcess([], 0, "", "")]))
+    failed = await manager.apush_new_refs(str(checkout), {"other": tip}, repository_url=str(target))
+    # Absent after a failed transfer is that failure, not an observation.
+    assert failed == {"other": RemoteRefResult(RemoteRefState.ERROR, error="remote unreachable")}
 
 
 @pytest.mark.asyncio

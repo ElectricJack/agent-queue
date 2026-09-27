@@ -1279,7 +1279,7 @@
       ]
     }
   },
-  "digest": "sha256:d84c80cc690d8fdc305b6a5d380dd0e038c9680a46735b9b0b7f821a2386bddf",
+  "digest": "sha256:db5e4ad0b9fee3f19c7d04f345d3a50476e54f58bce8b949903aabab788b752d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5815,6 +5815,7 @@
       "default_arm": true,
       "imports": [
         "src.claim_file",
+        "src.cli.client",
         "src.commands.contracts.integration",
         "src.commands.contracts.registry",
         "src.config",
@@ -5823,6 +5824,7 @@
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration",
+        "src.integration.delivery_truth",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"
@@ -10831,7 +10833,9 @@
         "src.profiles.capabilities",
         "src.reports.hourly"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Durable hourly author requests, CAS submission and deterministic fallback."
     },
     "tests/test_required_playbooks.py": {

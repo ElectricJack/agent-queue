@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:7375515ce77ae74cf0524bc4cef45c8dddc3ee2efe7a6b1d97194f97c5301b1f` |
+| Contract fingerprint | `sha256:6140d99e577d1805df3730ee4dc638fef57e2b97dfe9d6100e2df38c761bed56` |
 
 ## Parameters
 
@@ -25,6 +25,7 @@
 | `limit` | `integer` | no | `500` | — |
 | `offset` | `integer` | no | `0` | — |
 | `task_id` | `string \| null` | no | `null` | — |
+| `source` | `string \| null` | no | `null` | — |
 
 ## Result
 
@@ -40,9 +41,11 @@
 | `zero_fallback` | `boolean` | — |
 | `operations` | `object[]` | — |
 | `legacy_heads` | `object[]` | — |
+| `counts` | `object` | — |
+| `budget_exhausted` | `boolean` | — |
 | `next_offset` | `integer \| null` | — |
 
-Projected into the run receipt: `project_id`, `repository_id`, `inventory`, `repairs`, `ambiguous`, `fallback_generations`, `fallback_count`, `zero_fallback`, `operations`, `legacy_heads`, `next_offset`.
+Projected into the run receipt: `project_id`, `repository_id`, `inventory`, `repairs`, `ambiguous`, `fallback_generations`, `fallback_count`, `zero_fallback`, `operations`, `legacy_heads`, `counts`, `budget_exhausted`, `next_offset`.
 
 ## Outcomes
 
