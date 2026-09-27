@@ -48552,6 +48552,17 @@
               }
             ],
             "title": "Provider Generation"
+          },
+          "reason_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason Code"
           }
         },
         "type": "object",
@@ -48562,7 +48573,7 @@
           "action"
         ],
         "title": "RerouteDecision",
-        "description": "What one re-route sweep did (or would do) with one task (D12-D15).\n\n``action`` is ``move``, ``hold`` or ``skip``; ``kind`` names why a held\ntask is not moving (``provider_pinned``, ``no_equivalent_rung``,\n``awaiting_failover_capacity`` with ``ahead``, ...)."
+        "description": "What one re-route sweep did (or would do) with one task (D12-D15).\n\n``action`` is ``move``, ``hold`` or ``skip``; ``kind`` names why a held\ntask is not moving (``provider_pinned``, ``no_equivalent_rung``,\n``awaiting_failover_capacity`` with ``ahead``, the capacity spill kinds\n``spill_no_target`` / ``spill_pinned`` / ..., ...)."
       },
       "RerouteUndoRefusal": {
         "properties": {

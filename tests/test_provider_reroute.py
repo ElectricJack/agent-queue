@@ -27,7 +27,7 @@ import pytest
 
 from src.config import ProviderFailoverConfig
 from src.intelligence_classes import IntelligenceClass
-from src.models import AgentProfile, Task, TaskStatus
+from src.models import Agent, AgentProfile, Task, TaskStatus
 from src.providers.availability import AVAILABLE, DEGRADED, DISABLED, EXHAUSTED, UNAUTHENTICATED
 from src.providers.intent import CLASS_ONLY, PINNED, PREFERRED
 from src.providers.reroute import (
@@ -695,6 +695,305 @@ def test_decision_dicts_carry_the_api_model_fields():
     [d] = plan_sweep([_cand("t1")], _ctx())
     RerouteDecision(**d.to_dict())
     assert SimpleNamespace  # keep the import used for readability of fixtures
+
+
+# -- capacity spill in the automatic sweep (D24: S1, S2, S7) ------------------------
+
+#: ``standard-high-codex`` is full (2 of 2 busy) with one task queued behind it;
+#: ``standard-high-claude`` has an idle worker and nothing queued.  Each entry is
+#: ``(max_active, idle, busy, ready)`` in ``p-1``.
+SATURATED = {"standard-high-codex": (2, 0, 2, 1), "standard-high-claude": (2, 1, 0, 0)}
+
+
+async def _measurement(orch, pools, *, room=0):
+    """A fake ``PoolMeasurement`` of ``p-1``; *room* is its free workspaces."""
+    from src.orchestrator.pools import PoolMeasurement
+    from src.scheduler import PlacementCandidate, PoolKey, PoolProjectSupply, PoolSupply
+
+    profiles = {p.id: p for p in await orch.db.list_profiles()}
+    m = PoolMeasurement()
+    m.projects = {"p-1": await orch.db.get_project("p-1")}
+    live_total = sum(idle + busy for _max, idle, busy, _ready in pools.values())
+    for pid, (max_active, idle, busy, ready) in pools.items():
+        key = PoolKey(pid)
+        m.profiles[key] = profiles[pid]
+        m.supply[key] = PoolSupply(
+            running_idle=idle,
+            running_busy=busy,
+            by_project={"p-1": PoolProjectSupply(running_idle=idle, running_busy=busy)},
+        )
+        m.demand[key] = ready
+        m.bounds[key] = (0, max_active)
+        m.candidates[key] = [
+            PlacementCandidate("p-1", ready=ready, live=idle + busy,
+                               project_live_total=live_total, project_cap=None,
+                               workspace_capacity=room, quarantined=False, warm_floor=0)
+        ]
+    return m
+
+
+def _measure_with(orch, pools, *, room=0):
+    """Point the sweep at a fake measurement; returns the list of calls."""
+    calls: list = []
+
+    async def measure(project_ids=None):
+        calls.append(project_ids)
+        return await _measurement(orch, pools, room=room)
+
+    orch.provider_reroute._pool_measure = measure
+    return calls
+
+
+async def _age(orch, task_id, seconds=900.0):
+    """Make *task_id* look as if it has waited *seconds* (S3 reads ``updated_at``)."""
+    import time
+
+    from sqlalchemy import update
+
+    from src.database.tables import tasks
+
+    async with orch.db._engine.begin() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == task_id).values(updated_at=time.time() - seconds)
+        )
+
+
+async def _waiting(orch, task_id, profile="standard-high-codex", **kw):
+    await _task(orch, task_id, profile, **kw)
+    await _age(orch, task_id)
+
+
+async def test_spill_moves_a_waiting_task_off_a_saturated_rung(orch):
+    """D24 acceptance: the move, its ``capacity_spill`` row, comment and both events."""
+    import json
+
+    await _waiting(orch, "stuck")
+    calls = _measure_with(orch, SATURATED)
+    spilled: list = []
+    rerouted: list = []
+    orch.bus.subscribe("pool.spilled", spilled.append)
+    orch.bus.subscribe("task.rerouted", rerouted.append)
+
+    result = await _handler(orch).execute("provider_reroute", {})
+
+    assert result["outcome"] == "rerouted", result
+    assert len(calls) == 1  # one pool measurement per sweep
+    [move] = result["moved"]
+    assert (move["task_id"], move["from_profile_id"], move["to_profile_id"]) == (
+        "stuck", "standard-high-codex", "standard-high-claude"
+    )
+    assert move["reason_code"] == "capacity_spill"
+    [batch] = result["batch_ids"]
+    assert batch.startswith("spill-")
+    assert result["notices"] == []  # a sweep every five minutes never messages (S7)
+
+    task = await orch.db.get_task("stuck")
+    assert task.profile_id == "standard-high-claude"
+    assert task.rerouted_from == "standard-high-codex"
+    assert task.provider_intent == PREFERRED and task.intelligence_class == "standard-high"
+    [row] = await orch.db.list_task_reroutes(task_id="stuck")
+    assert row["reason_code"] == "capacity_spill" and row["batch_id"] == batch
+    assert (row["from_provider"], row["to_provider"]) == ("codex", "claude")
+    assert row["provider_state"] == AVAILABLE
+    comments = (await orch.db.list_task_comments("stuck"))["comments"]
+    [body] = [c["body"] for c in comments if "capacity spill" in c["body"]]
+    assert "standard-high-codex had no free capacity for 15 min: 2/2 live, 0 idle" in body
+    assert f"batch `{batch}`" in body
+    assert "aq provider reroute-undo --task-id stuck" in body
+
+    assert [(e["task_id"], e["reason_code"], e["batch_id"]) for e in rerouted] == [
+        ("stuck", "capacity_spill", batch)
+    ]
+    [event] = spilled
+    assert event["batch_id"] == batch and event["moved"] == 1
+    assert event["routes"] == [
+        {"from_profile_id": "standard-high-codex", "to_profile_id": "standard-high-claude",
+         "count": 1}
+    ]
+    assert event["projects"] == ["p-1"]
+    [logged] = await orch.db.get_recent_events(event_type="pool.spilled")
+    assert json.loads(logged["payload"])["batch_id"] == batch
+    # Spill is not an outage: no failover batch event.
+    assert await orch.db.get_recent_events(event_type="provider.reroute_batch") == []
+
+
+async def test_spill_dry_run_plans_and_writes_nothing(orch):
+    await _waiting(orch, "stuck")
+    _measure_with(orch, SATURATED)
+    result = await _handler(orch).execute("provider_reroute", {"dry_run": True})
+    assert result["outcome"] == "rerouted" and result["applied"] is False, result
+    assert [(d["task_id"], d["reason_code"]) for d in result["moved"]] == [
+        ("stuck", "capacity_spill")
+    ]
+    assert result["batch_ids"] == []
+    assert (await orch.db.get_task("stuck")).profile_id == "standard-high-codex"
+    assert await orch.db.list_task_reroutes(task_id="stuck") == []
+    assert await orch.db.get_recent_events(event_type="task.rerouted") == []
+    assert await orch.db.get_recent_events(event_type="pool.spilled") == []
+
+
+async def test_spill_under_mode_observe_answers_disabled(orch):
+    await _waiting(orch, "stuck")
+    _measure_with(orch, SATURATED)
+    orch.config.provider_failover.mode = "observe"
+    try:
+        result = await _handler(orch).execute("provider_reroute", {})
+    finally:
+        orch.config.provider_failover.mode = "enforce"
+    assert result["outcome"] == "disabled" and result["applied"] is False, result
+    assert [d["task_id"] for d in result["moved"]] == ["stuck"]  # the plan, never applied
+    assert (await orch.db.get_task("stuck")).profile_id == "standard-high-codex"
+    assert await orch.db.list_task_reroutes(task_id="stuck") == []
+
+
+async def test_spill_enabled_false_moves_nothing(orch):
+    await _waiting(orch, "stuck")
+    calls = _measure_with(orch, SATURATED)
+    orch.config.provider_failover.spill.enabled = False
+    try:
+        result = await _handler(orch).execute("provider_reroute", {})
+    finally:
+        orch.config.provider_failover.spill.enabled = True
+    assert result["outcome"] == "idle" and result["moved"] == [], result
+    assert calls == []  # the pass does not even measure
+    assert (await orch.db.get_task("stuck")).profile_id == "standard-high-codex"
+
+
+async def test_a_task_younger_than_after_seconds_is_not_spilled(orch):
+    await _task(orch, "fresh", "standard-high-codex")
+    _measure_with(orch, SATURATED)
+    result = await _handler(orch).execute("provider_reroute", {})
+    assert result["outcome"] == "idle" and result["moved"] == [], result
+    assert (await orch.db.get_task("fresh")).profile_id == "standard-high-codex"
+
+
+async def test_spill_is_automatic_only(orch):
+    """S1: a sweep scoped to a provider or to named tasks never spills."""
+    await _waiting(orch, "stuck")
+    calls = _measure_with(orch, SATURATED)
+    handler = _handler(orch)
+    scoped = await handler.execute("provider_reroute", {"provider": "codex"})
+    named = await handler.execute("provider_reroute", {"task_id": ["stuck"]})
+    assert scoped["moved"] == [] and named["moved"] == [], (scoped, named)
+    assert calls == []
+    assert (await orch.db.get_task("stuck")).profile_id == "standard-high-codex"
+
+
+async def test_spill_reroute_undo_by_batch_restores(orch):
+    await _waiting(orch, "stuck")
+    _measure_with(orch, SATURATED)
+    handler = _handler(orch)
+    result = await handler.execute("provider_reroute", {})
+    [batch] = result["batch_ids"]
+    undone = await handler.execute("provider_reroute_undo", {"batch_id": batch})
+    assert undone["outcome"] == "undone", undone
+    task = await orch.db.get_task("stuck")
+    assert task.profile_id == "standard-high-codex" and task.rerouted_from is None
+    rows = await orch.db.list_task_reroutes(task_id="stuck")
+    assert [r["reason_code"] for r in rows] == ["operator_undo", "capacity_spill"]
+    assert rows[1]["undone_at"] is not None
+
+
+async def test_spill_counts_toward_the_automatic_move_limits(orch):
+    """S3: a spilled task is inside ``task_cooldown_seconds`` on the next sweep."""
+    await _waiting(orch, "stuck")
+    _measure_with(orch, SATURATED)
+    handler = _handler(orch)
+    await handler.execute("provider_reroute", {})
+    # Now it waits on a full claude rung with an idle codex worker beside it.
+    await _age(orch, "stuck")
+    _measure_with(
+        orch, {"standard-high-codex": (2, 1, 0, 0), "standard-high-claude": (2, 0, 2, 1)}
+    )
+    result = await handler.execute("provider_reroute", {})
+    assert result["moved"] == [], result
+    [held] = result["held"]
+    assert (held["task_id"], held["kind"], held["reason_code"]) == (
+        "stuck", "reroute_limit_reached", "capacity_spill"
+    )
+    assert (await orch.db.get_task("stuck")).profile_id == "standard-high-claude"
+
+
+async def test_failover_and_spill_share_a_sweep_and_never_plan_a_task_twice(orch):
+    """With codex down, failover still moves its queue while spill relieves a
+    full claude rung, and every task is decided by exactly one pass."""
+    await orch.db.create_profile(
+        AgentProfile(id="standard-high-claude-b", name="standard-high-claude-b",
+                     harness="claude", default_class="standard-high")
+    )
+    await orch.db.update_profile("standard-high-claude-b", lifecycle="pool", max_active=2)
+    await _waiting(orch, "down", "standard-high-codex", priority=10)
+    await _waiting(orch, "full", "standard-high-claude")
+    await _codex_down(orch)
+    _measure_with(
+        orch,
+        {
+            "standard-high-codex": (2, 0, 0, 1),
+            "standard-high-claude": (2, 0, 2, 1),
+            "standard-high-claude-b": (2, 1, 0, 0),
+        },
+    )
+    result = await _handler(orch).execute("provider_reroute", {})
+    assert result["outcome"] == "rerouted", result
+    moved = {d["task_id"]: (d["to_profile_id"], d["reason_code"]) for d in result["moved"]}
+    assert moved == {
+        "down": ("standard-high-claude", "provider_unavailable"),
+        "full": ("standard-high-claude-b", "capacity_spill"),
+    }
+    decided = [d["task_id"] for key in ("moved", "held", "skipped") for d in result[key]]
+    assert len(decided) == len(set(decided)), decided
+    generation = orch.provider_availability.row("codex").generation
+    assert result["batch_ids"][0] == f"prb-codex-{generation}"
+    assert result["batch_ids"][1].startswith("spill-")
+    assert (await orch.db.get_task("down")).profile_id == "standard-high-claude"
+    assert (await orch.db.get_task("full")).profile_id == "standard-high-claude-b"
+
+
+async def test_a_failing_measurement_never_breaks_failover(orch):
+    await _task(orch, "down", "standard-high-codex")
+    await _waiting(orch, "stuck", "standard-high-claude")
+    await _codex_down(orch)
+
+    async def broken(project_ids=None):
+        raise RuntimeError("measurement exploded")
+
+    orch.provider_reroute._pool_measure = broken
+    result = await _handler(orch).execute("provider_reroute", {})
+    assert [d["task_id"] for d in result["moved"]] == ["down"], result
+    assert (await orch.db.get_task("stuck")).profile_id == "standard-high-claude"
+
+
+async def test_spill_candidates_are_the_claim_frontier(orch):
+    """S3: READY, unblocked, unassigned, no ``hold:`` label, in claim order."""
+    import time
+
+    from sqlalchemy import update
+
+    from src.database.tables import tasks
+
+    for task_id, priority in (("a", 50), ("b", 10), ("blocked", 1), ("held", 1),
+                              ("assigned", 1), ("young", 1)):
+        await _waiting(orch, task_id, priority=priority)
+    await _task(orch, "other-rung", "standard-high-claude")
+    await _age(orch, "other-rung")
+    await orch.db.add_task_label("held", "hold:operator")
+    await orch.db.create_agent(
+        Agent(id="agent-x", name="agent-x", profile_id="standard-high-codex")
+    )
+    async with orch.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "blocked").values(is_blocked=1))
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "assigned").values(assigned_agent_id="agent-x")
+        )
+    await _age(orch, "young", seconds=10.0)
+    rows = await orch.db.list_spill_candidates(
+        ["standard-high-codex"], updated_before=time.time() - 300
+    )
+    assert [row["id"] for row in rows] == ["b", "a"]
+    assert all(row["updated_at"] < time.time() - 300 for row in rows)
+    everything = await orch.db.list_spill_candidates(["standard-high-codex"])
+    assert [row["id"] for row in everything] == ["young", "b", "a"]
+    assert await orch.db.list_spill_candidates([]) == []
 
 
 # -- the direct path fails fast (D13a) ---------------------------------------------

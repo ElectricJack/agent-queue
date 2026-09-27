@@ -490,6 +490,10 @@ class Orchestrator(
                 self.session_spec_builder, "_intelligence_classes", None
             ) or self.intelligence_classes,
             bus=self.bus,
+            # Capacity spill (provider-failover D24) reads one pool
+            # measurement per automatic sweep, with the sizer's global cap.
+            pool_measure=self._measure_pools,
+            pool_global_cap=self._pool_global_cap,
         )
         self.provider_availability.reroute = self.provider_reroute
         # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for

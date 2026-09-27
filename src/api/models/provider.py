@@ -243,7 +243,8 @@ class RerouteDecision(BaseModel):
 
     ``action`` is ``move``, ``hold`` or ``skip``; ``kind`` names why a held
     task is not moving (``provider_pinned``, ``no_equivalent_rung``,
-    ``awaiting_failover_capacity`` with ``ahead``, ...).
+    ``awaiting_failover_capacity`` with ``ahead``, the capacity spill kinds
+    ``spill_no_target`` / ``spill_pinned`` / ..., ...).
     """
 
     task_id: str
@@ -265,6 +266,9 @@ class RerouteDecision(BaseModel):
     title: str = ""
     status: str = ""
     provider_generation: int | None = None
+    #: Which pass decided it: ``provider_unavailable`` (failover),
+    #: ``operator_forced`` or ``capacity_spill`` (D24).
+    reason_code: str | None = None
 
 
 class ProviderRerouteResponse(BaseModel):
