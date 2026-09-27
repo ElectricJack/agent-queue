@@ -78,4 +78,28 @@ describe("WebSocket wire discriminators", () => {
     expect(client.getQueryState(["sessions", "task"])?.isInvalidated).toBe(false);
     client.clear();
   });
+
+  it("refreshes the provider allocation view on pool and session frames", () => {
+    vi.useFakeTimers();
+    const client = new QueryClient();
+    renderHook(() => useEventStream(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+
+    client.setQueryData(["providers", "allocation"], {});
+    transport.instance.onmessage?.({
+      data: JSON.stringify({ _event_type: "pool.lifecycle_changed", profile_id: "worker", request_id: "alloc-1" }),
+    });
+    expect(client.getQueryState(["providers", "allocation"])?.isInvalidated).toBe(true);
+
+    client.setQueryData(["providers", "allocation"], {});
+    transport.instance.onmessage?.({ data: JSON.stringify({ _event_type: "session.exited", session_id: "s1" }) });
+    // A session burst refreshes the provider supply once, like the pool rows.
+    vi.advanceTimersByTime(1_000);
+    expect(client.getQueryState(["providers", "allocation"])?.isInvalidated).toBe(true);
+    client.clear();
+    vi.useRealTimers();
+  });
 });

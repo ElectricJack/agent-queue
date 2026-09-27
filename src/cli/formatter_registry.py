@@ -223,6 +223,9 @@ def _register_all():
         format_pool_table,
         format_profile_detail,
         format_provider_held_tasks,
+        format_provider_allocation_status,
+        format_provider_allocation_preview,
+        format_provider_allocation_apply,
         format_provider_table,
         format_profile_list,
         format_prompt_list,
@@ -477,6 +480,15 @@ def _register_all():
     )
 
     # -- Provider availability (provider-failover D20) ------------------------
+
+    for command, render in (
+        ("provider_allocation_status", format_provider_allocation_status),
+        ("provider_allocation_preview", format_provider_allocation_preview),
+        ("provider_allocation_apply", format_provider_allocation_apply),
+    ):
+        # Keep the entire typed object in JSON: projects, diagnostics, ceilings
+        # and warnings are part of the response, alongside the profile rows.
+        FORMATTERS[command] = FormatterSpec(render=render, many=False)
 
     FORMATTERS["provider_status"] = FormatterSpec(
         render=format_provider_table,

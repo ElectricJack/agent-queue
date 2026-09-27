@@ -808,6 +808,83 @@ aq system get-recent-events --event-type 'pool.*' --since 10m
 
 ---
 
+## 6a. Provider allocation
+
+`aq pool provider` groups ordinary worker profiles by their effective harness
+provider. Use a provider key such as `codex` or its vendor alias `openai`.
+Control and stage profiles, named profiles, templates, retired project rows,
+malformed profiles and unknown providers appear in diagnostics and are excluded
+from bulk selection.
+
+```bash
+aq pool provider status
+aq pool provider status --project-id agent-queue --provider openai
+aq pool provider status --json
+```
+
+Status shows lifecycle and bounds per profile, fleet and per-project demand
+and supply, busy and idle sessions with task titles and idle ages, explicit
+pins, manual agent definitions and their overrides, project routing preferences,
+and the last allocation. `--project-id` filters project detail; bounds and
+aggregate counts remain fleet-wide. Project-scoped callers see other projects'
+details redacted. `--json` keeps the complete typed response in the versioned
+`data` envelope, including projects, diagnostics and ceilings.
+
+Every change starts with a read-only preview:
+
+```bash
+aq pool provider preview --provider openai --lifecycle pool --min 0 --max 2
+aq pool provider apply --preview-token '<TOKEN_FROM_PREVIEW>'
+```
+
+Omitting `--profiles` selects every eligible worker profile on that provider.
+Use `--profiles ID,ID` to narrow it; obtain ids from status or
+`aq agent list-profiles`, with available classes listed by
+`aq system list-intelligence-classes`. `--lifecycle pool|task` changes
+participation. `--min` and `--max N|unbounded` set **per-profile** pool bounds;
+omitting either preserves that bound. Preview prints the before/after profiles,
+project-effective limits, live session actions, pinned tasks, manual agent push
+eligibility and warnings. Its aggregate configured ceiling is a total for
+inspection, not a separate provider cap: `--max 2` on three enabled pool
+profiles configures a total ceiling of six, still subject to the global pool
+cap and project capacity.
+
+`--receive-new-work PROJECT` sets that project's preferred provider for
+unpinned work; `--clear-new-work PROJECT` restores default routing. The flags
+are mutually exclusive. Existing `class_only` READY work can move to equivalent
+rungs when setting a preference. Explicit pins, `preferred` task routes and
+in-progress work stay as routed. If the preferred provider has no compatible
+class option, new work waits with `preferred_provider_unavailable`; it does
+not silently spill to another provider.
+
+Drain behavior is explicit:
+
+| Preview flag | Idle sessions | Busy sessions |
+|---|---|---|
+| `--drain graceful` (default) | Marked stopped for reconciler teardown | Finish their task, then stop |
+| `--drain idle-now` | Terminated now | Finish their task, then stop |
+| `--drain interrupt-busy` | Terminated now | Interrupted only with operator scope and exact-set authorization |
+
+For interruption, apply needs `--authorize-busy-interrupt ID,ID` matching
+every affected busy session (or its task) in the preview. Pinned READY work
+left on profiles leaving the pool raises a blocking warning: acknowledge
+deliberate waiting with `--allow-pinned-wait` on preview or apply. Manual
+agents and their overrides remain unchanged; preview names changes to whether
+they can receive push work.
+
+Apply accepts the preview token and explicit authorizations. It accepts no
+provider, profile, lifecycle, bounds, routing or drain selectors. The daemon
+rejects a changed snapshot with `preview_stale` and returns a fresh preview;
+review it before using its token. Tokens belong to the issuing daemon, so
+preview again after a restart. Global lifecycle/bounds changes and busy
+interruption require operator scope; a project admin may change its own
+project's preference. A task-scoped worker cannot preview or apply.
+
+Apply reports individual applied, failed and compensated profile rows. A
+partial failure is an error, not a successful cutover. The durable
+`provider.allocation_changed` audit contains the request id and before/after
+state; related `pool.*` events carry the same request id.
+
 ## 7. A cutover runbook
 
 For a fleet moving several worker profiles at once. Every step is an admin
@@ -824,20 +901,24 @@ on the per-project breakdown, not a pool address.
 aq doctor --check pools.disabled --check pools.orphan_agents
 aq system get-config --section swarm            # note global_max_active
 aq project get --project-id agent-queue         # note max_concurrent_agents
+aq pool provider status --project-id agent-queue
 ```
 
 Size the fleet against the box, not against the project roster: the sum of
 every profile's `max_active` is bounded by `swarm.global_max_active`, which
 defaults to `resources.max_concurrent_agents` (8).
 
-**2. Flip lifecycle, then bounds, one profile at a time.** Do the smallest,
-least-loaded profile first and watch a full tick before continuing.
+**2. Preview and apply a small selection first.** Choose a least-loaded
+profile from status, then watch a full tick before expanding the selection.
+Read both the per-profile bounds and the aggregate ceiling in the preview.
 
 ```bash
 P=agent-queue
-aq pool set-lifecycle --profile-id astra-high-codex --lifecycle pool
-aq pool scale         --profile-id astra-high-codex --min 0 --max 1
-aq pool status --project-id $P
+PROFILE='<PROFILE_ID_FROM_STATUS>'
+aq pool provider preview --provider openai --profiles "$PROFILE" \
+  --lifecycle pool --min 0 --max 1 --drain graceful
+aq pool provider apply --preview-token '<TOKEN_FROM_PREVIEW>'
+aq pool provider status --project-id "$P" --provider openai
 ```
 
 Keep `min 0` for every pool unless you are deliberately paying for a warm
@@ -870,10 +951,11 @@ If a row must be taken out of service, disable it
 (`aq agent edit --agent-id <id> --no-enabled`) — do not delete it; see the
 warning in §5.
 
-**5. Record it.** `pool.bounds_changed` and `pool.lifecycle_changed` are
-bus-only events and are gone once the daemon restarts. The durable record of a
-cutover is the system profile markdown in the vault and whatever you write
-down:
+**5. Record it.** Save apply's request id and check status's last allocation.
+`provider.allocation_changed` is the durable audit; the related
+`pool.bounds_changed`, `pool.lifecycle_changed` and `pool.session_drained`
+events carry that request id. The profile markdown also records the resulting
+configuration:
 
 ```bash
 git -C ~/.agent-queue/vault status --short   # if the vault is version-controlled

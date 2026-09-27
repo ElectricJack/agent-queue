@@ -1600,6 +1600,388 @@ def _until_text(ts: float | None) -> str:
     return f"in {delta / 86400:.1f}d"
 
 
+def _allocation_table(title: str, columns: tuple[str, ...], rows: list) -> Table:
+    """Plain-text cells keep task titles and operator ids out of Rich markup."""
+    table = Table(title=title, title_style="bold", border_style="bright_black")
+    for column in columns:
+        table.add_column(column, overflow="fold")
+    for row in rows:
+        table.add_row(*(Text("—" if value is None else str(value)) for value in row))
+    return table
+
+
+def _allocation_ceiling(value: dict) -> str:
+    maximum = (
+        "unbounded"
+        if value.get("unbounded") or value.get("max_active") is None
+        else value["max_active"]
+    )
+    return (
+        f"min {value.get('min_active', 0)}, max {maximum} "
+        f"across {value.get('pool_profiles', 0)} enabled pool profiles"
+    )
+
+
+def _allocation_state(value: dict) -> str:
+    if value.get("lifecycle") != "pool":
+        return f"{value.get('lifecycle', '?')}; enabled={value.get('enabled', True)}; no pool"
+    maximum = value.get("max_active")
+    return (
+        f"pool; enabled={value.get('enabled', True)}; min={value.get('min_active')}; "
+        f"max={'unbounded' if maximum is None else maximum}; "
+        f"min/project={value.get('min_per_project')}"
+    )
+
+
+def _allocation_sessions(rows: list[dict]) -> Group:
+    parts = [Text("Live sessions", style="bold")]
+    for row in rows:
+        parts.append(
+            Text(
+                f"Session {row['session_id']} — {row.get('project_id') or '—'} / "
+                f"{row.get('profile_id') or '—'}"
+            )
+        )
+        parts.append(
+            Text(
+                f"  {row['activity']} / {row['state']}; "
+                f"idle seconds: {row.get('idle_seconds', '—')}; "
+                f"action: {row.get('action', 'none')}"
+            )
+        )
+        if row.get("task_id"):
+            parts.append(Text(f"  Task {row['task_id']}: {row.get('task_title') or '—'}"))
+    return Group(*parts)
+
+
+def _allocation_warnings(data: dict) -> list[Text]:
+    return [
+        Text(
+            f"{'BLOCKING' if warning.get('blocking') else 'Warning'} "
+            f"{warning.get('code', '')}: {warning.get('message', '')} "
+            f"({', '.join(warning.get('subjects') or [])})"
+            f"{' [acknowledged]' if warning.get('acknowledged') else ''}",
+            style="yellow",
+        )
+        for warning in data.get("warnings", [])
+    ]
+
+
+def _allocation_affected(data: dict) -> list:
+    parts = []
+    if data.get("pinned"):
+        parts.append(
+            _allocation_table(
+                "Pinned tasks",
+                ("Task", "Project", "Profile", "Status", "Waits"),
+                [
+                    (
+                        row["task_id"],
+                        row.get("project_id"),
+                        row["profile_id"],
+                        row["status"],
+                        row.get("waits", False),
+                    )
+                    for row in data["pinned"]
+                ],
+            )
+        )
+    if data.get("manual_agents"):
+        parts.append(
+            _allocation_table(
+                "Manual agents — push eligibility",
+                ("Agent", "Profile", "Harness", "Before", "After"),
+                [
+                    (
+                        row["agent_id"],
+                        row["profile_id"],
+                        row.get("effective_harness"),
+                        row["push_before"],
+                        row["push_after"],
+                    )
+                    for row in data["manual_agents"]
+                ],
+            )
+        )
+    preference = data.get("preference")
+    if preference:
+        parts.append(
+            Text(
+                f"New work for {preference['project_id']}: "
+                f"{preference.get('before') or 'default routing'} -> "
+                f"{preference.get('after') or 'default routing'}"
+            )
+        )
+    parts.extend(_allocation_warnings(data))
+    return parts
+
+
+def format_provider_allocation_status(data: dict) -> Group:
+    """The complete fleet view, retaining per-project and excluded-profile context."""
+    global_max = data.get("global_max_active")
+    parts = [Text(f"Global pool ceiling: {'unbounded' if global_max is None else global_max}")]
+    if data.get("redacted"):
+        parts.append(
+            Text(
+                "Other projects' detail is redacted; counts and bounds remain fleet-wide.",
+                style="yellow",
+            )
+        )
+    if not data.get("providers"):
+        parts.append(Text("No ordinary worker providers configured.", style="dim"))
+    counters = ("ready", "idle", "busy", "starting", "draining", "unresponsive")
+    for group in data.get("providers", []):
+        parts.append(
+            Text(
+                f"{group['vendor']} ({group['provider']}) — {group.get('state', 'available')}",
+                style="bold",
+            )
+        )
+        parts.append(Text(f"Aggregate configured ceiling: {_allocation_ceiling(group['ceiling'])}"))
+        parts.append(
+            Text(
+                "Fleet supply: "
+                + ", ".join(f"{key}={group['supply'].get(key, 0)}" for key in counters)
+            )
+        )
+        profiles = group.get("profiles", [])
+        parts.append(
+            _allocation_table(
+                "Worker profiles — bounds per profile",
+                ("Profile", "Harness", "Class", "Configuration", "Pins / preferred"),
+                [
+                    (
+                        row["profile_id"] + (f"\n{row['name']}" if row.get("name") else ""),
+                        row["harness"],
+                        row.get("intelligence_class"),
+                        _allocation_state(row),
+                        f"{row['pinned']['count']} / {row['preferred']['count']}",
+                    )
+                    for row in profiles
+                ],
+            )
+        )
+        supply_rows, session_rows, pin_rows = [], [], []
+        for row in profiles:
+            supply_rows.append(
+                (row["profile_id"], "fleet", *(row["supply"].get(key) for key in counters))
+            )
+            for project in row.get("projects", []):
+                supply_rows.append(
+                    (
+                        row["profile_id"],
+                        project.get("project_id"),
+                        *(project.get(key) for key in counters),
+                    )
+                )
+            for session in row.get("sessions", []):
+                session_rows.append({**session, "profile_id": row["profile_id"]})
+            for intent in ("pinned", "preferred"):
+                pin_rows.extend(
+                    (task_id, row["profile_id"], intent)
+                    for task_id in row[intent].get("task_ids", [])
+                )
+            hidden = row.get("hidden") or {}
+            if any(hidden.values()):
+                parts.append(
+                    Text(
+                        f"{row['profile_id']} hidden detail: "
+                        + ", ".join(f"{key}={value}" for key, value in hidden.items())
+                    )
+                )
+        parts.append(
+            _allocation_table("Demand and supply", ("Profile", "Project", *counters), supply_rows)
+        )
+        if session_rows:
+            parts.append(_allocation_sessions(session_rows))
+        if pin_rows:
+            parts.append(
+                _allocation_table("Explicit task intent", ("Task", "Profile", "Intent"), pin_rows)
+            )
+        if group.get("manual_agents"):
+            parts.append(Text("Manual agents and overrides", style="bold"))
+            for agent in group["manual_agents"]:
+                parts.append(
+                    Text(
+                        f"Agent {agent['agent_id']} ({agent.get('name', '')}) "
+                        f"— {agent['profile_id']}"
+                    )
+                )
+                parts.append(
+                    Text(
+                        f"  {agent['state']}; enabled={agent['enabled']}; "
+                        f"effective: {agent.get('effective_harness')} / "
+                        f"{agent.get('effective_class')}"
+                    )
+                )
+                parts.append(
+                    Text(
+                        f"  Overrides: harness={agent.get('harness')}, "
+                        f"class={agent.get('intelligence_class')}, "
+                        f"model={agent.get('model')}"
+                    )
+                )
+                if agent.get("current_task_id"):
+                    parts.append(
+                        Text(
+                            f"  Task {agent['current_task_id']}: "
+                            f"{agent.get('current_task_title') or '—'}"
+                        )
+                    )
+        event = group.get("last_allocation")
+        if event:
+            parts.append(
+                Text(
+                    f"Last allocation: {event.get('request_id')} {event.get('status')} by {event.get('actor')}"
+                )
+            )
+    if data.get("projects"):
+        parts.append(
+            _allocation_table(
+                "Project routing preferences",
+                ("Project", "Preferred provider", "Agent cap"),
+                [
+                    (
+                        row["project_id"],
+                        row.get("preferred_provider") or "default routing",
+                        row.get("max_concurrent_agents"),
+                    )
+                    for row in data["projects"]
+                ],
+            )
+        )
+    if data.get("diagnostics"):
+        parts.append(
+            _allocation_table(
+                "Excluded from bulk selection",
+                ("Kind", "Id", "Reason"),
+                [(row["kind"], row["id"], row["reason"]) for row in data["diagnostics"]],
+            )
+        )
+    return Group(*parts)
+
+
+def format_provider_allocation_preview(data: dict) -> Group:
+    """Print the reviewed set and the exact impact bound to its token."""
+    parts = [
+        Text(f"{data.get('vendor', '')} ({data['provider']}) allocation preview", style="bold")
+    ]
+    parts.append(
+        Text(
+            f"Required scope: {data['required_scope']}; drain: {data['request'].get('drain', 'graceful')}"
+        )
+    )
+    parts.append(
+        _allocation_table(
+            "Profiles — before and after",
+            ("Profile", "Selected", "Before", "After", "Changed fields"),
+            [
+                (
+                    row["profile_id"],
+                    row["selected"],
+                    _allocation_state(row["before"]),
+                    _allocation_state(row["after"]),
+                    ", ".join(row.get("changed_fields", [])),
+                )
+                for row in data.get("profiles", [])
+            ],
+        )
+    )
+    ceiling = data["ceiling"]
+    parts.append(
+        Text(
+            f"Aggregate configured ceiling: Before {_allocation_ceiling(ceiling['before'])}; "
+            f"After {_allocation_ceiling(ceiling['after'])}"
+        )
+    )
+    if data.get("project_limits"):
+        parts.append(
+            _allocation_table(
+                "Project-effective limits",
+                ("Project", "Profile", "Before", "After"),
+                [
+                    (
+                        row["project_id"],
+                        row["profile_id"],
+                        "no pool"
+                        if row["lifecycle_before"] != "pool"
+                        else row.get("effective_max_before")
+                        if row.get("effective_max_before") is not None
+                        else "unbounded",
+                        "no pool"
+                        if row["lifecycle_after"] != "pool"
+                        else row.get("effective_max_after")
+                        if row.get("effective_max_after") is not None
+                        else "unbounded",
+                    )
+                    for row in data["project_limits"]
+                ],
+            )
+        )
+    if data.get("sessions"):
+        parts.append(_allocation_sessions(data["sessions"]))
+    busy = data.get("busy") or {}
+    if busy.get("session_ids"):
+        parts.append(
+            Text(
+                f"Busy authorization set — sessions: {', '.join(busy['session_ids'])}; "
+                f"tasks: {', '.join(busy.get('task_ids', []))}"
+            )
+        )
+    parts.extend(_allocation_affected(data))
+    if data.get("blocked"):
+        parts.append(
+            Text("BLOCKED: acknowledge the blocking warnings before apply.", style="bold yellow")
+        )
+    parts.append(Text(f"Preview token: {data['preview_token']}"))
+    return Group(*parts)
+
+
+def format_provider_allocation_apply(data: dict) -> Group:
+    """Applied and compensated rows with the durable request id."""
+    parts = [
+        Text(f"Allocation {data.get('request_id', '—')}: {data.get('status', '?')}", style="bold")
+    ]
+    if data.get("profiles"):
+        parts.append(
+            _allocation_table(
+                "Profile results",
+                ("Profile", "Status", "Before", "After", "Error / compensation"),
+                [
+                    (
+                        row["profile_id"],
+                        row["status"],
+                        _allocation_state(row["before"]),
+                        _allocation_state(row["after"]),
+                        row.get("error") or row.get("compensation_error"),
+                    )
+                    for row in data["profiles"]
+                ],
+            )
+        )
+    ceiling = data.get("ceiling")
+    if ceiling:
+        parts.append(
+            Text(
+                f"Aggregate configured ceiling: Before {_allocation_ceiling(ceiling['before'])}; "
+                f"After {_allocation_ceiling(ceiling['after'])}"
+            )
+        )
+    if data.get("session_actions"):
+        parts.append(
+            _allocation_table(
+                "Session actions",
+                ("Session", "Project", "Action", "Error"),
+                [
+                    (row["session_id"], row.get("project_id"), row["action"], row.get("error"))
+                    for row in data["session_actions"]
+                ],
+            )
+        )
+    parts.extend(_allocation_affected(data))
+    return Group(*parts)
+
+
 def format_provider_table(providers: list[dict]):
     """Format ``provider_status`` rows (one per provider) for ``aq provider status``.
 

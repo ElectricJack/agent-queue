@@ -46,6 +46,7 @@ menus.py           Interactive prompts (task wizard, fuzzy select, confirm)
 messages.py        `aq message *`, `aq inbox`, `aq reply`, `aq chat`
 message_wait.py    `aq message wait` — bounded attachment to a durable collaboration wait
 playbook.py        `aq playbook` — compile, run, HITL, health
+pool_provider.py   `aq pool provider` — generated status/apply and structured preview flags
 plugins.py         `aq plugin {list,info,install,remove,enable,disable,update,config,logs,...}`
 projects.py        Hand-crafted `aq project` commands needing composite logic or UX sugar
 questions.py       `aq question {list,answer,escalate}` — identity-based worker questions
