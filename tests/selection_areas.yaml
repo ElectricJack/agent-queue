@@ -107,6 +107,7 @@ areas:
     description: "Worker pools: global per-profile sizing, per-project placement, the pool reconciler and session carve-outs, pool doctor checks, pool API endpoints, default install pools and the swarm config and surface."
     match:
       - tests/test_pool_*.py
+      - tests/test_cli_pool_provider.py
       - tests/test_swarm_*.py
       - tests/test_install_pools.py
       - tests/test_task_session_pool_integration.py

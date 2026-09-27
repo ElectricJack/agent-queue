@@ -32,6 +32,11 @@ from src.tools import (
 # CommandHandler commands covered by hand-crafted CLI commands.
 # Auto-generation skips these to avoid duplicates.
 HANDCRAFTED_COVERAGE = {
+    # pool_provider.py mounts schema-generated status/apply in a nested group
+    # and translates preview's operator flags into structured arguments.
+    "provider_allocation_status",
+    "provider_allocation_preview",
+    "provider_allocation_apply",
     # test_runner.py — internal commands of the claim-aware smart runner.
     "test_select",
     "test_selection_recheck",
@@ -580,7 +585,17 @@ def _make_auto_command(
                         emit_error(exc.code, exc.detail_message, exc.details or None)
                     else:
                         console.print(f"[bold red]Error:[/] {exc}")
-                        _app._render_command_findings(exc.details or {})
+                        details = exc.details or {}
+                        formatted = False
+                        if name == "provider_allocation_apply":
+                            if details.get("preview"):
+                                formatted = apply_formatter(
+                                    "provider_allocation_preview", details["preview"], console
+                                )
+                            elif details.get("status"):
+                                formatted = apply_formatter(name, details, console)
+                        if not formatted:
+                            _app._render_command_findings(details)
                     raise SystemExit(exc.exit_code)
                 else:
                     raise

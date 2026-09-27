@@ -1221,6 +1221,7 @@
     "worker-pools": {
       "description": "Worker pools: global per-profile sizing, per-project placement, the pool reconciler and session carve-outs, pool doctor checks, pool API endpoints, default install pools and the swarm config and surface.",
       "modules": [
+        "tests/test_cli_pool_provider.py",
         "tests/test_install_pools.py",
         "tests/test_pool_admin.py",
         "tests/test_pool_agent_routing.py",
@@ -1279,7 +1280,7 @@
       ]
     }
   },
-  "digest": "sha256:22e0d3db9e923f0c0a8433a47107e74a7459afdd81827f6bc329c1e55ca16087",
+  "digest": "sha256:8526cea88f988c5f92556c3188c07c588a90717a9d71ce0e3dca2649877cbbab",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3196,6 +3197,21 @@
         "parametrize"
       ],
       "summary": "Contract tests for the ``aq plugin`` CLI layer (api-cli plan 19)."
+    },
+    "tests/test_cli_pool_provider.py": {
+      "areas": [
+        "worker-pools"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.models.provider",
+        "src.cli.app",
+        "src.cli.exceptions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Provider allocation CLI payloads and the mixed-fleet operator view."
     },
     "tests/test_cli_projects.py": {
       "areas": [
