@@ -15,7 +15,8 @@ This module is the pure half, in the house style of :func:`plan_sweep`:
   :func:`capacity_view_from_measurement` folds one tick's
   ``PoolMeasurement`` into it with the same counting
   :func:`~src.scheduler.size_pools` and
-  :func:`~src.scheduler.place_pool_actions` use;
+  :func:`~src.scheduler.place_pool_actions` use, and
+  :func:`with_incoming_moves` adds the failover pass's planned moves to it;
 * :func:`plan_capacity_spill` turns candidates, a :class:`PlanContext` and a
   view into one :class:`~src.providers.reroute.Decision` per candidate under
   Decisions S3 to S6.
@@ -29,8 +30,8 @@ from __future__ import annotations
 
 import math
 import time
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from src.providers.availability import AVAILABLE, UNAVAILABLE
@@ -56,6 +57,7 @@ __all__ = [
     "capacity_view_from_measurement",
     "plan_capacity_spill",
     "spill_batch_id",
+    "with_incoming_moves",
 ]
 
 #: Why a READY task on a pool that cannot serve it is not spilling (S3-S6, S8).
@@ -221,6 +223,37 @@ def capacity_view_from_measurement(
         )
     headroom = None if global_cap is None else max(0, int(global_cap) - used)
     return CapacityView(pools=pools, project_room=room, global_headroom=headroom)
+
+
+def with_incoming_moves(view: CapacityView, decisions: Iterable[Decision]) -> CapacityView:
+    """*view* with every planned move in *decisions* counted as READY on its target.
+
+    The sweep plans its failover pass and its spill pass before it writes
+    anything, so the one measurement it takes does not yet see the work
+    failover is about to move.  Folding those moves in keeps a spill target
+    from offering the same capacity twice (S5) and makes a ``dry_run`` plan
+    the live one.  Returns *view* itself when nothing moves in.
+    """
+    incoming: dict[str, dict[str, int]] = {}
+    for decision in decisions:
+        target = decision.to_profile_id
+        if decision.action != "move" or not target or target not in view.pools:
+            continue
+        per_project = incoming.setdefault(target, {})
+        per_project[decision.project_id] = per_project.get(decision.project_id, 0) + 1
+    if not incoming:
+        return view
+    pools = dict(view.pools)
+    for profile_id, per_project in incoming.items():
+        pool = pools[profile_id]
+        projects = dict(pool.projects)
+        for project_id, count in per_project.items():
+            local = pool.project(project_id)
+            projects[project_id] = replace(local, ready=local.ready + count)
+        pools[profile_id] = replace(
+            pool, ready=pool.ready + sum(per_project.values()), projects=projects
+        )
+    return replace(view, pools=pools)
 
 
 # -- the planner --------------------------------------------------------------------
