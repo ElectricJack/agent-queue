@@ -3655,6 +3655,13 @@ class Orchestrator(
         task_snapshot = [
             task for task in task_snapshot if not is_supervisor_profile(task.profile_id)
         ]
+        delivery_admission = await self._delivery_admission(
+            [task.id for task in task_snapshot if task.status == TaskStatus.READY]
+        )
+        task_snapshot = [
+            task for task in task_snapshot
+            if task.status != TaskStatus.READY or task.id in delivery_admission.allowed
+        ]
         hierarchy_runnable_task_ids = await self.db.hierarchy_runnable_task_ids(
             [task.id for task in task_snapshot if task.status == TaskStatus.READY]
         )
