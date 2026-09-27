@@ -16,6 +16,10 @@ actually sent, not by scraping the screen.  Configuration is hermetic: a
 throwaway ``CODEX_HOME`` / ``CLAUDE_CONFIG_DIR`` with a fake key, never the
 operator's own login.
 
+Both nudges and direct input must reach these detached CLIs without a
+resize wake.  ``resize-pane`` cannot resize their single-pane windows;
+neither Claude nor Codex needs a window resize before accepting input.
+
 Marked ``tmux`` (deselected by default).  Run with::
 
     aq test tests/test_tmux_harness_wake.py -m tmux -p no:xdist
@@ -424,6 +428,30 @@ def harness_id(request):
 
 
 class TestIdleWorkerWakes:
+    async def test_direct_input_reaches_the_model_after_enter(
+        self, harness_id, api, socket_name, tmp_path, cli_home
+    ):
+        provider = _provider(socket_name, tmp_path)
+        token = f"tok-{uuid.uuid4().hex[:8]}"
+        handle = await _start_idle(
+            provider, SPECS[harness_id](tmp_path, api, token, cli_home), harness_id
+        )
+        try:
+            await provider.send_input(handle, text=LONG_REMINDER)
+            prefix = await provider._ready_prefix_hint(handle.name)
+
+            async def painted() -> bool:
+                return _submit_pending(
+                    await provider.peek(handle, 30), _marker_for(LONG_REMINDER), prefix
+                )
+
+            await _until(painted, timeout=10, what="the direct input to be painted")
+            assert not api.received(LONG_REMINDER)
+            await provider.send_input(handle, key="Enter")
+            await _delivered(api, LONG_REMINDER)
+        finally:
+            await provider.stop(handle)
+
     async def test_a_wrapped_reminder_then_a_message_reach_the_model(
         self, harness_id, api, socket_name, tmp_path, cli_home
     ):

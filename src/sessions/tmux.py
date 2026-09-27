@@ -644,8 +644,7 @@ class TmuxProvider(SessionProvider):
             if _parse_environment_value(observed, _META_TOKEN_KEY) != h.instance_token:
                 raise SessionError("Terminal session instance changed")
 
-            # Unpark copy mode. A detached TUI may also need a one-time
-            # resize signal before accepting input after an idle period.
+            # Unpark copy mode before sending input.
             with contextlib.suppress(TmuxCommandError):
                 in_mode = (
                     await self._tmux(
@@ -658,9 +657,6 @@ class TmuxProvider(SessionProvider):
                 ).strip()
                 if in_mode == "1":
                     await self._tmux("send-keys", "-t", pane, "-X", "cancel")
-                if time.monotonic() - self._last_input_at.get(h.name, 0) > 5:
-                    await self._tmux("resize-pane", "-t", pane, "-D", "1")
-                    await self._tmux("resize-pane", "-t", pane, "-U", "1")
             if key is not None:
                 await self._tmux("send-keys", "-t", pane, key)
             else:
@@ -735,13 +731,8 @@ class TmuxProvider(SessionProvider):
 
             # Never append a reminder to a user's draft or compete with an
             # attached terminal. This guard shares send_input's lock and runs
-            # before any resize, key, or paste (including copy-mode cancel).
+            # before any key or paste (including copy-mode cancel).
             await self._require_empty_composer(h.name, pane, prefix)
-
-            # Detached TUIs drop pastes until a SIGWINCH wakes them (§9).
-            with contextlib.suppress(TmuxCommandError):
-                await self._tmux("resize-pane", "-t", pane, "-D", "1")
-                await self._tmux("resize-pane", "-t", pane, "-U", "1")
 
             # A repaint or a newly attached client can invalidate the first
             # observation. Recheck immediately before writing the reminder.
