@@ -92,6 +92,79 @@ async def test_frozen_sources_separate_landed_pending_and_agent_verification():
     )
 
 
+def workspace(project_id, path, kind_id="project-repo"):
+    return {"project_id": project_id, "workspace_path": str(path), "kind_id": kind_id}
+
+
+def repository_snapshot(repos, workspaces, **project):
+    data = snapshot()
+    data["projects"] = [{**data["projects"][0], **project}]
+    data["sources"] = {"repos": repos, "workspaces": workspaces}
+    return data
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        pytest.param(
+            {"source_type": "link", "source_path": "/moved/away", "checkout_base_path": ""},
+            id="moved-link",
+        ),
+        pytest.param(
+            {"source_type": "clone", "source_path": "", "checkout_base_path": ""},
+            id="daemon-created-clone",
+        ),
+    ],
+)
+async def test_unusable_repository_path_reads_the_project_repo_base(tmp_path, configured):
+    # Live 2026-09-27: a moved linked source raised git_read_failed and
+    # development clone rows (no path) left three projects unavailable.
+    repo = {**frozen("repos")[0], **configured}
+    data = repository_snapshot(
+        [repo],
+        [
+            workspace("p", tmp_path),
+            workspace("p", "/vault/projects/p", "vault"),
+            workspace("p", "/job-snapshots/abc", "job-snapshot"),
+        ],
+    )
+    result, _, read = await build(data)
+    assert read.call_args.kwargs["checkout"] == str(tmp_path)
+    assert result["brief"]["git"]["p"]["repository_id"] == "repo-p"
+    gaps = {gap["reason"] for gap in result["brief"]["coverage"]["gaps"]}
+    assert "configured_repository_unavailable" not in gaps
+
+
+async def test_existing_configured_path_wins_over_the_base(tmp_path):
+    configured, base = tmp_path / "configured", tmp_path / "base"
+    configured.mkdir()
+    base.mkdir()
+    repo = {**frozen("repos")[0], "source_path": str(configured)}
+    _, _, read = await build(repository_snapshot([repo], [workspace("p", base)]))
+    assert read.call_args.kwargs["checkout"] == str(configured)
+
+
+async def test_projects_without_repositories_ignore_vault_and_snapshot_bases(tmp_path):
+    data = repository_snapshot(
+        [],
+        [workspace("p", tmp_path), workspace("p", "/vault/projects/p", "vault")],
+    )
+    _, _, read = await build(data)
+    assert read.call_args.kwargs["checkout"] == str(tmp_path)
+
+
+async def test_ambiguous_project_repo_bases_stay_unavailable(tmp_path):
+    repo = {**frozen("repos")[0], "source_type": "clone", "source_path": ""}
+    data = repository_snapshot(
+        [repo], [workspace("p", tmp_path / "one"), workspace("p", tmp_path / "two")]
+    )
+    result, _, read = await build(data)
+    read.assert_not_awaited()
+    assert {"source": "git:p", "reason": "configured_repository_unavailable"} in result[
+        "brief"
+    ]["coverage"]["gaps"]
+
+
 async def test_replayed_fact_is_late_and_morning_membership_deduplicates_it():
     data = snapshot()
     data["sources"]["completions"][0]["completed_at"] = 80000
@@ -443,7 +516,22 @@ async def test_stale_remote_tracking_refs_are_visible_and_no_fetch_is_run(repo):
     assert result["fetched_at"] is None
 
 
-async def test_git_failure_is_a_gap_and_command_operands_are_hashes():
+async def test_missing_checkout_is_named_without_running_git(tmp_path):
+    async def run(args, **kwargs):
+        raise AssertionError(f"git ran in a missing checkout: {args}")
+
+    result = await read_git_evidence(
+        SimpleNamespace(arun_git_result=run),
+        checkout=str(tmp_path / "moved"),
+        default_branch="main",
+        since=0,
+        until=100,
+        now=100,
+    )
+    assert result["gaps"] == ["checkout_unavailable"] and result["head"] is None
+
+
+async def test_git_failure_is_a_gap_and_command_operands_are_hashes(caplog, tmp_path):
     calls = []
 
     async def run(args, **kwargs):
@@ -458,7 +546,7 @@ async def test_git_failure_is_a_gap_and_command_operands_are_hashes():
 
     result = await read_git_evidence(
         SimpleNamespace(arun_git_result=run),
-        checkout="/daemon/base",
+        checkout=str(tmp_path),
         default_branch="main",
         since=0,
         until=100,
@@ -466,10 +554,13 @@ async def test_git_failure_is_a_gap_and_command_operands_are_hashes():
         previous_head=OLD,
     )
     assert "git_read_failed" in result["gaps"]
+    assert any(
+        str(tmp_path) in record.getMessage() and record.exc_info for record in caplog.records
+    )
     log = next(args for args, _ in calls if args[0] == "log")
     assert f"{HEAD}..{HEAD}" in log and log[-1] == "--"
     assert f"--max-count={MAX_COMMITS + 1}" in log
-    assert all(kwargs["cwd"] == "/daemon/base" for _, kwargs in calls)
+    assert all(kwargs["cwd"] == str(tmp_path) for _, kwargs in calls)
 
 
 # Durable scheduling and read surface (implementation plan 2).
