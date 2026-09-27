@@ -871,7 +871,7 @@
       ]
     },
     "provider-failover": {
-      "description": "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine, in-flight failure handling, escalation pages and availability API and doctor checks.",
+      "description": "Provider availability and failover: the availability reducer, evidence collectors, launch suppression, provider intent and pins, the re-route engine and its capacity-spill planner, in-flight failure handling, escalation pages and availability API and doctor checks.",
       "modules": [
         "tests/test_fake_session_script.py",
         "tests/test_provider_availability.py",
@@ -883,6 +883,7 @@
         "tests/test_provider_inflight.py",
         "tests/test_provider_intent.py",
         "tests/test_provider_reroute.py",
+        "tests/test_provider_spill.py",
         "tests/test_provider_suppression.py"
       ]
     },
@@ -1261,7 +1262,7 @@
       ]
     }
   },
-  "digest": "sha256:8cef1ecd38f5a55a5a319c91ae6be8f35646623afc37d363175a90306a8140dc",
+  "digest": "sha256:1dd9b728731bf61d7be9f8be1ed6d26f39e25fded9c3906a9ec4f1a024db7204",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10281,6 +10282,26 @@
       ],
       "markers": [],
       "summary": "The re-route engine (provider-failover D11-D17)."
+    },
+    "tests/test_provider_spill.py": {
+      "areas": [
+        "provider-failover"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.models",
+        "src.orchestrator.pools",
+        "src.providers.availability",
+        "src.providers.intent",
+        "src.providers.reroute",
+        "src.providers.spill",
+        "src.scheduler"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Capacity spill (provider-failover D24): the pure planner, its view and its config."
     },
     "tests/test_provider_suppression.py": {
       "areas": [
