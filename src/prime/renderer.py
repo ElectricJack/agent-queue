@@ -101,6 +101,7 @@ class PrimeRenderer:
         )
         effective_profile_id = session_profile_id or task.profile_id
         project = await self.db.get_project(task.project_id)
+        development = getattr(project, "hierarchical_integration_mode", None) == "development"
         if not effective_profile_id:
             effective_profile_id = getattr(project, "default_profile_id", None)
 
@@ -148,8 +149,13 @@ class PrimeRenderer:
             _sections.build_completion_protocol_section(
                 task_id,
                 lifecycle=session_lifecycle,
-                development=getattr(project, "hierarchical_integration_mode", None)
-                == "development",
+                development=development,
+                regenerate=(
+                    (getattr(project, "hierarchical_integration_policy", None) or {}).get(
+                        "regenerate"
+                    )
+                    if development else None
+                ),
                 allow_emergent_work=allow_emergent_work,
             ),
         )
