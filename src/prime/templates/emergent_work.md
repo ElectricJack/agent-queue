@@ -31,3 +31,9 @@ abandon, or move it aside merely to make your close pass. If a filing was simply
 move it with `aq task reparent --task-id <finding-id> --parent-id <container-id>` (or
 `--root`). You may move only unclaimed tasks you filed, to the same parents you could have
 filed under; a move to root receives the routing gate a root filing gets.
+
+Never make work you file wait on the task you hold or on anything above it: membership
+already relates a child to its parent, and whatever it needs from your task (a plan, a
+spec) exists before you file it. A gating `needs:` or `--depends-on` edge onto your own
+task or its ancestors is refused as `dependency_on_ancestor`; order the new tasks among
+themselves instead.
