@@ -1,11 +1,14 @@
 """Bind delivered, terminal legacy tasks to their designated repository.
 
 The development publisher accepted null-repository tasks on the designated
-repository.  Its latest-completion receipt is the evidence for this recovery.
-So is an ``integration_legacy_deliveries`` row for the designated repository:
-``aq integration adopt-legacy-deliveries`` records one for a child it proved
-on the default branch or that an operator superseded, retired or accepted.
-For a container, children proven either way establish the same repository route.
+repository.  Git is the evidence for this recovery: the task's latest
+completion is contained in the designated repository's default branch
+(:mod:`src.integration.delivery_truth`, observed before the binding's locked
+transaction and rechecked inside it).  So is an ``integration_legacy_deliveries``
+row for the designated repository: ``aq integration adopt-legacy-deliveries``
+records one for a child it proved on the default branch or that an operator
+superseded, retired or accepted.  For a container, children proven either way
+establish the same repository route.
 """
 
 from __future__ import annotations
@@ -15,7 +18,6 @@ from uuid import uuid4
 
 from sqlalchemy import insert, select, update
 
-from src.database.queries.blocked_state import development_delivery_receipt
 from src.database.tables import (
     integration_legacy_deliveries,
     projects,
@@ -23,12 +25,31 @@ from src.database.tables import (
     task_comments,
     tasks,
 )
+from src.integration.delivery_truth import DeliveryState
 from src.integration.legacy_deliveries import TERMINAL_TASK_STATES
 
 
 class LegacyRepositoryBinding:
-    def __init__(self, db):
+    def __init__(self, db, *, delivery=None):
         self.db = db
+        # Git delivery truth; the daemon registers one observer on its database.
+        self.delivery = delivery if delivery is not None else getattr(
+            db, "_delivery_observer", None
+        )
+
+    async def _observe(self, project_id: str):
+        """Git evidence for the project's unbound completed tasks, before any lock."""
+        if self.delivery is None:
+            return None
+        async with self.db._engine.connect() as conn:
+            ids = set((await conn.execute(
+                select(tasks.c.id).where(
+                    tasks.c.project_id == project_id,
+                    tasks.c.status == "COMPLETED",
+                    tasks.c.repo_id.is_(None),
+                )
+            )).scalars())
+        return await self.delivery.observe(ids) if ids else None
 
     async def run(
         self, project_id: str, *, principal: str, dry_run: bool = True,
@@ -37,6 +58,7 @@ class LegacyRepositoryBinding:
         if not dry_run and not (reason or "").strip():
             return {"outcome": "invalid", "project_id": project_id,
                     "error": "--apply requires an audit reason"}
+        view = await self._observe(project_id)
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
             project = (await conn.execute(
@@ -69,17 +91,14 @@ class LegacyRepositoryBinding:
             hierarchy_ids = set(children) | {
                 row["id"] for row in rows if row["parent_task_id"] is not None
             }
-            receipt_ids = set((await conn.execute(
-                select(tasks.c.id).select_from(
-                    tasks.join(projects, projects.c.id == tasks.c.project_id).join(
-                        repos, repos.c.id == projects.c.integration_repository_id
-                    )
-                ).where(
-                    tasks.c.project_id == project_id,
-                    tasks.c.status == "COMPLETED",
-                    development_delivery_receipt(tasks, projects, repos),
-                )
-            )).scalars())
+            # Git, not a receipt: the latest completion on the default branch,
+            # for exactly the identity observed before this transaction.
+            completed = [row["id"] for row in rows if row["status"] == "COMPLETED"]
+            verified = await view.verified_on(conn, completed) if view is not None else {}
+            receipt_ids = {
+                task_id for task_id, evidence in verified.items()
+                if evidence.state is DeliveryState.CONTAINED
+            }
             # How adoption proved, or an operator decided, each recorded child.
             legacy_proofs = dict((await conn.execute(
                 select(integration_legacy_deliveries.c.task_id,
