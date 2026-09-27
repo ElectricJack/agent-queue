@@ -1155,6 +1155,95 @@ class TestEndToEndOnFakeProvider:
         assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
         assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
         assert await db.get_task_completion("t1") is None
+        assert close["escalated"] is False
+        assert await db.get_task_meta("t1", "needs_attention") is None
+
+    @pytest.mark.parametrize("failure", [
+        "invalid_contract", "missing_completion", "failed_completion",
+        "empty_commits", "mismatched_commits",
+    ])
+    async def test_development_repair_provenance_refusal_flags_operator_and_retains_claim(
+        self, db, real_orch, real_handler, tmp_path, failure
+    ):
+        from src.models import TaskCompletion
+
+        wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
+        session = await _make_session(db, real_orch.session_providers.create("fake"))
+        task_before = await db.get_task("t1")
+        await db.create_task(Task(
+            id="original", project_id="p1", repo_id="repo", title="Original", description="",
+            status=TaskStatus.COMPLETED,
+        ))
+        if failure not in {"invalid_contract", "missing_completion"}:
+            await db.save_task_completion(TaskCompletion(
+                id="original-close", task_id="original",
+                outcome="fail" if failure == "failed_completion" else "pass",
+                commits=[] if failure == "empty_commits" else [base], completed_at=time.time(),
+            ))
+        contract = {"invalid": True} if failure == "invalid_contract" else [
+            {"task_id": "original", "source_sha": await git.arev_parse(wd, "HEAD")}
+        ]
+        await db.set_task_meta("t1", "development_repair_sources", contract)
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "session_id": session.id, "outcome": "pass", "summary": "repair",
+        })
+        assert close["success"] is False and close["result"] == "verification_failed"
+        assert close["escalated"] is True
+        assert "you can still fix from this workspace" not in close["error"]
+        assert "daemon state this workspace cannot change" in close["error"]
+        # An unlabelled source names the migration scoped to this held task.
+        scope = " --task-id t1" if failure in {"empty_commits", "mismatched_commits"} else ""
+        assert f"Operator remedy: aq integration migrate-provenance p1{scope} --apply" in close["error"]
+        reason = "delivery_provenance_migration"
+        assert await db.get_task_meta("t1", "needs_attention") == reason
+        assert ("task.needs_attention", {
+            "task_id": "t1", "project_id": "p1", "title": task_before.title, "reason": reason,
+        }) in real_orch.bus.events
+        task_after = await db.get_task("t1")
+        assert task_after.status is TaskStatus.IN_PROGRESS
+        assert task_after.claim_epoch == task_before.claim_epoch
+        assert task_after.assigned_agent_id == task_before.assigned_agent_id
+        assert (await db.get_workspace("ws1")).locked_by_task_id == "t1"
+        session_after = await db.get_session(session.id)
+        assert session_after.state == session.state
+        assert session_after.task_id == session.task_id
+        assert await db.get_task_completion("t1") is None
+
+    async def test_development_repair_close_retains_exact_legacy_source_binding(
+        self, db, real_orch, real_handler, tmp_path
+    ):
+        from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+        from src.models import TaskCompletion
+        from pathlib import Path
+
+        wd, git, base = await self._setup_development_git(db, real_orch, tmp_path)
+        await git._arun(["checkout", "-b", "original", base], cwd=wd)
+        (Path(wd) / "original").write_text("original work")
+        await git.acommit_all(wd, "original source")
+        source = await git.arev_parse(wd, "HEAD")
+        await git._arun(["checkout", "aq/t1"], cwd=wd)
+        await db.create_task(Task(
+            id="original", project_id="p1", repo_id="repo", title="Original", description="",
+            status=TaskStatus.COMPLETED,
+        ))
+        await db.save_task_completion(TaskCompletion(
+            id="original-close", task_id="original", outcome="pass", commits=[source],
+            completed_at=time.time(),
+        ))
+        await db.set_task_meta("t1", "development_repair_sources", [
+            {"task_id": "original", "source_sha": source},
+        ])
+        close = await real_handler.execute("task_close", {
+            "task_id": "t1", "outcome": "pass", "summary": "exact repair",
+        })
+        assert close["success"] is True
+        store = GitProvenance(git, wd, repository_url=(await db.get_repo("repo")).url)
+        original = CompletedSource(CompletionIdentity("p1", "repo", "original", "original-close"), source)
+        assert (await store.read_completion(original.identity))["source_oid"] == source
+        final = await git.arev_parse(wd, "HEAD")
+        assert not await store.ancestor(source, final)
+        assert await store.contained(original, final)
+        assert await db.get_task_meta("t1", "needs_attention") is None
 
     async def test_development_code_free_close_keeps_exact_generation_without_false_artifact(
         self, db, real_orch, real_handler, tmp_path

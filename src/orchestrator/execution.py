@@ -1696,9 +1696,11 @@ class ExecutionMixin:
             except Exception as exc:
                 # Publication failures leave the same claim/worktree live.
                 # No successful close can precede verified complete evidence.
+                await self._development_delivery_refusal(ctx, exc)
                 return {
                     "status": task.status.value, "pr_url": None, "pipeline_ok": False,
-                    "verification_retry": True, "issues": [str(exc)], "feedback": str(exc),
+                    "verification_retry": True, "escalated": ctx.verification_escalated,
+                    "issues": list(ctx.verification_issues), "feedback": ctx.verification_feedback,
                 }
         if managed_parent_suspended:
             new_status = TaskStatus.PAUSED

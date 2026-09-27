@@ -59,7 +59,9 @@ behaves. Profiles are global: one definition per agent type, shared across
 projects, with `vault/agent-types/<id>/profile.md` as the source of truth.
 Creating, editing and deleting global agents requires the global admin scope.
 `aq agent message` is the only hand-written leaf here: it delivers guidance to
-a *live* worker and reports the delivery status.
+a *live* worker and reports the delivery status. `--reply-to <message-id>` puts
+the guidance on that message's thread, which is what satisfies a worker's
+message-thread wait.
 
 
 | Command | Daemon command | Kind | What it does |

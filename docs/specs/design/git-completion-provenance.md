@@ -70,8 +70,19 @@ both of these hold: the delivery that filed the repair
 (`development_repair_evidence.delivery_id`) names that task and source and
 postdates the completion (the generation fence), and the source is an ancestor
 of the repair (the pre-provenance check). A different reported source, a newer
-generation or a source the repair lacks still requires migration, and the
-refusal names the `--task-id` command to run.
+generation or a source the repair lacks still requires migration. An empty
+legacy commit list without that filing-delivery fence (for example, only a
+delivery-row source binding) is not bound automatically either.
+
+An invalid repair contract, a missing passing immutable source completion, or
+an unlabelled source the bridge cannot bind refuses close as an operator blocker
+(`precondition:provenance_migration`). Completion recording uses the same
+delivery-refusal path as pipeline verification: it retains the live task, claim,
+session and workspace, sets `needs_attention:delivery_provenance_migration`, and
+emits `task.needs_attention`. The refusal names the operator remedy
+`aq integration migrate-provenance <project-id> --apply`, scoped with
+`--task-id <repair>` for an unlabelled source; inventory can report ambiguous
+evidence that still needs operator resolution.
 
 `authority:operator` additionally requires an authorized operator/equivalence
 operation and a reason. Git cannot establish semantic equivalence of arbitrary

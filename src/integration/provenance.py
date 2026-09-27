@@ -19,6 +19,20 @@ MAX_REPLACEMENTS = 1000
 MAX_RECORD_BYTES = 64 * 1024
 
 
+class ProvenanceMigrationRequired(ValueError):
+    """Legacy repair evidence needs an authorized operator migration."""
+
+    def __init__(self, detail: str, project_id: str, *, task_id: str | None = None):
+        # A held task's refusal names the migration scoped to what it needs.
+        scope = f" --task-id {task_id}" if task_id else ""
+        self.context = {
+            "fixable_by": "operator",
+            "precondition": "provenance_migration",
+            "remedy": f"aq integration migrate-provenance {project_id}{scope} --apply",
+        }
+        super().__init__(detail)
+
+
 def task_message(message: str, task_id: str) -> str:
     """Append task identity without amending history or changing hook configuration."""
     if not task_id or any(ord(c) < 32 for c in task_id):
@@ -271,11 +285,13 @@ async def record_worker_completion(
         # a full set of original completions; a reopened original fails closed.
         replaces = []
         if not isinstance(contract, list) or len(contract) > 100:
-            raise ValueError("invalid exact development repair contract")
+            raise ProvenanceMigrationRequired("invalid exact development repair contract", project.id)
         for member in contract:
             completion = await db.get_task_completion(member["task_id"])
             if completion is None or completion.outcome != "pass":
-                raise ValueError("repair source has no passing immutable completion")
+                raise ProvenanceMigrationRequired(
+                    "repair source has no passing immutable completion", project.id
+                )
             original = CompletionIdentity(project.id, repo.id, member["task_id"], completion.id)
             if await store.read_completion(original) is None:
                 # Upgrade bridge for an original closed before provenance.
@@ -284,10 +300,9 @@ async def record_worker_completion(
                     db, store, project.id, task.id, member, completion, repair_head=source
                 )
                 if exact is None:
-                    raise ValueError(
-                        f"unlabelled repair source {member['task_id']} requires exact provenance "
-                        f"migration: aq integration migrate-provenance {project.id} "
-                        f"--task-id {task.id}"
+                    raise ProvenanceMigrationRequired(
+                        f"unlabelled repair source {member['task_id']} requires exact "
+                        "provenance migration", project.id, task_id=task.id,
                     )
                 await store.write_completion(CompletedSource(original, exact))
             replaces.append(CompletedSource(original, member["source_sha"]))

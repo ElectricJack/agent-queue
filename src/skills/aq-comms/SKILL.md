@@ -51,6 +51,15 @@ aq agent message --all-running "Never run a bare pytest" --profile worker
 aq message status <message-id>
 ```
 
+When the guidance answers a worker's message, pass that message's id with
+`--reply-to <message-id>`. The guidance then joins the message's thread, which
+is what a worker's durable message wait (`aq wait register --kind message
+--ref <thread>`) waits for; guidance sent without it never satisfies that wait:
+
+```bash
+aq agent message <task-id> "Filed: fresh-ember and .1-.9." --reply-to <message-id>
+```
+
 Use `aq session nudge` only for low-level diagnostics; it is not a reliable
 supervisor-to-worker delivery surface.
 
