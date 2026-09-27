@@ -304,8 +304,9 @@ export type { PoolStatusRow, PoolProjectStatus };
  * Polled on the flock's cadence because supply turns over as fast as agent
  * state does.
  */
-export function usePoolStatus(projectId?: string) {
-  return useQuery({
+/** Shared by the cold /agents prefetch (routeData.ts) and the mounted hook. */
+export function poolStatusQuery(projectId?: string) {
+  return {
     queryKey: ["pools", projectId ?? "all"],
     queryFn: async () => {
       const { data } = await poolStatus({
@@ -319,7 +320,11 @@ export function usePoolStatus(projectId?: string) {
     // poll only reconciles. At 5s from the shell rail it was, with the
     // roster, most of what an idle dashboard asked the daemon for.
     refetchInterval: 30_000,
-  });
+  };
+}
+
+export function usePoolStatus(projectId?: string) {
+  return useQuery(poolStatusQuery(projectId));
 }
 
 /** Live ``lifecycle: pool`` sessions — the individual instances behind a pool. */

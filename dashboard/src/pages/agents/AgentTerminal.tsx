@@ -1,12 +1,24 @@
-import { useState } from "react";
+import { lazy, Suspense, useState, type ReactNode } from "react";
 import { CommandLineIcon } from "@heroicons/react/24/outline";
 import { useStartAgentTerminal, type FlockAgent } from "../../api/agents";
 import { useProjects } from "../../api/hooks";
 import type { SessionSummary } from "../../api/hooks";
-import InteractiveTerminal from "../../components/InteractiveTerminal";
-import WatchTerminal from "../../components/WatchTerminal";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
 import { focusSessionHref } from "../focus/routes";
+
+// The terminals carry xterm (~330 KB). The Agents page opens on the pool
+// directory, which shows none, so its cold load must not download and compile
+// them; they load when the first agent or pool view opens.
+const InteractiveTerminal = lazy(() => import("../../components/InteractiveTerminal"));
+const WatchTerminal = lazy(() => import("../../components/WatchTerminal"));
+
+function TerminalChunk({ children }: { children: ReactNode }) {
+  return (
+    <Suspense fallback={<p className="m-auto p-6 text-center text-xs text-gray-500">Loading terminal…</p>}>
+      {children}
+    </Suspense>
+  );
+}
 
 export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAgent; focusRequest?: string | null }) {
   const running = !!agent.session_id && (agent.session_state === "running" || agent.session_state === "draining");
@@ -79,10 +91,18 @@ export default function AgentTerminal({ agent, focusRequest }: { agent: FlockAge
   // open that socket. Mobile dashboard spec §2.3, plan D1. The phone terminal
   // watches, and types through the input-only socket once Type is on.
   if (compact) {
-    return <WatchTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name}
-      focusHref={focusSessionHref(agent.session_id!)} />;
+    return (
+      <TerminalChunk>
+        <WatchTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name}
+          focusHref={focusSessionHref(agent.session_id!)} />
+      </TerminalChunk>
+    );
   }
-  return <InteractiveTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name} focusRequest={focusRequest} />;
+  return (
+    <TerminalChunk>
+      <InteractiveTerminal key={agent.session_id} sessionId={agent.session_id!} name={agent.name} focusRequest={focusRequest} />
+    </TerminalChunk>
+  );
 }
 
 /**
@@ -116,8 +136,16 @@ export function PoolInstanceTerminal({ instance, focusRequest }: { instance: Ses
   }
   // Never attached below 768 px, as in AgentTerminal; the link pins this process.
   if (compact) {
-    return <WatchTerminal key={instance.id} sessionId={instance.id} name={instance.name}
-      focusHref={focusSessionHref(instance.id, { started: instance.started_at })} />;
+    return (
+      <TerminalChunk>
+        <WatchTerminal key={instance.id} sessionId={instance.id} name={instance.name}
+          focusHref={focusSessionHref(instance.id, { started: instance.started_at })} />
+      </TerminalChunk>
+    );
   }
-  return <InteractiveTerminal key={instance.id} sessionId={instance.id} name={instance.name} focusRequest={focusRequest} />;
+  return (
+    <TerminalChunk>
+      <InteractiveTerminal key={instance.id} sessionId={instance.id} name={instance.name} focusRequest={focusRequest} />
+    </TerminalChunk>
+  );
 }

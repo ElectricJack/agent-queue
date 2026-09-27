@@ -23,26 +23,27 @@ function setCompact(compact: boolean) {
 afterEach(() => Object.defineProperty(window, "matchMedia", { configurable: true, writable: true, value: original }));
 
 describe("agent terminals below 768 px", () => {
-  it("watch instead of attaching", () => {
+  it("watch instead of attaching", async () => {
     setCompact(true);
     render(<MemoryRouter><AgentTerminal agent={agent} /></MemoryRouter>);
-    expect(screen.getByText("Watching s1 → /focus/sessions/s1")).toBeInTheDocument();
+    // The terminals are lazy chunks, so the view arrives a tick after the render.
+    expect(await screen.findByText("Watching s1 → /focus/sessions/s1")).toBeInTheDocument();
     expect(screen.queryByText(/Interactive/)).toBeNull();
   });
 
-  it("pin a pool instance's process in the focus link", () => {
+  it("pin a pool instance's process in the focus link", async () => {
     setCompact(true);
     render(<MemoryRouter><PoolInstanceTerminal instance={{ id: "p1", name: "pool-1", state: "running", provider: "tmux", started_at: 1790000000 }} /></MemoryRouter>);
-    expect(screen.getByText("Watching p1 → /focus/sessions/p1?started=1790000000")).toBeInTheDocument();
+    expect(await screen.findByText("Watching p1 → /focus/sessions/p1?started=1790000000")).toBeInTheDocument();
     expect(screen.queryByText(/Interactive/)).toBeNull();
   });
 
-  it("still attach at desktop widths", () => {
+  it("still attach at desktop widths", async () => {
     setCompact(false);
     render(<MemoryRouter><AgentTerminal agent={agent} /></MemoryRouter>);
-    expect(screen.getByText("Interactive s1")).toBeInTheDocument();
+    expect(await screen.findByText("Interactive s1")).toBeInTheDocument();
     render(<MemoryRouter><PoolInstanceTerminal instance={{ id: "p1", name: "pool-1", state: "running", provider: "tmux", started_at: 1790000000 }} /></MemoryRouter>);
-    expect(screen.getByText("Interactive p1")).toBeInTheDocument();
+    expect(await screen.findByText("Interactive p1")).toBeInTheDocument();
     expect(screen.queryByText(/Watching/)).toBeNull();
   });
 });
