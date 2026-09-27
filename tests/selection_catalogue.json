@@ -1136,6 +1136,7 @@
         "tests/test_terminal_origin_config.py",
         "tests/test_terminal_pty.py",
         "tests/test_terminal_stream.py",
+        "tests/test_tmux_harness_wake.py",
         "tests/test_tmux_integration.py",
         "tests/test_tmux_nudge_confirm.py",
         "tests/test_tmux_nudge_drafts.py",
@@ -1266,7 +1267,7 @@
       ]
     }
   },
-  "digest": "sha256:cd1da10ddcb6e9eb3887d1aec63bb657238db2d0fe1e5e7b3e8d5af8dd220aec",
+  "digest": "sha256:1db4ddd3a2b893aee813b2a559dd92c47a12e89dadced8245cb63a62815f98c4",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5712,6 +5713,7 @@
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
+        "src.integration",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.models"
@@ -11465,7 +11467,8 @@
         "src.sessions.fake",
         "src.sessions.harness_registry",
         "src.sessions.provider",
-        "src.sessions.spec"
+        "src.sessions.spec",
+        "src.sessions.tmux"
       ],
       "markers": [],
       "summary": "``sessions.stuck_composer`` — the doctor half of the lost-Enter stall."
@@ -12806,6 +12809,22 @@
       ],
       "summary": "Tests for ``cron.HH:MM`` wall-clock triggers in the timer service."
     },
+    "tests/test_tmux_harness_wake.py": {
+      "areas": [
+        "tmux-terminals"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.sessions",
+        "src.sessions.harness_parser",
+        "src.sessions.provider",
+        "src.sessions.tmux"
+      ],
+      "markers": [
+        "tmux"
+      ],
+      "summary": "Waking an idle worker: the real Codex and Claude CLIs in real tmux panes."
+    },
     "tests/test_tmux_integration.py": {
       "areas": [
         "tmux-terminals"
@@ -13488,8 +13507,10 @@
         "src.database.queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.integration.hierarchy",
         "src.models",
-        "src.orchestrator"
+        "src.orchestrator",
+        "src.vault"
       ],
       "markers": [
         "parametrize",
