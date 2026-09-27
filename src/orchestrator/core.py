@@ -882,6 +882,9 @@ class Orchestrator(
         suffix that sets the agent's "role" for the task.
         """
         project = await self.db.get_project(task.project_id)
+        if not task.profile_id and project and getattr(project, "preferred_provider", None):
+            profile_id = await self._effective_default_profile_id(project)
+            return await self.db.get_profile(profile_id) if profile_id else None
         profile_id = task.profile_id or (
             await self._availability_aware_default(project.default_profile_id, project.id)
             if project
@@ -963,7 +966,8 @@ class Orchestrator(
             project, system_profiles=system_profiles
         )
         return await self._availability_aware_default(
-            raw, getattr(project, "id", None), system_profiles=system_profiles
+            raw, getattr(project, "id", None), system_profiles=system_profiles,
+            preferred_provider=getattr(project, "preferred_provider", None),
         )
 
     async def _availability_aware_default(
@@ -972,19 +976,21 @@ class Orchestrator(
         project_id: str | None = None,
         *,
         system_profiles: list[AgentProfile] | None = None,
+        preferred_provider: str | None = None,
     ) -> str | None:
-        """The default's equivalent rung while its provider is unavailable (D13).
+        """Equivalent default for project preference or unavailable provider (D13).
 
         Derived per call and never persisted -- ``projects.default_profile_id``
         is not rewritten, so recovery needs no undo.  Reads the profiles only
-        while some provider is actually suppressed, so a healthy box pays
-        nothing.
+        while a preference is set or some provider is actually suppressed.
         """
         if not default_profile_id:
             return default_profile_id
         availability = getattr(self, "provider_availability", None)
         reroute = getattr(self, "provider_reroute", None)
-        if availability is None or reroute is None or not availability.suppressed_providers():
+        if availability is None or reroute is None or (
+            not preferred_provider and not availability.suppressed_providers()
+        ):
             return default_profile_id
         try:
             available = (
@@ -993,9 +999,10 @@ class Orchestrator(
             profiles = {profile.id: profile for profile in available}
         except Exception:
             logger.debug("availability-aware default: profiles unreadable", exc_info=True)
-            return default_profile_id
+            return None if preferred_provider else default_profile_id
         return reroute.resolve_default_profile_id(
-            default_profile_id, profiles, project_id=project_id
+            default_profile_id, profiles, project_id=project_id,
+            preferred_provider=preferred_provider,
         )
 
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
@@ -3654,6 +3661,13 @@ class Orchestrator(
         # turn into a queued worker or consume a scheduler/reconciler slot.
         task_snapshot = [
             task for task in task_snapshot if not is_supervisor_profile(task.profile_id)
+        ]
+        delivery_admission = await self._delivery_admission(
+            [task.id for task in task_snapshot if task.status == TaskStatus.READY]
+        )
+        task_snapshot = [
+            task for task in task_snapshot
+            if task.status != TaskStatus.READY or task.id in delivery_admission.allowed
         ]
         hierarchy_runnable_task_ids = await self.db.hierarchy_runnable_task_ids(
             [task.id for task in task_snapshot if task.status == TaskStatus.READY]
