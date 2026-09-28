@@ -14,10 +14,12 @@ semantic bodies, without an LLM:
 * ``default-pipeline`` — a reviewer-authored deterministic graph
   (``_default_pipeline_body``): three single-command rules whose refusals
   reach a ``failed`` terminal, the commit rule filtered to approved human gates.
-* ``default-assignment-routing`` — a reviewer-authored deterministic graph
-  (``_default_assignment_routing_body``): read options, decide (LLM) when the
-  class is not explicit, write the route.  Spec:
-  ``docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md``.
+* ``default-assignment-routing`` — the routing semantic body
+  (``_default_assignment_routing_body``): plan with ``task_route_plan`` over
+  the source's ``## Routing policy`` block, passed verbatim as a string
+  literal; classify (LLM) only when the plan asks; write the plan with
+  ``task_route_apply``.  Spec: ``projects/agent-queue/specs/
+  2026-09-28-mandatory-task-routing.md`` §6.3 and §6.7.
 
 This writes the fixture bundle only.  Two trees hold byte-identical copies of
 a reviewed recording and are not touched here — copy them across by hand after
@@ -606,30 +608,126 @@ def _section(source: PlaybookSource, heading: str, until: str) -> str:
     return "\n".join(lines[start : end]).strip()
 
 
-def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
-    """The reviewer-authored deterministic graph for ``default-assignment-routing``.
+#: The heading of the routing playbook's policy section (mandatory-routing
+#: §6.3); its fenced ``yaml`` block is the policy every plan step carries.
+ROUTING_POLICY_HEADING = "## Routing policy"
 
-    One rule on ``task.route_needed``: read the task's routing options, let
-    the LLM decide only when the class is not explicit, then write the route
-    with ``task_route``.  Every step carries the numbered prose line that
-    authorises it.  Spec:
-    ``docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md``.
+
+def routing_policy_block(source_text: str) -> str:
+    """The text of the fenced ``yaml`` block under ``## Routing policy``, verbatim.
+
+    Every line between the opening and the closing fence, each ending in a
+    newline.  A missing section or block, or a second block in the section,
+    is a refusal rather than a guess: the block *is* the executed policy.
+    """
+    lines = source_text.splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line.strip() == ROUTING_POLICY_HEADING)
+    except StopIteration:
+        raise SystemExit(f"routing source has no {ROUTING_POLICY_HEADING!r} section") from None
+    end = next(
+        (i for i in range(start + 1, len(lines)) if lines[i].startswith("## ")), len(lines)
+    )
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in lines[start + 1 : end]:
+        if current is None and line.strip() == "```yaml":
+            current = []
+        elif current is not None and line.strip() == "```":
+            blocks.append(current)
+            current = None
+        elif current is not None:
+            current.append(line)
+    if current is not None or len(blocks) != 1:
+        raise SystemExit(
+            f"{ROUTING_POLICY_HEADING!r} must hold exactly one closed ```yaml block"
+        )
+    return "".join(f"{line}\n" for line in blocks[0])
+
+
+def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
+    """The routing semantic body for ``default-assignment-routing``.
+
+    Mandatory-routing §6.7: one rule on ``task.route_needed``.  Plan with
+    ``task_route_plan`` over the policy block, classify with the LLM only
+    when the plan asks for it, and write the plan with ``task_route_apply``.
+    V2 binds a name once and a transition names only a step, so the three
+    plans carry distinct bindings (``plan_a``, ``plan_b``, ``plan_c``) and
+    each has its own apply step.  Every ``task_route_plan`` step passes the
+    ``## Routing policy`` block's text, verbatim, as the scalar literal
+    ``policy``: a ``LiteralValue`` holds scalars and flat containers only, so
+    a string is the faithful carrier, and the reviewed prose and the executed
+    policy cannot drift.  Every step carries the numbered prose line that
+    authorises it.
     """
     index = ProseIndex(source, source.vault_path)
     rule = "route-task"
-    read = f"{rule}--read_options"
-    choose = f"{rule}--choose"
-    apply_explicit = f"{rule}--apply_explicit"
-    apply_decision = f"{rule}--apply_decision"
+    plan_first = f"{rule}--plan_first"
+    classify = f"{rule}--classify"
+    plan_classified = f"{rule}--plan_classified"
+    plan_unclassified = f"{rule}--plan_unclassified"
     done = f"{rule}--done"
     failed = f"{rule}--failed"
     task_id = {"type": "event_ref", "path": "task_id"}
+    policy = {"type": "literal", "value": routing_policy_block(source.raw)}
+    router_id = str(source.frontmatter["id"])
 
-    def routing(path: str) -> dict[str, Any]:
-        return {"type": "binding_ref", "binding": "routing", "path": path}
+    def bound(binding: str, path: str | None = None) -> dict[str, Any]:
+        ref: dict[str, Any] = {"type": "binding_ref", "binding": binding}
+        if path is not None:
+            ref["path"] = path
+        return ref
 
-    def decision(path: str) -> dict[str, Any]:
-        return {"type": "binding_ref", "binding": "decision", "path": path}
+    def plan_step(title: str, ordinal: int, binding: str, apply_step: str,
+                  classification: dict[str, Any] | None,
+                  extra: dict[str, str]) -> dict[str, Any]:
+        inputs: dict[str, Any] = {"task_id": task_id, "policy": policy}
+        if classification is not None:
+            inputs["classification"] = classification
+        transitions = {
+            "planned": apply_step,
+            "held": done,
+            "already_routed": done,
+            "needs_classification": failed,
+            "no_candidates": failed,
+            "rejected": failed,
+            "runtime_error": failed,
+        }
+        transitions.update(extra)
+        return {
+            "type": "command",
+            "rule": rule,
+            "title": title,
+            "source": index.step_ref(rule, ordinal),
+            "command": "task_route_plan",
+            "inputs": inputs,
+            "save_result_as": binding,
+            "transitions": transitions,
+        }
+
+    def apply_step(title: str, binding: str) -> dict[str, Any]:
+        return {
+            "type": "command",
+            "rule": rule,
+            "title": title,
+            "source": index.step_ref(rule, 5),
+            "command": "task_route_apply",
+            "inputs": {"task_id": task_id, "plan": bound(binding)},
+            "transitions": {
+                "routed": done,
+                "stale": done,
+                "rejected": failed,
+                "runtime_error": failed,
+            },
+        }
+
+    def status_in(path: str, values: list[str]) -> dict[str, Any]:
+        return {
+            "type": "comparison",
+            "op": "in",
+            "left": {"type": "event_ref", "path": path},
+            "right": {"type": "literal", "value": values},
+        }
 
     return {
         "rules": [
@@ -637,109 +735,68 @@ def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
                 "id": rule,
                 "name": rule,
                 "trigger": {"event_type": "task.route_needed"},
-                # Route-needed is deliberately re-emitted while a task has
-                # no route.  Its event id is therefore not a durable task
-                # identity.  Admit only a currently eligible, still-unrouted
-                # hydrated row so a queued retry cannot invoke the chooser
-                # after another run has routed or completed the task.
+                # Route-needed is deliberately re-emitted while a task owes a
+                # route, so its event id is not a durable task identity.
+                # Admit only a currently eligible hydrated row that the
+                # router still owes a route, and only for a project bound to
+                # this playbook, so a queued retry cannot reach the planner
+                # after another run routed or finished the task.
                 "guard": {
                     "type": "bool",
                     "op": "and",
                     "operands": [
+                        status_in("task.status", ["DEFINED", "READY", "BLOCKED"]),
+                        status_in("task.route_source", ["unrouted", "legacy"]),
                         {
                             "type": "comparison",
-                            "op": "in",
-                            "left": {"type": "event_ref", "path": "task.status"},
-                            "right": {
-                                "type": "literal",
-                                "value": ["DEFINED", "READY", "BLOCKED"],
-                            },
-                        },
-                        {
-                            "type": "bool",
-                            "op": "or",
-                            "operands": [
-                                {
-                                    "type": "bool",
-                                    "op": "not",
-                                    "operands": [
-                                        {
-                                            "type": "exists",
-                                            "value": {
-                                                "type": "event_ref",
-                                                "path": "task.intelligence_class",
-                                            },
-                                            "mode": "truthy",
-                                        }
-                                    ],
-                                },
-                                {
-                                    "type": "bool",
-                                    "op": "not",
-                                    "operands": [
-                                        {
-                                            "type": "exists",
-                                            "value": {
-                                                "type": "event_ref",
-                                                "path": "task.profile_id",
-                                            },
-                                            "mode": "truthy",
-                                        }
-                                    ],
-                                },
-                            ],
+                            "op": "eq",
+                            "left": {"type": "event_ref", "path": "router"},
+                            "right": {"type": "literal", "value": router_id},
                         },
                     ],
                 },
-                "entry_step": read,
+                "entry_step": plan_first,
                 "source": index.rule_ref(rule),
             }
         ],
         "steps": {
-            read: {
-                "type": "command",
-                "rule": rule,
-                "title": "read_options",
-                "source": index.step_ref(rule, 1),
-                "command": "task_route_options",
-                "inputs": {"task_id": task_id},
-                "save_result_as": "routing",
-                "transitions": {
-                    "already_routed": done,
-                    "held": done,
-                    "explicit": apply_explicit,
-                    "undecided": choose,
-                    "no_options": failed,
-                    "rejected": failed,
-                    "runtime_error": failed,
-                },
-            },
-            choose: {
+            plan_first: plan_step(
+                "plan_first", 1, "plan_a", f"{rule}--apply_a", None,
+                {"needs_classification": classify},
+            ),
+            classify: {
                 "type": "llm",
                 "rule": rule,
-                "title": "choose",
+                "title": "classify",
                 "source": index.step_ref(rule, 2),
                 "profile_id": "playbook-compiler",
                 "prompt": {
                     "type": "literal",
-                    "value": _section(source, "## Choosing a class", "## "),
+                    "value": _section(source, "## Classifying a task", "## "),
                 },
+                # §6.5: the classifier sees the task and the policy's
+                # vocabulary, never a profile, a provider or a load.
                 "inputs": {
-                    "title": routing("title"),
-                    "description": routing("description"),
-                    "priority": routing("priority"),
-                    "task_type": routing("task_type"),
-                    "options": routing("options"),
+                    name: bound("plan_a", name)
+                    for name in (
+                        "title", "description", "task_type", "class_hint",
+                        "questions", "allowed_kinds", "allowed_classes",
+                    )
                 },
                 "output_schema": {
                     "type": "object",
                     "properties": {
+                        "task_type": {"type": "string"},
                         "intelligence_class": {"type": "string"},
-                        "provider": {"type": ["string", "null"]},
-                        "profile_id": {"type": "string"},
+                        "narrow": {"type": "boolean"},
+                        "test_verified": {"type": "boolean"},
+                        "independent_verifier": {"type": "boolean"},
                         "reason": {"type": "string", "minLength": 1, "maxLength": 400},
                     },
-                    "required": ["intelligence_class", "provider", "profile_id", "reason"],
+                    "required": [
+                        "task_type", "intelligence_class", "narrow",
+                        "test_verified", "independent_verifier", "reason",
+                    ],
                     "additionalProperties": False,
                 },
                 "budget": {
@@ -749,39 +806,22 @@ def _default_assignment_routing_body(source: PlaybookSource) -> dict[str, Any]:
                     "timeout_seconds": 300,
                 },
                 "tool_use": {"enabled": False, "aq_commands": [], "plugin_tools": []},
-                "save_result_as": "decision",
-                "transitions": _llm_transitions(apply_decision, failed),
+                "save_result_as": "classification",
+                # A failed classification still routes, on the policy's
+                # defaults (§6.4 step 4).
+                "transitions": _llm_transitions(plan_classified, plan_unclassified),
             },
-            apply_explicit: {
-                "type": "command",
-                "rule": rule,
-                "title": "apply_explicit",
-                "source": index.step_ref(rule, 3),
-                "command": "task_route",
-                "inputs": {
-                    "task_id": task_id,
-                    "profile_id": routing("explicit_profile_id"),
-                    "intelligence_class": routing("intelligence_class"),
-                    "reason": {"type": "literal", "value": "explicit intelligence class"},
-                    "provider_intent": {"type": "literal", "value": "class_only"},
-                },
-                "transitions": {"routed": done, "rejected": failed, "runtime_error": failed},
-            },
-            apply_decision: {
-                "type": "command",
-                "rule": rule,
-                "title": "apply_decision",
-                "source": index.step_ref(rule, 4),
-                "command": "task_route",
-                "inputs": {
-                    "task_id": task_id,
-                    "profile_id": decision("profile_id"),
-                    "intelligence_class": decision("intelligence_class"),
-                    "reason": decision("reason"),
-                    "provider_intent": {"type": "literal", "value": "class_only"},
-                },
-                "transitions": {"routed": done, "rejected": failed, "runtime_error": failed},
-            },
+            plan_classified: plan_step(
+                "plan_classified", 3, "plan_b", f"{rule}--apply_b",
+                bound("classification"), {},
+            ),
+            plan_unclassified: plan_step(
+                "plan_unclassified", 4, "plan_c", f"{rule}--apply_c",
+                {"type": "literal", "value": {"failed": True}}, {},
+            ),
+            f"{rule}--apply_a": apply_step("apply_a", "plan_a"),
+            f"{rule}--apply_b": apply_step("apply_b", "plan_b"),
+            f"{rule}--apply_c": apply_step("apply_c", "plan_c"),
             done: _terminal(rule, "completed", index.step_ref(rule, None)),
             failed: _terminal(rule, "failed", index.step_ref(rule, None)),
         },

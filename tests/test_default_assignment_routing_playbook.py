@@ -1,27 +1,37 @@
-"""The shipped routing policy runs as an ordinary pipeline over the route commands.
+"""The shipped router runs as an ordinary pipeline over the router commands.
 
-Spec: ``docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md``.
-The orchestrator only emits ``task.route_needed``; everything that decides
-what a task needs — the class, the profile, the reason — is this playbook.
+Spec: ``projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md`` §6.7.
+The orchestrator only emits ``task.route_needed``; the reviewed artifact plans
+with ``task_route_plan`` over its policy block, asks the LLM to classify only
+when the plan needs an answer, and writes the plan with ``task_route_apply``.
+These run the reviewed fixture through the real engine and a real handler, so
+the invocation ``task_route_apply`` checks is the artifact's own.
 """
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from src.commands.contracts import CONTRACTS
 from src.commands.contracts.builtin import set_handler_provider
 from src.commands.principal import ExecutionPrincipal, PrincipalKind
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
+from src.database import Database
 from src.intelligence_classes import IntelligenceClass
-from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
+from src.models import AgentProfile, Project, Task, TaskStatus, TaskType
+from src.orchestrator import Orchestrator
 from src.playbooks.definition import load_definition_json
 from src.playbooks.engine import PlaybookEngine
 from src.playbooks.executors import EXECUTORS, ExecutionMode
 from src.playbooks.executors.base import EngineServices
 from src.playbooks.executors.llm import _result as llm_result
 from src.profiles.capabilities import CapabilityPolicy
+from src.routing.sources import LEGACY, ROUTER, UNROUTED
 from src.sessions.harness_parser import Harness
+from tests.db_fixtures import lease_dsn
 from tests.playbook_v2_engine_helpers import (
     InMemoryArtifactStore,
     RecordingRunRepository,
@@ -30,58 +40,90 @@ from tests.playbook_v2_engine_helpers import (
 )
 
 FIXTURE = Path("tests/fixtures/playbooks/v2/default-assignment-routing/artifact.json")
+ROUTER_ID = "default-assignment-routing"
 
 CLASSES = {
-    "standard-medium": IntelligenceClass("standard-medium", "Standard", "", {
-        "anthropic": {"model": "claude-sonnet-5"},
-    }),
-    "deep-low": IntelligenceClass("deep-low", "Deep", "", {
-        "anthropic": {"model": "claude-fable-5"},
-    }),
+    class_id: IntelligenceClass(class_id, class_id, "", {
+        "anthropic": {"model": f"claude-{class_id}"},
+        "codex": {"model": f"gpt-{class_id}"},
+    })
+    for class_id in ("standard-high", "deep-high")
+}
+
+NARROW_DESIGN = {
+    "task_type": "design", "intelligence_class": "deep-high", "narrow": False,
+    "test_verified": False, "independent_verifier": False,
+    "reason": "asks for an architecture",
 }
 
 
 class _ScriptedLlm:
-    """Stands in for the live LLM executor: answers the choose step with *decision*."""
+    """Stands in for the live LLM executor: answers the classify step."""
 
-    def __init__(self, decision: dict) -> None:
-        self.decision = decision
+    def __init__(self, answer: dict | None, outcome: str = "completed") -> None:
+        self.answer = answer
+        self.outcome = outcome
         self.prompts: list[str] = []
+        self.inputs: dict | None = None
 
     async def execute(self, step, ctx):
         self.prompts.append(step.prompt.value)
         self.inputs = dict(ctx.inputs)
-        return llm_result(step, ctx, outcome="completed", value=self.decision)
+        return llm_result(step, ctx, outcome=self.outcome, value=self.answer)
 
 
-async def _handler(command_handler_factory):
-    handler = await command_handler_factory()
-    db = handler.db
-    for profile in (
+def _profiles() -> list[AgentProfile]:
+    return [
         AgentProfile(id="playbook-compiler", name="compiler", harness="claude"),
-        AgentProfile(
-            id="standard-medium-claude", name="std", lifecycle="pool",
-            harness="claude", default_class="standard-medium",
-        ),
-        AgentProfile(
-            id="deep-low-claude", name="deep", lifecycle="pool",
-            harness="claude", default_class="deep-low",
-        ),
-    ):
+        AgentProfile(id="standard-high-claude", name="", lifecycle="pool", harness="claude",
+                     default_class="standard-high", max_active=2),
+        AgentProfile(id="standard-high-codex", name="", lifecycle="pool", harness="codex",
+                     default_class="standard-high", max_active=2),
+        AgentProfile(id="deep-high-claude", name="", lifecycle="pool", harness="claude",
+                     default_class="deep-high", max_active=1),
+        AgentProfile(id="deep-high-codex", name="", lifecycle="pool", harness="codex",
+                     default_class="deep-high", max_active=1),
+    ]
+
+
+@pytest.fixture
+async def handler(tmp_path):
+    from src.commands.handler import CommandHandler
+
+    db = Database(lease_dsn("routing-playbook.db"))
+    await db.initialize()
+    for profile in _profiles():
         await db.create_profile(profile)
-    await db.create_project(
-        Project(id="p", name="Project", default_profile_id="standard-medium-claude")
+    await db.create_project(Project(id="p", name="Project"))
+    cfg = AppConfig(
+        discord=DiscordConfig(bot_token="test", guild_id="1"),
+        workspace_dir=str(tmp_path / "work"), data_dir=str(tmp_path / "data"),
+        database=DatabaseConfig(url=lease_dsn("unused.db")),
     )
-    orch = handler.orchestrator
-    orch.harness_registry.upsert(
-        Harness(id="claude", name="claude", command="claude", model_flag="--model")
-    )
-    orch.session_spec_builder._intelligence_classes = dict(CLASSES)
-    orch.intelligence_classes = None  # route validation reads the builder's dict
-    return handler
+    cfg.sessions.enabled = True
+    cfg.sessions.provider = "fake"
+    cfg.swarm.enabled = True
+    orchestrator = Orchestrator(cfg)
+    orchestrator.db = db
+    orchestrator.git = MagicMock()
+    orchestrator.bus.emit = AsyncMock()
+    for harness in ("claude", "codex"):
+        orchestrator.harness_registry.upsert(Harness(
+            id=harness, name=harness, command=harness, model_flag="--model",
+        ))
+    orchestrator.session_spec_builder._intelligence_classes = dict(CLASSES)
+    orchestrator.intelligence_classes.replace(dict(CLASSES))
+    handler = CommandHandler(orchestrator, cfg)
+    set_handler_provider(lambda: handler)
+    try:
+        yield handler
+    finally:
+        set_handler_provider(None)
+        await db.close()
 
 
-def _engine(handler, artifact):
+def _engine(handler):
+    artifact = load_definition_json(FIXTURE.read_text(encoding="utf-8"))
     runs = RecordingRunRepository()
     engine = PlaybookEngine(
         services=EngineServices(
@@ -103,247 +145,200 @@ def _principal():
         kind=PrincipalKind.PLAYBOOK,
         project_id="p",
         policy=CapabilityPolicy.from_namespaces(
-            aq_commands=["task_route_options", "task_route"]
+            aq_commands=["task_route_plan", "task_route_apply"]
         ),
     )
 
 
-def _event(task: Task) -> dict:
+def _event(task: Task, *, router: str = ROUTER_ID) -> dict:
     return {
         "event_type": "task.route_needed",
         "event_id": f"route-{task.id}",
         "task_id": task.id,
         "project_id": task.project_id,
         "title": task.title,
+        "router": router,
     }
 
 
-async def test_explicit_class_is_pinned_to_the_pool_that_serves_it(
-    command_handler_factory,
-):
-    handler = await _handler(command_handler_factory)
+async def _create(handler, task_id: str, **kw) -> Task:
+    kw.setdefault("status", TaskStatus.READY)
     await handler.db.create_task(Task(
-        id="explicit", project_id="p", title="Hard bug", description="",
-        status=TaskStatus.READY, intelligence_class="deep-low",
+        id=task_id, project_id="p", title=task_id, description="d", **kw,
     ))
-    artifact = load_definition_json(FIXTURE.read_text(encoding="utf-8"))
-    engine, runs = _engine(handler, artifact)
-    set_handler_provider(lambda: handler)
-    try:
-        result = await engine.dispatch_event(
-            _event(await handler.db.get_task("explicit")), _principal()
-        )
-    finally:
-        set_handler_provider(None)
+    return await handler.db.get_task(task_id)
+
+
+async def _dispatch(handler, task: Task, llm: _ScriptedLlm, monkeypatch, **event):
+    monkeypatch.setitem(EXECUTORS[ExecutionMode.LIVE], "llm", llm)
+    engine, runs = _engine(handler)
+    result = await engine.dispatch_event(_event(task, **event), _principal())
+    return result, runs
+
+
+def _steps(runs) -> list[str]:
+    return [receipt.step_id for receipt in runs.receipts]
+
+
+async def test_a_task_whose_kind_and_hint_decide_the_route_needs_no_llm(
+    handler, monkeypatch,
+):
+    """Acceptance: the kind and the hint decide, so no classification is asked."""
+    task = await _create(handler, "hinted", task_type=TaskType.BUGFIX, class_hint="standard-high")
+    llm = _ScriptedLlm(NARROW_DESIGN)
+
+    result, runs = await _dispatch(handler, task, llm, monkeypatch)
+
     assert tuple(result.rules_selected) == ("route-task",)
     (run,) = runs.snapshots.values()
     assert run.lifecycle.value == "completed", run.error
-    steps = [r.step_id for r in runs.receipts]
-    assert "route-task--choose" not in steps
-    assert "route-task--apply_explicit" in steps
+    assert llm.prompts == []
+    steps = _steps(runs)
+    assert "route-task--plan_first" in steps and "route-task--apply_a" in steps
+    assert "route-task--classify" not in steps
+    routed = await handler.db.get_task("hinted")
+    assert routed.route_source == ROUTER
+    # Equal pressure on both standard-high pools; ``tie_order`` puts Codex first.
+    assert (routed.profile_id, routed.intelligence_class) == (
+        "standard-high-codex", "standard-high",
+    )
+    assert routed.route["rule"] == "kinds.bugfix"
+    assert routed.route["classification"] is None
 
-    task = await handler.db.get_task("explicit")
-    assert task.profile_id == "deep-low-claude"
-    assert task.intelligence_class == "deep-low"
-    assert await handler.db.count_ready_by_profile("p") == {"deep-low-claude": 1}
 
-
-async def test_undecided_task_takes_the_llm_decision_from_the_options(
-    command_handler_factory, monkeypatch,
+async def test_a_filed_class_without_a_profile_is_still_honoured_as_the_hint(
+    handler, monkeypatch,
 ):
-    handler = await _handler(command_handler_factory)
-    await handler.db.create_task(Task(
-        id="open", project_id="p", title="Fix a typo", description="one-line change",
-        status=TaskStatus.READY,
-    ))
-    scripted = _ScriptedLlm({
-        "intelligence_class": "standard-medium", "provider": "anthropic",
-        "profile_id": "standard-medium-claude", "reason": "routine localized edit",
-    })
-    monkeypatch.setitem(EXECUTORS[ExecutionMode.LIVE], "llm", scripted)
-    artifact = load_definition_json(FIXTURE.read_text(encoding="utf-8"))
-    engine, runs = _engine(handler, artifact)
-    set_handler_provider(lambda: handler)
-    try:
-        result = await engine.dispatch_event(
-            _event(await handler.db.get_task("open")), _principal()
-        )
-    finally:
-        set_handler_provider(None)
-    assert tuple(result.rules_selected) == ("route-task",)
+    """The superseded router's ``explicit`` branch, kept for unrouted filings.
+
+    Until creation writes ``class_hint`` (mandatory routing Task 4), a worker
+    filing with ``--intelligence-class`` and no profile is stored unrouted
+    with the class in ``intelligence_class``.
+    """
+    task = await _create(
+        handler, "filed", task_type=TaskType.RESEARCH, intelligence_class="deep-high",
+    )
+    assert (task.route_source, task.class_hint) == (UNROUTED, None)
+    llm = _ScriptedLlm(NARROW_DESIGN)
+
+    _result, runs = await _dispatch(handler, task, llm, monkeypatch)
+
     (run,) = runs.snapshots.values()
     assert run.lifecycle.value == "completed", run.error
-    assert "Choosing a class" in scripted.prompts[0]
-    assert scripted.inputs["title"] == "Fix a typo"
-    rows = scripted.inputs["options"]
-    assert {(r["intelligence_class"], r["profile_id"]) for r in rows} == {
-        ("standard-medium", "standard-medium-claude"), ("deep-low", "deep-low-claude"),
-    }
-
-    task = await handler.db.get_task("open")
-    assert task.intelligence_class == "standard-medium"
-    assert task.profile_id == "standard-medium-claude"
+    assert llm.prompts == []
+    routed = await handler.db.get_task("filed")
+    # Research defaults to standard-high; the filed class lifts it, and
+    # ``reserved`` keeps deep-high Claude for design, so Codex takes it.
+    assert (routed.route_source, routed.profile_id, routed.intelligence_class) == (
+        ROUTER, "deep-high-codex", "deep-high",
+    )
 
 
-async def test_already_routed_task_ends_without_writing(command_handler_factory):
-    handler = await _handler(command_handler_factory)
-    await handler.db.create_task(Task(
-        id="done", project_id="p", title="Routed", description="",
-        status=TaskStatus.READY, intelligence_class="deep-low", profile_id="deep-low-claude",
-    ))
-    before = await handler.db.get_task("done")
-    artifact = load_definition_json(FIXTURE.read_text(encoding="utf-8"))
-    engine, runs = _engine(handler, artifact)
-    set_handler_provider(lambda: handler)
-    try:
-        result = await engine.dispatch_event(_event(before), _principal())
-    finally:
-        set_handler_provider(None)
-    assert result.rules_selected == ()
-    assert not runs.snapshots
-    assert (await handler.db.get_task("done")).updated_at == before.updated_at
+async def test_an_unhinted_task_is_classified_then_routed(handler, monkeypatch):
+    """Classification is the only LLM step, and it only ever names a kind and a class."""
+    task = await _create(handler, "open")
+    llm = _ScriptedLlm(NARROW_DESIGN)
 
+    _result, runs = await _dispatch(handler, task, llm, monkeypatch)
 
-async def test_stale_route_event_for_completed_unrouted_task_never_calls_chooser(
-    command_handler_factory, monkeypatch,
-):
-    """The rule guard reads the current row, not stale route-needed payload."""
-    handler = await _handler(command_handler_factory)
-    await handler.db.create_task(Task(
-        id="completed", project_id="p", title="Completed before routing", description="",
-        status=TaskStatus.COMPLETED,
-    ))
-    scripted = _ScriptedLlm({
-        "intelligence_class": "standard-medium", "provider": "anthropic",
-        "profile_id": "standard-medium-claude", "reason": "would be stale",
-    })
-    monkeypatch.setitem(EXECUTORS[ExecutionMode.LIVE], "llm", scripted)
-    artifact = load_definition_json(FIXTURE.read_text(encoding="utf-8"))
-    engine, runs = _engine(handler, artifact)
-    set_handler_provider(lambda: handler)
-    try:
-        result = await engine.dispatch_event(
-            _event(await handler.db.get_task("completed")), _principal()
-        )
-    finally:
-        set_handler_provider(None)
-    assert result.rules_selected == ()
-    assert not runs.snapshots
-    assert scripted.prompts == []
-
-
-async def _worker_files(handler, profile_id: str) -> str:
-    """A worker on *profile_id*, holding a task, files a finding without ``--profile``."""
-    now = time.time()
-    await handler.db.create_task(Task(
-        id="held", project_id="p", title="Design the parser", description="",
-        status=TaskStatus.IN_PROGRESS, profile_id=profile_id, intelligence_class="deep-low",
-    ))
-    await handler.db.create_session(SessionRecord(
-        id="s-fable", project_id="p", profile_id=profile_id, harness="claude",
-        provider="fake", name="s-fable", lifecycle="task", task_id="held",
-        state="running", work_dir="/tmp", epoch="e1", instance_token="tok",
-        started_at=now, last_activity=now,
-    ))
-    handler._invalidate_principal_cache()
-    result = await handler.execute("create_task", {
-        "title": "Fix the tokenizer off-by-one",
-        "description": "found while designing the parser",
-        "reason": "the held design task exposed a tokenizer bug",
-        "_scope": {"kind": "session", "session_id": "s-fable", "task_id": None,
-                   "project_id": "p", "elevated": False},
-    })
-    assert "error" not in result, result
-    return result["task_id"]
-
-
-async def _route_needed(handler, task_id: str, decision: dict, monkeypatch):
-    scripted = _ScriptedLlm(decision)
-    monkeypatch.setitem(EXECUTORS[ExecutionMode.LIVE], "llm", scripted)
-    artifact = load_definition_json(FIXTURE.read_text(encoding="utf-8"))
-    engine, runs = _engine(handler, artifact)
-    set_handler_provider(lambda: handler)
-    try:
-        await engine.dispatch_event(_event(await handler.db.get_task(task_id)), _principal())
-    finally:
-        set_handler_provider(None)
     (run,) = runs.snapshots.values()
-    return run, scripted
-
-
-async def test_a_fable_workers_bug_is_routed_by_the_playbook_not_pinned_to_fable(
-    command_handler_factory, monkeypatch,
-):
-    """Worker-filed work used to inherit the filer's profile as its route.
-
-    ``deep-low-claude`` stands in for the Fable rung: every bug a design
-    worker found ran on Fable, because the filing was pinned to it and the
-    route options were narrowed to that one profile.
-    """
-    handler = await _handler(command_handler_factory)
-    filed = await _worker_files(handler, "deep-low-claude")
-
-    task = await handler.db.get_task(filed)
-    assert task.profile_id is None and not task.intelligence_class
-    options = await handler.execute("task_route_options", {"task_id": filed})
-    assert (options["outcome"], options["profile_id"]) == ("undecided", None)
-    assert {r["profile_id"] for r in options["options"]} == {
-        "standard-medium-claude", "deep-low-claude",
-    }
-
-    run, scripted = await _route_needed(handler, filed, {
-        "intelligence_class": "standard-medium", "provider": "anthropic",
-        "profile_id": "standard-medium-claude", "reason": "ordinary bug fix",
-    }, monkeypatch)
-
     assert run.lifecycle.value == "completed", run.error
-    assert {r["profile_id"] for r in scripted.inputs["options"]} == {
-        "standard-medium-claude", "deep-low-claude",
+    assert len(llm.prompts) == 1 and llm.prompts[0].startswith("## Classifying a task")
+    # §6.5: the classifier never sees a profile, a provider or a load.
+    assert set(llm.inputs) == {
+        "title", "description", "task_type", "class_hint",
+        "questions", "allowed_kinds", "allowed_classes",
     }
-    task = await handler.db.get_task(filed)
-    assert (task.profile_id, task.intelligence_class) == (
-        "standard-medium-claude", "standard-medium",
+    assert llm.inputs["title"] == "open"
+    assert "design" in llm.inputs["allowed_kinds"]
+    assert "route-task--apply_b" in _steps(runs)
+    routed = await handler.db.get_task("open")
+    # Design goes to the code-design lane, which prefers Claude.
+    assert (routed.route_source, routed.profile_id, routed.intelligence_class) == (
+        ROUTER, "deep-high-claude", "deep-high",
     )
+    assert routed.task_type == TaskType.DESIGN
+    assert routed.route["classification"]["task_type"] == "design"
 
 
-async def test_the_chooser_cannot_route_a_worker_filing_onto_a_control_profile(
-    command_handler_factory, monkeypatch,
+@pytest.mark.parametrize(
+    "llm",
+    [
+        _ScriptedLlm(None, outcome="runtime_error"),
+        # An answer outside the policy's vocabulary is a failed classification.
+        _ScriptedLlm({**NARROW_DESIGN, "task_type": "galaxy"}),
+    ],
+    ids=["runtime_error", "invalid_answer"],
+)
+async def test_a_failed_classification_still_routes_on_the_policy_defaults(
+    handler, monkeypatch, llm,
 ):
-    """The filer no longer pins its child, so the route is what bounds it."""
-    handler = await _handler(command_handler_factory)
-    filed = await _worker_files(handler, "deep-low-claude")
+    task = await _create(handler, "unclear")
 
-    run, _scripted = await _route_needed(handler, filed, {
-        "intelligence_class": "standard-medium", "provider": "anthropic",
-        "profile_id": "playbook-compiler", "reason": "the task text asked for it",
-    }, monkeypatch)
+    _result, runs = await _dispatch(handler, task, llm, monkeypatch)
 
-    assert run.lifecycle.value == "failed"
-    assert (await handler.db.get_task(filed)).profile_id is None
-
-
-def test_the_chooser_reserves_fable_for_design_and_sends_narrow_work_to_opencode():
-    """The compiled chooser prompt carries the operator's lane rules (2026-09-20).
-
-    Before this, the only tie-break was "prefer a ``pool`` lifecycle row", and
-    every OpenCode rung is ``lifecycle: task`` — so no task was ever routed to
-    OpenCode, and nothing kept bug fixes off the Fable design rung.
-    """
-    artifact = load_definition_json(FIXTURE.read_text(encoding="utf-8"))
-    prompt = " ".join(artifact.steps["route-task--choose"].prompt.value.split())
-
-    assert "(`deep-high-claude`) is for code design only" in prompt
-    assert (
-        "Never choose it for a bug fix, a repair, an implementation, tests, or documentation"
-        in prompt
+    (run,) = runs.snapshots.values()
+    assert run.lifecycle.value == "completed", run.error
+    assert len(llm.prompts) == 1
+    routed = await handler.db.get_task("unclear")
+    # ``default_kind: feature`` at its class, ``standard-high``.
+    assert (routed.route_source, routed.profile_id, routed.intelligence_class) == (
+        ROUTER, "standard-high-codex", "standard-high",
     )
-    assert (
-        "Choose `standard-high-opencode` for that work and `fast-low-opencode` for trivial "
-        "mechanical edits" in prompt
+    assert routed.route["rule"] == "kinds.feature"
+    assert routed.route["classification"]["failed"] is True
+    assert routed.task_type is None
+
+
+async def test_a_legacy_route_goes_back_through_the_router(handler, monkeypatch):
+    task = await _create(
+        handler, "old", task_type=TaskType.RESEARCH, route_source=LEGACY,
+        profile_id="standard-high-claude", intelligence_class="standard-high",
     )
-    assert "Choose `fast-off-opencode` only when the task names an independent verifier" in prompt
-    assert "Integration repairs" in prompt and "are never OpenCode work" in prompt
-    # The pool preference is a fallback after the OpenCode guidance, not ahead of it.
-    assert prompt.index("apply the OpenCode guidance above first") < prompt.index(
-        "prefer a `pool` lifecycle row"
+
+    _result, runs = await _dispatch(handler, task, _ScriptedLlm(NARROW_DESIGN), monkeypatch)
+
+    (run,) = runs.snapshots.values()
+    assert run.lifecycle.value == "completed", run.error
+    routed = await handler.db.get_task("old")
+    assert routed.route_source == ROUTER
+    assert routed.profile_id == "standard-high-codex"
+
+
+async def test_a_task_the_router_already_routed_starts_no_run(handler, monkeypatch):
+    task = await _create(
+        handler, "done", task_type=TaskType.RESEARCH, route_source=ROUTER,
+        profile_id="standard-high-claude", intelligence_class="standard-high",
     )
+    llm = _ScriptedLlm(NARROW_DESIGN)
+
+    result, runs = await _dispatch(handler, task, llm, monkeypatch)
+
+    assert result.rules_selected == ()
+    assert not runs.snapshots
+    assert (await handler.db.get_task("done")).updated_at == task.updated_at
+
+
+async def test_a_stale_event_for_a_finished_task_starts_no_run(handler, monkeypatch):
+    """The guard reads the current row, not the route-needed payload."""
+    task = await _create(handler, "finished", status=TaskStatus.COMPLETED)
+    llm = _ScriptedLlm(NARROW_DESIGN)
+
+    result, runs = await _dispatch(handler, task, llm, monkeypatch)
+
+    assert result.rules_selected == ()
+    assert not runs.snapshots
+    assert llm.prompts == []
+    assert (await handler.db.get_task("finished")).route_source == UNROUTED
+
+
+async def test_a_project_bound_to_another_router_is_left_to_it(handler, monkeypatch):
+    task = await _create(handler, "elsewhere", task_type=TaskType.RESEARCH)
+
+    result, runs = await _dispatch(
+        handler, task, _ScriptedLlm(NARROW_DESIGN), monkeypatch, router="project-router",
+    )
+
+    assert result.rules_selected == ()
+    assert not runs.snapshots
+    assert (await handler.db.get_task("elsewhere")).route_source == UNROUTED

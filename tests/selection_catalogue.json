@@ -1292,7 +1292,7 @@
       ]
     }
   },
-  "digest": "sha256:175411ace48a790b9b8147b8c26afd3f14478fcb3c091bfaea3aa2e9b7e5be9c",
+  "digest": "sha256:f94de28daa815f6f41572d88ecb3ba6a5d40dff1252cdc689aa0dbe4b4de10d6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4408,19 +4408,26 @@
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.handler",
         "src.commands.principal",
+        "src.config",
+        "src.database",
         "src.intelligence_classes",
         "src.models",
+        "src.orchestrator",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors",
         "src.playbooks.executors.base",
         "src.playbooks.executors.llm",
         "src.profiles.capabilities",
+        "src.routing.sources",
         "src.sessions.harness_parser"
       ],
-      "markers": [],
-      "summary": "The shipped routing policy runs as an ordinary pipeline over the route commands."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The shipped router runs as an ordinary pipeline over the router commands."
     },
     "tests/test_default_pipeline_intake.py": {
       "areas": [
@@ -4454,7 +4461,8 @@
         "src.playbooks.profiles",
         "src.playbooks.required",
         "src.playbooks.validation",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.routing.policy"
       ],
       "markers": [
         "parametrize"

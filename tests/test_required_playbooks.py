@@ -481,6 +481,105 @@ async def test_a_healthy_operator_activation_is_kept(tmp_path):
         await db.close()
 
 
+def _router_without_task_route_apply(body):
+    """A router that plans but never writes: every ``task_route_apply`` step gone.
+
+    Stands in for the superseded ``task_route`` router and for a vault compile
+    that diverged from the shipped one: both validate and serve, and neither
+    can write a router route (mandatory routing §6.7).
+    """
+    applies = {
+        step_id
+        for step_id, step in body["steps"].items()
+        if step.get("command") == "task_route_apply"
+    }
+    for step_id in applies:
+        del body["steps"][step_id]
+    for step in body["steps"].values():
+        for outcome, target in list((step.get("transitions") or {}).items()):
+            if target in applies:
+                step["transitions"][outcome] = "route-task--done"
+    del body["compiled_against"]["commands"]["task_route_apply"]
+
+
+async def _routing_health(handler):
+    from src.playbooks.required import _system_activation
+
+    records, _contracts, _profiles = await handler._v2_health_records()
+    return _system_activation(records, "default-assignment-routing").health.value
+
+
+async def test_a_ready_router_that_cannot_apply_a_route_is_repointed(tmp_path):
+    """Upgrade path of §6.7: a healthy activation is re-pointed when it lacks the grant.
+
+    Without this, the enabled, ready activation of the previous router would
+    be durable operator state the reconciler never touches, and the rebuilt
+    bundle would never serve.
+    """
+    from src.playbooks.definition import granted_aq_commands
+
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        older = _shipped_variant("default-assignment-routing", _router_without_task_route_apply)
+        assert "task_route_apply" not in granted_aq_commands(older)
+        older_sha = await _store_variant(db, handler, older)
+        await _activate(db, "default-assignment-routing", older_sha)
+        assert await _routing_health(handler) == "ready"
+        shipped_sha = (
+            (reviewed_bundle_source() / "default-assignment-routing" / "artifact.sha256")
+            .read_text(encoding="utf-8")
+            .strip()
+        )
+
+        result = await reconciler.reconcile()
+
+        assert result["required"]["default-assignment-routing"] == {
+            "ok": True,
+            "artifact_sha256": shipped_sha,
+            "repointed_from": older_sha,
+        }
+        row = await _system_row(db, "default-assignment-routing")
+        assert (row["active_artifact_sha256"], row["enabled"]) == (shipped_sha, True)
+    finally:
+        await db.close()
+
+
+async def test_an_operator_router_that_grants_task_route_apply_is_kept(tmp_path):
+    """An operator's own compatible router keeps serving (§6.7)."""
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        own = _shipped_variant("default-assignment-routing", lambda body: body.update(version=2))
+        own_sha = await _store_variant(db, handler, own)
+        await _activate(db, "default-assignment-routing", own_sha)
+        assert await _routing_health(handler) == "ready"
+
+        result = await reconciler.reconcile()
+
+        assert result["required"]["default-assignment-routing"] == {
+            "ok": True,
+            "artifact_sha256": own_sha,
+        }
+        row = await _system_row(db, "default-assignment-routing")
+        assert row["active_artifact_sha256"] == own_sha
+    finally:
+        await db.close()
+
+
+async def test_a_disabled_router_without_the_grant_stays_disabled(tmp_path):
+    db, handler, reconciler = await _reconciler(tmp_path)
+    try:
+        older = _shipped_variant("default-assignment-routing", _router_without_task_route_apply)
+        older_sha = await _store_variant(db, handler, older)
+        await _activate(db, "default-assignment-routing", older_sha, enabled=False)
+
+        await reconciler.reconcile()
+
+        row = await _system_row(db, "default-assignment-routing")
+        assert (row["active_artifact_sha256"], row["enabled"]) == (older_sha, False)
+    finally:
+        await db.close()
+
+
 async def test_a_stale_default_activation_is_repointed_too(tmp_path):
     db, handler, reconciler = await _reconciler(tmp_path)
     try:

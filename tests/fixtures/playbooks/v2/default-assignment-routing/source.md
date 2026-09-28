@@ -14,122 +14,192 @@ llm_config:
 
 # Default assignment routing
 
-Every `task.route_needed` event begins the one `route-task` rule. The
-orchestrator emits that event for a task that lacks the fields a worker needs
-to pick it up — an `intelligence_class`, a `profile_id`, or both — and decides
-nothing else. This playbook is the routing policy: it chooses the class the
-task needs and the profile that serves it, and writes both onto the task. A
-project that wants different routing keeps a project-scope copy of this file;
-no code changes. The design is
-`docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md`.
+Every task a worker runs is routed here, and only here. The orchestrator emits
+`task.route_needed` for a queued task that still owes a route and decides
+nothing else. This playbook owns the routing rules and the balance between
+providers: the routing policy block below is what `task_route_plan` applies,
+deterministically, to the task's hints, the live pool capacity, provider
+availability and provider usage. An LLM only classifies a task when an answer
+the policy needs is missing. It never sees a profile, a provider or a load, so
+it cannot choose a model. `task_route_apply` writes the route and refuses every
+caller except the project's bound router. A project that wants different rules
+runs a reviewed project-scope copy of this file under its own id and is bound to
+it; no code changes. The design is
+`projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md` §6.
 
 ## Rule: route-task
 
-The rule is admitted only when the current hydrated task row is `DEFINED`,
-`READY`, or `BLOCKED` and still lacks either its intelligence class or worker
-profile. This is deliberately a current-row guard rather than a condition on
-the event payload: route-needed events are retried and can arrive after a
-successful route or task completion. Such stale events must start no run and
-must never reach the chooser. An admitted rule reads the task's routing state
-and takes exactly one of three paths.
+The rule is admitted only when all of these hold:
 
-1. Call `task_route_options` with `task_id` from the event. Bind the result as
-   `routing`. It reports the task's fields, whether its class is explicit, and
-   the `options` catalog — one row per intelligence class, provider and
-   profile an ordinary worker can execute, with configured, idle and busy
-   counts. An `already_routed` outcome ends the rule: the task carries a
-   class and a profile that serves it. A `held` outcome also ends the rule:
-   the task has options in principle, but every one is on a provider that is
-   unavailable right now, and the task waits for one to recover rather than
-   failing a run every two minutes for the length of the outage. An
-   `explicit` outcome — the operator already fixed the class, and
-   `routing.explicit_profile_id` names the profile that serves it — continues
-   to step 3. An `undecided` outcome continues to step 2. A `no_options`,
-   `rejected`, or `runtime_error` outcome fails the rule.
-2. Ask the `playbook-compiler` profile to choose the route. Give it the task's
-   `title`, `description`, `priority` and `task_type`, and the `options`
-   rows, all from `routing`. Bind the answer as `decision`: an
-   `intelligence_class`, a `provider`, a `profile_id`, and a `reason`. The
-   guidance is the "Choosing a class" section below. A `completed` outcome
-   continues to step 4; a `runtime_error` outcome fails the rule.
-3. Call `task_route` with `task_id` from the event, `profile_id`
-   `routing.explicit_profile_id`, `intelligence_class`
-   `routing.intelligence_class`, `reason` `explicit intelligence class`, and
-   `provider_intent` `class_only`. A `routed` outcome ends the rule; a
-   `rejected` or `runtime_error` outcome fails it.
-4. Call `task_route` with `task_id` from the event, `profile_id`
-   `decision.profile_id`, `intelligence_class` `decision.intelligence_class`,
-   `reason` `decision.reason`, and `provider_intent` `class_only`. It writes
-   the class and the profile onto the task under the "no worker holds it"
-   predicate and resolves the task's routing gate. A `routed` outcome ends
-   the rule; a `rejected` or `runtime_error` outcome fails it.
+- the current hydrated `task` row is `DEFINED`, `READY` or `BLOCKED`;
+- its `task.route_source` is `unrouted` or `legacy`;
+- the event's `router`, the project's bound routing playbook, is
+  `default-assignment-routing`, this playbook's id.
 
-The route this playbook writes is routing's own placement, so it records the
-provider intent `class_only`: nobody chose the provider, and if it becomes
-unavailable the task may fail over to the same class elsewhere. `task_route`
-never downgrades a `pinned` or `preferred` intent a human set on the same
-provider.
+The guard reads the current row rather than the event payload: route-needed
+events are re-emitted, and one can arrive after another run routed the task or
+after the task finished. Such a stale event starts no run. The `router` check
+keeps this playbook out of a project bound to another router. An admitted rule
+plans the route, classifies the task only when the plan asks for it, and
+applies the plan. Each plan has its own binding, because a run binds a name
+once.
 
-## Choosing a class
+1. Call `task_route_plan` with `task_id` from the event and `policy`, the text
+   of the routing policy block below, verbatim. Bind the result as `plan_a`.
+   A `planned` outcome continues to step 5 with `plan_a`: the task's kind and
+   class hint decided the route, and no LLM is asked. A
+   `needs_classification` outcome continues to step 2. A `held` outcome ends
+   the rule: every candidate is on a provider that cannot launch right now,
+   and the task waits for one to recover rather than failing a run every two
+   minutes for the length of the outage. An `already_routed` outcome ends the
+   rule. A `no_candidates`, `rejected` or `runtime_error` outcome fails it.
+2. Ask the `playbook-compiler` profile to classify the task. Give it the
+   `title`, `description`, `task_type`, `class_hint`, `questions`,
+   `allowed_kinds` and `allowed_classes` from `plan_a`, and nothing else.
+   Bind the answer as `classification`. The guidance is the "Classifying a
+   task" section below. A `completed` outcome continues to step 3. A
+   `runtime_error` outcome, where the model failed or answered outside the
+   schema, continues to step 4.
+3. Call `task_route_plan` with `task_id`, `policy` and `classification`. Bind
+   the result as `plan_b`. A `planned` outcome continues to step 5 with
+   `plan_b`. A `held` outcome ends the rule, and so does `already_routed`,
+   because another run routed the task while this one was classifying it.
+   Every other outcome fails the rule.
+4. Call `task_route_plan` with `task_id`, `policy` and a `classification` of
+   `{"failed": true}`. The classification failed, so the plan proceeds with
+   the policy's defaults and treats every lane requirement as unmet: a failed
+   classification still routes the task. Bind the result as `plan_c`. A
+   `planned` outcome continues to step 5 with `plan_c`. A `held` or
+   `already_routed` outcome ends the rule. Every other outcome fails it.
+5. Call `task_route_apply` with `task_id` and `plan`, the plan the previous
+   step bound: `plan_a`, `plan_b` or `plan_c`. It re-selects among the plan's
+   candidates on fresh capacity, so a burst of routes spreads out, writes the
+   route with `route_source` `router`, resolves the task's routing gate and
+   emits `task.routed`. A `routed` outcome ends the rule. A `stale` outcome
+   also ends it and writes nothing: the task was claimed, finished or routed
+   after it was planned. A `rejected` or `runtime_error` outcome fails the
+   rule.
 
-Default to `standard-high` for ordinary feature implementation, debugging,
-refactoring, tests, and coordinated changes across modules. Most development
-tasks belong in this class. Use a fast class only for clearly trivial, localized
-work whose requirements are already settled.
+## Routing policy
 
-When the task is described as straightforward, routine, conventional, or an
-ordinary dependency or bug fix, select `standard-high` whenever it is offered.
-Those descriptions are affirmative evidence for the default, not a reason to
-escalate. Do not select a deep class merely because the task involves an
-unfamiliar library or language, several files, or a failing test.
+This block is passed verbatim, as the string `policy`, to every
+`task_route_plan` step. The command validates it and records its digest,
+`policy_sha256`, on every route it plans. Profiles are named by class and
+harness, never by rung id. Key by key:
 
-The `deep-high` row on the `anthropic` provider (`deep-high-claude`) is for code
-design only: a spec, an architecture, an implementation plan, or an API shape.
-Never choose it for a bug fix, a repair, an implementation, tests, or
-documentation, however hard that work looks; route those to another row.
+- `kinds`: the class a task of that kind gets when it has no hint, and
+  `max_class`, the highest class a hint may ask for; a higher hint is clamped.
+  A kind with a `lane` goes to that lane. A kind with `narrow: true` may go to
+  the OpenCode lanes.
+- `origins`: overrides by who filed the task. Integration and development
+  repairs are never OpenCode work, and a review dispatch goes to the
+  design-review lane.
+- `lanes`: `code-design` tries Claude first and falls back to Codex only when
+  Claude cannot take the task. `art-design` holds for Codex: `hold: true`
+  writes the provider intent `pinned`, so art design waits for its provider
+  rather than going elsewhere. `narrow` sends narrow, test-verified work to
+  OpenCode while it has a free slot; `narrow-unverified-model` does the same
+  only when an independent verifier checks the result.
+- `reserved`: keeps deep-high Claude for code design and design review, so a
+  hard bug fix hinted deep-high lands on deep-high Codex.
+- `balance`: the load score. A candidate's pressure is its live load plus one,
+  over its slots times its harness weight, its provider's usage factor and its
+  availability factor. The least-pressed candidate wins, and `tie_order`
+  breaks a tie, Codex first.
 
-Outside design, use a deep class or `astra-high` only for exceptionally
-difficult work: a genuinely unresolved architectural problem, a hard
-investigation with concrete evidence that standard reasoning was insufficient,
-or unusually complex correctness reasoning. The reason must name that specific
-difficulty and explain why `standard-high` is insufficient. C++, multiple files,
-native builds, integration tests, high priority, and a failing CI run alone are
-not reasons to select one of them. `astra-*` exists only on OpenAI, so it is
-selectable only when a supplied row offers it.
+```yaml
+version: 1
+class_order: [fast-off, fast-low, fast-high, standard-low, standard-high, deep-low, deep-high]
+default_kind: feature
+kinds:
+  design:   {class: deep-high,     max_class: deep-high,     lane: code-design}
+  art:      {class: deep-high,     max_class: deep-high,     lane: art-design}
+  research: {class: standard-high, max_class: deep-high}
+  feature:  {class: standard-high, max_class: deep-high,     narrow: true}
+  bugfix:   {class: standard-high, max_class: deep-high,     narrow: true}
+  refactor: {class: standard-high, max_class: deep-high,     narrow: true}
+  test:     {class: standard-high, max_class: standard-high, narrow: true}
+  docs:     {class: standard-high, max_class: standard-high, narrow: true}
+  chore:    {class: fast-high,     max_class: standard-high, narrow: true}
+  sync:     {class: fast-high,     max_class: standard-high, narrow: true}
+  plan:     {class: deep-high,     max_class: deep-high,     lane: code-design}
+origins:
+  integration_repair: {narrow: false}
+  development_repair: {narrow: false}
+  review_dispatch:    {lane: design-review}
+lanes:
+  code-design:   {class: deep-high, harnesses: [claude, codex], prefer: [claude]}
+  art-design:    {class: deep-high, harnesses: [codex], hold: true}
+  design-review: {class: deep-high, harnesses: [claude, codex]}
+  narrow:
+    harnesses: [opencode]
+    classes: {standard-high: standard-high, fast-high: fast-low, fast-low: fast-low}
+    requires: [narrow, test_verified]
+    prefer: true
+  narrow-unverified-model:
+    harnesses: [opencode]
+    classes: {fast-low: fast-off}
+    requires: [narrow, test_verified, independent_verifier]
+    prefer: true
+reserved:
+  - {class: deep-high, harness: claude, only_lanes: [code-design, design-review]}
+balance:
+  harness_weights: {claude: 1.0, codex: 1.0, opencode: 1.0}
+  usage_soft_percent: 80
+  usage_floor_factor: 0.1
+  degraded_factor: 0.5
+  tie_order: [codex, claude, opencode]
+```
 
-OpenCode rows are the ones whose `profile_id` ends in `-opencode`. Prefer one
-for well-specified, test-verified implementation with a narrow footprint: the
-requirements are settled, the files to change are named or obvious, and an
-existing or specified test checks the result. Choose `standard-high-opencode`
-for that work and `fast-low-opencode` for trivial mechanical edits, whenever the
-row is offered. Choose `fast-off-opencode` only when the task names an
-independent verifier, such as a test or check someone else runs, because that
-model can report success on a file it has broken. Integration repairs (titled
-`Repair development integration: ...`) and end-to-end or manual-verification
-work are never OpenCode work.
+## Classifying a task
 
-Choose a class and compatible profile only from the supplied options. Preserve
-explicit operator assignments. If `standard-high` is absent, select the closest
-suitable available standard class and explain the fallback; do not promote to
-deep just because workers are temporarily occupied.
+You classify one task for the router. You do not choose a model, a provider or
+a profile: the router chooses those from your answer, its policy and live
+capacity. Every field of the answer is required. `questions` names the fields
+the router actually needs, so take the most care with those.
 
-Copy `provider` from the chosen row. Temporary worker occupancy is not a reason
-to change the required intelligence class. When several rows offer the chosen
-class, apply the OpenCode guidance above first; otherwise prefer a `pool`
-lifecycle row, then the row with idle capacity.
+- `task_type`: one of `allowed_kinds`. Keep the task's own `task_type` when it
+  has one. `design` is code design: a spec, an architecture, an implementation
+  plan or an API shape. `art` is visual or art-heavy design. `plan` breaks
+  approved work into tasks. `research` is an investigation whose deliverable
+  is findings rather than a change. `feature`, `bugfix`, `refactor`, `test`,
+  `docs`, `chore` and `sync` are what they say.
+- `intelligence_class`: one of `allowed_classes`. Keep the `class_hint` when
+  the task has one. Default to `standard-high` for ordinary feature
+  implementation, debugging, refactoring, tests, and coordinated changes
+  across modules; most development tasks belong there. A task described as
+  straightforward, routine, conventional, or an ordinary dependency or bug fix
+  is `standard-high`. Use a fast class only for clearly trivial, localized
+  work whose requirements are already settled. Use a deep class only for
+  design, or for exceptionally difficult work: a genuinely unresolved
+  architectural problem, a hard investigation with concrete evidence that
+  standard reasoning was insufficient, or unusually complex correctness
+  reasoning. An unfamiliar library or language, several files, native builds,
+  integration tests, high priority, and a failing CI run alone are not
+  reasons for a deep class.
+- `narrow`: true when the work is well specified with a narrow footprint: the
+  requirements are settled and the files to change are named or obvious.
+- `test_verified`: true when an existing or specified test checks the result.
+  End-to-end or manual-verification work is not test-verified.
+- `independent_verifier`: true only when the task names a verifier that
+  someone else runs, such as a test or check outside the change itself.
+- `reason`: one or two sentences, at most 400 characters, naming the evidence
+  for the answer.
 
-Give a concise, non-empty `reason`. Return exactly one JSON object with this
-shape and no extra fields:
+Return exactly one JSON object with this shape and no extra fields:
 
 ```json
-{"intelligence_class":"<class from a row>","provider":"<provider from that row>","profile_id":"<profile from that row>","reason":"<why this class fits>"}
+{"task_type":"<one of allowed_kinds>","intelligence_class":"<one of allowed_classes>","narrow":false,"test_verified":false,"independent_verifier":false,"reason":"<the evidence>"}
 ```
 
 ## Failure handling, uniformly
 
 The rule has no retry. A failed step ends the run with a `failed` terminal so
-the run overlay shows what broke, and `aq task explain` names the run. The
-orchestrator re-emits `task.route_needed` for a task that is still unrouted,
-at most every two minutes, so a transient failure is retried by the next
-event and a permanent one — no profile can execute the class — stays visible
-until an operator adds a profile or pins the task by hand.
+the run overlay shows what broke, and `aq task explain` names the run. The task
+stays unrouted and visible, and no worker can claim it. The orchestrator
+re-emits `task.route_needed` for a task that is still unrouted, at most every
+two minutes, so a transient failure is retried by the next event and a
+permanent one (no worker candidate satisfies the policy) stays visible until
+an operator adds a profile or binds the project to another router. A failed
+classification is not a failed run: the plan proceeds with the policy's
+defaults.
