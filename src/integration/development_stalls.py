@@ -375,7 +375,7 @@ class PublisherStalls:
                 result = repair_chain(
                     row["manifest"], observation.history, statuses,
                     repository_id=observation.repository_id,
-                    target_ref=observation.target_ref, identity=self.repair_identity,
+                    target_ref=observation.target_ref, identity=self.repair_identity, row=row,
                 )
                 repair = result["open_repair"]
                 # A closed repair is live only while it is itself pending

@@ -1287,7 +1287,7 @@
       ]
     }
   },
-  "digest": "sha256:2aa986deaab65df16c1bd583207983840d6177065b01e82969ec3d9a5858984e",
+  "digest": "sha256:9185e30f2702586f6f4cd5d98c15d0787f12e732095a069f67e3adade5dc94f4",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4606,6 +4606,7 @@
         "src.config",
         "src.database",
         "src.database.queries.hierarchy_queries",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.git_checks",
         "src.doctor.integration_checks",
@@ -4619,6 +4620,7 @@
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.development_settlement",
         "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
@@ -7121,10 +7123,12 @@
       "default_arm": true,
       "imports": [
         "src.config",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.delivery_path",
+        "src.integration.delivery_truth",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.context",

@@ -211,6 +211,17 @@ names it with the `missing_provenance` skip reason, and a repeated identical
 skip stalls with one supervisor message, like every other stall. A branchless
 task with no recorded commits is organizational and has no artifact of its own.
 
+The one database answer every reader honours is a **settlement**: a record that
+a generation is *not owed* to one target (task metadata
+`development_delivery_settlement`). Git is still asked first: a settlement only
+turns work the target lacks from `pending` into `settled`, which satisfies
+dependents and settlement like a delivery but never says the work was delivered;
+contained work reads `contained` whatever was settled. It is fenced to its
+repository, its target and, for ordinary work, the exact completion it settled,
+so reopening and closing the task owes the new work again.
+Settlements come only from a [retarget](#when-the-default-branch-changes) and
+from [`settle-parked`](#settle-or-dismiss-a-parked-delivery).
+
 ### Retiring the legacy delivery table
 
 Revision `a00000000038` removed the `development_deliveries` table, the
@@ -379,6 +390,11 @@ parked content under the current policy:
 aq integration sweep demo --retry
 ```
 
+A park holds its source only on the target it parked on; after a
+[retarget](#when-the-default-branch-changes) it holds nothing. When a parked row
+is for work the target does not owe at all, settle it rather than repairing it:
+[settle or dismiss a parked delivery](#settle-or-dismiss-a-parked-delivery).
+
 ### Conflicts confined to generated files
 
 Most conflicts between parallel branches used to be in generated files: two
@@ -519,6 +535,73 @@ Repeating cancellation also retires leftover tasks from older cancellations
 that omitted the verifier. Once all delegates are terminal or paused, repeating
 the command makes no changes. The verifier's task and audit references are kept;
 cancellation does not claim that verification passed.
+
+## Settle or dismiss a parked delivery
+
+A parked row whose members the target does not owe (work already on another
+branch, superseded, or delivered some other way) needs a decision, not a repair
+and not a hand-moved target branch:
+
+```bash
+aq integration status demo                                   # parked: [<operation-id>]
+aq integration settle-parked demo <operation-id> --reason 'Superseded by demo.9'
+aq integration settle-parked demo <operation-id> --dismiss --reason 'Stale park'
+```
+
+* **Settle** (the default) checks in git that each member's current completion
+  is still the one that parked, then records it, and every repair filed for the
+  row, as not owed to the target. Only a row on the current target can be
+  settled; the next sweep retires a row parked on an old one. The publisher never
+  merges them there, their dependents are released on the next evaluation and no
+  further repair is filed. The result lists `open_repairs`: repairs still being
+  worked on, which you retire with `aq task close <id> --obsolete` once their
+  sessions stop. A member that completed again after it parked owes its new work,
+  so settling it is refused; dismiss the row instead.
+* **Dismiss** only withdraws the row: its members return to the publisher, which
+  merges them again on the next sweep and parks them again, as a new row, if they
+  still conflict. Repairs are left alone.
+
+Either way the row becomes `cancelled`, with the decision (`settled_by` or
+`dismissed`: reason, operator, time) in its evidence. The command takes the
+publisher lock, so it answers `blocked` while a sweep runs; run it again. It
+needs a LOCAL operator or the project's live supervisor
+([`DevelopmentIntegration.settle_parked`](../../src/integration/development.py)).
+
+## When the default branch changes
+
+Retargeting a development project — `aq integration enable --mode disabled`,
+`aq project set … integration-repository` with a new `default_branch`, then
+`aq integration develop` — makes the publisher deliver somewhere new. Three
+things about the old target are not carried over
+([`src/integration/development_settlement.py`](../../src/integration/development_settlement.py)):
+
+* **Work the old target already has.** A generation completed before the
+  retarget whose source the old target contains is settled as not owed to the new
+  one (`delivered_to_previous_target`), instead of being merged — or parked and
+  repaired — into it. Work completed before the retarget that the old target does
+  *not* have is still owed and is delivered to the new target as usual. If the old
+  branch is gone, nothing can be proven there and everything stays owed.
+* **Repairs built for the old target.** A repair starts from the target its park
+  named and carries that branch's history, so it is settled as not owed to any
+  other target (`repair_for_previous_target`); its sources are judged on the new
+  target on their own. A source that conflicts on the new target too gets a repair
+  of its own there (the park records it as `evidence.repair_id`), never the old
+  one. A park on the current target whose members all turn out not to be owed is
+  cancelled, and its repairs are settled with it; if the same content parks there
+  again later, its repair is owed again.
+* **Parks on the old target.** A park is a conflict with one base of one target.
+  Parks are scoped to the current target, so a source parked on the old one is
+  merged into the new one on the next sweep; the stale row is cancelled with
+  `evidence.retired` naming the new target.
+
+Only `aq integration develop` moves the target: its configuration row records
+`retarget: {from_ref, to_ref}` (and its result says so), and the first
+configuration onto the new target fences which completions came before it. An
+`aq integration adopt` onto another ref is not a retarget. The first sweep on the new target writes one
+journal row of kind `settlement` listing what it settled, and sends
+`supervisor-<project>` one message naming each task. If some of that work does
+belong on the new target, merge its source there on a branch that keeps it as an
+ancestor and record it with `aq integration adopt`, or reopen and close the task.
 
 ## Designating the repository
 
@@ -715,6 +798,8 @@ catalogue or rule regeneration was required.
 [`src/integration/development.py`](../../src/integration/development.py),
 skip stalls in
 [`src/integration/development_stalls.py`](../../src/integration/development_stalls.py),
+retargets and settlements in
+[`src/integration/development_settlement.py`](../../src/integration/development_settlement.py),
 commands in
 [`src/commands/integration_commands.py`](../../src/commands/integration_commands.py),
 CLI in [`src/cli/integration.py`](../../src/cli/integration.py).

@@ -1403,6 +1403,34 @@ async def test_recover_child_command_reports_empty_exception_type():
     assert result["error"] == "RuntimeError()"
 
 
+async def test_settle_parked_command_requires_integration_authority():
+    from src.commands.integration_commands import IntegrationCommandsMixin
+
+    handler = IntegrationCommandsMixin()
+    handler.db = object()
+    service = AsyncMock()
+    service.settle_parked.return_value = {"outcome": "settled", "id": "op-1"}
+    handler._development_integration = lambda: service
+    args = {"project_id": "p", "operation_id": "op-1", "reason": "superseded"}
+    with patch("src.commands.integration_commands.integration_operator",
+               return_value=(None, "not a live supervisor of p")):
+        refused = await handler._cmd_integration_settle_parked(args)
+    assert (refused["outcome"], service.settle_parked.await_count) == ("unauthorized", 0)
+    with patch("src.commands.integration_commands.integration_operator",
+               return_value=("supervisor-p", None)):
+        assert (await handler._cmd_integration_settle_parked(args))["outcome"] == "settled"
+    service.settle_parked.assert_awaited_once_with(
+        "p", "op-1", reason="superseded", operator_id="supervisor-p", dismiss=False,
+    )
+    service.settle_parked.side_effect = DevelopmentBusy("repository publisher is already running")
+    with patch("src.commands.integration_commands.integration_operator",
+               return_value=("supervisor-p", None)):
+        busy = await handler._cmd_integration_settle_parked(args)
+    assert (busy["outcome"], busy["error"]) == (
+        "blocked", "repository publisher is already running",
+    )
+
+
 @pytest.mark.parametrize("blocker", ["human_gate", "unfinished_dependency"])
 async def test_batch_keeps_non_delivery_blockers(setup, blocker):
     db, service, _source, remote, _repo = setup
@@ -4718,7 +4746,7 @@ async def test_delivery_uses_current_generation_before_close_record_is_saved(
 ):
     """A completed transition cannot borrow an older, delivered generation."""
     from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
-    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+    from src.integration.delivery_truth import SETTLEMENT_KEY, DeliveryState, load_delivery_requests
     from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 
     db, service, source, _remote, repo = setup
@@ -4726,6 +4754,10 @@ async def test_delivery_uses_current_generation_before_close_record_is_saved(
     old_head = await feature(setup, task_id, retain=prior_completion)
     if prior_completion:
         git(source, "push", "origin", f"{old_head}:main")
+        await db.set_task_meta(task_id, SETTLEMENT_KEY, {
+            "repository_id": "r", "target_ref": "refs/heads/main",
+            "completion_id": "feature-closing", "reason": "previous target",
+        })
         previous = (await load_delivery_requests(
             db, [task_id], repository_id="r", target_ref="refs/heads/main",
         ))[task_id]
@@ -4757,6 +4789,7 @@ async def test_delivery_uses_current_generation_before_close_record_is_saved(
     ))[task_id]
     assert request.completion_id == new_id
     assert request.completed_at is None
+    assert not request.settles
     evidence = await (await truth_snapshot(setup)).evaluate(request)
     assert evidence.state is DeliveryState.PENDING
     assert evidence.source_oid == new_head
@@ -5505,3 +5538,402 @@ async def test_legacy_repair_rows_cannot_prove_replacement_chains(setup, repairs
     )
     evidence = await snapshot.evaluate_many(requests.values())
     assert evidence["bounded-0"].satisfied is False
+
+
+# --- Retargets, target-scoped parks and settling parked deliveries ----------------
+# matter-engine-cpp, 2026-09-28: after main -> vg-vt-improvements, work already
+# on main was parked into the new target, repairs built for main kept running,
+# and sources parked on main stayed held while they applied cleanly.
+
+
+async def _retarget(setup, branch, start_point):
+    """Deliver into *branch* from now on, as drain / designate / develop does."""
+    db, service, source, _remote, _repo = setup
+    git(source, "push", "origin", f"{start_point}:refs/heads/{branch}")
+    await db.update_repo("r", default_branch=branch)
+    return await service.configure(
+        "p", {"validation": "focused", "commands": ["test -f base.txt"]},
+        reason=f"deliver into {branch}", operator_id="local",
+    )
+
+
+async def _settlement_notices(db):
+    from src.integration.development_settlement import SETTLEMENT_MESSAGE_KIND
+
+    async with db._engine.connect() as conn:
+        return (await conn.execute(
+            select(messages).where(messages.c.body_kind == SETTLEMENT_MESSAGE_KIND)
+        )).mappings().all()
+
+
+def _is_ancestor(repository, commit, ref):
+    return subprocess.run(
+        ["git", "-C", str(repository), "merge-base", "--is-ancestor", commit, ref],
+        capture_output=True, check=False,
+    ).returncode == 0
+
+
+async def test_retarget_settles_what_the_old_target_has_and_carries_the_rest(setup):
+    from src.integration.delivery_truth import SETTLEMENT_KEY
+    from src.integration.development_settlement import DELIVERED_TO_PREVIOUS_TARGET
+
+    db, service, _source, remote, _repo = setup
+    base = git(remote, "rev-parse", "main")
+    delivered = await feature(setup, "delivered", filename="shared.txt", content="main\n")
+    assert (await service.sweep("p"))["outcome"] == "delivered"
+    # Completed while main was the target, and conflicting with what main has.
+    clash = await feature(setup, "clash", filename="shared.txt", content="next\n")
+    await service.sweep("p")
+    [old_park] = [row for row in await service.rows("p") if row["state"] == "parked"]
+    assert (old_park["target_ref"], old_park["manifest"][0]["task_id"]) == (
+        "refs/heads/main", "clash"
+    )
+    await db.create_task(Task(
+        id="after-delivered", project_id="p", title="after", description="",
+        status=TaskStatus.READY,
+    ))
+    await db.add_dependency("after-delivered", "delivered")
+
+    configured = await _retarget(setup, "next", base)
+    assert configured["retarget"] == {
+        "from_ref": "refs/heads/main", "to_ref": "refs/heads/next",
+    }
+    assert await _delivery_pending(db, "delivered"), "owed until the sweep settles it"
+    with pytest.raises(ValueError, match="not on the current target"):
+        await service.settle_parked("p", old_park["id"], reason="x", operator_id="local")
+    later = await feature(setup, "later")
+    result = await service.sweep("p")
+
+    # The source parked on main applies cleanly to the new target and is not
+    # held by its old park; main's delivered work is not merged into it.
+    assert result["outcome"] == "delivered"
+    assert {member["task_id"] for member in result["manifest"]} == {"clash", "later"}
+    assert _is_ancestor(remote, clash, "next") and _is_ancestor(remote, later, "next")
+    assert not _is_ancestor(remote, delivered, "next")
+    settlement = await db.get_task_meta("delivered", SETTLEMENT_KEY)
+    assert (settlement["reason"], settlement["target_ref"], settlement["completion_id"]) == (
+        DELIVERED_TO_PREVIOUS_TARGET, "refs/heads/next", "feature-delivered",
+    )
+    assert settlement["evidence"]["previous_target_ref"] == "refs/heads/main"
+    assert not await _delivery_pending(db, "delivered")
+    assert not await _admission_blocked(setup, "after-delivered")
+    rows = {row["id"]: row for row in await service.rows("p")}
+    assert rows[old_park["id"]]["state"] == "cancelled"
+    assert rows[old_park["id"]]["evidence"]["retired"]["target_ref"] == "refs/heads/next"
+    [journal] = [row for row in rows.values()
+                 if (row["evidence"] or {}).get("kind") == "settlement"]
+    assert [member["task_id"] for member in journal["manifest"]] == ["delivered"]
+    [notice] = await _settlement_notices(db)
+    assert notice["to_id"] == "supervisor-p" and "- delivered:" in notice["body"]
+
+    # Settled once: nothing new is settled, merged or announced.
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert len(await _settlement_notices(db)) == 1
+    # A new completion of the settled task is owed to the new target again.
+    await complete_source(setup, "delivered", "delivered-again", delivered)
+    assert await _delivery_pending(db, "delivered")
+
+
+async def test_repair_built_for_the_old_target_is_not_owed_to_the_new_one(setup):
+    from src.integration.delivery_truth import SETTLEMENT_KEY
+    from src.integration.development_settlement import REPAIR_FOR_PREVIOUS_TARGET
+
+    db, service, source, remote, _repo = setup
+    base = git(remote, "rev-parse", "main")
+    await feature(setup, "on-main", filename="shared.txt", content="main\n")
+    await service.sweep("p")
+    clash = await feature(setup, "clash", filename="shared.txt", content="next\n")
+    await service.sweep("p")
+    [parked] = [row for row in await service.rows("p") if row["state"] == "parked"]
+    repair_id = service._repair_identity(parked["manifest"])
+    assert (await db.get_task_meta(repair_id, "development_repair_evidence"))[
+        "target_ref"] == "refs/heads/main"
+    # The repair's worker merges the source onto main, as its description says.
+    git(source, "fetch", "origin")
+    git(source, "checkout", "-B", "aq/" + repair_id, "origin/main")
+    git(source, "merge", "--no-commit", "-s", "ours", clash)
+    (source / "shared.txt").write_text("main\nnext\n")
+    git(source, "add", "shared.txt")
+    git(source, "commit", "--no-edit")
+    repair_head = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", "aq/" + repair_id)
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == repair_id).values(status="COMPLETED")
+        )
+    await complete_source(setup, repair_id, "repair-close", repair_head)
+
+    await _retarget(setup, "next", base)
+    result = await service.sweep("p")
+
+    assert [member["task_id"] for member in result["manifest"]] == ["clash"]
+    assert not _is_ancestor(remote, repair_head, "next")
+    settlement = await db.get_task_meta(repair_id, SETTLEMENT_KEY)
+    assert (settlement["reason"], settlement["completion_id"]) == (
+        REPAIR_FOR_PREVIOUS_TARGET, None,
+    )
+    assert settlement["evidence"]["built_for"] == "refs/heads/main"
+    assert not await _delivery_pending(db, repair_id)
+
+
+async def test_park_on_the_current_target_whose_member_is_not_owed_is_cancelled(setup):
+    """quick-dune: parked into the new target before the retarget was understood."""
+    from src.integration.delivery_truth import SETTLEMENT_KEY
+    from src.integration.development_settlement import SOURCES_NOT_OWED
+
+    db, service, source, remote, _repo = setup
+    base = git(remote, "rev-parse", "main")
+    git(source, "checkout", "-B", "next-work", base)
+    (source / "shared.txt").write_text("next\n")
+    git(source, "add", "shared.txt")
+    git(source, "commit", "-m", "next has its own shared.txt")
+    next_head = git(source, "rev-parse", "HEAD")
+    delivered = await feature(setup, "delivered", filename="shared.txt", content="main\n")
+    await service.sweep("p")
+    await _retarget(setup, "next", next_head)
+    # An older publisher parked it into the new target and filed its repair.
+    member = {"task_id": "delivered", "source_sha": delivered, "parent_task_id": None}
+    await service.save({
+        "id": "stale-park", "project_id": "p", "repository_id": "r",
+        "target_ref": "refs/heads/next", "expected_sha": next_head, "state": "parked",
+        "manifest": [member], "evidence": {"kind": "merge_conflict"},
+        "reason": "source conflict; independent work may continue",
+        "created_at": time.time(), "updated_at": time.time(),
+    })
+    stale = next(row for row in await service.rows("p") if row["id"] == "stale-park")
+    repair_id = await service.ensure_repair(
+        "p", "r", [member], next_head, reason="conflict", parked=stale,
+    )
+
+    assert (await service.sweep("p"))["outcome"] == "idle"
+
+    row = next(row for row in await service.rows("p") if row["id"] == "stale-park")
+    assert row["state"] == "cancelled"
+    assert row["evidence"]["settled"]["repairs"] == [repair_id]
+    assert (await db.get_task_meta(repair_id, SETTLEMENT_KEY))["reason"] == SOURCES_NOT_OWED
+    assert not _is_ancestor(remote, delivered, "next")
+    assert any(repair_id in notice["body"] for notice in await _settlement_notices(db))
+
+
+async def test_source_parked_on_both_targets_gets_a_repair_for_the_new_one(setup):
+    from src.integration.delivery_truth import SETTLEMENT_KEY
+    from src.integration.development_settlement import REPAIR_FOR_PREVIOUS_TARGET
+
+    db, service, source, remote, _repo = setup
+    base = git(remote, "rev-parse", "main")
+    await feature(setup, "on-main", filename="shared.txt", content="main\n")
+    await service.sweep("p")
+    clash = await feature(setup, "clash", filename="shared.txt", content="clash\n")
+    await service.sweep("p")
+    [main_park] = [row for row in await service.rows("p") if row["state"] == "parked"]
+    main_repair = service._repair_identity(main_park["manifest"])
+    git(source, "checkout", "-B", "next-work", base)
+    (source / "shared.txt").write_text("next\n")
+    git(source, "add", "shared.txt")
+    git(source, "commit", "-m", "next has its own shared.txt")
+    await _retarget(setup, "next", git(source, "rev-parse", "HEAD"))
+
+    await service.sweep("p")
+
+    [next_park] = [row for row in await service.rows("p") if row["state"] == "parked"]
+    assert (next_park["target_ref"], next_park["manifest"]) == (
+        "refs/heads/next", main_park["manifest"],
+    )
+    next_repair = next_park["evidence"]["repair_id"]
+    assert next_repair != main_repair
+    repair = await db.get_task(next_repair)
+    assert "Publication target: refs/heads/next." in repair.description
+    assert (await db.get_task_meta(next_repair, "development_repair_evidence"))[
+        "target_ref"] == "refs/heads/next"
+    # The repair built for main finishes; it is not owed here, and the park on
+    # next is still carried by its own repair.
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks).where(tasks.c.id == main_repair).values(status="COMPLETED")
+        )
+    git(source, "push", "origin", f"{clash}:refs/heads/aq/{main_repair}")
+    await complete_source(setup, main_repair, "main-repair-close", clash)
+    await service.sweep("p")
+    assert (await db.get_task_meta(main_repair, SETTLEMENT_KEY))["reason"] == (
+        REPAIR_FOR_PREVIOUS_TARGET
+    )
+    note = await service._parked_repair_note(
+        await db.get_repo("r"), "refs/heads/next", await service.rows("p"), "clash",
+    )
+    assert f"carried by repair {next_repair}" in note
+
+
+def test_retarget_is_read_from_the_journal_targets():
+    from src.integration.development_settlement import (
+        previous_target,
+        repair_target_of,
+        retarget_of,
+    )
+
+    def row(identity, created_at, target, kind=None, repository="r", reason=None):
+        return {"id": identity, "created_at": created_at, "repository_id": repository,
+                "target_ref": target, "evidence": {"kind": kind} if kind else {},
+                "reason": reason}
+
+    history = [
+        row("configure-main", 1, "refs/heads/main", "configuration"),
+        row("batch", 2, "refs/heads/main", reason="development batch"),
+        row("preserve", 3, "refs/heads/aq/development/abc/def"),
+        row("configure-next", 4, "refs/heads/next", "configuration"),
+        row("policy", 5, "refs/heads/next", "configuration"),
+        row("park", 6, "refs/heads/next"),
+        row("other-repository", 7, "refs/heads/main", repository="elsewhere"),
+        # An adoption names any ref; it never moves the target.
+        row("adopt-main", 8, "refs/heads/main", "operator_accepted"),
+    ]
+    assert retarget_of(history, "r", "refs/heads/next") == {
+        "from_ref": "refs/heads/main", "at": 4.0, "operation_id": "configure-next",
+    }
+    assert retarget_of(history, "r", "refs/heads/main") is None
+    assert retarget_of(history[:3], "r", "refs/heads/main") is None
+    assert previous_target(history, "r", "refs/heads/next") is None
+    assert previous_target(history[:3], "r", "refs/heads/next") == "refs/heads/main"
+    assert previous_target([], "r", "refs/heads/next") is None
+    # A policy change after an adoption elsewhere is not a retarget.
+    same = [row("configure-main", 1, "refs/heads/main", "configuration"),
+            row("adopt-x", 2, "refs/heads/x", "operator_accepted"),
+            row("policy", 3, "refs/heads/main", "configuration")]
+    assert retarget_of(same, "r", "refs/heads/main") is None
+    assert previous_target(same, "r", "refs/heads/main") is None
+    # A journal from before configuration rows: the publisher's own park names
+    # the old target, and the develop row may record it explicitly.
+    legacy = [row("park-main", 1, "refs/heads/main",
+                  reason="source conflict; independent work may continue"),
+              row("adopt-x", 2, "refs/heads/x", "operator_accepted"),
+              row("configure-next", 3, "refs/heads/next", "configuration")]
+    assert retarget_of(legacy, "r", "refs/heads/next")["from_ref"] == "refs/heads/main"
+    assert previous_target(legacy[:2], "r", "refs/heads/next") == "refs/heads/main"
+    recorded = [{**row("configure-next", 3, "refs/heads/next", "configuration"),
+                 "evidence": {"kind": "configuration",
+                              "retarget": {"from_ref": "refs/heads/trunk"}}}]
+    assert retarget_of(recorded, "r", "refs/heads/next")["from_ref"] == "refs/heads/trunk"
+    assert repair_target_of("", {"delivery_id": "batch"}, history) == "refs/heads/main"
+    assert repair_target_of(
+        "Candidate/base: abc.\nPublication target: refs/heads/main.\nFetch origin", {}, [],
+    ) == "refs/heads/main"
+    assert repair_target_of("no target named", None, history) is None
+
+
+async def _park_two(setup):
+    db, service, _source, _remote, _repo = setup
+    await feature(setup, "one", filename="base.txt", content="one\n")
+    await feature(setup, "two", filename="base.txt", content="two\n")
+    await feature(setup, "independent")
+    await db.create_task(Task(
+        id="dependent", project_id="p", title="dependent", description="",
+        status=TaskStatus.READY,
+    ))
+    await db.add_dependency("dependent", "two")
+    result = await service.sweep("p")
+    assert {member["task_id"] for member in result["manifest"]} == {"one", "independent"}
+    [parked] = [row for row in await service.rows("p") if row["state"] == "parked"]
+    assert parked["manifest"][0]["task_id"] == "two"
+    return parked
+
+
+async def test_settle_parked_releases_dependents_and_retires_its_repairs(setup):
+    from src.integration.delivery_truth import SETTLEMENT_KEY
+    from src.integration.development_settlement import OPERATOR_SETTLED
+
+    db, service, _source, remote, _repo = setup
+    parked = await _park_two(setup)
+    repair_id = service._repair_identity(parked["manifest"])
+    assert await db.get_task(repair_id) is not None
+    assert await _admission_blocked(setup, "dependent")
+
+    with pytest.raises(ValueError, match="reason"):
+        await service.settle_parked("p", parked["id"], reason=" ", operator_id="local")
+    with pytest.raises(ValueError, match="unknown development operation"):
+        await service.settle_parked("p", "no-such-row", reason="x", operator_id="local")
+    result = await service.settle_parked(
+        "p", parked["id"], reason="superseded by one", operator_id="supervisor-p",
+    )
+
+    assert (result["outcome"], result["members"], result["open_repairs"]) == (
+        "settled", ["two"], [repair_id],
+    )
+    assert set(result["settled"]) == {"two", repair_id}
+    settlement = await db.get_task_meta("two", SETTLEMENT_KEY)
+    assert (settlement["reason"], settlement["detail"], settlement["operator_id"]) == (
+        OPERATOR_SETTLED, "superseded by one", "supervisor-p",
+    )
+    assert settlement["completion_id"] == "feature-two"
+    assert not await _admission_blocked(setup, "dependent")
+    row = next(row for row in await service.rows("p") if row["id"] == parked["id"])
+    assert row["state"] == "cancelled"
+    assert row["evidence"]["settled_by"]["reason"] == "superseded by one"
+    main = git(remote, "rev-parse", "main")
+    assert (await service.sweep("p"))["outcome"] == "idle"
+    assert git(remote, "rev-parse", "main") == main
+    assert not any(row["state"] == "parked" for row in await service.rows("p"))
+    again = await service.settle_parked("p", parked["id"], reason="x", operator_id="local")
+    assert again["outcome"] == "already_terminal"
+    # Git is asked first: work that does reach the target reads contained.
+    two = git(remote, "rev-parse", "two")
+    git(_source, "checkout", "main")
+    git(_source, "pull", "--ff-only", "origin", "main")
+    git(_source, "merge", "--no-ff", "--no-edit", "-X", "theirs", two)
+    git(_source, "push", "origin", "main")
+    assert _is_ancestor(remote, two, "main")
+    view = await db._delivery_observer.observe(["two"])
+    assert view.get("two").state.value == "contained"
+
+
+async def test_dismiss_parked_returns_the_source_to_the_publisher(setup):
+    from src.integration.delivery_truth import SETTLEMENT_KEY
+
+    db, service, _source, _remote, _repo = setup
+    parked = await _park_two(setup)
+
+    result = await service.settle_parked(
+        "p", parked["id"], reason="stale park", operator_id="local", dismiss=True,
+    )
+
+    assert (result["outcome"], result["settled"]) == ("dismissed", [])
+    assert await db.get_task_meta("two", SETTLEMENT_KEY) is None
+    row = next(row for row in await service.rows("p") if row["id"] == parked["id"])
+    assert (row["state"], row["evidence"]["dismissed"]["reason"]) == ("cancelled", "stale park")
+    # Merged again on the next sweep: it still conflicts, so it parks anew.
+    await service.sweep("p")
+    [reparked] = [row for row in await service.rows("p") if row["state"] == "parked"]
+    assert reparked["id"] != parked["id"]
+    assert reparked["manifest"][0]["task_id"] == "two"
+
+
+async def test_a_settled_park_that_parks_again_owes_its_repair_again(setup):
+    from src.integration.delivery_truth import SETTLEMENT_KEY
+
+    db, service, _source, _remote, _repo = setup
+    parked = await _park_two(setup)
+    repair_id = service._repair_identity(parked["manifest"])
+    await service.settle_parked("p", parked["id"], reason="not wanted", operator_id="local")
+    assert await db.get_task_meta(repair_id, SETTLEMENT_KEY) is not None
+
+    # Closed again with the same source: a new completion, owed again.
+    await complete_source(setup, "two", "two-again", parked["manifest"][0]["source_sha"])
+    await service.sweep("p")
+
+    [reparked] = [row for row in await service.rows("p") if row["state"] == "parked"]
+    assert reparked["manifest"] == parked["manifest"]
+    assert await db.get_task_meta(repair_id, SETTLEMENT_KEY) is None
+
+
+async def test_settle_parked_refuses_a_member_that_completed_again(setup):
+    _db, service, source, _remote, _repo = setup
+    parked = await _park_two(setup)
+    git(source, "checkout", "two")
+    (source / "two-more.txt").write_text("more\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "more work")
+    git(source, "push", "origin", "two")
+    await complete_source(setup, "two", "two-again", git(source, "rev-parse", "HEAD"))
+
+    with pytest.raises(ValueError, match="completed again"):
+        await service.settle_parked("p", parked["id"], reason="x", operator_id="local")
+    row = next(row for row in await service.rows("p") if row["id"] == parked["id"])
+    assert row["state"] == "parked"

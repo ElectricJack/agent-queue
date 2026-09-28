@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-131 commands are registered.
+132 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -128,6 +128,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_retry_cleanup`](integration_retry_cleanup.md) | Integration Retry Cleanup | Authenticated hierarchical integration operational control. |
 | [`integration_schedule_due`](integration_schedule_due.md) | Schedule integration sweep | Coalesce a periodic or manual trigger into one durable sweep request. |
 | [`integration_seal`](integration_seal.md) | Seal integration frontier | Atomically snapshot the full eligible integration frontier. |
+| [`integration_settle_parked`](integration_settle_parked.md) | Integration Settle Parked | Settle a parked development delivery as not owed, or dismiss it. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
 | [`integration_trust_manifest`](integration_trust_manifest.md) | Integration Trust Manifest | Render the App-mode trust manifest from the policy, the authenticated binding and the daemon's App, and compare the default-branch copy. |

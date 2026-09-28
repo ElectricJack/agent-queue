@@ -26,7 +26,12 @@ from src.database.tables import (
     tasks,
 )
 from src.git.manager import GitError
-from src.integration.delivery_truth import DeliveryRequest, delivery_snapshot
+from src.integration.delivery_truth import (
+    SETTLEMENT_KEY,
+    DeliveryRequest,
+    delivery_snapshot,
+    settlement_fields,
+)
 from src.integration.publishable_artifact import legacy_artifact
 
 
@@ -164,6 +169,18 @@ async def _inputs(db, candidate_ids, conn):
         else []
     )
     obsolete = {r["task_id"] for r in markers}
+    # Not owed to its target (a retarget or ``settle-parked``): satisfied.
+    settlements = {
+        task_id: settlement_fields(value)
+        for task_id, value in (
+            await conn.execute(
+                select(task_metadata.c.task_id, task_metadata.c.value).where(
+                    task_metadata.c.task_id.in_(source_ids),
+                    task_metadata.c.key == SETTLEMENT_KEY,
+                )
+            )
+        ).all()
+    } if source_ids else {}
     gate_rows = (
         (
             await conn.execute(
@@ -223,6 +240,7 @@ async def _inputs(db, candidate_ids, conn):
                 target_ref="refs/heads/" + repo["default_branch"] if repo else "",
             ),
             has_recorded_source=row["id"] in recorded,
+            **settlements.get(row["id"], {}),
         )
 
     # Compare values, not counts: a replacement edge/gate is movement too.

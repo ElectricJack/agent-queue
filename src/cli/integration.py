@@ -657,6 +657,29 @@ def integration_development_sweep(ctx, project_id, retry, recover_child):
     })
 
 
+@integration.command("settle-parked")
+@click.argument("project_id")
+@click.argument("operation_id")
+@click.option("--dismiss", is_flag=True,
+              help="Only withdraw the park: its sources are merged again on the next sweep "
+                   "(and park again if they still conflict). Default: settle them as not owed.")
+@click.option("--reason", required=True)
+@click.pass_context
+@_handle_errors
+def integration_settle_parked(ctx, project_id, operation_id, dismiss, reason):
+    """Settle a parked development delivery as not owed, or dismiss it.
+
+    OPERATION_ID is a row from `aq integration status PROJECT_ID` `parked`.
+    Settling records each parked source (and every repair filed for it) as not
+    owed to the row's target: the publisher never merges it there and its
+    dependents are released.
+    """
+    _execute(ctx, "integration_settle_parked", {
+        "project_id": project_id, "operation_id": operation_id, "dismiss": dismiss,
+        "reason": reason,
+    })
+
+
 @integration.command("migrate-provenance")
 @click.argument("project_id")
 @click.option("--apply", is_flag=True, help="Publish verified evidence; default is read-only inventory.")

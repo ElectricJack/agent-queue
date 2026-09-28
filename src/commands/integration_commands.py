@@ -2588,6 +2588,20 @@ class IntegrationCommandsMixin:
         except (ValueError, RuntimeError, KeyError) as exc:
             return _failure("blocked", str(exc).strip() or repr(exc))
 
+    async def _cmd_integration_settle_parked(self, args: dict) -> dict:
+        operator_id, refusal = await integration_operator(
+            getattr(self, "db", None), str(args.get("project_id") or "")
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        try:
+            return await self._development_integration().settle_parked(
+                args["project_id"], args["operation_id"], reason=args["reason"],
+                operator_id=operator_id, dismiss=args.get("dismiss", False),
+            )
+        except (ValueError, RuntimeError, KeyError) as exc:
+            return _failure("blocked", str(exc).strip() or repr(exc))
+
     async def _cmd_integration_cancel_preserving(self, args: dict) -> dict:
         operation_id = str(args.get("operation_id") or "")
         _label, refusal = await self._integration_operator_for_operation(operation_id)
