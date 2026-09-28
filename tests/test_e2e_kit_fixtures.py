@@ -88,11 +88,9 @@ def test_app_train_files_hint_only_graph_and_playbook_created_review(monkeypatch
             return {"parent_id": "epic-1", "nodes": [{"key": "leaf", "task_id": "epic-1.1"}]}
         if args[:2] == ("playbook", "import"):
             return {"success": True, "activated": True}
-        if args[:2] == ("playbook", "run"):
-            return {"status": "completed", "failed_steps": []}
         if args[:2] == ("task", "children"):
             children = [{"id": "epic-1.1", "profile_id": "train-worker"}]
-            if any(call[:2] == ("playbook", "run") for call in calls):
+            if any(call[:2] == ("task", "create") for call in calls):
                 children.append({"id": "epic-1.2", "profile_id": "reviewer"})
             return children
         if args[:2] == ("task", "deps"):
@@ -117,9 +115,11 @@ def test_app_train_files_hint_only_graph_and_playbook_created_review(monkeypatch
     artifact = json.loads(artifact_path.read_text())
     steps = artifact["steps"]
     assert steps["file-review--ensure"]["inputs"]["profile_id"]["value"] == "reviewer"
+    assert steps["file-review--ensure"]["inputs"]["parent_id"]["path"] == "parent_task_id"
     assert steps["file-review--provenance"]["inputs"]["dep_type"]["value"] == "discovered-from"
     assert steps["file-review--blocks"]["inputs"]["dep_type"]["value"] == "blocks"
-    assert any(call[:2] == ("playbook", "run") for call in calls)
+    assert any(call[:2] == ("playbook", "import") for call in calls)
+    assert not any(call[:2] == ("playbook", "run") for call in calls)
 
 
 def test_development_validation_preset_checks_the_committed_readme(tmp_path):

@@ -1100,7 +1100,7 @@ def scenario_state(state: dict, scenario: str) -> dict:
     return state.setdefault("scenarios", {}).setdefault(scenario, {})
 
 
-def _review_role_body(pid: str, scenario: str, epic_id: str, leaf_id: str) -> dict:
+def _review_role_body(pid: str, scenario: str, leaf_title: str) -> dict:
     """A one-leaf playbook: only its PLAYBOOK principal can file the reviewer role."""
     rule = "file-review"
     prefix = f"{rule}--"
@@ -1115,6 +1115,9 @@ def _review_role_body(pid: str, scenario: str, epic_id: str, leaf_id: str) -> di
 
     def bound(path: str) -> dict:
         return {"type": "binding_ref", "binding": "review", "path": path}
+
+    def template(prefix: str, path: str) -> dict:
+        return {"type": "template", "parts": [literal(prefix), event(path)]}
 
     def command(name: str, inputs: dict, next_step: str, *, save: bool = False) -> dict:
         from src.playbooks.validation import RegistryContractLookup
@@ -1134,24 +1137,24 @@ def _review_role_body(pid: str, scenario: str, epic_id: str, leaf_id: str) -> di
         "rules": [{"id": rule, "name": rule, "source": source,
                    "trigger": {"event_type": "task.created"},
                    "guard": {"type": "comparison", "op": "eq",
-                             "left": event("task_id"), "right": literal(leaf_id)},
+                             "left": event("title"), "right": literal(leaf_title)},
                    "entry_step": prefix + "ensure"}],
         "steps": {
             prefix + "ensure": command("ensure_task", {
                 "project_id": event("project_id"),
-                "dedup_key": literal(f"app-train-review:{leaf_id}"),
+                "dedup_key": template("app-train-review:", "task_id"),
                 "title": literal(f"{scenario}: review the leaf"),
-                "description": literal(f"Review {leaf_id}'s exact checkpoint head and approve it."),
+                "description": template("Review the exact checkpoint head of ", "task_id"),
                 "profile_id": literal(REVIEWER_PROFILE),
                 "intelligence_class": literal(TRAIN_CLASS),
-                "parent_id": literal(epic_id),
+                "parent_id": event("parent_task_id"),
             }, prefix + "provenance", save=True),
             prefix + "provenance": command("add_dependency", {
-                "task_id": bound("task_id"), "depends_on": literal(leaf_id),
+                "task_id": bound("task_id"), "depends_on": event("task_id"),
                 "dep_type": literal("discovered-from"),
             }, prefix + "blocks"),
             prefix + "blocks": command("add_dependency", {
-                "task_id": bound("task_id"), "depends_on": literal(leaf_id),
+                "task_id": bound("task_id"), "depends_on": event("task_id"),
                 "dep_type": literal("blocks"),
             }, prefix + "done"),
             prefix + "done": {"type": "terminal", "rule": rule, "title": "Done",
@@ -1162,8 +1165,8 @@ def _review_role_body(pid: str, scenario: str, epic_id: str, leaf_id: str) -> di
     }
 
 
-def _file_review_role(pid: str, scenario: str, epic_id: str, leaf_id: str) -> str:
-    """Compile and run a disposable playbook with the reviewer role grant."""
+def _install_review_role_playbook(pid: str, scenario: str, leaf_title: str) -> str:
+    """Activate a disposable playbook before graph filing emits task.created."""
     from types import SimpleNamespace
 
     import yaml
@@ -1175,26 +1178,6 @@ def _file_review_role(pid: str, scenario: str, epic_id: str, leaf_id: str) -> st
                                           VaultProfileLookup)
     from src.profiles.parser import parse_profile, parsed_profile_to_agent_profile
 
-    def reviewer_child() -> str | None:
-        response = operator("task", "children", "--task-id", epic_id)
-        children = response.get("children", []) if isinstance(response, dict) else response
-        reviews = [child for child in children if child.get("profile_id") == REVIEWER_PROFILE]
-        check(len(reviews) <= 1, f"multiple reviewer children of {epic_id}: {reviews}")
-        return reviews[0]["id"] if reviews else None
-
-    def ensure_edges(review_id: str) -> None:
-        deps = operator("task", "deps", "--task-id", review_id)
-        for kind, field in (("discovered-from", "provenance"), ("blocks", "depends_on")):
-            if not any(edge.get("id") == leaf_id and edge.get("dep_type") == kind
-                       for edge in deps.get(field, [])):
-                operator("task", "add-dependency", "--task-id", review_id,
-                         "--depends-on", leaf_id, "--dep-type", kind)
-
-    existing = reviewer_child()
-    if existing:
-        ensure_edges(existing)
-        return existing
-
     playbook_id = f"app-train-review-{scenario.lower()}"
     source_path = VAULT / "projects" / pid / "playbooks" / f"{playbook_id}.md"
     source_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1202,7 +1185,7 @@ def _file_review_role(pid: str, scenario: str, epic_id: str, leaf_id: str) -> st
         f"---\nid: {playbook_id}\nkind: pipeline\nrole: app-train-review\n"
         f"scope: project:{pid}\ntriggers:\n  - task.created\n---\n\n"
         f"# App train {scenario} reviewer\n\n"
-        f"File one `reviewer` role task for `{leaf_id}` under `{epic_id}`, "
+        f"File one `reviewer` role task for the leaf titled `{leaf_title}`, "
         "then link its provenance and completion dependency to the leaf.\n"
     )
     source = PlaybookSource.load(source_path, vault_root=VAULT)
@@ -1212,7 +1195,7 @@ def _file_review_role(pid: str, scenario: str, epic_id: str, leaf_id: str) -> st
     check(profile.is_valid, f"invalid {REVIEWER_PROFILE} profile: {profile.errors}")
     fields = parsed_profile_to_agent_profile(profile)
     proposal = propose(
-        source, _review_role_body(pid, scenario, epic_id, leaf_id),
+        source, _review_role_body(pid, scenario, leaf_title),
         contracts=RegistryContractLookup(),
         profiles=VaultProfileLookup({REVIEWER_PROFILE: SimpleNamespace(**fields)}),
         events=RegisteredEventLookup(), version=1, enforce_inventory=False,
@@ -1237,12 +1220,45 @@ def _file_review_role(pid: str, scenario: str, epic_id: str, leaf_id: str) -> st
     (bundle / "manifest.md").write_text("---\n" + yaml.safe_dump(manifest)
                                         + "---\n\nApp train reviewer role task.\n")
     operator("playbook", "import", "--path", str(bundle), "--activate")
-    run = operator("playbook", "run", "--playbook-id", playbook_id,
-                   "--event", json.dumps({"type": "task.created", "task_id": leaf_id,
-                                          "project_id": pid}))
-    check(run.get("status") == "completed" and not run.get("failed_steps"),
-          f"review role playbook failed: {run}")
-    created = reviewer_child()
+    return playbook_id
+
+
+def _file_review_role(pid: str, scenario: str, epic_id: str, leaf_id: str,
+                      playbook_id: str) -> str:
+    """Read the service-dispatched role task, falling back on pre-Task-5 builds."""
+    def reviewer_child() -> str | None:
+        response = operator("task", "children", "--task-id", epic_id)
+        children = response.get("children", []) if isinstance(response, dict) else response
+        reviews = [child for child in children if child.get("profile_id") == REVIEWER_PROFILE]
+        check(len(reviews) <= 1, f"multiple reviewer children of {epic_id}: {reviews}")
+        return reviews[0]["id"] if reviews else None
+
+    def ensure_edges(review_id: str) -> None:
+        deps = operator("task", "deps", "--task-id", review_id)
+        for kind, field in (("discovered-from", "provenance"), ("blocks", "depends_on")):
+            if not any(edge.get("id") == leaf_id and edge.get("dep_type") == kind
+                       for edge in deps.get(field, [])):
+                operator("task", "add-dependency", "--task-id", review_id,
+                         "--depends-on", leaf_id, "--dep-type", kind)
+
+    existing = reviewer_child()
+    if existing:
+        ensure_edges(existing)
+        return existing
+    try:
+        created = wait_for(reviewer_child, what=f"{scenario} reviewer role task",
+                           timeout=10, interval=1)
+    except Failure:
+        # Before mandatory routing's Task 5, class-matched graph nodes have
+        # no routing gate and create_graph emits no task.created event. A
+        # manual playbook run works on that older build; Task 5 uses the
+        # service-dispatched path above and will refuse a local role filing.
+        run = operator("playbook", "run", "--playbook-id", playbook_id,
+                       "--event", json.dumps({"type": "task.created", "task_id": leaf_id,
+                                              "project_id": pid, "parent_task_id": epic_id}))
+        check(run.get("status") == "completed" and not run.get("failed_steps"),
+              f"review role playbook failed: {run}")
+        created = reviewer_child()
     check(created is not None, f"playbook created no reviewer child of {epic_id}")
     ensure_edges(created)
     return created
@@ -1279,6 +1295,8 @@ def create_epic(args) -> None:
         "nodes": [{"key": "leaf", "title": f"{args.scenario}: {args.title}",
                    "description": f"Change the fixture: {sorted(changes)}"}],
     }
+    playbook_id = _install_review_role_playbook(
+        pid, args.scenario, f"{args.scenario}: {sc.get('title', args.title)}")
     if not sc.get("epic_id"):
         path = HOME / f"epic-{args.scenario.lower()}.yaml"
         path.write_text(yaml.safe_dump(graph, sort_keys=False))
@@ -1289,9 +1307,11 @@ def create_epic(args) -> None:
         created = operator("task", "create", "--project", pid, "--graph", str(path))
         save_payload(f"{args.scenario.lower()}-epic-created", created)
         ids = _graph_ids(created)
-        sc.update(epic_id=ids["parent"], leaf_id=ids["leaf"], changes=changes)
+        sc.update(epic_id=ids["parent"], leaf_id=ids["leaf"], title=args.title,
+                  changes=changes)
         save_state(state)
-    review_id = _file_review_role(pid, args.scenario, sc["epic_id"], sc["leaf_id"])
+    review_id = _file_review_role(pid, args.scenario, sc["epic_id"], sc["leaf_id"],
+                                  playbook_id)
     sc["review_id"] = review_id
     save_state(state)
     # Task ids are per database: an earlier scratch database may have left
