@@ -16,12 +16,11 @@ value an App installation token would see, and they also use the recorded
 payload as it is to show that the reader reports `unverifiable` when the field
 is absent.
 
-Built from GitHub's documented response shape, not recorded:
+Recorded 2026-09-28 through the App `agent-queue-train` (5075923), with an
+installation token minted for the private fixture repository alone, by the
+live proof's `prepare` step (`scripts/e2e-app-train.sh`, spec §10):
 
-- `fixture-classic-protection.json`: the classic protection on
-  `ElectricJack/aq-gh615-app-fixture-20260923` described in spec §2, which
-  requires `fixture` from App 15368. That repository is private, and reading
-  classic protection needs a credential.
-
-The live proof (spec §10, S1-S6) replaces the built payloads with recordings
-made through the App.
+- `fixture-classic-protection.json`:
+  `GET /repositories/1384141153/branches/main/protection`, the classic
+  protection on `ElectricJack/aq-gh615-app-fixture-20260923` described in
+  spec §2, which requires `fixture` from App 15368 (strictly up to date).
