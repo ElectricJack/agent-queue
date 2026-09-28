@@ -63,7 +63,7 @@ async def reconcile_ready_integration_owners(orch) -> None:
             continue
         try:
             released = await reconcile_closed_integration_owners(
-                orch, project.id, ready_only=True
+                orch, project.id, ready_only=not project.hierarchical_integration_draining
             )
             if released:
                 logger.info("Recovered ended integration owners for retries: %s", released)
@@ -86,7 +86,6 @@ async def reconcile_closed_integration_owners(
     if (
         project is None
         or project.hierarchical_integration_mode not in {"hierarchy", "train"}
-        or project.hierarchical_integration_draining
     ):
         return []
     recovered = []
@@ -346,7 +345,6 @@ async def recover_completed_pool_claims(orch, project_id: str) -> list[str]:
     if (
         project is None
         or project.hierarchical_integration_mode not in {"hierarchy", "train"}
-        or project.hierarchical_integration_draining
         or not project.integration_repository_id
     ):
         return []

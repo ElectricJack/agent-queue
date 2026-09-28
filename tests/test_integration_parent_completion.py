@@ -40,6 +40,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.integration.hierarchy import HierarchyIntegration
+from src.integration.drain_owners import terminal_reservation_clause
 from src.integration.status import IntegrationStatusService
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.integration.models import BranchKey, Fence
@@ -1090,6 +1091,13 @@ async def test_parent_completion_pins_exact_verification_for_rollover(db):
     assert completed["outcome"] == "completed"
     assert (await db.get_task("parent")).status is TaskStatus.COMPLETED
     assert (await db.get_integration_operation(checkpointed["operation_id"]))["state"] == "completed"
+    async with db._engine.connect() as conn:
+        verifier_is_terminal = (await conn.execute(
+            select(terminal_reservation_clause())
+            .select_from(integration_branch_owners)
+            .where(integration_branch_owners.c.ref == "aq/parent")
+        )).scalar_one()
+    assert verifier_is_terminal is True
     completed_status = await IntegrationStatusService(db).task_blockers("parent")
     assert completed_status is not None
     assert completed_status["parent_readiness"]["operation_id"] == checkpointed["operation_id"]
