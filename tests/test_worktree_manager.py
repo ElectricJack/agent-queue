@@ -705,6 +705,107 @@ class TestResetSlot:
         )
 
 
+# ───────────────────── project default branch (not main) ─────────────────
+
+
+@dataclass
+class FakeProject:
+    id: str = "p1"
+    repo_url: str = ""
+    repo_default_branch: str | None = "main"
+
+
+class ProjectDB(FakeDB):
+    def __init__(self, project: FakeProject):
+        super().__init__()
+        self.project = project
+
+    async def get_project(self, project_id):
+        return self.project if project_id == self.project.id else None
+
+
+class TestProjectDefaultBranch:
+    """Slots and task branches start from the project's configured branch.
+
+    Seen in matter-engine-cpp: ``aq project set ... branch vg-vt-improvements``
+    recorded the branch, integration delivered into it, and every worker slot
+    was still cut from ``origin/main`` — origin's HEAD, which is what the
+    slot manager asked git for.  A worker who did not notice built on main
+    and delivered main's history into the project branch.
+    """
+
+    BRANCH = "vg-vt-improvements"
+
+    @pytest.fixture
+    def project_tip(self, base_repo: Path) -> str:
+        """Push ``vg-vt-improvements`` one commit ahead of main; origin HEAD stays main."""
+        _git(["switch", "-c", self.BRANCH], cwd=base_repo)
+        (base_repo / "feature.txt").write_text("project branch only\n")
+        _git(["add", "feature.txt"], cwd=base_repo)
+        _git(["commit", "-m", "project branch work"], cwd=base_repo)
+        _git(["push", "origin", self.BRANCH], cwd=base_repo)
+        tip = _git(["rev-parse", "HEAD"], cwd=base_repo)
+        _git(["switch", "main"], cwd=base_repo)
+        assert _git(["rev-parse", "main"], cwd=base_repo) != tip
+        return tip
+
+    def _mgr(self, bus, mutexes, base_ws, default_branch):
+        db = ProjectDB(FakeProject(repo_default_branch=default_branch))
+        db.workspaces[base_ws.id] = base_ws
+        return WorktreeSlotManager(
+            db=db,
+            git=GitManager(),
+            bus=bus,
+            config=WorktreesConfig(enabled=True, setup_timeout_seconds=60),
+            git_mutex=mutexes,
+        )
+
+    def test_create_slot_starts_from_the_project_branch(
+        self, bus, mutexes, base_ws, kind, project_tip
+    ):
+        m = self._mgr(bus, mutexes, base_ws, self.BRANCH)
+        slot = asyncio.run(m.create_slot(base_ws, kind, 0))
+        assert _git(["rev-parse", "HEAD"], cwd=slot.workspace_path) == project_tip
+
+    def test_task_branch_is_cut_from_the_project_branch(
+        self, bus, mutexes, base_ws, kind, project_tip
+    ):
+        m = self._mgr(bus, mutexes, base_ws, self.BRANCH)
+        slot = asyncio.run(m.create_slot(base_ws, kind, 0))
+        branch = asyncio.run(m.reset_slot_for_task(slot, FakeTask(id="tsk-vg")))
+        assert branch == "aq/tsk-vg"
+        assert _git(["rev-parse", "HEAD"], cwd=slot.workspace_path) == project_tip
+        assert (Path(slot.workspace_path) / "feature.txt").exists()
+
+    def test_a_slot_created_on_main_is_reset_onto_the_project_branch(
+        self, bus, mutexes, base_ws, kind, project_tip
+    ):
+        """An existing slot (cut before the branch was set) must not keep main."""
+        before = self._mgr(bus, mutexes, base_ws, "main")
+        slot = asyncio.run(before.create_slot(base_ws, kind, 0))
+        assert not (Path(slot.workspace_path) / "feature.txt").exists()
+
+        after = self._mgr(bus, mutexes, base_ws, self.BRANCH)
+        asyncio.run(after.reset_slot_for_task(slot, FakeTask(id="tsk-next")))
+        assert _git(["rev-parse", "HEAD"], cwd=slot.workspace_path) == project_tip
+
+    def test_no_recorded_branch_falls_back_to_origin_head(
+        self, bus, mutexes, base_ws, kind, base_repo, project_tip
+    ):
+        m = self._mgr(bus, mutexes, base_ws, None)
+        slot = asyncio.run(m.create_slot(base_ws, kind, 0))
+        main_tip = _git(["rev-parse", "origin/main"], cwd=base_repo)
+        assert _git(["rev-parse", "HEAD"], cwd=slot.workspace_path) == main_tip
+
+    def test_an_unsafe_recorded_branch_is_refused_not_ignored(
+        self, bus, mutexes, base_ws, kind
+    ):
+        """Falling back to origin HEAD here would reintroduce the bug silently."""
+        m = self._mgr(bus, mutexes, base_ws, "--upload-pack=evil")
+        with pytest.raises(GitError, match="default branch"):
+            asyncio.run(m.create_slot(base_ws, kind, 0))
+
+
 # ─────────────────── GitManager worktree primitives (§4) ─────────────────
 
 
