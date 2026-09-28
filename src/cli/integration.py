@@ -1014,7 +1014,10 @@ def integration_onboard_train(
     if write_policy and plan.policy is not None:
         _write(write_policy, json.dumps(plan.policy, indent=2) + "\n")
     if write_trust_manifest and plan.trust_manifest is not None:
-        _write(write_trust_manifest, json.dumps(plan.trust_manifest, indent=2) + "\n")
+        from src.integration.trust_manifest import canonical_text
+
+        # The same bytes ``aq integration trust-manifest --write`` produces.
+        _write(write_trust_manifest, canonical_text(plan.trust_manifest))
     if write_workflow:
         _write(write_workflow, onboarding.ci_workflow_template(files, test_command=test_command))
     by_path = {report.path: report for report in classification.workflows}
@@ -1029,3 +1032,157 @@ def integration_onboard_train(
         written=written,
     )
     emit(ctx, data, entity="integration", render=_render_onboarding)
+
+
+# ---------------------------------------------------------------------------
+# aq integration trust-manifest
+# ---------------------------------------------------------------------------
+
+
+def _trust_manifest_write_command(
+    project_id: str, policy_path: str | None, repository_id: str | None
+) -> str:
+    import shlex
+
+    from src.integration.trust_manifest import TRUST_MANIFEST_PATH
+
+    parts = ["aq", "integration", "trust-manifest", project_id]
+    if policy_path:
+        parts += ["--policy", policy_path]
+    if repository_id:
+        parts += ["--repository-id", repository_id]
+    parts += ["--write", TRUST_MANIFEST_PATH]
+    return shlex.join(parts)
+
+
+def _check_verdict(committed: dict[str, Any]) -> tuple[bool, list[str]]:
+    """``(passes, warning codes)`` for ``--check``: identity decides, the check set warns."""
+    passes = bool(committed.get("present") and committed.get("identity_equal"))
+    return passes, list(committed.get("warnings") or []) if passes else []
+
+
+def _render_diff(committed: dict[str, Any]) -> None:
+    import json
+
+    from .app import console
+
+    for item in committed.get("diff") or []:
+        have = (
+            json.dumps(item.get("committed"))
+            if item.get("committed_present", True)
+            else "<absent>"
+        )
+        console.print(
+            f"  {item['field']} ({item['kind']}): expected {json.dumps(item.get('expected'))}, "
+            f"committed {have}",
+            markup=False, highlight=False, soft_wrap=True,
+        )
+
+
+def _render_trust_manifest(data: dict[str, Any], *, mode: str, fix: str) -> None:
+    from .app import console
+
+    committed = data.get("committed") or {}
+    where = (
+        f"{committed.get('path')} on {committed.get('ref')}"
+        + (f" ({committed['sha']})" if committed.get("sha") else "")
+    )
+    if mode == "print":
+        click.echo(data["text"], nl=False)
+        return
+    if mode == "write":
+        console.print(
+            f"[green]wrote[/] {data['written']} (sha256 {data['sha256']}) for "
+            f"{data['full_name']} ({data['github_repository_id']}), App "
+            f"{data['attestation_app_id']}, {data['policy_source']} policy",
+            highlight=False,
+        )
+    passes, warnings = _check_verdict(committed)
+    if not committed.get("present"):
+        reason = committed.get("error") or "absent"
+        console.print(f"[red]committed copy unavailable[/]: {where}: {reason}", highlight=False)
+    elif passes and not warnings:
+        console.print(f"[green]committed copy matches[/]: {where}", highlight=False)
+    elif passes:
+        console.print(f"committed copy matches on identity: {where}", highlight=False)
+        for code in warnings:
+            console.print(f"[yellow]warning:[/] {code}", highlight=False)
+        _render_diff(committed)
+    else:
+        detail = f": {committed['error']}" if committed.get("error") else ""
+        console.print(
+            f"[red]committed copy differs[/] ({committed.get('code')}): {where}{detail}",
+            highlight=False,
+        )
+        _render_diff(committed)
+    if mode == "check" and not (passes and not warnings):
+        console.print("regenerate with:", highlight=False)
+        console.print(fix, markup=False, highlight=False, soft_wrap=True)
+
+
+@integration.command("trust-manifest")
+@click.argument("project_id")
+@click.option("--policy", "policy_path", type=click.Path(exists=True, dir_okay=False),
+              help="Build from this policy JSON instead of the project's bound policy.")
+@click.option("--repository-id",
+              help="Integration repository id (default: the project's designated one).")
+@click.option("--write", "write_path", type=click.Path(dir_okay=False),
+              help="Write the canonical manifest to this path.")
+@click.option("--check", "check", is_flag=True,
+              help="Exit 1 unless the default-branch copy matches on identity.")
+@click.option("--print", "print_text", is_flag=True,
+              help="Print the canonical manifest text.")
+@click.pass_context
+@_handle_errors
+def integration_trust_manifest(
+    ctx: click.Context,
+    project_id: str,
+    policy_path: str | None,
+    repository_id: str | None,
+    write_path: str | None,
+    check: bool,
+    print_text: bool,
+) -> None:
+    """Render PROJECT_ID's App-mode trust manifest (.github/agent-queue-integration.json).
+
+    The daemon builds it from the policy (--policy FILE, else the bound one),
+    the authenticated GitHub binding and its own App, and compares the copy
+    committed on the default branch.  --write writes the canonical text,
+    --print prints it, and --check exits 1 when the committed copy is missing
+    or differs on an identity field; a check-set or formatting difference is a
+    warning, because the frozen policy snapshot owns the check set.  Read-only;
+    refused under existing-login credentials (not_app_mode).
+    """
+    import json
+    from pathlib import Path
+
+    modes = [name for name, chosen in (
+        ("write", write_path is not None), ("check", check), ("print", print_text),
+    ) if chosen]
+    if len(modes) != 1:
+        raise click.UsageError("pass exactly one of --write PATH, --check and --print")
+    mode = modes[0]
+    args: dict[str, Any] = {"project_id": project_id}
+    if policy_path:
+        try:
+            args["policy"] = json.loads(Path(policy_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise click.UsageError(f"cannot read the policy {policy_path}: {exc}") from exc
+    if repository_id:
+        args["repository_id"] = repository_id
+
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _request():
+        async with _get_client(api_url) as client:
+            return await client.execute("integration_trust_manifest", args)
+
+    data = dict(_run(_request()))
+    if mode == "write":
+        Path(write_path).write_text(data["text"], encoding="utf-8")
+        data["written"] = write_path
+    fix = _trust_manifest_write_command(project_id, policy_path, repository_id)
+    data["write_command"] = fix
+    emit(ctx, data, render=lambda value: _render_trust_manifest(value, mode=mode, fix=fix))
+    if mode == "check" and not _check_verdict(data.get("committed") or {})[0]:
+        raise SystemExit(1)

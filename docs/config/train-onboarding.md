@@ -180,6 +180,36 @@ target repository, with Actions variables readable; otherwise status reports
 reviewed agent-queue policy already names `15368`, so the agent-queue cutover
 needs only the manifest and the variables while this mode is configured.
 
+The daemon renders the same manifest from what it actually trusts:
+
+```text
+aq integration trust-manifest PROJECT [--policy FILE] [--repository-id ID] \
+    (--write PATH | --check | --print) [--json]
+```
+
+It builds from `--policy FILE`, or the bound policy when that is omitted. The
+repository is `--repository-id`, or the designated one. `repository_id` and
+`full_name` come from the authenticated GitHub binding, `attestation_app_id`
+from the daemon's App, `ci_producer_app_id` from the policy producer and the
+check set from the policy's `root` boundary, in policy order. The text is
+`json.dumps(manifest, indent=2, sort_keys=True)` plus a newline, the bytes
+`--write-trust-manifest` writes too (`src/integration/trust_manifest.py` is the
+one builder). The result also compares the copy committed on the default branch,
+read through the App at that branch's exact SHA. `--check` exits 1 when that
+copy is missing, unparseable or differs on an identity field (the repository
+ids, the name, either App id, the schema), and prints the field diff and the
+`--write` command. A check-set or formatting difference is only a warning
+(`trust_manifest_check_set_differs`, `trust_manifest_noncanonical`), because the
+frozen policy snapshot owns the runtime check set. The command is read-only; it
+is refused with `not_app_mode` under existing-login credentials, with
+`ci_producer_not_numeric` for a slug producer, and at scope for worker tokens.
+The shipped supervisor profile holds the grant. For agent-queue:
+
+```bash
+aq integration trust-manifest agent-queue --policy docs/config/agent-queue-train-policy.json \
+    --repository-id agent-queue2 --write .github/agent-queue-integration.json
+```
+
 ## 4. By shape
 
 A plan stops at the first prerequisite that changes the repository: a CI

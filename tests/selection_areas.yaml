@@ -396,6 +396,7 @@ areas:
       - tests/test_integration_operator_controls.py
       - tests/test_integration_troubleshooting_doc.py
       - tests/test_cli_integration.py
+      - tests/test_integration_trust_manifest.py
       - tests/test_doctor_integration_checks.py
   - id: epic-trains
     description: "Epic trains: legible epic branch names, epic dependencies ordering batches, epic pull requests and review evidence, rebase warnings, batch CI repair adoption and rebuild, the reviewed train policies, and onboarding a project onto the train."

@@ -500,7 +500,8 @@
         "tests/test_integration_controls.py",
         "tests/test_integration_operational_controls.py",
         "tests/test_integration_operator_controls.py",
-        "tests/test_integration_troubleshooting_doc.py"
+        "tests/test_integration_troubleshooting_doc.py",
+        "tests/test_integration_trust_manifest.py"
       ]
     },
     "integration-ownership": {
@@ -1284,7 +1285,7 @@
       ]
     }
   },
-  "digest": "sha256:c150ee5b51d90b91dee2a4c040df52cf008513a9074768867454210d0f759b9c",
+  "digest": "sha256:a880b0c1740126932a314e72a63fd2a69708fedb48ed3b507b2d7da26c89c73c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7519,6 +7520,33 @@
       "markers": [],
       "summary": "The integration troubleshooting guide teaches stranded branch-owner recovery."
     },
+    "tests/test_integration_trust_manifest.py": {
+      "areas": [
+        "integration-controls"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.git.github_contracts",
+        "src.integration",
+        "src.integration.ci",
+        "src.integration.train_onboarding",
+        "src.integration.trust_manifest",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The App-mode trust manifest: shared builder, daemon command and CLI (spec §6.1)."
+    },
     "tests/test_integration_workspace_handoff.py": {
       "areas": [
         "integration-ownership"
@@ -13251,6 +13279,7 @@
         "src.integration.ci",
         "src.integration.models",
         "src.integration.train_onboarding",
+        "src.integration.trust_manifest",
         "src.jobs.adapters",
         "src.playbooks.required"
       ],

@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-129 commands are registered.
+130 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -129,6 +129,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_seal`](integration_seal.md) | Seal integration frontier | Atomically snapshot the full eligible integration frontier. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
+| [`integration_trust_manifest`](integration_trust_manifest.md) | Integration Trust Manifest | Render the App-mode trust manifest from the policy, the authenticated binding and the daemon's App, and compare the default-branch copy. |
 | [`integration_waive_history`](integration_waive_history.md) | Integration Waive History | Authenticated hierarchical integration operational control. |
 
 ### Other
