@@ -51,6 +51,21 @@ class AttestationError(ValueError):
     pass
 
 
+SubjectTrustCause = Literal["missing", "too_large", "malformed", "identity_mismatch"]
+
+
+class SubjectTrustError(AttestationError):
+    """A subject tree's trust manifest is absent, oversized, malformed or names
+    another identity, so the subject is refused (spec I4, I6)."""
+
+    def __init__(
+        self, cause: SubjectTrustCause, detail: str, *, fields: tuple[str, ...] = ()
+    ) -> None:
+        super().__init__(detail)
+        self.cause = cause
+        self.fields = fields
+
+
 class RequiredChecksManifest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 

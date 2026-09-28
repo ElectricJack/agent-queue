@@ -161,7 +161,15 @@ No `.github/agent-queue-integration.json`, AQ attestation App, or
 Existing installations that explicitly configure `integration.github_app`
 use its installation credential through the shared `gh` path and retain the
 App trust manifest, producer-identity and hosted-variable checks. The default
-existing-login mode uses its policy-derived checks. Changing credential mode
+existing-login mode uses its policy-derived checks. In App mode every subject
+(a root candidate and each parent snapshot) must carry that manifest in its own
+tree. AQ compares it on identity only (repository, attestation App, attestation
+name and CI producer); the frozen policy snapshot alone decides which checks are
+required, so no tree can add, drop or rename one, and parent and root may
+require different sets. A subject whose manifest is missing, oversized,
+malformed or names another identity is refused: `aq integration status` shows
+`subject_trust_invalid` with the subject, head SHA, cause and mismatching
+fields. Refresh that branch from the default branch. Changing credential mode
 requires a daemon restart; an App failure never falls back to the stored
 login. Historical internal names containing `app_client` are staged
 compatibility names, not another transport to configure. See

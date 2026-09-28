@@ -179,6 +179,17 @@ report `ready: false` because a rollout prerequisite is missing.
    external probe. Blockers already reported by the database half are
    de-duplicated by `(code, ref, detail)` before the remainder is merged, and
    the digest is recomputed over the union.
+9. **Subject trust** — in App credential mode the attestation service reads
+   `.github/agent-queue-integration.json` from each subject's exact tree (a
+   root candidate or a parent snapshot) before it observes CI, and compares it
+   on identity only; the frozen policy snapshot owns the check set. A refused
+   subject is merged here as `subject_trust_invalid`, with `ref` set to the
+   operation id and the facts `target_kind`, `subject` (batch and revision, or
+   parent task and generation), `head_sha`, `cause` (`missing`, `too_large`,
+   `malformed` or `identity_mismatch`) and the mismatching `fields`. It is
+   reported only while the operation is active and that subject and head are
+   still current. The refusal is a live observation held by the daemon, like
+   the external probe: after a restart it reappears on the next CI poll.
 
 ## Side effects and persistence
 

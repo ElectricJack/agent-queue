@@ -21,7 +21,14 @@ from src.database.tables import (
 from src.git.github_app import GitHubAppError, GitHubRepositoryBinding
 from src.git.github_contracts import GitHubCredentialIdentity
 from src.integration.attestation import IntegrationAttestationService
-from src.integration.ci import ATTESTATION_CHECK_NAME, AttestationPayload
+from src.integration.ci import (
+    ATTESTATION_CHECK_NAME,
+    AttestationError,
+    AttestationPayload,
+    IntegrationTrustManifest,
+    SubjectTrustError,
+)
+from src.integration.controls import IntegrationControlService
 from src.integration.main_promotion import RootAttestationSubject
 from src.integration.repair import RepairService
 from src.models import Project, RepoConfig, RepoSourceType
@@ -236,7 +243,8 @@ async def attestation_db(tmp_path, reuse_database):
 
 
 class ExactTreeGit:
-    def __init__(self, manifest: bytes):
+    def __init__(self, manifest: bytes | None):
+        # ``None`` is a subject tree that predates the manifest.
         self.manifest = manifest
         self.fetches: list[dict] = []
 
@@ -246,6 +254,12 @@ class ExactTreeGit:
 
     async def arun_git_result(self, args, **kwargs):
         assert args == ["show", f"{SHA}:.github/agent-queue-integration.json"]
+        if self.manifest is None:
+            return SimpleNamespace(
+                returncode=128,
+                stdout="",
+                stderr="fatal: path '.github/agent-queue-integration.json' does not exist",
+            )
         return SimpleNamespace(returncode=0, stdout=self.manifest.decode(), stderr="")
 
 
@@ -683,6 +697,372 @@ async def test_publish_fails_closed_for_untrusted_candidate_tree(
     assert client.published == 0
     async with attestation_db._engine.connect() as conn:
         assert await conn.scalar(select(integration_candidate_revisions.c.state)) == "green"
+
+
+CANDIDATE_ROW = {
+    "operation_id": "root-op",
+    "batch_id": "batch",
+    "revision": 0,
+    "candidate_sha": SHA,
+}
+SNAPSHOT_CHECKS = ("Tests (default)", "Tests (postgres-integration)")
+
+
+def _recording(client):
+    """Record every required-check name the observer asks the provider for."""
+    asked: list[str] = []
+    original = client.paged_items
+
+    async def paged_items(path, *, key):
+        if key == "check_runs" and "check_name=" in path and "Attestation" not in path:
+            asked.append(path.split("check_name=", 1)[1].split("&", 1)[0])
+        return await original(path, key=key)
+
+    client.paged_items = paged_items
+    return asked
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tree_checks",
+    [
+        {"version": "checks-v0", "names": ["Tests (default)"]},
+        {
+            "version": "checks-v2",
+            "names": ["Tests (default)", "Tests (postgres-integration)", "Tests (lint)"],
+        },
+        {"version": "checks-v1", "names": ["Tests (postgres-integration)", "Tests (default)"]},
+    ],
+    ids=["weaker", "stronger", "reordered"],
+)
+async def test_subject_check_set_is_informational_and_the_snapshot_decides(
+    attestation_db, tmp_path, tree_checks
+):
+    await _reset_candidate_for_observation(attestation_db)
+    client = ProviderClient()
+    client.workflow_offset = 1000
+    asked = _recording(client)
+    service = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document(required_checks=tree_checks)),
+        github_client_factory=lambda binding: client,
+        clock=lambda: 10.0,
+    )
+
+    result = await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0)
+
+    assert result["outcome"] == "published"
+    # Observation and publication each read exactly the snapshot's names.
+    assert asked == ["Tests%20%28default%29", "Tests%20%28postgres-integration%29"] * 2
+    published = json.loads(client.records[0]["output"]["text"])
+    assert published["required_check_set_version"] == "checks-v1"
+    assert tuple(check["name"] for check in published["checks"]) == SNAPSHOT_CHECKS
+    assert await service.subject_trust_blockers("p") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("provider_kind", "expected_outcome", "expected_event"),
+    [
+        ("missing", "red", "integration.candidate_red"),
+        ("failure", "red", "integration.candidate_red"),
+    ],
+)
+async def test_subject_check_set_cannot_lower_the_snapshot_bar(
+    attestation_db, tmp_path, provider_kind, expected_outcome, expected_event
+):
+    """A tree that drops a required check from its manifest still owes it."""
+    await _reset_candidate_for_observation(attestation_db)
+    client = ProviderClient()
+    client.workflow_offset = 1000
+    original = client.paged_items
+
+    async def dropped(path, *, key):
+        rows = await original(path, key=key)
+        if key == "check_runs" and "check_name=Tests%20%28postgres-integration%29" in path:
+            if provider_kind == "missing":
+                return []
+            rows[0] = {**rows[0], "conclusion": "failure"}
+        return rows
+
+    client.paged_items = dropped
+    weakened = {"version": "checks-v0", "names": ["Tests (default)"]}
+    service = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document(required_checks=weakened)),
+        github_client_factory=lambda binding: client,
+        clock=lambda: 10.0,
+    )
+
+    result = await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0)
+
+    assert result["outcome"] == expected_outcome
+    assert client.published == 0
+    async with attestation_db._engine.connect() as conn:
+        events = (await conn.execute(select(integration_outbox))).mappings().all()
+        evidence = (
+            await conn.execute(
+                select(integration_check_evidence).where(
+                    integration_check_evidence.c.id != "ci-aggregate"
+                )
+            )
+        ).mappings().all()
+    assert [event["event_type"] for event in events] == (
+        [expected_event] if expected_event else []
+    )
+    assert all(row["required_check_version"] == "checks-v1" for row in evidence)
+    if provider_kind == "failure":
+        assert {name for row in evidence for name in row["checks"]} == set(SNAPSHOT_CHECKS)
+    else:
+        assert any(
+            row["checks"].get("Tests (postgres-integration)") == "missing"
+            for row in evidence
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("manifest", "cause", "fields"),
+    [
+        (None, "missing", []),
+        (b"x" * (64 * 1024 + 1), "too_large", []),
+        (b"{not-json", "malformed", []),
+        (b'{"schema":"aq.integration-trust.v1","schema":"x"}', "malformed", []),
+        (trust_document(schema="aq.integration-trust.v2"), "malformed", []),
+        (trust_document(attestation_app_id=404), "malformed", []),
+        (trust_document(repository_id=304), "identity_mismatch", ["repository_id"]),
+        (
+            trust_document(
+                canonical_repository_id="other",
+                full_name="acme/other",
+                attestation_app_id=505,
+                ci_producer_app_id=606,
+            ),
+            "identity_mismatch",
+            ["canonical_repository_id", "full_name", "attestation_app_id", "ci_producer_app_id"],
+        ),
+        (
+            trust_document(attestation_name="Another Attestation"),
+            "identity_mismatch",
+            ["attestation_name"],
+        ),
+    ],
+    ids=[
+        "missing",
+        "too_large",
+        "not_json",
+        "duplicate_field",
+        "other_schema",
+        "invalid_document",
+        "repository_id",
+        "every_identity",
+        "attestation_name",
+    ],
+)
+async def test_subject_trust_refusal_is_classified_and_named_in_status(
+    attestation_db, tmp_path, manifest, cause, fields
+):
+    await _reset_candidate_for_observation(attestation_db)
+    async with attestation_db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(integration_repair_stages.c.operation_id == "root-op")
+            .values(policy={"debug_intelligence_class": "deep"})
+        )
+    client = ProviderClient()
+    client.workflow_offset = 1000
+    git = ExactTreeGit(manifest)
+    service = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=git,
+        github_client_factory=lambda binding: client,
+        clock=lambda: 10.0,
+    )
+
+    result = await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0)
+
+    assert result == {"outcome": "configuration_blocked"}
+    assert client.published == 0
+    blockers = await service.subject_trust_blockers("p")
+    assert [
+        {key: value for key, value in blocker.items() if key != "detail"}
+        for blocker in blockers
+    ] == [
+        {
+            "code": "subject_trust_invalid",
+            "ref": "root-op",
+            "target_kind": "batch",
+            "subject": {"batch_id": "batch", "revision": 0},
+            "head_sha": SHA,
+            "cause": cause,
+            "fields": fields,
+        }
+    ]
+    assert blockers[0]["detail"].startswith(f"batch batch revision 0 at {SHA}: ")
+    assert blockers[0]["detail"].endswith("refresh the branch from the default branch")
+    assert await service.subject_trust_blockers("other-project") == []
+
+    status = await IntegrationControlService(
+        attestation_db, subject_trust_reader=service.subject_trust_blockers
+    ).status("p")
+    assert blockers[0] in status["blockers"]
+    assert status["ready"] is False
+
+    # Refreshing the subject from the default branch retires the report.
+    git.manifest = trust_document()
+    assert (await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0))["outcome"] == (
+        "published"
+    )
+    assert await service.subject_trust_blockers("p") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["subject_moved", "operation_ended"])
+async def test_subject_trust_report_retires_with_its_subject(attestation_db, tmp_path, change):
+    await _reset_candidate_for_observation(attestation_db)
+    client = ProviderClient()
+    service = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(None),
+        github_client_factory=lambda binding: client,
+    )
+    await service.handle_candidate_ci(dict(CANDIDATE_ROW), 10.0)
+    assert [blocker["cause"] for blocker in await service.subject_trust_blockers("p")] == [
+        "missing"
+    ]
+
+    async with attestation_db.immediate() as conn:
+        if change == "subject_moved":
+            await conn.execute(
+                update(integration_candidate_revisions)
+                .where(integration_candidate_revisions.c.batch_id == "batch")
+                .values(head_sha="b" * 40)
+            )
+        else:
+            await conn.execute(
+                update(integration_repair_operations)
+                .where(integration_repair_operations.c.id == "root-op")
+                .values(state="completed")
+            )
+
+    assert await service.subject_trust_blockers("p") == []
+    assert service._subject_trust == {}
+
+
+@pytest.mark.asyncio
+async def test_parent_and_root_boundaries_take_their_own_checks_from_one_tree(tmp_path):
+    """App mode no longer forces the parent and root check sets to be equal."""
+    client = ProviderClient()
+    service = IntegrationAttestationService(
+        None,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        github_client_factory=lambda binding: client,
+    )
+    root = {
+        "version": "checks-v1",
+        "names": list(SNAPSHOT_CHECKS),
+        "producer_id": "404",
+    }
+    parent = {"version": "focused-v1", "names": ["Tests (default)"], "producer_id": "404"}
+    state = {
+        "project_id": "p",
+        "operation_id": "op",
+        "canonical_repository_id": "repo-config-1",
+        "repository_numeric_id": 303,
+        "repository_full_name": "acme/widgets",
+        "policy_snapshot": {
+            "root": {"required_checks": root},
+            "parent": {"required_checks": parent},
+        },
+        "batch_id": "op",
+        "revision": 1,
+        "parent_task_id": "parent",
+        "generation": 1,
+        "candidate_sha": SHA,
+    }
+
+    root_trust, _ = await service._load_trust(dict(state))
+    parent_trust, _ = await service._load_trust(dict(state), boundary="parent")
+
+    assert isinstance(root_trust, IntegrationTrustManifest)
+    assert (root_trust.required_checks.version, root_trust.required_checks.names) == (
+        "checks-v1",
+        SNAPSHOT_CHECKS,
+    )
+    assert (parent_trust.required_checks.version, parent_trust.required_checks.names) == (
+        "focused-v1",
+        ("Tests (default)",),
+    )
+    assert root_trust.model_copy(update={"required_checks": parent_trust.required_checks}) == (
+        parent_trust
+    )
+
+
+@pytest.mark.asyncio
+async def test_subject_producer_is_compared_with_the_snapshot_boundary(tmp_path):
+    client = ProviderClient()
+    service = IntegrationAttestationService(
+        None,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        github_client_factory=lambda binding: client,
+    )
+    required = {"version": "checks-v1", "names": list(SNAPSHOT_CHECKS), "producer_id": "15368"}
+    state = {
+        "canonical_repository_id": "repo-config-1",
+        "repository_numeric_id": 303,
+        "repository_full_name": "acme/widgets",
+        "policy_snapshot": {"root": {"required_checks": required}},
+        "batch_id": "batch",
+        "revision": 0,
+        "candidate_sha": SHA,
+    }
+
+    with pytest.raises(SubjectTrustError) as refused:
+        await service._load_trust(state)
+
+    assert (refused.value.cause, refused.value.fields) == (
+        "identity_mismatch",
+        ("ci_producer_app_id",),
+    )
+
+
+@pytest.mark.asyncio
+async def test_slug_producer_in_app_mode_is_a_policy_fault_not_a_subject_refusal(tmp_path):
+    client = ProviderClient()
+    service = IntegrationAttestationService(
+        None,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        github_client_factory=lambda binding: client,
+    )
+    required = {
+        "version": "checks-v1",
+        "names": list(SNAPSHOT_CHECKS),
+        "producer_id": "github-actions",
+    }
+    state = {
+        "project_id": "p",
+        "operation_id": "root-op",
+        "canonical_repository_id": "repo-config-1",
+        "repository_numeric_id": 303,
+        "repository_full_name": "acme/widgets",
+        "policy_snapshot": {"root": {"required_checks": required}},
+        "batch_id": "batch",
+        "revision": 0,
+        "candidate_sha": SHA,
+    }
+
+    with pytest.raises(AttestationError, match="numeric") as refused:
+        await service._load_trust(state)
+
+    assert not isinstance(refused.value, SubjectTrustError)
+    assert service._subject_trust == {}
 
 
 @pytest.mark.asyncio
