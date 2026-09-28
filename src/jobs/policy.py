@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,15 +33,46 @@ class Preset:
     pytest: bool = False
 
 
+NODE_PRESETS = frozenset({
+    "build", "npm_ci", "npm_test", "pnpm_install", "pnpm_check", "pnpm_build"
+})
+
+
+def node_executable(name: str) -> str | None:
+    """Resolve the daemon user's Node tools without trusting a submitted path."""
+    search = os.pathsep.join((
+        os.environ.get("PATH", ""),
+        str(Path.home() / ".local" / "share" / "pnpm"),
+        str(Path.home() / ".local" / "bin"),
+    ))
+    found = shutil.which(name, path=search)
+    return str(Path(found).absolute()) if found else None
+
+
 def presets(root: Path) -> dict[str, Preset]:
     """Executable paths are supplied by the server, never by a submitter."""
     python = str(Path(sys.executable).absolute())
-    return {
+    available = {
         "test": Preset("test", (python, "-m", "pytest"), pytest=True),
         "lint": Preset("lint", (python, "-m", "ruff", "check")),
-        "build": Preset("build", ("/usr/bin/npm", "run", "build"), weight=2),
         "e2e": Preset("e2e", (python, str(root / "src/jobs/e2e.py")), "exclusive"),
     }
+    if node_executable("node") is None:
+        return available
+    npm, pnpm = node_executable("npm"), node_executable("pnpm")
+    if npm:
+        available.update({
+            "build": Preset("build", (npm, "run", "build"), weight=2),
+            "npm_ci": Preset("npm_ci", (npm, "ci"), weight=2),
+            "npm_test": Preset("npm_test", (npm, "test")),
+        })
+    if pnpm:
+        available.update({
+            "pnpm_install": Preset("pnpm_install", (pnpm, "install", "--frozen-lockfile"), weight=2),
+            "pnpm_check": Preset("pnpm_check", (pnpm, "check")),
+            "pnpm_build": Preset("pnpm_build", (pnpm, "run", "build"), weight=2),
+        })
+    return available
 
 
 def request_hash(request: dict) -> str:
@@ -69,7 +102,7 @@ def validate_args(preset: Preset, args: list[str], root: Path, worker_cap: int) 
         value = arg.split("=", 1)[-1] if "=" in arg else arg
         if value.startswith("/") or ".." in Path(value.split("::", 1)[0]).parts:
             raise JobError("jobs.cwd_invalid")
-        if preset.name in {"build", "e2e"} and args:
+        if preset.name in NODE_PRESETS | {"e2e"} and args:
             raise JobError("jobs.preset_denied")
     if preset.pytest:
         args = [*args, "-n", str(worker_cap)]

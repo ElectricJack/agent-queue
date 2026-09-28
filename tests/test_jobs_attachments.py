@@ -19,7 +19,7 @@ from src.config import AppConfig
 from src.jobs.adapters import finite_command
 from src.jobs.artifacts import OutputStore, job_directory
 from src.jobs.output import read_output
-from src.jobs.policy import JobError
+from src.jobs.policy import JobError, presets, validate_args
 from tests.test_jobs_queries import db as _db_fixture
 from tests.test_jobs_queries import values
 
@@ -202,3 +202,35 @@ def test_finite_adapter_refuses_independent_shell_or_watchers(command):
 
 def test_finite_adapter_accepts_python3_ruff():
     assert finite_command("python3 -m ruff check src") == ("lint", ["src"])
+
+
+@pytest.mark.parametrize("command,preset", [
+    ("npm ci", "npm_ci"),
+    ("npm test", "npm_test"),
+    ("npm run build", "build"),
+    ("pnpm install --frozen-lockfile", "pnpm_install"),
+    ("pnpm check", "pnpm_check"),
+    ("pnpm run build", "pnpm_build"),
+])
+def test_finite_adapter_accepts_bounded_node_commands(command, preset):
+    assert finite_command(command) == (preset, [])
+    with pytest.raises(JobError, match="jobs.preset_denied"):
+        finite_command(command + " --extra")
+
+
+def test_node_presets_use_server_resolved_executables(tmp_path, monkeypatch):
+    for name in ("node", "npm", "pnpm"):
+        binary = tmp_path / name
+        binary.write_text("#!/bin/sh\n")
+        binary.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    accepted = presets(tmp_path)
+    assert accepted["build"].argv == (str(tmp_path / "npm"), "run", "build")
+    assert accepted["pnpm_install"].argv == (
+        str(tmp_path / "pnpm"), "install", "--frozen-lockfile"
+    )
+    assert validate_args(accepted["npm_ci"], [], tmp_path, 1) == [
+        str(tmp_path / "npm"), "ci"
+    ]
+    with pytest.raises(JobError, match="jobs.preset_denied"):
+        validate_args(accepted["npm_ci"], ["--unsafe"], tmp_path, 1)
