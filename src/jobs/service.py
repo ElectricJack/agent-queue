@@ -19,6 +19,7 @@ from src.jobs.policy import (
     request_hash, validate_args,
 )
 from src.jobs.result import build_result
+from src.resources import project_tests
 from src.resources.limits import session_env_caps
 from src.sessions.env import SCRATCH_DB_SENTINEL
 
@@ -70,7 +71,22 @@ class JobService:
         if not ws or ws.project_id != project_id:
             raise JobError("jobs.cwd_invalid")
         cwd = Path(ws.workspace_path).resolve(strict=True)
-        argv = validate_args(accepted, args, cwd, self.config.resources.test_worker_cap())
+        test_setup = None
+        xdist = True
+        if preset == "test":
+            try:
+                test_setup = project_tests.resolve(
+                    cwd, project_id=project_id,
+                    interpreters=self.config.resources.test_interpreters,
+                )
+            except project_tests.ProjectTestsError as exc:
+                raise JobError("jobs.test_interpreter_unavailable") from exc
+            xdist = await asyncio.to_thread(project_tests.has_xdist, test_setup.python)
+        if test_setup:
+            accepted = presets(self.root, test_python=test_setup.python)[preset]
+        argv = validate_args(
+            accepted, args, cwd, self.config.resources.test_worker_cap(), xdist=xdist
+        )
         job_class = accepted.job_class
         if accepted.pytest:
             from src.cli.test_runner import _is_full_suite
@@ -130,7 +146,7 @@ class JobService:
                 raise JobError("jobs.preset_denied")
             dirs = dict.fromkeys((str(Path(accepted.argv[0]).parent), str(Path(node).parent)))
             env["PATH"] = ":".join((*dirs, env["PATH"]))
-        if accepted.pytest or preset == "e2e":
+        if (test_setup and test_setup.requires_postgres) or preset == "e2e":
             from src.database.migration_guard import same_database
 
             if not cfg.test_database_url or same_database(
@@ -138,6 +154,8 @@ class JobService:
             ):
                 raise JobError("jobs.test_database_unconfigured")
             env["POSTGRES_TEST_DSN"] = cfg.test_database_url
+        if test_setup:
+            env = test_setup.child_env(env)
         if preset == "e2e":
             from urllib.parse import urlsplit, unquote
 

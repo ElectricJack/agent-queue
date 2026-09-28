@@ -1294,7 +1294,7 @@
       ]
     }
   },
-  "digest": "sha256:78edd15710328e2a23e176c0645887c147f19c08bed7390b7eb110ef68c6ab4e",
+  "digest": "sha256:afd0c8b081dcbad46284f8d044a54419702279dd4ebfbb33020112e84caa11bd",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3420,7 +3420,9 @@
         "src.cli.exceptions",
         "src.cli.test_runner",
         "src.config",
+        "src.resources",
         "src.resources.box_lock",
+        "src.resources.project_tests",
         "src.resources.semaphore",
         "src.resources.slot_report",
         "src.test_selection.report"
@@ -7782,6 +7784,7 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.git.manager",
         "src.jobs.policy",
         "src.jobs.result",
         "src.jobs.service",
@@ -7789,7 +7792,8 @@
         "src.models"
       ],
       "markers": [
-        "migration"
+        "migration",
+        "parametrize"
       ],
       "summary": "Idempotency races, atomic outbox and non-expiring workspace pins."
     },
