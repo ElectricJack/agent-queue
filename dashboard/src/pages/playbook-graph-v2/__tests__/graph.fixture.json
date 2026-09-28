@@ -935,6 +935,8 @@
           },
           "type": "agent_task",
           "profile_id": "reviewer",
+          "intelligence_class": null,
+          "task_type": null,
           "objective": {
             "type": "literal",
             "value": "Re-review the change and record the riskiest line"
@@ -946,7 +948,6 @@
           "timeout_seconds": 3600,
           "retry": null,
           "save_result_as": "escalation",
-          "pin_provider": null,
           "transitions": {
             "completed": "await-approval",
             "failed": "review-unavailable",

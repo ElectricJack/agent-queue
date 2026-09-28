@@ -1295,7 +1295,7 @@
       ]
     }
   },
-  "digest": "sha256:7cf2d3b8b1ad857092f0cdff4ed02a1aa3eb2d3a721244f9285864cb6dc504ca",
+  "digest": "sha256:4755539750a9260aa2af44882712e2a51e764fe9ebaf9710dbaaf881134a6ed6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3422,7 +3422,9 @@
         "src.cli.exceptions",
         "src.cli.test_runner",
         "src.config",
+        "src.resources",
         "src.resources.box_lock",
+        "src.resources.project_tests",
         "src.resources.semaphore",
         "src.resources.slot_report",
         "src.test_selection.report"
@@ -7785,6 +7787,7 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.git.manager",
         "src.jobs.policy",
         "src.jobs.result",
         "src.jobs.service",
@@ -7792,7 +7795,8 @@
         "src.models"
       ],
       "markers": [
-        "migration"
+        "migration",
+        "parametrize"
       ],
       "summary": "Idempotency races, atomic outbox and non-expiring workspace pins."
     },
@@ -9426,6 +9430,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.models.playbook_v2",
         "src.commands.contracts",
         "src.docs_urls",
         "src.playbooks.artifact_ref",
@@ -9589,7 +9594,8 @@
       "imports": [
         "src.playbooks",
         "src.playbooks.definition",
-        "src.playbooks.expressions"
+        "src.playbooks.expressions",
+        "src.routing.sources"
       ],
       "markers": [
         "parametrize"
@@ -10752,9 +10758,7 @@
         "src.task_graph.formulas",
         "src.vault"
       ],
-      "markers": [
-        "parametrize"
-      ],
+      "markers": [],
       "summary": "Provider intent: who meant the provider a task's profile names (provider-failover D8-D10)."
     },
     "tests/test_provider_reroute.py": {
@@ -13112,6 +13116,9 @@
         "src.api.models.task",
         "src.cli.app",
         "src.cli.tasks",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
         "src.commands.handler",
         "src.config",
         "src.database",

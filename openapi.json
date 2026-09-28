@@ -18935,7 +18935,14 @@
       "AiNodeDetailDTO": {
         "properties": {
           "profile_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Profile Id"
           },
           "intelligence_class": {
@@ -19012,7 +19019,6 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "profile_id",
           "capabilities",
           "capability_fingerprint",
           "budget"
@@ -24076,7 +24082,14 @@
       "DelegationPolicyDTO": {
         "properties": {
           "child_profile_id": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Child Profile Id"
           },
           "wait_for_completion": {
@@ -24113,9 +24126,6 @@
         },
         "additionalProperties": false,
         "type": "object",
-        "required": [
-          "child_profile_id"
-        ],
         "title": "DelegationPolicyDTO",
         "description": "AgentTaskStep only."
       },
