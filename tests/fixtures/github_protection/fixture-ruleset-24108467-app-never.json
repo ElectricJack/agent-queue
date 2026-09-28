@@ -1,0 +1,43 @@
+{
+  "_links": {
+    "html": {
+      "href": "https://github.com/ElectricJack/aq-gh615-app-fixture-20260923/rules/24108467"
+    },
+    "self": {
+      "href": "https://api.github.com/repos/ElectricJack/aq-gh615-app-fixture-20260923/rulesets/24108467"
+    }
+  },
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "refs/heads/main"
+      ]
+    }
+  },
+  "created_at": "2026-09-28T09:28:48.300Z",
+  "current_user_can_bypass": "never",
+  "enforcement": "active",
+  "id": 24108467,
+  "name": "Train-only main",
+  "node_id": "RRS_lACqUmVwb3NpdG9yec5SgFFhzgFv3bM",
+  "rules": [
+    {
+      "parameters": {
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "Agent Queue Integration Attestation",
+            "integration_id": 5075923
+          }
+        ],
+        "strict_required_status_checks_policy": false
+      },
+      "type": "required_status_checks"
+    }
+  ],
+  "source": "ElectricJack/aq-gh615-app-fixture-20260923",
+  "source_type": "Repository",
+  "target": "branch",
+  "updated_at": "2026-09-28T09:28:48.352Z"
+}

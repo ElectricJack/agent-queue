@@ -1,0 +1,75 @@
+{
+  "check_runs": [
+    {
+      "app": {
+        "client_id": "Iv23liD0aQbdfYIA0prd",
+        "created_at": "2026-09-25T16:09:37Z",
+        "description": "",
+        "events": [],
+        "external_url": "https://github.com/ElectricJack/agent-queue",
+        "html_url": "https://github.com/apps/agent-queue-train",
+        "id": 5075923,
+        "name": "agent-queue-train",
+        "node_id": "A_kwDOAAMFis4ATXPT",
+        "owner": {
+          "avatar_url": "https://avatars.githubusercontent.com/u/198026?v=4",
+          "events_url": "https://api.github.com/users/ElectricJack/events{/privacy}",
+          "followers_url": "https://api.github.com/users/ElectricJack/followers",
+          "following_url": "https://api.github.com/users/ElectricJack/following{/other_user}",
+          "gists_url": "https://api.github.com/users/ElectricJack/gists{/gist_id}",
+          "gravatar_id": "",
+          "html_url": "https://github.com/ElectricJack",
+          "id": 198026,
+          "login": "ElectricJack",
+          "node_id": "MDQ6VXNlcjE5ODAyNg==",
+          "organizations_url": "https://api.github.com/users/ElectricJack/orgs",
+          "received_events_url": "https://api.github.com/users/ElectricJack/received_events",
+          "repos_url": "https://api.github.com/users/ElectricJack/repos",
+          "site_admin": false,
+          "starred_url": "https://api.github.com/users/ElectricJack/starred{/owner}{/repo}",
+          "subscriptions_url": "https://api.github.com/users/ElectricJack/subscriptions",
+          "type": "User",
+          "url": "https://api.github.com/users/ElectricJack",
+          "user_view_type": "public"
+        },
+        "permissions": {
+          "actions": "read",
+          "actions_variables": "read",
+          "administration": "read",
+          "checks": "write",
+          "contents": "write",
+          "issues": "write",
+          "metadata": "read",
+          "pull_requests": "write",
+          "workflows": "write"
+        },
+        "slug": "agent-queue-train",
+        "updated_at": "2026-09-26T02:45:51Z"
+      },
+      "check_suite": {
+        "id": 98570638218
+      },
+      "completed_at": "2026-09-28T09:40:37Z",
+      "conclusion": "success",
+      "details_url": "https://github.com/ElectricJack/agent-queue",
+      "external_id": "aq-attestation-v1:4252490e3dee32cb4a023affca0b023f8e1b4c8fca93859c0bbf39652faf176b",
+      "head_sha": "df8c833bb61a82cddc6b9cf9c3661278265dd0fc",
+      "html_url": "https://github.com/ElectricJack/aq-gh615-app-fixture-20260923/runs/108871530825",
+      "id": 108871530825,
+      "name": "Agent Queue Integration Attestation",
+      "node_id": "CR_kwDOUoBRYc8AAAAZWT-5SQ",
+      "output": {
+        "annotations_count": 0,
+        "annotations_url": "https://api.github.com/repos/ElectricJack/aq-gh615-app-fixture-20260923/check-runs/108871530825/annotations",
+        "summary": "Authenticated Agent Queue integration evidence",
+        "text": "{\"attestation_app_id\":5075923,\"canonical_repository_id\":\"aqapp-0928\",\"checks\":[{\"check_run_id\":108871423828,\"check_suite_id\":98570642813,\"conclusion\":\"success\",\"head_sha\":\"df8c833bb61a82cddc6b9cf9c3661278265dd0fc\",\"name\":\"fixture\",\"producer_app_id\":15368}],\"ci_producer_app_id\":15368,\"head_sha\":\"df8c833bb61a82cddc6b9cf9c3661278265dd0fc\",\"repository_id\":1384141153,\"required_check_set_version\":\"fixture-v1\",\"schema\":\"aq.integration-attestation.v1\",\"workflow_runs\":[{\"check_suite_id\":98570642813,\"conclusion\":\"success\",\"head_sha\":\"df8c833bb61a82cddc6b9cf9c3661278265dd0fc\",\"run_attempt\":1,\"workflow_run_id\":36404978189}]}",
+        "title": "Agent Queue Integration Attestation"
+      },
+      "pull_requests": [],
+      "started_at": "2026-09-28T09:40:37Z",
+      "status": "completed",
+      "url": "https://api.github.com/repos/ElectricJack/aq-gh615-app-fixture-20260923/check-runs/108871530825"
+    }
+  ],
+  "total_count": 1
+}
