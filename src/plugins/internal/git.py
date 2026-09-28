@@ -818,9 +818,11 @@ class GitPlugin(InternalPlugin):
         return 0
 
     @staticmethod
-    async def _git_diff_stat(git, ws_path: str, branch: str) -> str:
+    async def _git_diff_stat(
+        git, ws_path: str, branch: str, project_branch: str | None = None
+    ) -> str:
         try:
-            default_branch = await git.aget_default_branch(ws_path)
+            default_branch = project_branch or await git.aget_default_branch(ws_path)
             if branch == default_branch:
                 return ""
             merge_base = await git._arun(
@@ -874,7 +876,10 @@ class GitPlugin(InternalPlugin):
 
                 ahead_behind = await self._git_ahead_behind(git, ws_path, branch)
                 stash_count = await self._git_stash_count(git, ws_path)
-                diff_stat = await self._git_diff_stat(git, ws_path, branch)
+                diff_stat = await self._git_diff_stat(
+                    git, ws_path, branch,
+                    project_branch=project.repo_default_branch or None,
+                )
 
                 current_task_title = None
                 if ws.locked_by_task_id:

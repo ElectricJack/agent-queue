@@ -824,6 +824,7 @@
         "tests/test_plugin_commands.py",
         "tests/test_plugin_cron_to_playbook_migration.py",
         "tests/test_plugin_external_service_access.py",
+        "tests/test_plugin_git_diff_stat.py",
         "tests/test_plugin_invoke_llm.py",
         "tests/test_plugin_service_registration.py",
         "tests/test_plugin_services.py",
@@ -1287,7 +1288,7 @@
       ]
     }
   },
-  "digest": "sha256:9185e30f2702586f6f4cd5d98c15d0787f12e732095a069f67e3adade5dc94f4",
+  "digest": "sha256:d1a2d69b6f9216a8a4d9b545150da5c381eb55cb4c59214f01f122d1ea976af6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6878,6 +6879,7 @@
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
+        "src.integration",
         "src.integration.completion_recovery",
         "src.integration.ownership",
         "src.models"
@@ -7287,6 +7289,7 @@
         "src.database.queries.hierarchy_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
+        "src.integration.drain_owners",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
@@ -9667,6 +9670,17 @@
       ],
       "markers": [],
       "summary": "External plugins may access an explicit allowlist of services."
+    },
+    "tests/test_plugin_git_diff_stat.py": {
+      "areas": [
+        "plugins"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.plugins.internal.git"
+      ],
+      "markers": [],
+      "summary": "get_git_status diff stat must diff against the project's default branch."
     },
     "tests/test_plugin_invoke_llm.py": {
       "areas": [
