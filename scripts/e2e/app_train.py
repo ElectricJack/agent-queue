@@ -895,10 +895,14 @@ def s2(_args) -> None:
     record("S2", "protection.app_bypass_item", item(result, "protection"))
 
     step("S9b: develop accepted with the bypass, then disabled again")
+    before = generation(pid)
     accepted = operator("integration", "develop", pid, "--validation", "none",
                         "--reason", "S9: development with the App bypass")
-    record("S9", "develop_with_app_bypass", {k: accepted.get(k) for k in
-                                             ("mode", "effective_mode", "generation")})
+    save_payload("s9-develop-accepted", accepted)
+    record("S9", "develop_with_app_bypass", {
+        "generation_before": before, "generation_after": generation(pid),
+        "desired_mode": operator("integration", "status", pid).get("desired_mode"),
+        "outcome": accepted.get("outcome") if isinstance(accepted, dict) else accepted})
     operator("integration", "enable", pid, "--mode", "disabled",
              "--expected-generation", generation(pid), "--reason", "S9: leave development")
     record("S9", "disabled_again", operator("integration", "status", pid).get("effective_mode"))
@@ -1128,7 +1132,7 @@ def create_epic(args) -> None:
             {"key": "leaf", "title": f"{args.scenario}: {args.title}", "profile": WORKER_PROFILE,
              "description": f"Change the fixture: {sorted(changes)}"},
             {"key": "review", "title": f"{args.scenario}: review the leaf",
-             "profile": REVIEWER_PROFILE, "task_type": "review",
+             "profile": REVIEWER_PROFILE, "task_type": "chore",
              "description": "Review the leaf's exact head and approve it.",
              "needs": [{"on": "leaf", "dep_type": "discovered-from"}]},
         ],
@@ -1381,6 +1385,7 @@ def watch(args) -> None:
     deadline = time.monotonic() + args.timeout
     last = None
     flushed = False
+    released_at_start = (operator("integration", "status", pid).get("release") or {}).get("batch_id")
     while time.monotonic() < deadline:
         status = operator("integration", "status", pid)
         view = _batch_view(status)
@@ -1393,7 +1398,12 @@ def watch(args) -> None:
             operator("integration", "flush", pid)
             flushed = True
             record(args.scenario, "flush", "settling window skipped by flush")
-        if args.until and _reached(status, args.until):
+        released = (status.get("release") or {}).get("batch_id")
+        if args.until == "release-changed" and released and released != released_at_start:
+            record(args.scenario, "released", status["release"])
+            print(f"batch {released} released")
+            return
+        if args.until and args.until != "release-changed" and _reached(status, args.until):
             print(f"reached {args.until}")
             return
         time.sleep(args.interval)
@@ -1546,7 +1556,8 @@ def main() -> int:
     parser.add_argument("--write", action="append", help="epic: PATH[=CONTENT] the leaf writes")
     parser.add_argument("--copy", action="append", help="epic: PATH=SOURCE the leaf writes")
     parser.add_argument("--delete", action="append", help="epic: PATH the leaf deletes")
-    parser.add_argument("--until", help="watch: stop at promoted | released | <status text>")
+    parser.add_argument("--until",
+                        help="watch: stop at release-changed | promoted | <status text>")
     parser.add_argument("--flush", action="store_true", help="watch: flush once settling arms")
     parser.add_argument("--interval", type=float, default=15.0)
     parser.add_argument("--timeout", type=float, default=3600.0)
