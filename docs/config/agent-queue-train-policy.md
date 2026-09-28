@@ -138,9 +138,10 @@ ones: task `swift-pinnacle` asks for that decision, and `bold-cascade` fixes the
 creation paths that leave the repository unset.
 
 While `integration.github_app` is configured (App credential mode) the
-functional preflight also needs `.github/agent-queue-integration.json` and the
-two `AQ_INTEGRATION_*` Actions variables; the numeric producer above is already
-the one App mode requires. Every other project's cutover, and these App-mode
+functional preflight also needs `.github/agent-queue-integration.json`
+(committed, and pinned to this policy by `tests/test_integration_trust_manifest.py`)
+and the two `AQ_INTEGRATION_*` Actions variables; the numeric producer above is
+already the one App mode requires. Every other project's cutover, and these App-mode
 requirements, are in [train-onboarding.md](train-onboarding.md).
 
 The status response in observe mode must report zero functional blockers and

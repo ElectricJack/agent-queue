@@ -195,8 +195,9 @@ same change as a trigger fix or a CI workflow. The plan also prints the two
 `gh variable set` commands. The App's single installation must cover every
 target repository, with Actions variables readable; otherwise status reports
 `repository_binding_failed` or `hosted_workflow_variables_unavailable`. The
-reviewed agent-queue policy already names `15368`, so the agent-queue cutover
-needs only the manifest and the variables while this mode is configured.
+reviewed agent-queue policy already names `15368`, and its manifest is committed
+(below), so the agent-queue cutover needs only the variables while this mode is
+configured.
 
 The manifest is reviewed repository content, so its initial commit may pass
 through the development publisher. Later check-set rotations may update it
@@ -236,6 +237,10 @@ The shipped supervisor profile holds the grant. For agent-queue:
 aq integration trust-manifest agent-queue --policy docs/config/agent-queue-train-policy.json \
     --repository-id agent-queue2 --write .github/agent-queue-integration.json
 ```
+
+That file is committed. `tests/test_integration_trust_manifest.py` pins it to
+the builder's output for the reviewed policy, so a change to the policy's check
+set must regenerate it with this command and commit both files together.
 
 Two more commands check and set up the rest:
 

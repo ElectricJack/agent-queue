@@ -29,41 +29,16 @@ from src.profiles.capabilities import DENY_ALL
 REPO = Path(__file__).resolve().parents[1]
 POLICY_PATH = REPO / "docs/config/agent-queue-train-policy.json"
 EXAMPLE_PATH = REPO / ".github/agent-queue-integration.example.json"
+MANIFEST_PATH = REPO / trust_manifest.TRUST_MANIFEST_PATH
 SHA = "a" * 40
 
-#: Spec §9.2: agent-queue's manifest, byte for byte, with the reviewed policy's
-#: check names in policy order (the E2E names follow the Tests names, unsorted).
-AGENT_QUEUE_MANIFEST = """\
-{
-  "attestation_app_id": 5075923,
-  "attestation_name": "Agent Queue Integration Attestation",
-  "canonical_repository_id": "agent-queue2",
-  "ci_producer_app_id": 15368,
-  "full_name": "ElectricJack/agent-queue",
-  "repository_id": 1160639300,
-  "required_checks": {
-    "names": [
-      "Tests (cli-conformance)",
-      "Tests (default-1/8)",
-      "Tests (default-2/8)",
-      "Tests (default-3/8)",
-      "Tests (default-4/8)",
-      "Tests (default-5/8)",
-      "Tests (default-6/8)",
-      "Tests (default-7/8)",
-      "Tests (default-8/8)",
-      "Tests (migration-and-slow)",
-      "Tests (postgres-integration)",
-      "E2E CLI (claims)",
-      "E2E CLI (cli)",
-      "E2E CLI (graphs)",
-      "E2E CLI (failover)"
-    ],
-    "version": "tests-yml-v3"
-  },
-  "schema": "aq.integration-trust.v1"
-}
-"""
+#: Spec §9.2 step 3: agent-queue's committed manifest, the text
+#: ``aq integration trust-manifest agent-queue --policy
+#: docs/config/agent-queue-train-policy.json --repository-id agent-queue2
+#: --write .github/agent-queue-integration.json`` writes.  The first builder
+#: test pins it to the reviewed policy, so a check-set rotation (spec §9.5) is
+#: the policy and a regenerated manifest, with no copy here to edit.
+AGENT_QUEUE_MANIFEST = MANIFEST_PATH.read_text()
 
 
 def _policy() -> dict:
@@ -92,11 +67,18 @@ def _with_producers(parent: str, root: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_the_reviewed_policy_renders_the_agent_queue_manifest_byte_for_byte():
+def test_the_committed_manifest_is_the_builder_output_for_the_reviewed_policy():
     manifest = _agent_queue_manifest()
+    committed = IntegrationTrustManifest.model_validate_json(AGENT_QUEUE_MANIFEST)
 
-    assert trust_manifest.canonical_text(manifest) == AGENT_QUEUE_MANIFEST
-    IntegrationTrustManifest.model_validate(manifest)
+    # A policy check-set change without --write regenerating the file fails here.
+    assert AGENT_QUEUE_MANIFEST == trust_manifest.canonical_text(manifest), (
+        "regenerate with: aq integration trust-manifest agent-queue --policy "
+        "docs/config/agent-queue-train-policy.json --repository-id agent-queue2 "
+        "--write .github/agent-queue-integration.json"
+    )
+    assert committed.model_dump(mode="json", by_alias=True) == manifest
+    assert trust_manifest.compare(manifest, AGENT_QUEUE_MANIFEST).status == "ok"
     # Policy order, not sorted order: the check-name comparison is ordered.
     assert manifest["required_checks"]["names"] == _policy()["root"]["required_checks"]["names"]
 

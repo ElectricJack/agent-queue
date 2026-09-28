@@ -89,6 +89,8 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["dashboard/src/pages/playbook-graph-v2/__tests__/graph.fixture.json"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
   - { paths: ["packages/**", "openapi.json"], areas: ["api-contract", "file-access"] }
   - { paths: [".github/workflows/**"], areas: ["ci-sentinel", "epic-trains"] }
+  # The committed trust manifest is pinned to the reviewed policy's builder output.
+  - { paths: [".github/agent-queue-integration.json", "docs/config/agent-queue-train-policy.json"], areas: ["integration-controls"] }
   - { paths: [".test_durations", "scripts/merge_test_durations.py"], areas: ["ci-sentinel"] }
   - { paths: ["setup.sh"], areas: ["install"] }
   - { paths: ["scripts/e2e*", "scripts/e2e/**"], areas: ["e2e-kit"] }
