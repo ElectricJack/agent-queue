@@ -1,0 +1,103 @@
+# Every push and pull request: validate the data files, run the unit tests,
+# build (which captures the static views), probe the built page for console
+# errors and failed requests, compare the captures to the references, enforce
+# byte budgets, check links, and hold the page to its Lighthouse budget.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test, build, capture, budgets, links
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npm run validate
+      - run: npm run typecheck
+      - run: npm test
+
+      # Before the build: `npm run build` captures dist/static/*.jpg and
+      # tmp/visual/*.png with it, and under CI a missing Chromium fails the
+      # build instead of skipping the capture.
+      - name: Install Chromium for the static capture
+        run: npx playwright install --with-deps chromium
+
+      - run: npm run build
+
+      - name: Console probe (errors, failed requests, broken images)
+        run: node tools/console-probe.mjs
+
+      - run: npm run check:visual
+      - run: npm run budgets
+
+      # --external is on here and off in the deploy workflow: a pull request is
+      # the right place to learn that a project link rotted.
+      - name: Link check (including external URLs)
+        run: node tools/link-check.mjs dist --external
+
+      - name: Upload built site
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist
+          retention-days: 7
+
+      - name: Upload captures on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: visual
+          path: tmp/visual
+          retention-days: 7
+
+  lighthouse:
+    name: Lighthouse budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # The build captures the static fallback images, which the page links.
+      - name: Install Chromium for the static capture
+        run: npx playwright install --with-deps chromium
+
+      - run: npm run build
+
+      # lhci serves dist/ itself (staticDistDir) and uses the runner's Chrome.
+      # Thresholds live in lighthouserc.json.
+      - name: Lighthouse
+        run: npx -y @lhci/cli@0.15.1 autorun
+
+      - name: Upload Lighthouse reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lighthouse
+          path: .lighthouseci
+          retention-days: 7

@@ -125,6 +125,12 @@ must be bound or finished before cutover. Nothing can yet settle the terminal
 ones: task `swift-pinnacle` asks for that decision, and `bold-cascade` fixes the
 creation paths that leave the repository unset.
 
+While `integration.github_app` is configured (App credential mode) the
+functional preflight also needs `.github/agent-queue-integration.json`, the two
+`AQ_INTEGRATION_*` Actions variables and the numeric producer `15368` in place
+of `github-actions`. Every other project's cutover, and this App-mode
+requirement, is in [train-onboarding.md](train-onboarding.md).
+
 The status response in observe mode must report zero functional blockers and
 `ready: true`; activation health above confirms the exact active route hashes.
 Observe does not schedule train batches. The later train-mode cutover belongs to the supervisor after

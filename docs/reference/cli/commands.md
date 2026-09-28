@@ -308,6 +308,7 @@ moved).
 | `aq integration develop` | `—` | hand | Use automatic development batches with explicit local validation. |
 | `aq integration enable` | `—` | hand | CAS PROJECT_ID to MODE using the generation reported by status. |
 | `aq integration flush` | `—` | hand | Request an immediate eligibility pass or train sweep for PROJECT_ID. |
+| `aq integration onboard-train` | `—` | hand | Plan PROJECT_ID's move onto the integration train and print every step; changes nothing ([runbook](../../config/train-onboarding.md)). |
 | `aq integration reconcile-unmaterialized` | `—` | hand | Bind safe pre-rollout tasks and reserve their hierarchy origins. |
 | `aq integration recover-candidate-member` | `—` | hand | Resolve one pushed frozen candidate-member repair reservation. |
 | `aq integration resolve-candidate-member` | `—` | hand | Resolve the candidate member assigned to this repair session. |

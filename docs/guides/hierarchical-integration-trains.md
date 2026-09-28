@@ -34,6 +34,7 @@ The command synopsis used below is:
 
 ```text
 aq integration status PROJECT_ID
+aq integration onboard-train PROJECT_ID [--write-policy PATH] [--write-trust-manifest PATH] [--write-workflow PATH]
 aq integration flush PROJECT_ID
 aq integration enable PROJECT_ID --mode observe --expected-generation GENERATION --reason REASON
 aq integration enable PROJECT_ID --mode train --interval-seconds SECONDS --expected-generation GENERATION --reason REASON
@@ -173,16 +174,21 @@ substitute an empty required-check set.
 
 ## 3. Bind reviewed shared artifacts, classes, and profiles
 
-Parent and root routes name a shared system-scoped V2 artifact. AQ no longer
-ships one: the `hierarchical-delivery` and `root-integration-train` bundles this
-step used to import were retired on 2026-09-11 and are not valid choices for a
-new project policy — see [Retired factory
-playbooks](#retired-factory-playbooks) below before touching an installation
-that still references them. Supply your own reviewed bundle, import and activate
-it once, then reference that exact artifact from each project's policy with
-`scope: system` and an empty `scope_identifier`. Schedules, repositories, CI
-requirements, repair budgets, and operation state remain per project. Importing
-never activates:
+Parent and root routes name a shared system-scoped V2 artifact. AQ ships
+`parent-integration` and `root-train` (`src/prompts/reviewed_playbooks/`,
+seeded into `vault/reviewed-playbooks/`): the reviewed agent-queue graphs at
+system scope. A system activation of either serves only a project whose frozen
+policy names it. `aq integration onboard-train PROJECT` writes a policy that
+references them and prints this whole rollout for one project; its runbook is
+[docs/config/train-onboarding.md](../config/train-onboarding.md). The older
+`hierarchical-delivery` and `root-integration-train` bundles were retired on
+2026-09-11 and are not valid choices for a new project policy. See [Retired
+factory playbooks](#retired-factory-playbooks) below before touching an
+installation that still references them. To use a bundle of your own instead,
+import and activate it once, then reference that exact artifact from each
+project's policy with `scope: system` and an empty `scope_identifier`.
+Schedules, repositories, CI requirements, repair budgets, and operation state
+remain per project. Importing never activates:
 
 ```bash
 aq playbook v2-import --path /srv/aq/reviewed/PARENT_PLAYBOOK_ID

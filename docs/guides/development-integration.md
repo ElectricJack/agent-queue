@@ -43,15 +43,15 @@ assumes its vocabulary (batch, manifest, journal, parked).
 ```bash
 aq integration develop demo \
   --validation focused \
-  --command '/path/to/venv/bin/python -m pytest -q' \
+  --command 'aq test tests/test_demo.py' \
   --interval-seconds 300 \
   --reason 'Batched development delivery for demo'
 ```
 
 The command returns `{"outcome": "configured", …}` with the stored policy, and
-the same decision is written into the delivery journal, where it stays. This is
-the real configuration row this repository's own project carries, read back
-with `aq integration status agent-queue`:
+the same decision is written into the delivery journal, where it stays. A
+supported policy for this repository could look like this in
+`aq integration status agent-queue`:
 
 ```text
 {
@@ -62,7 +62,7 @@ with `aq integration status agent-queue`:
     "kind": "configuration",
     "operator_id": "local:-",
     "policy": {"validation": "focused",
-               "commands": ["~/.agent-queue/operator-checks/isolated-tests.py tests/test_development_integration.py"],
+               "commands": ["aq test tests/test_development_integration.py"],
                "timeout_seconds": 300, "interval_seconds": 300, "max_batch_size": 50}
   },
   "reason": "Steady-state development: five-minute batches and focused integration checks; …"
@@ -83,10 +83,10 @@ Options:
 
 | Option | Meaning |
 |---|---|
-| `--validation focused` | Default. Every `--command` must exit 0 or the batch parks. At least one command is required. |
+| `--validation focused` | Default. A reported command failure parks the batch; an infrastructure outcome defers it. At least one command is required. |
 | `--validation advisory` | Runs the commands, records failures, publishes anyway. |
 | `--validation none` | Runs nothing; the journal records `not_run`. |
-| `--command` | Repeatable. Runs under `bash -c` in AQ's retained clone, with the daemon's environment. |
+| `--command` | Repeatable finite command. AQ rejects unsupported syntax at configuration time; see the preset list below. Commands run as detached jobs against the candidate commit. |
 | `--interval-seconds` | Periodic recovery sweep interval. Default 300. Task completion also requests a sweep on the next integration cycle (normally within 5 seconds, once an active batch finishes). |
 | `--timeout-seconds` | Seconds each command may *run*. Default 300, maximum 3600. Time queued for a test slot is not counted. |
 | `--slot-wait-seconds` | Seconds a command may queue for a test slot (via `aq test`) before the batch is deferred to the next tick — never parked, never repaired. Default 600, maximum 3600. |
@@ -94,16 +94,30 @@ Options:
 | `--regenerate-timeout-seconds` | Seconds one regeneration may run before that merge counts as failed. Default 600, maximum 3600. |
 | `--reason` | Required, and kept in the journal. |
 
-> **Note.** Validation commands do not run in a worker's worktree. They run in
-> AQ's own clone under `<data_dir>/development-integration/…`, with whatever
-> is installed for the daemon's user. Point at an absolute interpreter or a
-> small wrapper script rather than assuming a virtualenv is active. Each
-> command may *run* for 300 seconds (`timeout_seconds`, up to 3600); time it
-> spends queued for a test slot under `aq test` is bounded separately
+Supported commands are `aq test …`, `pytest …`, `python[3] -m pytest …`,
+`ruff check …`, `python[3] -m ruff check …`, `npm ci`, `npm test`,
+`npm run build`, `pnpm install --frozen-lockfile`, `pnpm check`,
+`pnpm run build`, and `scripts/e2e-smoke.sh`. The Node and smoke commands
+take no extra arguments. Shell operators, arbitrary scripts, absolute
+interpreter paths, and wrappers such as `isolated-tests.py` are unsupported.
+The Python presets use the daemon's interpreter and its installed packages;
+they cannot select another project's virtualenv. Node and pnpm executables
+are resolved by the server. Configure an install command before a test or
+build command; checks in one validation attempt share a detached snapshot,
+so ignored `node_modules` survives between them. A retry uses a fresh snapshot.
+
+> **Note.** Validation commands do not run in a worker's worktree or under a
+> shell. They run as managed jobs in a detached snapshot of AQ's retained
+> candidate clone. Each command may *run* for 300 seconds
+> (`timeout_seconds`, up to 3600); time it spends queued for a test slot is bounded separately
 > (`slot_wait_seconds`, default 600). A timeout is recorded as exit code 124
 > and, like any validation that verified nothing, defers the batch rather
 > than parking it — see
 > [Validation could not finish](integration-troubleshooting.md#validation-could-not-finish-deferred).
+
+Existing policies containing commands outside this list must be reconfigured
+by the local operator. AQ does not rewrite a stored policy during an upgrade;
+an unsupported stored command defers validation until it is replaced.
 
 Policy changes take effect on the next batch. There is no drain to wait for.
 

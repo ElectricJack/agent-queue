@@ -24,12 +24,16 @@ _EXCLUDED_TOOLS = frozenset({"load_tools", "reply_to_user"})
 #: system-scoped by nature and a project-scoped playbook may trigger on them.
 GLOBAL_EVENT_PREFIXES = ("timer.", "cron.")
 
-# These two definitions are the command-bearing integration lifecycle.  They
-# are shared at system scope, but their authority always comes from a project's
-# frozen policy route.  Other system playbooks (default review, notifications,
-# observers) retain normal event-to-scope fanout.
+# These definitions are the command-bearing integration lifecycle.  They are
+# shared at system scope, but their authority always comes from a project's
+# frozen policy route: a ready system activation of ``parent-integration`` or
+# ``root-train`` (the shipped shared routes) runs only for a project whose
+# policy names it, never for every project's ``task.completed``.  The first two
+# are the retired 2026-09-11 bundles, kept so a surviving activation stays
+# fenced.  Other system playbooks (default review, notifications, observers)
+# retain normal event-to-scope fanout.
 INTEGRATION_LIFECYCLE_PLAYBOOK_IDS = frozenset(
-    {"hierarchical-delivery", "root-integration-train"}
+    {"hierarchical-delivery", "root-integration-train", "parent-integration", "root-train"}
 )
 _PARENT_INTEGRATION_EVENTS = frozenset(
     {

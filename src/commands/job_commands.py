@@ -75,8 +75,25 @@ class JobCommandsMixin:
                 ).limit(1))
                 if blocked:
                     raise JobError("jobs.cleanup_blocked")
-                snapshot_id = "job-snapshot-" + digest
-                snapshot = Path(self.config.data_dir) / "job-snapshots" / digest
+                # All checks in one validation attempt share a detached clone.
+                # An install preset must leave its ignored dependencies for the
+                # following test/build preset, while each attempt remains isolated.
+                group = args.get("snapshot_group")
+                snapshot_digest = (
+                    hashlib.sha256(json.dumps({
+                        "project_id": args["project_id"],
+                        "operation_id": args["operation_id"],
+                        "input_ref": args["input_ref"],
+                        "snapshot_group": group,
+                    }, sort_keys=True).encode()).hexdigest()
+                    if group else digest
+                )
+                snapshot_id = "job-snapshot-" + snapshot_digest
+                snapshot = Path(self.config.data_dir) / "job-snapshots" / snapshot_digest
+                if group:
+                    await conn.execute(select(func.pg_advisory_xact_lock(
+                        109797, func.hashtext(snapshot_id)
+                    )))
                 git = GitManager()
                 if not snapshot.exists():
                     await asyncio.to_thread(snapshot.parent.mkdir, parents=True, exist_ok=True)

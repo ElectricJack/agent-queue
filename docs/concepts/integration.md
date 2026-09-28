@@ -89,9 +89,9 @@ private-repository acceptance run are still outstanding; see the
 
 ## A realistic example
 
-Assumes the daemon is running. Substitute your own project id — the output
-below is this repository's own project, read back as it stands. The command is
-read-only and safe on any install.
+Assumes the daemon is running. Substitute your own project id. The output
+below is an illustrative status record with a supported validation command;
+live generation and policy values will differ. The command is read-only.
 
 ```bash
 aq integration status agent-queue
@@ -106,7 +106,7 @@ aq integration status agent-queue
   "generation": 14,
   "policy": {
     "validation": "focused",
-    "commands": ["~/.agent-queue/operator-checks/isolated-tests.py tests/test_development_integration.py"],
+    "commands": ["aq test tests/test_development_integration.py"],
     "timeout_seconds": 300,
     "interval_seconds": 300,
     "max_batch_size": 50
@@ -227,24 +227,31 @@ The project's `DevelopmentPolicy` chooses one of three levels
 
 | `validation` | Behaviour |
 |---|---|
-| `focused` | Runs every configured command in the retained clone. All must exit 0 or the batch is parked. At least one command is required — a `focused` policy with no commands is rejected at configuration time. |
+| `focused` | Runs every configured command in a detached candidate snapshot. A reported failure parks the batch; an infrastructure outcome defers it. At least one command is required. |
 | `advisory` | Runs the same commands and records failures in the evidence, but publishes anyway. |
 | `none` | Runs nothing and records `"conclusion": "not_run"`. |
 
-Each command runs under `/bin/bash -c` in its own process group, in the
-retained clone, with the daemon's environment, bounded by
-`timeout_seconds` (default 300, maximum 3600). A timeout kills the whole
-process group and is recorded as exit code 124. The last 8,000 characters of
-combined output are kept per command.
+Each command is translated to a finite server-owned job preset. Configuration
+rejects a command the translator does not support. Supported forms are
+`aq test …`, `pytest …`, `python[3] -m pytest …`, `ruff check …`,
+`python[3] -m ruff check …`, `npm ci`, `npm test`, `npm run build`,
+`pnpm install --frozen-lockfile`, `pnpm check`, `pnpm run build`, and
+`scripts/e2e-smoke.sh`. Node and smoke commands take no extra arguments.
+The job runs without a shell in a detached snapshot of the candidate commit.
+Checks in one validation attempt share that snapshot so an install can supply
+dependencies to later checks. A new attempt gets a fresh snapshot. Each run is
+bounded by `timeout_seconds` (default 300, maximum 3600), with queue time
+bounded separately by `slot_wait_seconds`. A timeout defers the batch. The
+last 8,000 characters of combined output are kept per command.
 
 Validation is not allowed to change what is being published: if `HEAD` moved
 or the working tree is dirty afterwards, the sweep refuses to publish with
 *"validation modified the candidate; refusing publication"*.
 
-> **Note.** Because commands run in AQ's clone with the daemon's environment,
-> a command like `pytest` only works if its dependencies are installed there.
-> Use an absolute interpreter path or a small wrapper script. This repository
-> configures exactly that: one wrapper under `~/.agent-queue/operator-checks/`.
+> **Note.** Python presets use the daemon's interpreter and installed packages;
+> absolute interpreter paths and wrapper scripts are not supported. Node tools
+> are resolved by the server, and `npm ci` or
+> `pnpm install --frozen-lockfile` should precede a Node test or build check.
 
 ## Publication
 

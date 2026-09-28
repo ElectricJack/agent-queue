@@ -593,7 +593,8 @@ def integration_recover_candidate_member(ctx: click.Context, reservation_id: str
 @integration.command("develop")
 @click.argument("project_id")
 @click.option("--validation", type=click.Choice(["focused", "advisory", "none"]), default="focused")
-@click.option("--command", "commands", multiple=True, help="Local validation command; repeatable.")
+@click.option("--command", "commands", multiple=True,
+              help="Finite validation preset command; repeatable. No shell or wrapper scripts.")
 @click.option("--interval-seconds", type=click.IntRange(min=1), default=300)
 @click.option("--timeout-seconds", type=click.IntRange(1, 3600), default=None,
               help="Seconds each command may run (default 300); slot wait is not counted.")
@@ -691,3 +692,340 @@ def integration_migrate_provenance(ctx, project_id, apply, limit, offset, task_i
 def integration_cancel_preserving(ctx, operation_id, reason):
     """Cancel obsolete repair scheduling while retaining refs and attached workspaces."""
     _execute(ctx, "integration_cancel_preserving", {"operation_id": operation_id, "reason": reason})
+
+
+# ---------------------------------------------------------------------------
+# aq integration onboard-train
+# ---------------------------------------------------------------------------
+
+#: Top-level files that name a project's stack (``train_onboarding.detect_stack``).
+_STACK_FILES = (
+    "package.json", "package-lock.json", "pnpm-lock.yaml", "pyproject.toml",
+    "requirements.txt", ".nvmrc",
+)
+
+
+def _git(repo: str, *args: str) -> str:
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "-C", repo, *args], capture_output=True, text=True, timeout=30, check=False
+    )
+    if result.returncode != 0:
+        raise click.ClickException(
+            f"git {' '.join(args)} failed in {repo}: {result.stderr.strip() or result.returncode}"
+        )
+    return result.stdout
+
+
+def _read_repository(repo: str, ref: str) -> tuple[str, dict[str, str], dict[str, str]]:
+    """``(commit, workflows, stack files)`` at ``ref``.  Reads objects only: no checkout."""
+    commit = _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+    listing = _git(repo, "ls-tree", "--name-only", commit, ".github/workflows/").split()
+    workflows = {
+        path: _git(repo, "show", f"{commit}:{path}")
+        for path in listing
+        if path.endswith((".yml", ".yaml"))
+    }
+    top = set(_git(repo, "ls-tree", "--name-only", commit).split())
+    files = {name: _git(repo, "show", f"{commit}:{name}") for name in _STACK_FILES if name in top}
+    return commit, workflows, files
+
+
+def _daemon_config() -> dict[str, Any]:
+    import os
+
+    import yaml
+
+    path = os.path.expanduser("~/.agent-queue/config.yaml")
+    try:
+        with open(path, encoding="utf-8") as handle:
+            loaded = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _github_app_id(config: dict[str, Any]) -> int | None:
+    integration_config = config.get("integration")
+    app = integration_config.get("github_app") if isinstance(integration_config, dict) else None
+    if not isinstance(app, dict):
+        return None
+    try:
+        return int(app.get("app_id"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _gh_json(*args: str) -> str | None:
+    """One best-effort ``gh`` read; ``None`` when gh is absent or refuses."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["gh", *args], capture_output=True, text=True, timeout=20, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _render_onboarding(data: dict[str, Any]) -> None:
+    from .app import console
+
+    console.print(
+        f"[bold]{data['project_id']}[/]: shape [cyan]{data['shape']}[/], "
+        f"path [cyan]{data['path']}[/]"
+    )
+    source = data.get("source") or {}
+    if source:
+        console.print(f"read {source.get('repo')} at {source.get('ref')} ({source.get('commit')})")
+    if data.get("required_checks"):
+        console.print(
+            f"required checks ({data.get('check_version')}, "
+            f"{data.get('credential_mode')} producer):"
+        )
+        for name in data["required_checks"]:
+            console.print(f"  - {name}")
+    for report in data.get("workflows") or []:
+        gate = "gates the train" if report["push_on_train_refs"] else "does not run on train refs"
+        console.print(f"[dim]{report['path']}: {gate}[/]")
+        for job in report["jobs"]:
+            reason = f" ({job['reason']})" if job.get("reason") else ""
+            console.print(f"[dim]  {job['job_id']}: {job['status']}{reason}[/]")
+        for note in report.get("notes") or []:
+            console.print(f"[yellow]  note: {note}[/]")
+    for fix in data.get("trigger_fixes") or []:
+        console.print("[bold]Trigger fix[/]")
+        console.print(fix, markup=False, highlight=False, soft_wrap=True)
+    for command in data.get("validation_commands") or []:
+        console.print(f"validation command: {command}", markup=False, soft_wrap=True)
+    if data.get("trust_manifest"):
+        console.print("App-mode trust manifest: ready (--write-trust-manifest writes it)")
+    for problem in data.get("problems") or []:
+        console.print(f"[red]problem:[/] {problem}", highlight=False)
+    for path in data.get("written") or []:
+        console.print(f"[green]wrote[/] {path}")
+    for number, step in enumerate(data.get("steps") or [], start=1):
+        console.print(f"\n[bold]{number}. {step['title']}[/]")
+        if step.get("note"):
+            console.print(step["note"], highlight=False)
+        for command in step.get("commands") or []:
+            # Unwrapped, so a long command still pastes as one line.
+            console.print(command, markup=False, highlight=False, soft_wrap=True)
+
+
+@integration.command("onboard-train")
+@click.argument("project_id")
+@click.option("--repo", "repo_path", type=click.Path(exists=True, file_okay=False),
+              help="Checkout to read workflows from (default: the project's workspace).")
+@click.option("--ref", help="Ref to read (default: origin/<default branch>). Fetch first if stale.")
+@click.option("--repo-url", help="Repository URL when the daemon's project record is unreadable.")
+@click.option("--default-branch", help="Default branch when the project record is unreadable.")
+@click.option("--credential-mode", type=click.Choice(["auto", "existing-login", "app"]),
+              default="auto", show_default=True,
+              help="auto reads integration.github_app from ~/.agent-queue/config.yaml.")
+@click.option("--route", type=click.Choice(["auto", "shared", "project"]), default="auto",
+              show_default=True,
+              help="auto: the project's own reviewed pair when shipped, else the shared pair.")
+@click.option("--intelligence-class", default="standard-high", show_default=True,
+              help="Class for primary, verifier and debug repair work.")
+@click.option("--harness", default="codex", show_default=True,
+              help="Harness of the derived <class>-<harness> rung those use.")
+@click.option("--check", "checks", multiple=True,
+              help="Required check name; repeatable. Replaces the derived set.")
+@click.option("--check-version", help="Required-check set version (default: a digest of names).")
+@click.option("--github-repository-id", type=click.IntRange(min=1),
+              help="Numeric GitHub id for the App-mode trust manifest (default: gh api).")
+@click.option("--validation-command", "validation_commands", multiple=True,
+              help="Development-path validation command; repeatable. Must be a job preset "
+                   "(pytest, aq test, ruff check, npm run build); default: none.")
+@click.option("--repository-id",
+              help="The project's integration repository id when status does not report it.")
+@click.option("--test-command", help="Test command for the --write-workflow template.")
+@click.option("--interval-seconds", type=click.IntRange(min=1), default=300, show_default=True)
+@click.option("--write-policy", type=click.Path(dir_okay=False),
+              help="Write the generated train policy JSON here.")
+@click.option("--write-trust-manifest", type=click.Path(dir_okay=False),
+              help="Write the App-mode .github/agent-queue-integration.json here.")
+@click.option("--write-workflow", type=click.Path(dir_okay=False),
+              help="Write a starting CI workflow here (projects without CI).")
+@click.option("--check-prs/--no-check-prs", default=True, show_default=True,
+              help="Ask gh which legacy pull requests are still open.")
+@click.pass_context
+@_handle_errors
+def integration_onboard_train(
+    ctx, project_id, repo_path, ref, repo_url, default_branch, credential_mode, route,
+    intelligence_class, harness,
+    checks, check_version, github_repository_id, validation_commands, repository_id,
+    test_command,
+    interval_seconds, write_policy, write_trust_manifest, write_workflow, check_prs,
+):
+    """Plan PROJECT_ID's move onto the integration train; print every step.
+
+    Reads the project from the daemon and its workflows from Git, derives the
+    required check-run names, and prints the drain, bind, policy, observe and
+    ready-check commands.  Nothing is changed: the mode flips stay with the
+    supervisor or local operator.  With --repo and --repo-url it plans from Git
+    alone when the daemon's records are out of scope or unreachable.  Runbook:
+    docs/config/train-onboarding.md.
+    """
+    import json
+    from pathlib import Path
+
+    from src.integration import train_onboarding as onboarding
+    from src.playbooks.required import reviewed_bundle_source
+
+    from .exceptions import CommandError, DaemonNotRunningError
+
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _reads():
+        reads: dict[str, Any] = {}
+        async with _get_client(api_url) as client:
+            for key, command, args in (
+                ("project", "get_project", {"project_id": project_id}),
+                ("status", "integration_status", {"project_id": project_id}),
+                ("completed", "list_tasks", {"project_id": project_id, "status": "COMPLETED"}),
+                ("blocked", "list_tasks", {"project_id": project_id, "status": "BLOCKED"}),
+            ):
+                try:
+                    reads[key] = await client.execute(command, args)
+                except CommandError:
+                    reads[key] = None
+        return reads
+
+    try:
+        optional = _run(_reads())
+    except DaemonNotRunningError:
+        if not (repo_path and repo_url):
+            raise
+        optional = {}
+    project = optional.get("project") or {}
+    status = optional.get("status") or {}
+    repo = repo_path or project.get("workspace")
+    if not repo or not Path(repo).is_dir():
+        raise click.UsageError(f"{project_id} has no readable workspace; pass --repo PATH")
+    notes: list[str] = []
+    repository_url = repo_url or project.get("repo_url") or ""
+    if not repository_url:
+        # The supervisor's grants omit get_project: fall back to the checkout.
+        try:
+            repository_url = _git(repo, "remote", "get-url", "origin").strip()
+        except click.ClickException as exc:
+            raise click.UsageError(
+                f"cannot read {project_id}'s repository URL; pass --repo-url"
+            ) from exc
+        notes.append(
+            f"repository URL {repository_url!r} read from the checkout's origin; the binding "
+            "requires it to match the project record exactly (pass --repo-url to override)"
+        )
+    branch = default_branch or project.get("repo_default_branch") or "main"
+    ref = ref or f"origin/{branch}"
+    commit, workflows, files = _read_repository(repo, ref)
+    classification = onboarding.classify(repository_url, workflows)
+
+    config = _daemon_config()
+    app_id = _github_app_id(config)
+    if credential_mode == "auto":
+        credential_mode = "app" if app_id is not None else "existing-login"
+    full_name = classification.full_name
+    if (
+        credential_mode == "app"
+        and github_repository_id is None
+        and full_name
+        and classification.shape.startswith("github")
+    ):
+        found = _gh_json("api", f"repos/{full_name}", "--jq", ".id")
+        github_repository_id = int(found) if found and found.isdigit() else None
+
+    parent_route = root_route = None
+    if classification.shape.startswith("github"):
+        parent_route, root_route = onboarding.select_routes(
+            reviewed_bundle_source(), project_id, route
+        )
+
+    def _legacy(result: Any) -> list[dict[str, Any]]:
+        return [task for task in (result or {}).get("tasks") or [] if isinstance(task, dict)]
+
+    legacy = [
+        (task["id"], task["pr_url"])
+        for task in _legacy(optional.get("completed"))
+        if task.get("pr_url") and not task.get("parent_task_id")
+    ]
+    unchecked = 0
+    if check_prs and legacy:
+        # A bounded number of gh reads; the rest are reported, never dropped.
+        checked, unchecked = legacy[:50], max(0, len(legacy) - 50)
+        legacy = [
+            (task_id, url)
+            for task_id, url in checked
+            if _gh_json("pr", "view", url, "--json", "state", "--jq", ".state") in (None, "OPEN")
+        ]
+    completed = optional.get("completed") or {}
+    if completed.get("hidden_completed") or (completed.get("total") or 0) > len(
+        completed.get("tasks") or []
+    ):
+        notes.append("the daemon capped the completed-task list; some legacy PRs may be unlisted")
+    designated = repository_id or status.get("repository_id") or next(
+        (
+            row.get("repository_id")
+            for row in status.get("deliveries") or []
+            if isinstance(row, dict) and row.get("repository_id")
+        ),
+        None,
+    )
+    facts = onboarding.ProjectFacts(
+        project_id=project_id,
+        repository_url=repository_url,
+        default_branch=branch,
+        integration_repository_id=designated,
+        current_mode=status.get("effective_mode"),
+        legacy_pull_requests=tuple(legacy),
+        blocked_tasks=tuple(task["id"] for task in _legacy(optional.get("blocked"))),
+        unchecked_pull_requests=unchecked,
+    )
+    policy_path = write_policy or f"train-policy.{project_id}.json"
+    plan = onboarding.plan_onboarding(
+        facts,
+        classification,
+        parent_route=parent_route,
+        root_route=root_route,
+        credential_mode=credential_mode,
+        intelligence_class=intelligence_class,
+        profile_id=f"{intelligence_class}-{harness}",
+        check_names=checks or None,
+        check_version=check_version,
+        attestation_app_id=app_id,
+        github_repository_id=github_repository_id,
+        validation=validation_commands,
+        interval_seconds=interval_seconds,
+        policy_path=policy_path,
+        manifest_path=write_trust_manifest or onboarding.TRUST_MANIFEST_PATH,
+        workflow_path=write_workflow or ".github/workflows/ci.yml",
+    )
+
+    written: list[str] = []
+
+    def _write(path: str, text: str) -> None:
+        Path(path).write_text(text, encoding="utf-8")
+        written.append(path)
+
+    if write_policy and plan.policy is not None:
+        _write(write_policy, json.dumps(plan.policy, indent=2) + "\n")
+    if write_trust_manifest and plan.trust_manifest is not None:
+        _write(write_trust_manifest, json.dumps(plan.trust_manifest, indent=2) + "\n")
+    if write_workflow:
+        _write(write_workflow, onboarding.ci_workflow_template(files, test_command=test_command))
+    by_path = {report.path: report for report in classification.workflows}
+    data = plan.as_dict()
+    data["problems"] = [*notes, *data["problems"]]
+    data.update(
+        source={"repo": repo, "ref": ref, "commit": commit},
+        trigger_fixes=[
+            onboarding.trigger_fix(by_path[path], workflows[path])
+            for path in classification.trigger_fixes
+        ],
+        written=written,
+    )
+    emit(ctx, data, entity="integration", render=_render_onboarding)
