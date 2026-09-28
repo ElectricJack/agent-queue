@@ -281,6 +281,7 @@ class IntegrationCommandsMixin:
             return service
         from src.integration.controls import IntegrationControlService
 
+        attestation = getattr(self.orchestrator, "integration_attestation_service", None)
         return IntegrationControlService(
             self.db,
             scheduler=self._integration_scheduler(),
@@ -288,6 +289,7 @@ class IntegrationCommandsMixin:
             legacy_resolution_observer=(
                 self._integration_promotion_service().observe_legacy_resolution_target
             ),
+            subject_trust_reader=getattr(attestation, "subject_trust_blockers", None),
         )
 
     async def _integration_operator_for_operation(

@@ -9,7 +9,9 @@ from sqlalchemy import select
 from src.database.tables import (
     integration_repair_operations, projects, task_integration_checkpoints, tasks,
 )
-from src.integration.ci import AuthenticatedGitHubObserver, CIService, ParentCISubject
+from src.integration.ci import (
+    AuthenticatedGitHubObserver, CIService, ParentCISubject, SubjectTrustError,
+)
 from src.integration.outbox import enqueue_integration_event
 
 logger = logging.getLogger(__name__)
@@ -87,6 +89,10 @@ class ParentCIService:
         for row in rows:
             try:
                 await self.handle(dict(row))
+            except SubjectTrustError:
+                # Recorded (and logged once) for ``aq integration status`` as
+                # subject_trust_invalid; the next poll re-reads the tree.
+                continue
             except Exception:
                 logger.exception('Parent CI remains retryable for %s', row['task_id'])
 
@@ -98,21 +104,21 @@ class ParentCIService:
         if binding is None:
             return
         await ensure_parent_store(self.attestation.git, self.attestation._store(repo.id))
-        required = row['policy_snapshot']['parent']['required_checks']
         subject = ParentCISubject(
             operation_id=row['operation_id'], parent_task_id=row['task_id'],
             generation=row['generation'], head_sha=row['head_sha'],
         )
+        # The parent boundary of the frozen snapshot owns the check set; the
+        # tree's manifest is compared on identity only.
         trust, client = await self.attestation._load_trust({
+            'project_id': row['project_id'], 'operation_id': row['operation_id'],
+            'parent_task_id': row['task_id'], 'generation': row['generation'],
             'canonical_repository_id': repo.id,
             'repository_numeric_id': binding.repository_id,
             'repository_full_name': binding.full_name,
             'policy_snapshot': row['policy_snapshot'],
             'batch_id': row['operation_id'], 'revision': row['generation'],
             'candidate_sha': row['head_sha'],
-            'required_check_version': required['version'],
-            'required_check_names': tuple(required['names']),
-            'ci_producer_id': required['producer_id'],
         }, boundary='parent')
         ci = CIService(self.db, trust, AuthenticatedGitHubObserver(client, expected_event="push"))
 

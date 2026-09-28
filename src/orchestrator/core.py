@@ -1878,6 +1878,7 @@ class Orchestrator(
                 self, project_id, repository_id
             ),
             legacy_resolution_observer=self.promotion_service.observe_legacy_resolution_target,
+            subject_trust_reader=self.integration_attestation_service.subject_trust_blockers,
         )
 
         async def reconcile_root_intent(row: dict[str, Any], _now: float):

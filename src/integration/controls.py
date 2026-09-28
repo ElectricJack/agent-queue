@@ -92,6 +92,7 @@ class IntegrationControlService:
         external_preflight: ExternalPreflight | None = None,
         cleanup_service: Any | None = None,
         legacy_resolution_observer: Callable[[dict[str, Any]], Awaitable[str | None]] | None = None,
+        subject_trust_reader: Callable[[str], Awaitable[list[dict[str, Any]]]] | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db = db
@@ -99,6 +100,9 @@ class IntegrationControlService:
         self.external_preflight = external_preflight
         self.cleanup_service = cleanup_service
         self.legacy_resolution_observer = legacy_resolution_observer
+        # Subjects whose tree trust manifest was refused (spec §5.3); the
+        # attestation service observes them, status names them.
+        self.subject_trust_reader = subject_trust_reader
         self.clock = clock
 
     def _recovery(self):
@@ -253,6 +257,8 @@ class IntegrationControlService:
             for item in observed["blockers"]
             if (item["code"], item["ref"], item["detail"]) not in database_keys
         ]
+        if self.subject_trust_reader is not None:
+            external.extend(await self.subject_trust_reader(project_id))
         blockers = _sorted_blockers(list(status["blockers"]) + external)
         return {
             "outcome": "status",
