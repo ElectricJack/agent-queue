@@ -819,6 +819,50 @@ def test_cli_writes_the_reviewed_agent_queue_policy_byte_for_byte(tmp_path, mode
     ).read_bytes()
 
 
+def test_cli_writes_the_trust_manifest_the_daemon_command_renders(tmp_path):
+    """``--write-trust-manifest`` and ``trust-manifest --write`` share one builder."""
+    from src.cli.app import cli
+    from src.integration import trust_manifest
+
+    repo = _repo(tmp_path, _own_workflows())
+    client = _client(
+        {
+            "get_project": {
+                "repo_url": GITHUB.format("agent-queue"),
+                "repo_default_branch": "main",
+                "workspace": str(repo),
+            },
+            "integration_status": {"repository_id": "agent-queue2", "effective_mode": "disabled"},
+        }
+    )
+    app_config = {"integration": {"github_app": {"app_id": 5075923}}}
+    manifest_path = tmp_path / "agent-queue-integration.json"
+    with (
+        patch("src.cli.integration._get_client", return_value=client),
+        patch("src.cli.integration._daemon_config", return_value=app_config),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--json", "integration", "onboard-train", "agent-queue",
+                "--credential-mode", "app", "--check-version", "tests-yml-v3",
+                "--github-repository-id", "1160639300", "--no-check-prs",
+                "--write-trust-manifest", str(manifest_path),
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    reviewed = json.loads((ROOT / "docs/config/agent-queue-train-policy.json").read_text())
+    expected = trust_manifest.manifest_for_policy(
+        reviewed,
+        canonical_repository_id="agent-queue2",
+        repository_id=1160639300,
+        full_name="ElectricJack/agent-queue",
+        attestation_app_id=5075923,
+    )
+    assert manifest_path.read_text() == trust_manifest.canonical_text(expected)
+
+
 def test_cli_plans_from_git_alone_when_daemon_records_are_out_of_scope(tmp_path):
     from src.cli.app import cli
 

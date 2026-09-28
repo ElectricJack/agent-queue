@@ -344,6 +344,143 @@ class IntegrationCommandsMixin:
             return _failure("unauthorized", "integration status is outside the caller project")
         return await self._integration_control_service().status(project_id)
 
+    async def _cmd_integration_trust_manifest(self, args: dict) -> dict:
+        """Render the App-mode trust manifest and compare the default-branch copy.
+
+        Read-only (App-mode integration train spec §6.1).  The policy is the
+        caller's ``policy`` when given, so a manifest can be prepared before
+        the policy is bound, else the project's bound policy.  The repository
+        is ``repository_id`` when given, else the designated one.  Every
+        identity comes from the daemon: ``repository_id`` and ``full_name``
+        from the authenticated binding, ``attestation_app_id`` from the App
+        client, and the committed copy is read through the App at the
+        default branch's exact SHA.
+        """
+        from pydantic import ValidationError
+
+        from src.git.github_contracts import (
+            GitHubAccessError,
+            GitHubCredentialMode,
+            credential_identity_from_client,
+        )
+        from src.integration import trust_manifest
+        from src.integration.models import HierarchicalIntegrationPolicy
+        from src.integration.preflight import read_committed_trust_manifest
+
+        project_id = str(args.get("project_id") or "")
+        if not project_id:
+            return _failure("not_found", "project_id is required")
+        _label, refusal = await integration_operator(getattr(self, "db", None), project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        project = await self.db.get_project(project_id)
+        if project is None:
+            return _failure("not_found", f"project {project_id} does not exist")
+
+        supplied = args.get("policy")
+        raw_policy = supplied if supplied is not None else project.hierarchical_integration_policy
+        if raw_policy is None:
+            return _failure(
+                "policy_missing", f"{project_id} has no bound integration policy; pass --policy FILE"
+            )
+        try:
+            policy = HierarchicalIntegrationPolicy.model_validate(raw_policy)
+        except (ValidationError, TypeError, ValueError) as exc:
+            return _failure("policy_invalid", f"the integration policy is invalid: {exc}")
+
+        repository_id = str(args.get("repository_id") or project.integration_repository_id or "")
+        if not repository_id:
+            return _failure(
+                "repository_not_designated",
+                f"{project_id} has no designated integration repository; pass --repository-id",
+            )
+        repository = await self.db.get_repo(repository_id)
+        if repository is None or repository.project_id != project_id:
+            return _failure(
+                "repository_mismatch", f"repository {repository_id} does not belong to {project_id}"
+            )
+        if not repository.default_branch:
+            return _failure(
+                "repository_default_branch_missing",
+                f"repository {repository_id} has no default branch",
+            )
+
+        resolver = getattr(self.orchestrator, "github_repository_binding_resolver", None)
+        factory = getattr(self.orchestrator, "github_client_factory", None)
+        if resolver is None or factory is None:
+            return _failure("provider_not_wired", "the daemon's GitHub client is not wired")
+        try:
+            binding = resolver(repository)
+            if inspect.isawaitable(binding):
+                binding = await binding
+        except Exception:  # noqa: BLE001 - any binding failure is the named refusal
+            binding = None
+        if binding is None:
+            return _failure(
+                "repository_binding_failed",
+                f"repository {repository_id} has no authenticated GitHub binding "
+                "(its origin must be an exact https://github.com/OWNER/REPO.git URL)",
+            )
+        try:
+            client = factory(binding)
+            if inspect.isawaitable(client):
+                client = await client
+            identity = credential_identity_from_client(client)
+        except Exception:  # noqa: BLE001 - any client failure is the named refusal
+            client = identity = None
+        if identity is None or getattr(client, "repository", None) != binding:
+            return _failure("provider_binding_failed", "the GitHub client could not bind")
+        if identity.mode is not GitHubCredentialMode.APP:
+            return _failure(
+                "not_app_mode",
+                "the trust manifest is an App credential mode anchor; this daemon uses "
+                "existing-login credentials (integration.github_app is not configured)",
+            )
+
+        try:
+            manifest = trust_manifest.manifest_for_policy(
+                policy,
+                canonical_repository_id=repository_id,
+                repository_id=binding.repository_id,
+                full_name=binding.full_name,
+                attestation_app_id=identity.app_id,
+            )
+        except trust_manifest.TrustManifestRefusal as exc:
+            return _failure(exc.code, str(exc))
+        text = trust_manifest.canonical_text(manifest)
+
+        committed: dict[str, Any] = {
+            "path": trust_manifest.TRUST_MANIFEST_PATH,
+            "ref": repository.default_branch,
+            "sha": None,
+        }
+        try:
+            sha, raw = await read_committed_trust_manifest(
+                client, binding, repository.default_branch
+            )
+        except (GitHubAccessError, ValueError) as exc:
+            committed.update(
+                trust_manifest.compare(manifest, None).as_dict(),
+                error=f"the default-branch copy could not be read: {exc}",
+            )
+        else:
+            committed.update(sha=sha, **trust_manifest.compare(manifest, raw).as_dict())
+        return {
+            "success": True,
+            "outcome": "manifest",
+            "project_id": project_id,
+            "repository_id": repository_id,
+            "policy_source": "argument" if supplied is not None else "bound",
+            "github_repository_id": binding.repository_id,
+            "full_name": binding.full_name,
+            "attestation_app_id": identity.app_id,
+            "path": trust_manifest.TRUST_MANIFEST_PATH,
+            "manifest": manifest,
+            "text": text,
+            "sha256": trust_manifest.text_sha256(text),
+            "committed": committed,
+        }
+
     async def _cmd_integration_flush(self, args: dict) -> dict:
         project_id = str(args.get("project_id") or "")
         if not project_id:

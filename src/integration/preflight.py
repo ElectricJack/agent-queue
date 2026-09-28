@@ -10,6 +10,7 @@ from urllib.parse import quote
 from pydantic import ValidationError
 
 from src.git.github_contracts import (
+    GitHubAccessError,
     GitHubCredentialIdentity,
     GitHubCredentialMode,
     credential_identity_from_client,
@@ -55,17 +56,45 @@ def _artifact_matches(definition: Any, route: Any) -> bool:
         return False
 
 
+def _decoded_content(payload: dict[str, Any]) -> bytes:
+    if payload.get("encoding") != "base64" or not isinstance(payload.get("content"), str):
+        raise ValueError("trust content response is malformed")
+    encoded = "".join(payload["content"].split())
+    return base64.b64decode(encoded, validate=True)
+
+
 async def _read_trust(client: Any, binding: Any, default_branch: str) -> Any:
     path = quote(TRUST_MANIFEST_PATH, safe="/")
     ref = quote(default_branch, safe="")
     payload = await client.request_json(
         "GET", f"/repos/{binding.full_name}/contents/{path}?ref={ref}"
     )
-    if payload.get("encoding") != "base64" or not isinstance(payload.get("content"), str):
-        raise ValueError("trust content response is malformed")
-    encoded = "".join(payload["content"].split())
-    raw = base64.b64decode(encoded, validate=True)
-    return _parse_trust_manifest(raw)
+    return _parse_trust_manifest(_decoded_content(payload))
+
+
+async def read_committed_trust_manifest(
+    client: Any, binding: Any, default_branch: str
+) -> tuple[str, bytes | None]:
+    """``(default-branch SHA, raw manifest bytes)`` read through the App client.
+
+    The file is read at the SHA, not the branch name, so the bytes are the
+    ones that SHA carries even if the branch moves between the two reads.
+    ``None`` means the file is absent there; any other failure raises.
+    """
+    sha = await client.exact_head_ref(default_branch)
+    if sha is None:
+        raise ValueError(f"default branch {default_branch!r} does not exist")
+    path = quote(TRUST_MANIFEST_PATH, safe="/")
+    try:
+        payload = await client.request_json(
+            "GET", f"/repositories/{binding.repository_id}/contents/{path}?ref={sha}"
+        )
+    except GitHubAccessError as exc:
+        # The ref read proved the repository visible, so a 404 is the file.
+        if exc.category == "not_found_or_hidden":
+            return sha, None
+        raise
+    return sha, _decoded_content(payload)
 
 
 async def _read_hosted_variables(client: Any, binding: Any) -> dict[str, str]:
@@ -277,4 +306,4 @@ async def daemon_functional_preflight(
     return tuple(dict.fromkeys(blockers))
 
 
-__all__ = ["daemon_functional_preflight"]
+__all__ = ["daemon_functional_preflight", "read_committed_trust_manifest"]

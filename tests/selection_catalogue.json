@@ -500,7 +500,8 @@
         "tests/test_integration_controls.py",
         "tests/test_integration_operational_controls.py",
         "tests/test_integration_operator_controls.py",
-        "tests/test_integration_troubleshooting_doc.py"
+        "tests/test_integration_troubleshooting_doc.py",
+        "tests/test_integration_trust_manifest.py"
       ]
     },
     "integration-ownership": {
@@ -1284,7 +1285,7 @@
       ]
     }
   },
-  "digest": "sha256:70b4f8cfc5ad3b6a69a501809500602ffd7c2b238be6ccb14b7e6a97ac12ef11",
+  "digest": "sha256:20212f6f5aa4ad1146e4a43c0fa0c1c651e36ac43240367fd0fa75189e30a0a6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7518,6 +7519,33 @@
       "markers": [],
       "summary": "The integration troubleshooting guide teaches stranded branch-owner recovery."
     },
+    "tests/test_integration_trust_manifest.py": {
+      "areas": [
+        "integration-controls"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.git.github_contracts",
+        "src.integration",
+        "src.integration.ci",
+        "src.integration.train_onboarding",
+        "src.integration.trust_manifest",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The App-mode trust manifest: shared builder, daemon command and CLI (spec §6.1)."
+    },
     "tests/test_integration_workspace_handoff.py": {
       "areas": [
         "integration-ownership"
@@ -9081,6 +9109,8 @@
       "default_arm": true,
       "imports": [
         "src.database.tables",
+        "src.git.github_app",
+        "src.git.github_contracts",
         "src.git.manager",
         "src.integration.ci",
         "src.integration.parent_ci"
@@ -13248,6 +13278,7 @@
         "src.integration.ci",
         "src.integration.models",
         "src.integration.train_onboarding",
+        "src.integration.trust_manifest",
         "src.jobs.adapters",
         "src.playbooks.required"
       ],
