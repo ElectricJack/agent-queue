@@ -187,8 +187,8 @@ foreign venv is activated for the pytest child (`VIRTUAL_ENV`, its `bin`
 first on `PATH`), and when that interpreter has no pytest-xdist the run is
 serial — still under its slot — instead of an `-n` pytest would reject.
 `aq test` names the interpreter it chose on stderr, so `--aq-dry-run`'s
-stdout stays a command line you can paste. `--aq-detach` jobs still run
-under the daemon's interpreter.
+stdout stays a command line you can paste. Detached jobs and development
+validation use the same project interpreter selected in their pinned workspace.
 
 ### Test scope and the recorded baseline
 
