@@ -12,10 +12,12 @@ What it does, in order:
    from inside a worktree); otherwise the ``resources:`` section of
    ``~/.agent-queue/config.yaml``; otherwise built-in defaults.  A worktree
    with no config still gets gating.
-2. Preflight the required ``POSTGRES_TEST_DSN`` and every path-shaped
-   argument. Refuse before taking a slot when configuration is absent or a
-   path does not exist, rather than producing hundreds of fixture errors or
-   xdist's misleading "no tests ran".
+2. Preflight every path-shaped argument, resolve the project whose tests
+   are named (``src/resources/project_tests.py``: its interpreter, and
+   whether it is agent-queue itself) and, for agent-queue only, the required
+   ``POSTGRES_TEST_DSN``. Refuse before taking a slot when configuration is
+   absent or a path does not exist, rather than producing hundreds of
+   fixture errors or xdist's misleading "no tests ran".
 3. Take shared box admission and one of N ``flock`` slots, printing a "waiting" line so a
    queued agent looks queued rather than hung.  A run that selects the
    whole suite first takes the box-wide full-suite lock (capacity one), so
@@ -264,6 +266,23 @@ def _looks_like_a_path(arg: str) -> bool:
     return bool(head) and (os.sep in head or head.endswith(".py"))
 
 
+def _anchor(args: tuple[str, ...], cwd: Path | None = None) -> Path:
+    """Where the tests being run live: the common directory of the named paths.
+
+    ``aq test ~/dev/other/tests/test_x.py`` runs the other project's tests
+    wherever it is typed from; with no existing path named, the cwd decides.
+    """
+    cwd = cwd or Path.cwd()
+    directories = []
+    for arg in _positional_args(args):
+        path = cwd / arg.split("::", 1)[0]
+        if path.exists():
+            directories.append(path if path.is_dir() else path.parent)
+    if not directories:
+        return cwd
+    return Path(os.path.commonpath([str(d.resolve()) for d in directories]))
+
+
 def _missing_paths(args: tuple[str, ...]) -> list[str]:
     """Path-shaped arguments that do not exist on disk.
 
@@ -406,11 +425,23 @@ def _is_full_suite(args: tuple[str, ...], *, cwd: Path | None = None) -> bool:
 
 
 def _compose_pytest_argv(
-    args: tuple[str, ...], *, workers: int, markers: str, apply_markers: bool
+    args: tuple[str, ...],
+    *,
+    workers: int,
+    markers: str,
+    apply_markers: bool,
+    python: str | None = None,
+    xdist: bool = True,
 ) -> list[str]:
-    """The full pytest command line, with caps folded in where absent."""
-    argv = [sys.executable, "-m", "pytest"]
-    if not _xdist_disabled(args):
+    """The full pytest command line, with caps folded in where absent.
+
+    *python* is the project's interpreter (default: ``aq``'s own).  Without
+    pytest-xdist in it (*xdist* false) no ``-n``/``--dist`` is folded in: the
+    run is serial, still under its slot, rather than refused by pytest as
+    unrecognized arguments.
+    """
+    argv = [python or sys.executable, "-m", "pytest"]
+    if xdist and not _xdist_disabled(args):
         if not _has_flag(args, "-n", "--numprocesses"):
             argv.extend(["-n", str(workers)])
         # Keep a module's tests on one worker (its database fixtures are
@@ -877,7 +908,12 @@ class _TestCommand(click.Command):
     "--aq-no-jev", is_flag=True, help="Use the static fallback only; record Jev as disabled."
 )
 @click.option(
-    "--aq-project", default=None, help="Project id for an operator run outside a worker session."
+    "--aq-project",
+    default=None,
+    help=(
+        "Project id for an operator run outside a worker session "
+        "(smart selection and resources.test_interpreters)."
+    ),
 )
 @click.option(
     "--aq-reap-orphans",
@@ -929,6 +965,11 @@ def test_command(
     A path-shaped argument that does not exist is refused before pytest
     starts (exit 4), and a run that collected nothing exits nonzero and
     says so.
+
+    Another project's tests run under that project's interpreter:
+    ``resources.test_interpreters[<project id>]``, else its ``.venv``
+    (the main checkout's, from a worker slot).  Only agent-queue's own
+    suite requires ``POSTGRES_TEST_DSN``.
     """
     if aq_wait and not aq_detach:
         raise click.UsageError("--aq-wait requires --aq-detach")
@@ -1065,11 +1106,30 @@ def test_command(
         console.print(f"[dim]cwd: {os.getcwd()} — nothing was run.[/]")
         ctx.exit(4)
 
+    from rich.markup import escape
+
+    from src.resources import project_tests
+
+    try:
+        project = project_tests.resolve(
+            _anchor(pytest_args),
+            project_id=aq_project or os.environ.get("AQ_PROJECT_ID"),
+            interpreters=getattr(resources, "test_interpreters", None),
+        )
+    except project_tests.ProjectTestsError as exc:
+        console.print(f"[red]aq test:[/] {escape(str(exc))}")
+        console.print("[dim]Nothing was run.[/]")
+        ctx.exit(4)
+    xdist = _xdist_disabled(pytest_args) or project_tests.has_xdist(project.python)
+    _report_project(project, xdist=xdist, explicit_n=_has_flag(pytest_args, "-n", "--numprocesses"))
+
     argv = _compose_pytest_argv(
         pytest_args,
         workers=workers,
         markers=markers,
         apply_markers=not aq_all_markers,
+        python=project.python,
+        xdist=xdist,
     )
 
     if aq_dry_run:
@@ -1079,7 +1139,8 @@ def test_command(
         click.echo(shlex.join(argv))
         return
 
-    dsn_error = postgres_test_dsn_error()
+    # agent-queue's own suite needs PostgreSQL; nobody else's is refused for it.
+    dsn_error = postgres_test_dsn_error() if project.requires_postgres else None
     if dsn_error:
         console.print(f"[red]aq test:[/] {dsn_error}")
         ctx.exit(4)
@@ -1178,9 +1239,10 @@ def test_command(
                     report, "acquired", waited=round(time.monotonic() - queued_at, 3), slot=slot
                 )
             scope = "full-suite lock + " if full_suite else ""
-            console.print(f"[dim]aq test: {scope}slot {slot} of {slots}, -n {workers}[/]")
+            spread = f"-n {workers}" if xdist else "serial"
+            console.print(f"[dim]aq test: {scope}slot {slot} of {slots}, {spread}[/]")
             click.echo(f"$ {shlex.join(argv)}", err=True)
-            child_env = os.environ.copy()
+            child_env = project.child_env(os.environ)
             # Always replace an inherited token. Nested or concurrent `aq test`
             # invocations are separate owners and must never derive the same
             # PostgreSQL database names. The slot record names it too, so a
@@ -1213,6 +1275,30 @@ def test_command(
         console.print(f"[red]aq test:[/] {exc}")
         console.print("[dim]Run `aq test --aq-status` to see who is holding them.[/]")
         ctx.exit(75)  # EX_TEMPFAIL — retryable, not a test failure
+
+
+def _report_project(project, *, xdist: bool, explicit_n: bool) -> None:
+    """Say, on stderr, whose interpreter runs another project's tests.
+
+    agent-queue's own runs print nothing new.  stderr keeps ``--aq-dry-run``'s
+    stdout a command line you can paste.
+    """
+    from src.resources.project_tests import AGENT_QUEUE, FALLBACK
+
+    if project.source == AGENT_QUEUE:
+        return
+    if project.source == FALLBACK:
+        click.echo(
+            f"aq test: no interpreter found for {project.root} (no .venv, no "
+            f"resources.test_interpreters entry); using {project.python}",
+            err=True,
+        )
+    else:
+        click.echo(
+            f"aq test: {project.root} runs under {project.python} ({project.source})", err=True
+        )
+    if not xdist and not explicit_n:
+        click.echo(f"aq test: {project.python} has no pytest-xdist; running serially", err=True)
 
 
 def _report_full_suite_busy(snapshot: dict, *, waited_for: int | None) -> None:
