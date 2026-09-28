@@ -19,9 +19,8 @@ class ReviewDecideRequest:
         revision (int):
         decision (str):
         note (None | str | Unset):
-        responder_class (None | str | Unset): Who revises after request_changes or reject: intelligence class for the
-            new revision task.
-        responder_profile (None | str | Unset): Optional worker profile for that revision class.
+        responder_class (None | str | Unset): After request_changes or reject: intelligence-class hint for the new
+            revision task, which the project's router routes. A responder profile is not accepted.
     """
 
     review_id: str
@@ -29,7 +28,6 @@ class ReviewDecideRequest:
     decision: str
     note: None | str | Unset = UNSET
     responder_class: None | str | Unset = UNSET
-    responder_profile: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -51,12 +49,6 @@ class ReviewDecideRequest:
         else:
             responder_class = self.responder_class
 
-        responder_profile: None | str | Unset
-        if isinstance(self.responder_profile, Unset):
-            responder_profile = UNSET
-        else:
-            responder_profile = self.responder_profile
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -70,8 +62,6 @@ class ReviewDecideRequest:
             field_dict["note"] = note
         if responder_class is not UNSET:
             field_dict["responder_class"] = responder_class
-        if responder_profile is not UNSET:
-            field_dict["responder_profile"] = responder_profile
 
         return field_dict
 
@@ -102,22 +92,12 @@ class ReviewDecideRequest:
 
         responder_class = _parse_responder_class(d.pop("responder_class", UNSET))
 
-        def _parse_responder_profile(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        responder_profile = _parse_responder_profile(d.pop("responder_profile", UNSET))
-
         review_decide_request = cls(
             review_id=review_id,
             revision=revision,
             decision=decision,
             note=note,
             responder_class=responder_class,
-            responder_profile=responder_profile,
         )
 
         review_decide_request.additional_properties = d

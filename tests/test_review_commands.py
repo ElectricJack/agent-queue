@@ -391,13 +391,18 @@ async def test_dispatch_pins_revision_records_activity_and_preserves_gate(env):
     review_id = submitted["review_id"]
     before = await db.get_review(review_id)
     dispatched = await handler.execute("review_dispatch", {
-        "review_id": review_id, "to": ["worker"], "revision": 1,
+        "review_id": review_id, "revision": 1,
         "with_comments": False, "focus": "migration rollback",
     })
     assert dispatched["success"], dispatched
     record = dispatched["dispatches"][0]
     task = await db.get_task(record["task_id"])
-    assert task.profile_id == "worker"
+    # Filed unrouted with the default class hint; the router picks the
+    # reviewer (mandatory-routing spec §5.3).
+    assert (task.profile_id, task.intelligence_class) == (None, None)
+    assert (task.class_hint, task.route_source) == ("deep-high", "unrouted")
+    assert task.created_by_kind == "review_dispatch"
+    assert (record["profile_id"], record["intelligence_class"]) == (None, "deep-high")
     assert task.task_type.value == "research"
     assert f"aq review show --review-id {review_id} --revision 1`" in task.description
     assert "--comments" not in task.description
@@ -419,11 +424,11 @@ async def test_dispatch_pins_revision_records_activity_and_preserves_gate(env):
     assert revised["revision"] == 2
     assert (await db.get_task(task.id)).description == task.description
     repeated = await handler.execute("review_dispatch", {
-        "review_id": review_id, "to": ["worker"], "revision": 1,
+        "review_id": review_id, "revision": 1,
     })
     assert repeated["error_code"] == "duplicate_dispatch"
     forced = await handler.execute("review_dispatch", {
-        "review_id": review_id, "to": ["worker"], "revision": 1, "force": True,
+        "review_id": review_id, "revision": 1, "force": True,
     })
     assert forced["success"], forced
     assert forced["dispatches"][0]["task_id"] != task.id
@@ -431,49 +436,87 @@ async def test_dispatch_pins_revision_records_activity_and_preserves_gate(env):
     assert len((await handler.execute("review_show", {"review_id": review_id}))["dispatches"]) == 2
 
 
-async def test_dispatch_refusals_and_capacity_warning(env):
+async def test_dispatch_refusals_and_count(env):
     handler, db = env
     submitted = await handler.execute("review_submit", {
         "project_id": "p", "kind": "plan", "title": "Plan", "content": "# Plan\n",
     })
     review_id = submitted["review_id"]
-    unknown = await handler.execute("review_dispatch", {"review_id": review_id, "to": ["missing"]})
-    assert unknown["error_code"] == "unknown_profile"
-    await db.create_profile(AgentProfile(
-        id="disabled-pool", name="Disabled", harness="codex", lifecycle="pool",
-        enabled=False, aq_commands=["review_show"], harness_tools=[], plugin_tools=[],
-    ))
-    disabled = await handler.execute("review_dispatch", {
-        "review_id": review_id, "to": ["disabled-pool"],
+    before = len(await db.list_tasks(project_id="p"))
+    # A dispatch never names a reviewer profile (mandatory-routing spec §5.3).
+    named = await handler.execute("review_dispatch", {"review_id": review_id, "to": ["worker"]})
+    assert named["error_code"] == "routing.choice_forbidden"
+    for count in (0, 11, True):
+        refused = await handler.execute("review_dispatch", {"review_id": review_id, "count": count})
+        assert refused["error_code"] == "invalid_count", refused
+    unknown = await handler.execute("review_dispatch", {
+        "review_id": review_id, "intelligence_class": "no-such-class",
     })
-    assert disabled["error_code"] == "disabled_profile"
-    await db.create_profile(AgentProfile(
-        id="no-review", name="No review", harness="codex", lifecycle="pool",
-        aq_commands=[], harness_tools=[], plugin_tools=[],
-    ))
-    cannot_read = await handler.execute("review_dispatch", {
-        "review_id": review_id, "to": ["no-review"],
-    })
-    assert cannot_read["error_code"] == "profile_cannot_review"
-    await db.create_profile(AgentProfile(
-        id="zero-pool", name="Zero", harness="codex", lifecycle="pool",
-        max_active=0, aq_commands=["review_show"], harness_tools=[], plugin_tools=[],
-    ))
+    assert unknown["error_code"] == "invalid_class"
+    assert len(await db.list_tasks(project_id="p")) == before
     fanout = await handler.execute("review_dispatch", {
-        "review_id": review_id, "to": ["worker", "zero-pool"],
+        "review_id": review_id, "count": 2, "intelligence_class": "standard-high",
     })
     assert fanout["success"], fanout
     assert len(fanout["dispatches"]) == 2
-    assert fanout["dispatches"][1]["capacity_warning"] == "pool zero-pool has max_active=0"
+    tasks = [await db.get_task(d["task_id"]) for d in fanout["dispatches"]]
+    assert [t.title for t in tasks] == ["Adversarial review: Plan (1/2)", "Adversarial review: Plan (2/2)"]
+    assert {t.class_hint for t in tasks} == {"standard-high"}
+    assert all(t.profile_id is None for t in tasks)
     assert (await handler.execute("review_dispatch", {
-        "review_id": review_id, "to": ["worker"],
+        "review_id": review_id,
     }))["error_code"] == "duplicate_dispatch"
     assert (await handler.execute("review_withdraw", {
         "review_id": review_id, "reason": "cancel",
     }))["success"]
-    closed = await handler.execute("review_dispatch", {"review_id": review_id, "to": ["worker"]})
+    closed = await handler.execute("review_dispatch", {"review_id": review_id})
     assert closed["error_code"] == "review_closed"
     assert "withdrawn" in closed["error"]
+
+
+async def test_dispatch_excludes_the_author_revisions_provider(env, monkeypatch):
+    """Each reviewer carries ``exclude_providers: [<author's provider>]``, so the
+    router picks another family (spec §5.3, D5); the planner honours it."""
+    handler, db = env
+    submitted = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "spec", "title": "Cross family", "content": "# X\n",
+    })
+    review_id = submitted["review_id"]
+    revision = await db.get_review_revision(review_id, 1)
+    real = db.list_task_session_attempts
+
+    async def attempts(task_id, **kwargs):
+        if task_id == "author":
+            # Newest first: the attempt after the submission is not the author's.
+            return [
+                {"harness": "codex", "started_at": revision["submitted_at"] + 60},
+                {"harness": "claude", "started_at": revision["submitted_at"] - 60},
+            ]
+        return await real(task_id, **kwargs)
+
+    monkeypatch.setattr(db, "list_task_session_attempts", attempts)
+    dispatched = await handler.execute("review_dispatch", {"review_id": review_id, "count": 2})
+    assert dispatched["success"], dispatched
+    for record in dispatched["dispatches"]:
+        assert record["exclude_providers"] == ["claude"]
+        task = await db.get_task(record["task_id"])
+        assert task.profile_id is None
+        assert task.route == {"constraints": {"exclude_providers": ["claude"]}}
+        facts = await handler._routing_task_facts(task, await db.get_project("p"))
+        assert facts.exclude_providers == frozenset({"claude"})
+        assert facts.created_by_kind == "review_dispatch"
+
+
+async def test_dispatch_without_an_observed_author_attempt_has_no_constraint(env):
+    handler, db = env
+    submitted = await handler.execute("review_submit", {
+        "project_id": "p", "kind": "spec", "title": "Operator", "content": "# O\n",
+    })
+    dispatched = await handler.execute("review_dispatch", {"review_id": submitted["review_id"]})
+    assert dispatched["success"], dispatched
+    [record] = dispatched["dispatches"]
+    assert record["exclude_providers"] == []
+    assert (await db.get_task(record["task_id"])).route is None
 
 
 async def test_only_held_dispatched_worker_can_comment_on_pinned_revision(env):
@@ -486,7 +529,7 @@ async def test_only_held_dispatched_worker_can_comment_on_pinned_revision(env):
         "project_id": "p", "kind": "spec", "title": "Other", "content": "# Other\n",
     })
     task_id = (await handler.execute("review_dispatch", {
-        "review_id": review_id, "to": ["worker"],
+        "review_id": review_id,
     }))["dispatches"][0]["task_id"]
     unassigned = await _scoped(handler, "review_comment", {
         "review_id": review_id, "revision": 1, "quote": "Claim.", "body": "Unsupported",
@@ -531,7 +574,7 @@ async def test_only_held_dispatched_worker_can_comment_on_pinned_revision(env):
     }, session_id="peer-worker", task_id=task_id))["error"].startswith("out of scope")
 
 
-def test_dispatch_cli_repeats_to_and_selects_clean_room(monkeypatch):
+def test_dispatch_cli_sends_count_and_class_and_selects_clean_room(monkeypatch):
     from click.testing import CliRunner
 
     from src.cli.app import cli
@@ -545,18 +588,25 @@ def test_dispatch_cli_repeats_to_and_selects_clean_room(monkeypatch):
 
     monkeypatch.setattr(reviews, "_execute", execute)
     result = CliRunner().invoke(cli, [
-        "review", "dispatch", "--review-id", "rev-one", "--to", "astra-high-codex",
-        "--to", "deep-high-claude", "--revision", "3", "--no-comments",
+        "review", "dispatch", "--review-id", "rev-one", "--count", "2",
+        "--class", "standard-high", "--revision", "3", "--no-comments",
         "--focus", "security", "--force", "--json",
     ])
     assert result.exit_code == 0, result.output
     assert captured == {
         "command": "review_dispatch",
         "params": {
-            "review_id": "rev-one", "to": ["astra-high-codex", "deep-high-claude"],
+            "review_id": "rev-one", "count": 2, "intelligence_class": "standard-high",
             "revision": 3, "with_comments": False, "focus": "security", "force": True,
         },
     }
+    defaults = CliRunner().invoke(cli, ["review", "dispatch", "--review-id", "rev-one", "--json"])
+    assert defaults.exit_code == 0, defaults.output
+    assert (captured["params"]["count"], captured["params"]["intelligence_class"]) == (1, "deep-high")
+    named = CliRunner().invoke(cli, [
+        "review", "dispatch", "--review-id", "rev-one", "--to", "deep-high-claude",
+    ])
+    assert named.exit_code != 0
 
 
 async def test_changes_requested_creates_one_revision_task_for_every_author_state(env):
@@ -591,10 +641,11 @@ async def test_changes_requested_creates_one_revision_task_for_every_author_stat
         revisions = [task for task in await db.list_tasks(project_id="p")
                      if task.title.endswith(f"(review {review_id})")]
         assert len(revisions) == 1
-        assert revisions[0].profile_id == "fast-high-codex"
-        assert revisions[0].intelligence_class == "fast-high"
+        # The responder class is a hint; the router routes the revision task.
+        assert revisions[0].profile_id is None
+        assert (revisions[0].intelligence_class, revisions[0].class_hint) == (None, "fast-high")
         assert revisions[0].parent_task_id is None
-        assert (await db.get_task_meta(revisions[0].id, "review_response"))["profile_source"] == "explicit"
+        assert (await db.get_task_meta(revisions[0].id, "review_response"))["profile_source"] == "router"
         repeated = await handler.execute("review_decide", {
             "review_id": review_id, "revision": 1, "decision": "request_changes",
             "responder_class": "fast-high",
@@ -607,7 +658,9 @@ async def test_changes_requested_creates_one_revision_task_for_every_author_stat
     assert not await db.get_pending_messages("session", "supervisor-p")
 
 
-async def test_response_routing_uses_decided_revision_class_and_project_default(env):
+async def test_response_routing_files_the_decided_class_as_a_hint(env):
+    """A revision task is routed by the router: the decision's class is its
+    hint, and no project default or class match picks a profile (spec §5.3)."""
     handler, db = env
     ensure_default_intelligence_classes(handler.config.data_dir)
     handler.orchestrator.intelligence_classes = load_intelligence_classes(handler.config.data_dir)
@@ -645,18 +698,22 @@ async def test_response_routing_uses_decided_revision_class_and_project_default(
     assert decided["success"], decided
     revision = await db.get_review_revision(chosen["review_id"], 1)
     assert (revision["responder_class"], revision["responder_profile_source"]) == (
-        "standard-high", "explicit",
+        "standard-high", "router",
     )
     response = next(task for task in await db.list_tasks(project_id="p")
                     if task.title.startswith("Revise Chosen route"))
-    assert (response.profile_id, response.intelligence_class) == (
-        "standard-high-codex", "standard-high",
+    assert (response.profile_id, response.intelligence_class, response.class_hint) == (
+        None, None, "standard-high",
     )
+    assert response.route_source == "unrouted"
+    assert "class hint standard-high" in response.description
     shown = await handler.execute("review_show", {"review_id": chosen["review_id"]})
     assert shown["response_route"]["kind"] == "new_task"
-    assert shown["response_route"]["profile_id"] == "standard-high-codex"
+    assert shown["response_route"]["profile_id"] is None
     assert shown["response_route"]["class_id"] == "standard-high"
-    assert "new revision task on standard-high (explicit)" in shown["response_route"]["summary"]
+    assert "routed by the project's router (class hint standard-high)" in (
+        shown["response_route"]["summary"]
+    )
 
     fallback = await handler.execute("review_submit", {
         "task_id": "peer", "kind": "spec", "title": "Default route", "content": "# Default\n",
@@ -668,93 +725,59 @@ async def test_response_routing_uses_decided_revision_class_and_project_default(
     assert decided["success"], decided
     revision = await db.get_review_revision(fallback["review_id"], 1)
     assert revision["responder_class"] is None
-    assert revision["responder_profile_source"] == "project_default"
+    assert revision["responder_profile_source"] == "router"
     response = next(task for task in await db.list_tasks(project_id="p")
                     if task.title.startswith("Revise Default route"))
-    assert response.profile_id == "fast-high-codex"
-    assert response.intelligence_class == "fast-high"
+    # No project default: unrouted, no hint.
+    assert (response.profile_id, response.intelligence_class, response.class_hint) == (
+        None, None, None,
+    )
     assert response.provider_intent == "class_only"
-    assert (await db.get_task_meta(response.id, "review_response"))["profile_source"] == "project_default"
-    assert (await db.get_project("p")).default_profile_id == "fast-high-codex"
+    assert (await db.get_task_meta(response.id, "review_response"))["profile_source"] == "router"
     shown = await handler.execute("review_show", {"review_id": fallback["review_id"]})
-    assert shown["response_route"]["profile_id"] == "fast-high-codex"
-    assert shown["response_route"]["class_id"] == "fast-high"
-    assert "project_default" in shown["response_route"]["summary"]
+    assert shown["response_route"]["profile_id"] is None
+    assert shown["response_route"]["class_id"] is None
+    assert "no class hint" in shown["response_route"]["summary"]
 
 
 async def test_review_show_explains_both_decision_routes(env):
-    handler, db = env
+    handler, _db = env
     with_author = await handler.execute("review_submit", {
         "task_id": "author", "kind": "spec", "title": "Active author", "content": "# Active\n",
     })
     shown = await handler.execute("review_show", {"review_id": with_author["review_id"]})
     assert shown["response_route"]["kind"] == "new_task"
-    assert "Request changes → new revision task on standard-high (project_default)" in shown["response_route"]["summary"]
+    assert "Request changes → new revision task, routed by the project's router (no class hint)" in (
+        shown["response_route"]["summary"]
+    )
     assert "Approve → sent to the supervisor" in shown["response_route"]["summary"]
+    assert "class hint standard-high" in shown["response_route"]["class_summaries"]["standard-high"]
 
-    ensure_default_intelligence_classes(handler.config.data_dir)
-    handler.orchestrator.intelligence_classes = load_intelligence_classes(handler.config.data_dir)
-    await db.create_profile(AgentProfile(
-        id="standard-high-codex", name="Standard high", harness="codex", lifecycle="pool",
-        default_class="standard-high", needs_workspace=False,
-        aq_commands=[], harness_tools=[], plugin_tools=[],
-    ))
     decided = await handler.execute("review_decide", {
         "review_id": with_author["review_id"], "revision": 1, "decision": "request_changes",
-        "responder_class": "standard-high", "responder_profile": "standard-high-codex",
+        "responder_class": "standard-high",
     })
     assert decided["success"], decided
     shown = await handler.execute("review_show", {"review_id": with_author["review_id"]})
     assert shown["response_route"]["kind"] == "new_task"
-    assert "new revision task on standard-high (explicit)" in shown["response_route"]["summary"]
-
-    without_author = await handler.execute("review_submit", {
-        "project_id": "p", "kind": "spec", "title": "No author", "content": "# No author\n",
-    })
-    shown = await handler.execute("review_show", {"review_id": without_author["review_id"]})
-    assert shown["response_route"]["kind"] == "new_task"
-    assert "new revision task on standard-high (project_default)" in shown["response_route"]["summary"]
+    assert "(class hint standard-high)" in shown["response_route"]["summary"]
 
 
-async def test_response_routing_accepts_explicit_matching_profile(env):
+async def test_response_profile_is_refused(env):
+    """A decision gives the revision task a class hint, never a profile."""
     handler, db = env
-    ensure_default_intelligence_classes(handler.config.data_dir)
-    handler.orchestrator.intelligence_classes = load_intelligence_classes(handler.config.data_dir)
-    await db.create_profile(AgentProfile(
-        id="standard-high-codex", name="Standard high", harness="codex", lifecycle="pool",
-        default_class="standard-high", needs_workspace=False,
-        aq_commands=[], harness_tools=[], plugin_tools=[],
-    ))
     submitted = await handler.execute("review_submit", {
         "task_id": "author", "kind": "spec", "title": "Explicit route", "content": "# Explicit\n",
     })
-    mismatch = await handler.execute("review_decide", {
+    refused = await handler.execute("review_decide", {
         "review_id": submitted["review_id"], "revision": 1, "decision": "request_changes",
-        "responder_class": "fast-high", "responder_profile": "standard-high-codex",
+        "responder_class": "standard-high", "responder_profile": "worker",
     })
-    assert mismatch["error_code"] == "invalid_responder_profile"
+    assert refused["error_code"] == "routing.choice_forbidden"
+    assert "responder_class" in refused["error"]
     assert (await db.get_review(submitted["review_id"]))["state"] == "in_review"
-    await db.delete_task("author")
-    await db.create_profile(AgentProfile(
-        id="disabled-worker", name="Disabled", harness="codex", lifecycle="pool",
-        default_class="standard-high", enabled=False, needs_workspace=False,
-        aq_commands=[], harness_tools=[], plugin_tools=[],
-    ))
-    await db.update_project("p", default_profile_id="disabled-worker")
-    decided = await handler.execute("review_decide", {
-        "review_id": submitted["review_id"], "revision": 1, "decision": "request_changes",
-        "responder_class": "standard-high", "responder_profile": "standard-high-codex",
-    })
-    assert decided["success"], decided
-    revision = await db.get_review_revision(submitted["review_id"], 1)
-    assert revision["responder_profile"] == "standard-high-codex"
-    assert revision["responder_profile_source"] == "explicit"
-    response = next(task for task in await db.list_tasks(project_id="p")
-                    if task.title.startswith("Revise Explicit route"))
-    assert response.profile_id == "standard-high-codex"
-    assert response.provider_intent == "preferred"
-    shown = await handler.execute("review_show", {"review_id": submitted["review_id"]})
-    assert "new revision task on standard-high (explicit)" in shown["response_route"]["summary"]
+    assert not [task for task in await db.list_tasks(project_id="p")
+                if task.title.startswith("Revise Explicit route")]
 
 
 async def test_revision_task_contains_comments_and_can_resubmit(env):
@@ -785,7 +808,7 @@ async def test_revision_task_contains_comments_and_can_resubmit(env):
     assert "aq review submit --review-id" in task.description
     assert "--resolves" in task.description
     assert (await db.get_task_meta(task.id, "review_response")) == {
-        "review_id": review_id, "revision": 1, "profile_source": "project_default",
+        "review_id": review_id, "revision": 1, "profile_source": "router",
     }
     refused = await _scoped(handler, "review_submit", {
         "review_id": review_id, "content": "# Wrong worker\n",
@@ -887,7 +910,7 @@ async def test_train_mode_revision_task_answers_after_restart_reclaim(env, tmp_p
         # Filed as a train root, not through the plain-root path.
         assert task.branch_name.startswith("aq/epic/")
         assert (await db.get_task_meta(task.id, "review_response")) == {
-            "review_id": review_id, "revision": revision, "profile_source": "project_default",
+            "review_id": review_id, "revision": revision, "profile_source": "router",
         }
         await _reclaim_after_restart(db, tmp_path, reclaimer, task.id)
         args = {"review_id": review_id, "content": f"# Revision {revision + 1}\n"}
@@ -909,7 +932,7 @@ async def test_train_mode_dispatch_records_its_task(env):
         "project_id": "p", "kind": "spec", "title": "Train rollout", "content": "# Rollout\n",
     })
     dispatched = await handler.execute("review_dispatch", {
-        "review_id": submitted["review_id"], "to": ["worker"], "revision": 1,
+        "review_id": submitted["review_id"], "revision": 1,
     })
     assert dispatched["success"], dispatched
     task_id = dispatched["dispatches"][0]["task_id"]

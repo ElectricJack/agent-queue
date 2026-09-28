@@ -1,4 +1,8 @@
-"""Revision a00000000039 (mandatory-routing §11 revision 1) on owned disposable PostgreSQL."""
+"""Mandatory-routing revisions on owned disposable PostgreSQL.
+
+a00000000039 (§11 revision 1) and a00000000040 (review dispatches name a class
+hint, §5.3).
+"""
 
 from __future__ import annotations
 
@@ -22,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 REVISION = "a00000000039"
 PRECEDING_REVISION = previous_revision(REVISION)
 CHECK = "ck_tasks_route_source"
+DISPATCH_REVISION = "a00000000040"
 COLUMNS = ("route_source", "class_hint", "route")
 
 # (task id, profile, class) -> (route_source, class_hint) after the upgrade.
@@ -70,9 +75,12 @@ def bindings(conn) -> dict[str, str | None]:
     return dict(rows)
 
 
-def test_single_head():
+def test_revisions_are_on_the_single_line():
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert script.get_heads() == [REVISION]
+    [head] = script.get_heads()
+    line = {rev.revision for rev in script.iterate_revisions(head, "base")}
+    assert {REVISION, DISPATCH_REVISION} <= line
+    assert script.get_revision(DISPATCH_REVISION).down_revision == REVISION
 
 
 @pytest.mark.parametrize("existing", ["legacy", "fresh"])
@@ -163,5 +171,75 @@ async def test_upgrade_backfills_is_idempotent_and_downgrade_reverses(existing):
 
         async with engine.begin() as conn:
             await conn.run_sync(verify_downgrade_and_repeat)
+    finally:
+        await engine.dispose()
+
+
+def dispatch_columns(conn) -> dict[str, dict]:
+    return {c["name"]: c for c in sa.inspect(conn).get_columns("doc_review_dispatches")}
+
+
+@pytest.mark.parametrize("existing", ["legacy", "fresh"])
+async def test_dispatch_class_hint_revision_is_idempotent_and_reverses(existing):
+    engine = create_postgres_engine(await create_scratch_database("dispatchhintmigration"))
+    revision = import_module("migrations.versions.a00000000040_review_dispatch_class_hint")
+    try:
+        await migrate(engine, "upgrade", REVISION)
+
+        def prepare(conn):
+            if existing == "legacy":
+                # An install from before the revision: NOT NULL profile, no class.
+                op = Operations(MigrationContext.configure(conn))
+                op.drop_column("doc_review_dispatches", "intelligence_class")
+                op.alter_column(
+                    "doc_review_dispatches", "profile_id",
+                    existing_type=sa.Text(), nullable=False,
+                )
+            conn.execute(sa.text(
+                "INSERT INTO doc_review_dispatches (id, review_id, profile_id, revision, "
+                "with_comments, task_id, dispatched_by, created_at) VALUES "
+                "('dsp-old', 'rev', 'deep-high-codex', 1, true, 'task-old', 'local', 1)"
+            ))
+
+        async with engine.begin() as conn:
+            await conn.run_sync(prepare)
+        await migrate(engine, "upgrade", DISPATCH_REVISION)
+
+        def verify_and_repeat(conn):
+            columns = dispatch_columns(conn)
+            assert columns["profile_id"]["nullable"]
+            assert columns["intelligence_class"]["nullable"]
+            with Operations.context(MigrationContext.configure(conn)):
+                revision.upgrade()
+                revision.upgrade()
+            conn.execute(sa.text(
+                "INSERT INTO doc_review_dispatches (id, review_id, profile_id, "
+                "intelligence_class, revision, with_comments, task_id, dispatched_by, "
+                "created_at) VALUES "
+                "('dsp-new', 'rev', NULL, 'deep-high', 1, true, 'task-new', 'local', 2)"
+            ))
+            rows = conn.execute(sa.text(
+                "SELECT id, profile_id, intelligence_class FROM doc_review_dispatches ORDER BY id"
+            )).all()
+            assert [tuple(row) for row in rows] == [
+                ("dsp-new", None, "deep-high"), ("dsp-old", "deep-high-codex", None),
+            ]
+
+        async with engine.begin() as conn:
+            await conn.run_sync(verify_and_repeat)
+        # A row without a profile keeps the column nullable on downgrade.
+        await migrate(engine, "downgrade", REVISION)
+
+        def verify_downgrade(conn):
+            columns = dispatch_columns(conn)
+            assert "intelligence_class" not in columns
+            assert columns["profile_id"]["nullable"]
+            conn.execute(sa.text("DELETE FROM doc_review_dispatches WHERE profile_id IS NULL"))
+            with Operations.context(MigrationContext.configure(conn)):
+                revision.downgrade()
+            assert not dispatch_columns(conn)["profile_id"]["nullable"]
+
+        async with engine.begin() as conn:
+            await conn.run_sync(verify_downgrade)
     finally:
         await engine.dispose()

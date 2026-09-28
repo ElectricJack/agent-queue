@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy import delete, insert, select, update
@@ -81,14 +81,12 @@ class RepairService:
         clock: Callable[[], float] = time.time,
         confirm_handoff=None,
         confirm_stopped=None,
-        route_validator: Callable[[str, str | None], bool | Awaitable[bool]] | None = None,
         owner_recovery=None,
     ) -> None:
         self.db = db
         self.clock = clock
         self._ownership = BranchOwnership(db, confirm_handoff=confirm_handoff, clock=clock)
         self._confirm_stopped = confirm_stopped
-        self._route_validator = route_validator
         self._owner_recovery = owner_recovery
 
     async def retire_terminal_delegates(self, now: float, *, limit: int = 100) -> list[str]:
@@ -332,7 +330,9 @@ class RepairService:
                     "ordinal": 0,
                     "policy": boundary.repair.model_dump(mode="json"),
                     "intelligence_class": boundary.primary_intelligence_class,
-                    "profile_id": boundary.primary_profile_id,
+                    # Deprecated column: routes come from the router, never
+                    # from the policy, so new stages record no profile.
+                    "profile_id": None,
                     "repair_task_id": None,
                     "writer_kind": None,
                     "starting_sha": starting_sha,
@@ -1003,11 +1003,11 @@ class RepairService:
                         writer_kind="repair_delegate",
                     )
             else:
+                # The delegate is filed with the stage's class as a hint; the
+                # router writes its route.  A stage's ``profile_id`` column is
+                # deprecated and never chooses one.
                 intelligence_class = repair_stage["intelligence_class"]
-                profile_id = repair_stage["profile_id"]
-                if not intelligence_class or not await self._route_is_valid(
-                    intelligence_class, profile_id
-                ):
+                if not intelligence_class:
                     return self._dispatch_value(
                         "configuration_blocked", operation_id, stage
                     )
@@ -1033,8 +1033,7 @@ class RepairService:
                         parent_task_id=None,
                         repo_id=target.repository_id,
                         branch_name=target.branch,
-                        profile_id=profile_id,
-                        intelligence_class=intelligence_class,
+                        class_hint=intelligence_class,
                         created_by_kind="integration_repair",
                         created_by_id=operation_id,
                     ),
@@ -2340,16 +2339,6 @@ class RepairService:
             return None
         return dict(operation), dict(repair_stage), target, str(project_id)
 
-    async def _route_is_valid(
-        self, intelligence_class: str, profile_id: str | None
-    ) -> bool:
-        if self._route_validator is None:
-            return False
-        result = self._route_validator(intelligence_class, profile_id)
-        if inspect.isawaitable(result):
-            result = await result
-        return bool(result)
-
     async def _reuse_verifier_on(
         self, conn, operation, repair_stage, target, project_id: str
     ) -> dict[str, Any] | None:
@@ -2713,7 +2702,7 @@ class RepairService:
         candidate = dict(archived) | {"status": TaskStatus.PAUSED.value}
         if not self._delegate_task_matches(candidate, operation, target, project_id):
             return None
-        if not await self._route_is_valid(stage["intelligence_class"], stage["profile_id"]):
+        if not stage["intelligence_class"]:
             return None
         # The operation/stage locks precede this restore. The normal dispatch
         # handoff still fences the branch before this task can become READY.
@@ -2723,7 +2712,9 @@ class RepairService:
             status=TaskStatus.PAUSED, priority=archived["priority"],
             repo_id=target.repository_id, branch_name=target.branch,
             retry_count=archived["retry_count"], max_retries=archived["max_retries"],
-            profile_id=stage["profile_id"], intelligence_class=stage["intelligence_class"],
+            # Filed unrouted with the stage's class hint; the router writes
+            # the route, whatever profile the archived copy carried.
+            class_hint=stage["intelligence_class"],
             created_by_kind="integration_repair", created_by_id=operation["id"],
             created_at=archived["created_at"],
         ), conn=conn)
@@ -3069,7 +3060,8 @@ class RepairService:
             "ordinal": 1,
             "policy": boundary.repair.model_dump(mode="json"),
             "intelligence_class": boundary.repair.debug_intelligence_class,
-            "profile_id": boundary.repair.debug_profile_id,
+            # Deprecated column; ``debug_profile_id`` is ignored (routing spec §5.3).
+            "profile_id": None,
             "repair_task_id": None,
             "writer_kind": None,
             "starting_sha": self._subject_sha(primary["current_subject"]),

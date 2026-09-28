@@ -27,8 +27,7 @@
       "primary_attempts": 3,
       "debug_seconds": 3600,
       "debug_attempts": 3,
-      "debug_intelligence_class": "standard-high",
-      "debug_profile_id": "standard-high-codex"
+      "debug_intelligence_class": "standard-high"
     },
     "route": {
       "playbook_id": "agent-queue-parent-integration",
@@ -47,9 +46,7 @@
       }
     },
     "primary_intelligence_class": "standard-high",
-    "primary_profile_id": "standard-high-codex",
-    "verifier_intelligence_class": "standard-high",
-    "verifier_profile_id": "standard-high-codex"
+    "verifier_intelligence_class": "standard-high"
   },
   "root": {
     "required_checks": {
@@ -78,8 +75,7 @@
       "primary_attempts": 3,
       "debug_seconds": 3600,
       "debug_attempts": 3,
-      "debug_intelligence_class": "standard-high",
-      "debug_profile_id": "standard-high-codex"
+      "debug_intelligence_class": "standard-high"
     },
     "route": {
       "playbook_id": "agent-queue-root-train",
@@ -98,9 +94,7 @@
       }
     },
     "primary_intelligence_class": "standard-high",
-    "primary_profile_id": "standard-high-codex",
-    "verifier_intelligence_class": "standard-high",
-    "verifier_profile_id": "standard-high-codex"
+    "verifier_intelligence_class": "standard-high"
   },
   "branchless_parent": "verifier",
   "on_failed_child": "block",

@@ -1292,7 +1292,7 @@
       ]
     }
   },
-  "digest": "sha256:f94de28daa815f6f41572d88ecb3ba6a5d40dff1252cdc689aa0dbe4b4de10d6",
+  "digest": "sha256:acacdfc7854027fea42a9a4cc788a2bedab801ca2c46379f6c6e254cbd9de08c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2503,7 +2503,6 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
-        "src.orchestrator.provider_distribution",
         "src.orchestrator.route_needed",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry"
@@ -8893,7 +8892,7 @@
         "migration",
         "parametrize"
       ],
-      "summary": "Revision a00000000039 (mandatory-routing §11 revision 1) on owned disposable PostgreSQL."
+      "summary": "Mandatory-routing revisions on owned disposable PostgreSQL."
     },
     "tests/test_migration_test_selections.py": {
       "areas": [
@@ -12697,6 +12696,7 @@
       "default_arm": true,
       "imports": [
         "src.commands.handler",
+        "src.commands.principal",
         "src.commands.task_commands",
         "src.config",
         "src.database",
@@ -12707,7 +12707,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "An explicit intelligence class picks its own lane at creation time."
+      "summary": "Creation stores hints, never a resolved route (mandatory-routing spec §1, §5.3)."
     },
     "tests/test_task_close_summary_enforcement.py": {
       "areas": [

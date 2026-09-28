@@ -623,9 +623,9 @@ class CandidateService:
                 return self._result("wait", state, revision, operation_id)
             stage = int(expired["stage"])
         await self.repair.dispatch(operation_id, stage)
-        # The pinned playbook dispatches from this durable ``conflict`` result
-        # with the orchestrator's configured route validator.  This local
-        # best-effort dispatch mirrors member conflicts and closes the
+        # The pinned playbook dispatches from this durable ``conflict`` result;
+        # the delegate carries the stage's class hint and the router routes it.
+        # This local best-effort dispatch mirrors member conflicts and closes the
         # record/dispatch crash window when dependencies are already present.
         # Its transient/configuration outcome must not relabel a routine source
         # conflict as human work.

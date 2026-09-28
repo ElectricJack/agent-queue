@@ -374,22 +374,17 @@ def task_create(
     tools + system prompt). Use ``--agent-type`` to pick the scope the
     task runs under when no explicit profile is given.
 
-    ``--intelligence-class`` without ``--profile`` chooses the profile from
-    the class before the task is written: if the implicit route — the project
-    default, or the caller's own profile when a worker files it — runs
-    another class, an enabled worker whose default_class matches is selected
-    (pool first, then that route's provider, then Claude). A class that is
-    not in the vault, or that no enabled worker runs, is refused, and the
-    second refusal lists the classes that are available. The result's
-    ``profile_source`` reports the rule: explicit, class_match,
-    project_default or inherited. Pass ``--profile`` with it to name a
-    provider or a specific worker.
+    ``--intelligence-class`` is a hint to the router, not a route: the task
+    is stored unrouted with the class as its ``class_hint``, and the
+    project's routing playbook picks the profile and the final class (a
+    class outside the policy's bounds for the kind is clamped). A class that
+    is not in the vault is refused. Creation never picks a profile from the
+    class, the project default or the caller's own profile.
 
     An explicit ``--profile`` is a *preference* (``provider_intent:
     preferred``): if its provider runs out of usage or loses its login, the
     task fails over to the same class on another provider. ``--pin`` makes it
     a requirement (``pinned``) — the task holds until that provider is back.
-    A profile chosen by class or by the project default is ``class_only``.
 
     ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
     in one transaction instead of a single task; add ``--dry-run`` to see the

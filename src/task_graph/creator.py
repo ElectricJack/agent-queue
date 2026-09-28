@@ -467,7 +467,11 @@ async def build_plan(
                 "is_plan_subtask": 0,
                 "task_type": node.task_type,
                 "profile_id": node.profile,
-                "intelligence_class": node.intelligence_class,
+                # A class with no profile is the filer's hint; the router
+                # writes the route (mandatory-routing spec §5.1).  A named
+                # profile keeps its class until the filing surfaces refuse it.
+                "intelligence_class": node.intelligence_class if node.profile else None,
+                "class_hint": node.intelligence_class,
                 "provider_intent": node.provider_intent,
                 "attachments": "[]",
                 "deliverables": json.dumps(node.deliverables),

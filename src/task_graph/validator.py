@@ -1037,7 +1037,7 @@ def _check_pins(graph: TaskGraph) -> list[GraphError]:
             node.key,
         )
         for node in graph.nodes
-        if node.pin and (not node.profile or node.profile_source == "class_match")
+        if node.pin and not node.profile
     ]
 
 

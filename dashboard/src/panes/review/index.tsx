@@ -148,13 +148,12 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
   }, [comment, response, viewedRevision]);
 
   const submitDecision = useCallback(async (
-    decision: ReviewDecision, note: string, responderClass: string, responderProfile: string,
+    decision: ReviewDecision, note: string, responderClass: string,
   ) => {
     if (!response || viewedRevision == null) return;
     await decide.mutateAsync({
       review_id: response.review.id, revision: viewedRevision, decision, ...(note ? { note } : {}),
       ...(decision !== "approve" && responderClass ? { responder_class: responderClass } : {}),
-      ...(decision !== "approve" && responderProfile ? { responder_profile: responderProfile } : {}),
     });
   }, [decide, response, viewedRevision]);
 

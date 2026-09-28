@@ -656,7 +656,7 @@ async def test_conflict_dispatches_and_rejects_caller_supplied_lineage(db, tmp_p
     origin, work, base, members = _make_conflicting_origin(tmp_path)
     await db.update_repo("repo", url=str(origin))
     await _seed_batch(db, members=members, base_sha=base)
-    repair = RepairService(db, route_validator=lambda _intelligence_class, _profile_id: True)
+    repair = RepairService(db)
     app = _AppClient(origin)
     app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
     service = CandidateService(
@@ -1462,7 +1462,12 @@ async def test_public_build_takes_over_expired_prepush_claim_once(
         assert {result.outcome for result in results} <= {"conflict", "wait"}
         assert "conflict" in {result.outcome for result in results}
         converged = await services[0].build("batch")
-        assert converged.outcome == "conflict"
+        # The conflict dispatched its repair delegate on the stage's class hint
+        # alone (mandatory routing: no route validator), so a replay waits on
+        # it, as in test_conflict_dispatches_and_rejects_caller_supplied_lineage.
+        assert converged.outcome == "wait"
+        delegate = await db.get_task("repair-repair-batch-batch-0")
+        assert delegate is not None and delegate.profile_id is None
         assert forge.calls == []
     else:
         assert {result.outcome for result in results} <= {"already_built", "wait"}
@@ -1937,7 +1942,7 @@ async def test_overdue_rebuild_immediately_dispatches_preserved_debug_budget(db,
     origin, work, base, members = _make_origin(tmp_path)
     await db.update_repo("repo", url=str(origin))
     await _seed_batch(db, members=members[:1], base_sha=base)
-    repair = RepairService(db, route_validator=lambda _intelligence_class, _profile_id: True)
+    repair = RepairService(db)
     app = _AppClient(origin)
     app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
     git = _LocalPushGit(origin)
@@ -2198,7 +2203,7 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         return changed.rowcount == 1
 
     ownership = BranchOwnership(db, confirm_handoff=release_like_orchestrator)
-    repair = RepairService(db, route_validator=lambda *_: True)
+    repair = RepairService(db)
     recovery_clock = [100.0]
     service = CandidateService(
         db,
@@ -2786,7 +2791,7 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
         git_manager=_LocalPushGit(origin),
         forge_provider=_AuditForge(),
         app_client=app,
-        repair_service=RepairService(db, route_validator=lambda *_: True),
+        repair_service=RepairService(db),
         branch_ownership=ownership,
         clock=lambda: 100.0,
     )

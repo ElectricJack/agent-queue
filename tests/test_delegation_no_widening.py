@@ -230,19 +230,9 @@ class TestDefaultInheritance:
         assert (await handler.db.get_task(result["task_id"])).profile_id is None
 
     async def test_worker_filing_with_a_class_is_routed_not_class_matched(self, handler):
-        """An explicit class does not re-pin a filing onto a class lane at create.
-
-        Class-lane resolution picks a lane for the *implicit* route; a worker
-        filing has none, so the class travels with the unpinned task to the
-        assignment playbook.
-        """
+        """A class is a hint: the filing is stored unrouted and the router
+        routes it (mandatory-routing spec §5.3)."""
         handler._validate_routing_class = lambda *_args, **_kwargs: None
-        lane = await handler.db.get_profile("narrower")
-
-        async def resolve(_class_id, _implicit):
-            return lane, None
-
-        handler._resolve_class_route = resolve
         sid = await _session_for(handler, "narrow")
 
         result = await _create(handler, sid, intelligence_class="c")
@@ -251,7 +241,8 @@ class TestDefaultInheritance:
         assert "profile_source" not in result
         task = await handler.db.get_task(result["task_id"])
         assert task.profile_id is None
-        assert task.intelligence_class == "c"
+        assert (task.intelligence_class, task.class_hint) == (None, "c")
+        assert task.route_source == "unrouted"
         assert await handler.db.get_task_meta(task.id, "filed_by_profile_id") == "narrow"
 
     async def test_an_explicit_profile_from_a_worker_is_still_a_pin(self, handler):
@@ -264,8 +255,10 @@ class TestDefaultInheritance:
         assert task.profile_id == "narrower"
         assert await handler.db.get_task_meta(task.id, "filed_by_profile_id") is None
 
-    async def test_a_sandboxed_playbook_still_default_inherits(self, handler):
-        """Only worker filings changed: a playbook delegating work keeps its sandbox."""
+    async def test_a_sandboxed_playbook_no_longer_inherits(self, handler):
+        """No filer inherits its own profile (mandatory-routing spec §2): a
+        playbook's unprofiled filing is unrouted, and the router offers only
+        worker candidates, so the child still cannot exceed a worker route."""
         handler.set_caller_profile("narrow")
         try:
             result = await handler.execute(
@@ -275,7 +268,8 @@ class TestDefaultInheritance:
             handler.set_caller_profile(None)
 
         assert "error" not in result, result
-        assert (await handler.db.get_task(result["task_id"])).profile_id == "narrow"
+        task = await handler.db.get_task(result["task_id"])
+        assert (task.profile_id, task.route_source) == (None, "unrouted")
 
 
 class TestWorkerFiledRouteBound:

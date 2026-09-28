@@ -167,11 +167,14 @@ async def test_create_with_explicit_intent_value(setup) -> None:
     assert (await db.get_task(result["task_id"])).provider_intent == CLASS_ONLY
 
 
-async def test_create_by_class_match_is_class_only(setup) -> None:
+async def test_create_with_a_class_hint_is_unrouted_and_class_only(setup) -> None:
     handler, db = setup
     result = await _create(handler, intelligence_class="deep-high")
-    assert result["profile_source"] == "class_match", result
-    assert (await db.get_task(result["task_id"])).provider_intent == CLASS_ONLY
+    # No class match at creation (mandatory routing §5.3): the router routes it.
+    assert "profile_source" not in result, result
+    task = await db.get_task(result["task_id"])
+    assert (task.profile_id, task.class_hint) == (None, "deep-high")
+    assert task.provider_intent == CLASS_ONLY
 
 
 async def test_create_with_nothing_leaves_the_default_implicit_and_class_only(setup) -> None:
@@ -402,7 +405,8 @@ async def test_graph_node_intents(setup) -> None:
     by_title = {t.title: t for t in await db.list_tasks(project_id="p")}
     assert by_title["Named"].provider_intent == PREFERRED
     assert by_title["Pinned"].provider_intent == PINNED
-    assert by_title["Classed"].profile_id == "deep-high-claude"
+    assert by_title["Classed"].profile_id is None
+    assert by_title["Classed"].class_hint == "deep-high"
     assert by_title["Classed"].provider_intent == CLASS_ONLY
 
 
@@ -422,7 +426,7 @@ async def test_graph_pin_without_profile_is_an_error(setup) -> None:
     handler, db = setup
     graph = {"version": 1, "nodes": [
         {"key": "a", "title": "No profile", "pin": True},
-        {"key": "b", "title": "Class matched", "intelligence_class": "deep-high", "pin": True},
+        {"key": "b", "title": "Class hint", "intelligence_class": "deep-high", "pin": True},
     ]}
     result = await handler._cmd_create_task_graph({"project_id": "p", "graph": graph})
     rules = sorted((e["rule"], e["node"]) for e in result["errors"])
