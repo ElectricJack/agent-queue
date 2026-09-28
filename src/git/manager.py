@@ -406,6 +406,17 @@ def _repository_location(reference: str, base: str) -> str:
     return reference.removesuffix(".git")
 
 
+def repository_urls_match(configured_url: str, repository_url: str, *, base: str) -> bool:
+    """Compare repository locations, including equivalent GitHub SSH/HTTPS URLs."""
+    authorized = _github_full_name(repository_url)
+    configured = _github_full_name(configured_url)
+    if authorized is not None or configured is not None:
+        return authorized == configured
+    return _repository_location(configured_url, base) == _repository_location(
+        repository_url, base
+    )
+
+
 def _require_authorized_repository(configured_url: str, repository_url: str, *, base: str) -> None:
     """Refuse a checkout remote naming anything but the authorized repository.
 
@@ -415,15 +426,7 @@ def _require_authorized_repository(configured_url: str, repository_url: str, *, 
     selection. GitHub names compare case-insensitively, as GitHub does; SSH
     and HTTPS spellings of one repository are the same repository.
     """
-    authorized = _github_full_name(repository_url)
-    configured = _github_full_name(configured_url)
-    if authorized is not None or configured is not None:
-        matches = authorized == configured
-    else:
-        matches = _repository_location(configured_url, base) == _repository_location(
-            repository_url, base
-        )
-    if not matches:
+    if not repository_urls_match(configured_url, repository_url, base=base):
         raise GitError("push destination is not the authorized repository")
 
 

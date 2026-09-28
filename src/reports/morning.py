@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from src.git.manager import repository_urls_match
 from src.reports.authoring import surface_map
 from src.reports.git import read_git_evidence
 from src.reports.hourly import MAX_BRIEF_BYTES, hash_brief
@@ -70,26 +71,46 @@ def _tests(row: dict) -> list[str]:
     )
 
 
-def _repository(project: dict, sources: dict) -> tuple[tuple[str, ...], str, str] | None:
+async def _repository(
+    project: dict, sources: dict, git: Any
+) -> tuple[tuple[str, ...], str, str] | None:
     """Checkout paths to try, default branch and repository id for *project*.
 
     The configured repository's own path comes first. Development clone rows
-    carry no path and a linked source can move, so the project's one
-    project-repo base workspace, which its worktrees come from, follows.
+    carry no path and a linked source can move, so a verified project-repo
+    base workspace, which its worktrees come from, follows.
     """
     bases = [
-        row["workspace_path"]
+        row
         for row in sources.get("workspaces", [])
         if row["project_id"] == project["id"]
         and (row.get("kind_id") or "project-repo") == "project-repo"
     ]
-    base = tuple(bases) if len(bases) == 1 else ()
     candidates = [row for row in sources.get("repos", []) if row["project_id"] == project["id"]]
     selected_id = project.get("integration_repository_id")
     if selected_id:
         candidates = [row for row in candidates if row["id"] == selected_id]
     elif len(candidates) > 1:
         candidates = [row for row in candidates if row["url"] == project.get("repo_url")]
+    if len(bases) > 1:
+        configured_url = (
+            candidates[0].get("url") if len(candidates) == 1 else project.get("repo_url")
+        )
+        if not configured_url:
+            return None
+        for row in bases:
+            path = row["workspace_path"]
+            remote_url = await git.aget_remote_url(path)
+            if not remote_url or not repository_urls_match(configured_url, remote_url, base=path):
+                return None
+        bases.sort(
+            key=lambda row: (
+                row.get("name") != f"{project['id']}-primary",
+                row["workspace_path"],
+            )
+        )
+        bases = bases[:1]
+    base = tuple(row["workspace_path"] for row in bases)
     if len(candidates) == 1:
         repo = candidates[0]
         path = repo["source_path"] if repo["source_type"] == "link" else repo["checkout_base_path"]
@@ -259,7 +280,7 @@ async def collect_morning_evidence(
     git_reads: dict[str, dict] = {}
     for project in project_rows:
         project_id = project["id"]
-        repo = _repository(project, sources)
+        repo = await _repository(project, sources, git)
         if repo is None:
             git_reads[project_id] = {
                 "head": None,

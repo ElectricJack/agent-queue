@@ -257,11 +257,13 @@ the window still ends at the planned instant, while the full author deadline
 starts at reservation. Interrupted builds recover their stored window and
 source context; ready briefs and their hashes are never rebuilt.
 
-Git evidence reads the configured repository's checkout, else the project's single
-`project-repo` base workspace. Reads never fetch: a remote-tracking head whose
-`FETCH_HEAD` is over an hour old is a `stale_remote_tracking_head` gap, a missing
-checkout is `checkout_unavailable`, and a project with no or several candidate
-checkouts is `configured_repository_unavailable`.
+Git evidence reads the configured repository's checkout, else a `project-repo` base
+workspace. When several bases exist, each origin must match the configured repository;
+the `<project>-primary` workspace wins, followed by a stable path order. Reads never fetch:
+a remote-tracking head whose `FETCH_HEAD` is over an hour old is a
+`stale_remote_tracking_head` gap, a missing
+checkout is `checkout_unavailable`, and a project with no usable checkout or
+different/unreadable origins is `configured_repository_unavailable`.
 Per-source coverage and default-branch heads advance on finalization, separately
 from transport receipts. Failed sources retain their cursor for recovery;
 lookback caps disclose the omitted interval. Morning fact membership deduplicates
