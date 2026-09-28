@@ -32,6 +32,7 @@ from sqlalchemy import (
     text,
     true,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
 
@@ -223,7 +224,7 @@ tasks = Table(
     # hint, and the router's explainable record of the route it chose.
     Column("route_source", Text, nullable=False, server_default="unrouted"),
     Column("class_hint", Text, nullable=True),
-    Column("route", JSON(none_as_null=True), nullable=True),
+    Column("route", JSONB(none_as_null=True), nullable=True),
     CheckConstraint(
         "provider_intent IN ('pinned','preferred','class_only')",
         name="ck_tasks_provider_intent",
