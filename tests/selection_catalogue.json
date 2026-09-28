@@ -1294,7 +1294,7 @@
       ]
     }
   },
-  "digest": "sha256:4f3aaf2829ff66945a5832f1087578a5bcfa3c6ef2d526fee87f1d23b3980de1",
+  "digest": "sha256:af678ee2665db874933a2ecc45c2ff4ee9044868422ffb43ef087dcfad0182b7",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3421,7 +3421,9 @@
         "src.cli.exceptions",
         "src.cli.test_runner",
         "src.config",
+        "src.resources",
         "src.resources.box_lock",
+        "src.resources.project_tests",
         "src.resources.semaphore",
         "src.resources.slot_report",
         "src.test_selection.report"

@@ -2168,6 +2168,7 @@
         "per_session_cpu_share": null,
         "session_nice": 10,
         "test_deselect_markers": "not perf and not migration and not slow and not tmux and not integration",
+        "test_interpreters": {},
         "test_poll_interval": 2.0,
         "test_slots": 2,
         "test_wait_timeout": 1800,
@@ -2307,6 +2308,13 @@
         "test_deselect_markers": {
           "default": "not perf and not migration and not slow and not tmux and not integration",
           "type": "string"
+        },
+        "test_interpreters": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {},
+          "type": "object"
         },
         "test_poll_interval": {
           "default": 2.0,
