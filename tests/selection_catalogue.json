@@ -1294,7 +1294,7 @@
       ]
     }
   },
-  "digest": "sha256:83e551b91045b9db5e5c050eaf48a88073e3861ad4e923422f7e4778697a5e0e",
+  "digest": "sha256:78edd15710328e2a23e176c0645887c147f19c08bed7390b7eb110ef68c6ab4e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5170,7 +5170,8 @@
         "src.config",
         "src.jobs.adapters",
         "src.jobs.policy",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.routing.planner"
       ],
       "markers": [
         "parametrize"
