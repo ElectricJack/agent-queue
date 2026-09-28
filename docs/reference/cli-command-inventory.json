@@ -3857,6 +3857,7 @@
           "--check-version",
           "--github-repository-id",
           "--validation-command",
+          "--repository-id",
           "--test-command",
           "--interval-seconds",
           "--write-policy",

@@ -1283,7 +1283,7 @@
       ]
     }
   },
-  "digest": "sha256:a4fe23c34a45877a1de8badbd239d1c5e68fad324bcb4afafa9303e633baf928",
+  "digest": "sha256:d5f21c28fafd7168b8be969bb2cb52b711489130b80afe7a65f2e3b2b715be59",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -13232,6 +13232,7 @@
         "src.integration.ci",
         "src.integration.models",
         "src.integration.train_onboarding",
+        "src.jobs.adapters",
         "src.playbooks.required"
       ],
       "markers": [

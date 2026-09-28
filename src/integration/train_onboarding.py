@@ -104,8 +104,8 @@ class WorkflowReport:
 
     @property
     def is_ci_candidate(self) -> bool:
-        """A pull-request workflow that is not a deployment: CI that could gate the train."""
-        return self.pull_request and not self.deployment
+        """CI that could gate the train once its push trigger names the train's refs."""
+        return (self.pull_request or self.push) and not self.deployment
 
 
 def _triggers(document: Mapping[str, Any]) -> dict[str, Any]:
@@ -181,12 +181,24 @@ def _push_covers_train_refs(triggers: Mapping[str, Any]) -> tuple[bool, str | No
     return True, None
 
 
-# Three-valued evaluation of a job ``if:`` for a push event.  Only
-# ``github.event_name`` comparisons are known; every other atom is unknown.
+# Three-valued evaluation of a job ``if:`` for a push of a train ref.  Known:
+# ``github.event_name`` (``push``), ``github.ref``/``github.ref_name`` (an
+# ``aq/integration/...`` or ``aq/parent/...`` branch, so equal to no literal
+# outside ``aq/``) and the status functions; every other atom is unknown.
 _TOKEN = re.compile(
     r"\s*(?:(?P<op>&&|\|\||==|!=|!|\(|\)|,)|(?P<str>'(?:[^']|'')*')"
     r"|(?P<ident>[A-Za-z_][A-Za-z0-9_.\-*]*)|(?P<num>-?\d+(?:\.\d+)?))"
 )
+
+
+_STATUS_FUNCTIONS = {
+    "always": "true",
+    "success": "true",
+    "failure": "false",
+    "cancelled": "false",
+}
+#: A job ``if:`` naming one of these still runs when a job it needs was skipped.
+_RUNS_AFTER_SKIPPED_NEED = ("always()", "failure()", "cancelled()")
 
 
 class _IfParser:
@@ -255,10 +267,20 @@ class _IfParser:
         if token in (("op", "=="), ("op", "!=")):
             operator = self._take()[1]
             right = self._atom()
-            if left[0] == "event" and right[0] == "str":
+            if right[0] in ("event", "ref", "ref_name") and left[0] == "str":
+                left, right = right, left
+            if right[0] != "str":
+                return None
+            if left[0] == "event":
                 equal = right[1] == self.event
-            elif right[0] == "event" and left[0] == "str":
-                equal = left[1] == self.event
+            elif left[0] == "ref":
+                if right[1].startswith("refs/heads/aq/"):
+                    return None
+                equal = False
+            elif left[0] == "ref_name":
+                if right[1].startswith("aq/"):
+                    return None
+                equal = False
             else:
                 return None
             return equal if operator == "==" else not equal
@@ -282,6 +304,7 @@ class _IfParser:
         if kind == "ident":
             if self._peek() == ("op", "("):
                 depth = 0
+                arguments = 0
                 while True:
                     token = self._take()
                     if token == ("op", "("):
@@ -290,9 +313,19 @@ class _IfParser:
                         depth -= 1
                         if depth == 0:
                             break
+                    else:
+                        arguments += 1
+                # Status functions, relative to the job's own ``needs``, which
+                # the caller follows separately: success() is the default.
+                if not arguments and value in _STATUS_FUNCTIONS:
+                    return "bool", _STATUS_FUNCTIONS[value]
                 return "unknown", ""
             if value == "github.event_name":
                 return "event", ""
+            if value == "github.ref":
+                return "ref", ""
+            if value == "github.ref_name":
+                return "ref_name", ""
             if value in ("true", "false"):
                 return "bool", value
             return "unknown", ""
@@ -300,7 +333,7 @@ class _IfParser:
 
 
 def job_runs_on_push(condition: Any) -> bool | None:
-    """``True``/``False`` when a job ``if:`` is decided for a push event, else ``None``."""
+    """Whether a job ``if:`` runs for a push of a train ref; ``None`` when undecidable."""
     if condition is None:
         return True
     if isinstance(condition, bool):
@@ -412,90 +445,125 @@ def job_check_names(job_id: str, job: Mapping[str, Any]) -> tuple[tuple[str, ...
     return tuple(names), None
 
 
+def _empty_report(path: str, note: str) -> WorkflowReport:
+    return WorkflowReport(
+        path=path,
+        name=path,
+        push_on_train_refs=False,
+        pull_request=False,
+        push=False,
+        deployment=False,
+        jobs=(),
+        notes=(note,),
+    )
+
+
+def _needs(job: Mapping[str, Any]) -> list[str]:
+    needs = job.get("needs")
+    if isinstance(needs, str):
+        return [needs]
+    return [str(need) for need in needs] if isinstance(needs, list) else []
+
+
 def analyze_workflow(path: str, text: str) -> WorkflowReport:
     """Read one workflow file: its triggers and the check runs each job produces."""
     try:
         document = yaml.safe_load(text)
     except yaml.YAMLError as exc:
-        return WorkflowReport(
-            path=path,
-            name=path,
-            push_on_train_refs=False,
-            pull_request=False,
-            push=False,
-            deployment=False,
-            jobs=(),
-            notes=(f"not valid YAML: {exc}",),
-        )
+        return _empty_report(path, f"not valid YAML: {exc}")
     if not isinstance(document, Mapping):
-        return WorkflowReport(
-            path=path,
-            name=path,
-            push_on_train_refs=False,
-            pull_request=False,
-            push=False,
-            deployment=False,
-            jobs=(),
-            notes=("not a workflow mapping",),
-        )
+        return _empty_report(path, "not a workflow mapping")
     triggers = _triggers(document)
     notes: list[str] = []
     covered, problem = _push_covers_train_refs(triggers)
     if problem:
         notes.append(problem)
-    raw_jobs = document.get("jobs") if isinstance(document.get("jobs"), Mapping) else {}
-    deployment = any(
-        isinstance(job, Mapping) and job.get("environment") is not None for job in raw_jobs.values()
-    )
+    raw_jobs = {
+        str(job_id): job
+        for job_id, job in (
+            document.get("jobs") if isinstance(document.get("jobs"), Mapping) else {}
+        ).items()
+        if isinstance(job, Mapping)
+    }
+    decided = {job_id: job_runs_on_push(job.get("if")) for job_id, job in raw_jobs.items()}
+    deploy_jobs = {job_id for job_id, job in raw_jobs.items() if job.get("environment") is not None}
+    # A deploy job whose ``if:`` is provably false on a train ref (a main-only
+    # deploy) leaves the rest of the workflow ordinary CI.  One that might run
+    # makes the whole workflow a deployment: the train's refs must never be
+    # added to its trigger, and where they already are, every candidate deploys.
+    risky = sorted(job_id for job_id in deploy_jobs if decided[job_id] is not False)
+    deployment = bool(risky)
     if deployment and covered:
-        notes.append("deployment workflow runs on the train's refs: every candidate push deploys")
+        notes.append(
+            "deployment workflow runs on the train's refs: "
+            f"{', '.join(risky)} deploys on every candidate push"
+        )
     pull_request = "pull_request" in triggers or "pull_request_target" in triggers
+    push = "push" in triggers
     # A workflow gates the train when it runs on the train's refs, or could once
-    # its push trigger names them (pull-request CI).  Anything else -- a
-    # workflow_run follow-up, a main-only post-merge job -- never does.
-    gate = covered or (pull_request and not deployment)
-    jobs: list[JobChecks] = []
+    # its push trigger names them.  A workflow_run follow-up or a schedule never
+    # does, and neither does a deployment.
+    gate = covered or ((pull_request or push) and not deployment)
+    statuses: dict[str, JobChecks] = {}
     for job_id, job in raw_jobs.items():
-        if not isinstance(job, Mapping):
-            continue
-        names, unresolved = job_check_names(str(job_id), job)
+        names, unresolved = job_check_names(job_id, job)
         if deployment:
-            jobs.append(JobChecks(str(job_id), names, "excluded", "deployment workflow"))
-            continue
-        if not gate:
-            jobs.append(
-                JobChecks(str(job_id), names, "excluded", "workflow never runs on the train's refs")
+            statuses[job_id] = JobChecks(job_id, names, "excluded", "deployment workflow")
+        elif job_id in deploy_jobs:
+            statuses[job_id] = JobChecks(
+                job_id, names, "excluded", "deploy job never runs on the train's refs"
             )
-            continue
-        if unresolved:
-            jobs.append(JobChecks(str(job_id), names, "unresolved", unresolved))
-            continue
-        runs = job_runs_on_push(job.get("if"))
-        if runs is False:
-            jobs.append(JobChecks(str(job_id), names, "excluded", "job if: skips push events"))
-        elif runs is None:
-            jobs.append(
-                JobChecks(
-                    str(job_id),
-                    names,
-                    "required",
-                    "job if: could not be decided for push; confirm it runs on the train's refs",
-                )
+        elif not gate:
+            statuses[job_id] = JobChecks(
+                job_id, names, "excluded", "workflow never runs on the train's refs"
+            )
+        elif unresolved:
+            statuses[job_id] = JobChecks(job_id, names, "unresolved", unresolved)
+        elif decided[job_id] is False:
+            statuses[job_id] = JobChecks(job_id, names, "excluded", "job if: skips push events")
+        elif decided[job_id] is None:
+            statuses[job_id] = JobChecks(
+                job_id,
+                names,
+                "required",
+                "job if: could not be decided for push; confirm it runs on the train's refs",
             )
         else:
-            jobs.append(JobChecks(str(job_id), names, "required"))
+            statuses[job_id] = JobChecks(job_id, names, "required")
+    # GitHub skips a job whose need was skipped unless its own ``if:`` asks to
+    # run anyway, and the CI observer counts a skipped required check as red.
+    skipped = {job_id for job_id, job in statuses.items() if job.status == "excluded"}
+    changed = True
+    while changed and not deployment:
+        changed = False
+        for job_id, job in raw_jobs.items():
+            status = statuses[job_id]
+            if status.status == "excluded":
+                continue
+            missing = [need for need in _needs(job) if need in skipped]
+            condition = str(job.get("if") or "")
+            if missing and not any(marker in condition for marker in _RUNS_AFTER_SKIPPED_NEED):
+                statuses[job_id] = JobChecks(
+                    job_id,
+                    status.names,
+                    "excluded",
+                    f"needs {', '.join(missing)}, which does not run on the train's refs",
+                )
+                skipped.add(job_id)
+                changed = True
+    for job_id, job in raw_jobs.items():
         runs_on = job.get("runs-on")
         labels = runs_on if isinstance(runs_on, list) else [runs_on]
-        if "self-hosted" in labels:
+        if statuses[job_id].status != "excluded" and "self-hosted" in labels:
             notes.append(f"job {job_id} runs on a self-hosted runner, which must be online")
     return WorkflowReport(
         path=path,
         name=str(document.get("name") or path),
         push_on_train_refs=covered,
         pull_request=pull_request,
-        push="push" in triggers,
+        push=push,
         deployment=deployment,
-        jobs=tuple(jobs),
+        jobs=tuple(statuses[job_id] for job_id in raw_jobs),
         notes=tuple(notes),
     )
 
@@ -547,6 +615,28 @@ class Classification:
     problems: tuple[str, ...]
 
 
+def _check_set(reports: Sequence[WorkflowReport]) -> tuple[CheckSet, list[str]]:
+    """The union of required names, and a problem for each name two jobs share.
+
+    The CI observer takes the newest check run of a required name across every
+    push suite, so a shared name lets one job's success hide the other's
+    failure.  The planner refuses to bind such a set rather than merge it.
+    """
+    producers: dict[str, list[str]] = {}
+    for report in reports:
+        for job in report.jobs:
+            if job.status == "required":
+                for name in job.names:
+                    producers.setdefault(name, []).append(f"{report.path}:{job.job_id}")
+    problems = [
+        f"check name {name!r} is produced by {', '.join(jobs)}; rename one: the observer "
+        "reads only the newest run of a name, so one job could hide the other's failure"
+        for name, jobs in producers.items()
+        if len(jobs) > 1
+    ]
+    return CheckSet(tuple(producers), tuple(report.path for report in reports)), problems
+
+
 def classify(repository_url: str | None, workflows: Mapping[str, str]) -> Classification:
     """Decide the project's train shape from its repository URL and workflow files."""
     reports = tuple(analyze_workflow(path, text) for path, text in sorted(workflows.items()))
@@ -563,44 +653,51 @@ def classify(repository_url: str | None, workflows: Mapping[str, str]) -> Classi
         shape = (
             "local_remote"
             if _is_local(repository_url) or not repository_url
-            else ("unsupported_forge")
+            else "unsupported_forge"
         )
         return Classification(shape, None, CheckSet((), ()), (), reports, tuple(problems))
+    canonical = f"https://github.com/{full_name}.git"
+    if repository_url.strip() != canonical:
+        problems.append(
+            f"repository URL {repository_url!r} is not the form integration binding accepts "
+            f"({canonical}); correct the project's repository URL first"
+        )
 
     live = [report for report in reports if report.push_on_train_refs and report.required_names]
     if live:
-        names = _unique(name for report in live for name in report.required_names)
-        # Pull-request CI beside the live workflows cannot gate the train until
-        # its push trigger names the train's refs; say so, but the shape holds.
+        required, duplicates = _check_set(live)
+        # CI beside the live workflows cannot gate the train until its push
+        # trigger names the train's refs; say so, but the shape holds.
         advisory = tuple(
             report.path
             for report in reports
-            if report.is_ci_candidate and not report.push_on_train_refs and report.required_names
+            if report.pull_request
+            and report.is_ci_candidate
+            and not report.push_on_train_refs
+            and report.required_names
         )
         return Classification(
-            "github_ci",
-            full_name,
-            CheckSet(names, tuple(r.path for r in live)),
-            advisory,
-            reports,
-            tuple(problems),
+            "github_ci", full_name, required, advisory, reports, tuple(problems + duplicates)
         )
-    candidates = [report for report in reports if report.is_ci_candidate and report.required_names]
+    pending = [
+        report
+        for report in reports
+        if report.is_ci_candidate and not report.push_on_train_refs and report.required_names
+    ]
+    # Pull-request CI is the project's CI when it has any; only a project whose
+    # CI runs on push alone falls back to its push workflows.
+    candidates = [report for report in pending if report.pull_request] or pending
     if candidates:
-        names = _unique(name for report in candidates for name in report.required_names)
+        required, duplicates = _check_set(candidates)
         return Classification(
             "github_ci_trigger_missing",
             full_name,
-            CheckSet(names, tuple(r.path for r in candidates)),
+            required,
             tuple(r.path for r in candidates),
             reports,
-            tuple(problems),
+            tuple(problems + duplicates),
         )
     return Classification("github_no_ci", full_name, CheckSet((), ()), (), reports, tuple(problems))
-
-
-def _unique(names: Any) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(names))
 
 
 # ---------------------------------------------------------------------------
@@ -791,25 +888,6 @@ def suggested_commands(files: Mapping[str, str]) -> tuple[str, ...]:
     return ()
 
 
-def validation_command(files: Mapping[str, str]) -> str | None:
-    """One ``bash -c`` validation command for the development publisher.
-
-    It runs in AQ's retained clone with the daemon's environment, so a Python
-    project installs into a throwaway virtualenv outside the clone rather than
-    into the daemon's own interpreter.  Node installs land in ``node_modules/``,
-    which the clone's ``.gitignore`` must cover: validation that leaves the
-    tree dirty refuses publication.
-    """
-    if detect_stack(files) == "python":
-        install = _python_install(files).replace("python -m pip", '"$venv/bin/pip"', 1)
-        return (
-            'venv="$(mktemp -d)/venv" && python3 -m venv "$venv" && '
-            f'{install} && "$venv/bin/python" -m pytest -q'
-        )
-    commands = suggested_commands(files)
-    return " && ".join(commands) if commands else None
-
-
 def ci_workflow_template(files: Mapping[str, str], *, test_command: str | None = None) -> str:
     """A starting ``.github/workflows/ci.yml`` whose single ``Tests`` job gates the train."""
     stack = detect_stack(files)
@@ -838,13 +916,15 @@ def ci_workflow_template(files: Mapping[str, str], *, test_command: str | None =
 # Written by `aq integration onboard-train` (docs/config/train-onboarding.md).
 # The integration train accepts only check runs from a push of the exact
 # candidate it built, so the push trigger names the train's refs:
-# aq/integration/** (root candidates) and aq/parent/** (parent snapshots).
+# aq/integration/** (root candidates) and aq/parent/** (parent snapshots);
+# main shows that the default branch is green.
 # Keep `Tests` as the job name: it is the required check in the project's
 # train policy. Never add deploy steps or secrets to this workflow.
 on:
   pull_request:
   push:
     branches:
+      - main
       - 'aq/integration/**'
       - 'aq/parent/**'
   workflow_dispatch:
@@ -863,16 +943,37 @@ jobs:
 
 
 def trigger_fix(report: WorkflowReport, text: str) -> str:
-    """The ``on.push.branches`` the workflow needs, keeping its current branches."""
+    """The push trigger the workflow needs, keeping what it runs on today.
+
+    ``branches`` gains the train's patterns.  A ``branches-ignore`` filter
+    (which GitHub forbids beside ``branches``) must instead stop matching them,
+    and a ``paths`` filter must go, or a candidate could still produce no runs.
+    """
     triggers = _triggers(yaml.safe_load(text) or {})
-    current: list[str] = []
     push = triggers.get("push")
-    if isinstance(push, Mapping):
-        branches = push.get("branches")
-        current = [branches] if isinstance(branches, str) else [str(b) for b in branches or ()]
+    config = push if isinstance(push, Mapping) else {}
+    comments = [f"# {report.path}"]
+    for key in ("paths", "paths-ignore"):
+        if config.get(key):
+            comments.append(f"# remove push.{key}: a path filter can leave a candidate untested")
+    ignored = config.get("branches-ignore")
+    if ignored is not None:
+        ignored = [ignored] if isinstance(ignored, str) else [str(item) for item in ignored]
+        blocking = [
+            pattern
+            for pattern in ignored
+            if any(_filter_regex(pattern).match(ref) for ref in TRAIN_REF_SAMPLES)
+        ]
+        comments.append(
+            "# push uses branches-ignore; drop the patterns that match the train's refs: "
+            + (", ".join(blocking) if blocking else "(none match; check the other filters)")
+        )
+        return "\n".join(comments)
+    branches = config.get("branches")
+    current = [branches] if isinstance(branches, str) else [str(b) for b in branches or ()]
     wanted = list(dict.fromkeys([*current, *TRAIN_BRANCH_PATTERNS]))
     lines = "\n".join(f"      - '{pattern}'" for pattern in wanted)
-    return f"# {report.path}\non:\n  push:\n    branches:\n{lines}"
+    return "\n".join(comments) + f"\non:\n  push:\n    branches:\n{lines}"
 
 
 # ---------------------------------------------------------------------------
@@ -892,6 +993,8 @@ class ProjectFacts:
     legacy_pull_requests: tuple[tuple[str, str], ...] = ()
     #: BLOCKED tasks a local-remote project must deliver before development mode.
     blocked_tasks: tuple[str, ...] = ()
+    #: Legacy pull requests whose state could not be checked.
+    unchecked_pull_requests: int = 0
 
 
 @dataclass(frozen=True)
@@ -911,7 +1014,7 @@ class OnboardingPlan:
     credential_mode: str
     policy: dict[str, Any] | None
     trust_manifest: dict[str, Any] | None
-    validation_command: str | None
+    validation_commands: tuple[str, ...]
     workflows: tuple[WorkflowReport, ...]
     problems: list[str] = field(default_factory=list)
     steps: list[Step] = field(default_factory=list)
@@ -957,13 +1060,19 @@ def plan_onboarding(
     check_version: str | None = None,
     attestation_app_id: int | None = None,
     github_repository_id: int | None = None,
-    validation: str | None = None,
+    validation: Sequence[str] = (),
     interval_seconds: int = 300,
     policy_path: str = "train-policy.json",
     manifest_path: str = TRUST_MANIFEST_PATH,
     workflow_path: str = ".github/workflows/ci.yml",
 ) -> OnboardingPlan:
-    """Every step from the project's current state to a ready observe-mode train."""
+    """Every step from the project's current state to a ready observe-mode train.
+
+    A plan stops at the first prerequisite that changes the repository (a CI
+    workflow, a trigger fix) or at a problem that makes the policy unsafe to
+    bind: the rest depends on a re-run once that change is on the default
+    branch.
+    """
     project = facts.project_id
     shape = classification.shape
     problems = list(classification.problems)
@@ -972,9 +1081,12 @@ def plan_onboarding(
 
     names = tuple(check_names) if check_names else classification.required.names
     version = check_version or (check_set_version(names) if names else None)
+    conflicted = any("is produced by" in problem for problem in classification.problems)
+    if check_names:
+        conflicted = False
     policy = None
     manifest = None
-    if names and parent_route is not None and root_route is not None:
+    if names and not conflicted and parent_route is not None and root_route is not None:
         policy = build_policy(
             checks=names,
             check_version=version or check_set_version(names),
@@ -984,6 +1096,18 @@ def plan_onboarding(
             intelligence_class=intelligence_class,
             profile_id=profile_id,
         )
+    # Status reports the designated repository outside development mode; with no
+    # designation the project's own id names the record the binding creates.
+    # Unread status, or development mode (whose status omits it), is not a guess.
+    repository_id = facts.integration_repository_id or (
+        project if facts.current_mode not in (None, "development") else None
+    )
+    if repository_id is None:
+        problems.append(
+            "the designated integration repository id is unknown (integration status was "
+            "unreadable, or the project is in development mode, whose status omits it): pass "
+            "--repository-id with the project's existing repository id"
+        )
     if credential_mode == "app" and names and classification.full_name:
         if attestation_app_id is None:
             problems.append("App credential mode needs the App id (integration.github_app.app_id)")
@@ -992,9 +1116,9 @@ def plan_onboarding(
                 "App credential mode needs the GitHub repository id: pass "
                 f'--github-repository-id "$(gh api repos/{classification.full_name} --jq .id)"'
             )
-        else:
+        elif repository_id is not None:
             manifest = build_trust_manifest(
-                canonical_repository_id=_repository_id(facts),
+                canonical_repository_id=repository_id,
                 github_repository_id=github_repository_id,
                 full_name=classification.full_name,
                 attestation_app_id=attestation_app_id,
@@ -1010,7 +1134,7 @@ def plan_onboarding(
         credential_mode=credential_mode,
         policy=policy,
         trust_manifest=manifest,
-        validation_command=validation if shape == "github_no_ci" else None,
+        validation_commands=(),
         workflows=classification.workflows,
         problems=problems,
     )
@@ -1020,30 +1144,14 @@ def plan_onboarding(
             Step(
                 "Land a CI workflow first",
                 (),
-                f"The train accepts only GitHub check runs, and {project} has no workflow. "
-                f"Commit the template written to {workflow_path} through the project's current "
-                "delivery path (disabled mode: its pull request, merged by a human), make its "
-                "`Tests` job green on main, then run onboard-train again. It classifies as "
-                "github_ci once the workflow is on the default branch.",
+                "The train accepts only GitHub check runs from a push of the exact candidate, "
+                f"and {project} has no workflow that could produce one. A local command cannot "
+                f"stand in. Commit the template written to {workflow_path} (as "
+                ".github/workflows/ci.yml) through the project's current delivery path "
+                "(disabled mode: its pull request, merged by a human). Make its `Tests` job green "
+                "on main, then run onboard-train again: the project then classifies as github_ci.",
             )
         )
-        if validation:
-            steps.append(
-                Step(
-                    "Optional interim: the development train until CI lands",
-                    (
-                        (
-                            f"aq integration develop {_q(project)} --validation focused --command "
-                            f"{_q(validation)} --interval-seconds {interval_seconds} "
-                            "--reason 'development train until the CI workflow lands'"
-                        ),
-                    ),
-                    "Only if batched delivery is wanted before CI exists: it publishes to the "
-                    "default branch after this local validation, with no pull request. The "
-                    "train cutover then starts by draining it. Skip it to keep the current "
-                    "pull request review until the workflow lands.",
-                )
-            )
         return plan
     if shape == "github_ci_trigger_missing":
         steps.append(
@@ -1051,13 +1159,27 @@ def plan_onboarding(
                 "Make CI run on the train's refs first",
                 (),
                 "The train reads CI only from push runs on aq/integration/** and aq/parent/**, "
-                "and these workflows push only on other branches: "
+                "and these workflows never push-trigger there: "
                 + ", ".join(classification.trigger_fixes)
-                + ". Land the trigger change printed under 'Trigger fixes' through the "
-                "project's current delivery path, then run onboard-train again.",
+                + ". Land the trigger change printed under 'Trigger fix' through the project's "
+                "current delivery path, then run onboard-train again. The observe preflight "
+                "does not look at CI, so a train bound before this lands would stay red.",
             )
         )
-    if facts.legacy_pull_requests:
+    if facts.legacy_pull_requests or facts.unchecked_pull_requests:
+        note = (
+            "These completed tasks predate the train and are not enrolled in it: status "
+            "ignores them and no batch will ever deliver them. Merge each approved, open PR "
+            "now, while the project still uses its legacy review path (--method merge keeps "
+            "the task's branch tip an ancestor of the default branch), or close it and refile "
+            "the work as a new task after cutover. `aq git pr-merge` runs gh in the daemon's "
+            "data directory, never in a project checkout."
+        )
+        if facts.unchecked_pull_requests:
+            note += (
+                f" {facts.unchecked_pull_requests} more PR(s) were not checked; list them with "
+                f"`aq task list --project {project} --status COMPLETED` and check each."
+            )
         steps.append(
             Step(
                 "Resolve legacy pull requests before the drain",
@@ -1072,12 +1194,7 @@ def plan_onboarding(
                         ),
                     )
                 ),
-                "These completed tasks predate the train and are not enrolled in it: status "
-                "ignores them and no batch will ever deliver them. Merge each approved, open "
-                "PR now, while the project still uses its legacy review path (--method merge "
-                "keeps the task's branch tip an ancestor of the default branch), or close it "
-                "and refile the work as a new task after cutover. `aq git pr-merge` runs gh in "
-                "the daemon's data directory, never in a project checkout.",
+                note,
             )
         )
     if credential_mode == "app" and classification.full_name:
@@ -1086,8 +1203,9 @@ def plan_onboarding(
                 "App credential mode: publish the trust manifest and Actions variables",
                 (
                     (
-                        f"# commit {manifest_path} (written by --write-trust-manifest) to "
-                        f"{facts.default_branch} through the project's current delivery path"
+                        f"# commit {manifest_path} (--write-trust-manifest) as "
+                        f"{TRUST_MANIFEST_PATH} on {facts.default_branch}, through the project's "
+                        "current delivery path"
                     ),
                     (
                         f"gh variable set AQ_INTEGRATION_ATTESTATION_APP_ID --repo "
@@ -1100,9 +1218,22 @@ def plan_onboarding(
                 ),
                 "With integration.github_app configured the functional preflight reads "
                 f"{TRUST_MANIFEST_PATH} from the default branch and both Actions variables, and "
-                "requires the policy producer to be the numeric GitHub Actions App id.",
+                "requires the policy producer to be the numeric GitHub Actions App id. The App "
+                "installation must cover this repository (with Actions variables readable).",
             )
         )
+    if shape == "github_ci_trigger_missing":
+        return plan
+    if policy is None or repository_id is None:
+        steps.append(
+            Step(
+                "Resolve the problems above, then run onboard-train again",
+                (),
+                "No policy is bound while its check set is empty or ambiguous, its routes are "
+                "missing, or the repository to bind is unknown.",
+            )
+        )
+        return plan
     if parent_route is not None and root_route is not None:
         steps.append(_import_step(parent_route, root_route))
     steps.append(
@@ -1115,7 +1246,21 @@ def plan_onboarding(
         )
     )
     mode = facts.current_mode
-    if mode not in (None, "disabled"):
+    if mode is None:
+        steps.append(
+            Step(
+                "Drain first unless status says disabled",
+                (
+                    (
+                        f"aq integration enable {_q(project)} --mode disabled --expected-generation "
+                        "\"$(generation)\" --reason 'drain for train cutover'"
+                    ),
+                ),
+                "The project's mode could not be read. Run this only when status reports an "
+                "effective mode other than disabled, then repeat status until draining is false.",
+            )
+        )
+    elif mode != "disabled":
         steps.append(
             Step(
                 f"Drain the {mode} publisher",
@@ -1130,7 +1275,6 @@ def plan_onboarding(
                 "drain finishes once every frozen integration operation is terminal.",
             )
         )
-    repository_id = _repository_id(facts)
     if facts.integration_repository_id:
         bind = (
             f"aq project set {_q(project)} integration-repository-id {_q(repository_id)} "
@@ -1201,10 +1345,6 @@ def plan_onboarding(
     return plan
 
 
-def _repository_id(facts: ProjectFacts) -> str:
-    return facts.integration_repository_id or facts.project_id
-
-
 def _import_step(parent: PlaybookRoute, root: PlaybookRoute) -> Step:
     commands: list[str] = []
     for route in (parent, root):
@@ -1228,14 +1368,45 @@ def _import_step(parent: PlaybookRoute, root: PlaybookRoute) -> Step:
     )
 
 
+def supported_validation(commands: Sequence[str]) -> tuple[list[str], list[str]]:
+    """``(supported, refused)``: development validation runs only server presets.
+
+    The publisher submits each command to the job queue, which maps it onto a
+    fixed preset (``src.jobs.adapters.finite_command``: ``pytest``/``aq test``
+    and ``ruff check`` in the daemon's interpreter, ``npm run build`` with no
+    arguments) and runs no shell.  Anything else is refused, which defers every
+    batch forever rather than failing loudly, so the planner never prints one.
+    """
+    from src.jobs.adapters import finite_command
+    from src.jobs.policy import JobError
+
+    supported: list[str] = []
+    refused: list[str] = []
+    for command in commands:
+        try:
+            finite_command(command)
+        except JobError:
+            refused.append(command)
+        else:
+            supported.append(command)
+    return supported, refused
+
+
 def _development_plan(
     facts: ProjectFacts,
     classification: Classification,
     problems: list[str],
-    validation: str | None,
+    validation: Sequence[str],
     interval_seconds: int,
 ) -> OnboardingPlan:
     project = facts.project_id
+    supported, refused = supported_validation(validation)
+    for command in refused:
+        problems.append(
+            f"validation command {command!r} is not a job preset (pytest, aq test, ruff check, "
+            "npm run build with no arguments; no shell) and would defer every batch; "
+            "it is left out"
+        )
     plan = OnboardingPlan(
         project_id=project,
         shape=classification.shape,
@@ -1245,13 +1416,11 @@ def _development_plan(
         credential_mode="n/a",
         policy=None,
         trust_manifest=None,
-        validation_command=validation,
+        validation_commands=tuple(supported),
         workflows=classification.workflows,
         problems=problems,
     )
     where = "a repository on disk" if classification.shape == "local_remote" else "another forge"
-    if not validation:
-        problems.append("no validation command: pass --validation-command")
     if facts.blocked_tasks:
         plan.steps.append(
             Step(
@@ -1278,22 +1447,30 @@ def _development_plan(
             Step("Already on the development train", (f"aq integration status {_q(project)}",))
         )
         return plan
-    command = f"--command {_q(validation)} " if validation else "--command 'VALIDATION' "
+    if supported:
+        flags = "--validation focused " + " ".join(
+            f"--command {_q(command)}" for command in supported
+        )
+        gate = "the listed job presets"
+    else:
+        flags = "--validation none"
+        gate = (
+            "no batch validation: no job preset can install and test this stack, so each "
+            "task's own close checks remain the gate, as under per-task direct delivery"
+        )
     plan.steps.append(
         Step(
             "Enter the development train",
             (
                 (
-                    f"aq integration develop {_q(project)} --validation focused {command}"
+                    f"aq integration develop {_q(project)} {flags} "
                     f"--interval-seconds {interval_seconds} "
-                    "--reason 'onto the development train: batched, validated delivery'"
+                    "--reason 'onto the development train: batched, lease-guarded delivery'"
                 ),
                 f"aq integration status {_q(project)}",
             ),
             f"Hierarchy and train need github.com; {project} pushes to {where}, so its train "
-            "is the development publisher. The validation command runs under bash in AQ's "
-            "retained clone with the daemon's environment: confirm node/python are on the "
-            "daemon's PATH, or use absolute paths.",
+            f"is the development publisher. Validation: {gate}.",
         )
     )
     return plan
@@ -1321,6 +1498,6 @@ __all__ = [
     "producer_for",
     "select_routes",
     "suggested_commands",
+    "supported_validation",
     "trigger_fix",
-    "validation_command",
 ]

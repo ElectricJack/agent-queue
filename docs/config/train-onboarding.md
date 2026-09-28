@@ -16,15 +16,16 @@ Two pieces make any project bindable:
   observe-mode train. It changes nothing.
 
 The mode flips are operator-scoped. A LOCAL operator, or a live named
-supervisor of the project (or the global supervisor), runs every command
-below. A worker's token is refused at scope.
+supervisor of the project (or the global supervisor), runs the integration and
+`aq project set` commands below. The once-per-install playbook import in
+section 1 is a LOCAL operator action. A worker's token is refused at scope.
 
 ## Where each project stands
 
 The table reflects the state read on 2026-09-27: modes from the operator
 database, workflows from each default branch, and pull requests from `gh`.
 
-| Project | Remote | Mode now | Shape | Train path | Required checks the planner derives | Before binding |
+| Project | Remote | Mode now | Shape | Train path | What gates delivery | Before binding |
 |---|---|---|---|---|---|---|
 | outrider-ide | GitHub | disabled | `github_ci` | train | `Rust 1.89 minimum version`, `ubuntu-latest`, `windows-latest`, `macos-latest` | nothing (App mode: manifest + variables) |
 | matter-engine-cpp | GitHub | development | `github_ci` | train | `Native Windows build and tests` | drain development; self-hosted `matter-engine-msvc` runner online |
@@ -32,12 +33,12 @@ database, workflows from each default branch, and pull requests from `gh`.
 | jackkern.com | GitHub | disabled | `github_ci_trigger_missing` | train | `Test, build, capture, budgets, links`, `Lighthouse budget` | CI must push-trigger on the train's refs |
 | quilt-trader | GitHub | disabled | `github_no_ci` | train, once CI exists | `Tests` (from the template) | land a CI workflow; live-money rules below |
 | rom-downloader | GitHub | disabled | `github_no_ci` | train, once CI exists | `Tests` (from the template) | land a CI workflow |
-| matter-engine-web | on disk | disabled | `local_remote` | development train | local: `npm ci && npm test && npm run build` | none |
-| quilt-trader-web | on disk | disabled | `local_remote` | development train | local: `npm ci && npm test && npm run build` | none |
-| agent-queue-site | on disk | disabled | `local_remote` | development train | local: `pnpm install --frozen-lockfile && pnpm check` | none |
+| matter-engine-web | on disk | disabled | `local_remote` | development train | each task's close checks (`--validation none`: no job preset can install and test a Node project, [agile-pinnacle](#local-remotes-matter-engine-web-quilt-trader-web-agent-queue-site)) | none |
+| quilt-trader-web | on disk | disabled | `local_remote` | development train | same as matter-engine-web | none |
+| agent-queue-site | on disk | disabled | `local_remote` | development train | same as matter-engine-web | none |
 
 Every legacy pull request the cutover task named is already resolved (see
-[Legacy pull requests](#legacy-pull-requests)).
+[Legacy pull requests](#5-legacy-pull-requests)).
 
 ## 1. The shared routes (once per install)
 
@@ -69,8 +70,9 @@ Both validations must report zero errors or questions, and both imports must
 report the two hashes above. Activation health must show each exact hash
 enabled and ready. Activation publishes itself to the live runtime
 (`_v2_publish_activation` refreshes the dispatch table), so no restart is
-needed. A system-scoped activation is an install-wide change: a LOCAL operator
-or the global supervisor runs it, not a project's supervisor.
+needed. A system-scoped activation is an install-wide change, and the shipped
+supervisor profile grants none of the `playbook` import, validate or activate
+commands, so a LOCAL operator runs this section.
 
 ## 2. The planner
 
@@ -87,9 +89,12 @@ BLOCKED tasks from the daemon. Then it reads `.github/workflows/*` and the
 stack files (`package.json`, lockfiles, `pyproject.toml`,
 `requirements.txt`, `.nvmrc`) at `origin/<default branch>` of the project's
 workspace. It reads Git objects only: no fetch and no checkout. Fetch first if
-the ref may be stale. It prints the commit it read. With `--repo` and
-`--repo-url` it plans from Git alone when the daemon's records are out of
-scope or unreachable. `--json` returns the whole plan.
+the ref may be stale. It prints the commit it read. Each daemon read is
+optional. The shipped supervisor profile lacks `get_project`, so a supervisor
+passes `--repo CHECKOUT`, and the planner takes the URL from that checkout's
+`origin` and says so; the binding refuses a URL that differs from the project
+record. With `--repo` and `--repo-url` it plans from Git alone when the daemon
+is unreachable. `--json` returns the whole plan.
 
 How it decides:
 
@@ -105,9 +110,25 @@ How it decides:
   `exclude` rules are applied. Reusable-workflow calls, computed matrices,
   object-valued matrix suffixes and names reading other contexts are reported
   as problems, never guessed.
-- **Jobs left out.** Every job of a deployment workflow (any job with an
-  `environment`), and jobs whose `if:` provably skips push events. A job whose
-  `if:` cannot be decided is kept and named in the problems.
+- **Jobs left out.** A deploy job (one with an `environment`) is never a
+  check. When its `if:` is provably false on a train ref (a main-only deploy,
+  `github.ref == 'refs/heads/main'`) the rest of the workflow stays CI.
+  Otherwise the whole workflow is a deployment: its jobs are left out, the
+  train's refs are never proposed for its trigger, and a note warns when they
+  already run there. Jobs whose `if:` provably skips a push of a train ref are
+  left out too, and so is every job that `needs` a skipped job, unless its own
+  `if:` uses `always()`, `failure()` or `cancelled()`. GitHub skips such a job,
+  and the observer counts a skipped required check as red. The `if:`
+  evaluator knows `github.event_name`, `github.ref`, `github.ref_name` and the
+  status functions. A job whose `if:` it cannot decide is kept and named in
+  the problems.
+- **Problems that stop the plan.** Two jobs producing the same check name (the
+  observer reads only the newest run of a name, so one job could hide the
+  other's failure), a repository URL that is not
+  `https://github.com/OWNER/REPO.git` (the form the binding accepts), and an
+  unknown repository id (status unreadable, or development mode, whose status
+  omits it: pass `--repository-id`). The plan then ends at "Resolve the
+  problems above".
 - **The check-set version.** A digest of the names (`ci-<12 hex>`), so it
   changes exactly when they do. `--check-version` overrides it.
 - **The route.** The project's own reviewed pair (`<project>-parent-integration`,
@@ -145,19 +166,26 @@ that needs repository-side trust, not the existing-login path:
 
 `--credential-mode auto` (the default) detects this from
 `~/.agent-queue/config.yaml`, uses the producer `15368` and looks up the
-repository's numeric id with `gh api`. `--write-trust-manifest` writes the
-file, and the plan prints the two `gh variable set` commands. Commit the
-manifest through the project's current delivery path before the observe
-step. It can ride in the same change as a trigger fix or a CI workflow. The
+repository's numeric id with `gh api`. `--write-trust-manifest PATH` writes the
+file locally. Commit it as `.github/agent-queue-integration.json` through the
+project's current delivery path before the observe step. It can ride in the
+same change as a trigger fix or a CI workflow. The plan also prints the two
+`gh variable set` commands. The App's single installation must cover every
+target repository, with Actions variables readable; otherwise status reports
+`repository_binding_failed` or `hosted_workflow_variables_unavailable`. The
 reviewed agent-queue policy uses the slug, so the agent-queue cutover meets
 the same three requirements while this mode is configured.
 
 ## 4. By shape
 
-Every GitHub shape ends with the same script. The planner prints it with the
-project's values, reading a fresh generation before each mutation:
+A plan stops at the first prerequisite that changes the repository: a CI
+workflow, a trigger fix, or the App-mode manifest riding with one. After that
+change reaches the default branch, run the planner again. Once CI gates, the
+plan ends with the same script for every GitHub project, printed with the
+project's values and a fresh generation read before each mutation:
 
-1. drain, only when the project is not already `disabled`: `aq integration
+1. drain, only when the project is not already `disabled` (with status
+   unreadable, the plan prints the drain as conditional): `aq integration
    enable P --mode disabled ...`, then repeat status until `effective_mode`
    is `disabled` and `draining` is false;
 2. bind the repository: `integration-repository-id` when one is designated,
@@ -170,7 +198,7 @@ project's values, reading a fresh generation before each mutation:
 6. run the ready check: status must report `ready` with zero blockers.
 
 The planner never prints `--mode hierarchy` or `--mode train`. Those flips
-belong to the supervisor after observe is clean (section 6).
+belong to the supervisor after observe is clean (section 7).
 
 ### GitHub with CI: outrider-ide, matter-engine-cpp
 
@@ -182,7 +210,9 @@ aq integration onboard-train matter-engine-cpp --write-policy train-policy.matte
 - outrider-ide pushes CI on every branch and has no designated repository. The
   plan binds `{"id":"outrider-ide","url":"https://github.com/ElectricJack/outrider-ide.git","default_branch":"main"}`.
 - matter-engine-cpp is in `development` (generation 9), so the plan starts
-  with the drain. Its stored policy still names the retired system route
+  with the drain. Development-mode status does not report the designated
+  repository, so pass `--repository-id matter-engine-cpp` (its existing
+  record). Its stored policy still names the retired system route
   `root-integration-train` from its 2026-09-09 train, and the policy binding
   replaces it. Its only check runs on the self-hosted `matter-engine-msvc`
   Windows runner, which must be online for any candidate to go green.
@@ -203,7 +233,9 @@ on:
 
 Land that change through the project's current path (disabled mode: a pull
 request a human merges), then run the planner again: it reclassifies as
-`github_ci`. Notes:
+`github_ci`. Until then the plan stops after this step, because the observe
+preflight never looks at CI: a train bound before the fix would pass its ready
+check and then never see a check run. Notes:
 
 - jackkern.com's `deploy.yml` publishes GitHub Pages on every push to `main`.
   It is a deployment workflow, never a required check. A train promotion
@@ -225,21 +257,21 @@ aq integration onboard-train quilt-trader --write-workflow ci.yml
 ```
 
 The template has one job, `Tests`, which becomes the required check. It runs
-on `pull_request` and on pushes to `aq/integration/**` and `aq/parent/**`,
-with `contents: read`, no secrets and no deploy step. For a Python project it
-runs `pip install -e '.[dev]'` (or `-r requirements.txt`) and then `pytest`.
-Pass `--test-command` when the project needs something else. File the
-workflow as a task in that project and merge it through its pull request.
-Make `Tests` green on `main`, then run the planner again: it reclassifies as
-`github_ci` with `Tests` as the check. A candidate cannot promote while the
-suite is red, so fix red tests before the flip, not after.
+on `pull_request` and on pushes to `main`, `aq/integration/**` and
+`aq/parent/**`, with `contents: read`, no secrets and no deploy step. For a
+Python project it runs `pip install -e '.[dev]'` (or `-r requirements.txt`) and
+then `pytest`. quilt-trader's tests likely also need its `coordinator` and
+`worker` extras. The task that lands the workflow adjusts the install line,
+and `--test-command` replaces the steps outright. File the workflow as a task
+in that project and merge it through its pull request. Make `Tests` green on
+`main`, then run the planner again: it reclassifies as `github_ci` with
+`Tests` as the check. A candidate cannot promote while the suite is red, so
+fix red tests before the flip, not after.
 
-The plan also prints an **optional interim**: the development train, using a
-validation command that installs into a throwaway virtualenv outside AQ's
-clone. Use it only if batched delivery must start before CI exists. It
-publishes without a pull request, and the later train cutover starts by
-draining it. For quilt-trader, keep pull request review until the workflow
-lands.
+There is no local-validation interim. The development publisher validates
+only through the job queue's fixed presets (next section), and none of them
+can install these projects' dependencies. Keep each project's pull request
+review until its workflow lands.
 
 ### Local remotes: matter-engine-web, quilt-trader-web, agent-queue-site
 
@@ -247,29 +279,38 @@ These push to bare repositories under `~/.agent-queue/local-remotes/`.
 Hierarchy and train need github.com (`delivery_path_problems` and the
 `integration.delivery_path` doctor check), and no pull request can exist on
 disk. Their train is the **development publisher**. It keeps the batch
-journal, the pre-publish validation and the exact-lease push, needs no forge,
-and replaces agile-ridge's per-task direct delivery for these projects:
+journal, dependency ordering and the exact-lease push, needs no forge, and
+replaces agile-ridge's per-task direct delivery for these projects:
 
 ```bash
-aq integration onboard-train matter-engine-web
+aq integration onboard-train matter-engine-web --repo ~/dev/websites/matter-engine
 # prints:
-aq integration develop matter-engine-web --validation focused --command 'npm ci && npm test && npm run build' --interval-seconds 300 --reason 'onto the development train: batched, validated delivery'
+aq integration develop matter-engine-web --validation none --interval-seconds 300 --reason 'onto the development train: batched, lease-guarded delivery'
 ```
 
 - `develop` designates the project's repository itself when the project has
   none (`development-<hash>` from the project URL). No binding step is needed.
-- The validation command runs under `bash -c` in AQ's retained clone with the
-  daemon's environment. The daemon's `PATH` must reach `node`/`npm`/`pnpm`
-  (this box: `~/.local/share/pnpm`), or use absolute paths. `node_modules/`
-  and `dist/` are git-ignored in all three repositories, so validation leaves
-  the clone clean. Validation that leaves the tree dirty refuses publication.
+- **Validation is `none`, and that is deliberate.** Development validation runs
+  no shell. `src/integration/development_validation.py` submits each command
+  to the job queue, which maps it onto a fixed preset
+  (`src/jobs/adapters.finite_command`). The presets are `pytest` or `aq test`
+  in the daemon's own interpreter, `ruff check`, and `npm run build` with no
+  arguments through `/usr/bin/npm`, which this box does not have. Anything
+  else is refused as an infrastructure outcome, and that defers every batch
+  forever. `develop` does not reject it up front. No preset can install and
+  test a Node project, so each task's own close checks remain the gate, as
+  they were under direct delivery. The planner leaves out any
+  `--validation-command` that is not a preset, and names it in the problems.
+  Task `agile-pinnacle` tracks adding install and test presets, rejecting
+  non-preset commands at configure time, and correcting the development
+  docs, which still describe `bash -c`.
 - `aq task deliver` refuses a development project. The plan lists any BLOCKED
   task to deliver first. None was BLOCKED on 2026-09-27.
 - agent-queue-site's `deploy.yml` would deploy a preview on every push,
   including a train candidate. That matters only if the site moves to GitHub.
   On disk no workflow runs.
 
-## Legacy pull requests
+## 5. Legacy pull requests
 
 The cutover task named quilt-trader #3-#9, rom-downloader #1-2, jackkern.com
 #37-38 and outrider-ide #1-2 as open and approved. Read with `gh pr view` on
@@ -311,7 +352,7 @@ aq git pr-merge --project-id PROJECT --pr-url URL --method merge
 `onboard-train` asks `gh` for each completed task's PR state (`--check-prs`,
 the default) and puts only the still-open ones in this step.
 
-## quilt-trader is live money
+## 6. quilt-trader is live money
 
 The coordinator (FastAPI on port 8000) runs from the working tree of
 `~/dev/quilt-trader`, the project's primary workspace. Cron runs
@@ -343,7 +384,7 @@ redeploy nor restart it:
   are read-only and belong to the `quilt-health-checks` container, not to any
   integration train.
 
-## 6. After observe: the supervisor's flips
+## 7. After observe: the supervisor's flips
 
 Once observe reports ready with zero blockers, take a fresh generation and
 flip each project, one at a time:

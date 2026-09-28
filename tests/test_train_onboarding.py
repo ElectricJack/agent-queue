@@ -128,7 +128,7 @@ def test_deploy_workflows_never_become_required_checks():
     site = onboarding.classify("/srv/site.git", _workflows("agent-queue-site"))
     site_deploy = next(r for r in site.workflows if r.path.endswith("deploy.yml"))
     assert site_deploy.push_on_train_refs
-    assert any("every candidate push deploys" in note for note in site_deploy.notes)
+    assert any("deploys on every candidate push" in note for note in site_deploy.notes)
 
 
 def test_self_hosted_runners_are_named():
@@ -206,6 +206,13 @@ def test_path_filtered_push_cannot_gate_the_train():
         ("needs.guard.outputs.configured == 'true'", None),
         ("startsWith(github.ref, 'refs/heads/aq/')", None),
         ("!(github.event_name == 'push')", False),
+        ("github.ref == 'refs/heads/main'", False),
+        ("github.ref_name != 'main'", True),
+        ("github.ref == 'refs/heads/aq/integration/x'", None),
+        ("always()", True),
+        ("success() && github.event_name == 'push'", True),
+        ("failure()", False),
+        ("!cancelled()", True),
     ],
 )
 def test_job_conditions_are_decided_for_push_events(condition, runs):
@@ -348,7 +355,9 @@ def test_check_set_version_moves_with_the_names():
 def test_app_mode_plan_carries_a_valid_trust_manifest_and_variables():
     classification = onboarding.classify(GITHUB.format("outrider-ide"), _workflows("outrider-ide"))
     parent, root = _shared_routes()
-    facts = onboarding.ProjectFacts("outrider-ide", GITHUB.format("outrider-ide"))
+    facts = onboarding.ProjectFacts(
+        "outrider-ide", GITHUB.format("outrider-ide"), current_mode="disabled"
+    )
     plan = onboarding.plan_onboarding(
         facts,
         classification,
@@ -446,7 +455,7 @@ def test_unbound_project_binds_its_repository_record_and_resolves_legacy_prs_fir
     assert f"integration-repository '{record}'" in bind.commands[0]
 
 
-def test_trigger_missing_plan_starts_with_the_workflow_change():
+def test_trigger_missing_plan_stops_after_the_repository_changes():
     classification = onboarding.classify(GITHUB.format("jackkern.com"), _workflows("jackkern.com"))
     parent, root = _shared_routes()
     plan = onboarding.plan_onboarding(
@@ -454,27 +463,29 @@ def test_trigger_missing_plan_starts_with_the_workflow_change():
         classification,
         parent_route=parent,
         root_route=root,
+        credential_mode="app",
+        attestation_app_id=5075923,
+        github_repository_id=7,
     )
-    assert plan.steps[0].title == "Make CI run on the train's refs first"
+    assert _titles(plan) == [
+        "Make CI run on the train's refs first",
+        "App credential mode: publish the trust manifest and Actions variables",
+    ]
     assert plan.policy is not None
+    assert ".github/agent-queue-integration.json on main" in plan.steps[1].commands[0]
 
 
-def test_no_ci_plan_stops_at_the_workflow_and_offers_the_interim_path():
-    files = _files("quilt-trader")
+def test_no_ci_plan_stops_at_the_workflow():
     classification = onboarding.classify(GITHUB.format("quilt-trader"), {})
     plan = onboarding.plan_onboarding(
         onboarding.ProjectFacts("quilt-trader", GITHUB.format("quilt-trader")),
         classification,
         parent_route=None,
         root_route=None,
-        validation=onboarding.validation_command(files),
     )
-    assert _titles(plan) == [
-        "Land a CI workflow first",
-        "Optional interim: the development train until CI lands",
-    ]
+    assert _titles(plan) == ["Land a CI workflow first"]
     assert plan.policy is None
-    assert '"$venv/bin/pip" install' in plan.steps[1].commands[0]
+    assert "A local command cannot" in plan.steps[0].note
 
 
 def test_ci_template_gates_the_train_with_a_tests_job():
@@ -484,15 +495,16 @@ def test_ci_template_gates_the_train_with_a_tests_job():
         assert classification.shape == "github_ci"
         assert classification.required.names == ("Tests",)
         assert "${{ secrets." not in template
+        assert "      - main\n" in template
 
     assert "exit 1" in onboarding.ci_workflow_template({})
     assert "- run: make check" in onboarding.ci_workflow_template({}, test_command="make check")
+    pnpm = onboarding.suggested_commands(_files("agent-queue-site") | {"pnpm-lock.yaml": ""})
+    assert pnpm == ("pnpm install --frozen-lockfile", "pnpm check")
 
 
-def test_local_remote_plan_enters_development_with_a_validation_command():
-    files = _files("matter-engine-web") | {"package-lock.json": ""}
+def test_local_remote_plan_without_a_preset_publishes_unvalidated_batches():
     classification = onboarding.classify("/srv/local-remotes/matter-engine-web.git", {})
-    validation = onboarding.validation_command(files)
     plan = onboarding.plan_onboarding(
         onboarding.ProjectFacts(
             "matter-engine-web",
@@ -503,44 +515,149 @@ def test_local_remote_plan_enters_development_with_a_validation_command():
         classification,
         parent_route=None,
         root_route=None,
-        validation=validation,
     )
-    assert validation == "npm ci && npm test && npm run build"
     assert plan.path == "development"
     assert _titles(plan) == ["Deliver BLOCKED tasks first", "Enter the development train"]
     assert (
         plan.steps[1]
         .commands[0]
         .startswith(
-            "aq integration develop matter-engine-web --validation focused "
-            "--command 'npm ci && npm test && npm run build' --interval-seconds 300"
+            "aq integration develop matter-engine-web --validation none --interval-seconds 300"
         )
     )
+    assert "close checks remain the gate" in plan.steps[1].note
 
     already = onboarding.plan_onboarding(
         onboarding.ProjectFacts("x", "/srv/x.git", current_mode="development"),
         classification,
         parent_route=None,
         root_route=None,
-        validation="true",
     )
     assert _titles(already) == ["Already on the development train"]
 
 
-def test_pnpm_projects_prefer_their_check_script():
-    files = _files("agent-queue-site") | {"pnpm-lock.yaml": ""}
-    assert onboarding.validation_command(files) == "pnpm install --frozen-lockfile && pnpm check"
+def test_development_validation_keeps_only_job_presets():
+    from src.jobs.adapters import finite_command
 
-
-def test_missing_validation_is_a_problem_not_a_guess():
     plan = onboarding.plan_onboarding(
         onboarding.ProjectFacts("x", "/srv/x.git"),
         onboarding.classify("/srv/x.git", {}),
         parent_route=None,
         root_route=None,
+        validation=("npm run build", "npm ci && npm test", "python3 -m pytest -q tests"),
     )
-    assert "no validation command" in plan.problems[0]
-    assert "--command 'VALIDATION'" in plan.steps[-1].commands[0]
+    command = plan.steps[-1].commands[0]
+    assert (
+        "--validation focused --command 'npm run build' --command 'python3 -m pytest -q tests'"
+        in command
+    )
+    assert "npm ci" not in command
+    assert plan.validation_commands == ("npm run build", "python3 -m pytest -q tests")
+    assert any("'npm ci && npm test' is not a job preset" in p for p in plan.problems)
+    for printed in plan.validation_commands:
+        finite_command(printed)
+
+
+def test_main_only_deploy_job_leaves_the_rest_of_the_workflow_ci():
+    workflow = """
+on: push
+jobs:
+  test: {runs-on: x}
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    runs-on: x
+"""
+    report = onboarding.analyze_workflow("ci.yml", workflow)
+    assert not report.deployment
+    assert report.required_names == ("test",)
+    assert not report.notes
+    status = {job.job_id: job.status for job in report.jobs}
+    assert status == {"test": "required", "deploy": "excluded"}
+
+
+def test_push_only_ci_needs_a_trigger_fix_not_a_new_workflow():
+    workflow = "on:\n  push:\n    branches: [main]\njobs:\n  test: {runs-on: x}\n"
+    classification = onboarding.classify(GITHUB.format("p"), {"ci.yml": workflow})
+    assert classification.shape == "github_ci_trigger_missing"
+    assert classification.required.names == ("test",)
+    assert classification.trigger_fixes == ("ci.yml",)
+
+
+def test_a_job_needing_a_skipped_job_is_not_required():
+    workflow = """
+on: push
+jobs:
+  guard:
+    if: github.event_name == 'pull_request'
+    runs-on: x
+  tests:
+    needs: guard
+    runs-on: x
+  report:
+    needs: [tests]
+    runs-on: x
+  summary:
+    needs: guard
+    if: always()
+    runs-on: x
+"""
+    report = onboarding.analyze_workflow("ci.yml", workflow)
+    status = {job.job_id: (job.status, job.reason) for job in report.jobs}
+    assert status["tests"][0] == "excluded" and "needs guard" in status["tests"][1]
+    assert status["report"][0] == "excluded" and "needs tests" in status["report"][1]
+    assert status["summary"] == ("required", None)
+
+
+def test_a_shared_check_name_is_a_problem_and_blocks_the_policy():
+    one = "on: push\njobs:\n  a: {name: Tests, runs-on: x}\n"
+    two = "on: push\njobs:\n  b: {name: Tests, runs-on: x}\n"
+    classification = onboarding.classify(GITHUB.format("p"), {"one.yml": one, "two.yml": two})
+    assert classification.required.names == ("Tests",)
+    assert any("'Tests' is produced by one.yml:a, two.yml:b" in p for p in classification.problems)
+    parent, root = _shared_routes()
+    plan = onboarding.plan_onboarding(
+        onboarding.ProjectFacts("p", GITHUB.format("p")),
+        classification,
+        parent_route=parent,
+        root_route=root,
+    )
+    assert plan.policy is None
+    assert _titles(plan) == ["Resolve the problems above, then run onboard-train again"]
+
+
+def test_a_repository_url_binding_would_refuse_is_a_problem():
+    classification = onboarding.classify(
+        "git@github.com:ElectricJack/p.git", _workflows("outrider-ide")
+    )
+    assert classification.shape == "github_ci"
+    assert any("https://github.com/ElectricJack/p.git" in p for p in classification.problems)
+
+
+def test_development_project_with_an_unreported_repository_is_not_guessed():
+    classification = onboarding.classify(
+        GITHUB.format("matter-engine"), _workflows("matter-engine-cpp")
+    )
+    parent, root = _shared_routes()
+    plan = onboarding.plan_onboarding(
+        onboarding.ProjectFacts(
+            "matter-engine-cpp", GITHUB.format("matter-engine"), current_mode="development"
+        ),
+        classification,
+        parent_route=parent,
+        root_route=root,
+    )
+    assert any("--repository-id" in p for p in plan.problems)
+    assert _titles(plan)[-1] == "Resolve the problems above, then run onboard-train again"
+
+
+def test_trigger_fix_for_branches_ignore_names_the_patterns_to_drop():
+    text = "on:\n  push:\n    branches-ignore: ['aq/**', 'gh-pages']\n  pull_request:\njobs:\n  t: {runs-on: x}\n"
+    report = onboarding.analyze_workflow("ci.yml", text)
+    fix = onboarding.trigger_fix(report, text)
+    assert "branches-ignore" in fix and "aq/**" in fix and "gh-pages" not in fix.split(":")[-1]
+    assert "branches:" not in fix
 
 
 # ---------------------------------------------------------------------------
@@ -683,7 +800,8 @@ def test_cli_plans_from_git_alone_when_daemon_records_are_out_of_scope(tmp_path)
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)["data"]
     assert data["shape"] == "local_remote"
-    assert data["validation_command"] == "npm ci && npm test && npm run build"
+    assert data["validation_commands"] == []
+    assert "--validation none" in data["steps"][-1]["commands"][0]
     assert data["written"] == [str(workflow_path)]
     assert "name: Tests" in workflow_path.read_text()
 
@@ -699,6 +817,28 @@ def test_cli_needs_a_repository_url_when_the_project_is_unreadable(tmp_path):
     assert result.exit_code != 0
     assert "--repo-url" in result.output
 
+    subprocess.run(
+        ["git", "-C", str(repo), "remote", "add", "origin", GITHUB.format("p")], check=True
+    )
+    with patch("src.cli.integration._get_client", return_value=client):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--json",
+                "integration",
+                "onboard-train",
+                "p",
+                "--repo",
+                str(repo),
+                "--credential-mode",
+                "existing-login",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["shape"] == "github_no_ci"
+    assert "read from the checkout's origin" in data["problems"][0]
+
 
 def test_cli_human_output_keeps_commands_on_one_line(tmp_path):
     from src.cli.app import cli
@@ -711,7 +851,13 @@ def test_cli_human_output_keeps_commands_on_one_line(tmp_path):
             ]
         },
     )
-    client = _client({"get_project": None, "integration_status": None, "list_tasks": None})
+    client = _client(
+        {
+            "get_project": None,
+            "integration_status": {"repository_id": None, "effective_mode": "disabled"},
+            "list_tasks": None,
+        }
+    )
     with patch("src.cli.integration._get_client", return_value=client):
         result = CliRunner().invoke(
             cli,

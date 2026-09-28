@@ -797,10 +797,8 @@ def _render_onboarding(data: dict[str, Any]) -> None:
     for fix in data.get("trigger_fixes") or []:
         console.print("[bold]Trigger fix[/]")
         console.print(fix, markup=False, highlight=False, soft_wrap=True)
-    if data.get("validation_command"):
-        console.print(
-            f"validation command: {data['validation_command']}", markup=False, soft_wrap=True
-        )
+    for command in data.get("validation_commands") or []:
+        console.print(f"validation command: {command}", markup=False, soft_wrap=True)
     if data.get("trust_manifest"):
         console.print("App-mode trust manifest: ready (--write-trust-manifest writes it)")
     for problem in data.get("problems") or []:
@@ -838,8 +836,11 @@ def _render_onboarding(data: dict[str, Any]) -> None:
 @click.option("--check-version", help="Required-check set version (default: a digest of names).")
 @click.option("--github-repository-id", type=click.IntRange(min=1),
               help="Numeric GitHub id for the App-mode trust manifest (default: gh api).")
-@click.option("--validation-command",
-              help="Development-path validation command (default: derived from the stack).")
+@click.option("--validation-command", "validation_commands", multiple=True,
+              help="Development-path validation command; repeatable. Must be a job preset "
+                   "(pytest, aq test, ruff check, npm run build); default: none.")
+@click.option("--repository-id",
+              help="The project's integration repository id when status does not report it.")
 @click.option("--test-command", help="Test command for the --write-workflow template.")
 @click.option("--interval-seconds", type=click.IntRange(min=1), default=300, show_default=True)
 @click.option("--write-policy", type=click.Path(dir_okay=False),
@@ -855,7 +856,8 @@ def _render_onboarding(data: dict[str, Any]) -> None:
 def integration_onboard_train(
     ctx, project_id, repo_path, ref, repo_url, default_branch, credential_mode, route,
     intelligence_class, harness,
-    checks, check_version, github_repository_id, validation_command, test_command,
+    checks, check_version, github_repository_id, validation_commands, repository_id,
+    test_command,
     interval_seconds, write_policy, write_trust_manifest, write_workflow, check_prs,
 ):
     """Plan PROJECT_ID's move onto the integration train; print every step.
@@ -900,13 +902,24 @@ def integration_onboard_train(
         optional = {}
     project = optional.get("project") or {}
     status = optional.get("status") or {}
-    repository_url = repo_url or project.get("repo_url") or ""
-    if not repository_url:
-        raise click.UsageError(f"cannot read {project_id}'s repository URL; pass --repo-url")
-    branch = default_branch or project.get("repo_default_branch") or "main"
     repo = repo_path or project.get("workspace")
     if not repo or not Path(repo).is_dir():
         raise click.UsageError(f"{project_id} has no readable workspace; pass --repo PATH")
+    notes: list[str] = []
+    repository_url = repo_url or project.get("repo_url") or ""
+    if not repository_url:
+        # The supervisor's grants omit get_project: fall back to the checkout.
+        try:
+            repository_url = _git(repo, "remote", "get-url", "origin").strip()
+        except click.ClickException as exc:
+            raise click.UsageError(
+                f"cannot read {project_id}'s repository URL; pass --repo-url"
+            ) from exc
+        notes.append(
+            f"repository URL {repository_url!r} read from the checkout's origin; the binding "
+            "requires it to match the project record exactly (pass --repo-url to override)"
+        )
+    branch = default_branch or project.get("repo_default_branch") or "main"
     ref = ref or f"origin/{branch}"
     commit, workflows, files = _read_repository(repo, ref)
     classification = onboarding.classify(repository_url, workflows)
@@ -939,21 +952,37 @@ def integration_onboard_train(
         for task in _legacy(optional.get("completed"))
         if task.get("pr_url") and not task.get("parent_task_id")
     ]
+    unchecked = 0
     if check_prs and legacy:
-        still_open = []
-        for task_id, url in legacy[:50]:
-            state = _gh_json("pr", "view", url, "--json", "state", "--jq", ".state")
-            if state is None or state == "OPEN":
-                still_open.append((task_id, url))
-        legacy = still_open
+        # A bounded number of gh reads; the rest are reported, never dropped.
+        checked, unchecked = legacy[:50], max(0, len(legacy) - 50)
+        legacy = [
+            (task_id, url)
+            for task_id, url in checked
+            if _gh_json("pr", "view", url, "--json", "state", "--jq", ".state") in (None, "OPEN")
+        ]
+    completed = optional.get("completed") or {}
+    if completed.get("hidden_completed") or (completed.get("total") or 0) > len(
+        completed.get("tasks") or []
+    ):
+        notes.append("the daemon capped the completed-task list; some legacy PRs may be unlisted")
+    designated = repository_id or status.get("repository_id") or next(
+        (
+            row.get("repository_id")
+            for row in status.get("deliveries") or []
+            if isinstance(row, dict) and row.get("repository_id")
+        ),
+        None,
+    )
     facts = onboarding.ProjectFacts(
         project_id=project_id,
         repository_url=repository_url,
         default_branch=branch,
-        integration_repository_id=status.get("repository_id"),
+        integration_repository_id=designated,
         current_mode=status.get("effective_mode"),
         legacy_pull_requests=tuple(legacy),
         blocked_tasks=tuple(task["id"] for task in _legacy(optional.get("blocked"))),
+        unchecked_pull_requests=unchecked,
     )
     policy_path = write_policy or f"train-policy.{project_id}.json"
     plan = onboarding.plan_onboarding(
@@ -968,7 +997,7 @@ def integration_onboard_train(
         check_version=check_version,
         attestation_app_id=app_id,
         github_repository_id=github_repository_id,
-        validation=validation_command or onboarding.validation_command(files),
+        validation=validation_commands,
         interval_seconds=interval_seconds,
         policy_path=policy_path,
         manifest_path=write_trust_manifest or onboarding.TRUST_MANIFEST_PATH,
@@ -989,6 +1018,7 @@ def integration_onboard_train(
         _write(write_workflow, onboarding.ci_workflow_template(files, test_command=test_command))
     by_path = {report.path: report for report in classification.workflows}
     data = plan.as_dict()
+    data["problems"] = [*notes, *data["problems"]]
     data.update(
         source={"repo": repo, "ref": ref, "commit": commit},
         trigger_fixes=[
