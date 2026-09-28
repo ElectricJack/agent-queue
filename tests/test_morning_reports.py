@@ -59,9 +59,9 @@ def snapshot():
     }
 
 
-async def build(data=None, *, observed=None, **kwargs):
+async def build(data=None, *, observed=None, git=None, **kwargs):
     db = SimpleNamespace(collect_morning_report_sources=AsyncMock(return_value=data or snapshot()))
-    git = SimpleNamespace()
+    git = git or SimpleNamespace()
     from unittest.mock import patch
 
     with patch(
@@ -153,12 +153,51 @@ async def test_projects_without_repositories_ignore_vault_and_snapshot_bases(tmp
     assert read.call_args.kwargs["checkout"] == str(tmp_path)
 
 
-async def test_ambiguous_project_repo_bases_stay_unavailable(tmp_path):
+@pytest.mark.parametrize(
+    ("primary_name", "expected"),
+    [("p-primary", "primary"), ("ordinary", "other")],
+)
+async def test_matching_project_repo_bases_select_deterministically(
+    tmp_path, primary_name, expected
+):
+    repo = {**frozen("repos")[0], "source_type": "clone", "source_path": ""}
+    primary, other = tmp_path / "primary", tmp_path / "other"
+    data = repository_snapshot(
+        [repo],
+        [
+            {**workspace("p", other), "name": "other"},
+            {**workspace("p", primary), "name": primary_name},
+        ],
+    )
+    git = SimpleNamespace(
+        aget_remote_url=AsyncMock(
+            side_effect={
+                str(other): "git@github.com:example/repo.git",
+                str(primary): "https://github.com/example/repo",
+            }.get
+        )
+    )
+    result, _, read = await build(data, git=git)
+    assert read.call_args.kwargs["checkout"] == str(tmp_path / expected)
+    assert git.aget_remote_url.await_count == 2
+    assert result["brief"]["git"]["p"]["repository_id"] == "repo-p"
+
+
+@pytest.mark.parametrize("second_url", ["https://github.com/example/other", None])
+async def test_different_or_unreadable_project_repo_bases_stay_unavailable(tmp_path, second_url):
     repo = {**frozen("repos")[0], "source_type": "clone", "source_path": ""}
     data = repository_snapshot(
         [repo], [workspace("p", tmp_path / "one"), workspace("p", tmp_path / "two")]
     )
-    result, _, read = await build(data)
+    git = SimpleNamespace(
+        aget_remote_url=AsyncMock(
+            side_effect={
+                str(tmp_path / "one"): "https://github.com/example/repo",
+                str(tmp_path / "two"): second_url,
+            }.get
+        )
+    )
+    result, _, read = await build(data, git=git)
     read.assert_not_awaited()
     assert {"source": "git:p", "reason": "configured_repository_unavailable"} in result[
         "brief"
