@@ -167,6 +167,9 @@ The schema is SQLAlchemy Core `Table`s in `src/database/tables.py`; revisions li
 - **`server_default` takes the bare value** (`"system"`, not `"'system'"`); booleans use
   `sa.false()` / `sa.true()` (`tests/test_migration_string_defaults.py`,
   `tests/test_migration_boolean_defaults.py`).
+- **JSON columns are `JSONB`, never `sa.JSON`**: `json` has no equality operator, so any
+  whole-row `DISTINCT`/`UNION`/`GROUP BY` over the table fails at plan time
+  (`tests/test_migration_json_columns.py`; the 2026-09-28 scheduler outage).
 - Revision ids are sequential (`a000000000NN`), so two sibling branches can claim the
   same one: after rebasing, check `alembic heads` and re-chain the later file.
 

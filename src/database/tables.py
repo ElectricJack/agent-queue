@@ -32,6 +32,7 @@ from sqlalchemy import (
     text,
     true,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
 
@@ -221,9 +222,12 @@ tasks = Table(
     # Mandatory routing (spec 2026-09-28 §3 I1, §4): who wrote the route in
     # ``profile_id`` (``src.routing.sources``), the filer's intelligence-class
     # hint, and the router's explainable record of the route it chose.
+    # ``route`` is JSONB, never plain JSON: ``json`` has no equality operator,
+    # so any DISTINCT, UNION or GROUP BY over a whole ``tasks`` row fails
+    # (outage 2026-09-28; revision a00000000040, tests/test_migration_json_columns.py).
     Column("route_source", Text, nullable=False, server_default="unrouted"),
     Column("class_hint", Text, nullable=True),
-    Column("route", JSON(none_as_null=True), nullable=True),
+    Column("route", JSONB(none_as_null=True), nullable=True),
     CheckConstraint(
         "provider_intent IN ('pinned','preferred','class_only')",
         name="ck_tasks_provider_intent",

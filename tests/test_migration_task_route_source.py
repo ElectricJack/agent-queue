@@ -11,7 +11,6 @@ from alembic import command
 from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
-from alembic.script import ScriptDirectory
 
 from src.database.engine import create_postgres_engine
 from tests.alembic_revisions import previous_revision
@@ -68,11 +67,6 @@ def routes(conn) -> dict[str, tuple[str, str | None]]:
 def bindings(conn) -> dict[str, str | None]:
     rows = conn.execute(sa.text("SELECT id, assignment_playbook_id FROM projects")).all()
     return dict(rows)
-
-
-def test_single_head():
-    script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert script.get_heads() == [REVISION]
 
 
 @pytest.mark.parametrize("existing", ["legacy", "fresh"])

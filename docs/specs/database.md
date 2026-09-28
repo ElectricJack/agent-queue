@@ -563,7 +563,7 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `rerouted_from` | TEXT | nullable | The profile the task was on before its first automatic re-route that has not been undone (D17); NULL means "where it was put". Partial index `idx_tasks_rerouted` on (`profile_id`) WHERE `rerouted_from IS NOT NULL` is what the re-route trickle counts |
 | `route_source` | TEXT | NOT NULL DEFAULT 'unrouted' | Who wrote the route in `profile_id` (mandatory-task-routing spec 2026-09-28 §3, `ck_tasks_route_source`): `unrouted`, `router`, `override`, `role` (a stage profile: triage, spec-ingest, reviewer, final-reviewer) or `legacy`. Until every writer declares one, the query layer stamps a profile written with no source `role` or `legacy` (`src/routing/sources.py`). Added by `a00000000039` |
 | `class_hint` | TEXT | nullable | The filer's intelligence-class hint to the router; `a00000000039` backfilled it from `intelligence_class` |
-| `route` | JSON | nullable | The router's record of the route it chose: hints, classification, rule, lane, candidates and scores, policy digest, playbook run. Added by `a00000000039` |
+| `route` | JSONB | nullable | The router's record of the route it chose: hints, classification, rule, lane, candidates and scores, policy digest, playbook run. Added by `a00000000039` as JSON; `a00000000040` retyped it JSONB, because a plain `json` column fails every whole-row `SELECT DISTINCT tasks.*` (outage 2026-09-28) |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
