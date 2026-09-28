@@ -1,11 +1,15 @@
-"""Convert tasks.route from json to jsonb so task rows support DISTINCT.
+"""Retype tasks.route from json to jsonb so whole-row DISTINCT works.
 
 Revision ID: a00000000040
 Revises: a00000000039
 
-The squashed baseline uses live metadata, and the operator database was
-already converted out of band. Only databases whose route column is still
-json need an ALTER; both paths preserve existing route records.
+Revision a00000000039 added tasks.route as plain json, which has no equality
+operator. The scheduler's SELECT DISTINCT tasks.* then failed every cycle.
+The squashed baseline uses live JSONB metadata and production was patched out
+of band, so only databases still using json need an ALTER.
+
+Downgrade leaves the column as jsonb: restoring json would restore the outage,
+and the a00000000039 code can read and write jsonb unchanged.
 """
 
 import sqlalchemy as sa
@@ -34,21 +38,11 @@ def upgrade() -> None:
     op.alter_column(
         "tasks",
         "route",
-        type_=JSONB(),
+        type_=JSONB(none_as_null=True),
         existing_nullable=True,
         postgresql_using="route::jsonb",
     )
 
 
 def downgrade() -> None:
-    current = _route_type(op.get_bind())
-    if isinstance(current, JSONB):
-        op.alter_column(
-            "tasks",
-            "route",
-            type_=JSON(),
-            existing_nullable=True,
-            postgresql_using="route::json",
-        )
-    elif not isinstance(current, JSON):
-        raise RuntimeError(f"tasks.route has unexpected type {current!r}; expected jsonb")
+    pass
