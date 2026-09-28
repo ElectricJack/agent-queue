@@ -1,0 +1,46 @@
+{
+  "url": "https://api.github.com/repos/ElectricJack/aq-gh615-app-fixture-20260923/branches/main/protection",
+  "required_status_checks": {
+    "url": "https://api.github.com/repos/ElectricJack/aq-gh615-app-fixture-20260923/branches/main/protection/required_status_checks",
+    "strict": false,
+    "contexts": [
+      "fixture"
+    ],
+    "contexts_url": "https://api.github.com/repos/ElectricJack/aq-gh615-app-fixture-20260923/branches/main/protection/required_status_checks/contexts",
+    "checks": [
+      {
+        "context": "fixture",
+        "app_id": 15368
+      }
+    ]
+  },
+  "required_signatures": {
+    "url": "https://api.github.com/repos/ElectricJack/aq-gh615-app-fixture-20260923/branches/main/protection/required_signatures",
+    "enabled": false
+  },
+  "enforce_admins": {
+    "url": "https://api.github.com/repos/ElectricJack/aq-gh615-app-fixture-20260923/branches/main/protection/enforce_admins",
+    "enabled": false
+  },
+  "required_linear_history": {
+    "enabled": false
+  },
+  "allow_force_pushes": {
+    "enabled": false
+  },
+  "allow_deletions": {
+    "enabled": false
+  },
+  "block_creations": {
+    "enabled": false
+  },
+  "required_conversation_resolution": {
+    "enabled": false
+  },
+  "lock_branch": {
+    "enabled": false
+  },
+  "allow_fork_syncing": {
+    "enabled": false
+  }
+}

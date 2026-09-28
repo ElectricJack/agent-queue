@@ -1,0 +1,29 @@
+[
+  {
+    "type": "deletion",
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "ElectricJack/agent-queue",
+    "ruleset_id": 21960669
+  },
+  {
+    "type": "non_fast_forward",
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "ElectricJack/agent-queue",
+    "ruleset_id": 21960669
+  },
+  {
+    "type": "required_status_checks",
+    "parameters": {
+      "strict_required_status_checks_policy": false,
+      "do_not_enforce_on_create": false,
+      "required_status_checks": [
+        {
+          "context": "aq-train/candidate"
+        }
+      ]
+    },
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "ElectricJack/agent-queue",
+    "ruleset_id": 24002443
+  }
+]

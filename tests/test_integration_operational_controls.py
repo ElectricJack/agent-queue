@@ -35,7 +35,7 @@ from src.database.tables import (
 from src.git.github import GitHubAccess, GitHubClient
 from src.git.github_app import AppTokenProvider, GitHubRepositoryBinding, HttpResponse
 from src.git.github_auth import GitHubAuth
-from src.git.github_contracts import GitHubCredentialIdentity
+from src.git.github_contracts import GitHubAccessError, GitHubCredentialIdentity
 from src.integration.controls import IntegrationControlService, daemon_functional_preflight
 from src.integration.preflight import FunctionalPreflight
 from src.integration.hierarchy import HierarchyIntegration
@@ -986,7 +986,7 @@ async def test_history_waiver_applicability_is_honored_by_later_cutovers(db):
 
 @pytest.fixture
 def protected(monkeypatch):
-    """Default-branch protection reads as ``attested_only`` (the reader is a stub)."""
+    """Default-branch protection reads as ``attested_only`` without the reader's reads."""
     from src.integration import app_mode
 
     async def attested_only(_ctx):
@@ -1124,6 +1124,9 @@ class _AppModeClient:
         return "a" * 40
 
     async def paged_list(self, path, *, max_pages):
+        if path == "/repositories/303/rules/branches/main?per_page=100":
+            # The App cannot read the rules: protection is unverifiable.
+            raise GitHubAccessError("permission", "GitHub request failed")
         assert path == f"/repositories/303/contents/.github/workflows?ref={'a' * 40}"
         return [{"type": "file", "path": path} for path in self.workflows]
 
@@ -1196,7 +1199,7 @@ async def test_non_numeric_producer_does_not_hide_another_manifest_mismatch(db, 
     )
 
 
-async def test_app_mode_preflight_blocks_on_unverifiable_protection_until_the_reader_lands(db):
+async def test_app_mode_preflight_blocks_on_unreadable_protection(db):
     orchestrator = _preflight_orchestrator(db, _AppModeClient(ci_producer_app_id=1234))
 
     # Unverifiable is a blocker in App mode, never "unprotected" (spec §8.3).

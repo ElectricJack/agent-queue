@@ -2529,9 +2529,32 @@ class IntegrationCommandsMixin:
         )
         if refusal is not None:
             return _failure("unauthorized", refusal)
+        from src.git.github_contracts import GitHubCredentialIdentity
+        from src.integration import protection
+
+        orchestrator = getattr(self, "orchestrator", None)
+        resolver = getattr(orchestrator, "github_repository_binding_resolver", None)
+        factory = getattr(orchestrator, "github_client_factory", None)
+        identity = getattr(getattr(orchestrator, "github_access", None), "credential_identity", None)
+        guard = None
+        if resolver is not None and factory is not None:
+            # The App's push must get past the default branch's protection
+            # (App-mode spec §8.2); never a rules write.
+            async def guard(repository):
+                project = await self.db.get_project(args["project_id"])
+                return await protection.development_guard(
+                    repository,
+                    binding_resolver=resolver,
+                    client_factory=factory,
+                    identity=identity if isinstance(identity, GitHubCredentialIdentity) else None,
+                    policy=protection.bound_policy(project),
+                )
         try:
             return await self._development_integration().configure(
-                args["project_id"], args["policy"], reason=args["reason"], operator_id=operator_id)
+                args["project_id"], args["policy"], reason=args["reason"], operator_id=operator_id,
+                protection_guard=guard)
+        except protection.DevelopmentPublisherBlocked as exc:
+            return {**_failure("blocked", str(exc)), "blockers": [exc.blocker()]}
         except (ValueError, RuntimeError, KeyError) as exc:
             return _failure("blocked", str(exc))
 
