@@ -380,9 +380,8 @@ class DependencyQueryMixin:
     async def get_stuck_defined_tasks(self, threshold_seconds: int) -> list[Task]:
         """Return DEFINED tasks blocked by a BLOCKED or FAILED dependency.
 
-        A semi-join, not ``SELECT DISTINCT`` over a join: ``tasks.route`` is
-        ``json``, which PostgreSQL cannot compare, so a DISTINCT over whole
-        task rows fails to plan (fair-grove-86).
+        A semi-join avoids comparing whole task rows in ``SELECT DISTINCT``.
+        That query failed when ``tasks.route`` was a PostgreSQL ``json`` column.
         """
         async with self._engine.begin() as conn:
             dep_tasks = tasks.alias("dep")

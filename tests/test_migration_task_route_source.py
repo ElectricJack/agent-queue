@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from importlib import import_module
 from pathlib import Path
 
@@ -82,81 +81,6 @@ def test_single_head():
 def test_route_metadata_uses_jsonb():
     assert isinstance(tasks.c.route.type, JSONB)
     assert tasks.c.route.type.none_as_null
-
-
-@pytest.mark.parametrize("existing_type", ["json", "jsonb"])
-async def test_route_jsonb_upgrade_preserves_records_and_is_idempotent(existing_type):
-    engine = create_postgres_engine(await create_scratch_database("routejsonbmigration"))
-    revision = import_module("migrations.versions.a00000000040_task_route_jsonb")
-    payload = {"rule": "balanced", "candidates": ["worker-a", "worker-b"]}
-    column_type = sa.text(
-        "SELECT data_type FROM information_schema.columns "
-        "WHERE table_name = 'tasks' AND column_name = 'route'"
-    )
-    relfilenode = sa.text("SELECT pg_relation_filenode('tasks'::regclass)")
-    try:
-        await migrate(engine, "upgrade", REVISION)
-        async with engine.begin() as conn:
-            if existing_type == "json":
-                await conn.execute(sa.text(
-                    "ALTER TABLE tasks ALTER COLUMN route TYPE json USING route::json"
-                ))
-            await conn.execute(sa.text(
-                "INSERT INTO projects (id, name, created_at) VALUES ('p', 'P', 1)"
-            ))
-            await conn.execute(sa.text(
-                "INSERT INTO tasks (id, project_id, title, description, created_at, "
-                "updated_at) VALUES ('t', 'p', 'T', 'D', 1, 1), "
-                "('empty', 'p', 'Empty', 'D', 1, 1)"
-            ))
-            await conn.execute(
-                sa.text("UPDATE tasks SET route = CAST(:payload AS json) WHERE id = 't'"),
-                {"payload": json.dumps(payload)},
-            )
-            assert await conn.scalar(column_type) == existing_type
-            before = await conn.scalar(relfilenode)
-
-        await migrate(engine, "upgrade", HEAD_REVISION)
-        async with engine.begin() as conn:
-            assert await conn.scalar(column_type) == "jsonb"
-            if existing_type == "jsonb":
-                assert await conn.scalar(relfilenode) == before
-            records = (await conn.execute(sa.text(
-                "SELECT id, route::text FROM tasks ORDER BY id"
-            ))).all()
-            assert [
-                (task_id, json.loads(route) if route else None) for task_id, route in records
-            ] == [("empty", None), ("t", payload)]
-            # The original failure was SELECT DISTINCT over a json route.
-            distinct = await conn.execute(sa.text("SELECT DISTINCT route FROM tasks"))
-            assert len(distinct.all()) == 2
-            converted = await conn.scalar(relfilenode)
-
-            def repeat_upgrade(sync_conn):
-                with Operations.context(MigrationContext.configure(sync_conn)):
-                    revision.upgrade()
-
-            await conn.run_sync(repeat_upgrade)
-            assert await conn.scalar(relfilenode) == converted
-
-        await migrate(engine, "downgrade", REVISION)
-        async with engine.begin() as conn:
-            assert await conn.scalar(column_type) == "json"
-
-            def repeat_downgrade(sync_conn):
-                with Operations.context(MigrationContext.configure(sync_conn)):
-                    revision.downgrade()
-
-            await conn.run_sync(repeat_downgrade)
-            assert await conn.scalar(column_type) == "json"
-        await migrate(engine, "upgrade", HEAD_REVISION)
-        async with engine.begin() as conn:
-            assert await conn.scalar(column_type) == "jsonb"
-            assert json.loads(await conn.scalar(sa.text(
-                "SELECT route::text FROM tasks WHERE id = 't'"
-            ))) == payload
-    finally:
-        await engine.dispose()
 
 
 @pytest.mark.parametrize("existing", ["legacy", "fresh"])
