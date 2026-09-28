@@ -279,6 +279,27 @@ class TestRequestForwarding:
         assert result.exit_code == 0, result.output
         assert "requires_kinds" not in captured
 
+    @pytest.mark.parametrize("source", ["--graph", "--from-spec"])
+    def test_after_review_is_forwarded_with_a_graph(self, runner, tmp_path, source):
+        """A graph gated on a review is one command, not a hand edit per node."""
+        graph = tmp_path / "graph.json"
+        graph.write_text('{"version": 1, "nodes": [{"key": "a", "title": "A"}]}')
+        captured: dict = {}
+        with patch(
+            "src.cli.tasks._get_client",
+            return_value=_capture_client(captured, "create_task_graph"),
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "task", "create", "--project", "p1",
+                    source, str(graph) if source == "--graph" else "specs/x.md",
+                    "--after-review", "review-42",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert captured["after_review"] == "review-42"
+
 
 # ---------------------------------------------------------------------------
 # Persistence — the parsed values against a real handler and database

@@ -3210,19 +3210,9 @@ class TaskCommandsMixin:
         # updated atomically.
         after_review = args.get("after_review")
         if after_review is not None:
-            review = await self.db.get_review(str(after_review))
-            if review is None:
-                return {
-                    "success": False,
-                    "error_code": "not_found",
-                    "error": f"review '{after_review}' not found",
-                }
-            if review["state"] == "withdrawn":
-                return {
-                    "success": False,
-                    "error_code": "review_closed",
-                    "error": f"review '{after_review}' is withdrawn and cannot gate work",
-                }
+            review_error, review = await self._review_for_gating(after_review)
+            if review_error is not None:
+                return review_error
             if review["state"] != "approved":
                 async with self.db.immediate() as conn:
                     flipped = await self.db.attach_gate_waiters(
@@ -3435,6 +3425,29 @@ class TaskCommandsMixin:
 
         return result
 
+    async def _review_for_gating(self, review_id: str) -> tuple[dict | None, dict | None]:
+        """Resolve the review an ``after_review`` argument names: ``(error, review)``.
+
+        A missing review is ``not_found`` and a withdrawn one ``review_closed``;
+        either way nothing may be attached to its gate.  An approved review is
+        returned like any other — its gate is resolved, so the caller attaches
+        nothing.
+        """
+        review = await self.db.get_review(str(review_id))
+        if review is None:
+            return {
+                "success": False,
+                "error_code": "not_found",
+                "error": f"review '{review_id}' not found",
+            }, None
+        if review["state"] == "withdrawn":
+            return {
+                "success": False,
+                "error_code": "review_closed",
+                "error": f"review '{review_id}' is withdrawn and cannot gate work",
+            }, None
+        return None, review
+
     async def _validate_graph_parent(
         self, project_id: str, parent_id: str | None
     ) -> tuple[dict | None, Task | None]:
@@ -3612,6 +3625,19 @@ class TaskCommandsMixin:
         spec_path = args.get("spec_path")
         if bool(raw_graph) == bool(spec_path):
             return {"error": "exactly one of 'graph' or 'spec_path' is required"}
+
+        # ``after_review`` gates every node on a document review, like
+        # ``create_task``'s.  Resolved before anything is parsed or written,
+        # so an unknown or withdrawn review never leaves an ungated graph.
+        after_review = args.get("after_review")
+        review = None
+        if after_review is not None:
+            review_error, review = await self._review_for_gating(after_review)
+            if review_error is not None:
+                return review_error
+        review_gate_id = (
+            review["gate_id"] if review is not None and review["state"] != "approved" else None
+        )
 
         parent_id = args.get("parent_id")
         parent = None
@@ -3806,6 +3832,7 @@ class TaskCommandsMixin:
                 parent_id=parent_id,
                 filing=filing,
                 container_parent_id=container_parent_id,
+                review_gate_id=review_gate_id,
             )
         except GraphFilingError as exc:
             return {
@@ -3826,6 +3853,13 @@ class TaskCommandsMixin:
                 await self._emit_task_graph_change("task.updated", container)
         report["project_id"] = project_id
         report["warnings"] = [w.to_dict() for w in warnings]
+        if review is not None:
+            report["after_review"] = {
+                "review_id": review["id"],
+                "gate_id": review["gate_id"],
+                # Empty for an approved review, whose gate is already resolved.
+                "gated_task_ids": report["task_ids"] if review_gate_id is not None else [],
+            }
         if class_matched:
             # node key -> the profile its class selected (profile_source
             # ``class_match``); other nodes kept their explicit or implicit route.
@@ -4226,19 +4260,9 @@ class TaskCommandsMixin:
         after_review = args.get("after_review")
         review = None
         if after_review is not None:
-            review = await self.db.get_review(str(after_review))
-            if review is None:
-                return {
-                    "success": False,
-                    "error_code": "not_found",
-                    "error": f"review '{after_review}' not found",
-                }
-            if review["state"] == "withdrawn":
-                return {
-                    "success": False,
-                    "error_code": "review_closed",
-                    "error": f"review '{after_review}' is withdrawn and cannot gate work",
-                }
+            review_error, review = await self._review_for_gating(after_review)
+            if review_error is not None:
+                return review_error
 
         if "status" in args and task.status == TaskStatus.PAUSED and task.resume_after is None:
             return {"error": "Task is manually paused; use resume_task."}
