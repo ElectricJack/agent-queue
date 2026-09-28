@@ -529,6 +529,81 @@ async def _run_cycle_and_wait(orch):
     await orch.wait_for_running_tasks()
 
 
+@pytest.mark.parametrize(
+    "failing_step",
+    [
+        "_resume_paused_tasks",
+        "_check_defined_tasks",
+        "_sweep_container_completion",
+        "_check_stuck_defined_tasks",
+        "_check_failed_blocked_tasks",
+        "_schedule",
+        "_sweep_operational_event_retention",
+        "_sweep_test_selection_retention",
+        "_maintain_conversations",
+        "_auto_archive_tasks",
+        "_reconcile_playbook_child_tasks",
+        "_check_paused_playbook_timeouts",
+        "_sweep_playbook_v2_retention",
+        "_reap_worktree_slots",
+        "_deliver_messages",
+        "_revoke_expired_tokens",
+    ],
+)
+async def test_failing_cycle_step_does_not_stop_pools_or_sessions(
+    orch, monkeypatch, failing_step
+):
+    """Each bare step can fail repeatedly without stalling pool/session convergence."""
+    # The known JSON DISTINCT failure in monitoring would otherwise mask later steps.
+    monkeypatch.setattr(orch, "_check_stuck_defined_tasks", AsyncMock())
+    monkeypatch.setattr(orch, "_check_failed_blocked_tasks", AsyncMock())
+    failure = AsyncMock(side_effect=RuntimeError(f"{failing_step} failed"))
+    monkeypatch.setattr(orch, failing_step, failure)
+    pools = AsyncMock()
+    sessions = AsyncMock()
+    monkeypatch.setattr(orch, "_reconcile_pools", pools)
+    monkeypatch.setattr(orch, "_reconcile_sessions", sessions)
+
+    await orch.run_one_cycle()
+    await orch.run_one_cycle()
+
+    assert failure.await_count == 2
+    assert pools.await_count == 2
+    assert sessions.await_count == 2
+
+
+async def test_failing_pool_reconciliation_does_not_stop_sessions(orch, monkeypatch, caplog):
+    pools = AsyncMock(side_effect=RuntimeError("pool failed"))
+    sessions = AsyncMock()
+    monkeypatch.setattr(orch, "_check_stuck_defined_tasks", AsyncMock())
+    monkeypatch.setattr(orch, "_reconcile_pools", pools)
+    monkeypatch.setattr(orch, "_reconcile_sessions", sessions)
+
+    await orch.run_one_cycle()
+
+    pools.assert_awaited_once_with()
+    sessions.assert_awaited_once_with()
+    assert caplog.text.count("Scheduler cycle error") == 1
+
+
+async def test_failed_cycle_logs_at_most_one_error_per_reconciler(orch, monkeypatch, caplog):
+    monkeypatch.setattr(
+        orch, "_resume_paused_tasks", AsyncMock(side_effect=RuntimeError("promotion failed"))
+    )
+    pools = AsyncMock(side_effect=RuntimeError("pool failed"))
+    sessions = AsyncMock(side_effect=RuntimeError("session failed"))
+    monkeypatch.setattr(orch, "_reconcile_pools", pools)
+    monkeypatch.setattr(orch, "_reconcile_sessions", sessions)
+
+    await orch.run_one_cycle()
+
+    pools.assert_awaited_once_with()
+    sessions.assert_awaited_once_with()
+    assert caplog.text.count("Scheduler cycle error") == 1
+    assert caplog.text.count("Pool reconciliation error") == 1
+    assert caplog.text.count("Session reconciliation error") == 1
+
+
 @pytest.mark.parametrize("enabled", [True, False])
 @pytest.mark.parametrize("child_completed", [True, False])
 async def test_session_cycle_playbook_sweeps_use_the_installed_handler(
