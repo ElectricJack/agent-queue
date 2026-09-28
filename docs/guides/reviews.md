@@ -201,7 +201,9 @@ From the worker's point of view the workflow is short:
    the content; the daemon returns the review id and the vault path.
 3. **Close** the task as pass with the review id and vault path in the
    summary. The worker does not wait for the decision; the work that depends
-   on it waits (via `--after-review`).
+   on it waits (via `--after-review`). A whole build graph takes it too:
+   `aq task create --from-spec <path> --after-review <id>` (or `--graph`)
+   attaches every node to the review's gate in the graph's own transaction.
 4. **Revise** if you hold a revision task (*"Revise \<title> (review \<id>)"*):
    `aq review show --review-id <id> --comments`, then resubmit with
    `aq review submit --review-id <id> --file <draft> --changes "…"

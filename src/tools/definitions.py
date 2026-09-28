@@ -5488,6 +5488,14 @@ _ALL_TOOL_DEFINITIONS = [
                         "session; recorded on every discovered-from provenance edge."
                     ),
                 },
+                "after_review": {
+                    "type": "string",
+                    "description": (
+                        "Attach every node of the graph to the named document review's "
+                        "gate until the review is approved. An unknown or withdrawn "
+                        "review refuses the whole graph; an approved one gates nothing."
+                    ),
+                },
             },
         },
     },

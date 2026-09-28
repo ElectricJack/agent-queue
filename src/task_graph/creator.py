@@ -40,6 +40,7 @@ from src.database.tables import (
     task_context,
     task_criteria,
     task_dependencies,
+    task_gates,
     task_labels,
     tasks,
 )
@@ -791,6 +792,7 @@ async def write_plan(
     routing_manager=None,
     hierarchy_service=None,
     filing: GraphFilingContext | None = None,
+    review_gate_id: str | None = None,
 ) -> None:
     """Persist a :class:`GraphPlan` in exactly one transaction.
 
@@ -824,6 +826,10 @@ async def write_plan(
     hierarchy, held-task and quota fence is the first operation in this
     transaction; newly created nodes receive trusted creator fields, durable
     request correlation, and a ``discovered-from`` edge before commit.
+
+    ``review_gate_id`` attaches every node (not the container or its phases,
+    which are never claimed) to that document review's open gate before
+    ``recompute_blocked``, so no node is claimable before its gate exists.
     """
     async with db._engine.begin() as conn:
         if filing is not None:
@@ -1057,6 +1063,11 @@ async def write_plan(
             label_stmt = ins(task_labels).values(task_id=plan.parent_id, label=provenance.label)
             label_stmt = label_stmt.on_conflict_do_nothing(index_elements=["task_id", "label"])
             await conn.execute(label_stmt)
+        if review_gate_id is not None and plan.node_rows:
+            await conn.execute(
+                insert(task_gates),
+                [{"task_id": task_id, "gate_id": review_gate_id} for task_id in plan.task_ids],
+            )
         # The phases are in the projection too, or the inter-phase gate is
         # never computed and phase 2 is claimable the moment it is released.
         # So is a worker's gated root container, which withholds its nodes.
@@ -1137,6 +1148,7 @@ async def create_graph(
     provenance: FormulaProvenance | None = None,
     filing: GraphFilingContext | None = None,
     container_parent_id: str | None = None,
+    review_gate_id: str | None = None,
 ) -> dict:
     """Create the graph, or report what creating it would do.
 
@@ -1147,7 +1159,8 @@ async def create_graph(
     given, is written inside ``write_plan``'s transaction (spec §13) and
     surfaced in the report — never persisted or reported on a dry run.
     *container_parent_id* files the graph's new container under that
-    existing task instead of at the project root.
+    existing task instead of at the project root.  *review_gate_id* gates
+    every node on that document review (``write_plan``).
     """
     db = handler.db
     if graph.phases:
@@ -1192,6 +1205,7 @@ async def create_graph(
         routing_manager=getattr(getattr(handler, "orchestrator", None), "playbook_manager", None),
         hierarchy_service=hierarchy_service,
         filing=filing,
+        review_gate_id=review_gate_id,
     )
     for task_id in plan.routing_task_ids:
         await handler._emit_admitted_routing_gates(task_id)
