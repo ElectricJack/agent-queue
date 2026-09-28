@@ -384,6 +384,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/providers/**"], areas: ["provider-failover", "provider-usage"] }
   - { paths: ["src/resources/**"], areas: ["resource-gating", "cli-test-runner"] }
   - { paths: ["src/reports/**"], areas: ["digest"] }
+  - { paths: ["src/routing/**"], areas: ["task-routing"] }
   - { paths: ["src/resources/test_db_reaper.py"], areas: ["test-substrate"] }
   - { paths: ["src/resources/slot_report.py"], areas: ["development-delivery"] }
   - { paths: ["src/reviews/**"], areas: ["document-reviews"] }

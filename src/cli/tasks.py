@@ -16,6 +16,7 @@ import click
 from .app import cli, console, _run, _get_client, _handle_errors
 from .claim_epoch import claim_epoch_option, resolve_claim_epoch
 from .envelope import emit
+from .styles import TASK_TYPES
 
 
 def _getval(obj: Any, key: str, default: Any = None) -> Any:
@@ -204,7 +205,13 @@ def _create_task_graph(
 @click.option("-t", "--title", default=None, help="Task title (skips wizard step)")
 @click.option("-d", "--description", default=None, help="Task description")
 @click.option("--priority", default=None, type=click.IntRange(1, 300), help="Priority (1-300)")
-@click.option("--type", "task_type", default=None, help="Task type")
+@click.option(
+    "--type",
+    "task_type",
+    type=click.Choice(TASK_TYPES),
+    default=None,
+    help="The kind of work, a hint to the router (design: code design; art: art-heavy design)",
+)
 @click.option(
     "--integration-mode",
     "integration_mode",

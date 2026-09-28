@@ -31,6 +31,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 
 from src.docs_urls import DEFAULT_DOCS_BASE_URL
+from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
 
 logger = logging.getLogger(__name__)
 
@@ -3086,6 +3087,24 @@ def load_provider_failover_config(section: object) -> ProviderFailoverConfig:
 
 
 @dataclass
+class RoutingConfig:
+    """Mandatory task routing (spec 2026-09-28 §8).
+
+    ``default_router`` is the routing playbook a new project is bound to
+    (``projects.assignment_playbook_id``): project creation and onboarding
+    both write it.  Read per project creation, so an edit applies to the next
+    project without a restart; existing projects keep their binding.
+    """
+
+    default_router: str = DEFAULT_ROUTER_PLAYBOOK_ID
+
+    def validate(self) -> list[ConfigError]:
+        if not isinstance(self.default_router, str) or not self.default_router.strip():
+            return [ConfigError("routing", "default_router", "must be a non-empty playbook id")]
+        return []
+
+
+@dataclass
 class GraphLayoutConfig:
     """Server-side task graph layout (spatial-layout design §8).
 
@@ -3350,6 +3369,7 @@ class AppConfig:
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
     providers: ProvidersConfig = field(default_factory=ProvidersConfig)
     provider_failover: ProviderFailoverConfig = field(default_factory=ProviderFailoverConfig)
+    routing: RoutingConfig = field(default_factory=RoutingConfig)
     graph_layout: GraphLayoutConfig = field(default_factory=GraphLayoutConfig)
     dashboard_server: DashboardServerConfig = field(default_factory=DashboardServerConfig)
     agent_profiles: list[AgentProfileConfig] = field(default_factory=list)
@@ -3570,6 +3590,7 @@ class AppConfig:
         errors.extend(self.metrics.validate())
         errors.extend(self.providers.validate())
         errors.extend(self.provider_failover.validate())
+        errors.extend(self.routing.validate())
         errors.extend(self.graph_layout.validate())
         errors.extend(self.dashboard_server.validate())
         if self.dashboard_server.port == self.mcp_server.port:
@@ -3688,6 +3709,7 @@ class AppConfig:
         updated.surface = fresh.surface
         updated.providers = fresh.providers
         updated.provider_failover = fresh.provider_failover
+        updated.routing = fresh.routing
 
         return updated
 
@@ -3736,6 +3758,8 @@ HOT_RELOADABLE_SECTIONS = {
     # the config getter rather than a copy, so a threshold edit bites on the
     # next piece of evidence (provider-failover D22).
     "provider_failover",
+    # Read when a project is created or onboarded (spec 2026-09-28 §8).
+    "routing",
     "docs",
     "graph_layout",
     # Read by the dashboard server process when it starts, never by the
@@ -4812,6 +4836,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
 
     if "provider_failover" in raw:
         config.provider_failover = load_provider_failover_config(raw["provider_failover"])
+
+    if "routing" in raw:
+        config.routing = RoutingConfig(**_dataclass_kwargs(RoutingConfig, raw["routing"]))
 
     # Both spellings: the spec nests it under ``dashboard``, while
     # ``config_editor``/``update_config`` write AppConfig field names as

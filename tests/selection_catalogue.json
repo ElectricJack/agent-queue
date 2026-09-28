@@ -714,6 +714,7 @@
         "tests/test_migration_string_defaults.py",
         "tests/test_migration_subagent_events.py",
         "tests/test_migration_supervisor_conversations.py",
+        "tests/test_migration_task_route_source.py",
         "tests/test_migration_test_selections.py",
         "tests/test_migration_token_cache_columns.py",
         "tests/test_migration_workspaces_v2.py",
@@ -1108,6 +1109,7 @@
         "tests/test_routing_gate_guard.py",
         "tests/test_task_class_routing.py",
         "tests/test_task_route.py",
+        "tests/test_task_route_source.py",
         "tests/test_task_routing_contract.py"
       ]
     },
@@ -1288,7 +1290,7 @@
       ]
     }
   },
-  "digest": "sha256:d1a2d69b6f9216a8a4d9b545150da5c381eb55cb4c59214f01f122d1ea976af6",
+  "digest": "sha256:c6b689784f09964b118d1a88ca15bd664d50c13c15d1ed072ed5d4bd4f956b57",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8869,6 +8871,20 @@
       ],
       "summary": "The supervisor-conversation revision upgrades idempotently on PostgreSQL."
     },
+    "tests/test_migration_task_route_source.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Revision a00000000039 (mandatory-routing §11 revision 1) on owned disposable PostgreSQL."
+    },
     "tests/test_migration_test_selections.py": {
       "areas": [
         "migrations"
@@ -12936,6 +12952,30 @@
       ],
       "markers": [],
       "summary": "Task 12 (dv2-p1): ``task_route`` command + ``routing`` gate integration."
+    },
+    "tests/test_task_route_source.py": {
+      "areas": [
+        "task-routing"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.models.task",
+        "src.cli.app",
+        "src.cli.styles",
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.models",
+        "src.routing.sources",
+        "src.task_graph.parser",
+        "src.task_graph.validator",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Route source, class hint, route record, router binding and the design/art kinds."
     },
     "tests/test_task_routing_contract.py": {
       "areas": [

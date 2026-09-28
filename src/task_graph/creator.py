@@ -44,6 +44,7 @@ from src.database.tables import (
     tasks,
 )
 from src.models import DepType, TaskStatus
+from src.routing.sources import stamped_route_source
 from src.task_graph.models import GraphNode, TaskGraph
 from src.task_names import (
     MAX_NAMING_DEPTH,
@@ -545,9 +546,15 @@ async def _insert_task(conn, row: dict) -> None:
     """Insert one task row.
 
     Factored out — and module-level — so the single-transaction guarantee can
-    be tested by patching this to fail partway through (§12).
+    be tested by patching this to fail partway through (§12).  A row naming a
+    profile without a route source gets the transitional stamp that
+    ``_insert_task_row`` applies (mandatory-routing spec §9.2).
     """
-    await conn.execute(insert(tasks).values(**_strip_private(row)))
+    values = _strip_private(row)
+    values["route_source"] = stamped_route_source(
+        values.get("profile_id"), values.get("route_source")
+    )
+    await conn.execute(insert(tasks).values(**values))
 
 
 def _rewrite_ids(plan: GraphPlan, real: dict[str, str]) -> None:

@@ -441,6 +441,7 @@ from .get_task_response_422 import GetTaskResponse422
 from .get_task_response_children_type_0 import GetTaskResponseChildrenType0
 from .get_task_response_deliverables_item import GetTaskResponseDeliverablesItem
 from .get_task_response_parent_type_0 import GetTaskResponseParentType0
+from .get_task_response_route_type_0 import GetTaskResponseRouteType0
 from .get_task_result_request import GetTaskResultRequest
 from .get_task_result_response import GetTaskResultResponse
 from .get_task_result_response_422 import GetTaskResultResponse422
@@ -1405,6 +1406,7 @@ from .task_detail import TaskDetail
 from .task_detail_children_type_0 import TaskDetailChildrenType0
 from .task_detail_deliverables_item import TaskDetailDeliverablesItem
 from .task_detail_parent_type_0 import TaskDetailParentType0
+from .task_detail_route_type_0 import TaskDetailRouteType0
 from .task_dict import TaskDict
 from .task_heartbeat_request import TaskHeartbeatRequest
 from .task_heartbeat_response_422 import TaskHeartbeatResponse422
@@ -1434,6 +1436,7 @@ from .task_set_response_context_item import TaskSetResponseContextItem
 from .task_set_response_deliverables_item import TaskSetResponseDeliverablesItem
 from .task_set_response_parent_type_0 import TaskSetResponseParentType0
 from .task_set_response_provenance_item import TaskSetResponseProvenanceItem
+from .task_set_response_route_type_0 import TaskSetResponseRouteType0
 from .task_show_request import TaskShowRequest
 from .task_show_response import TaskShowResponse
 from .task_show_response_422 import TaskShowResponse422
@@ -1442,6 +1445,7 @@ from .task_show_response_context_item import TaskShowResponseContextItem
 from .task_show_response_deliverables_item import TaskShowResponseDeliverablesItem
 from .task_show_response_parent_type_0 import TaskShowResponseParentType0
 from .task_show_response_provenance_item import TaskShowResponseProvenanceItem
+from .task_show_response_route_type_0 import TaskShowResponseRouteType0
 from .task_status_summary import TaskStatusSummary
 from .task_status_summary_by_status import TaskStatusSummaryByStatus
 from .task_status_summary_in_progress_item import TaskStatusSummaryInProgressItem
@@ -1991,6 +1995,7 @@ __all__ = (
     "GetTaskResponseChildrenType0",
     "GetTaskResponseDeliverablesItem",
     "GetTaskResponseParentType0",
+    "GetTaskResponseRouteType0",
     "GetTaskResultRequest",
     "GetTaskResultResponse",
     "GetTaskResultResponse422",
@@ -2947,6 +2952,7 @@ __all__ = (
     "TaskDetailChildrenType0",
     "TaskDetailDeliverablesItem",
     "TaskDetailParentType0",
+    "TaskDetailRouteType0",
     "TaskDict",
     "TaskHeartbeatRequest",
     "TaskHeartbeatResponse422",
@@ -2976,6 +2982,7 @@ __all__ = (
     "TaskSetResponseDeliverablesItem",
     "TaskSetResponseParentType0",
     "TaskSetResponseProvenanceItem",
+    "TaskSetResponseRouteType0",
     "TaskShowRequest",
     "TaskShowResponse",
     "TaskShowResponse422",
@@ -2984,6 +2991,7 @@ __all__ = (
     "TaskShowResponseDeliverablesItem",
     "TaskShowResponseParentType0",
     "TaskShowResponseProvenanceItem",
+    "TaskShowResponseRouteType0",
     "TaskStatusSummary",
     "TaskStatusSummaryByStatus",
     "TaskStatusSummaryInProgressItem",

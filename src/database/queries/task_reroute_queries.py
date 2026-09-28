@@ -23,6 +23,7 @@ from src.database.queries.blocked_state import apply_label_filters
 from src.database.queries.claim_queries import _frontier_predicates
 from src.database.tables import messages, sessions, task_reroutes, tasks
 from src.models import TaskStatus
+from src.routing.sources import UNROUTED, stamped_route_source
 
 #: Statuses a task can be re-routed (or undone) from: queued, never running.
 REROUTABLE_STATUSES = (
@@ -37,6 +38,20 @@ SPILL_REASON = "capacity_spill"
 UNDO_REASON = "operator_undo"
 
 _UNSET = object()
+
+
+def _kept_route_source(to_profile_id: str):
+    """A move keeps the task's route source; a row that never had one is stamped.
+
+    Failover, spill and undo move a task among profiles without changing who
+    routed it.  A row still ``unrouted`` while it names a profile was written
+    by a path that declared no source, and gets the transitional stamp for
+    the profile it moves to (mandatory-routing spec §9.2).
+    """
+    return case(
+        (tasks.c.route_source == UNROUTED, stamped_route_source(to_profile_id)),
+        else_=tasks.c.route_source,
+    )
 
 
 def _unheld():
@@ -96,6 +111,7 @@ class TaskRerouteQueryMixin:
         now = time.time()
         values: dict[str, Any] = {
             "profile_id": to_profile_id,
+            "route_source": _kept_route_source(to_profile_id),
             "rerouted_from": case(
                 (tasks.c.rerouted_from == to_profile_id, None),
                 else_=func.coalesce(tasks.c.rerouted_from, expected_profile_id),
@@ -151,6 +167,7 @@ class TaskRerouteQueryMixin:
                 return None
             values: dict[str, Any] = {
                 "profile_id": row.rerouted_from,
+                "route_source": _kept_route_source(row.rerouted_from),
                 "rerouted_from": None,
                 "updated_at": now,
             }

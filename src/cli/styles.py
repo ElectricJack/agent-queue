@@ -68,7 +68,14 @@ TASK_TYPE_ICONS: dict[str, str] = {
     "chore": "🔧",
     "research": "🔍",
     "plan": "📋",
+    "sync": "🔄",
+    "design": "📐",
+    "art": "🎨",
 }
+
+#: Every ``TaskType`` value, in display order: the ``--type`` choices.  The CLI
+#: does not import ``src.models``; a test holds this equal to ``TaskType``.
+TASK_TYPES: tuple[str, ...] = tuple(TASK_TYPE_ICONS)
 
 
 def priority_style(priority: int) -> str:

@@ -36,6 +36,7 @@ export const STATUS_OPTIONS = [
 
 export const TASK_TYPE_OPTIONS = [
   "feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan", "sync",
+  "design", "art",
 ];
 
 export const INTEGRATION_MODE_OPTIONS = ["pull_request", "direct"];

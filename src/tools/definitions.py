@@ -1210,8 +1210,13 @@ _ALL_TOOL_DEFINITIONS = [
                         "chore",
                         "research",
                         "plan",
+                        "design",
+                        "art",
                     ],
-                    "description": "Categorize the task type for display and filtering (optional)",
+                    "description": (
+                        "The kind of work, a hint to the router (optional): design is "
+                        "code or system design, art is art-heavy design"
+                    ),
                 },
                 "profile_id": {
                     "type": "string",
@@ -2155,6 +2160,8 @@ _ALL_TOOL_DEFINITIONS = [
                         "chore",
                         "research",
                         "plan",
+                        "design",
+                        "art",
                         None,
                     ],
                     "description": "New task type (optional, set to null to clear)",

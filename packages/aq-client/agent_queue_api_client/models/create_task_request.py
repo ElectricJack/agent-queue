@@ -24,7 +24,8 @@ class CreateTaskRequest:
         integration_mode (None | str | Unset): Integration-policy override: 'pull_request' pushes the task branch and
             opens a PR (review pipeline owns the merge); 'direct' merges into the default branch on completion. Omit to
             inherit the project/system policy.
-        task_type (None | str | Unset): Categorize the task type for display and filtering (optional)
+        task_type (None | str | Unset): The kind of work, a hint to the router (optional): design is code or system
+            design, art is art-heavy design
         profile_id (None | str | Unset): Eligible worker profile ID to configure the task (optional; supervisor is not
             executable)
         provider_intent (None | str | Unset): Whether anyone meant the provider profile_id names (provider-failover D8).

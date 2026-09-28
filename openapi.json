@@ -23269,7 +23269,7 @@
               }
             ],
             "title": "Task Type",
-            "description": "Categorize the task type for display and filtering (optional)"
+            "description": "The kind of work, a hint to the router (optional): design is code or system design, art is art-heavy design"
           },
           "profile_id": {
             "anyOf": [
@@ -31001,6 +31001,40 @@
                 "type": "null"
               }
             ]
+          },
+          "route_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route Source"
+          },
+          "class_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Class Hint"
+          },
+          "route": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route"
           }
         },
         "type": "object",
@@ -57807,6 +57841,40 @@
                 "type": "null"
               }
             ]
+          },
+          "route_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route Source"
+          },
+          "class_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Class Hint"
+          },
+          "route": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route"
           }
         },
         "type": "object",
@@ -58991,6 +59059,40 @@
               }
             ]
           },
+          "route_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route Source"
+          },
+          "class_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Class Hint"
+          },
+          "route": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route"
+          },
           "context": {
             "items": {
               "additionalProperties": true,
@@ -59344,6 +59446,40 @@
                 "type": "null"
               }
             ]
+          },
+          "route_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route Source"
+          },
+          "class_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Class Hint"
+          },
+          "route": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route"
           },
           "context": {
             "items": {

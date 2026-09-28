@@ -54,6 +54,7 @@ from src.models import (
     VerificationType,
     WorkspaceMode,
 )
+from src.routing.sources import UNROUTED, stamped_route_source
 from src.state_machine import is_valid_status_transition
 from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES, SubtasksOpenError
 
@@ -276,6 +277,8 @@ class TaskQueryMixin:
         )).scalar_one_or_none()
         if archived_project is not None and archived_project != task.project_id:
             raise ValueError("Cannot recreate an archived task in another project")
+        # Keep the caller's model in step with the row it wrote.
+        task.route_source = stamped_route_source(task.profile_id, task.route_source)
         now = time.time()
         await conn.execute(
             insert(tasks).values(
@@ -314,6 +317,9 @@ class TaskQueryMixin:
                 created_by_id=task.created_by_id,
                 provider_intent=task.provider_intent or "class_only",
                 rerouted_from=task.rerouted_from,
+                route_source=task.route_source,
+                class_hint=task.class_hint,
+                route=task.route,
                 # A brand-new row has no edges yet, so it starts
                 # unblocked; the edges that follow recompute it
                 # (work-graph implementation spec §4.1).
@@ -587,6 +593,10 @@ class TaskQueryMixin:
         layout stale until the next full pass.
         """
         values = self._coerce_task_values(kwargs)
+        if "profile_id" in values:
+            values["route_source"] = stamped_route_source(
+                values["profile_id"], values.get("route_source")
+            )
         async with self._engine.begin() as conn:
             comment_source_project = None
             if "project_id" in kwargs:
@@ -2458,6 +2468,9 @@ class TaskQueryMixin:
             filed_count=int(row.get("filed_count") or 0),
             provider_intent=row.get("provider_intent") or "class_only",
             rerouted_from=row.get("rerouted_from"),
+            route_source=row.get("route_source") or UNROUTED,
+            class_hint=row.get("class_hint"),
+            route=row.get("route"),
         )
 
     async def update_task_routing(
@@ -2470,6 +2483,7 @@ class TaskQueryMixin:
         clear_intelligence_class: bool = False,
         provider_intent: str | None = None,
         rerouted_from: str | None | object = _UNSET,
+        route_source: str | None = None,
     ) -> bool:
         """Update routing only while no worker holds the task.
 
@@ -2480,8 +2494,15 @@ class TaskQueryMixin:
         ``provider_intent`` (provider-failover D8) is written when given and
         left alone otherwise; ``rerouted_from`` likewise, where ``None``
         clears the marker.  Every routing write rides the same guard.
+
+        ``route_source`` is always written: the declared source, else the
+        transitional ``role``/``legacy`` stamp for *profile_id*, and
+        ``unrouted`` when *profile_id* is ``None`` (mandatory-routing §9.2).
         """
-        vals: dict = {"profile_id": profile_id}
+        vals: dict = {
+            "profile_id": profile_id,
+            "route_source": stamped_route_source(profile_id, route_source),
+        }
         if intelligence_class is not None or clear_intelligence_class:
             vals["intelligence_class"] = intelligence_class
         if preferred_workspace_id is not None:

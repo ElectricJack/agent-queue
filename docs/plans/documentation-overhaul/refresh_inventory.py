@@ -462,6 +462,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Intelligence-class parsing and live registry."),
     ("src/assignment_routing.py", "routing", "docs/concepts/agents-and-routing.md",
      PRODUCTION, "Routing state a task needs before a worker can take it."),
+    ("src/routing/**", "routing", "docs/concepts/agents-and-routing.md", PRODUCTION,
+     "Mandatory task routing: route sources and the router."),
     ("src/agent_names.py", "routing", "docs/concepts/agents-and-routing.md",
      PRODUCTION, "Agent naming rules."),
 

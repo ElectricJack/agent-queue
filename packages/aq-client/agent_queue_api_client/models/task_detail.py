@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from ..models.task_detail_children_type_0 import TaskDetailChildrenType0
     from ..models.task_detail_deliverables_item import TaskDetailDeliverablesItem
     from ..models.task_detail_parent_type_0 import TaskDetailParentType0
+    from ..models.task_detail_route_type_0 import TaskDetailRouteType0
     from ..models.task_ref import TaskRef
     from ..models.task_reroute import TaskReroute
 
@@ -60,6 +61,9 @@ class TaskDetail:
         rerouted_from (None | str | Unset):
         reroute (None | TaskReroute | Unset):
         provider_hold (None | ProviderHoldDetail | Unset):
+        route_source (None | str | Unset):
+        class_hint (None | str | Unset):
+        route (None | TaskDetailRouteType0 | Unset):
     """
 
     id: str
@@ -97,6 +101,9 @@ class TaskDetail:
     rerouted_from: None | str | Unset = UNSET
     reroute: None | TaskReroute | Unset = UNSET
     provider_hold: None | ProviderHoldDetail | Unset = UNSET
+    route_source: None | str | Unset = UNSET
+    class_hint: None | str | Unset = UNSET
+    route: None | TaskDetailRouteType0 | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -104,6 +111,7 @@ class TaskDetail:
         from ..models.task_completion_detail import TaskCompletionDetail
         from ..models.task_detail_children_type_0 import TaskDetailChildrenType0
         from ..models.task_detail_parent_type_0 import TaskDetailParentType0
+        from ..models.task_detail_route_type_0 import TaskDetailRouteType0
         from ..models.task_reroute import TaskReroute
 
         id = self.id
@@ -272,6 +280,26 @@ class TaskDetail:
         else:
             provider_hold = self.provider_hold
 
+        route_source: None | str | Unset
+        if isinstance(self.route_source, Unset):
+            route_source = UNSET
+        else:
+            route_source = self.route_source
+
+        class_hint: None | str | Unset
+        if isinstance(self.class_hint, Unset):
+            class_hint = UNSET
+        else:
+            class_hint = self.class_hint
+
+        route: dict[str, Any] | None | Unset
+        if isinstance(self.route, Unset):
+            route = UNSET
+        elif isinstance(self.route, TaskDetailRouteType0):
+            route = self.route.to_dict()
+        else:
+            route = self.route
+
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -345,6 +373,12 @@ class TaskDetail:
             field_dict["reroute"] = reroute
         if provider_hold is not UNSET:
             field_dict["provider_hold"] = provider_hold
+        if route_source is not UNSET:
+            field_dict["route_source"] = route_source
+        if class_hint is not UNSET:
+            field_dict["class_hint"] = class_hint
+        if route is not UNSET:
+            field_dict["route"] = route
 
         return field_dict
 
@@ -355,6 +389,7 @@ class TaskDetail:
         from ..models.task_detail_children_type_0 import TaskDetailChildrenType0
         from ..models.task_detail_deliverables_item import TaskDetailDeliverablesItem
         from ..models.task_detail_parent_type_0 import TaskDetailParentType0
+        from ..models.task_detail_route_type_0 import TaskDetailRouteType0
         from ..models.task_ref import TaskRef
         from ..models.task_reroute import TaskReroute
 
@@ -609,6 +644,41 @@ class TaskDetail:
 
         provider_hold = _parse_provider_hold(d.pop("provider_hold", UNSET))
 
+        def _parse_route_source(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        route_source = _parse_route_source(d.pop("route_source", UNSET))
+
+        def _parse_class_hint(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        class_hint = _parse_class_hint(d.pop("class_hint", UNSET))
+
+        def _parse_route(data: object) -> None | TaskDetailRouteType0 | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                route_type_0 = TaskDetailRouteType0.from_dict(data)
+
+                return route_type_0
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(None | TaskDetailRouteType0 | Unset, data)
+
+        route = _parse_route(d.pop("route", UNSET))
+
         task_detail = cls(
             id=id,
             project_id=project_id,
@@ -645,6 +715,9 @@ class TaskDetail:
             rerouted_from=rerouted_from,
             reroute=reroute,
             provider_hold=provider_hold,
+            route_source=route_source,
+            class_hint=class_hint,
+            route=route,
         )
 
         task_detail.additional_properties = d

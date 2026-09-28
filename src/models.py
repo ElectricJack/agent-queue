@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID, UNROUTED
+
 
 class TaskStatus(Enum):
     """The states a task can occupy in the orchestrator's state machine.
@@ -103,6 +105,10 @@ class TaskType(Enum):
     RESEARCH = "research"
     PLAN = "plan"
     SYNC = "sync"
+    # Design kinds the router sends to the design lanes (mandatory-routing
+    # spec §6.3): ``design`` is code or system design, ``art`` is art-heavy.
+    DESIGN = "design"
+    ART = "art"
 
 
 # Convenience set for validation without constructing enum members.
@@ -402,7 +408,10 @@ class Project:
     repo_url: str = ""
     repo_default_branch: str = "main"
     default_profile_id: str | None = None  # fallback profile for tasks in this project
-    assignment_playbook_id: str | None = None
+    # The router binding (mandatory-routing spec §8): the routing playbook that
+    # routes this project's tasks.  Creation passes ``routing.default_router``;
+    # this default is that key's default.
+    assignment_playbook_id: str | None = DEFAULT_ROUTER_PLAYBOOK_ID
     # Project-level integration policy: "direct" | "pull_request" | None
     # (None = inherit the system default, config ``integration.default_mode``).
     integration_mode: str | None = None
@@ -515,6 +524,13 @@ class Task:
     provider_intent: str = "class_only"
     # The profile before the first automatic re-route not yet undone (D17).
     rerouted_from: str | None = None
+    # Mandatory routing (spec 2026-09-28 §3-§4): who wrote ``profile_id``
+    # (``src.routing.sources``), the filer's class hint, and the router's
+    # record of the route.  Until every writer declares a source, the query
+    # layer stores a profile written as ``unrouted`` as ``role`` or ``legacy``.
+    route_source: str = UNROUTED
+    class_hint: str | None = None
+    route: dict[str, Any] | None = None
     # Persisted blocked-state projection (work-graph design §4).  Pure
     # derived data: 1 iff some blocking edge is unsatisfied or an attached
     # gate is unresolved.  Recomputed in-transaction by the query layer —

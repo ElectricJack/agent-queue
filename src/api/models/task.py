@@ -150,6 +150,13 @@ class TaskDetail(BaseModel):
     rerouted_from: str | None = None
     reroute: TaskReroute | None = None
     provider_hold: ProviderHoldDetail | None = None
+    # Mandatory routing (spec 2026-09-28 §3): who wrote ``profile_id``
+    # (unrouted | router | override | role | legacy), the filer's
+    # intelligence-class hint, and the router's record of the route.  Set by
+    # ``get_task``; list rows omit them.
+    route_source: str | None = None
+    class_hint: str | None = None
+    route: dict[str, Any] | None = None
 
 
 class TaskDict(BaseModel):

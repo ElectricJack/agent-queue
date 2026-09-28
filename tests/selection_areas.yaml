@@ -91,6 +91,7 @@ areas:
       - tests/test_cross_project_routing.py
       - tests/test_default_assignment_routing_playbook.py
       - tests/test_pool_agent_routing.py
+      - tests/test_task_route_source.py
   - id: task-activity
     description: "Recent work reads: tasks touched in a time window across live and archived tasks, completion records, per-attempt session snapshots and model attribution."
     match: [tests/test_task_activity.py, tests/test_task_session_attempts.py]

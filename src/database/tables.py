@@ -218,9 +218,19 @@ tasks = Table(
     # The profile the task was on before its first automatic re-route that
     # has not been undone (D17).  NULL means "where it was put".
     Column("rerouted_from", Text, nullable=True),
+    # Mandatory routing (spec 2026-09-28 §3 I1, §4): who wrote the route in
+    # ``profile_id`` (``src.routing.sources``), the filer's intelligence-class
+    # hint, and the router's explainable record of the route it chose.
+    Column("route_source", Text, nullable=False, server_default="unrouted"),
+    Column("class_hint", Text, nullable=True),
+    Column("route", JSON(none_as_null=True), nullable=True),
     CheckConstraint(
         "provider_intent IN ('pinned','preferred','class_only')",
         name="ck_tasks_provider_intent",
+    ),
+    CheckConstraint(
+        "route_source IN ('unrouted','router','override','role','legacy')",
+        name="ck_tasks_route_source",
     ),
     Index("idx_tasks_project_dedup", "project_id", "dedup_key"),
     Column("created_at", Float, nullable=False),
