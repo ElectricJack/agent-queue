@@ -603,6 +603,36 @@ async def test_session_cycle_playbook_sweep_failures_do_not_stop_housekeeping(
     assert "Scheduler cycle error" not in caplog.text
 
 
+async def test_failing_monitoring_checks_do_not_stop_pools_or_sessions(
+    orch, monkeypatch, caplog
+):
+    """A monitoring alert that raises must not cost the fleet its workers.
+
+    fair-grove-86: ``_check_stuck_defined_tasks`` raised on every cycle for
+    53 minutes, and because it ran bare inside the cycle, nothing after it
+    ran either -- no pool starts anywhere, and drained sessions were never
+    torn down.  Alerts are observation; scheduling must not depend on them.
+    """
+    stuck = AsyncMock(side_effect=RuntimeError("stuck scan unavailable"))
+    failed = AsyncMock(side_effect=RuntimeError("failed scan unavailable"))
+    monkeypatch.setattr(orch, "_check_stuck_defined_tasks", stuck)
+    monkeypatch.setattr(orch, "_check_failed_blocked_tasks", failed)
+    pools = AsyncMock()
+    sessions = AsyncMock()
+    monkeypatch.setattr(orch, "_reconcile_pools", pools)
+    monkeypatch.setattr(orch, "_reconcile_sessions", sessions)
+
+    await orch.run_one_cycle()
+
+    stuck.assert_awaited_once_with()
+    failed.assert_awaited_once_with()
+    pools.assert_awaited_once_with()
+    sessions.assert_awaited_once_with()
+    assert "Stuck DEFINED task check failed" in caplog.text
+    assert "FAILED/BLOCKED task report failed" in caplog.text
+    assert "Scheduler cycle error" not in caplog.text
+
+
 async def test_scheduler_cycles_continue_while_workspace_scan_is_pending(orch, tmp_path):
     from src.workspace_spec_watcher import WorkspaceSpecWatcher
 
