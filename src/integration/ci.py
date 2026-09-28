@@ -362,7 +362,7 @@ class IntegrationCIEvidence(BaseModel):
     run_id: str
     attempt: int = Field(ge=0)
     required_check_version: str
-    checks: dict[str, Literal["success", "failure", "cancelled", "skipped", "neutral"]]
+    checks: dict[str, Literal["success", "failure", "cancelled", "skipped", "neutral", "missing"]]
     conclusion: Literal["success", "failure", "cancelled", "inconclusive"]
     classification: Literal["conclusive", "full_suite_fallback"]
     observed_at: float
@@ -912,6 +912,7 @@ class AuthenticatedGitHubObserver:
             else None
         )
         selected: list[dict[str, Any]] = []
+        missing: list[str] = []
         for name in trust.required_checks.names:
             path = (
                 f"/repos/{owner}/{repository}/commits/{head_sha}/check-runs"
@@ -941,7 +942,8 @@ class AuthenticatedGitHubObserver:
                     continue
                 candidates.append((record_id, record))
             if not candidates:
-                raise AttestationError(f"required check is missing: {name}")
+                missing.append(name)
+                continue
             _, newest = max(candidates, key=lambda item: item[0])
             selected_app = newest.get("app")
             selected_app_id = (
@@ -978,9 +980,49 @@ class AuthenticatedGitHubObserver:
                 }
             )
 
+        missing_suite_id: int | None = None
+        if missing:
+            # An empty check list immediately after a push is not a CI failure.
+            # Only completed push workflows for this exact head can establish
+            # that the snapshot's required name was never produced.
+            push_runs = [record for record in workflow_records if record.get("event") == "push"]
+            if not push_runs or any(record.get("status") != "completed" for record in push_runs):
+                raise AttestationError(f"required check is pending: {', '.join(missing)}")
+            for record in push_runs:
+                suite_id = _strict_int(record.get("check_suite_id"))
+                if (
+                    record.get("head_sha") != head_sha
+                    or suite_id is None
+                    or suite_id <= 0
+                    or _strict_int(record.get("id")) is None
+                    or _strict_int(record.get("workflow_id")) is None
+                    or _strict_int(record.get("run_attempt")) is None
+                    or record.get("conclusion")
+                    not in {"success", "failure", "cancelled", "skipped", "neutral"}
+                ):
+                    raise AttestationError("completed push workflow identity is malformed")
+                if isinstance(trust, IntegrationCITrust):
+                    _require_workflow_repository(record, trust)
+            # Anchor the absence to one real completed suite. Prefer a suite
+            # already carrying a selected required check, so each evidence row
+            # still describes a single workflow attempt.
+            selected_suites = {check["check_suite_id"] for check in selected}
+            missing_suite_id = min(
+                (
+                    _strict_int(record["check_suite_id"])
+                    for record in push_runs
+                    if _strict_int(record["check_suite_id"]) in selected_suites
+                ),
+                default=min(_strict_int(record["check_suite_id"]) for record in push_runs),
+            )
+
         workflow_rows: list[dict[str, Any]] = []
         workflow_ids: dict[int, int] = {}
-        for suite_id in dict.fromkeys(check["check_suite_id"] for check in selected):
+        suite_ids = dict.fromkeys(
+            [check["check_suite_id"] for check in selected]
+            + ([missing_suite_id] if missing_suite_id is not None else [])
+        )
+        for suite_id in suite_ids:
             matches = [
                 record
                 for record in workflow_records
@@ -1045,6 +1087,11 @@ class AuthenticatedGitHubObserver:
                 }
             )
             workflow_ids[suite_id] = workflow_id
+        if missing_suite_id is not None:
+            selected.extend(
+                {"name": name, "check_suite_id": missing_suite_id, "conclusion": "missing"}
+                for name in missing
+            )
         if any(check["conclusion"] != "success" for check in selected) or any(
             workflow["conclusion"] != "success" for workflow in workflow_rows
         ):

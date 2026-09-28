@@ -540,6 +540,30 @@ class IntegrationAttestationService:
                 ):
                     return False
                 identities = tuple(sorted(evidence_ids))
+                # The red event dispatches a repair delegate without evidence
+                # arguments. Put absent snapshot checks in its durable dossier
+                # before enqueueing the event so the delegate can see them.
+                missing_rows = [
+                    row for row in rows if "missing" in (row["checks"] or {}).values()
+                ]
+                if missing_rows:
+                    dossier = dict(stage["dossier"] or {})
+                    failed_checks = list(dossier.get("failed_checks", []))
+                    recorded_ids = {item.get("evidence_id") for item in failed_checks}
+                    for row in missing_rows:
+                        if row["id"] not in recorded_ids:
+                            failed_checks.append(
+                                {"evidence_id": row["id"], "checks": row["checks"]}
+                            )
+                    dossier["failed_checks"] = failed_checks
+                    await conn.execute(
+                        update(integration_repair_stages)
+                        .where(
+                            integration_repair_stages.c.operation_id == subject.operation_id,
+                            integration_repair_stages.c.ordinal == stage["ordinal"],
+                        )
+                        .values(dossier=dossier)
+                    )
 
             identity = json.dumps(
                 {

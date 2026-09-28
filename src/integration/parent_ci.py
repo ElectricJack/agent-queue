@@ -7,7 +7,8 @@ import logging
 from sqlalchemy import select
 
 from src.database.tables import (
-    integration_repair_operations, projects, task_integration_checkpoints, tasks,
+    integration_check_evidence, integration_repair_operations, projects,
+    task_integration_checkpoints, tasks,
 )
 from src.integration.ci import AuthenticatedGitHubObserver, CIService, ParentCISubject
 from src.integration.outbox import enqueue_integration_event
@@ -135,6 +136,25 @@ class ParentCIService:
         evidence_ids = observed['evidence_ids']
         if not evidence_ids:
             return
+        repair_evidence_id = evidence_ids[0]
+        if observed['outcome'] == 'red':
+            # Repair records one evidence row. Prefer the row that names an
+            # absent snapshot check when other completed suites also ran.
+            async with self.db._engine.connect() as conn:
+                evidence = (
+                    await conn.execute(
+                        select(integration_check_evidence).where(
+                            integration_check_evidence.c.id.in_(evidence_ids)
+                        )
+                    )
+                ).mappings().all()
+            repair_evidence_id = next(
+                (
+                    item['id'] for item in evidence
+                    if 'missing' in (item['checks'] or {}).values()
+                ),
+                repair_evidence_id,
+            )
         event_id = 'parent-ci-' + hashlib.sha256(':'.join(evidence_ids).encode()).hexdigest()
         async with self.db.immediate() as conn:
             if await ci._lock_parent_subject_on(conn, subject) is None:
@@ -146,7 +166,7 @@ class ParentCIService:
                     'operation_id': row['operation_id'], 'target_kind': 'parent',
                     'task_id': row['task_id'], 'generation': row['generation'],
                     'head_sha': row['head_sha'], 'evidence_ids': evidence_ids,
-                    'evidence_id': evidence_ids[0],
+                    'evidence_id': repair_evidence_id,
                     'conclusion': 'success' if observed['outcome'] == 'green' else 'failure',
                 }, available_at=self.attestation.clock(),
             )

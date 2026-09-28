@@ -613,8 +613,51 @@ async def test_gh_observer_rejects_required_check_from_an_older_workflow_attempt
 @pytest.mark.asyncio
 async def test_authenticated_observer_rejects_partial_required_matrix():
     client = FakeGitHubClient({"unit": [], "postgres": []}, [])
-    with pytest.raises(AttestationError, match="missing"):
+    with pytest.raises(AttestationError, match="pending"):
         await AuthenticatedGitHubObserver(client).observe(trust(), SHA)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["queued", "in_progress", "completed"])
+@pytest.mark.parametrize("existing_login", [False, True])
+async def test_missing_check_requires_all_push_workflows_completed(status, existing_login):
+    workflows = [
+        {
+            "id": 31 + index,
+            "workflow_id": 301 + index,
+            "run_attempt": 1,
+            "check_suite_id": 21 + index,
+            "head_sha": SHA,
+            "event": "push",
+            "status": "completed" if index == 0 else status,
+            "conclusion": "success" if index == 0 or status == "completed" else None,
+            "repository": {"id": 303, "full_name": "acme/widgets"},
+            "head_repository": {"id": 303, "full_name": "acme/widgets"},
+        }
+        for index in range(2)
+    ]
+    selected_trust = ci_trust() if existing_login else trust()
+    observer = AuthenticatedGitHubObserver(
+        FakeGitHubClient({"unit": [], "postgres": []}, workflows), expected_event="push"
+    )
+
+    if status != "completed":
+        with pytest.raises(AttestationError, match="pending"):
+            await observer.observe(selected_trust, SHA)
+    else:
+        observation = await observer.observe(selected_trust, SHA)
+        assert isinstance(observation, FailedCIObservation)
+        assert observation.conclusion == "failure"
+        assert observation.workflow_runs == ({
+            "workflow_run_id": 31,
+            "run_attempt": 1,
+            "check_suite_id": 21,
+            "head_sha": SHA,
+            "conclusion": "success",
+        },)
+        assert {check["name"]: check["conclusion"] for check in observation.checks} == {
+            "unit": "missing", "postgres": "missing"
+        }
 
 
 @pytest.mark.asyncio
