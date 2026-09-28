@@ -2504,6 +2504,11 @@ class ResourcesConfig:
     test_poll_interval: float = 2.0
     #: ``-m`` expression ``aq test`` applies when the caller passed none.
     test_deselect_markers: str = "not perf and not migration and not slow and not tmux and not integration"
+    #: Interpreter ``aq test`` runs pytest with, per project id, e.g.
+    #: ``{"quilt-trader": "~/dev/quilt-trader/.venv/bin/python"}``.  An
+    #: unlisted project is detected: agent-queue uses ``aq``'s interpreter,
+    #: any other project its ``.venv`` (``src/resources/project_tests.py``).
+    test_interpreters: dict[str, str] = field(default_factory=dict)
     #: doctor ``resources.load`` warns when the 5-minute load average
     #: exceeds ``cores * load_warn_ratio``.
     load_warn_ratio: float = 1.0
@@ -2554,6 +2559,24 @@ class ResourcesConfig:
             errors.append(ConfigError("resources", "session_nice", "must be between -20 and 19"))
         if self.load_warn_ratio <= 0:
             errors.append(ConfigError("resources", "load_warn_ratio", "must be positive"))
+        if not isinstance(self.test_interpreters, dict):
+            errors.append(
+                ConfigError(
+                    "resources",
+                    "test_interpreters",
+                    "must be a mapping of project id -> interpreter path",
+                )
+            )
+        else:
+            for project_id, python in self.test_interpreters.items():
+                if not isinstance(python, str) or not python.strip():
+                    errors.append(
+                        ConfigError(
+                            "resources",
+                            f"test_interpreters.{project_id}",
+                            "must be a non-empty interpreter path",
+                        )
+                    )
         errors.extend(self.cgroups.validate())
         errors.extend(self.jobs.validate())
         return errors
@@ -4191,6 +4214,15 @@ def _coerce_field(annotation: str, value: object) -> object:
     return value
 
 
+def _test_interpreters(raw: object) -> object:
+    """``resources.test_interpreters`` with string keys; a non-mapping is kept for validate()."""
+    if raw is None:
+        return {}
+    if isinstance(raw, Mapping):
+        return {str(k): v for k, v in raw.items()}
+    return raw
+
+
 def _dataclass_kwargs(cls: type, section: object) -> dict:
     """:func:`_present_kwargs` with the spec read off the dataclass itself.
 
@@ -4814,6 +4846,7 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
             ),
             load_warn_ratio=float(res.get("load_warn_ratio", 1.0)),
             max_pytest_processes=int(res.get("max_pytest_processes", 24)),
+            test_interpreters=_test_interpreters(res.get("test_interpreters")),
             cgroups=cgroups,
             jobs=JobsConfig(**_dataclass_kwargs(JobsConfig, res.get("jobs"))),
         )
