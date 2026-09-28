@@ -358,9 +358,11 @@ async def test_candidate_push_failure_cannot_be_overridden_by_newer_pr_success()
 
 
 @pytest.mark.asyncio
-async def test_gh_observer_uses_policy_producer_and_emits_manifest_free_receipt():
+@pytest.mark.parametrize("producer_id", ["15368", "github-actions"])
+async def test_gh_observer_uses_policy_producer_and_emits_manifest_free_receipt(producer_id):
+    # The numeric id is canonical; the legacy slug keeps matching for frozen snapshots.
     policy = policy_snapshot()
-    policy["root"]["required_checks"]["producer_id"] = "github-actions"
+    policy["root"]["required_checks"]["producer_id"] = producer_id
     gh_trust = ci_trust_from_policy(
         canonical_repository_id="repo-config-1",
         repository_id=303,
@@ -438,7 +440,7 @@ async def test_gh_observer_uses_policy_producer_and_emits_manifest_free_receipt(
     ).observe(gh_trust, SHA)
 
     assert isinstance(observation.payload, CIReceiptPayload)
-    assert observation.payload.producer_id == "github-actions"
+    assert observation.payload.producer_id == producer_id
     assert observation.payload.repository_id == 303
     assert observation.payload.head_sha == SHA
     assert tuple(check.name for check in observation.payload.checks) == ("unit", "postgres")

@@ -20,7 +20,7 @@
         "E2E CLI (graphs)",
         "E2E CLI (failover)"
       ],
-      "producer_id": "github-actions"
+      "producer_id": "15368"
     },
     "repair": {
       "primary_seconds": 1800,
@@ -71,7 +71,7 @@
         "E2E CLI (graphs)",
         "E2E CLI (failover)"
       ],
-      "producer_id": "github-actions"
+      "producer_id": "15368"
     },
     "repair": {
       "primary_seconds": 1800,

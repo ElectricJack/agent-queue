@@ -541,6 +541,7 @@
       "description": "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup.",
       "modules": [
         "tests/test_attestation_check_run_id.py",
+        "tests/test_hosted_attestation.py",
         "tests/test_integration_attestation.py",
         "tests/test_integration_candidates.py",
         "tests/test_integration_ci.py",
@@ -1283,7 +1284,7 @@
       ]
     }
   },
-  "digest": "sha256:13b9e68386c17335c5b6f7080e11e1bc56eaa91e2086b8de993cb12b3f927b5f",
+  "digest": "sha256:c150ee5b51d90b91dee2a4c040df52cf008513a9074768867454210d0f759b9c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2863,7 +2864,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Full CI runs on pull requests and integration boundaries, never on a push to main."
+      "summary": "Full CI runs on pull requests and integration boundaries, and on `main` only unattested."
     },
     "tests/test_claim_commands.py": {
       "areas": [
@@ -6341,6 +6342,21 @@
       ],
       "markers": [],
       "summary": "Container settlement — spec §7."
+    },
+    "tests/test_hosted_attestation.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration",
+        "src.integration.ci",
+        "src.integration.hosted_attestation"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Shared vectors for the hosted `main` push attestation verifier (App-mode spec §7.2)."
     },
     "tests/test_import_cycles.py": {
       "areas": [

@@ -12,6 +12,10 @@ name: Tests
 # first, by one of the runs above or by the development publisher's
 # pre-publish validation, so a run per `main` commit only repeated that work.
 # `workflow_dispatch` runs the suite by hand on any branch, `main` included.
+# `workflow_call` is the break-glass audit: `main-attestation.yml` calls this
+# workflow for a push to `main` that carries no valid integration attestation.
+# Its checks are named `unattested-ci / Tests (...)`, so they never collide
+# with the required check names the train observes on a candidate.
 on:
   pull_request:
     branches:
@@ -22,6 +26,7 @@ on:
       - 'aq/parent/**'
       - 'aq/integration/**'
   workflow_dispatch:
+  workflow_call:
 
 # One group per ref (`refs/pull/<n>/merge` for a PR), so a newer push
 # supersedes that PR's or integration branch's obsolete run. Parent snapshot

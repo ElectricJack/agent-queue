@@ -32,6 +32,19 @@ from src.git.github_contracts import (
 ATTESTATION_CHECK_NAME = "Agent Queue Integration Attestation"
 TRUST_MANIFEST_PATH = ".github/agent-queue-integration.json"
 _SHA_PATTERN = r"^[0-9a-f]{40}$"
+_NUMERIC_PRODUCER = re.compile(r"[1-9][0-9]*")
+
+
+def is_numeric_producer_id(producer_id: object) -> bool:
+    """Whether a policy ``producer_id`` is the canonical numeric App id.
+
+    The canonical producer is the producer App's id as a positive decimal
+    string with no sign or leading zero (GitHub Actions is ``"15368"``), the
+    value GitHub reports as ``check_run.app.id``. App credential mode requires
+    it; a slug such as ``github-actions`` is legacy and keeps working only
+    under existing-login credentials.
+    """
+    return isinstance(producer_id, str) and _NUMERIC_PRODUCER.fullmatch(producer_id) is not None
 
 
 class AttestationError(ValueError):

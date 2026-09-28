@@ -141,12 +141,12 @@ Before binding, confirm the names against a real push run on the default
 branch or a branch that triggers CI:
 
 ```bash
-gh api repos/OWNER/REPO/commits/SHA/check-runs --jq '.check_runs[] | [.name, .app.slug] | @tsv'
+gh api repos/OWNER/REPO/commits/SHA/check-runs --jq '.check_runs[] | [.name, .app.id, .app.slug] | @tsv'
 ```
 
 Run from agent-queue itself, the planner reproduces
 [agent-queue-train-policy.json](agent-queue-train-policy.json) byte for byte
-(existing-login mode, `--check-version tests-yml-v3`).
+(in either credential mode, `--check-version tests-yml-v3`).
 
 ## 3. App credential mode
 
@@ -160,12 +160,16 @@ that needs repository-side trust, not the existing-login path:
 - Actions variables `AQ_INTEGRATION_ATTESTATION_APP_ID` (the App id) and
   `AQ_INTEGRATION_REQUIRED_CHECK_VERSION` (the check-set version). Missing:
   `hosted_workflow_variables_unavailable`.
-- A policy producer equal to the manifest's numeric `ci_producer_app_id`,
-  which is 15368, GitHub Actions. The slug `github-actions` reads as
-  `trust_manifest_mismatch`.
+- A numeric policy producer on both boundaries: a positive decimal, with no
+  sign or leading zero. A legacy slug such as `github-actions` is the blocker
+  `ci_producer_not_numeric`.
+- That producer equal to the manifest's numeric `ci_producer_app_id`, which is
+  15368, GitHub Actions. A different number is `trust_manifest_mismatch`.
 
-`--credential-mode auto` (the default) detects this from
-`~/.agent-queue/config.yaml`, uses the producer `15368` and looks up the
+The planner emits the producer `15368` in both credential modes, so a policy
+it writes binds under either one without a rebind. Existing-login credentials
+still accept a slug that an older policy holds. `--credential-mode auto` (the
+default) detects App mode from `~/.agent-queue/config.yaml` and looks up the
 repository's numeric id with `gh api`. `--write-trust-manifest PATH` writes the
 file locally. Commit it as `.github/agent-queue-integration.json` through the
 project's current delivery path before the observe step. It can ride in the
@@ -173,8 +177,8 @@ same change as a trigger fix or a CI workflow. The plan also prints the two
 `gh variable set` commands. The App's single installation must cover every
 target repository, with Actions variables readable; otherwise status reports
 `repository_binding_failed` or `hosted_workflow_variables_unavailable`. The
-reviewed agent-queue policy uses the slug, so the agent-queue cutover meets
-the same three requirements while this mode is configured.
+reviewed agent-queue policy already names `15368`, so the agent-queue cutover
+needs only the manifest and the variables while this mode is configured.
 
 ## 4. By shape
 

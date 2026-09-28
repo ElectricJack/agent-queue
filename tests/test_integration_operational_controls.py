@@ -1035,6 +1035,132 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
     assert "hosted_workflow_variables_mismatch" in blockers
 
 
+def _preflight_orchestrator(db, client) -> SimpleNamespace:
+    """Every runtime dependency wired, the route artifact matching ``_policy()``."""
+    loaded = SimpleNamespace(
+        id="hierarchical-delivery",
+        scope=SimpleNamespace(type="project", project_id="p"),
+        schema_version=2,
+        source_hash="sha256:" + "3" * 64,
+        version=1,
+        contract_fingerprint=lambda: "sha256:" + "2" * 64,
+    )
+    db.list_profiles = AsyncMock(
+        return_value=[SimpleNamespace(id=value) for value in ("worker", "debugger", "verifier")]
+    )
+    return SimpleNamespace(
+        db=db,
+        github_client_factory=lambda _binding: client,
+        github_repository_binding_resolver=lambda _repository: client.repository,
+        playbook_manager=SimpleNamespace(_store=SimpleNamespace(load=lambda _sha: loaded)),
+        integration_attestation_service=object(),
+        root_promotion_service=object(),
+        integration_cleanup_service=object(),
+        git=object(),
+        intelligence_classes={"standard": object(), "deep": object()},
+    )
+
+
+class _AppModeClient:
+    """App credentials over a repository whose manifest and variables are published."""
+
+    repository = GitHubRepositoryBinding(303, "acme/widgets")
+    credential_identity = GitHubCredentialIdentity.app(101, 202)
+
+    def __init__(self, ci_producer_app_id: int) -> None:
+        self.trust = {
+            "schema": "aq.integration-trust.v1",
+            "canonical_repository_id": "repo",
+            "repository_id": 303,
+            "full_name": "acme/widgets",
+            "ci_producer_app_id": ci_producer_app_id,
+            "attestation_app_id": 101,
+            "attestation_name": "Agent Queue Integration Attestation",
+            "required_checks": {"version": "checks-v1", "names": ["Tests (default)"]},
+        }
+
+    async def request_json(self, _method, path):
+        if "/contents/" in path:
+            return {
+                "encoding": "base64",
+                "content": base64.b64encode(json.dumps(self.trust).encode()).decode(),
+            }
+        value = "101" if path.endswith("AQ_INTEGRATION_ATTESTATION_APP_ID") else "checks-v1"
+        return {"name": path.rsplit("/", 1)[-1], "value": value}
+
+
+async def _set_producers(db, parent: str, root: str) -> None:
+    policy = _policy()
+    policy["parent"]["required_checks"]["producer_id"] = parent
+    policy["root"]["required_checks"]["producer_id"] = root
+    await db.update_project("p", hierarchical_integration_policy=policy)
+
+
+@pytest.mark.parametrize(
+    ("parent", "root"),
+    [
+        ("github-actions", "github-actions"),
+        ("github-actions", "15368"),
+        ("15368", "github-actions"),
+        ("0", "0"),
+        ("015368", "015368"),
+    ],
+)
+async def test_app_mode_preflight_names_a_non_numeric_producer(db, parent, root):
+    await _set_producers(db, parent, root)
+    orchestrator = _preflight_orchestrator(db, _AppModeClient(ci_producer_app_id=15368))
+
+    blockers = await daemon_functional_preflight(orchestrator, "p", "repo")
+
+    # The manifest is right for GitHub Actions; the policy's spelling is the cause.
+    assert blockers == ("ci_producer_not_numeric",)
+
+
+async def test_app_mode_preflight_accepts_the_numeric_producer(db):
+    await _set_producers(db, "15368", "15368")
+    orchestrator = _preflight_orchestrator(db, _AppModeClient(ci_producer_app_id=15368))
+
+    assert await daemon_functional_preflight(orchestrator, "p", "repo") == ()
+
+
+async def test_app_mode_preflight_reports_a_numeric_producer_the_manifest_does_not_name(db):
+    await _set_producers(db, "15368", "15368")
+    orchestrator = _preflight_orchestrator(db, _AppModeClient(ci_producer_app_id=1234))
+
+    assert await daemon_functional_preflight(orchestrator, "p", "repo") == (
+        "trust_manifest_mismatch",
+    )
+
+
+async def test_non_numeric_producer_does_not_hide_another_manifest_mismatch(db):
+    await _set_producers(db, "github-actions", "github-actions")
+    client = _AppModeClient(ci_producer_app_id=15368)
+    client.trust["full_name"] = "acme/other"
+    orchestrator = _preflight_orchestrator(db, client)
+
+    assert await daemon_functional_preflight(orchestrator, "p", "repo") == (
+        "ci_producer_not_numeric",
+        "trust_manifest_mismatch",
+    )
+
+
+@pytest.mark.parametrize("producer", ["15368", "github-actions"])
+async def test_existing_login_preflight_accepts_numeric_and_slug_producers(db, producer):
+    class Client:
+        credential_identity = GitHubCredentialIdentity.existing_login()
+        repository = GitHubRepositoryBinding(303, "acme/widgets")
+
+        async def request_json(self, method, path):
+            assert (method, path) == ("GET", "/repos/acme/widgets")
+            return {"id": 303, "full_name": "acme/widgets", "permissions": {"push": True}}
+
+    await _set_producers(db, producer, producer)
+    orchestrator = _preflight_orchestrator(db, Client())
+
+    # Frozen snapshots and evidence rows already hold the slug: compatibility.
+    assert await daemon_functional_preflight(orchestrator, "p", "repo") == ()
+
+
 @pytest.mark.parametrize("remote, expected", [
     ({"id": 303, "full_name": "acme/widgets", "permissions": {"push": True}}, ()),
     ({"id": 303, "full_name": "acme/widgets", "permissions": {"push": False}},

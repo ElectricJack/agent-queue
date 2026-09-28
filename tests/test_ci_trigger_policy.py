@@ -1,4 +1,4 @@
-"""Full CI runs on pull requests and integration boundaries, never on a push to main."""
+"""Full CI runs on pull requests and integration boundaries, and on `main` only unattested."""
 import json
 import math
 import re
@@ -57,16 +57,20 @@ def _context(value):
     return value
 
 
-def _runs(event_name, pull_request=None, repository='acme/widgets'):
-    """Evaluate the test job's ``if:`` guard for one event."""
-    expression = workflow()['jobs']['test']['if']
+def _evaluate(expression, **contexts):
+    """Evaluate a GitHub ``if:`` expression over plain-dict contexts."""
     python = re.sub(r'!(?!=)', ' not ', expression.replace('||', ' or ').replace('&&', ' and '))
-    github = _context({
+    names = {name: _context(value) for name, value in contexts.items()}
+    return bool(eval(python, {'__builtins__': {}}, {**names, 'startsWith': _starts_with}))
+
+
+def _runs(event_name, pull_request=None, repository='acme/widgets', job='test'):
+    """Evaluate a tests.yml job's ``if:`` guard for one event."""
+    return _evaluate(workflow()['jobs'][job]['if'], github={
         'event_name': event_name,
         'repository': repository,
         'event': {'pull_request': pull_request} if pull_request else {},
     })
-    return bool(eval(python, {'__builtins__': {}}, {'github': github, 'startsWith': _starts_with}))
 
 
 def _starts_with(text, prefix):
@@ -92,11 +96,11 @@ def test_push_ci_only_covers_integration_boundaries(branch, expected):
     assert _pushed(workflow()['on'], branch) is expected
 
 
-def test_no_workflow_runs_on_a_push_to_main():
+def test_only_the_attestation_audit_runs_on_a_push_to_main():
     files = sorted(WORKFLOWS.glob('*.yml')) + sorted(WORKFLOWS.glob('*.yaml'))
     assert files
-    for path in files:
-        assert not _pushed(workflow(path.name)['on'], 'main'), path.name
+    pushed = {path.name for path in files if _pushed(workflow(path.name)['on'], 'main')}
+    assert pushed == {'main-attestation.yml'}
 
 
 def test_pull_requests_into_main_run_ci():
@@ -109,6 +113,87 @@ def test_manual_ci_is_available_without_unused_merge_queue_runs():
     triggers = workflow()['on']
     assert 'workflow_dispatch' in triggers
     assert 'merge_group' not in triggers
+
+
+def test_tests_keeps_its_triggers_and_job_names_and_can_be_called():
+    tests = workflow()
+    assert list(tests['on']) == ['pull_request', 'push', 'workflow_dispatch', 'workflow_call']
+    assert tests['on']['push']['branches'] == ['aq/parent/**', 'aq/integration/**']
+    assert tests['on']['workflow_call'] == ''  # No inputs or secrets: it runs as pushed.
+    assert list(tests['jobs']) == ['test', 'e2e-cli']
+    assert tests['jobs']['test']['name'] == 'Tests (${{ matrix.suite.name }})'
+    assert tests['jobs']['e2e-cli']['name'] == 'E2E CLI (${{ matrix.group }})'
+
+
+@pytest.mark.parametrize('job', ['test', 'e2e-cli'])
+def test_called_suite_runs_every_job_for_the_callers_push(job):
+    # A called workflow sees the caller's context: main-attestation.yml runs on `push`.
+    assert _runs('push', job=job) is True
+
+
+def _checkout_action():
+    return workflow()['jobs']['test']['steps'][0]['uses']
+
+
+def test_main_attestation_is_the_specified_audit_workflow():
+    audit = workflow('main-attestation.yml')
+    assert audit['name'] == 'Main attestation'
+    assert audit['on'] == {'push': {'branches': ['main']}}
+    assert audit['permissions'] == {'contents': 'read', 'checks': 'read'}
+    # Its own group would share tests.yml's `tests-refs/heads/main` and deadlock the call.
+    assert 'concurrency' not in audit
+    assert list(audit['jobs']) == ['attestation', 'unattested-ci']
+
+    job = audit['jobs']['attestation']
+    assert job['name'] == 'Main attestation'
+    assert job['runs-on'] == 'ubuntu-latest'
+    assert job['outputs'] == {
+        'attested': '${{ steps.verify.outputs.attested }}',
+        'configured': '${{ steps.verify.outputs.configured }}',
+    }
+    checkout, verify = job['steps']
+    assert checkout == {
+        'uses': _checkout_action(),
+        'with': {
+            'ref': '${{ github.sha }}',
+            'sparse-checkout': 'src/integration/hosted_attestation.py',
+            'sparse-checkout-cone-mode': 'false',
+        },
+    }
+    assert Path(checkout['with']['sparse-checkout']).is_file()
+    assert verify == {
+        'id': 'verify',
+        'env': {
+            'GH_TOKEN': '${{ github.token }}',
+            'REPOSITORY': '${{ github.repository }}',
+            'REPOSITORY_ID': '${{ github.repository_id }}',
+            'SHA': '${{ github.sha }}',
+            'APP_ID': '${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}',
+            'CHECK_VERSION': '${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}',
+        },
+        'run': 'python3 src/integration/hosted_attestation.py',
+    }
+
+
+def test_unattested_ci_calls_the_full_suite():
+    audit = workflow('main-attestation.yml')['jobs']['unattested-ci']
+    assert set(audit) == {'needs', 'if', 'uses'}
+    assert audit['needs'] == 'attestation'
+    assert audit['uses'] == './.github/workflows/tests.yml'
+    assert 'workflow_call' in workflow(Path(audit['uses']).name)['on']
+
+
+@pytest.mark.parametrize(('configured', 'attested', 'runs'), [
+    ('true', 'false', True),
+    ('true', 'true', False),
+    # Variables unset: not in App mode yet, so no fallback CI.
+    ('false', 'false', False),
+    ('', '', False),
+])
+def test_unattested_ci_runs_only_for_a_configured_unattested_push(configured, attested, runs):
+    expression = workflow('main-attestation.yml')['jobs']['unattested-ci']['if']
+    outputs = {'configured': configured, 'attested': attested}
+    assert _evaluate(expression, needs={'attestation': {'outputs': outputs}}) is runs
 
 
 @pytest.mark.parametrize(('event_name', 'pull_request', 'expected'), [

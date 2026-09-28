@@ -148,8 +148,11 @@ integration:
 ```
 
 The parent and root policy below declare the exact CI check names, version,
-and producer (`github-actions` for GitHub Actions, or the real numeric producer
-App ID). This identifies who ran CI, not a separate AQ App you must register.
+and producer: the producer App's numeric id as a decimal string, `"15368"` for
+GitHub Actions. That is canonical in both credential modes; a legacy
+`github-actions` slug still matches under existing-login credentials, and App
+credential mode refuses it as `ci_producer_not_numeric`. This identifies who
+ran CI, not a separate AQ App you must register.
 AQ verifies the repository identity and exact commit against authenticated
 GitHub results, then records durable CI receipts before guarded promotion.
 No `.github/agent-queue-integration.json`, AQ attestation App, or
@@ -228,7 +231,7 @@ does not enable integration for projects that have no policy or remain disabled.
 {
   "version": 1,
   "parent": {
-    "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "github-actions"},
+    "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "15368"},
     "repair": {"primary_seconds": 1800, "primary_attempts": 3, "debug_seconds": 3600, "debug_attempts": 3, "debug_intelligence_class": "deep-high", "debug_profile_id": "deep-high-claude"},
     "route": {"playbook_id": "PARENT_PLAYBOOK_ID", "scope": "system", "scope_identifier": "", "activation_id": null, "artifact": {"playbook_id": "PARENT_PLAYBOOK_ID", "artifact_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "schema_generation": 2, "contract_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "source_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "compiler_build": "playbook-v2-compiler/1", "compiled_at": "2026-09-06T00:00:00Z", "version": 1}},
     "primary_intelligence_class": "standard-high",
@@ -237,7 +240,7 @@ does not enable integration for projects that have no policy or remain disabled.
     "verifier_profile_id": "standard-high-claude"
   },
   "root": {
-    "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "github-actions"},
+    "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "15368"},
     "repair": {"primary_seconds": 1800, "primary_attempts": 3, "debug_seconds": 3600, "debug_attempts": 3, "debug_intelligence_class": "deep-high", "debug_profile_id": "deep-high-claude"},
     "route": {"playbook_id": "ROOT_PLAYBOOK_ID", "scope": "system", "scope_identifier": "", "activation_id": null, "artifact": {"playbook_id": "ROOT_PLAYBOOK_ID", "artifact_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "schema_generation": 2, "contract_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "source_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "compiler_build": "playbook-v2-compiler/1", "compiled_at": "2026-09-06T00:00:00Z", "version": 1}},
     "primary_intelligence_class": "standard-high",
