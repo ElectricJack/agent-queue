@@ -8,10 +8,18 @@ retained in git (:mod:`src.integration.provenance`). A generation without one is
 unlabelled: no branch head, reported commit or historical manifest stands in
 for it, so it is unknown until an operator retains it
 (``aq integration migrate-provenance``). An absent ref is never an empty artifact.
+
+A *settlement* is the one database answer the evaluator honours, and it is not
+a delivery: it records that a generation is **not owed** to one target (work
+already delivered to the target a retarget replaced, a repair built for another
+target, or an operator's ``aq integration settle-parked``). It is fenced to the
+target and, for ordinary work, to the exact completion generation it settled,
+so a reopened task owes its new work again.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -24,11 +32,18 @@ from src.integration.provenance import CompletedSource, CompletionIdentity, GitP
 #: has no exact source retained in git. Unknown, never delivered or empty.
 MISSING_PROVENANCE = "missing_git_provenance"
 
+#: Task metadata recording that a generation's delivery is not owed to one
+#: target (see the module docstring). ``completion_id`` ``None`` settles every
+#: generation of the task; only a development repair, whose purpose is fixed
+#: when it is filed, is settled that way.
+SETTLEMENT_KEY = "development_delivery_settlement"
+
 
 class DeliveryState(StrEnum):
     CONTAINED = "contained"
     NO_ARTIFACT = "no_artifact"
     PENDING = "pending"
+    SETTLED = "settled"
     UNKNOWN = "unknown"
 
 
@@ -54,6 +69,20 @@ class DeliveryRequest:
     archived: bool = False
     task_status: str = "COMPLETED"
     claim_epoch: int = 0
+    #: The recorded settlement (:data:`SETTLEMENT_KEY`), whatever it fences;
+    #: :meth:`settles` decides whether it answers this request.
+    settled_target_ref: str | None = None
+    settled_completion_id: str | None = None
+    settled_reason: str | None = None
+    settled_source: str | None = None
+
+    @property
+    def settles(self):
+        """Whether the recorded settlement covers this target and generation."""
+        return bool(
+            self.settled_reason and self.settled_target_ref == self.target_ref
+            and self.settled_completion_id in {None, self.completion_id}
+        )
 
     @classmethod
     def from_task(cls, task, completion, *, repository_id, target_ref):
@@ -79,7 +108,9 @@ class DeliveryEvidence:
 
     @property
     def satisfied(self):
-        return self.state in {DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT}
+        return self.state in {
+            DeliveryState.CONTAINED, DeliveryState.NO_ARTIFACT, DeliveryState.SETTLED,
+        }
 
 
 @dataclass(frozen=True)
@@ -156,6 +187,10 @@ class DeliverySnapshot:
             return result(DeliveryState.UNKNOWN, "scope_mismatch")
         if self.error or not self.target_oid:
             return result(DeliveryState.UNKNOWN, self.error or "missing_target")
+        if request.settles:
+            # Not owed here, by a recorded decision; never read as delivered.
+            return result(DeliveryState.SETTLED, "settled: " + request.settled_reason,
+                          request.settled_source)
         try:
             provenance = GitProvenance(self.git, self.store, repository_url=self.repository_url)
             if request.completion_id:
@@ -211,7 +246,12 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
 
     from sqlalchemy import select
 
-    from src.database.tables import archived_tasks, task_completion_records, tasks
+    from src.database.tables import (
+        archived_tasks,
+        task_completion_records,
+        task_metadata,
+        tasks,
+    )
     from src.integration.publishable_artifact import legacy_artifact
 
     task_ids = set(task_ids)
@@ -243,6 +283,15 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
         recorded_ids |= set((await reader.execute(
             select(tasks.c.id).where(tasks.c.id.in_(task_ids), legacy_artifact(tasks))
         )).scalars())
+        settlements = {
+            task_id: settlement_fields(value)
+            for task_id, value in (await reader.execute(
+                select(task_metadata.c.task_id, task_metadata.c.value).where(
+                    task_metadata.c.task_id.in_(task_ids),
+                    task_metadata.c.key == SETTLEMENT_KEY,
+                )
+            )).all()
+        }
     completion_by_id = {
         row["task_id"]: db._row_to_task_completion(row) for row in completions
     }
@@ -253,8 +302,35 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
                 repository_id=repository_id, target_ref=target_ref,
             ),
             has_recorded_source=row["id"] in recorded_ids,
+            **settlements.get(row["id"], {}),
         )
         for rows, is_archived in ((live, False), (archived, True)) for row in rows
+    }
+
+
+def settlement_fields(value):
+    """The :class:`DeliveryRequest` fields of one stored settlement.
+
+    A malformed record settles nothing: the generation stays owed.
+    """
+    try:
+        record = json.loads(value) if isinstance(value, str) else value
+    except ValueError:
+        return {}
+    if not isinstance(record, dict) or not all(
+        isinstance(record.get(key), str) and record[key]
+        for key in ("target_ref", "reason")
+    ):
+        return {}
+    completion = record.get("completion_id")
+    if completion is not None and not (isinstance(completion, str) and completion):
+        return {}  # never widen a damaged generation fence to every generation
+    source = record.get("source_oid")
+    return {
+        "settled_target_ref": record["target_ref"],
+        "settled_completion_id": completion,
+        "settled_reason": record["reason"],
+        "settled_source": source if is_valid_git_oid(source) else None,
     }
 
 

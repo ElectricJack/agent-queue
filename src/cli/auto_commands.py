@@ -131,6 +131,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_migrate_provenance",
     "integration_development_sweep",
     "integration_cancel_preserving",
+    "integration_settle_parked",
     "integration_retry_cleanup",
     "integration_release_owner",
     "integration_reserve_owner",

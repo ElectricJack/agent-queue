@@ -1287,7 +1287,7 @@
       ]
     }
   },
-  "digest": "sha256:2aa986deaab65df16c1bd583207983840d6177065b01e82969ec3d9a5858984e",
+  "digest": "sha256:cefe5e4d577631e19ad32a3eae3de2cca28aa6b6732bf2281c4329a025752401",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4619,6 +4619,7 @@
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.development_settlement",
         "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",

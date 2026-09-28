@@ -38,6 +38,11 @@ def _client(result):
             {"project_id": "p", "retry": False, "recover_child": "child"},
         ),
         (
+            ["settle-parked", "p", "op-1", "--dismiss", "--reason", "stale park"],
+            "integration_settle_parked",
+            {"project_id": "p", "operation_id": "op-1", "dismiss": True, "reason": "stale park"},
+        ),
+        (
             [
                 "resolve-candidate-member",
                 "--resolved-head-sha",

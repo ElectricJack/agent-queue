@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 447,
+    "leaf_commands": 448,
     "registration": {
       "generated": 287,
-      "handwritten": 160
+      "handwritten": 161
     },
     "ownership": {
-      "core": 408,
+      "core": 409,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 446
+      "supported": 447
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 287,
-      "registration": 146
+      "registration": 147
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 387
+      "untested": 388
     }
   },
   "commands": [
@@ -4370,6 +4370,39 @@
           "batch_id"
         ],
         "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration settle-parked",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_settle_parked",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id",
+          "operation_id",
+          "--reason"
+        ],
+        "optional": [
+          "--dismiss",
           "--json",
           "--brief",
           "--api-url"

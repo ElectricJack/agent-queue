@@ -75,6 +75,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_migrate_provenance",
         "integration_development_sweep",
         "integration_cancel_preserving",
+        "integration_settle_parked",
         "integration_retry_cleanup",
         "integration_release_delegates",
         "integration_release_owner",
@@ -431,6 +432,27 @@ class IntegrationDevelopmentSweepArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     retry: bool = False
     recover_child: str | None = Field(default=None, min_length=1)
+
+
+class IntegrationSettleParkedArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    #: A ``parked`` row of ``aq integration status``.
+    operation_id: str = Field(min_length=1)
+    #: Only withdraw the park; its sources are merged again on the next sweep.
+    dismiss: bool = False
+    reason: str = Field(min_length=1)
+
+
+class IntegrationSettleParkedValue(CommandValue):
+    id: str | None = None
+    target_ref: str | None = None
+    state: str | None = None
+    members: list[str] = Field(default_factory=list)
+    #: Tasks recorded as not owed to ``target_ref`` (members and their repairs).
+    settled: list[str] = Field(default_factory=list)
+    repairs: list[dict[str, Any]] = Field(default_factory=list)
+    #: Repairs still being worked on; retire one with ``aq task close --obsolete``.
+    open_repairs: list[str] = Field(default_factory=list)
 
 
 class IntegrationOperationalValue(CommandValue):
@@ -2791,6 +2813,25 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
                                              {"inventory", "migrated", "blocked"})
 
         registry.register(CommandRegistration(name, contract, migrate))
+    name = "integration_settle_parked"
+    if registry.get(name) is None:
+        contract = _operational_contract(name, IntegrationSettleParkedArgs,
+            ("settled", "dismissed", "already_terminal", "blocked"),
+            successes=frozenset({"settled", "dismissed", "already_terminal"}),
+            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationSettleParkedValue)
+        contract = contract.model_copy(update={
+            "presentation": contract.presentation.model_copy(update={
+                "summary": "Settle a parked development delivery as not owed, or dismiss it.",
+            }),
+        })
+
+        async def settle_parked(args, ctx):
+            return await _hierarchy_adapter(
+                "integration_settle_parked", args, ctx, IntegrationSettleParkedValue,
+                {"settled", "dismissed", "already_terminal", "blocked"},
+            )
+
+        registry.register(CommandRegistration(name, contract, settle_parked))
     for name, args_model in _DEVELOPMENT_CONTRACT_ARGS:
         if registry.get(name) is None:
             contract = _operational_contract(name, args_model, _DEVELOPMENT_OUTCOMES,
