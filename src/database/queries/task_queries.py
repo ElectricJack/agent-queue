@@ -79,6 +79,10 @@ REPOSITORY_BOUND_MODES = frozenset({"observe", "hierarchy", "train", "developmen
 # work incarnation.  Task-row updated_at and close-record time can both move
 # after delivery, so neither is a safe freshness boundary.
 INTEGRATION_REWORK_AT_KEY = "integration_rework_at"
+# The development worker's current git provenance generation. Written with
+# COMPLETED so delivery readers never substitute an older close record while
+# the new record is still being saved by the close command.
+DEVELOPMENT_COMPLETION_ID_KEY = "development_completion_id"
 
 
 def task_repository_id(mode: str | None, integration_repository_id: str | None) -> str | None:
@@ -1423,6 +1427,17 @@ class TaskQueryMixin:
                 # claim fence).  Nothing was written, so there is nothing to
                 # project or announce.
                 return result
+
+            # A generation belongs to exactly one completed incarnation.
+            # ``transition_task_with_meta`` can replace it later in this same
+            # transaction when this is a development worker close.
+            if current_status == TaskStatus.COMPLETED or new_status == TaskStatus.COMPLETED:
+                await conn.execute(
+                    delete(task_metadata).where(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == DEVELOPMENT_COMPLETION_ID_KEY,
+                    )
+                )
 
             if current_status == TaskStatus.COMPLETED and new_status != TaskStatus.COMPLETED:
                 await self._upsert_meta(
