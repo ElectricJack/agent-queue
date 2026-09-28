@@ -413,6 +413,80 @@ async def test_read_protection_reads_three_things_and_writes_nothing():
     ]
 
 
+# ---------------------------------------------------------------------------
+# Recorded through the App on the fixture (spec §10 S2, 2026-09-28)
+# ---------------------------------------------------------------------------
+
+FIXTURE_BINDING = GitHubRepositoryBinding(1384141153, "ElectricJack/aq-gh615-app-fixture-20260923")
+FIXTURE_TRAIN_ONLY = 24108467
+
+
+class RecordedFixtureClient:
+    """Replays what the App's installation token read from the fixture in S2.
+
+    The §8.1 ruleset was applied with no bypass (``never``), then with the App
+    as a bypass actor (``always``). Classic protection had been removed in S1:
+    GitHub answered 404 "Branch not protected".
+    """
+
+    repository = FIXTURE_BINDING
+    credential_identity = APP
+
+    def __init__(self, bypass: str):
+        self.ruleset = _recorded(f"fixture-ruleset-{FIXTURE_TRAIN_ONLY}-app-{bypass}.json")
+        self.requests: list[tuple[str, str]] = []
+
+    async def paged_list(self, path, *, max_pages):
+        self.requests.append(("GET", path))
+        root = f"/repositories/{FIXTURE_BINDING.repository_id}"
+        assert path == f"{root}/rules/branches/main?per_page=100"
+        return _recorded("fixture-rules-main-attested-only.json")
+
+    async def request_json(self, method, path):
+        self.requests.append((method, path))
+        root = f"/repositories/{FIXTURE_BINDING.repository_id}"
+        if path == f"{root}/rulesets/{FIXTURE_TRAIN_ONLY}":
+            return copy.deepcopy(self.ruleset)
+        assert path == f"{root}/branches/main/protection", path
+        raise GitHubAccessError("not_found_or_hidden", "GitHub request failed")
+
+
+def test_the_app_token_sees_its_own_bypass_and_no_bypass_list():
+    """Spec §8.3's assumption, confirmed live: an installation token reads
+    ``current_user_can_bypass`` for itself, and GitHub withholds the actor list."""
+    for bypass in ("never", "always"):
+        ruleset = _recorded(f"fixture-ruleset-{FIXTURE_TRAIN_ONLY}-app-{bypass}.json")
+        assert ruleset["current_user_can_bypass"] == bypass
+        assert "bypass_actors" not in ruleset
+    assert _recorded("fixture-classic-protection-404.json")["status"] == 404
+
+
+@pytest.mark.parametrize(
+    "bypass, classification, blocked",
+    [("never", ATTESTED_ONLY, True), ("always", APP_BYPASS, False)],
+)
+async def test_the_recorded_fixture_protection_classifies_through_the_reader(
+    bypass, classification, blocked
+):
+    client = RecordedFixtureClient(bypass)
+
+    reading = await protection.read_protection(
+        client, FIXTURE_BINDING, "main", app_id=APP_ID, policy=POLICY
+    )
+
+    assert reading.classification == classification
+    assert reading.development_publisher_blocked is blocked
+    assert [(rule.type, rule.bypass, rule.requires_attestation) for rule in reading.rules] == [
+        ("required_status_checks", bypass, True)
+    ]
+    root = f"/repositories/{FIXTURE_BINDING.repository_id}"
+    assert client.requests == [
+        ("GET", f"{root}/rules/branches/main?per_page=100"),
+        ("GET", f"{root}/rulesets/{FIXTURE_TRAIN_ONLY}"),
+        ("GET", f"{root}/branches/main/protection"),
+    ]
+
+
 async def test_a_classic_protection_404_is_none():
     client = FakeProtectionClient(rules=[], rulesets={})
 

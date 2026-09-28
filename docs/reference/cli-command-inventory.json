@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 448,
+    "leaf_commands": 450,
     "registration": {
-      "generated": 287,
+      "generated": 289,
       "handwritten": 161
     },
     "ownership": {
-      "core": 409,
+      "core": 411,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 447
+      "supported": 449
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 287,
+      "dispatch": 289,
       "registration": 147
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 388
+      "untested": 390
     }
   },
   "commands": [
@@ -12572,6 +12572,42 @@
       }
     },
     {
+      "path": "aq system task-route-apply",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_route_apply",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id",
+          "--plan"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--plan"
+        ],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq system task-route-options",
       "registration": "generated",
       "owner_kind": "core",
@@ -12601,6 +12637,43 @@
           "--api-url"
         ],
         "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system task-route-plan",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_route_plan",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id",
+          "--policy"
+        ],
+        "optional": [
+          "--classification",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--classification"
+        ],
         "nullable": []
       }
     },

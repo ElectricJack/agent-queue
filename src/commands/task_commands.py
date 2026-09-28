@@ -3876,6 +3876,11 @@ class TaskCommandsMixin:
             # Provider intent and the re-route marker (provider-failover D8, D17).
             "provider_intent": task.provider_intent,
             "rerouted_from": task.rerouted_from,
+            # Who wrote the route, the filer's class hint and the router's
+            # record of it (mandatory-routing spec §3 I1, I6).
+            "route_source": task.route_source,
+            "class_hint": task.class_hint,
+            "route": task.route,
             "skip_verification": task.skip_verification,
             "workflow_id": task.workflow_id,
             "affinity_agent_id": task.affinity_agent_id,

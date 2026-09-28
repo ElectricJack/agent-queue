@@ -17,6 +17,7 @@ from typing import Any, NamedTuple
 
 from src.aq_uri import path_is_within
 from src.database.tables import TASK_DEP_TYPES
+from src.models import TASK_TYPE_VALUES
 from src.task_graph.models import GraphError, GraphNode, TaskGraph
 
 #: Edge kinds that gate readiness — only these can form a forbidden cycle.
@@ -558,6 +559,28 @@ def _check_dep_types(graph: TaskGraph) -> list[GraphError]:
     return errors
 
 
+def _check_task_types(graph: TaskGraph) -> list[GraphError]:
+    """A node ``task_type`` must be one of the ``TaskType`` values.
+
+    Creation coerces ``task_type`` to its enum (and the DB column would
+    reject a stray one), so a clean ``--dry-run`` must refuse the same
+    document instead of reporting a graph the real run rejects.  Mirrors
+    ``_check_dep_types``: name the bad node key and the allowed values.
+    """
+    errors: list[GraphError] = []
+    for node in graph.nodes:
+        if node.task_type is not None and node.task_type not in TASK_TYPE_VALUES:
+            errors.append(
+                _error(
+                    "bad_task_type",
+                    f"node '{node.key}' has task_type '{node.task_type}' but allowed "
+                    f"values are {', '.join(sorted(TASK_TYPE_VALUES))}",
+                    node.key,
+                )
+            )
+    return errors
+
+
 def _check_self_edges(graph: TaskGraph) -> list[GraphError]:
     """A node may not depend on itself — **whatever** the dep type.
 
@@ -983,6 +1006,7 @@ async def validate_graph(
     findings.extend(_check_titles(graph))
     findings.extend(_check_acceptance(graph))
     findings.extend(_check_dep_types(graph))
+    findings.extend(_check_task_types(graph))
     findings.extend(_check_self_edges(graph))
     findings.extend(_check_cycles(graph))
     findings.extend(_check_foreign_projects(graph, project_id))

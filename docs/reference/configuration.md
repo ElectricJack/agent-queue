@@ -80,6 +80,7 @@ aq system config schema
 | llm, providers, pricing, llm_logging | Direct LLM calls, provider probes, price tables, and LLM logging. | Provider configuration is local policy; no key is shipped. |
 | llm.fallback | An optional second direct-path credential, used only while provider availability holds the reserved `llm` key unavailable. | `null` (no fallback: direct-path calls fail fast during an outage). Restart-required like the rest of `llm`. See [`llm.fallback`](#llmfallback). |
 | provider_failover | Provider availability and failover: when a harness login counts as exhausted, logged out or failing, how it recovers, operator override expiry, and the failover policy and limits the re-route sweep reads. | `mode: enforce`. Hot-reloadable. Every key is in [`provider_failover` keys](#provider_failover-keys); `aq provider status` shows the state. |
+| routing | Mandatory task routing: `default_router`, the routing playbook a new project is bound to (`projects.assignment_playbook_id`) when it is created or onboarded. | `default_router: default-assignment-routing`. Hot-reloadable; an edit binds the next new project and leaves existing bindings alone. |
 | docs | Base URL used to link contracted playbook commands to their reference pages. | Defaults to this repository's `main/docs/` tree; private mirrors can override it. |
 | supervisor, supervisor_agent, sessions, worktrees, streams | Session execution, supervisor delivery, worktree behavior, and stream handling. | Some flags gate service construction and require restart. |
 | memory, memory_extractor, inbox | Optional memory extension behavior, extraction, and inbox polling. | Memory data is preserved if disabled; plugin availability is separate. |
@@ -388,7 +389,7 @@ aq system reload-config
 
 | Changes applied without daemon restart | Changes that require restart |
 |---|---|
-| agents_config, agent_profiles, archive, auto_task, dashboard_server, docs, global_token_budget_daily, graph_layout, llm_logging, logging, max_concurrent_playbook_runs, max_daily_playbook_tokens, metrics, monitoring, pricing, project_roots, provider_failover, providers, rate_limits, resources, scheduling, state_machine, surface, swarm, work_graph | api_auth, data_dir, database, database_path, discord, env, events, health_check, inbox, integration, llm, mcp_server, memory, memory_extractor, messages, messaging_platform, playbooks, profile, security, sessions, streams, supervisor, supervisor_agent, validate_events, workspace_dir, worktrees |
+| agents_config, agent_profiles, archive, auto_task, dashboard_server, docs, global_token_budget_daily, graph_layout, llm_logging, logging, max_concurrent_playbook_runs, max_daily_playbook_tokens, metrics, monitoring, pricing, project_roots, provider_failover, providers, rate_limits, resources, routing, scheduling, state_machine, surface, swarm, work_graph | api_auth, data_dir, database, database_path, discord, env, events, health_check, inbox, integration, llm, mcp_server, memory, memory_extractor, messages, messaging_platform, playbooks, profile, security, sessions, streams, supervisor, supervisor_agent, validate_events, workspace_dir, worktrees |
 
 The `integration` restart classification includes `integration.github_app`.
 Changing a process environment token or App key reference also requires a

@@ -28,6 +28,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.models import Project, ProjectConstraint, ProjectStatus
+from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
 
 
 class ProjectQueryMixin:
@@ -56,7 +57,12 @@ class ProjectQueryMixin:
                     repo_default_branch=project.repo_default_branch,
                     default_profile_id=project.default_profile_id,
                     preferred_provider=project.preferred_provider,
-                    assignment_playbook_id=project.assignment_playbook_id,
+                    # Never unbound (routing spec §8): the command layer passes
+                    # ``routing.default_router``; a caller that passes nothing
+                    # gets that key's default.
+                    assignment_playbook_id=(
+                        project.assignment_playbook_id or DEFAULT_ROUTER_PLAYBOOK_ID
+                    ),
                     integration_mode=project.integration_mode,
                     hierarchical_integration_mode=project.hierarchical_integration_mode,
                     integration_repository_id=project.integration_repository_id,

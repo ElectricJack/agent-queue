@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,14 +60,16 @@ def snapshot():
     }
 
 
-async def build(data=None, *, observed=None, **kwargs):
+async def build(data=None, *, observed=None, git=None, **kwargs):
     db = SimpleNamespace(collect_morning_report_sources=AsyncMock(return_value=data or snapshot()))
-    git = SimpleNamespace()
+    git = git or SimpleNamespace()
     from unittest.mock import patch
 
+    observed = observed or frozen("git")[0]
+    # One fresh read per project: the collector annotates each read in place.
     with patch(
         "src.reports.morning.read_git_evidence",
-        AsyncMock(return_value=observed or frozen("git")[0]),
+        AsyncMock(side_effect=lambda *_, **__: copy.deepcopy(observed)),
     ) as read:
         result = await collect_morning_evidence(db, git, window=WINDOW, now=172801, **kwargs)
     return result, db, read
@@ -153,12 +156,51 @@ async def test_projects_without_repositories_ignore_vault_and_snapshot_bases(tmp
     assert read.call_args.kwargs["checkout"] == str(tmp_path)
 
 
-async def test_ambiguous_project_repo_bases_stay_unavailable(tmp_path):
+@pytest.mark.parametrize(
+    ("primary_name", "expected"),
+    [("p-primary", "primary"), ("ordinary", "other")],
+)
+async def test_matching_project_repo_bases_select_deterministically(
+    tmp_path, primary_name, expected
+):
+    repo = {**frozen("repos")[0], "source_type": "clone", "source_path": ""}
+    primary, other = tmp_path / "primary", tmp_path / "other"
+    data = repository_snapshot(
+        [repo],
+        [
+            {**workspace("p", other), "name": "other"},
+            {**workspace("p", primary), "name": primary_name},
+        ],
+    )
+    git = SimpleNamespace(
+        aget_remote_url=AsyncMock(
+            side_effect={
+                str(other): "git@github.com:example/repo.git",
+                str(primary): "https://github.com/example/repo",
+            }.get
+        )
+    )
+    result, _, read = await build(data, git=git)
+    assert read.call_args.kwargs["checkout"] == str(tmp_path / expected)
+    assert git.aget_remote_url.await_count == 2
+    assert result["brief"]["git"]["p"]["repository_id"] == "repo-p"
+
+
+@pytest.mark.parametrize("second_url", ["https://github.com/example/other", None])
+async def test_different_or_unreadable_project_repo_bases_stay_unavailable(tmp_path, second_url):
     repo = {**frozen("repos")[0], "source_type": "clone", "source_path": ""}
     data = repository_snapshot(
         [repo], [workspace("p", tmp_path / "one"), workspace("p", tmp_path / "two")]
     )
-    result, _, read = await build(data)
+    git = SimpleNamespace(
+        aget_remote_url=AsyncMock(
+            side_effect={
+                str(tmp_path / "one"): "https://github.com/example/repo",
+                str(tmp_path / "two"): second_url,
+            }.get
+        )
+    )
+    result, _, read = await build(data, git=git)
     read.assert_not_awaited()
     assert {"source": "git:p", "reason": "configured_repository_unavailable"} in result[
         "brief"
@@ -229,6 +271,108 @@ async def test_oversized_brief_has_no_dangling_refs_or_advanceable_cursors():
     assert set(brief["projects"][0]["landed"]) <= keys
     assert not brief["coverage"]["complete"]
     assert brief["source_cursors"] == {}
+
+
+def busy_git_read():
+    """A capped default-branch read: 200 commits, a full diffstat, 200 proofs."""
+    observed = frozen("git")[0]
+    commits = [f"{i:040x}" for i in range(MAX_COMMITS)]
+    observed["commits"] = [
+        {"sha": sha, "at": 100000 + i, "subject": "s" * 300} for i, sha in enumerate(commits)
+    ]
+    observed["diffstat"] = "d" * 8000
+    observed["ancestry"].update(dict.fromkeys(commits, "landed"))
+    observed["gaps"] = ["commit_limit", "file_limit"]
+    return observed
+
+
+def busy_sources(data, filler):
+    """Hundreds of long completions after *filler*, and a day of hourly digests."""
+    data["sources"]["completions"] += [
+        {
+            **filler,
+            "id": f"busy-{i}",
+            "task_id": f"busy-{i}",
+            "completed_at": 100000 + i,
+            "changes": "c" * 1500,
+            "summary": "s" * 1500,
+            "verification": "v" * 1000,
+        }
+        for i in range(300)
+    ]
+    digest = data["sources"]["digests"][0]
+    data["sources"]["digests"] = [{**digest, "id": f"digest-{i}"} for i in range(72)]
+    return data
+
+
+def assert_bounded_without_dangling_refs(brief):
+    assert len(json.dumps(brief, ensure_ascii=False).encode()) <= MAX_BRIEF_BYTES
+    keys = {fact["key"] for fact in brief["facts"]}
+    for project in brief["projects"]:
+        for group in ("landed", "pending", "failures"):
+            assert set(project[group]) <= keys
+    assert {"source": "brief", "reason": "byte_limit"} in brief["coverage"]["gaps"]
+    assert not brief["coverage"]["complete"]
+    assert brief["source_cursors"] == brief["source_heads"] == {}
+
+
+async def test_busy_window_keeps_a_delivered_task_landed(monkeypatch):
+    # Live 2026-09-28: a 48 KB git read and 72 hourly digests exceeded the
+    # 24 KiB cap on their own, so the trimmer dropped every one of 984 facts
+    # before touching either, and the supervisor had to file a no-facts report.
+    data = busy_sources(snapshot(), frozen("completions")[1])
+    result, _, _ = await build(copy.deepcopy(data), observed=busy_git_read())
+    brief = result["brief"]
+    assert_bounded_without_dangling_refs(brief)
+    assert {"delivery:d1", "completion:c1"} <= set(brief["projects"][0]["landed"])
+    by_key = {fact["key"]: fact for fact in brief["facts"]}
+    assert by_key["completion:c1"]["task_id"] == "t1"
+    assert by_key["delivery:d1"]["detail"]["shipment"] == "landed"
+    # Unresolved problems are kept with the landed work.
+    assert {"incident:recovery-1", "escalation:e1"} <= set(brief["projects"][0]["failures"])
+    assert result["would_suppress"] is False
+    # Context goes before evidence; every omission is counted, none is silent.
+    assert brief["digest_context"] == []
+    assert brief["omitted"]["digest_context"] == 72
+    assert brief["git"]["p"]["head"] == HEAD and "commits" not in brief["git"]["p"]
+    assert brief["git"]["p"]["commit_count"] == MAX_COMMITS
+    monkeypatch.setattr("src.reports.morning.MAX_BRIEF_BYTES", 10**9)
+    unbounded, _, _ = await build(data, observed=busy_git_read())
+    total = len(unbounded["brief"]["facts"])
+    assert brief["omitted"]["facts"] == total - len(brief["facts"]) > 0
+    assert brief["omitted"]["projects"] == {"p": brief["omitted"]["facts"] - 1}
+
+
+async def test_busy_project_cannot_crowd_out_another_projects_delivery():
+    # One project's newer landed work must not push a quieter project's
+    # delivered task (matter-engine-cpp beside agent-queue) out of the brief.
+    data = busy_sources(snapshot(), frozen("completions")[0])
+    data["projects"].append({"id": "q", "name": "Project Q", "repo_default_branch": "main"})
+    data["sources"]["repos"].append(
+        {**frozen("repos")[0], "id": "repo-q", "project_id": "q", "source_path": "/q"}
+    )
+    data["sources"]["completions"].append(
+        {**frozen("completions")[0], "id": "cq", "task_id": "tq", "project_id": "q"}
+    )
+    data["sources"]["deliveries"].append(
+        {**frozen("deliveries")[0], "id": "dq", "project_id": "q", "repository_id": "repo-q"}
+    )
+    reads = {"/configured/base": busy_git_read(), "/q": frozen("git")[0]}
+    db = SimpleNamespace(collect_morning_report_sources=AsyncMock(return_value=data))
+    from unittest.mock import patch
+
+    with patch(
+        "src.reports.morning.read_git_evidence",
+        AsyncMock(side_effect=lambda *_, checkout, **__: copy.deepcopy(reads[checkout])),
+    ):
+        result = await collect_morning_evidence(db, SimpleNamespace(), window=WINDOW, now=172801)
+    brief = result["brief"]
+    assert_bounded_without_dangling_refs(brief)
+    projects = {project["id"]: project for project in brief["projects"]}
+    assert {"delivery:dq", "completion:cq"} <= set(projects["q"]["landed"])
+    assert len(projects["p"]["landed"]) > len(projects["q"]["landed"])
+    # Landed work outranks per-commit history of either project.
+    assert not any(fact["source"] == "git" for fact in brief["facts"])
 
 
 async def test_truncated_completion_commits_cannot_prove_landing():

@@ -82,6 +82,10 @@ def typed_match(
     if kind == "task" and after_seq is None and due_at is None:
         return TaskMatch(task_id=ref or "").model_dump()
     if kind == "message" and due_at is None:
+        if after_seq is None:
+            raise WaitError(
+                "wait.invalid", "message waits require after_seq (the last seen message sequence)"
+            )
         return MessageMatch(thread_id=ref or "", after_seq=after_seq).model_dump()
     if kind == "timer" and ref is None and after_seq is None:
         return TimerMatch(due_at=due_at).model_dump()

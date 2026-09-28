@@ -680,3 +680,18 @@ Assertions must go through a public surface — `aq …` with `--json`, or
 `POST /api/execute`. Reading the database directly would let the kit pass
 while the surface an agent actually uses is broken, which is the whole thing
 it exists to prevent.
+
+## The App-mode train proof
+
+`scripts/e2e-app-train.sh` builds on this kit's isolation to run the App-mode
+spec's live proof (§10, S1-S10) against a disposable GitHub repository. It
+adds four things:
+- its own PostgreSQL container;
+- the `integration.github_app` block, appended through `AQ_E2E_EXTRA_CONFIG`;
+- pool profiles for the train;
+- a daemon started with an empty `GH_CONFIG_DIR` and no GitHub token.
+
+`scripts/e2e/app_train.py` holds one resumable step per scenario. Every step
+from `s1` on mutates the repository and refuses to run until the operator's
+approval is written to `$AQ_E2E_HOME/APPROVED`. The first run is recorded in
+[app-mode-train-2026-09-28.md](../gates/app-mode-train-2026-09-28.md).

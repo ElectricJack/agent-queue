@@ -24,6 +24,7 @@ from src.database.tables import (
     integration_legacy_gate_applicability,
     integration_repair_operations,
     integration_repair_stages,
+    integration_release_results,
     integration_rollout_transitions,
     project_integration_schedules,
     projects,
@@ -810,6 +811,76 @@ async def test_disable_drains_active_batch_then_background_reconciler_restores_l
     assert project.hierarchical_integration_desired_mode == "disabled"
     assert project.hierarchical_integration_draining is False
     assert (await db.get_integration_legacy_suppression("p"))["merge_sweep_suppressed"] is False
+
+
+async def test_released_train_batch_and_delivered_child_do_not_pin_disabled_drain(db):
+    service = IntegrationControlService(db, external_preflight=_external_ready, clock=lambda: 30.0)
+    assert (await service.enable(
+        "p", mode="train", expected_generation=0,
+        reason="start train", operator_id="operator:local",
+    ))["outcome"] == "enabled"
+    await db.create_task(Task(
+        id="parent", project_id="p", title="parent", description="",
+        status=TaskStatus.COMPLETED, repo_id="repo",
+    ))
+    await db.create_task(Task(
+        id="child", project_id="p", title="child", description="",
+        status=TaskStatus.COMPLETED, repo_id="repo", parent_task_id="parent",
+    ))
+    await db.create_task(Task(
+        id="live", project_id="p", title="live", description="",
+        status=TaskStatus.IN_PROGRESS, repo_id="repo",
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_batches).values(
+            id="batch", project_id="p", repository_id="repo", request_id="request",
+            trigger="manual", source_manifest_digest="sha256:" + "a" * 64,
+            base_sha="b" * 40, lifecycle="testing",
+            integration_branch="refs/heads/aq/integration/batch",
+            policy_snapshot=_policy(), artifact_snapshot=_artifact().model_dump(mode="json"),
+            cleanup_state="pending", created_at=30.0, updated_at=30.0,
+        ))
+        await conn.execute(insert(integration_branch_owners).values(
+            id="collector", repository_id="repo",
+            ref="refs/heads/aq/integration/batch", owner_id="repair-batch-batch",
+            owner_role="collector", fence_token=1, handoff_state="reserved",
+            created_at=30.0, updated_at=30.0,
+        ))
+        await conn.execute(insert(integration_branch_owners).values(
+            id="child-owner", repository_id="repo", ref="aq/child", owner_id="child",
+            owner_role="worker", fence_token=1, handoff_state="reserved",
+            created_at=30.0, updated_at=30.0,
+        ))
+        await conn.execute(insert(integration_branch_owners).values(
+            id="live-owner", repository_id="repo", ref="aq/live", owner_id="live",
+            owner_role="worker", fence_token=1, handoff_state="reserved",
+            created_at=30.0, updated_at=30.0,
+        ))
+    assert (await service.enable(
+        "p", mode="disabled", expected_generation=1,
+        reason="finish train", operator_id="operator:local",
+    ))["outcome"] == "draining"
+    assert await service.reconcile_drains(31.0) == ()
+
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).where(
+            integration_batches.c.id == "batch"
+        ).values(lifecycle="promoted", cleanup_state="complete", updated_at=32.0))
+        await conn.execute(insert(integration_release_results).values(
+            batch_id="batch", project_id="p", request_id="request",
+            operation_id="repair-batch-batch", released_at=32.0,
+        ))
+    assert await service.reconcile_drains(33.0) == ()
+    status = await IntegrationStatusService(db).status("p")
+    assert "active_owner" in {blocker["code"] for blocker in status["blockers"]}
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).where(
+            integration_branch_owners.c.id == "live-owner"
+        ).values(handoff_state="released", updated_at=34.0))
+    assert await service.reconcile_drains(35.0) == ("p",)
+    assert (await db.get_project("p")).hierarchical_integration_mode == "disabled"
+    status = await IntegrationStatusService(db).status("p")
+    assert "active_owner" not in {blocker["code"] for blocker in status["blockers"]}
 
 
 async def test_active_managed_work_rejects_observe_without_restoring_legacy(db):

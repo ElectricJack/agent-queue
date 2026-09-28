@@ -677,6 +677,27 @@ async def test_create_project_command_emits_project_created_without_workspace(on
     assert not {"workspace_id", "workspace_path", "workspace_in_vault"} & set(event)
 
 
+@pytest.mark.parametrize("router", [None, "project-router"])
+async def test_created_and_onboarded_projects_are_bound_to_the_router(onboarding, router):
+    """Every new project names its routing playbook (mandatory-routing spec §8)."""
+    service, database, config, root, _ = onboarding
+    if router is not None:
+        config.routing.default_router = router
+    expected = router or "default-assignment-routing"
+    _make_repo(root / "repo")
+    orchestrator = Orchestrator(config)
+    orchestrator.db = database
+    handler = CommandHandler(orchestrator, config)
+
+    created = await handler.execute("create_project", {"name": "Bare Project"})
+    onboarded = await service.onboard_project(_request())
+
+    assert created["created"] == "bare-project"
+    for project_id in ("bare-project", onboarded.project_id):
+        project = await database.get_project(project_id)
+        assert project.assignment_playbook_id == expected, project_id
+
+
 @pytest.mark.parametrize(
     ("source", "clone_url"),
     [

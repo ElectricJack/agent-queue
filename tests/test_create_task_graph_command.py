@@ -547,6 +547,44 @@ class TestSubtasksUnreportable:
         assert [w for w in result["warnings"] if w["rule"] == "subtasks_unreportable"] == []
 
 
+class TestNodeTypeValidation:
+    """A node ``task_type`` that is not a ``TaskType`` value must be refused."""
+
+    @staticmethod
+    def _bad_type_graph() -> dict:
+        doc = _simple_graph()
+        doc["nodes"][0]["task_type"] = "review"
+        return doc
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    async def test_invalid_task_type_is_refused_and_creates_nothing(self, setup, dry_run):
+        handler, db, _vault = setup
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": self._bad_type_graph(), "dry_run": dry_run}
+        )
+        assert "nothing was created" in result["error"]
+        errors = [e for e in result["errors"] if e["rule"] == "bad_task_type"]
+        assert len(errors) == 1
+        assert errors[0]["node"] == "a"
+        assert "review" in errors[0]["detail"]
+        from src.models import TASK_TYPE_VALUES
+
+        for value in sorted(TASK_TYPE_VALUES):
+            assert value in errors[0]["detail"]
+        assert await db.list_tasks(project_id="p1") == []
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    async def test_valid_task_type_passes(self, setup, dry_run):
+        handler, _db, _vault = setup
+        doc = _simple_graph()
+        doc["nodes"][0]["task_type"] = "refactor"
+        result = await handler._cmd_create_task_graph(
+            {"project_id": "p1", "graph": doc, "dry_run": dry_run}
+        )
+        assert "error" not in result
+        assert "bad_task_type" not in [e.get("rule") for e in result.get("errors", [])]
+
+
 def _phased_graph() -> dict:
     return {
         "version": 1,

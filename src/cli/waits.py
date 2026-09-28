@@ -24,8 +24,21 @@ def wait():
 
 @wait.command("register")
 @click.option("--kind", type=click.Choice(["job", "task", "message", "timer"]), required=True)
-@click.option("--ref", default=None, help="Job ID, task ID or authorized message thread ID.")
-@click.option("--after-seq", type=click.IntRange(min=0), default=None)
+@click.option(
+    "--ref",
+    default=None,
+    help=(
+        "Job ID, task ID or message thread ID (not a message ID). For a reply, send with "
+        "aq message send --thread-id ID --from-kind session --from-id $AQ_SESSION_ID; "
+        "use that ID here."
+    ),
+)
+@click.option(
+    "--after-seq",
+    type=click.IntRange(min=0),
+    default=None,
+    help="Required for message waits; use message.created_seq from aq message send --json.",
+)
 @click.option("--due-at", type=float, default=None, help="Timer due instant in UTC epoch seconds.")
 @click.option("--timeout", type=click.FloatRange(min=0, min_open=True, max=86400), default=None)
 @click.option("--idempotency-key", required=True)
@@ -37,6 +50,11 @@ def wait_register(
     ctx, kind, ref, after_seq, due_at, timeout, idempotency_key, project_id, claim_epoch
 ):
     """Register one condition and end the turn until its result pointer arrives."""
+    if kind == "message" and after_seq is None:
+        raise click.UsageError(
+            "--after-seq is required for --kind message; use message.created_seq "
+            "from aq message send --json"
+        )
     params = dict(
         kind=kind,
         ref=ref,

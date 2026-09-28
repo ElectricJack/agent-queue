@@ -126,10 +126,13 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/playbook_v2_engine_helpers.py"], areas: ["ci-sentinel", "epic-trains", "integration-promotion", "playbook-engine", "shipped-playbooks", "task-routing"] }
   - { paths: ["tests/playbook_v2_helpers.py"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
   - { paths: ["tests/session_dispatch_helpers.py"], areas: ["integration-promotion", "memory-facts", "orchestrator", "profiles", "prompts", "provider-failover", "task-lifecycle"] }
+  - { paths: ["tests/fixtures/app_mode/**"], areas: ["integration-controls"] }
   - { paths: ["tests/fixtures/contracts/**"], areas: ["ci-sentinel", "playbook-engine", "provider-failover", "shipped-playbooks"] }
   - { paths: ["tests/fixtures/fake_gh/**"], areas: ["projects", "github"] }
   - { paths: ["tests/fixtures/formulas/**"], areas: ["formulas", "intelligence-classes", "e2e-kit"] }
+  - { paths: ["tests/fixtures/github_protection/**"], areas: ["integration-controls"] }
   - { paths: ["tests/fixtures/harnesses/**"], areas: ["harnesses"] }
+  - { paths: ["tests/fixtures/hosted_attestation/**"], areas: ["integration-trains"] }
   - { paths: ["tests/fixtures/playbooks/**"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine", "shipped-playbooks", "ci-sentinel", "supervisor", "task-routing", "epic-trains", "integration-promotion", "document-reviews", "docs-guards"] }
   - { paths: ["tests/fixtures/provider_failover/**"], areas: ["provider-failover", "e2e-kit"] }
   - { paths: ["tests/fixtures/reports/**"], areas: ["digest"] }
@@ -261,7 +264,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/database/queries/agent_question_queries.py"], areas: ["agent-questions"] }
   - { paths: ["src/database/queries/api_session_token_queries.py"], areas: ["api-scope"] }
   - { paths: ["src/database/queries/archive_queries.py"], areas: ["task-archive"] }
-  - { paths: ["src/database/queries/assignment_route_queries.py", "src/database/queries/triage_queries.py"], areas: ["task-routing"] }
+  - { paths: ["src/database/queries/assignment_route_queries.py", "src/database/queries/routing_queries.py", "src/database/queries/triage_queries.py"], areas: ["task-routing"] }
   - { paths: ["src/database/queries/blocked_state.py", "src/database/queries/gate_queries.py", "src/database/queries/event_queries.py"], areas: ["work-graph"] }
   - { paths: ["src/database/queries/chat_queries.py"], areas: ["metrics"] }
   - { paths: ["src/database/queries/claim_queries.py"], areas: ["claims", "worker-pools"] }
@@ -381,6 +384,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/providers/**"], areas: ["provider-failover", "provider-usage"] }
   - { paths: ["src/resources/**"], areas: ["resource-gating", "cli-test-runner"] }
   - { paths: ["src/reports/**"], areas: ["digest"] }
+  - { paths: ["src/routing/**"], areas: ["task-routing"] }
   - { paths: ["src/resources/test_db_reaper.py"], areas: ["test-substrate"] }
   - { paths: ["src/resources/slot_report.py"], areas: ["development-delivery"] }
   - { paths: ["src/reviews/**"], areas: ["document-reviews"] }

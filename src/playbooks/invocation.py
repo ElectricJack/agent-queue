@@ -27,6 +27,11 @@ class PlaybookInvocation:
     rule_id: str
     step_id: str
     attempt: int
+    #: The AQ commands the invoking artifact grants
+    #: (:func:`~src.playbooks.definition.granted_aq_commands`), so a command
+    #: restricted to one kind of playbook can check the artifact without
+    #: reloading it from the store.
+    aq_commands: frozenset[str] = frozenset()
 
 
 _invocation_var: contextvars.ContextVar[PlaybookInvocation | None] = (
@@ -43,6 +48,7 @@ def current_invocation() -> PlaybookInvocation | None:
 @contextmanager
 def _invocation_context(ctx: StepContext) -> Iterator[PlaybookInvocation]:
     """Bind a snapshot constructed only from the engine's ``StepContext``."""
+    from src.playbooks.definition import granted_aq_commands
 
     invocation = PlaybookInvocation(
         run_id=ctx.run_id,
@@ -51,6 +57,7 @@ def _invocation_context(ctx: StepContext) -> Iterator[PlaybookInvocation]:
         rule_id=ctx.rule_id,
         step_id=ctx.step_id,
         attempt=ctx.attempt,
+        aq_commands=granted_aq_commands(getattr(ctx, "artifact", None)),
     )
     token = _invocation_var.set(invocation)
     try:

@@ -67,6 +67,7 @@ from src.database.queries.provider_usage_queries import ProviderUsageQueryMixin
 from src.database.queries.repo_queries import RepoQueryMixin
 from src.database.queries.report_queries import ReportQueriesMixin
 from src.database.queries.result_queries import ResultQueryMixin
+from src.database.queries.routing_queries import RoutingQueryMixin
 from src.database.queries.review_queries import ReviewQueriesMixin
 from src.database.queries.session_queries import SessionQueryMixin
 from src.database.queries.subagent_queries import SubagentQueriesMixin
@@ -99,6 +100,7 @@ class PostgreSQLDatabaseAdapter(
     HierarchyQueryMixin,
     LayoutQueryMixin,
     AssignmentRouteQueryMixin,
+    RoutingQueryMixin,
     ClaimQueryMixin,
     ProjectQueryMixin,
     ProfileQueryMixin,

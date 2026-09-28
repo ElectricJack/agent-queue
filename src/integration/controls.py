@@ -41,6 +41,7 @@ from src.database.tables import (
     tasks,
 )
 from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.drain_owners import terminal_reservation_clause
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
 from src.integration.preflight import daemon_functional_preflight
 from src.integration.scheduler import IntegrationScheduler, TrainService
@@ -1439,6 +1440,7 @@ class IntegrationControlService:
             .where(
                 repos.c.project_id == project_id,
                 integration_branch_owners.c.handoff_state != "released",
+                ~terminal_reservation_clause(),
             ),
             select(project_integration_leases.c.project_id).where(
                 project_integration_leases.c.project_id == project_id

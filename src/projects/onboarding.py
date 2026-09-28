@@ -319,6 +319,8 @@ class ProjectOnboardingService:
                     repo_url=remote_url or "",
                     repo_default_branch=default_branch,
                     default_profile_id=default_profile_id,
+                    # Bound to a router like a created project (routing spec §8).
+                    assignment_playbook_id=self.config.routing.default_router,
                 )
                 source_type = {
                     "link": RepoSourceType.LINK,

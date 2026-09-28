@@ -554,6 +554,106 @@ def test_malformed_api_json_is_unattested() -> None:
     _refused(github)
 
 
+# -- recorded live on the fixture (spec §10, 2026-09-28) ------------------------------
+
+RECORDED = ROOT / "tests/fixtures/hosted_attestation"
+FIXTURE_REPOSITORY = "ElectricJack/aq-gh615-app-fixture-20260923"
+FIXTURE_REPOSITORY_ID = 1384141153
+#: The attested promotions of S4 (check set ``fixture-v1``) and of the S8 rotation's
+#: contract step (``fixture-v2``), with the CI check run each attestation names.
+PROMOTIONS = {
+    "s4": ("df8c833bb61a82cddc6b9cf9c3661278265dd0fc", "fixture-v1", 108871423828),
+    "s8-contract": ("cc79fa1dc9a8bf8273ea3046f9dc20f3ed9fa719", "fixture-v2", 108887702637),
+}
+#: S6b: a workflow created a check run with the attestation's name using GITHUB_TOKEN.
+FORGED_SHA = "195192b4dc281e3e6b765b1c249215b291f8825d"
+
+
+def _recorded(name: str) -> dict:
+    return json.loads((RECORDED / f"{name}.json").read_text())
+
+
+class RecordedGitHub:
+    """Replays the fixture's recorded check runs for one pushed SHA."""
+
+    def __init__(self, sha: str, listing: dict, check_runs: dict[int, dict]) -> None:
+        self.sha = sha
+        self.listing = listing
+        self.check_runs = check_runs
+
+    def __call__(self, url: str) -> tuple[bytes, dict[str, str]]:
+        parts = urlsplit(url)
+        assert (parts.scheme, parts.netloc) == ("https", "api.github.com"), url
+        if parts.path == f"/repos/{FIXTURE_REPOSITORY}/commits/{self.sha}/check-runs":
+            assert parse_qs(parts.query)["check_name"] == [ATTESTATION_CHECK_NAME]
+            return json.dumps(self.listing).encode(), {}
+        prefix = f"/repos/{FIXTURE_REPOSITORY}/check-runs/"
+        assert parts.path.startswith(prefix), url
+        return json.dumps(self.check_runs[int(parts.path[len(prefix) :])]).encode(), {}
+
+
+def _fixture_env(sha: str, version: str) -> dict[str, str]:
+    return _env(
+        REPOSITORY=FIXTURE_REPOSITORY,
+        REPOSITORY_ID=str(FIXTURE_REPOSITORY_ID),
+        SHA=sha,
+        CHECK_VERSION=version,
+    )
+
+
+def _promotion(scenario: str) -> tuple[str, str, RecordedGitHub]:
+    sha, version, check_run_id = PROMOTIONS[scenario]
+    github = RecordedGitHub(
+        sha,
+        _recorded(f"{scenario}-attestation-check-runs"),
+        {check_run_id: _recorded(f"{scenario}-check-run-{check_run_id}")},
+    )
+    return sha, version, github
+
+
+@pytest.mark.parametrize("scenario", sorted(PROMOTIONS))
+def test_the_live_attestation_is_the_daemon_payload_byte_for_byte(scenario: str) -> None:
+    sha, version, github = _promotion(scenario)
+    (record,) = github.listing["check_runs"]
+    text = record["output"]["text"]
+
+    payload = AttestationPayload.model_validate_json(text)
+
+    assert record["app"]["id"] == APP_ID
+    assert payload.canonical_bytes().decode("ascii") == text
+    assert record["external_id"] == payload.external_id == _external_id(text)
+    assert (payload.head_sha, payload.required_check_set_version) == (sha, version)
+    assert payload.repository_id == FIXTURE_REPOSITORY_ID
+
+
+@pytest.mark.parametrize("scenario", sorted(PROMOTIONS))
+def test_accepts_the_attestations_the_daemon_published_live(scenario: str) -> None:
+    sha, version, github = _promotion(scenario)
+
+    verdict = hosted.verify(_fixture_env(sha, version), github)
+
+    assert (verdict.configured, verdict.attested) == (True, True), verdict.reason
+
+
+def test_a_live_attestation_does_not_verify_under_the_rotated_version() -> None:
+    sha, _version, github = _promotion("s4")
+
+    verdict = hosted.verify(_fixture_env(sha, "fixture-v2"), github)
+
+    assert (verdict.configured, verdict.attested) == (True, False)
+
+
+def test_refuses_the_recorded_forgery_from_actions() -> None:
+    listing = _recorded("s6b-forged-check-runs")
+    assert [run["app"]["id"] for run in listing["check_runs"]] == [CI_APP_ID]
+    github = RecordedGitHub(FORGED_SHA, listing, {})
+
+    verdict = hosted.verify(_fixture_env(FORGED_SHA, "fixture-v1"), github)
+
+    assert (verdict.configured, verdict.attested) == (True, False)
+    assert f"from App {APP_ID}" in verdict.reason
+
+
 # -- step outputs -------------------------------------------------------------------
 
 

@@ -2331,6 +2331,20 @@
       "type": "object",
       "x-reload": "hot"
     },
+    "routing": {
+      "additionalProperties": false,
+      "default": {
+        "default_router": "default-assignment-routing"
+      },
+      "properties": {
+        "default_router": {
+          "default": "default-assignment-routing",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "scheduling": {
       "additionalProperties": false,
       "default": {
@@ -2889,6 +2903,7 @@
       "providers",
       "rate_limits",
       "resources",
+      "routing",
       "scheduling",
       "state_machine",
       "surface",

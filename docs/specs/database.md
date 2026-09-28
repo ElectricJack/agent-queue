@@ -426,7 +426,7 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `repo_default_branch` | TEXT | DEFAULT 'main' | Default branch name (added via migration) |
 | `default_profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Default agent profile (added via migration) |
 | `preferred_provider` | TEXT | nullable | Operator preference for which provider serves this project's work; NULL defers to global provider selection and failover. Added by Alembic `a00000000037` |
-| `assignment_playbook_id` | TEXT | nullable | Assignment-routing playbook selected for the project; NULL uses the bundled system default. Added by Alembic `a7c91e4d2b63` |
+| `assignment_playbook_id` | TEXT | nullable | The project's router binding: the routing playbook that routes its tasks (mandatory-task-routing spec §8). A new project is bound to `routing.default_router` (default `default-assignment-routing`); `a00000000039` bound every unbound project. Added by Alembic `a7c91e4d2b63` |
 | `integration_mode` | TEXT | nullable | Project-level integration policy: `'direct'`, `'pull_request'`, or NULL (fall through to config `integration.default_mode`). Added by Alembic `c4d5e6f7a8b9` |
 | `hierarchical_integration_mode` | TEXT | NOT NULL DEFAULT 'disabled' | *Effective* hierarchical-integration rollout mode: one of `disabled`, `observe`, `hierarchy`, `train` (`ck_projects_hierarchical_integration_mode`). Only the orchestrator advances it, via a compare-and-set on `hierarchical_integration_generation`. Added by Alembic `c7a1e5d92f40` |
 | `integration_repository_id` | TEXT | nullable | The one `repos.id` designated as the hierarchical-integration repository (child branches, candidate trains and root promotion all target it). NULL leaves the project `repository_not_designated` and blocks every mode above `disabled`. Added by Alembic `c7a1e5d92f40` |
@@ -561,6 +561,9 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `created_by_id` | TEXT | nullable | Provenance (swarm-work-model §9), paired with `created_by_kind` |
 | `provider_intent` | TEXT | NOT NULL DEFAULT 'class_only' | `pinned`, `preferred` or `class_only` (`ck_tasks_provider_intent`): whether anyone meant the provider `profile_id` names (provider-failover D8). A pinned task holds while its provider is unavailable; the other two fail over. `pinned`/`preferred` with a NULL `profile_id` reads as `class_only` |
 | `rerouted_from` | TEXT | nullable | The profile the task was on before its first automatic re-route that has not been undone (D17); NULL means "where it was put". Partial index `idx_tasks_rerouted` on (`profile_id`) WHERE `rerouted_from IS NOT NULL` is what the re-route trickle counts |
+| `route_source` | TEXT | NOT NULL DEFAULT 'unrouted' | Who wrote the route in `profile_id` (mandatory-task-routing spec 2026-09-28 §3, `ck_tasks_route_source`): `unrouted`, `router`, `override`, `role` (a stage profile: triage, spec-ingest, reviewer, final-reviewer) or `legacy`. Until every writer declares one, the query layer stamps a profile written with no source `role` or `legacy` (`src/routing/sources.py`). Added by `a00000000039` |
+| `class_hint` | TEXT | nullable | The filer's intelligence-class hint to the router; `a00000000039` backfilled it from `intelligence_class` |
+| `route` | JSON | nullable | The router's record of the route it chose: hints, classification, rule, lane, candidates and scores, policy digest, playbook run. Added by `a00000000039` |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 

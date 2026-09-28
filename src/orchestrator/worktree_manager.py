@@ -976,19 +976,35 @@ class WorktreeSlotManager:
         # the collision.
         return None
 
-    async def _repository_url(self, project_id: str | None) -> str:
+    async def _project(self, project_id: str | None):
         if not project_id:
-            return ""
+            return None
         reader = getattr(self.db, "get_project", None)
-        project = await reader(project_id) if reader is not None else None
+        return await reader(project_id) if reader is not None else None
+
+    async def _repository_url(self, project_id: str | None) -> str:
+        project = await self._project(project_id)
         if project is None:
             return ""
         return project.repo_url or ""
 
     async def _default_branch(self, base_path: str, *, project_id: str | None = None) -> str:
+        """The branch slots are created from and task branches are cut from.
+
+        The project's ``repo_default_branch`` wins: it is what ``aq project
+        set <id> branch`` records and what integration delivers into, so a
+        slot started from origin's HEAD instead builds the task on the wrong
+        history.  Only a project with no recorded branch falls back to
+        detection.  A recorded value that is not a safe ref is refused rather
+        than replaced by origin's HEAD, which would be the same bug, silently.
+        """
+        project = await self._project(project_id)
+        configured = getattr(project, "repo_default_branch", None)
+        if isinstance(configured, str) and configured.strip():
+            return _validate_ref(configured.strip(), field="project default branch")
         try:
             return await self.git.aget_default_branch(
-                base_path, repository_url=await self._repository_url(project_id) or None
+                base_path, repository_url=(project.repo_url if project else "") or None
             )
         except Exception:
             return "main"

@@ -130,6 +130,8 @@ TASK_TYPE_EMOJIS: dict[str, str] = {
     "chore": "🔧",
     "research": "🔍",
     "plan": "📋",
+    "design": "📐",
+    "art": "🎨",
 }
 
 

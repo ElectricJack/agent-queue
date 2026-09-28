@@ -17,6 +17,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import project_onboarding_requests, projects, workspaces
 from src.models import Project, Workspace
+from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
 
 _PENDING = "pending"
 _TERMINAL = ("succeeded", "failed")
@@ -88,7 +89,12 @@ class OnboardingQueryMixin:
                     repo_url=project.repo_url,
                     repo_default_branch=project.repo_default_branch,
                     default_profile_id=project.default_profile_id,
-                    assignment_playbook_id=project.assignment_playbook_id,
+                    # Never unbound (routing spec §8): the command layer passes
+                    # ``routing.default_router``; a caller that passes nothing
+                    # gets that key's default.
+                    assignment_playbook_id=(
+                        project.assignment_playbook_id or DEFAULT_ROUTER_PLAYBOOK_ID
+                    ),
                     integration_mode=project.integration_mode,
                     created_at=now,
                 )

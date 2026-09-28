@@ -67,6 +67,7 @@ module catalog and prose live.
 | [`src/sessions/`](../../src/sessions/) | Harness sessions: tmux specs, reconciler, default harnesses. | `sessions` |
 | [`src/playbooks/`](../../src/playbooks/) | Playbooks V2: authoring, definition, validation, engine, runtime, executors. | `playbooks` |
 | [`src/profiles/`](../../src/profiles/) | Agent profiles, the MCP server registry and profile migrations. | `routing` |
+| [`src/routing/`](../../src/routing/) | Mandatory task routing: route sources, the routing policy schema and the pure planner behind `task_route_plan` / `task_route_apply`. | `routing` |
 | [`src/integration/`](../../src/integration/) | Branch delivery, batches, attestation and discard. | `integration` |
 | [`src/task_graph/`](../../src/task_graph/) | Formulas and the spatial graph layout engine. | `tasks` |
 | [`src/resources/`](../../src/resources/) | Per-session caps, the `flock` test semaphore, process attribution. | `scheduler` |

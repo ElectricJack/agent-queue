@@ -21,6 +21,25 @@ aq wait list --json
 aq wait cancel WAIT_ID
 ```
 
+To wait for a reply to a message you send, choose a thread ID and send as your
+session. The returned message ID identifies the message; it is not the thread ID.
+Use the sent message's `created_seq` as the exclusive cursor:
+
+```bash
+aq message send --to user:dashboard --project "$AQ_PROJECT_ID" \
+  --from-kind session --from-id "$AQ_SESSION_ID" \
+  --thread-id "request-$AQ_SESSION_ID" --body "Please reply here." --json
+# Read data.message.thread_id and data.message.created_seq from the response.
+aq wait register --kind message --ref "request-$AQ_SESSION_ID" \
+  --after-seq <created_seq> --timeout 3600 --idempotency-key reply
+```
+
+The reply must stay on that thread, for example through
+`aq message reply <message-id>` or
+`aq agent message <task-id> BODY --reply-to <message-id>`.
+For a collaboration thread, use its `collab-*` ID and the last seen thread
+sequence instead. Omitting `--after-seq` is a usage error for message waits.
+
 Job submission with `--wait` commits the job, workspace pin and blocking wait
 in one transaction. An existing active wait rejects the submission without
 leaving a job or reservation behind. Repeating the same submission key returns

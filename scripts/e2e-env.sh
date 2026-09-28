@@ -673,6 +673,14 @@ api_auth:
   require_session_token: false
 YAML
 
+# A caller-owned YAML fragment, appended verbatim.  scripts/e2e-app-train.sh
+# uses it for the `integration:` block that turns on GitHub App credential
+# mode; nothing above writes that key, so the fragment cannot repeat one.
+if [ -n "${AQ_E2E_EXTRA_CONFIG:-}" ]; then
+    echo "==> appending $AQ_E2E_EXTRA_CONFIG to the config"
+    cat "$AQ_E2E_EXTRA_CONFIG" >> "$E2E_CONFIG"
+fi
+
 # ---------------------------------------------------------------------------
 # 5. Database
 # ---------------------------------------------------------------------------

@@ -32,6 +32,7 @@ from src.database.tables import (
     tasks,
 )
 from src.integration.delivery_truth import DeliveryState
+from src.integration.drain_owners import terminal_reservation_clause
 from src.integration.legacy_deliveries import (
     NO_PARENT_COLLECTION,
     legacy_delivered_children_on,
@@ -505,12 +506,25 @@ class IntegrationStatusService:
                     parent_readiness.append(task_projection)
 
             blockers = list(functional["blockers"]) + list(project_blockers)
-            if ownership:
+            active_owners = (
+                await self._all(
+                    conn,
+                    select(integration_branch_owners.c.ref).where(
+                        integration_branch_owners.c.repository_id
+                        == project["integration_repository_id"],
+                        integration_branch_owners.c.handoff_state != "released",
+                        ~terminal_reservation_clause(),
+                    ).order_by(integration_branch_owners.c.ref),
+                )
+                if project["integration_repository_id"]
+                else []
+            )
+            if active_owners:
                 blockers.append(
                     _blocker(
                         "active_owner",
                         "one or more integration branches retain an active owner",
-                        ownership[0]["ref"],
+                        active_owners[0]["ref"],
                     )
                 )
             blockers.extend(

@@ -611,6 +611,27 @@ def referenced_profile_ids(definition: PlaybookDefinition) -> tuple[str, ...]:
     return tuple(sorted(found))
 
 
+def granted_aq_commands(definition: Any) -> frozenset[str]:
+    """Every AQ command the artifact grants: its command steps' commands and
+    the ``aq_commands`` its steps' tool use names.
+
+    Derived from the immutable artifact itself, never from a reviewed
+    manifest, so a repository write cannot grant anything.  A command that
+    must only run from one kind of playbook (``task_route_apply`` runs only
+    from the project's bound router) checks it on the live invocation
+    (:mod:`src.playbooks.invocation`).
+    """
+    found: set[str] = set()
+    for step in getattr(definition, "steps", {}).values():
+        command = getattr(step, "command", None)
+        if isinstance(command, str) and command:
+            found.add(command)
+        tool_use = getattr(step, "tool_use", None)
+        if tool_use is not None:
+            found.update(getattr(tool_use, "aq_commands", None) or ())
+    return frozenset(found)
+
+
 # --------------------------------------------------------------------------
 # §4.4 — triggers, rules and the artifact
 # --------------------------------------------------------------------------

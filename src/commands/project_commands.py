@@ -133,6 +133,8 @@ class ProjectCommandsMixin:
             repo_url=args.get("repo_url", ""),
             repo_default_branch=args.get("default_branch", "main"),
             default_profile_id=default_profile_id,
+            # Every project is bound to a router (mandatory-routing spec §8).
+            assignment_playbook_id=self.config.routing.default_router,
         )
         await self.db.create_project(project)
 

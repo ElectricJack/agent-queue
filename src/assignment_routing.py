@@ -17,8 +17,9 @@ from typing import Any
 
 from src.models import Task
 from src.providers.intent import PINNED, effective_intent
+from src.routing.sources import DEFAULT_ROUTER_PLAYBOOK_ID
 
-DEFAULT_ASSIGNMENT_PLAYBOOK_ID = "default-assignment-routing"
+DEFAULT_ASSIGNMENT_PLAYBOOK_ID = DEFAULT_ROUTER_PLAYBOOK_ID
 
 
 @dataclass(frozen=True)

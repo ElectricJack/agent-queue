@@ -10,7 +10,7 @@ interface CreateTaskModalProps {
   defaultProjectId?: string;
   onCreated?: (taskId: string) => void;
 }
-const TASK_TYPES = ["feature", "bugfix", "refactor", "test", "docs", "chore", "research"];
+const TASK_TYPES = ["feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan", "design", "art"];
 const inputClass = "w-full rounded-md border border-gray-600 bg-gray-800 px-3 py-2 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none";
 
 export default function CreateTaskModal({ open, onClose, defaultProjectId, onCreated }: CreateTaskModalProps) {

@@ -714,6 +714,7 @@
         "tests/test_migration_string_defaults.py",
         "tests/test_migration_subagent_events.py",
         "tests/test_migration_supervisor_conversations.py",
+        "tests/test_migration_task_route_source.py",
         "tests/test_migration_test_selections.py",
         "tests/test_migration_token_cache_columns.py",
         "tests/test_migration_workspaces_v2.py",
@@ -824,6 +825,7 @@
         "tests/test_plugin_commands.py",
         "tests/test_plugin_cron_to_playbook_migration.py",
         "tests/test_plugin_external_service_access.py",
+        "tests/test_plugin_git_diff_stat.py",
         "tests/test_plugin_invoke_llm.py",
         "tests/test_plugin_service_registration.py",
         "tests/test_plugin_services.py",
@@ -1096,7 +1098,7 @@
       ]
     },
     "task-routing": {
-      "description": "Task routing: routing gates, the task_route command, explicit class/profile requirements surviving creation and assignment, admission from active V2 artifacts, cross-project routing and the shipped assignment-routing policy.",
+      "description": "Task routing: routing gates, task_route, class/profile requirements surviving creation and assignment, admission from active V2 artifacts, cross-project routing, the shipped assignment-routing policy, and the router's policy, planner and task_route_plan/task_route_apply.",
       "modules": [
         "tests/test_agent_task_routing.py",
         "tests/test_assignment_routing.py",
@@ -1105,8 +1107,11 @@
         "tests/test_pool_agent_routing.py",
         "tests/test_routing_admission_v2.py",
         "tests/test_routing_gate_guard.py",
+        "tests/test_routing_planner.py",
+        "tests/test_routing_router.py",
         "tests/test_task_class_routing.py",
         "tests/test_task_route.py",
+        "tests/test_task_route_source.py",
         "tests/test_task_routing_contract.py"
       ]
     },
@@ -1287,7 +1292,7 @@
       ]
     }
   },
-  "digest": "sha256:9185e30f2702586f6f4cd5d98c15d0787f12e732095a069f67e3adade5dc94f4",
+  "digest": "sha256:175411ace48a790b9b8147b8c26afd3f14478fcb3c091bfaea3aa2e9b7e5be9c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6878,6 +6883,7 @@
       "imports": [
         "src.database.tables",
         "src.git.github_contracts",
+        "src.integration",
         "src.integration.completion_recovery",
         "src.integration.ownership",
         "src.models"
@@ -7287,6 +7293,7 @@
         "src.database.queries.hierarchy_queries",
         "src.database.queries.task_queries",
         "src.database.tables",
+        "src.integration.drain_owners",
         "src.integration.hierarchy",
         "src.integration.models",
         "src.integration.ownership",
@@ -8866,6 +8873,20 @@
       ],
       "summary": "The supervisor-conversation revision upgrades idempotently on PostgreSQL."
     },
+    "tests/test_migration_task_route_source.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Revision a00000000039 (mandatory-routing §11 revision 1) on owned disposable PostgreSQL."
+    },
     "tests/test_migration_test_selections.py": {
       "areas": [
         "migrations"
@@ -9667,6 +9688,17 @@
       ],
       "markers": [],
       "summary": "External plugins may access an explicit allowlist of services."
+    },
+    "tests/test_plugin_git_diff_stat.py": {
+      "areas": [
+        "plugins"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.plugins.internal.git"
+      ],
+      "markers": [],
+      "summary": "get_git_status diff stat must diff against the project's default branch."
     },
     "tests/test_plugin_invoke_llm.py": {
       "areas": [
@@ -11467,6 +11499,49 @@
       ],
       "summary": "A routing gate is only for tasks that still need a profile."
     },
+    "tests/test_routing_planner.py": {
+      "areas": [
+        "task-routing"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.routing.planner",
+        "src.routing.policy"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The pure route planner and the routing policy schema."
+    },
+    "tests/test_routing_router.py": {
+      "areas": [
+        "task-routing"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.commands.routing_commands",
+        "src.config",
+        "src.database",
+        "src.database.queries.routing_queries",
+        "src.event_schemas",
+        "src.intelligence_classes",
+        "src.models",
+        "src.orchestrator",
+        "src.playbooks.artifact_ref",
+        "src.playbooks.definition",
+        "src.playbooks.invocation",
+        "src.routing.sources",
+        "src.sessions.harness_parser"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "``task_route_plan`` and ``task_route_apply`` through a real handler."
+    },
     "tests/test_runtimes_base.py": {
       "areas": [
         "session-runtime"
@@ -12922,6 +12997,30 @@
       ],
       "markers": [],
       "summary": "Task 12 (dv2-p1): ``task_route`` command + ``routing`` gate integration."
+    },
+    "tests/test_task_route_source.py": {
+      "areas": [
+        "task-routing"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.models.task",
+        "src.cli.app",
+        "src.cli.styles",
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.tables",
+        "src.models",
+        "src.routing.sources",
+        "src.task_graph.parser",
+        "src.task_graph.validator",
+        "src.tools.definitions"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Route source, class hint, route record, router binding and the design/art kinds."
     },
     "tests/test_task_routing_contract.py": {
       "areas": [

@@ -116,6 +116,17 @@ async def test_foreign_target_and_missing_job_source(commands):
     assert missing["success"] and missing["wait"]["digest"]["reason"] == "source_unavailable"
 
 
+async def test_message_wait_without_cursor_returns_named_error(commands):
+    result = await execute(
+        commands,
+        "wait_register",
+        dict(kind="message", ref="thread", idempotency_key="missing-cursor", claim_epoch=1),
+    )
+    assert result["error_code"] == "wait.invalid"
+    assert "message waits require after_seq" in result["error"]
+    assert "validation error" not in result["error"]
+
+
 async def test_history_across_epochs_remains_readable_but_not_cancellable(commands, env):
     registered = await execute(
         commands,
@@ -613,6 +624,26 @@ def test_wait_cli_reads_claim_epoch_and_emits_versioned_json(monkeypatch):
     cancelled = CliRunner().invoke(cli, ["wait", "cancel", "w", "--claim-epoch", "8", "--json"])
     assert cancelled.exit_code == 0
     assert calls[-1] == ("wait_cancel", {"wait_id": "w", "claim_epoch": 8})
+
+
+def test_wait_cli_message_cursor_usage_and_help():
+    from src.cli.app import cli
+
+    runner = CliRunner()
+    missing = runner.invoke(
+        cli,
+        ["wait", "register", "--kind", "message", "--ref", "thread", "--idempotency-key", "k"],
+    )
+    assert missing.exit_code == 2
+    assert "--after-seq is required for --kind message" in missing.output
+    assert "message.created_seq" in missing.output
+
+    help_result = runner.invoke(cli, ["wait", "register", "--help"])
+    assert help_result.exit_code == 0
+    help_text = " ".join(help_result.output.split())
+    assert "--thread-id ID" in help_text
+    assert "--from-id $AQ_SESSION_ID" in help_text
+    assert "not a message ID" in help_text
 
 
 async def test_global_supervisor_subscription_does_not_block_and_pointer_needs_no_project(

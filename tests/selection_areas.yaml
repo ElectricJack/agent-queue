@@ -79,7 +79,7 @@ areas:
       - tests/test_formulas_*.py
       - tests/perf/test_formula_statements.py
   - id: task-routing
-    description: "Task routing: routing gates, the task_route command, explicit class/profile requirements surviving creation and assignment, admission from active V2 artifacts, cross-project routing and the shipped assignment-routing policy."
+    description: "Task routing: routing gates, task_route, class/profile requirements surviving creation and assignment, admission from active V2 artifacts, cross-project routing, the shipped assignment-routing policy, and the router's policy, planner and task_route_plan/task_route_apply."
     match:
       - tests/test_assignment_routing.py
       - tests/test_task_route.py
@@ -91,6 +91,9 @@ areas:
       - tests/test_cross_project_routing.py
       - tests/test_default_assignment_routing_playbook.py
       - tests/test_pool_agent_routing.py
+      - tests/test_task_route_source.py
+      - tests/test_routing_planner.py
+      - tests/test_routing_router.py
   - id: task-activity
     description: "Recent work reads: tasks touched in a time window across live and archived tasks, completion records, per-attempt session snapshots and model attribution."
     match: [tests/test_task_activity.py, tests/test_task_session_attempts.py]

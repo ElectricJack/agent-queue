@@ -573,6 +573,49 @@ async def test_variables_answer_to_the_policy_not_the_manifest(protected):
     assert items["manifest"]["codes"] == ["trust_manifest_check_set_differs"]
 
 
+RECORDED_VARIABLES = REPO / "tests/fixtures/app_mode"
+
+
+class RecordedVariables(FakeGitHub):
+    """Serves both Actions variables exactly as GitHub returned them to the fixture.
+
+    Recorded 2026-09-28 after the live proof's rotation switch (spec §10 S8):
+    ``GET /repos/ElectricJack/aq-gh615-app-fixture-20260923/actions/variables/<name>``.
+    """
+
+    async def request_json(self, method, path):
+        if "/actions/variables/" not in path:
+            return await super().request_json(method, path)
+        self.paths.append(path)
+        name = path.rsplit("/", 1)[-1]
+        return json.loads((RECORDED_VARIABLES / f"fixture-variable-{name}.json").read_text())
+
+
+async def test_recorded_variables_answer_to_the_bound_policy_version(protected):
+    """GitHub's payload carries timestamps beside the name and value; the item reads the
+    value and compares it with the policy alone, so the same recording is ok for the
+    policy the switch bound and a mismatch for one it did not."""
+    switched = _policy()
+    switched["root"]["required_checks"]["version"] = "fixture-v2"
+
+    ok = await _handler(RecordedVariables(), switched)._cmd_integration_app_verify(
+        {"project_id": "agent-queue"}
+    )
+    stale = await _handler(RecordedVariables())._cmd_integration_app_verify(
+        {"project_id": "agent-queue"}
+    )
+
+    variables = {item["id"]: item for item in ok["items"]}["variables"]
+    assert variables["status"] == "ok"
+    assert variables["observed"]["values"] == {
+        app_mode.APP_ID_VARIABLE: str(APP_ID),
+        app_mode.CHECK_VERSION_VARIABLE: "fixture-v2",
+    }
+    assert {item["id"]: item for item in stale["items"]}["variables"]["codes"] == [
+        "hosted_workflow_variables_mismatch"
+    ]
+
+
 async def test_a_slug_producer_leaves_the_manifest_compared_on_every_other_field(protected):
     client = FakeGitHub()
     client.files[trust_manifest.TRUST_MANIFEST_PATH] = _committed(full_name="ElectricJack/other")

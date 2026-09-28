@@ -15,7 +15,7 @@ from prompt_toolkit.validation import Validator
 
 from rich.console import Console
 
-from .styles import STATUS_ICONS, TASK_TYPE_ICONS
+from .styles import STATUS_ICONS, TASK_TYPE_ICONS, TASK_TYPES
 
 
 console = Console()
@@ -256,7 +256,7 @@ def task_creation_wizard(
     console.print()
     if task_type is None:
         console.print("[bold cyan]Step 5/6:[/] Task type")
-        task_types = ["feature", "bugfix", "refactor", "test", "docs", "chore", "research", "plan"]
+        task_types = [t for t in TASK_TYPES if t != "sync"]
         type_display = ", ".join(f"{TASK_TYPE_ICONS.get(t, '')} {t}" for t in task_types)
         console.print(f"  [dim]{type_display}[/]")
         task_type = prompt_choice("Type", task_types, default="feature")
