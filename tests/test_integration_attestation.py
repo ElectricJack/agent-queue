@@ -392,6 +392,7 @@ async def _reset_candidate_for_observation(db):
     ("provider_kind", "expected_outcome", "expected_event"),
     [
         ("pending", "not_green", None),
+        ("missing", "red", "integration.candidate_red"),
         ("red", "red", "integration.candidate_red"),
         ("green", "published", "integration.candidate_green"),
     ],
@@ -408,9 +409,21 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
         async def pending(path, *, key):
             if key == "check_runs" and "check_name=" in path:
                 return []
-            return await original(path, key=key)
+            rows = await original(path, key=key)
+            if key == "workflow_runs":
+                rows[0] = {**rows[0], "status": "in_progress", "conclusion": None}
+            return rows
 
         client.paged_items = pending
+    elif provider_kind == "missing":
+        original = client.paged_items
+
+        async def missing(path, *, key):
+            if key == "check_runs" and "check_name=" in path:
+                return []
+            return await original(path, key=key)
+
+        client.paged_items = missing
     elif provider_kind == "red":
         original = client.paged_items
 
@@ -450,6 +463,15 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
         assert second["outcome"] == "not_green"
     async with attestation_db._engine.connect() as conn:
         events = (await conn.execute(select(integration_outbox))).mappings().all()
+        evidence = (await conn.execute(select(integration_check_evidence))).mappings().all()
+        stage = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == "root-op",
+                    integration_repair_stages.c.ordinal == 0,
+                )
+            )
+        ).mappings().one()
         batch = (
             await conn.execute(
                 select(integration_batches).where(integration_batches.c.id == "batch")
@@ -459,6 +481,7 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
         assert batch["lifecycle"] == "testing"
     if expected_event is None:
         assert events == []
+        assert {row["id"] for row in evidence} == {"ci-aggregate"}
     else:
         assert len(events) == 1
         assert events[0]["event_type"] == expected_event
@@ -472,6 +495,56 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
             "revision": 0,
             "head_sha": SHA,
         }
+    if provider_kind == "missing":
+        missing_evidence = [row for row in evidence if row["id"] != "ci-aggregate"]
+        assert len(missing_evidence) == 1
+        assert missing_evidence[0]["conclusion"] == "failure"
+        assert missing_evidence[0]["checks"] == {
+            "Tests (default)": "missing", "Tests (postgres-integration)": "missing"
+        }
+        assert stage["dossier"]["failed_checks"] == [{
+            "evidence_id": missing_evidence[0]["id"],
+            "checks": missing_evidence[0]["checks"],
+        }]
+
+
+@pytest.mark.asyncio
+async def test_existing_login_candidate_missing_check_emits_red_continuation(
+    attestation_db, tmp_path
+):
+    await _reset_candidate_for_observation(attestation_db)
+    client = GitHubCLIProviderClient()
+    original = client.paged_items
+
+    async def missing(path, *, key):
+        if key == "check_runs" and "check_name=Tests%20%28postgres-integration%29" in path:
+            return []
+        return await original(path, key=key)
+
+    client.paged_items = missing
+    service = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        github_client_factory=lambda binding: client,
+        clock=lambda: 10.0,
+    )
+    observed = await service.handle_candidate_ci(
+        {"operation_id": "root-op", "batch_id": "batch", "revision": 0, "candidate_sha": SHA},
+        10.0,
+    )
+
+    assert observed["outcome"] == "red"
+    async with attestation_db._engine.connect() as conn:
+        events = (await conn.execute(select(integration_outbox))).mappings().all()
+        evidence = (await conn.execute(select(integration_check_evidence))).mappings().all()
+    assert len(events) == 1
+    assert events[0]["event_type"] == "integration.candidate_red"
+    missing_evidence = [row for row in evidence if row["id"] != "ci-aggregate"]
+    assert len(missing_evidence) == 1
+    assert missing_evidence[0]["checks"] == {
+        "Tests (default)": "success", "Tests (postgres-integration)": "missing"
+    }
 
 
 @pytest.mark.asyncio

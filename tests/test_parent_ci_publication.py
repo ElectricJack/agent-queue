@@ -6,9 +6,16 @@ import pytest
 from src.integration.parent_ci import publish_parent_snapshot
 
 from sqlalchemy import select, update
-from tests.test_integration_ci import ci_db as ci_db, trust, payload_dict, SHA
-from src.database.tables import integration_outbox, task_integration_checkpoints
-from src.integration.ci import TrustedFixtureObserver, TrustedCIObservation, AttestationPayload
+from tests.test_integration_ci import ci_db as ci_db, trust, payload_dict, policy_snapshot, SHA, FakeGitHubClient
+from src.database.tables import (
+    integration_check_evidence, integration_outbox, integration_repair_operations,
+    task_integration_checkpoints,
+)
+from src.git.github_app import GitHubRepositoryBinding
+from src.git.github_contracts import GitHubCredentialIdentity
+from src.integration.ci import (
+    TrustedFixtureObserver, TrustedCIObservation, AttestationPayload, IntegrationTrustManifest,
+)
 from src.integration.parent_ci import ParentCIService
 
 
@@ -104,6 +111,86 @@ async def test_legacy_parent_tick_publishes_exact_ci_and_fenced_event(ci_db, tmp
         assert events[0]['payload']['generation'] == 3
         assert len(events[0]['payload']['evidence_ids']) == 2
         backend.git.apush_repository_oid.assert_awaited_once()
+
+
+async def test_parent_completed_push_without_required_checks_emits_red(ci_db, tmp_path):
+    policy = policy_snapshot()
+    policy['parent']['required_checks']['names'] = ['unit', 'postgres', 'lint']
+    async with ci_db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == 'parent-op')
+            .values(policy_snapshot=policy)
+        )
+    manifest = trust().model_dump(by_alias=True)
+    manifest['required_checks']['names'] = ['unit', 'postgres', 'lint']
+    parent_trust = IntegrationTrustManifest.model_validate(manifest)
+    binding = GitHubRepositoryBinding(303, 'acme/widgets')
+    client = FakeGitHubClient(
+        {
+            'unit': [{
+                'id': 11, 'name': 'unit', 'head_sha': SHA, 'status': 'completed',
+                'conclusion': 'success', 'app': {'id': 404}, 'check_suite': {'id': 21},
+            }],
+            'postgres': [{
+                'id': 12, 'name': 'postgres', 'head_sha': SHA, 'status': 'completed',
+                'conclusion': 'success', 'app': {'id': 404}, 'check_suite': {'id': 22},
+            }],
+        },
+        [
+            {
+                'id': 31 + index, 'workflow_id': 301 + index, 'run_attempt': 1,
+                'check_suite_id': 21 + index, 'head_sha': SHA, 'status': 'completed',
+                'conclusion': 'success', 'event': 'push',
+            }
+            for index in range(2)
+        ],
+    )
+    original = client.paged_items
+
+    async def pages(path, *, key, max_pages=20):
+        if 'check_name=lint' in path:
+            return []
+        return await original(path, key=key, max_pages=max_pages)
+
+    client.paged_items = pages
+    client.repository = binding
+    client.credential_identity = GitHubCredentialIdentity.app(101, 202)
+    remote = {}
+
+    async def exact(branch):
+        return remote.get(branch)
+
+    async def push(_store, **kwargs):
+        remote[kwargs['branch']] = kwargs['tip_oid']
+        return kwargs['tip_oid']
+
+    client.exact_head_ref = exact
+    backend = SimpleNamespace(
+        db=ci_db,
+        git=SimpleNamespace(
+            afetch_repository_oid=AsyncMock(return_value=SHA),
+            apush_repository_oid=push,
+        ),
+        _load_trust=AsyncMock(return_value=(parent_trust, client)),
+        _store=lambda _: tmp_path,
+        clock=lambda: 100.0,
+    )
+    service = ParentCIService(backend, AsyncMock(return_value=binding))
+
+    await service.tick(100.0)
+
+    async with ci_db._engine.connect() as conn:
+        events = (await conn.execute(select(integration_outbox))).mappings().all()
+        evidence = (await conn.execute(select(integration_check_evidence))).mappings().all()
+    assert len(events) == 1
+    assert events[0]['event_type'] == 'integration.ci_completed'
+    assert events[0]['payload']['conclusion'] == 'failure'
+    assert len(events[0]['payload']['evidence_ids']) == 2
+    assert len(evidence) == 2
+    missing = next(row for row in evidence if row['checks'].get('lint') == 'missing')
+    assert missing['checks'] == {'unit': 'success', 'lint': 'missing'}
+    assert events[0]['payload']['evidence_id'] == missing['id']
 
 
 async def test_first_parent_initializes_a_real_bare_ci_store(tmp_path):
