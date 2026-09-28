@@ -35,7 +35,7 @@ from src.git.github_contracts import (
     GitHubCredentialIdentity,
     GitHubCredentialMode,
 )
-from src.integration import trust_manifest
+from src.integration import protection, trust_manifest
 from src.integration.ci import TRUST_MANIFEST_PATH
 from src.integration.models import HierarchicalIntegrationPolicy
 
@@ -168,11 +168,11 @@ class AppModeContext:
 
 def required_protection(mode: str | None) -> str | None:
     """The protection classification a project mode needs (spec §8.2); ``None`` is any."""
-    if mode == "disabled":
-        return None
-    if mode == "development":
-        return "app_bypass"
-    return "attested_only"
+    return protection.required_classification(mode)
+
+
+def target_ruleset_name(default_branch: str | None) -> str:
+    return f"Train-only {default_branch}"
 
 
 def target_ruleset(app_id: int, default_branch: str) -> dict[str, Any]:
@@ -182,7 +182,7 @@ def target_ruleset(app_id: int, default_branch: str) -> dict[str, Any]:
     holder of the daemon's private key can satisfy it, and nothing bypasses it.
     """
     return {
-        "name": f"Train-only {default_branch}",
+        "name": target_ruleset_name(default_branch),
         "target": "branch",
         "enforcement": "active",
         "conditions": {"ref_name": {"include": [f"refs/heads/{default_branch}"], "exclude": []}},
@@ -506,25 +506,73 @@ def expected_variables(
 
 
 async def check_protection(ctx: AppModeContext) -> AppModeItem:
-    """The default branch's protection, classified for the App (spec §8.3).
+    """The default branch's protection, classified for the App and judged for the mode.
 
-    The protection reader is not wired yet, so this reports ``unverifiable``:
-    a blocker in App mode that never counts as unprotected.
+    Spec §8.2-8.3 (:mod:`src.integration.protection`).  An unreadable
+    protection is ``unverifiable``, a blocker that never counts as unprotected.
+
+    A disabled project is judged like the strict modes.  Nothing pushes its
+    default branch, but it is being readied for them: the preflight that
+    gates ``enable`` and ``status`` judges it so, and this item must agree
+    (runbook §9.3 steps 3-5 confirm ``attested_only`` while disabled).
     """
+    mode = None if ctx.mode == "disabled" else ctx.mode
+    reading = await protection.read_protection(
+        ctx.client,
+        ctx.binding,
+        ctx.default_branch,
+        app_id=ctx.identity.app_id,
+        policy=ctx.policy,
+    )
+    failures, warnings = protection.judge(reading, mode)
+    expected = {"classification": required_protection(mode)}
+    observed = reading.as_dict()
+    # The repository ruleset expected.ruleset replaces (``app-setup`` prints
+    # its PUT): only one already named like the target, never a ruleset that
+    # also carries other rules or branches.
+    target = target_ruleset_name(ctx.default_branch)
+    named = {
+        rule.ruleset_id
+        for rule in reading.rules
+        if rule.ruleset_name == target and rule.ruleset_source_type == "Repository"
+    }
+    observed["ruleset_id"] = named.pop() if len(named) == 1 else None
+    if not failures and not warnings:
+        return AppModeItem("protection", OK, expected=expected, observed=observed)
     return AppModeItem(
         "protection",
-        FAIL,
-        ("main_protection_unverifiable",),
-        expected={"classification": required_protection(ctx.mode) or "any"},
-        observed={
-            "classification": "unverifiable",
-            "reason": "the protection reader is not implemented yet",
-        },
-        fix=(
-            f"apply expected.ruleset from {aq_command(ctx, 'app-verify')} --json "
-            "(runbook §9.3 step 4)"
-        ),
+        FAIL if failures else WARN,
+        failures or warnings,
+        expected=expected,
+        observed=observed,
+        fix=_protection_fix(ctx, (failures or warnings)[0]),
     )
+
+
+def _protection_fix(ctx: AppModeContext, code: str) -> str:
+    app_id = ctx.identity.app_id
+    if code == protection.UNVERIFIABLE_CODE:
+        return (
+            f"let App {app_id} read {ctx.binding.full_name}'s rulesets and branch protection "
+            f"(administration: read; observed.reason names the failed read), then re-run "
+            f"{aq_command(ctx, 'app-verify')}"
+        )
+    if code == protection.BLOCKS_DEVELOPMENT_CODE:
+        return (
+            f'add {{"actor_id": {app_id}, "actor_type": "Integration", "bypass_mode": '
+            f'"always"}} to the bypass actors of every ruleset in observed.rules that '
+            "refuses the App, and remove any classic protection that does "
+            "(runbook §9.6 rollback to development)"
+        )
+    fix = (
+        f"apply expected.ruleset from {aq_command(ctx, 'app-verify')} --json "
+        "(runbook §9.3 step 4)"
+    )
+    if code == protection.INCOMPATIBLE_CODE:
+        fix += ", and remove the rules observed.reason names"
+    elif code == protection.APP_BYPASS_CODE:
+        fix += "; it has no bypass actors"
+    return fix
 
 
 async def _audit_workflow(ctx: AppModeContext, branch: _DefaultBranch) -> AppModeItem:

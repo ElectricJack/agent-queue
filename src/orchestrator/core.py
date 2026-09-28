@@ -1777,6 +1777,9 @@ class Orchestrator(
         from src.integration.main_promotion import RootPromotionService
         from src.integration.outbox import IntegrationOutbox
         from src.integration.promotion import PromotionService
+        from src.integration.protection import (
+            enablement_reader as protection_enablement_reader,
+        )
         from src.integration.release import IntegrationReleaseService
         from src.integration.repair import RepairService
         from src.integration.scheduler import IntegrationScheduler
@@ -1836,6 +1839,12 @@ class Orchestrator(
             data_dir=self.config.data_dir,
             git_manager=self.git,
             github_client_factory=self.github_client_factory,
+            # The default branch's protection, classified for the App (spec §8.3).
+            protection_reader=protection_enablement_reader(
+                self.db,
+                binding_resolver=self.github_repository_binding_resolver,
+                client_factory=self.github_client_factory,
+            ),
         )
         self.integration_attestation_resolver = self.integration_attestation_service.resolve
         self.integration_release_service = IntegrationReleaseService(self.db)

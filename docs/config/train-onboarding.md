@@ -178,8 +178,29 @@ name, and every `warn` code is a non-blocking entry in the `warnings` list of
   policy's root check-set version). They are compared with those two values
   only, never with the manifest. Missing: `hosted_workflow_variables_unavailable`;
   different: `hosted_workflow_variables_mismatch`.
-- `protection`: reported `main_protection_unverifiable` until the protection
-  reader lands. That is a blocker in App mode, never "unprotected".
+- `protection`: the default branch's rules, read through the App
+  (`src/integration/protection.py`): the effective rules, including parent and
+  organization rulesets, the App's own `current_user_can_bypass` for each
+  ruleset, and classic protection. They are classified as `attested_only` (the
+  App cannot bypass, and the attestation pinned to its id is required),
+  `app_bypass`, `incompatible` (a rule the App cannot bypass would refuse an
+  attested fast-forward, such as a pull-request or signature rule, or a
+  required check that is neither the pinned attestation nor a policy check
+  pinned to the CI producer), `unprotected`, or `unverifiable` (a read failed).
+  The observe, hierarchy and train modes need `attested_only`, and a disabled
+  project is judged the same way because it is being readied for them:
+  `app_bypass` warns (`main_protection_app_bypass`), and the other three block
+  (`branch_protection_incompatible`, `main_protection_missing`,
+  `main_protection_unverifiable`). An unreadable protection is never
+  "unprotected". A development project needs the App's unattested push to get
+  through: `aq integration develop` is refused with
+  `main_protection_blocks_development_publisher` while a rule the App cannot
+  bypass would refuse it, which includes `attested_only` and `incompatible`.
+  The refusal names each such ruleset or classic protection setting. An
+  unverifiable reading does not refuse: it is returned as the command's
+  `evidence.protection`. `app-setup` prints the §8.1 target ruleset only for
+  the codes it fixes, and a `PUT` only to a ruleset already named
+  `Train-only <branch>`. Nothing in AQ writes a rule.
 - `audit_workflow`: a default-branch workflow that reads
   `vars.AQ_INTEGRATION_ATTESTATION_APP_ID`. Missing only warns,
   `audit_workflow_missing`.

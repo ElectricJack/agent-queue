@@ -2735,7 +2735,13 @@ class DevelopmentIntegration:
             )
         return report
 
-    async def configure(self, project_id, policy, *, reason, operator_id):
+    async def configure(self, project_id, policy, *, reason, operator_id, protection_guard=None):
+        """Enter (or reconfigure) development mode for *project_id*.
+
+        *protection_guard*, given the resolved repository, reads the default
+        branch's protection and raises when the publisher's push would be
+        refused (App-mode spec §8.2); its reading is returned as evidence.
+        """
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         from src.database.tables import (
@@ -2812,6 +2818,8 @@ class DevelopmentIntegration:
             repo = repositories[0]
         if repo is None or not repo.url:
             raise ValueError("project repository needs a remote URL")
+        # A GitHub read: before the exclusion and the project lock.
+        reading = await protection_guard(repo) if protection_guard is not None else None
         async with self.exclusion(repo.id), self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
             current_mode = await conn.scalar(
@@ -2950,12 +2958,15 @@ class DevelopmentIntegration:
                 )
             )
         self.next_due[project_id] = time.time() + policy.interval_seconds
-        return {
+        result = {
             "outcome": "configured",
             "project_id": project_id,
             "repository_id": repo.id,
             "policy": policy.model_dump(),
         }
+        if reading is not None:
+            result["evidence"] = {"protection": reading.as_dict()}
+        return result
 
     async def cancel_preserving(self, operation_id, *, reason):
         from src.database.tables import integration_batches

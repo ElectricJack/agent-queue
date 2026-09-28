@@ -1444,6 +1444,42 @@ async def test_failed_validation_parks_and_preserves_candidate(setup):
     assert (await service.sweep("p", retry=True))["outcome"] == "delivered"
 
 
+async def test_protection_guard_refusal_leaves_the_project_unchanged(setup):
+    """App-mode spec §8.2: a publisher the App's push cannot get past is refused."""
+    from src.integration import protection
+
+    db, service, _source, _remote, repo = setup
+    before = await db.get_project("p")
+    seen = []
+
+    async def refuse(repository):
+        seen.append(repository.id)
+        raise protection.DevelopmentPublisherBlocked(
+            repository.id, 5075923, protection.ProtectionReading(protection.ATTESTED_ONLY)
+        )
+
+    with pytest.raises(protection.DevelopmentPublisherBlocked):
+        await service.configure(
+            "p", {"commands": ["true"]}, reason="rollback", operator_id="local",
+            protection_guard=refuse,
+        )
+
+    after = await db.get_project("p")
+    assert seen == [repo.id]
+    assert after.hierarchical_integration_generation == before.hierarchical_integration_generation
+    assert after.hierarchical_integration_policy == before.hierarchical_integration_policy
+
+    async def allow(repository):
+        return protection.ProtectionReading(protection.APP_BYPASS)
+
+    result = await service.configure(
+        "p", {"commands": ["true"]}, reason="rollback", operator_id="local",
+        protection_guard=allow,
+    )
+    assert result["outcome"] == "configured"
+    assert result["evidence"]["protection"]["classification"] == "app_bypass"
+
+
 async def test_conflicting_member_does_not_block_independent_work(setup):
     _db, service, _source, remote, _repo = setup
     await feature(setup, "one", filename="base.txt", content="one\n")

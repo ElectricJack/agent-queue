@@ -501,6 +501,7 @@
         "tests/test_integration_controls.py",
         "tests/test_integration_operational_controls.py",
         "tests/test_integration_operator_controls.py",
+        "tests/test_integration_protection.py",
         "tests/test_integration_troubleshooting_doc.py",
         "tests/test_integration_trust_manifest.py"
       ]
@@ -1286,7 +1287,7 @@
       ]
     }
   },
-  "digest": "sha256:5c2bb7a53589f602035d3b5787a39c5e6a1b2402f1c636f39fbb458cc44dafc5",
+  "digest": "sha256:2aa986deaab65df16c1bd583207983840d6177065b01e82969ec3d9a5858984e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4621,6 +4622,7 @@
         "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
+        "src.integration.protection",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.integration.publishable_artifact",
@@ -7317,6 +7319,25 @@
         "parametrize"
       ],
       "summary": "Prepared child-to-parent promotion and crash recovery."
+    },
+    "tests/test_integration_protection.py": {
+      "areas": [
+        "integration-controls"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_commands",
+        "src.git.github_contracts",
+        "src.integration",
+        "src.integration.attestation",
+        "src.integration.models",
+        "src.integration.protection",
+        "src.integration.trust_manifest"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The default branch's protection, classified for the App (App-mode spec §8.2-8.3)."
     },
     "tests/test_integration_repair.py": {
       "areas": [

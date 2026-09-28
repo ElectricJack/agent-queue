@@ -1240,13 +1240,18 @@ def _render_app_item(item: dict[str, Any], *, detail: bool = True) -> None:
     status = item.get("status") or "?"
     style = _STATUS_STYLE.get(status, "white")
     codes = ", ".join(item.get("codes") or [])
+    observed = item.get("observed")
+    if item.get("id") == "protection" and isinstance(observed, dict):
+        # The classification is what runbook §9.3 checks, even when ok.
+        classification = observed.get("classification")
+        if classification:
+            codes = f"{codes} ({classification})" if codes else str(classification)
     console.print(
         f"  [{style}]{status:<4}[/] {item.get('id', '?'):<15} {codes}".rstrip(),
         highlight=False,
     )
     if not detail or status == "ok":
         return
-    observed = item.get("observed")
     if item.get("id") == "manifest" and isinstance(observed, dict):
         if observed.get("error"):
             console.print(f"       {observed['error']}", markup=False, highlight=False)
@@ -1339,6 +1344,12 @@ def _run_gh(argv: list[str]) -> dict[str, Any]:
     return outcome
 
 
+#: Protection codes the §8.1 target ruleset resolves; any other code keeps its own fix.
+_RULESET_FIXES = frozenset({
+    "main_protection_missing", "branch_protection_incompatible", "main_protection_app_bypass",
+})
+
+
 def _ruleset_commands(full_name: str, ruleset_id: Any) -> list[str]:
     put = f"gh api --method PUT repos/{full_name}/rulesets/{ruleset_id or 'RULESET_ID'} --input FILE"
     post = f"gh api --method POST repos/{full_name}/rulesets --input FILE"
@@ -1391,7 +1402,8 @@ def _render_app_setup(data: dict[str, Any]) -> None:
     protection = data["protection"]
     console.print("\n[bold]protection[/]", highlight=False)
     _render_app_item(protection["item"], detail=False)
-    if protection["item"].get("status") != "ok" and protection["ruleset"] is not None:
+    codes = set(protection["item"].get("codes") or ())
+    if codes & _RULESET_FIXES and protection["ruleset"] is not None:
         console.print(
             "  the target ruleset (save it as FILE; applying it is the repository admin's step, "
             "runbook §9.3 step 4):",
@@ -1400,6 +1412,12 @@ def _render_app_setup(data: dict[str, Any]) -> None:
         click.echo(json.dumps(protection["ruleset"], indent=2))
         for command in protection["commands"]:
             console.print(f"  {command}", markup=False, highlight=False, soft_wrap=True)
+    elif protection["item"].get("status") != "ok" and protection["item"].get("fix"):
+        # Unreadable, or a development project the target ruleset would keep
+        # blocked: the item's own fix, never a ruleset write.
+        console.print(
+            f"  {protection['item']['fix']}", markup=False, highlight=False, soft_wrap=True
+        )
 
     others = [
         item for item in verify.get("items") or []
