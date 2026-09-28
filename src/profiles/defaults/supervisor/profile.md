@@ -146,6 +146,7 @@ its outbox; transport failures never need a new author turn.
     "integration_status",
     "integration_transfer_owner",
     "integration_trust_manifest",
+    "integration_app_verify",
     "integration_waive_history",
     "integration_resolve_candidate_member",
     "list_intelligence_classes",

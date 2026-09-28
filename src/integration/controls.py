@@ -206,12 +206,24 @@ class IntegrationControlService:
 
     async def preflight(self, project_id: str) -> dict[str, Any]:
         """Read functional readiness without persisting observations."""
+        projection, _warnings = await self._preflight_with_warnings(project_id)
+        return projection
+
+    async def _preflight_with_warnings(
+        self, project_id: str
+    ) -> tuple[dict[str, Any], list[dict[str, str]]]:
+        """The preflight projection and its non-blocking warnings.
+
+        Warnings (App mode's ``warn`` items, spec §6.2) never enter the
+        blockers, their digest or ``ready``; only ``status`` shows them.
+        """
         async with self.db._engine.connect() as conn:
             projection = await self._functional_preflight_on(conn, project_id)
         projection["database_blocker_digest"] = projection["blocker_digest"]
         projection["database_blockers"] = list(projection["blockers"])
+        warnings: list[dict[str, str]] = []
         if projection["project_id"] is None:
-            return projection
+            return projection, warnings
         repository_id = projection["repository_id"]
         if repository_id and self.external_preflight is not None:
             external = self.external_preflight(project_id, repository_id)
@@ -225,10 +237,21 @@ class IntegrationControlService:
                         repository_id,
                     )
                 )
+            warnings = _sorted_blockers(
+                [
+                    _blocker(
+                        str(code),
+                        "configuration warning; readiness is not blocked "
+                        "(aq integration app-verify names the fix)",
+                        repository_id,
+                    )
+                    for code in getattr(external, "warnings", ())
+                ]
+            )
         projection["blockers"] = _sorted_blockers(projection["blockers"])
         projection["blocker_digest"] = _blocker_digest(projection["blockers"])
         projection["ready"] = not projection["blockers"]
-        return projection
+        return projection, warnings
 
     async def status(self, project_id: str) -> dict[str, Any]:
         """Return status plus live functional wiring blockers."""
@@ -246,8 +269,9 @@ class IntegrationControlService:
                 "outcome": "status",
                 **status,
                 "blocker_digest": _blocker_digest(status["blockers"]),
+                "warnings": [],
             }
-        observed = await self.preflight(project_id)
+        observed, warnings = await self._preflight_with_warnings(project_id)
         database_keys = {
             (item["code"], item["ref"], item["detail"])
             for item in observed["database_blockers"]
@@ -265,6 +289,7 @@ class IntegrationControlService:
             **status,
             "blockers": blockers,
             "blocker_digest": _blocker_digest(blockers),
+            "warnings": warnings,
             "ready": not blockers,
             "rollout_ready": not blockers,
         }

@@ -37,9 +37,11 @@ from src.git.github_app import AppTokenProvider, GitHubRepositoryBinding, HttpRe
 from src.git.github_auth import GitHubAuth
 from src.git.github_contracts import GitHubCredentialIdentity
 from src.integration.controls import IntegrationControlService, daemon_functional_preflight
+from src.integration.preflight import FunctionalPreflight
 from src.integration.hierarchy import HierarchyIntegration
 
 from src.integration.recovery_controls import IntegrationRecoveryControls
+from src.integration.trust_manifest import canonical_text
 from src.integration.models import (
     ArtifactSnapshot,
     HierarchicalIntegrationPolicy,
@@ -333,6 +335,33 @@ async def test_reconcile_unmaterialized_rejects_mixed_repository_graph_atomicall
     project = await db.get_project("p")
     assert parent.repo_id is None
     assert project.hierarchical_integration_generation == 1
+
+
+async def test_status_shows_app_mode_warnings_without_blocking_readiness(db):
+    warnings = ("trust_manifest_check_set_differs", "audit_workflow_missing")
+
+    async def warn_only(_project_id: str, _repository_id: str) -> FunctionalPreflight:
+        return FunctionalPreflight((), warnings)
+
+    service = IntegrationControlService(db, external_preflight=warn_only, clock=lambda: 10.0)
+    ready = await IntegrationControlService(db, external_preflight=_external_ready).preflight("p")
+
+    preflight = await service.preflight("p")
+    # Warnings stay out of the blockers, their digest and readiness.
+    assert preflight["ready"] is True and preflight["blockers"] == []
+    assert preflight["blocker_digest"] == ready["blocker_digest"]
+    assert "warnings" not in preflight
+    enabled = await service.enable(
+        "p", mode="observe", expected_generation=0, reason="observe", operator_id="local:test"
+    )
+    assert enabled["outcome"] == "enabled"
+
+    status = await service.status("p")
+    assert status["ready"] is True and status["rollout_ready"] is True
+    assert status["blockers"] == []
+    assert [item["code"] for item in status["warnings"]] == sorted(warnings)
+    assert {item["ref"] for item in status["warnings"]} == {"repo"}
+    assert all("readiness is not blocked" in item["detail"] for item in status["warnings"])
 
 
 async def test_enable_is_atomic_and_stale_generation_changes_nothing(db):
@@ -955,37 +984,23 @@ async def test_history_waiver_applicability_is_honored_by_later_cutovers(db):
     assert await _row_count(db, integration_legacy_gate_applicability) == 1
 
 
-async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_variables(db):
-    trust = {
-        "schema": "aq.integration-trust.v1",
-        "canonical_repository_id": "repo",
-        "repository_id": 303,
-        "full_name": "acme/widgets",
-        "ci_producer_app_id": 1234,
-        "attestation_app_id": 101,
-        "attestation_name": "Agent Queue Integration Attestation",
-        "required_checks": {"version": "checks-v1", "names": ["Tests (default)"]},
-    }
+@pytest.fixture
+def protected(monkeypatch):
+    """Default-branch protection reads as ``attested_only`` (the reader is a stub)."""
+    from src.integration import app_mode
 
-    class Client:
-        repository = GitHubRepositoryBinding(303, "acme/widgets")
-        # Transport is gh in both modes; trust follows credential identity.
-        auth_mode = "gh"
-        credential_identity = GitHubCredentialIdentity.app(101, 202)
+    async def attested_only(_ctx):
+        return app_mode.AppModeItem(
+            "protection", app_mode.OK, observed={"classification": "attested_only"}
+        )
 
-        async def request_json(self, _method, path):
-            if "/contents/" in path:
-                return {
-                    "encoding": "base64",
-                    "content": base64.b64encode(json.dumps(trust).encode()).decode(),
-                }
-            value = (
-                "101"
-                if path.endswith("AQ_INTEGRATION_ATTESTATION_APP_ID")
-                else "checks-v1"
-            )
-            return {"name": path.rsplit("/", 1)[-1], "value": value}
+    monkeypatch.setattr(app_mode, "check_protection", attested_only)
 
+
+async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_variables(
+    db, protected
+):
+    client = _AppModeClient(ci_producer_app_id=1234)
     loaded = _loaded_definition(scope="project")
     await db.update_project(
         "p",
@@ -996,8 +1011,8 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
     runtime = SimpleNamespace(_store=SimpleNamespace(load=lambda _sha: loaded))
     orchestrator = SimpleNamespace(
         db=db,
-        github_client_factory=lambda _binding: Client(),
-        github_repository_binding_resolver=lambda _repository: Client.repository,
+        github_client_factory=lambda _binding: client,
+        github_repository_binding_resolver=lambda _repository: client.repository,
         playbook_manager=runtime,
         integration_attestation_service=object(),
         root_promotion_service=object(),
@@ -1028,9 +1043,18 @@ async def test_daemon_functional_preflight_reads_artifact_trust_and_workflow_var
     assert "route_artifact_mismatch" in blockers
 
     runtime._store.load = lambda _sha: (_ for _ in ()).throw(FileNotFoundError())
-    trust["required_checks"]["version"] = "wrong"
+    client.trust["required_checks"]["version"] = "wrong"
     blockers = await daemon_functional_preflight(orchestrator, "p", "repo")
     assert "route_artifact_unavailable" in blockers
+    # The snapshot owns the check set (spec §6.3): a manifest version that lags
+    # is a warning, and the variables answer to the policy, not the manifest.
+    assert "trust_manifest_mismatch" not in blockers
+    assert "hosted_workflow_variables_mismatch" not in blockers
+    assert blockers.warnings == ("trust_manifest_check_set_differs",)
+
+    client.trust["attestation_app_id"] = 999
+    client.variables["AQ_INTEGRATION_REQUIRED_CHECK_VERSION"] = "wrong"
+    blockers = await daemon_functional_preflight(orchestrator, "p", "repo")
     assert "trust_manifest_mismatch" in blockers
     assert "hosted_workflow_variables_mismatch" in blockers
 
@@ -1061,8 +1085,12 @@ def _preflight_orchestrator(db, client) -> SimpleNamespace:
     )
 
 
+def _encoded(text: str) -> dict:
+    return {"encoding": "base64", "content": base64.b64encode(text.encode()).decode()}
+
+
 class _AppModeClient:
-    """App credentials over a repository whose manifest and variables are published."""
+    """App credentials over a repository whose App-mode anchors are all published."""
 
     repository = GitHubRepositoryBinding(303, "acme/widgets")
     credential_identity = GitHubCredentialIdentity.app(101, 202)
@@ -1078,15 +1106,37 @@ class _AppModeClient:
             "attestation_name": "Agent Queue Integration Attestation",
             "required_checks": {"version": "checks-v1", "names": ["Tests (default)"]},
         }
+        self.variables = {
+            "AQ_INTEGRATION_ATTESTATION_APP_ID": "101",
+            "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "checks-v1",
+        }
+        self.workflows = {
+            ".github/workflows/main-attestation.yml": (
+                "APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}\n"
+            ),
+        }
+
+    async def installation_token(self):
+        return "installation-token"
+
+    async def exact_head_ref(self, branch):
+        assert branch == "main"
+        return "a" * 40
+
+    async def paged_list(self, path, *, max_pages):
+        assert path == f"/repositories/303/contents/.github/workflows?ref={'a' * 40}"
+        return [{"type": "file", "path": path} for path in self.workflows]
 
     async def request_json(self, _method, path):
-        if "/contents/" in path:
-            return {
-                "encoding": "base64",
-                "content": base64.b64encode(json.dumps(self.trust).encode()).decode(),
-            }
-        value = "101" if path.endswith("AQ_INTEGRATION_ATTESTATION_APP_ID") else "checks-v1"
-        return {"name": path.rsplit("/", 1)[-1], "value": value}
+        if path == "/repos/acme/widgets":
+            return {"id": 303, "full_name": "acme/widgets", "default_branch": "main"}
+        if "/actions/variables/" in path:
+            name = path.rsplit("/", 1)[-1]
+            return {"name": name, "value": self.variables[name]}
+        if "/contents/.github/agent-queue-integration.json?" in path:
+            return _encoded(canonical_text(self.trust))
+        workflow = path.split("/contents/", 1)[1].split("?", 1)[0]
+        return _encoded(self.workflows[workflow])
 
 
 async def _set_producers(db, parent: str, root: str) -> None:
@@ -1106,7 +1156,7 @@ async def _set_producers(db, parent: str, root: str) -> None:
         ("015368", "015368"),
     ],
 )
-async def test_app_mode_preflight_names_a_non_numeric_producer(db, parent, root):
+async def test_app_mode_preflight_names_a_non_numeric_producer(db, protected, parent, root):
     await _set_producers(db, parent, root)
     orchestrator = _preflight_orchestrator(db, _AppModeClient(ci_producer_app_id=15368))
 
@@ -1116,14 +1166,16 @@ async def test_app_mode_preflight_names_a_non_numeric_producer(db, parent, root)
     assert blockers == ("ci_producer_not_numeric",)
 
 
-async def test_app_mode_preflight_accepts_the_numeric_producer(db):
+async def test_app_mode_preflight_accepts_the_numeric_producer(db, protected):
     await _set_producers(db, "15368", "15368")
     orchestrator = _preflight_orchestrator(db, _AppModeClient(ci_producer_app_id=15368))
 
     assert await daemon_functional_preflight(orchestrator, "p", "repo") == ()
 
 
-async def test_app_mode_preflight_reports_a_numeric_producer_the_manifest_does_not_name(db):
+async def test_app_mode_preflight_reports_a_numeric_producer_the_manifest_does_not_name(
+    db, protected
+):
     await _set_producers(db, "15368", "15368")
     orchestrator = _preflight_orchestrator(db, _AppModeClient(ci_producer_app_id=1234))
 
@@ -1132,7 +1184,7 @@ async def test_app_mode_preflight_reports_a_numeric_producer_the_manifest_does_n
     )
 
 
-async def test_non_numeric_producer_does_not_hide_another_manifest_mismatch(db):
+async def test_non_numeric_producer_does_not_hide_another_manifest_mismatch(db, protected):
     await _set_producers(db, "github-actions", "github-actions")
     client = _AppModeClient(ci_producer_app_id=15368)
     client.trust["full_name"] = "acme/other"
@@ -1141,6 +1193,15 @@ async def test_non_numeric_producer_does_not_hide_another_manifest_mismatch(db):
     assert await daemon_functional_preflight(orchestrator, "p", "repo") == (
         "ci_producer_not_numeric",
         "trust_manifest_mismatch",
+    )
+
+
+async def test_app_mode_preflight_blocks_on_unverifiable_protection_until_the_reader_lands(db):
+    orchestrator = _preflight_orchestrator(db, _AppModeClient(ci_producer_app_id=1234))
+
+    # Unverifiable is a blocker in App mode, never "unprotected" (spec §8.3).
+    assert await daemon_functional_preflight(orchestrator, "p", "repo") == (
+        "main_protection_unverifiable",
     )
 
 
@@ -1206,7 +1267,7 @@ async def test_gh_preflight_uses_existing_auth_without_app_manifest_or_variables
 
 
 async def test_daemon_functional_preflight_mints_token_with_actions_variables_read(
-    db, monkeypatch
+    db, monkeypatch, protected
 ):
     trust = {
         "schema": "aq.integration-trust.v1",
@@ -1281,7 +1342,15 @@ async def test_daemon_functional_preflight_mints_token_with_actions_variables_re
         async def run(self, args, **kwargs):
             assert kwargs["credential"].token == "installation-secret"
             endpoint = args[-1]
-            if "/contents/" in endpoint:
+            if endpoint == "repos/acme/widgets":
+                body = {"id": 303, "full_name": "acme/widgets", "default_branch": "main"}
+            elif endpoint == "repositories/303/git/ref/heads/main":
+                body = {"ref": "refs/heads/main", "object": {"sha": "a" * 40}}
+            elif endpoint.startswith("repositories/303/contents/.github/workflows?"):
+                body = [{"type": "file", "path": ".github/workflows/main-attestation.yml"}]
+            elif "/contents/.github/workflows/" in endpoint:
+                body = _encoded("APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}\n")
+            elif "/contents/" in endpoint:
                 body = {
                     "encoding": "base64",
                     "content": base64.b64encode(json.dumps(trust).encode()).decode(),

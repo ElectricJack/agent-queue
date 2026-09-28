@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -73,7 +73,7 @@ def build_trust_manifest(
     canonical_repository_id: str,
     repository_id: int,
     full_name: str,
-    ci_producer_app_id: int,
+    ci_producer_app_id: int | None,
     attestation_app_id: int,
     checks: Sequence[str],
     check_version: str,
@@ -82,6 +82,11 @@ def build_trust_manifest(
 
     ``checks`` keeps its order: the runtime compares check names as an
     ordered sequence, so the manifest lists them exactly as the policy does.
+
+    ``ci_producer_app_id=None`` is a comparison template for a policy whose
+    producer is itself at fault (``ci_producer_not_numeric``): the field is
+    ``None``, nothing is validated, and :func:`compare` is told to ignore it.
+    It is never a manifest to commit.
     """
     manifest = {
         "schema": SCHEMA,
@@ -93,7 +98,8 @@ def build_trust_manifest(
         "attestation_name": ATTESTATION_NAME,
         "required_checks": {"version": check_version, "names": list(checks)},
     }
-    IntegrationTrustManifest.model_validate(manifest)
+    if ci_producer_app_id is not None:
+        IntegrationTrustManifest.model_validate(manifest)
     return manifest
 
 
@@ -302,9 +308,15 @@ def _absent(error: str | None = None) -> ManifestComparison:
 
 
 def compare(
-    expected: Mapping[str, Any], committed: bytes | str | None
+    expected: Mapping[str, Any],
+    committed: bytes | str | None,
+    *,
+    ignore: Collection[str] = (),
 ) -> ManifestComparison:
-    """Compare a committed copy (raw file content, ``None`` when absent) field by field."""
+    """Compare a committed copy (raw file content, ``None`` when absent) field by field.
+
+    Fields in ``ignore`` are left out of the diff; the copy must still validate.
+    """
     if committed is None:
         return _absent()
     raw = committed.encode("utf-8") if isinstance(committed, str) else committed
@@ -337,6 +349,8 @@ def compare(
 
     diff: list[FieldDiff] = []
     for name in FIELDS:
+        if name in ignore:
+            continue
         want, have = _field(expected, name), _field(parsed, name)
         # ``type`` too: the schema's integers are strict, so "15368" != 15368.
         if have is _ABSENT or type(want) is not type(have) or want != have:
