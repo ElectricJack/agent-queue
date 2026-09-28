@@ -2907,12 +2907,21 @@ class Orchestrator(
 
             # 4. Monitoring: detect DEFINED tasks stuck beyond threshold.
             #    Runs after promotion so we don't false-alarm on tasks that
-            #    were just promoted in step 3.
-            await self._check_stuck_defined_tasks()
+            #    were just promoted in step 3.  Steps 4 and 4b only observe,
+            #    so each has its own try/except: a failing alert query once
+            #    skipped scheduling, pool starts and session teardown on every
+            #    cycle for 53 minutes (fair-grove-86).
+            try:
+                await self._check_stuck_defined_tasks()
+            except Exception:
+                logger.exception("Stuck DEFINED task check failed")
 
             # 4b. Periodic report of all FAILED/BLOCKED tasks so operators
             #     have an at-a-glance view of tasks needing intervention.
-            await self._check_failed_blocked_tasks()
+            try:
+                await self._check_failed_blocked_tasks()
+            except Exception:
+                logger.exception("FAILED/BLOCKED task report failed")
 
             # ── Phase 2: Scheduling & launch ────────────────────────────────
 
