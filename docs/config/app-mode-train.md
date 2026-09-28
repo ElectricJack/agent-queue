@@ -124,7 +124,9 @@ publisher, which pushes with the App's bypass on ruleset 24002443.
 
 Preconditions: every node of the implementation epic is complete and on
 `main`, and the disposable-repository gate report shows S1-S10 passing, or each
-gap accepted by the operator.
+gap accepted by the operator. The 2026-09-28 run is
+[app-mode-train-2026-09-28.md](../gates/app-mode-train-2026-09-28.md), driven by
+`scripts/e2e-app-train.sh`.
 
 1. **Verify before touching anything:**
 
