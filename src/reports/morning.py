@@ -6,6 +6,7 @@ import asyncio
 import json
 import math
 import os
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -107,6 +108,126 @@ async def _checkout(paths: tuple[str, ...]) -> str:
         if await asyncio.to_thread(os.path.isdir, path):
             return path
     return paths[0]
+
+
+_GROUPS = ("landed", "pending", "failures")
+# Per-commit history and session telemetry: the first evidence to omit.
+_TELEMETRY = frozenset({"git", "attempt", "reroute", "provider"})
+# Everything a git fact or a fact's shipment already carries.
+_GIT_DETAIL = frozenset({"commits", "files", "diffstat", "ancestry"})
+_COMPACT_TEXT = 160
+_COMPACT_ITEMS = 3
+
+
+def _size(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False).encode())
+
+
+def _compact(value: Any) -> Any:
+    if isinstance(value, str):
+        return value[:_COMPACT_TEXT]
+    if isinstance(value, list):
+        return [_compact(item) for item in value[:_COMPACT_ITEMS]]
+    if isinstance(value, dict):
+        return {key: _compact(item) for key, item in value.items()}
+    return value
+
+
+def _keep_order(facts: list[dict]) -> list[dict]:
+    """Facts most worth keeping first.
+
+    In-window evidence leads, late evidence follows and per-commit history
+    and session telemetry come last. Within each band projects take turns, so
+    one busy project cannot crowd the others out, and each project offers its
+    landed work and unresolved problems before the rest, newest first.
+    """
+
+    def band(fact: dict) -> tuple[bool, bool]:
+        return fact["source"] in _TELEMETRY, fact["late"]
+
+    def lesser(fact: dict) -> bool:
+        detail = fact["detail"]
+        return not (detail.get("unresolved") or detail.get("shipment") == "landed")
+
+    ranked = sorted(facts, key=lambda fact: (band(fact), lesser(fact), -fact["at"], fact["key"]))
+    turns: Counter = Counter()
+    order = []
+    for fact in ranked:
+        project = (band(fact), fact["project_id"])
+        turns[project] += 1
+        order.append((band(fact), turns[project]))
+    # A stable sort keeps each turn in ranked order.
+    return [fact for _, fact in sorted(zip(order, ranked), key=lambda pair: pair[0])]
+
+
+def _fit_brief(brief: dict) -> None:
+    """Bound *brief* to MAX_BRIEF_BYTES, dropping context before evidence.
+
+    Hourly digest context is context only, and the raw git reads repeat what
+    the facts carry: each commit is a git fact, ancestry is each fact's
+    shipment and the surface map is already drawn from the diffstat. Both go
+    before any fact (2026-09-28: a 48 KB git read and 8 KB of digests pushed
+    all 984 facts out and left a no-facts brief). Fact prose is shortened
+    next, and only then are facts omitted, least important first, with
+    per-project counts. A limit is incomplete coverage, never an apparent
+    no-change day, so nothing it proposes advances coverage.
+    """
+    if _size(brief) <= MAX_BRIEF_BYTES:
+        return
+    brief["coverage"]["gaps"].append({"source": "brief", "reason": "byte_limit"})
+    brief["coverage"]["complete"] = False
+    brief["source_cursors"] = {}
+    brief["source_heads"] = {}
+    brief["omitted"]["digest_context"] = len(brief["digest_context"])
+    brief["digest_context"] = []
+    brief["git"] = {
+        project_id: {
+            **{key: value for key, value in observed.items() if key not in _GIT_DETAIL},
+            "commit_count": len(observed.get("commits", [])),
+        }
+        for project_id, observed in brief["git"].items()
+    }
+    facts = [{**fact, "detail": _compact(fact["detail"])} for fact in brief["facts"]]
+    members = {
+        project["id"]: {group: project[group] for group in _GROUPS} for project in brief["projects"]
+    }
+    # Each list element costs its encoding plus a ", " separator.
+    refs: dict[str, int] = {}
+    for groups in members.values():
+        for keys in groups.values():
+            for key in keys:
+                refs[key] = refs.get(key, 0) + _size(key) + 2
+
+    def select(kept: list[dict]) -> None:
+        keys = {fact["key"] for fact in kept}
+        brief["facts"] = sorted(kept, key=lambda fact: (fact["at"], fact["key"]))
+        for project in brief["projects"]:
+            for group in _GROUPS:
+                project[group] = [key for key in members[project["id"]][group] if key in keys]
+        omitted = Counter(fact["project_id"] for fact in facts if fact["key"] not in keys)
+        brief["omitted"]["facts"] = omitted.total()
+        brief["omitted"]["projects"] = {
+            project_id: count for project_id, count in omitted.items() if project_id is not None
+        }
+
+    select([])
+    while _size(brief) > MAX_BRIEF_BYTES and brief["git"]:
+        brief["git"].pop(next(reversed(brief["git"])))
+    # Strict priority: a fact is omitted only when everything kept outranks
+    # it. Omission counts only shrink as facts are kept, so the budget holds.
+    budget = MAX_BRIEF_BYTES - _size(brief)
+    kept: list[dict] = []
+    for fact in _keep_order(facts):
+        budget -= _size(fact) + 2 + refs.get(fact["key"], 0)
+        if budget < 0:
+            break
+        kept.append(fact)
+    select(kept)
+    while _size(brief) > MAX_BRIEF_BYTES:
+        if not kept:
+            raise ValueError("morning brief metadata exceeds 24 KiB")
+        kept.pop()
+        select(kept)
 
 
 async def collect_morning_evidence(
@@ -395,29 +516,8 @@ async def collect_morning_evidence(
         },
         "omitted": {"facts": 0},
     }
-    # Keep provenance and coverage while bounding text sent to a future author.
-    # A limit is incomplete coverage, never an apparent no-change day.
-    while len(json.dumps(brief, ensure_ascii=False).encode()) > MAX_BRIEF_BYTES:
-        if facts:
-            removed = facts.pop()
-            for project in project_briefs:
-                for group in ("landed", "pending", "failures"):
-                    if removed["key"] in project[group]:
-                        project[group].remove(removed["key"])
-            brief["omitted"]["facts"] += 1
-        elif brief["git"]:
-            brief["git"].pop(next(reversed(brief["git"])))
-        elif brief["digest_context"]:
-            brief["digest_context"].pop()
-        else:
-            raise ValueError("morning brief metadata exceeds 24 KiB")
-        gap = {"source": "brief", "reason": "byte_limit"}
-        if gap not in gaps:
-            gaps.append(gap)
-        brief["coverage"]["complete"] = False
-        brief["source_cursors"] = {}
-        brief["source_heads"] = {}
-    has_changes = bool(facts)
+    _fit_brief(brief)
+    has_changes = bool(brief["facts"])
     would_suppress = not has_changes and brief["coverage"]["complete"]
     return {
         "brief": brief,
