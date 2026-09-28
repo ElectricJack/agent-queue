@@ -1,6 +1,7 @@
 # Document reviews
 
-AQ has a review surface for documents — specs and plans first — that lives in
+AQ has a review surface for documents — specs, plans, design proposals and
+research reports — that lives in
 the vault, is decided by Jack, and gates the work that depends on it. A
 document is a **review**, not a commit: the worker writes it in its checkout
 without committing it, submits it with `aq review submit`, and closes its
@@ -204,14 +205,33 @@ From the worker's point of view the workflow is short:
    on it waits (via `--after-review`). A whole build graph takes it too:
    `aq task create --from-spec <path> --after-review <id>` (or `--graph`)
    attaches every node to the review's gate in the graph's own transaction.
+
+   The close gate enforces the submit. A task that declares a `review`
+   deliverable (`--deliverable '{"id":"proposal","kind":"review","target":"spec"}'`;
+   target `spec`, `plan`, `other` or `any`) is refused a passing close with
+   `deliverables.unmet` until it has authored a review, or submitted a
+   revision of one, that is not withdrawn. Every `research` or `design` task
+   carries such an item — `{"id": "review", "kind": "review", "target":
+   "any"}` — whether or not its author declared one, read from the task's
+   type at close time. Prime lists it under **Deliverables** with the submit
+   command. A task that honestly produced no document waives it visibly with
+   `--deliverable-unmet 'review: <reason>'`, and a dispatched adversarial
+   reviewer (research-typed, but answering with comments) is exempt. This is
+   what keeps a proposal from finishing on a branch nobody reads: research
+   task `crisp-orbit-37` committed its design proposal, closed as pass, and
+   never reached the Reviews tab until the supervisor submitted it by hand.
 4. **Revise** if you hold a revision task (*"Revise \<title> (review \<id>)"*):
    `aq review show --review-id <id> --comments`, then resubmit with
    `aq review submit --review-id <id> --file <draft> --changes "…"
    [--resolves <comment-id> …]`, and close it.
 
 This is wired into every shipped worker profile's `## Rules` section as
-*Specs and plans go to review, not the repo*, and the shipped supervisor
-profile mirrors the operator side (§ Who may decide above). The rule
+*Documents go to review, not the repo*, and the shipped supervisor profile
+mirrors the operator side (§ Who may decide above) and tells the supervisor
+to file document-returning work as `research`/`design` or with a `review`
+deliverable, never with "commit the document". Shipped profiles are
+write-if-absent, so an existing install picks the new wording up only after
+the operator refreshes its vault copies. The rule
 replaces the superpowers default of committing specs to
 `docs/superpowers/specs/`.
 
@@ -543,7 +563,11 @@ something else.
 (API handlers and refusal codes), `src/cli/reviews.py` (the hand-written
 submit path; every other `aq review …` command is generated from
 `src/tools/definitions.py`), `src/models/` (the review and gate rows),
-`src/scheduler/` (gate enforcement on routing). Tests live in
-`tests/test_review_profile_rules.py` for the profile rule invariants, and
+`src/scheduler/` (gate enforcement on routing), `src/deliverables.py` and
+`_cmd_task_close` in `src/commands/session_commands.py` (the `review`
+deliverable and its close gate). Tests live in
+`tests/test_review_profile_rules.py` for the profile rule invariants,
+`tests/test_task_close_summary_enforcement.py` and `tests/test_deliverables.py`
+for the close gate, and
 under `tests/` for the service, state machine, permissions, and vault
 behaviours — see `tests/` for the full set.

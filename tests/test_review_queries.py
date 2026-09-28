@@ -275,6 +275,42 @@ class TestRevisions:
                 await db.insert_review_revision(revision=_revision(revision=1), conn=conn)
 
 
+class TestReviewsSubmittedByTask:
+    """The close gate's evidence for a ``review`` deliverable (vivid-delta)."""
+
+    async def test_a_task_with_no_review_has_none(self, db):
+        await _submit(db)
+        assert await db.list_reviews_submitted_by_task("some-other-task") == []
+
+    async def test_the_author_task_sees_its_review_with_kind_and_state(self, db):
+        await _submit(db, kind="other", state="changes_requested")
+        assert await db.list_reviews_submitted_by_task("author-task") == [
+            {"id": "rev-bright-harbor", "kind": "other", "state": "changes_requested"}
+        ]
+
+    async def test_a_revision_task_sees_the_review_it_resubmitted(self, db):
+        await _submit(db)
+        async with db.immediate() as conn:
+            await db.insert_review_revision(
+                revision=_revision(revision=2, submitted_task_id="revise-task"), conn=conn
+            )
+        assert await db.list_reviews_submitted_by_task("revise-task") == [
+            {"id": "rev-bright-harbor", "kind": "spec", "state": "in_review"}
+        ]
+
+    async def test_each_review_is_listed_once_oldest_first(self, db):
+        await _submit(db, "rev-b-two", created_at=200.0)
+        await _submit(db, "rev-a-one", created_at=100.0)
+        async with db.immediate() as conn:
+            await db.insert_review_revision(
+                revision=_revision("rev-a-one", revision=2), conn=conn
+            )
+        assert [r["id"] for r in await db.list_reviews_submitted_by_task("author-task")] == [
+            "rev-a-one",
+            "rev-b-two",
+        ]
+
+
 # ── comments ───────────────────────────────────────────────────────────────
 
 

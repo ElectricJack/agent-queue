@@ -529,6 +529,192 @@ async def test_close_accepts_test_and_command_deliverables_declared_as_shell_com
 
 
 # ---------------------------------------------------------------------------
+# Review deliverables: a proposal goes to Reviews, not only a branch
+# (vivid-delta; research task crisp-orbit-37 committed its proposal and was
+# never seen in the Reviews tab).
+# ---------------------------------------------------------------------------
+
+
+async def _submitted_review(db, review_id, *, task_id, kind="spec", state="in_review"):
+    """Store a document review with its first revision, as ``review_submit`` would."""
+    import hashlib
+    import time
+
+    now = time.time()
+    async with db.immediate() as conn:
+        await db.insert_review(
+            review={
+                "id": review_id,
+                "project_id": "p",
+                "author_task_id": task_id,
+                "kind": kind,
+                "title": "Proposal",
+                "vault_path": f"projects/p/specs/{review_id}.md",
+                "current_revision": 1,
+                "state": state,
+                "gate_id": None,
+                "decider": "user",
+                "decided_by": None,
+                "decided_at": None,
+                "decision_note": None,
+                "notified_revision": 0,
+                "created_at": now,
+                "updated_at": now,
+            },
+            revision={
+                "review_id": review_id,
+                "revision": 1,
+                "content": "# Proposal\n",
+                "content_sha256": hashlib.sha256(b"# Proposal\n").hexdigest(),
+                "submitted_by": "session:author",
+                "submitted_task_id": task_id,
+                "changes_note": None,
+                "submitted_at": now,
+                "responder_class": None,
+                "responder_profile": None,
+                "responder_profile_source": None,
+                "playbook": None,
+                "playbook_artifact": None,
+            },
+            conn=conn,
+        )
+
+
+async def _started(handler, db, **fields) -> str:
+    await db.create_project(Project(id="p", name="P"))
+    created = await handler.execute("create_task", {"project_id": "p", "title": "t", **fields})
+    tid = created["created"]
+    await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
+    return tid
+
+
+@pytest.mark.asyncio
+async def test_research_close_without_a_submitted_review_is_refused(handler, db):
+    """A research task's document must reach Reviews before a passing close."""
+    tid = await _started(handler, db, task_type="research")
+
+    result = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
+
+    assert result["success"] is False
+    assert result["code"] == "deliverables.unmet"
+    assert result["unmet_deliverables"] == [
+        {"id": "review", "kind": "review", "target": "any", "met": False, "reason": ""}
+    ]
+    assert f"aq review submit --task-id {tid}" in result["error"]
+    assert "--deliverable-unmet 'review: <reason>'" in result["error"]
+    assert (await db.get_task(tid)).status == TaskStatus.IN_PROGRESS
+    assert await db.get_task_completion(tid) is None
+
+
+@pytest.mark.asyncio
+async def test_design_close_passes_once_its_review_is_submitted(handler, db):
+    tid = await _started(handler, db, task_type="design")
+    await _submitted_review(db, "rev-bright-harbor", task_id=tid)
+
+    result = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
+
+    assert result["success"] is True, result
+    completion = await db.get_task_completion(tid)
+    assert completion.deliverables == [
+        {"id": "review", "kind": "review", "target": "any", "met": True, "reason": ""}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_research_without_a_document_waives_the_review_visibly(handler, db):
+    tid = await _started(handler, db, task_type="research")
+
+    result = await handler.execute(
+        "task_close",
+        {
+            "task_id": tid,
+            "outcome": "pass",
+            "deliverable_unmet": ["review: findings recorded as task comments; no document"],
+        },
+    )
+
+    assert result["success"] is True, result
+    completion = await db.get_task_completion(tid)
+    assert completion.deliverables == [
+        {
+            "id": "review",
+            "kind": "review",
+            "target": "any",
+            "met": False,
+            "reason": "findings recorded as task comments; no document",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_research_close_is_never_held_for_a_review(handler, db):
+    tid = await _started(handler, db, task_type="research")
+
+    result = await handler.execute(
+        "task_close", {"task_id": tid, "outcome": "fail", "summary": "could not finish"}
+    )
+
+    assert result["success"] is True, result
+
+
+@pytest.mark.asyncio
+async def test_a_dispatched_adversarial_reviewer_closes_without_its_own_review(handler, db):
+    """Dispatched reviewers are research-typed but answer with comments."""
+    tid = await _started(handler, db, task_type="research")
+    await _submitted_review(db, "rev-bright-harbor", task_id="author-task")
+    async with db.immediate() as conn:
+        await db.insert_review_dispatch(
+            {
+                "id": "dsp-1",
+                "review_id": "rev-bright-harbor",
+                "profile_id": "reviewer",
+                "revision": 1,
+                "with_comments": False,
+                "focus": None,
+                "task_id": tid,
+                "dispatched_by": "human:local-operator",
+                "created_at": 1.0,
+            },
+            conn=conn,
+        )
+
+    result = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
+
+    assert result["success"] is True, result
+    assert (await db.get_task_completion(tid)).deliverables == []
+
+
+@pytest.mark.asyncio
+async def test_a_declared_review_item_needs_a_review_of_its_kind(handler, db):
+    """A feature task created with a 'return a proposal' deliverable."""
+    tid = await _started(
+        handler,
+        db,
+        task_type="feature",
+        deliverables=[{"id": "proposal", "kind": "review", "target": "spec"}],
+    )
+    await _submitted_review(db, "rev-other-kind", task_id=tid, kind="other")
+
+    refused = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
+    assert refused["code"] == "deliverables.unmet"
+    assert "--kind spec" in refused["error"]
+
+    await _submitted_review(db, "rev-spec-kind", task_id=tid, kind="spec")
+    result = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
+    assert result["success"] is True, result
+
+
+@pytest.mark.asyncio
+async def test_a_withdrawn_review_does_not_satisfy_the_close(handler, db):
+    tid = await _started(handler, db, task_type="research")
+    await _submitted_review(db, "rev-withdrawn", task_id=tid, state="withdrawn")
+
+    result = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
+
+    assert result["code"] == "deliverables.unmet"
+
+
+# ---------------------------------------------------------------------------
 # Subtasks: a close refusal for open checklist rows (C3)
 # ---------------------------------------------------------------------------
 

@@ -159,6 +159,28 @@ class ReviewQueriesMixin:
                 review["relation"] = "author" if review["author_task_id"] == task_id else "waiting"
         return reviews
 
+    async def list_reviews_submitted_by_task(self, task_id: str) -> list[dict]:
+        """Reviews *task_id* authored or submitted a revision of, oldest first.
+
+        Rows carry ``id``, ``kind`` and ``state``: the close-time evidence for
+        a ``review`` deliverable (:mod:`src.deliverables`).  A revision task
+        counts through ``doc_review_revisions.submitted_task_id``.
+        """
+        resubmitted = exists().where(
+            and_(
+                doc_review_revisions.c.review_id == doc_reviews.c.id,
+                doc_review_revisions.c.submitted_task_id == task_id,
+            )
+        )
+        stmt = (
+            select(doc_reviews.c.id, doc_reviews.c.kind, doc_reviews.c.state)
+            .where(or_(doc_reviews.c.author_task_id == task_id, resubmitted))
+            .order_by(doc_reviews.c.created_at.asc(), doc_reviews.c.id.asc())
+        )
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).mappings().fetchall()
+        return [dict(r) for r in rows]
+
     async def transition_review(
         self,
         review_id: str,

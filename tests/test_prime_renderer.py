@@ -18,7 +18,7 @@ import pytest
 from tests.db_fixtures import lease_dsn
 
 from src.config import AppConfig, DatabaseConfig
-from src.models import AgentProfile, Project, SessionRecord, Task
+from src.models import AgentProfile, Project, SessionRecord, Task, TaskType
 from src.prime import PrimeRenderer
 from src.prime.models import PrimeDocument, PrimeSection
 from src.profiles.parser import parse_profile
@@ -198,6 +198,22 @@ class TestGoldenAssembly:
         assert "Fix the bug" in body
         assert "DEFINED" in body
         assert "Do the thing, carefully." in body
+
+    async def test_research_task_lists_its_implicit_review_deliverable(self, db, config, task):
+        """The worker learns up front that the document goes to Reviews (vivid-delta)."""
+        await db.update_task("task-1", task_type=TaskType.RESEARCH)
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task"]
+        assert "## Deliverables" in body
+        assert "- [review] `review` — `any`" in body
+        assert "aq review submit --task-id task-1" in body
+        assert "do not commit it" in body
+
+    async def test_task_without_a_review_item_gets_no_review_guidance(self, db, config, task):
+        doc = await PrimeRenderer(db, config).render_for_task("task-1")
+        body = {s.key: s.body for s in doc.sections}["task"]
+        assert "## Deliverables" not in body
+        assert "aq review submit" not in body
 
     async def test_task_section_omits_subtasks_block_when_none_exist(self, db, config, task):
         doc = await PrimeRenderer(db, config).render_for_task("task-1")
@@ -804,6 +820,7 @@ _CLI_TO_COMMAND: dict[str, str | None] = {
     "aq memory save": "memory_save",
     "aq memory search": "memory_search",
     "aq project ready": "project_ready",
+    "aq review submit": "review_submit",
     "aq job submit": "job_submit",
     "aq wait register": "wait_register",
     "aq wait show": "wait_get",

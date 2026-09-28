@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from src.aq_uri import path_is_within
+from src.deliverables import review_submit_guidance
 from src.profiles.capabilities import capability_policy_for
 from src.prompt_builder import extract_section
 
@@ -128,6 +129,7 @@ async def build_project_role_section(
 def build_task_section(
     task: Any,
     *,
+    deliverables: list[dict] | None = None,
     review_deliverables: str = "",
     integration_delivery: str = "",
     subtasks_block: str = "",
@@ -139,6 +141,10 @@ def build_task_section(
     delete-on-task-delete path), so this section carries the task's
     description as the closest available stand-in — matching what
     ``task_show`` itself exposes today.
+
+    ``deliverables`` is the close gate's effective list
+    (:func:`src.deliverables.resolve_task_deliverables`), so a research task
+    sees its implicit ``review`` item; it defaults to the declared list.
     """
     status = task.status
     status_value = getattr(status, "value", status)
@@ -152,12 +158,15 @@ def build_task_section(
     if task.description:
         lines.append("")
         lines.append(task.description.strip())
-    deliverables = getattr(task, "deliverables", [])
+    if deliverables is None:
+        deliverables = getattr(task, "deliverables", None) or []
     if deliverables:
         lines.extend(["", "## Deliverables", "Re-read the plan section and reconcile every item before closing:"])
         lines.extend(
             f"- [{item['kind']}] `{item['id']}` — `{item['target']}`" for item in deliverables
         )
+        if guidance := review_submit_guidance(task.id, deliverables):
+            lines.extend(["", guidance])
     if review_deliverables:
         lines.extend(["", review_deliverables])
     if integration_delivery:

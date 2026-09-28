@@ -115,6 +115,12 @@ Rules the daemon enforces:
   intentionally not shipped, declare it with
   `--deliverable-unmet 'id: reason'` (repeatable) — a pass with an
   undeclared gap is refused and keeps the task claimed.
+- A `review` deliverable is met by a document review the task submitted
+  (`aq review submit --task-id <task> --file <draft.md> --kind <kind>`),
+  not by a commit. Research and design tasks carry one (`review`) even when
+  none is listed: submit the proposal or report before a passing close, or
+  waive it with `--deliverable-unmet 'review: <reason>'` when there is no
+  document.
 
 ## Subtasks
 

@@ -1279,7 +1279,9 @@ _ALL_TOOL_DEFINITIONS = [
                         "--test); command -> a command line (met by a matching recorded "
                         "--command/--test; '<placeholder>' matches any arguments) or a single "
                         "identifier found in the repo; flag/registration -> an identifier found in "
-                        "the repo."
+                        "the repo; review -> spec, plan, other or any (met by a document review the "
+                        "task submitted with review_submit). Research and design tasks carry an "
+                        "implicit {id: review, kind: review, target: any} item."
                     ),
                     "items": {
                         "type": "object",
@@ -1287,7 +1289,7 @@ _ALL_TOOL_DEFINITIONS = [
                             "id": {"type": "string"},
                             "kind": {
                                 "type": "string",
-                                "enum": ["file", "test", "command", "flag", "registration"],
+                                "enum": ["file", "test", "command", "flag", "registration", "review"],
                             },
                             "target": {"type": "string"},
                         },
@@ -6282,7 +6284,8 @@ _ALL_TOOL_DEFINITIONS = [
                                     "--test); command -> a command line (met by a matching recorded "
                                     "--command/--test; '<placeholder>' matches any arguments) or a single "
                                     "identifier found in the repo; flag/registration -> an identifier found in "
-                                    "the repo."
+                                    "the repo; review -> spec, plan, other or any (met by a document review the "
+                                    "task submitted with review_submit)."
                                 ),
                                 "items": {
                                     "type": "object",
@@ -6296,6 +6299,7 @@ _ALL_TOOL_DEFINITIONS = [
                                                 "command",
                                                 "flag",
                                                 "registration",
+                                                "review",
                                             ],
                                         },
                                         "target": {"type": "string"},
