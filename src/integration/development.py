@@ -18,7 +18,7 @@ import sys
 import tempfile
 import time
 from contextlib import asynccontextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -32,7 +32,7 @@ from src.database.queries.blocked_state import (
 )
 from src.database.tables import (
     events, projects, sessions, task_completion_records,
-    tasks,
+    task_metadata, tasks,
 )
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration import development_validation as validation_outcomes
@@ -53,9 +53,15 @@ from src.integration.delivery_branches import (
 from src.integration.development_stalls import (
     DEFAULT_STALL_AFTER, PUBLISHER_SKIP_KEY, PublisherStalls, SweepObservation,
 )
+from src.integration.development_settlement import (
+    DELIVERED_TO_PREVIOUS_TARGET, OPERATOR_SETTLED, REPAIR_FOR_PREVIOUS_TARGET,
+    SOURCES_NOT_OWED, notify_settlements_on, previous_target, repair_target_of, retarget_of,
+    settlement_record, write_settlements_on,
+)
 from src.integration.development_validation import run_check as run_validation_check
 from src.integration.delivery_truth import (
-    MISSING_PROVENANCE, DeliveryState, delivery_snapshot, load_delivery_requests,
+    MISSING_PROVENANCE, SETTLEMENT_KEY, DeliverySnapshot, DeliveryState, delivery_snapshot,
+    load_delivery_requests, settlement_fields,
 )
 from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
 from src.integration.publishable_artifact import (
@@ -242,8 +248,20 @@ OPEN_REPAIR_STATUSES = frozenset({
 REPAIR_CHAIN_LIMIT = 8
 
 
+def row_repair_identity(row, identity=None):
+    """The repair carrying parked *row*.
+
+    A row names it (``evidence.repair_id``) when its manifest's usual repair
+    was filed for another target; otherwise it is the manifest's digest.
+    """
+    recorded = (row.get("evidence") or {}).get("repair_id")
+    if isinstance(recorded, str) and recorded.startswith("development-repair-"):
+        return recorded
+    return (identity or DevelopmentIntegration._repair_identity)(row["manifest"])
+
+
 def repair_chain(manifest, history, statuses, *, repository_id, target_ref, identity=None,
-                 verified=()):
+                 verified=(), row=None):
     """Follow a parked batch through its repairs to the one still carrying it.
 
     A parked batch's repair is ``development-repair-<digest of its manifest>``.
@@ -267,6 +285,9 @@ def repair_chain(manifest, history, statuses, *, repository_id, target_ref, iden
       refused, e.g. past the generation budget);
     * ``finished``: the last repair ended without completing;
     * ``loop``: the journal's chain repeats or passes :data:`REPAIR_CHAIN_LIMIT`.
+
+    Pass the parked *row* itself so a repair it names is followed
+    (:func:`row_repair_identity`).
     """
     rows = sorted(
         (row for row in history if row.get("repository_id") == repository_id),
@@ -275,11 +296,11 @@ def repair_chain(manifest, history, statuses, *, repository_id, target_ref, iden
     )
     parked_in = {}
     delivered = set(verified)
-    for row in rows:
-        members = _manifest_members(row.get("manifest"))
-        if row.get("state") == "parked":
+    for journal_row in rows:
+        members = _manifest_members(journal_row.get("manifest"))
+        if journal_row.get("state") == "parked":
             for member in members:
-                parked_in.setdefault(member["task_id"], []).append(row)
+                parked_in.setdefault(member["task_id"], []).append(journal_row)
     identity = identity or DevelopmentIntegration._repair_identity
     seen = set()
 
@@ -302,7 +323,7 @@ def repair_chain(manifest, history, statuses, *, repository_id, target_ref, iden
             return outcome(repair, "delivered", chain, f"repair {repair} was delivered")
         # Duplicate rows of one manifest share one repair: follow each once.
         successors = list(dict.fromkeys(
-            identity(row["manifest"]) for row in parked_in.get(repair, [])
+            row_repair_identity(parked, identity) for parked in parked_in.get(repair, [])
         ))
         if not successors:
             return outcome(
@@ -312,7 +333,9 @@ def repair_chain(manifest, history, statuses, *, repository_id, target_ref, iden
         results = [follow(successor, chain) for successor in successors]
         return next((result for result in results if result["open_repair"]), results[0])
 
-    return follow(identity(manifest), [])
+    return follow(
+        row_repair_identity(row, identity) if row is not None else identity(manifest), [],
+    )
 
 
 def describe_repair_chain(result):
@@ -1122,7 +1145,7 @@ class DevelopmentIntegration:
             conclusion = validation_outcomes.reclassify(row["evidence"])
             if conclusion != validation_outcomes.INFRASTRUCTURE:
                 continue
-            if await self.resolve_task(self._repair_identity(row["manifest"])) is not None:
+            if await self.resolve_task(row_repair_identity(row)) is not None:
                 # A repair is already in flight; its delivery (or its own
                 # ``blocks`` edges on the sources) settles this row as before.
                 continue
@@ -1507,11 +1530,15 @@ class DevelopmentIntegration:
             await self.run_git(store, "checkout", "--detach", "--force", base)
             history = await self._release_unverified_parks(repo, await self.rows(project_id))
             source_heads = truth.source_heads
+            # A park is a conflict with one target's base. A row parked on
+            # another target (before a retarget) holds nothing here; the
+            # reconciliation below retires it.
             parked = (
                 {
                     (m["task_id"], m.get("source_sha"))
                     for r in history
                     if r["state"] == "parked"
+                    and r["repository_id"] == repo.id and r["target_ref"] == target
                     for m in r["manifest"]
                     if m["task_id"] != recover_child_id
                 }
@@ -1552,13 +1579,23 @@ class DevelopmentIntegration:
             )
             evaluated = await truth.evaluate_many(requests.values())
             own_truth = {task["id"]: evaluated[task["id"]] for task in candidates}
+            if await self._settle_not_owed(repo, truth, requests, own_truth,
+                                           {task["id"]: task for task in candidates},
+                                           history, target):
+                requests = await load_delivery_requests(
+                    self.db, {task["id"] for task in candidates},
+                    repository_id=repo.id, target_ref=target,
+                )
+                evaluated = await truth.evaluate_many(requests.values())
+                own_truth = {task["id"]: evaluated[task["id"]] for task in candidates}
             contained = {
                 task_id: evidence for task_id, evidence in own_truth.items()
                 if evidence.state is DeliveryState.CONTAINED
             }
-            no_artifact = {
+            # Nothing to publish: no artifact, or not owed to this target.
+            nothing_owed = {
                 task_id for task_id, evidence in own_truth.items()
-                if evidence.state is DeliveryState.NO_ARTIFACT
+                if evidence.state in {DeliveryState.NO_ARTIFACT, DeliveryState.SETTLED}
             }
             await self.stalls.observe(
                 SweepObservation(
@@ -1568,7 +1605,7 @@ class DevelopmentIntegration:
                     source_heads=source_heads, history=history,
                     pending=frozenset(own_truth),
                 ),
-                set(contained) | no_artifact, {},
+                set(contained) | nothing_owed, {},
             )
             async with self.db._engine.connect() as conn:
                 eligible_ids = set((await conn.execute(
@@ -1579,7 +1616,7 @@ class DevelopmentIntegration:
                 )).scalars())
             obsolete_ids = set(await self.db.obsolete_task_ids(requests))
             candidates = [task for task in candidates if (
-                task["id"] not in contained and task["id"] not in no_artifact
+                task["id"] not in contained and task["id"] not in nothing_owed
                 and task["id"] not in obsolete_ids and task["id"] in eligible_ids
             )]
             from src.database.tables import task_dependencies
@@ -1852,6 +1889,9 @@ class DevelopmentIntegration:
                                       "reconflicted_at": now},
                         )
                     else:
+                        repair_id = await self._repair_id_for([member], target, history)
+                        if repair_id != self._repair_identity([member]):
+                            conflict["repair_id"] = repair_id
                         await self.save(
                             {
                                 "id": str(uuid4()),
@@ -1949,6 +1989,9 @@ class DevelopmentIntegration:
             await self._close_validation_deferrals(repo, evidence["conclusion"], head)
             if not passed:
                 now = time.time()
+                repair_id = await self._repair_id_for(manifest, target, history)
+                if repair_id != self._repair_identity(manifest):
+                    evidence = {**evidence, "repair_id": repair_id}
                 await self.save(
                     {
                         "id": str(uuid4()),
@@ -2063,7 +2106,7 @@ class DevelopmentIntegration:
             statuses = await repair_statuses(conn, [repo.project_id])
         results = [
             repair_chain(row["manifest"], history, statuses,
-                         repository_id=repo.id, target_ref=target)
+                         repository_id=repo.id, target_ref=target, row=row)
             for row in parked
         ]
         found = next((result for result in results if result["open_repair"]), results[0])
@@ -2087,11 +2130,12 @@ class DevelopmentIntegration:
         Parked rows are durable, so a subsequent sweep resumes dispatch after a crash.
         """
         history = await self._release_unverified_parks(repo, await self.rows(repo.project_id))
+        target = "refs/heads/" + repo.default_branch
+        history = await self._retire_retargeted_parks(repo, history, target)
         pending = {r["id"]: r for r in history if r["state"] == "parked" and r["manifest"]
-                   and r["repository_id"] == repo.id}
+                   and r["repository_id"] == repo.id and r["target_ref"] == target}
         if not pending:
             return
-        target = "refs/heads/" + repo.default_branch
         truth = await delivery_snapshot(
             self.git, store, project_id=repo.project_id, repository_id=repo.id,
             repository_url=repo.url, target_ref=target,
@@ -2104,16 +2148,20 @@ class DevelopmentIntegration:
         if not await truth.is_fresh():
             raise DevelopmentBusy("target changed during parked operation reconciliation")
         for identity, row in list(pending.items()):
+            proofs = [evaluated.get(member["task_id"]) for member in row["manifest"]]
             if not all(
-                (proof := evaluated.get(member["task_id"])) is not None
-                and proof.state is DeliveryState.CONTAINED
+                proof is not None
+                and proof.state in {DeliveryState.CONTAINED, DeliveryState.SETTLED}
                 and proof.source_oid == member.get("source_sha")
-                for member in row["manifest"]
+                for proof, member in zip(proofs, row["manifest"])
             ):
                 continue
-            evidence = armed_for_branch_cleanup({**row["evidence"],
-                "resolved_at_target": truth.target_oid})
-            await self.change(identity, state="finished", evidence=evidence)
+            if all(proof.state is DeliveryState.CONTAINED for proof in proofs):
+                evidence = armed_for_branch_cleanup({**row["evidence"],
+                    "resolved_at_target": truth.target_oid})
+                await self.change(identity, state="finished", evidence=evidence)
+            else:
+                await self._cancel_settled_park(repo, row, proofs, history, truth.target_oid)
             del pending[identity]
         for row in pending.values():
             # Each parked row is dispatched on its own.  A row the publisher
@@ -2136,6 +2184,324 @@ class DevelopmentIntegration:
                     }
                 )
             await self._record_batch_diagnostic(row, diagnostics)
+
+    async def _repair_id_for(self, manifest, target, history):
+        """The repair id a new park of *manifest* on *target* records.
+
+        A manifest's repair is its digest, unless that repair was filed for
+        another target (the same source parked before a retarget): a repair
+        built on the old target cannot carry the source here.
+        """
+        usual = self._repair_identity(manifest)
+        existing = await self.resolve_task(usual)
+        if existing is None:
+            return usual
+        built_for = repair_target_of(
+            existing.description, await self.db.get_task_meta(usual, REPAIR_EVIDENCE_KEY),
+            history,
+        )
+        if built_for in {None, target}:
+            return usual
+        return self._repair_identity([*manifest, {"target_ref": target}])
+
+    async def _reclaim_repair(self, repair_id, target):
+        """Drop *repair_id*'s settlement on *target*: a live park needs it again."""
+        from sqlalchemy import delete
+
+        async with self.db._engine.begin() as conn:
+            value = await conn.scalar(select(task_metadata.c.value).where(
+                task_metadata.c.task_id == repair_id, task_metadata.c.key == SETTLEMENT_KEY,
+            ))
+            if value is None or settlement_fields(value).get("settled_target_ref") != target:
+                return
+            await conn.execute(delete(task_metadata).where(
+                task_metadata.c.task_id == repair_id, task_metadata.c.key == SETTLEMENT_KEY,
+            ))
+        logger.warning(
+            "development publisher: repair %s is needed again on %s; its settlement is withdrawn",
+            repair_id, target,
+        )
+
+    async def _repair_links(self, row, history):
+        """The repairs filed for parked *row* and its successors, as they exist."""
+        async with self.db._engine.connect() as conn:
+            statuses = await repair_statuses(conn, [row["project_id"]])
+        chain = repair_chain(row["manifest"], history, statuses,
+                             repository_id=row["repository_id"],
+                             target_ref=row["target_ref"], row=row)["chain"]
+        return [link for link in chain if link["status"] is not None]
+
+    async def _cancel_settled_park(self, repo, row, proofs, history, target_oid):
+        """Cancel a park whose members this target does not owe, with its repairs.
+
+        Nothing was delivered and nothing is left to repair: a repair filed
+        for the row exists only to bring its members here, so it is settled
+        too, and the supervisor hears about any still being worked on.
+        """
+        repairs = await self._repair_links(row, history)
+        members = sorted(proof.request.task_id for proof in proofs)
+        records = {
+            link["task_id"]: settlement_record(
+                target_ref=row["target_ref"], repository_id=repo.id,
+                reason=SOURCES_NOT_OWED, completion_id=None, source_oid=None,
+                detail=f"repair of {', '.join(members)}, not owed to {row['target_ref']}",
+                authority="publisher", evidence={"operation_id": row["id"]},
+            )
+            for link in repairs
+        }
+        settled = {
+            "members": {proof.request.task_id: proof.reason for proof in proofs
+                        if proof.state is DeliveryState.SETTLED},
+            "repairs": sorted(records), "at_target": target_oid,
+        }
+        async with self.db._engine.begin() as conn:
+            await write_settlements_on(conn, records)
+            await revise_operation_on(conn, row["id"], lambda current: (
+                {"state": "cancelled",
+                 "evidence": {**(current["evidence"] or {}), "settled": settled}}
+                if current["state"] == "parked" else None
+            ))
+            if records:
+                await notify_settlements_on(conn, repo.project_id, row["id"], row["target_ref"],
+                                            records)
+
+    async def _retire_retargeted_parks(self, repo, history, target):
+        """Cancel this repository's parks on a target it no longer publishes to.
+
+        A park is a conflict with one base of one target; after a retarget it
+        describes nothing still owed, and its sources are merged into the new
+        target afresh (or parked there with their own row). The repair filed
+        for it is left to finish and is then settled as built for another
+        target. Returns *history* with the retired rows updated.
+        """
+        stale = [
+            row for row in history
+            if row["state"] == "parked" and row["repository_id"] == repo.id
+            and row["target_ref"] != target
+        ]
+        if not stale:
+            return history
+        now = time.time()
+        for row in stale:
+            retired = {"reason": "retargeted", "target_ref": target, "at": now,
+                       "repair": row_repair_identity(row)}
+            async with self.db._engine.begin() as conn:
+                await revise_operation_on(conn, row["id"], lambda current, retired=retired: (
+                    {"state": "cancelled",
+                     "evidence": {**(current["evidence"] or {}), "retired": retired}}
+                    if current["state"] == "parked" else None
+                ))
+            logger.warning(
+                "development publisher: retired park %s on %s; %s now publishes to %s",
+                row["id"], row["target_ref"], repo.id, target,
+                extra={"batch": row["id"], "project": repo.project_id},
+            )
+        return await self.rows(repo.project_id)
+
+    async def _settle_not_owed(self, repo, truth, requests, own_truth, candidates, history,
+                               target):
+        """Record pending work this target does not owe; return what was settled.
+
+        Two cases, both after a retarget (:mod:`src.integration.development_settlement`):
+        a repair filed to publish to another target, and a generation completed
+        before the retarget that the previous target contains (or settled).
+        Everything else stays owed, and is merged here as usual. The records,
+        one journal row and one supervisor notice commit together.
+        """
+        pending = {
+            task_id: evidence for task_id, evidence in own_truth.items()
+            if evidence.state is DeliveryState.PENDING
+        }
+        if not pending:
+            return {}
+        for task_id in set(await self.db.obsolete_task_ids(pending)):
+            del pending[task_id]
+        records = {}
+        repairs = sorted(task_id for task_id in pending
+                         if task_id.startswith("development-repair-"))
+        repair_evidence = (
+            await self.db.get_task_meta_bulk(repairs, REPAIR_EVIDENCE_KEY) if repairs else {}
+        )
+        for task_id in repairs:
+            built_for = repair_target_of(
+                candidates[task_id].get("description"), repair_evidence.get(task_id), history,
+            )
+            if built_for and built_for != target:
+                records[task_id] = settlement_record(
+                    target_ref=target, repository_id=repo.id,
+                    reason=REPAIR_FOR_PREVIOUS_TARGET, completion_id=None,
+                    source_oid=pending[task_id].source_oid,
+                    detail=f"repair filed to publish to {built_for}",
+                    authority="retarget", evidence={"built_for": built_for},
+                )
+        retarget = retarget_of(history, repo.id, target)
+        if retarget is not None:
+            from_ref = retarget["from_ref"]
+            previous_oid = truth.source_heads.get(
+                "refs/remotes/origin/" + from_ref.removeprefix("refs/heads/")
+            )
+            owed_before = [
+                replace(requests[task_id], target_ref=from_ref) for task_id in sorted(pending)
+                if task_id not in records
+                and requests[task_id].completed_at is not None
+                and requests[task_id].completed_at <= retarget["at"]
+            ]
+            if owed_before and not is_valid_git_oid(previous_oid):
+                logger.warning(
+                    "development publisher: %s was retargeted from %s, which is gone; "
+                    "%d earlier completion(s) stay owed to %s",
+                    repo.id, from_ref, len(owed_before), target,
+                    extra={"project": repo.project_id},
+                )
+            elif owed_before:
+                previous = DeliverySnapshot(
+                    truth.git, truth.store, truth.project_id, truth.repository_id,
+                    truth.repository_url, from_ref, previous_oid, truth.source_heads,
+                )
+                answers = await previous.evaluate_many(owed_before)
+                for task_id, answer in sorted(answers.items()):
+                    if answer.state not in {DeliveryState.CONTAINED, DeliveryState.SETTLED}:
+                        continue
+                    records[task_id] = settlement_record(
+                        target_ref=target, repository_id=repo.id,
+                        reason=DELIVERED_TO_PREVIOUS_TARGET,
+                        completion_id=requests[task_id].completion_id,
+                        source_oid=pending[task_id].source_oid,
+                        detail=f"delivered to {from_ref} before the retarget to {target}",
+                        authority="retarget", evidence={
+                            "previous_target_ref": from_ref,
+                            "previous_target_oid": previous_oid,
+                            "previous_answer": answer.reason,
+                            "retarget_operation_id": retarget["operation_id"],
+                        },
+                    )
+        if not records:
+            return {}
+        now = time.time()
+        operation_id = str(uuid4())
+        async with self.db._engine.begin() as conn:
+            await write_settlements_on(conn, records)
+            await conn.execute(self._operation_insert(
+                id=operation_id, project_id=repo.project_id, repository_id=repo.id,
+                target_ref=target, expected_sha=truth.target_oid, state="finished",
+                manifest=[
+                    {"task_id": task_id, "source_sha": record["source_oid"]}
+                    for task_id, record in sorted(records.items())
+                ],
+                evidence={"kind": "settlement", "settlements": records},
+                reason=f"not owed to {target}", created_at=now, updated_at=now,
+            ))
+            await notify_settlements_on(conn, repo.project_id, operation_id, target, records,
+                                        now=now)
+        logger.warning(
+            "development publisher: %d completion(s) not owed to %s: %s",
+            len(records), target, ", ".join(sorted(records)),
+            extra={"project": repo.project_id, "batch": operation_id},
+        )
+        return records
+
+    async def settle_parked(self, project_id, operation_id, *, reason, operator_id,
+                            dismiss=False):
+        """Settle or dismiss one parked publisher operation on a stated reason.
+
+        *settle* (the default) records every member's parked generation, and
+        every repair in the row's chain, as not owed to the row's target: the
+        publisher never merges them there, their dependents are released and
+        no further repair is filed. *dismiss* only withdraws the row: its
+        members return to the publisher and are merged again on the next sweep
+        (and park again if they still conflict); repairs are left alone.
+        Either way the row is cancelled with the decision recorded, under the
+        publisher's lock so no sweep is using it.
+        """
+        if not reason.strip():
+            raise ValueError("a reason is required to settle or dismiss a parked delivery")
+        project = await self.db.get_project(project_id)
+        if project is None or not project.integration_repository_id:
+            raise ValueError("project has no development repository")
+        repo = await self.db.get_repo(project.integration_repository_id)
+        async with self.exclusion(repo.id):
+            history = await self.rows(project_id)
+            row = next((row for row in history if row["id"] == operation_id), None)
+            if row is None or row["repository_id"] != repo.id:
+                raise ValueError(f"unknown development operation {operation_id}")
+            if row["state"] != "parked":
+                return {"outcome": "already_terminal", "id": operation_id,
+                        "state": row["state"]}
+            members = _manifest_members(row["manifest"])
+            repairs = await self._repair_links(row, history)
+            now = time.time()
+            decision = {"reason": reason.strip(), "operator_id": operator_id, "at": now}
+            records = {}
+            if not dismiss:
+                target = "refs/heads/" + repo.default_branch
+                if row["target_ref"] != target:
+                    raise ValueError(
+                        f"{operation_id} parked on {row['target_ref']}, not on the current "
+                        f"target {target}; the next sweep retires it (or dismiss it)"
+                    )
+                requests = await load_delivery_requests(
+                    self.db, {member["task_id"] for member in members},
+                    repository_id=repo.id, target_ref=target,
+                )
+                async with self.read_snapshot(repo, target) as truth:
+                    proofs = await truth.evaluate_many(
+                        request for request in requests.values() if request.completion_id
+                    )
+                for member in members:
+                    request = requests.get(member["task_id"])
+                    proof = proofs.get(member["task_id"])
+                    if request is None or proof is None:
+                        raise ValueError(
+                            f"parked member {member['task_id']} has no completion to settle"
+                        )
+                    if proof.state is DeliveryState.UNKNOWN:
+                        raise ValueError(
+                            f"{member['task_id']}'s current completion cannot be read in git "
+                            f"({proof.reason}); nothing was settled"
+                        )
+                    if proof.state is not DeliveryState.CONTAINED and (
+                        proof.source_oid != member.get("source_sha")
+                    ):
+                        raise ValueError(
+                            f"{member['task_id']} completed again after it parked; its new "
+                            "work is owed. Dismiss this row instead."
+                        )
+                    records[member["task_id"]] = settlement_record(
+                        target_ref=target, repository_id=repo.id,
+                        reason=OPERATOR_SETTLED, completion_id=request.completion_id,
+                        source_oid=member.get("source_sha"), detail=reason.strip(),
+                        authority="operator", operator_id=operator_id,
+                        evidence={"operation_id": operation_id}, now=now,
+                    )
+                for link in repairs:
+                    records.setdefault(link["task_id"], settlement_record(
+                        target_ref=row["target_ref"], repository_id=repo.id,
+                        reason=OPERATOR_SETTLED, completion_id=None, source_oid=None,
+                        detail=reason.strip(), authority="operator", operator_id=operator_id,
+                        evidence={"operation_id": operation_id}, now=now,
+                    ))
+                decision["settled"] = sorted(records)
+            key = "dismissed" if dismiss else "settled_by"
+            async with self.db._engine.begin() as conn:
+                await write_settlements_on(conn, records)
+                current = await revise_operation_on(conn, operation_id, lambda current: (
+                    {"state": "cancelled",
+                     "evidence": {**(current["evidence"] or {}), key: decision}}
+                    if current["state"] == "parked" else None
+                ))
+                if current is None or current["state"] != "parked":
+                    raise DevelopmentBusy("parked operation changed while settling; run again")
+        return {
+            "outcome": "dismissed" if dismiss else "settled",
+            "id": operation_id,
+            "target_ref": row["target_ref"],
+            "members": [member["task_id"] for member in members],
+            "settled": sorted(records),
+            "repairs": repairs,
+            "open_repairs": [
+                link["task_id"] for link in repairs if link["status"] in OPEN_REPAIR_STATUSES
+            ],
+        }
 
     @staticmethod
     def _name_diagnostic(diagnostics, *, kind, task_ids, detail):
@@ -2590,7 +2956,7 @@ class DevelopmentIntegration:
             # main on their own.  A repair that ended without delivering is
             # moot; one still able to run or deliver is held (or will be
             # collected as a member of its own delivery).
-            repair = await self.resolve_task(self._repair_identity(row["manifest"]))
+            repair = await self.resolve_task(row_repair_identity(row))
             if repair is not None and repair.status in {
                 TaskStatus.FAILED.value, TaskStatus.BLOCKED.value,
             }:
@@ -2735,7 +3101,13 @@ class DevelopmentIntegration:
             )
         return report
 
-    async def configure(self, project_id, policy, *, reason, operator_id):
+    async def configure(self, project_id, policy, *, reason, operator_id, protection_guard=None):
+        """Enter (or reconfigure) development mode for *project_id*.
+
+        *protection_guard*, given the resolved repository, reads the default
+        branch's protection and raises when the publisher's push would be
+        refused (App-mode spec §8.2); its reading is returned as evidence.
+        """
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         from src.database.tables import (
@@ -2812,6 +3184,13 @@ class DevelopmentIntegration:
             repo = repositories[0]
         if repo is None or not repo.url:
             raise ValueError("project repository needs a remote URL")
+        # A GitHub read: before the exclusion and the project lock.
+        reading = await protection_guard(repo) if protection_guard is not None else None
+        # A new target: the sweep settles work the old one already has
+        # (development_settlement); the row says so for the journal.
+        moved_from = previous_target(
+            await self.rows(project_id), repo.id, "refs/heads/" + repo.default_branch
+        )
         async with self.exclusion(repo.id), self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
             current_mode = await conn.scalar(
@@ -2943,6 +3322,9 @@ class DevelopmentIntegration:
                         "kind": "configuration",
                         "operator_id": operator_id,
                         "policy": policy.model_dump(),
+                        **({"retarget": {"from_ref": moved_from,
+                                         "to_ref": "refs/heads/" + repo.default_branch}}
+                           if moved_from else {}),
                     },
                     reason=reason,
                     created_at=now,
@@ -2950,12 +3332,18 @@ class DevelopmentIntegration:
                 )
             )
         self.next_due[project_id] = time.time() + policy.interval_seconds
-        return {
+        result = {
             "outcome": "configured",
             "project_id": project_id,
             "repository_id": repo.id,
             "policy": policy.model_dump(),
         }
+        if moved_from:
+            result["retarget"] = {"from_ref": moved_from,
+                                  "to_ref": "refs/heads/" + repo.default_branch}
+        if reading is not None:
+            result["evidence"] = {"protection": reading.as_dict()}
+        return result
 
     async def cancel_preserving(self, operation_id, *, reason):
         from src.database.tables import integration_batches
@@ -3448,12 +3836,18 @@ class DevelopmentIntegration:
         from src.models import DepType, Task, TaskType
         from src.task_names import MAX_STRUCTURAL_DEPTH
 
-        identity = self._repair_identity(manifest)
+        identity = (
+            row_repair_identity(parked) if parked is not None else self._repair_identity(manifest)
+        )
         # Archive-aware, or an archived repair reads back as "never filed" and
         # is recreated as a fresh READY task on every tick.  That is how
         # ``development-repair-dfda02e25d80e0d1ab2d`` came to sit in ``tasks``
         # as READY while ``archived_tasks`` held the same id COMPLETED.
         if await self.resolve_task(identity) is not None:
+            if parked is not None:
+                # A live park on this target owes its repair again, even one
+                # an earlier settlement of the same manifest released.
+                await self._reclaim_repair(identity, parked["target_ref"])
             return identity
         single_original_source = len(manifest) == 1 and not str(
             manifest[0]["task_id"]
@@ -3621,6 +4015,9 @@ class DevelopmentIntegration:
         evidence = parked.get("evidence") or {}
         return {
             "delivery_id": parked["id"],
+            # The target this repair publishes to; after a retarget it is owed
+            # nowhere else (development_settlement.repair_target_of).
+            "target_ref": parked.get("target_ref"),
             "reason": parked.get("reason"),
             "kind": evidence.get("kind"),
             "conclusion": evidence.get("conclusion"),

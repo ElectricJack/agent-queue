@@ -9,6 +9,7 @@ import time
 import uuid
 
 from src.database.queries.hierarchy_queries import HierarchyError
+from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
 from src.orchestrator.base_workspace import base_checkout_refusal
 from src.logging_config import CorrelationContext
 from src.discord.notifications import format_task_started
@@ -1699,9 +1700,10 @@ class ExecutionMixin:
                 if not await self._vault_only_delivery(ctx) and await self._task_uses_git(ctx):
                     from src.integration.provenance import record_worker_completion
 
+                    completion_id = completion_id or str(uuid.uuid4())
                     completion_source = await record_worker_completion(
                         self.db, self.git, task, project, workspace_path,
-                        completion_id or str(uuid.uuid4()), commit=commit,
+                        completion_id, commit=commit,
                         no_code_intent=await self._task_produces_no_code(ctx),
                     )
             except Exception as exc:
@@ -1820,6 +1822,20 @@ class ExecutionMixin:
                     new_status,
                     context=context,
                     retry_count=new_retry,
+                    assigned_agent_id=None,
+                    expect_claim_epoch=expect_claim_epoch,
+                    skip_open_subtasks=skip_open_subtasks,
+                    **pr_kwargs,
+                )
+            elif completion_source is not None and new_status == TaskStatus.COMPLETED:
+                # The git ref was retained above. Publish its generation id
+                # atomically with COMPLETED, before event subscribers and the
+                # command's full completion-record write can take their time.
+                await self.db.transition_task_with_meta(
+                    task.id,
+                    new_status,
+                    meta={DEVELOPMENT_COMPLETION_ID_KEY: completion_id},
+                    context=context,
                     assigned_agent_id=None,
                     expect_claim_epoch=expect_claim_epoch,
                     skip_open_subtasks=skip_open_subtasks,

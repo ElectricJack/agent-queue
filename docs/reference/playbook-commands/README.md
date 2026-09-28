@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-129 commands are registered.
+132 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -82,6 +82,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_abort`](integration_abort.md) | Integration Abort | Authenticated hierarchical integration operational control. |
 | [`integration_adopt`](integration_adopt.md) | Integration Adopt | Authenticated hierarchical integration operational control. |
 | [`integration_adopt_legacy_deliveries`](integration_adopt_legacy_deliveries.md) | Integration Adopt Legacy Deliveries | Authenticated hierarchical integration operational control. |
+| [`integration_app_verify`](integration_app_verify.md) | Integration App Verify | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each. |
 | [`integration_bind_legacy_repositories`](integration_bind_legacy_repositories.md) | Integration Bind Legacy Repositories | Authenticated hierarchical integration operational control. |
 | [`integration_build_candidate`](integration_build_candidate.md) | Build exact root candidate | Build exact root candidate |
 | [`integration_cancel_preserving`](integration_cancel_preserving.md) | Integration Cancel Preserving | Authenticated hierarchical integration operational control. |
@@ -127,8 +128,10 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_retry_cleanup`](integration_retry_cleanup.md) | Integration Retry Cleanup | Authenticated hierarchical integration operational control. |
 | [`integration_schedule_due`](integration_schedule_due.md) | Schedule integration sweep | Coalesce a periodic or manual trigger into one durable sweep request. |
 | [`integration_seal`](integration_seal.md) | Seal integration frontier | Atomically snapshot the full eligible integration frontier. |
+| [`integration_settle_parked`](integration_settle_parked.md) | Integration Settle Parked | Settle a parked development delivery as not owed, or dismiss it. |
 | [`integration_status`](integration_status.md) | Integration Status | Authenticated hierarchical integration operational control. |
 | [`integration_transfer_owner`](integration_transfer_owner.md) | Transfer integration branch owner | Stop and detach the current branch writer before granting a fresh fence. |
+| [`integration_trust_manifest`](integration_trust_manifest.md) | Integration Trust Manifest | Render the App-mode trust manifest from the policy, the authenticated binding and the daemon's App, and compare the default-branch copy. |
 | [`integration_waive_history`](integration_waive_history.md) | Integration Waive History | Authenticated hierarchical integration operational control. |
 
 ### Other

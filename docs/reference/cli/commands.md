@@ -304,6 +304,8 @@ moved).
 |---|---|---|---|
 | `aq integration abort` | `—` | hand | Abort a safe, human-required integration OPERATION_ID. |
 | `aq integration adopt` | `—` | hand | Record already-delivered work without replaying old repair checkpoints. |
+| `aq integration app-setup` | `—` | hand | Print what App credential mode still needs for PROJECT_ID and the exact fix; `--apply` sets only the differing Actions variables with your `gh` login and verifies again ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
+| `aq integration app-verify` | `—` | hand | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each, exit 1 when one fails ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
 | `aq integration cancel-preserving` | `—` | hand | Cancel obsolete repair scheduling while retaining refs and attached workspaces. |
 | `aq integration develop` | `—` | hand | Use automatic development batches with explicit local validation. |
 | `aq integration enable` | `—` | hand | CAS PROJECT_ID to MODE using the generation reported by status. |
@@ -316,6 +318,7 @@ moved).
 | `aq integration retry-cleanup` | `—` | hand | Requeue the exact safe cleanup items for BATCH_ID. |
 | `aq integration status` | `—` | hand | Show rollout, readiness, active work, and cleanup for PROJECT_ID. |
 | `aq integration sweep` | `—` | hand | Build and publish a development batch now. |
+| `aq integration trust-manifest` | `—` | hand | Render the App-mode trust manifest from the policy, the binding and the daemon's App; `--write`, `--print` or `--check` the default-branch copy ([runbook](../../config/train-onboarding.md#3-app-credential-mode)). |
 | `aq integration waive-history` | `—` | hand | Waive only the exact historical blockers reported for PROJECT_ID. |
 
 ### `aq mcp`

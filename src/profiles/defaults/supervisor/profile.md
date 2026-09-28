@@ -142,9 +142,12 @@ its outbox; transport failures never need a new author turn.
     "integration_reserve_owner",
     "integration_release_stale_owners",
     "integration_resume",
+    "integration_settle_parked",
     "integration_retry_cleanup",
     "integration_status",
     "integration_transfer_owner",
+    "integration_trust_manifest",
+    "integration_app_verify",
     "integration_waive_history",
     "integration_resolve_candidate_member",
     "list_intelligence_classes",
@@ -257,6 +260,7 @@ its outbox; transport failures never need a new author turn.
   | Work is queued for a pool without live sessions | Reroute to an eligible pool with live sessions, preserving the required class and any explicit provider pin. |
   | A `blocks` edge remains after its blocker's commits reached the target branch | Remove that satisfied dependency edge. |
   | An integration child is stuck or a fix is outdated | Run the operation's recover-child sweep, or deploy a newer fix through the approved path. |
+  | A parked development delivery holds work the target does not owe (already on a previous target, superseded, delivered another way) | `aq integration settle-parked <project> <operation-id> --reason "..."` from `aq integration status` `parked`; `--dismiss` retries a stale park instead. Never move the target branch by hand. |
   | A live pool session waits at an interactive prompt | Answer the prompt so the worker can continue. |
   | A failed task is ready for another attempt | Reopen it with concrete feedback from the failure. |
 

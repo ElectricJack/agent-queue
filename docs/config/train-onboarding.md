@@ -15,6 +15,12 @@ Two pieces make any project bindable:
   prints every command from the project's current state to a ready
   observe-mode train. It changes nothing.
 
+This install runs App credential mode, so each GitHub project also needs the
+App-mode trust anchors: the manifest, the main push audit workflow, the Actions
+variables and the ruleset. The planner prints them in order (section 3); the
+end-to-end procedure, with the command output to expect, is
+[app-mode-train.md](app-mode-train.md).
+
 The mode flips are operator-scoped. A LOCAL operator, or a live named
 supervisor of the project (or the global supervisor), runs the integration and
 `aq project set` commands below. The once-per-install playbook import in
@@ -81,6 +87,7 @@ aq integration onboard-train PROJECT \
   [--repo CHECKOUT] [--ref origin/main] \
   [--write-policy train-policy.PROJECT.json] \
   [--write-trust-manifest agent-queue-integration.json] \
+  [--write-audit-workflow main-attestation.yml] [--write-ruleset ruleset.PROJECT.json] \
   [--write-workflow ci.yml]
 ```
 
@@ -141,40 +148,189 @@ Before binding, confirm the names against a real push run on the default
 branch or a branch that triggers CI:
 
 ```bash
-gh api repos/OWNER/REPO/commits/SHA/check-runs --jq '.check_runs[] | [.name, .app.slug] | @tsv'
+gh api repos/OWNER/REPO/commits/SHA/check-runs --jq '.check_runs[] | [.name, .app.id, .app.slug] | @tsv'
 ```
 
 Run from agent-queue itself, the planner reproduces
 [agent-queue-train-policy.json](agent-queue-train-policy.json) byte for byte
-(existing-login mode, `--check-version tests-yml-v3`).
+(in either credential mode, `--check-version tests-yml-v3`).
 
 ## 3. App credential mode
+
+The operator runbook for App mode, from prerequisites through cutover,
+rotation, rollback and key rotation, is [app-mode-train.md](app-mode-train.md).
+This section is the reference for what the daemon checks and what the planner
+prints.
 
 This install configures `integration.github_app` (the `agent-queue-train`
 App, id 5075923), so the daemon runs in App credential mode. In that mode
 `daemon_functional_preflight` (`src/integration/preflight.py`) takes the path
-that needs repository-side trust, not the existing-login path:
+that needs repository-side trust, not the existing-login path. That path is
+the App-mode item report (`src/integration/app_mode.py`), the same one
+`aq integration app-verify` prints: every `fail` code is a blocker of the same
+name, and every `warn` code is a non-blocking entry in the `warnings` list of
+`aq integration status`.
 
-- `.github/agent-queue-integration.json` on the default branch, schema
-  `aq.integration-trust.v1`. Missing: `trust_manifest_unavailable`.
-- Actions variables `AQ_INTEGRATION_ATTESTATION_APP_ID` (the App id) and
-  `AQ_INTEGRATION_REQUIRED_CHECK_VERSION` (the check-set version). Missing:
-  `hosted_workflow_variables_unavailable`.
-- A policy producer equal to the manifest's numeric `ci_producer_app_id`,
-  which is 15368, GitHub Actions. The slug `github-actions` reads as
-  `trust_manifest_mismatch`.
+- `credential`: an installation token mints for the repository. Otherwise
+  `app_token_unavailable`; every item that reads GitHub then carries that code.
+- `repository`: GitHub's id, name and default branch equal the binding and
+  the AQ record. Otherwise `repository_mismatch`.
+- `producer`: a numeric policy producer on both boundaries, a positive
+  decimal with no sign or leading zero. A legacy slug such as `github-actions`
+  is `ci_producer_not_numeric`; two different numbers are `ci_producer_mismatch`.
+- `manifest`: `.github/agent-queue-integration.json` on the default branch,
+  schema `aq.integration-trust.v1`, equal on every identity field. Missing or
+  unparseable: `trust_manifest_unavailable`. A different identity, such as a
+  `ci_producer_app_id` other than the policy producer (15368, GitHub Actions),
+  is `trust_manifest_mismatch`. A check set that differs from the bound policy
+  only warns, `trust_manifest_check_set_differs`: it is expected during a
+  rotation, and the frozen snapshot owns the runtime check set.
+- `variables`: Actions variables `AQ_INTEGRATION_ATTESTATION_APP_ID` (the
+  daemon's App id) and `AQ_INTEGRATION_REQUIRED_CHECK_VERSION` (the bound
+  policy's root check-set version). They are compared with those two values
+  only, never with the manifest. Missing: `hosted_workflow_variables_unavailable`;
+  different: `hosted_workflow_variables_mismatch`.
+- `protection`: the default branch's rules, read through the App
+  (`src/integration/protection.py`): the effective rules, including parent and
+  organization rulesets, the App's own `current_user_can_bypass` for each
+  ruleset, and classic protection. They are classified as `attested_only` (the
+  App cannot bypass, and the attestation pinned to its id is required),
+  `app_bypass`, `incompatible` (a rule the App cannot bypass would refuse an
+  attested fast-forward, such as a pull-request or signature rule, or a
+  required check that is neither the pinned attestation nor a policy check
+  pinned to the CI producer), `unprotected`, or `unverifiable` (a read failed).
+  The observe, hierarchy and train modes need `attested_only`, and a disabled
+  project is judged the same way because it is being readied for them:
+  `app_bypass` warns (`main_protection_app_bypass`), and the other three block
+  (`branch_protection_incompatible`, `main_protection_missing`,
+  `main_protection_unverifiable`). An unreadable protection is never
+  "unprotected". A development project needs the App's unattested push to get
+  through: `aq integration develop` is refused with
+  `main_protection_blocks_development_publisher` while a rule the App cannot
+  bypass would refuse it, which includes `attested_only` and `incompatible`.
+  The refusal names each such ruleset or classic protection setting. An
+  unverifiable reading does not refuse: it is returned as the command's
+  `evidence.protection`. `app-setup` prints the §8.1 target ruleset only for
+  the codes it fixes, and a `PUT` only to a ruleset already named
+  `Train-only <branch>`. Nothing in AQ writes a rule.
+- `audit_workflow`: a default-branch workflow that reads
+  `vars.AQ_INTEGRATION_ATTESTATION_APP_ID`. Missing only warns,
+  `audit_workflow_missing`.
 
-`--credential-mode auto` (the default) detects this from
-`~/.agent-queue/config.yaml`, uses the producer `15368` and looks up the
-repository's numeric id with `gh api`. `--write-trust-manifest PATH` writes the
-file locally. Commit it as `.github/agent-queue-integration.json` through the
-project's current delivery path before the observe step. It can ride in the
-same change as a trigger fix or a CI workflow. The plan also prints the two
-`gh variable set` commands. The App's single installation must cover every
-target repository, with Actions variables readable; otherwise status reports
-`repository_binding_failed` or `hosted_workflow_variables_unavailable`. The
-reviewed agent-queue policy uses the slug, so the agent-queue cutover meets
-the same three requirements while this mode is configured.
+The planner emits the producer `15368` in both credential modes, so a policy
+it writes binds under either one without a rebind. Existing-login credentials
+still accept a slug that an older policy holds. `--credential-mode auto` (the
+default) detects App mode from `~/.agent-queue/config.yaml` and looks up the
+repository's numeric id with `gh api`. In App mode the plan orders the trust
+anchors around the drain (App-mode spec §11; [app-mode-train.md
+§9.7](app-mode-train.md#97-every-other-project)):
+
+1. **App mode: land the trust manifest and the audit workflow** through the
+   project's current delivery path. Both are inert until the variables are
+   set, and they can ride in the same change as a trigger fix or a CI
+   workflow. With a designated repository the manifest comes from
+   `aq integration trust-manifest PROJECT --policy train-policy.PROJECT.json
+   --repository-id ID --write .github/agent-queue-integration.json`; before
+   the bind creates the repository record, `--write-trust-manifest PATH`
+   writes the same bytes locally. `--write-audit-workflow PATH` renders
+   `main-attestation.yml`.
+2. The drain.
+3. **App mode: set the Actions variables (repository admin)**: `aq integration
+   app-setup PROJECT --policy ... --repository-id ID --apply`, or the two `gh
+   variable set` commands before a repository record exists.
+4. **App mode: require the attestation on main (repository admin)**: the
+   ruleset `--write-ruleset PATH` writes (the §8.1 shape: the attestation
+   pinned to the App, no bypass), posted with `gh api`, then `app-verify`.
+5. The bind, then observe, where `aq integration app-verify PROJECT` checks
+   every item against the bound policy.
+
+The rendered audit workflow embeds `src/integration/hosted_attestation.py`
+verbatim and runs on `ubuntu-latest` whatever runners the project's CI uses.
+For an unattested push it re-runs each gating CI workflow through
+`workflow_call` when that is safe: the workflow declares `workflow_call`, has
+no job with an `environment`, needs no inputs or secrets, and asks for no
+permission beyond `contents: read` and `checks: read`. A workflow with an
+`environment` is never called, because a called workflow runs with the
+caller's `main` ref and a main-only deploy would fire. Any gating workflow it
+cannot call is replaced by a failing `Unattested push to main` job. The CI
+template `--write-workflow` writes declares `workflow_call`. The App's single
+installation must cover every target repository, with Actions variables
+readable; otherwise status reports `repository_binding_failed` or
+`hosted_workflow_variables_unavailable`. The reviewed agent-queue policy
+already names `15368`, and its manifest and audit workflow are committed, so
+the agent-queue cutover needs the variables and the ruleset
+([app-mode-train.md §9.3](app-mode-train.md#93-cutover-supervisor-with-the-repository-admin-at-the-marked-steps)).
+
+The manifest is reviewed repository content, so its initial commit may pass
+through the development publisher. Later check-set rotations may update it
+through the train while the frozen policy snapshot still requires the old
+checks. AQ's reserved delivery-path guard protects daemon bookkeeping files,
+not this manifest. App-mode preflight and subject-trust checks still compare
+its identity fields to the binding, App and policy; the tree's check list is
+informational during a rotation. Actions variables and rulesets remain
+operator-managed trust anchors.
+
+The daemon renders the same manifest from what it actually trusts:
+
+```text
+aq integration trust-manifest PROJECT [--policy FILE] [--repository-id ID] \
+    (--write PATH | --check | --print) [--json]
+```
+
+It builds from `--policy FILE`, or the bound policy when that is omitted. The
+repository is `--repository-id`, or the designated one. `repository_id` and
+`full_name` come from the authenticated GitHub binding, `attestation_app_id`
+from the daemon's App, `ci_producer_app_id` from the policy producer and the
+check set from the policy's `root` boundary, in policy order. The text is
+`json.dumps(manifest, indent=2, sort_keys=True)` plus a newline, the bytes
+`--write-trust-manifest` writes too (`src/integration/trust_manifest.py` is the
+one builder). The result also compares the copy committed on the default branch,
+read through the App at that branch's exact SHA. `--check` exits 1 when that
+copy is missing, unparseable or differs on an identity field (the repository
+ids, the name, either App id, the schema), and prints the field diff and the
+`--write` command. A check-set or formatting difference is only a warning
+(`trust_manifest_check_set_differs`, `trust_manifest_noncanonical`), because the
+frozen policy snapshot owns the runtime check set. The command is read-only; it
+is refused with `not_app_mode` under existing-login credentials, with
+`ci_producer_not_numeric` for a slug producer, and at scope for worker tokens.
+The shipped supervisor profile holds the grant. For agent-queue:
+
+```bash
+aq integration trust-manifest agent-queue --policy docs/config/agent-queue-train-policy.json \
+    --repository-id agent-queue2 --write .github/agent-queue-integration.json
+```
+
+That file is committed. `tests/test_integration_trust_manifest.py` pins it to
+the builder's output for the reviewed policy, so a change to the policy's check
+set must regenerate it with this command and commit both files together.
+
+Two more commands check and set up the rest:
+
+```text
+aq integration app-verify PROJECT [--policy FILE] [--repository-id ID] [--json]
+aq integration app-setup PROJECT [--policy FILE] [--repository-id ID] [--apply]
+```
+
+`app-verify` (daemon command `integration_app_verify`, read-only) prints the
+seven items, each `ok`, `warn` or `fail` with its code, what was expected, what
+GitHub showed and the exact fix, and exits 1 when an item fails. `--json` adds
+`expected`: the manifest text, the two variable values and the target ruleset
+for the default branch, which requires the attestation pinned to the App's
+integration id and has no bypass. Existing-login credentials are reported as
+the `credential` item's `not_app_mode`, not refused. The shipped supervisor
+profile holds the grant.
+
+`app-setup` runs locally. It calls `app-verify` and prints, per concern, what is
+wrong and the fix. For the variables it prints `gh variable set NAME --repo
+OWNER/REPO --body VALUE` for each variable that differs. With `--apply` it runs
+those commands with your own `gh` login, which must be a repository admin, then
+verifies again and prints the `variables` item. A variable that is already
+correct is never touched. For the manifest it prints the `trust-manifest
+--write` command and where to commit the file. For protection it prints the
+target ruleset JSON and the `gh api --method PUT|POST …/rulesets` command. It
+never writes repository files and never applies a ruleset: the daemon's App
+holds no write permission over its own trust anchors, so these writes are the
+operator's.
 
 ## 4. By shape
 
@@ -197,14 +353,18 @@ project's values and a fresh generation read before each mutation:
    `bind-legacy-repositories` preview;
 6. run the ready check: status must report `ready` with zero blockers.
 
+In App credential mode the manifest and audit workflow land before the drain,
+and the Actions variables and the ruleset come between the drain and the bind
+(section 3).
+
 The planner never prints `--mode hierarchy` or `--mode train`. Those flips
 belong to the supervisor after observe is clean (section 7).
 
 ### GitHub with CI: outrider-ide, matter-engine-cpp
 
 ```bash
-aq integration onboard-train outrider-ide --write-policy train-policy.outrider-ide.json --write-trust-manifest agent-queue-integration.json
-aq integration onboard-train matter-engine-cpp --write-policy train-policy.matter-engine-cpp.json --write-trust-manifest agent-queue-integration.json
+aq integration onboard-train outrider-ide --write-policy train-policy.outrider-ide.json --write-trust-manifest agent-queue-integration.json --write-audit-workflow main-attestation.yml --write-ruleset ruleset.outrider-ide.json
+aq integration onboard-train matter-engine-cpp --write-policy train-policy.matter-engine-cpp.json --write-trust-manifest agent-queue-integration.json --write-audit-workflow main-attestation.yml --write-ruleset ruleset.matter-engine-cpp.json
 ```
 
 - outrider-ide pushes CI on every branch and has no designated repository. The
@@ -373,6 +533,10 @@ redeploy nor restart it:
   or editing the watchdog. A CI workflow in this repository must not deploy,
   hold secrets, or reach Trader1. Deploying a new `main` to the coordinator
   stays Jack's manual decision.
+- **The main push audit** (`--write-audit-workflow`) holds no secret and
+  deploys nothing, and the planner never names a fallback workflow that
+  declares an `environment`: such a workflow is replaced by a failing
+  `Unattested push to main` job instead of being called on `main`.
 - **Check after every mutation:**
 
   ```bash

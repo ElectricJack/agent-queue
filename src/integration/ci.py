@@ -32,10 +32,38 @@ from src.git.github_contracts import (
 ATTESTATION_CHECK_NAME = "Agent Queue Integration Attestation"
 TRUST_MANIFEST_PATH = ".github/agent-queue-integration.json"
 _SHA_PATTERN = r"^[0-9a-f]{40}$"
+_NUMERIC_PRODUCER = re.compile(r"[1-9][0-9]*")
+
+
+def is_numeric_producer_id(producer_id: object) -> bool:
+    """Whether a policy ``producer_id`` is the canonical numeric App id.
+
+    The canonical producer is the producer App's id as a positive decimal
+    string with no sign or leading zero (GitHub Actions is ``"15368"``), the
+    value GitHub reports as ``check_run.app.id``. App credential mode requires
+    it; a slug such as ``github-actions`` is legacy and keeps working only
+    under existing-login credentials.
+    """
+    return isinstance(producer_id, str) and _NUMERIC_PRODUCER.fullmatch(producer_id) is not None
 
 
 class AttestationError(ValueError):
     pass
+
+
+SubjectTrustCause = Literal["missing", "too_large", "malformed", "identity_mismatch"]
+
+
+class SubjectTrustError(AttestationError):
+    """A subject tree's trust manifest is absent, oversized, malformed or names
+    another identity, so the subject is refused (spec I4, I6)."""
+
+    def __init__(
+        self, cause: SubjectTrustCause, detail: str, *, fields: tuple[str, ...] = ()
+    ) -> None:
+        super().__init__(detail)
+        self.cause = cause
+        self.fields = fields
 
 
 class RequiredChecksManifest(BaseModel):
@@ -349,7 +377,7 @@ class IntegrationCIEvidence(BaseModel):
     run_id: str
     attempt: int = Field(ge=0)
     required_check_version: str
-    checks: dict[str, Literal["success", "failure", "cancelled", "skipped", "neutral"]]
+    checks: dict[str, Literal["success", "failure", "cancelled", "skipped", "neutral", "missing"]]
     conclusion: Literal["success", "failure", "cancelled", "inconclusive"]
     classification: Literal["conclusive", "full_suite_fallback"]
     observed_at: float
@@ -899,6 +927,7 @@ class AuthenticatedGitHubObserver:
             else None
         )
         selected: list[dict[str, Any]] = []
+        missing: list[str] = []
         for name in trust.required_checks.names:
             path = (
                 f"/repos/{owner}/{repository}/commits/{head_sha}/check-runs"
@@ -928,7 +957,8 @@ class AuthenticatedGitHubObserver:
                     continue
                 candidates.append((record_id, record))
             if not candidates:
-                raise AttestationError(f"required check is missing: {name}")
+                missing.append(name)
+                continue
             _, newest = max(candidates, key=lambda item: item[0])
             selected_app = newest.get("app")
             selected_app_id = (
@@ -965,9 +995,49 @@ class AuthenticatedGitHubObserver:
                 }
             )
 
+        missing_suite_id: int | None = None
+        if missing:
+            # An empty check list immediately after a push is not a CI failure.
+            # Only completed push workflows for this exact head can establish
+            # that the snapshot's required name was never produced.
+            push_runs = [record for record in workflow_records if record.get("event") == "push"]
+            if not push_runs or any(record.get("status") != "completed" for record in push_runs):
+                raise AttestationError(f"required check is pending: {', '.join(missing)}")
+            for record in push_runs:
+                suite_id = _strict_int(record.get("check_suite_id"))
+                if (
+                    record.get("head_sha") != head_sha
+                    or suite_id is None
+                    or suite_id <= 0
+                    or _strict_int(record.get("id")) is None
+                    or _strict_int(record.get("workflow_id")) is None
+                    or _strict_int(record.get("run_attempt")) is None
+                    or record.get("conclusion")
+                    not in {"success", "failure", "cancelled", "skipped", "neutral"}
+                ):
+                    raise AttestationError("completed push workflow identity is malformed")
+                if isinstance(trust, IntegrationCITrust):
+                    _require_workflow_repository(record, trust)
+            # Anchor the absence to one real completed suite. Prefer a suite
+            # already carrying a selected required check, so each evidence row
+            # still describes a single workflow attempt.
+            selected_suites = {check["check_suite_id"] for check in selected}
+            missing_suite_id = min(
+                (
+                    _strict_int(record["check_suite_id"])
+                    for record in push_runs
+                    if _strict_int(record["check_suite_id"]) in selected_suites
+                ),
+                default=min(_strict_int(record["check_suite_id"]) for record in push_runs),
+            )
+
         workflow_rows: list[dict[str, Any]] = []
         workflow_ids: dict[int, int] = {}
-        for suite_id in dict.fromkeys(check["check_suite_id"] for check in selected):
+        suite_ids = dict.fromkeys(
+            [check["check_suite_id"] for check in selected]
+            + ([missing_suite_id] if missing_suite_id is not None else [])
+        )
+        for suite_id in suite_ids:
             matches = [
                 record
                 for record in workflow_records
@@ -1032,6 +1102,11 @@ class AuthenticatedGitHubObserver:
                 }
             )
             workflow_ids[suite_id] = workflow_id
+        if missing_suite_id is not None:
+            selected.extend(
+                {"name": name, "check_suite_id": missing_suite_id, "conclusion": "missing"}
+                for name in missing
+            )
         if any(check["conclusion"] != "success" for check in selected) or any(
             workflow["conclusion"] != "success" for workflow in workflow_rows
         ):

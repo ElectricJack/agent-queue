@@ -26,7 +26,14 @@ but does not run on the train's refs; a workflow change lands first),
 ``github_no_ci`` (no CI at all; a workflow lands first, and
 :func:`ci_workflow_template` writes a starting point), ``local_remote`` and
 ``unsupported_forge`` (the development path).  The runbook is
-``docs/config/train-onboarding.md``.
+``docs/config/train-onboarding.md``; App credential mode's is
+``docs/config/app-mode-train.md``.
+
+In App credential mode a GitHub project also carries the ``main`` push audit
+(:func:`audit_workflow_template`): the hosted verifier embedded verbatim, and a
+fallback that re-runs the project's gating CI through ``workflow_call`` when
+that workflow can be called safely, or else fails with an "unattested push"
+summary.
 """
 
 from __future__ import annotations
@@ -54,13 +61,26 @@ TRAIN_REF_SAMPLES = (
 #: The patterns a trigger fix adds to ``on.push.branches``.
 TRAIN_BRANCH_PATTERNS = ("aq/integration/**", "aq/parent/**")
 
-#: The GitHub Actions App.  Existing-login credential mode matches it by slug;
-#: App credential mode compares the policy producer with the trust manifest's
-#: numeric ``ci_producer_app_id`` (``src/integration/preflight.py``).
-GITHUB_ACTIONS_SLUG = "github-actions"
+#: The GitHub Actions App.  Every policy the planner emits names it by its
+#: numeric id, the canonical producer in both credential modes, so a project can
+#: move between them without rebinding: App credential mode compares it with the
+#: trust manifest's ``ci_producer_app_id`` and refuses a slug as
+#: ``ci_producer_not_numeric`` (``src/integration/preflight.py``).
 GITHUB_ACTIONS_APP_ID = 15368
+#: Legacy only: policies bound before the numeric id was canonical name GitHub
+#: Actions by this slug.  Existing-login credentials still match it (frozen
+#: snapshots and evidence rows hold it); the planner never emits it.
+GITHUB_ACTIONS_SLUG = "github-actions"
 ATTESTATION_NAME = "Agent Queue Integration Attestation"
 TRUST_MANIFEST_PATH = ".github/agent-queue-integration.json"
+AUDIT_WORKFLOW_PATH = ".github/workflows/main-attestation.yml"
+#: What marks a workflow as the audit, as ``app-verify``'s ``audit_workflow`` item reads it.
+AUDIT_VARIABLE_REFERENCE = "vars.AQ_INTEGRATION_ATTESTATION_APP_ID"
+#: The stdlib-only verifier the audit workflow embeds (App-mode spec §7.2).
+HOSTED_VERIFIER_PATH = Path(__file__).with_name("hosted_attestation.py")
+#: What the audit workflow's token holds, so all a called workflow may ask for:
+#: GitHub lets a called workflow narrow the caller's permissions, never widen them.
+AUDIT_PERMISSIONS = {"contents": "read", "checks": "read"}
 
 SHARED_PARENT_ROUTE = "parent-integration"
 SHARED_ROOT_ROUTE = "root-train"
@@ -97,6 +117,12 @@ class WorkflowReport:
     deployment: bool
     jobs: tuple[JobChecks, ...]
     notes: tuple[str, ...] = ()
+    #: Declares the ``workflow_call`` trigger.
+    workflow_call: bool = False
+    #: The App-mode ``main`` push audit (it reads the attestation App id): never CI.
+    audit: bool = False
+    #: Why the ``main`` push audit cannot call this workflow; ``None`` when it can.
+    call_refusal: str | None = "not a readable workflow"
 
     @property
     def required_names(self) -> tuple[str, ...]:
@@ -105,7 +131,7 @@ class WorkflowReport:
     @property
     def is_ci_candidate(self) -> bool:
         """CI that could gate the train once its push trigger names the train's refs."""
-        return (self.pull_request or self.push) and not self.deployment
+        return (self.pull_request or self.push) and not self.deployment and not self.audit
 
 
 def _triggers(document: Mapping[str, Any]) -> dict[str, Any]:
@@ -465,6 +491,59 @@ def _needs(job: Mapping[str, Any]) -> list[str]:
     return [str(need) for need in needs] if isinstance(needs, list) else []
 
 
+def _permissions_problem(permissions: Any) -> str | None:
+    """What a ``permissions`` block asks beyond the audit's read-only token."""
+    if permissions is None:
+        return None
+    if not isinstance(permissions, Mapping):
+        return f"asks for {permissions}"
+    wider = [
+        f"{scope}: {level}"
+        for scope, level in permissions.items()
+        if level != "none" and not (level == "read" and AUDIT_PERMISSIONS.get(str(scope)) == "read")
+    ]
+    return f"asks for {', '.join(wider)}" if wider else None
+
+
+def _call_refusal(
+    triggers: Mapping[str, Any], document: Mapping[str, Any], jobs: Mapping[str, Mapping[str, Any]]
+) -> str | None:
+    """Why the ``main`` push audit must not call this workflow; ``None`` when it may.
+
+    A called workflow runs with the caller's ref, so a deploy job gated on
+    ``main`` would run on every unattested push: a workflow with an
+    ``environment`` is never called.  The audit passes no inputs and no
+    secrets, and GitHub refuses a called workflow that asks for more token
+    permissions than the caller holds, which would stop the audit itself.
+    """
+    environments = sorted(job_id for job_id, job in jobs.items() if job.get("environment"))
+    if environments:
+        return f"declares an environment ({', '.join(environments)}), so it may deploy"
+    if "workflow_call" not in triggers:
+        return "does not declare workflow_call"
+    config = triggers["workflow_call"] if isinstance(triggers["workflow_call"], Mapping) else {}
+    for kind in ("inputs", "secrets"):
+        declared = config.get(kind) if isinstance(config.get(kind), Mapping) else {}
+        required = sorted(
+            str(name)
+            for name, spec in declared.items()
+            if isinstance(spec, Mapping) and spec.get("required") and "default" not in spec
+        )
+        if required:
+            return f"workflow_call requires {kind} the audit does not pass: {', '.join(required)}"
+    problem = _permissions_problem(document.get("permissions"))
+    if problem:
+        return f"{problem}; the audit's token holds only contents: read and checks: read"
+    for job_id, job in jobs.items():
+        problem = _permissions_problem(job.get("permissions"))
+        if problem:
+            return (
+                f"job {job_id} {problem}; the audit's token holds only contents: read and "
+                "checks: read"
+            )
+    return None
+
+
 def analyze_workflow(path: str, text: str) -> WorkflowReport:
     """Read one workflow file: its triggers and the check runs each job produces."""
     try:
@@ -503,7 +582,9 @@ def analyze_workflow(path: str, text: str) -> WorkflowReport:
     # A workflow gates the train when it runs on the train's refs, or could once
     # its push trigger names them.  A workflow_run follow-up or a schedule never
     # does, and neither does a deployment.
-    gate = covered or ((pull_request or push) and not deployment)
+    # The main push audit verifies promotions after the fact; it gates nothing.
+    audit = AUDIT_VARIABLE_REFERENCE in text
+    gate = (covered or ((pull_request or push) and not deployment)) and not audit
     statuses: dict[str, JobChecks] = {}
     for job_id, job in raw_jobs.items():
         names, unresolved = job_check_names(job_id, job)
@@ -513,6 +594,8 @@ def analyze_workflow(path: str, text: str) -> WorkflowReport:
             statuses[job_id] = JobChecks(
                 job_id, names, "excluded", "deploy job never runs on the train's refs"
             )
+        elif audit:
+            statuses[job_id] = JobChecks(job_id, names, "excluded", "the main push audit")
         elif not gate:
             statuses[job_id] = JobChecks(
                 job_id, names, "excluded", "workflow never runs on the train's refs"
@@ -565,6 +648,9 @@ def analyze_workflow(path: str, text: str) -> WorkflowReport:
         deployment=deployment,
         jobs=tuple(statuses[job_id] for job_id in raw_jobs),
         notes=tuple(notes),
+        workflow_call="workflow_call" in triggers,
+        audit=audit,
+        call_refusal=_call_refusal(triggers, document, raw_jobs),
     )
 
 
@@ -760,9 +846,10 @@ def select_routes(
 
 
 def producer_for(credential_mode: str) -> str:
+    """The policy producer: GitHub Actions' numeric App id in every credential mode."""
     if credential_mode not in CREDENTIAL_MODES:
         raise ValueError(f"credential mode must be one of {', '.join(CREDENTIAL_MODES)}")
-    return str(GITHUB_ACTIONS_APP_ID) if credential_mode == "app" else GITHUB_ACTIONS_SLUG
+    return str(GITHUB_ACTIONS_APP_ID)
 
 
 def build_policy(
@@ -819,21 +906,23 @@ def build_trust_manifest(
     checks: Sequence[str],
     check_version: str,
 ) -> dict[str, Any]:
-    """``.github/agent-queue-integration.json`` for App credential mode."""
-    from src.integration.ci import IntegrationTrustManifest
+    """``.github/agent-queue-integration.json`` for App credential mode.
 
-    manifest = {
-        "schema": "aq.integration-trust.v1",
-        "canonical_repository_id": canonical_repository_id,
-        "repository_id": github_repository_id,
-        "full_name": full_name,
-        "ci_producer_app_id": GITHUB_ACTIONS_APP_ID,
-        "attestation_app_id": attestation_app_id,
-        "attestation_name": ATTESTATION_NAME,
-        "required_checks": {"version": check_version, "names": list(checks)},
-    }
-    IntegrationTrustManifest.model_validate(manifest)
-    return manifest
+    A thin wrapper over the shared builder (``src/integration/trust_manifest.py``)
+    that ``aq integration trust-manifest`` and the preflight use too; the planner's
+    producer is always GitHub Actions.
+    """
+    from src.integration import trust_manifest
+
+    return trust_manifest.build_trust_manifest(
+        canonical_repository_id=canonical_repository_id,
+        repository_id=github_repository_id,
+        full_name=full_name,
+        ci_producer_app_id=GITHUB_ACTIONS_APP_ID,
+        attestation_app_id=attestation_app_id,
+        checks=checks,
+        check_version=check_version,
+    )
 
 
 def detect_stack(files: Mapping[str, str]) -> str:
@@ -917,7 +1006,9 @@ def ci_workflow_template(files: Mapping[str, str], *, test_command: str | None =
 # The integration train accepts only check runs from a push of the exact
 # candidate it built, so the push trigger names the train's refs:
 # aq/integration/** (root candidates) and aq/parent/** (parent snapshots);
-# main shows that the default branch is green.
+# main shows that the default branch is green. workflow_call lets the App-mode
+# main push audit (main-attestation.yml) re-run this CI for a push to main
+# that carries no integration attestation.
 # Keep `Tests` as the job name: it is the required check in the project's
 # train policy. Never add deploy steps or secrets to this workflow.
 on:
@@ -928,6 +1019,7 @@ on:
       - 'aq/integration/**'
       - 'aq/parent/**'
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -977,6 +1069,217 @@ def trigger_fix(report: WorkflowReport, text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# The main push audit (App-mode integration train spec §7.2, §11)
+# ---------------------------------------------------------------------------
+
+#: The heredoc delimiter the audit workflow writes the verifier with.
+VERIFIER_DELIMITER = "AQ_HOSTED_ATTESTATION_PY"
+_VERIFIER_FILE = '"$RUNNER_TEMP/aq_hosted_attestation.py"'
+_JOB_ID_UNSAFE = re.compile(r"[^a-z0-9_-]+")
+#: What the template interpolates into YAML and shell text unquoted.
+_SAFE_REF = re.compile(r"[A-Za-z0-9._/-]+")
+_SAFE_PATH = re.compile(r"\.github/workflows/[A-Za-z0-9._-]+\.ya?ml")
+
+
+@dataclass(frozen=True)
+class AuditFallback:
+    """What ``main-attestation.yml`` runs for a push to the default branch it cannot trust."""
+
+    #: Gating CI workflows it re-runs through ``workflow_call``.
+    calls: tuple[str, ...]
+    #: ``(path, reason)`` for each gating workflow it must not call.
+    uncalled: tuple[tuple[str, str], ...]
+
+    @property
+    def fails(self) -> bool:
+        """Whether a failing "unattested push" job stands in for CI it cannot re-run."""
+        return bool(self.uncalled) or not self.calls
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "calls": list(self.calls),
+            "uncalled": [{"path": path, "reason": reason} for path, reason in self.uncalled],
+            "fails": self.fails,
+        }
+
+
+def audit_fallback(classification: Classification) -> AuditFallback:
+    """The audit's fallback: the project's gating CI workflows that can be called safely."""
+    reports = {report.path: report for report in classification.workflows}
+    calls: list[str] = []
+    uncalled: list[tuple[str, str]] = []
+    for path in classification.required.sources:
+        refusal = reports[path].call_refusal
+        if refusal is None and _SAFE_PATH.fullmatch(path) is None:
+            refusal = "is not a plain .github/workflows/*.yml path, which workflow_call needs"
+        if refusal is None:
+            calls.append(path)
+        else:
+            uncalled.append((path, refusal))
+    return AuditFallback(tuple(calls), tuple(uncalled))
+
+
+def hosted_verifier_source() -> str:
+    """``src/integration/hosted_attestation.py``, the text the audit embeds."""
+    return HOSTED_VERIFIER_PATH.read_text(encoding="utf-8")
+
+
+def _embeddable(source: str) -> str:
+    """``source`` as the body of a YAML literal block inside a quoted heredoc, unchanged.
+
+    GitHub substitutes ``${{ }}`` in a ``run`` script before the shell sees it,
+    and a literal block keeps neither trailing blanks nor carriage returns, so
+    any of those would change the embedded copy; the delimiter would end it.
+    """
+    lines = source.split("\n")
+    if not source.endswith("\n") or "${{" in source or "\r" in source:
+        raise ValueError("the verifier must end with a newline and hold no ${{ or carriage return")
+    if any(line != line.rstrip() or line.strip() == VERIFIER_DELIMITER for line in lines):
+        raise ValueError("the verifier has trailing whitespace or the heredoc delimiter")
+    return "\n".join(f"          {line}" if line else "" for line in lines[:-1])
+
+
+def _call_job_ids(paths: Sequence[str]) -> list[str]:
+    if len(paths) == 1:
+        return ["unattested-ci"]
+    ids: list[str] = []
+    for path in paths:
+        stem = _JOB_ID_UNSAFE.sub("-", Path(path).stem.lower()).strip("-") or "ci"
+        candidate = f"unattested-ci-{stem}"
+        while candidate in ids:
+            candidate += "-x"
+        ids.append(candidate)
+    return ids
+
+
+_UNATTESTED = (
+    "    needs: attestation\n"
+    "    if: >-\n"
+    "      needs.attestation.outputs.configured == 'true' &&\n"
+    "      needs.attestation.outputs.attested != 'true'\n"
+)
+
+
+def audit_workflow_template(
+    fallback: AuditFallback, *, default_branch: str = "main", verifier: str | None = None
+) -> str:
+    """``.github/workflows/main-attestation.yml`` for one project.
+
+    The same audit as agent-queue's own workflow, made self-contained: the
+    verifier is embedded verbatim from :func:`hosted_verifier_source` instead of
+    read from a sparse checkout, and the job runs on ``ubuntu-latest`` whatever
+    runners the project's CI uses.  An unattested push re-runs each workflow in
+    ``fallback.calls``; a gating workflow it must not call (see
+    :func:`_call_refusal`) is replaced by a job that fails with an "unattested
+    push" summary, so the push stays visible.  The workflow holds no secret and
+    deploys nothing.
+    """
+    if _SAFE_REF.fullmatch(default_branch) is None:
+        raise ValueError(f"default branch {default_branch!r} is not a plain branch name")
+    for path in fallback.calls:
+        if _SAFE_PATH.fullmatch(path) is None:
+            raise ValueError(f"the audit cannot call {path!r}")
+    body = _embeddable(hosted_verifier_source() if verifier is None else verifier)
+    branch = json.dumps(default_branch)
+    if fallback.calls and not fallback.uncalled:
+        fallback_text = "re-runs the project's CI (" + ", ".join(fallback.calls) + ")"
+    elif fallback.calls:
+        fallback_text = (
+            "re-runs the CI it can call and fails an `Unattested push` job for the rest"
+        )
+    else:
+        fallback_text = "fails an `Unattested push` job, because no gating CI can be called"
+    jobs: list[str] = []
+    for path, job_id in zip(fallback.calls, _call_job_ids(fallback.calls), strict=True):
+        jobs.append(f"  {job_id}:\n{_UNATTESTED}    uses: ./{path}\n")
+    if fallback.fails:
+        why = (
+            "; ".join(f"{path} {reason}" for path, reason in fallback.uncalled)
+            or "the project has no gating CI workflow"
+        )
+        explanation = json.dumps(
+            f"No workflow re-runs CI for this push ({why}). Run the project's CI on this "
+            "commit by hand and review it."
+        )
+        if "${{" in explanation:
+            raise ValueError("a workflow path holds ${{")
+        jobs.append(
+            "  unattested-push:\n"
+            f"    name: Unattested push to {default_branch}\n"
+            f"{_UNATTESTED}"
+            "    runs-on: ubuntu-latest\n"
+            "    steps:\n"
+            "      - env:\n"
+            "          REASON: ${{ needs.attestation.outputs.reason }}\n"
+            f"          UNCALLED: {explanation}\n"
+            "        run: |\n"
+            "          {\n"
+            f'            echo "### Unattested push to {default_branch}"\n'
+            '            echo ""\n'
+            '            echo "No valid Agent Queue integration attestation: $REASON"\n'
+            '            echo ""\n'
+            '            echo "$UNCALLED"\n'
+            '          } >> "$GITHUB_STEP_SUMMARY"\n'
+            f'          echo "::error title=Unattested push to {default_branch}::$REASON"\n'
+            "          exit 1\n"
+        )
+    return f"""name: Main attestation
+# Written by `aq integration onboard-train --write-audit-workflow`
+# (docs/config/app-mode-train.md). The break-glass audit (App-mode integration
+# train spec §7.2): a train promotion moves {default_branch} to a candidate the
+# daemon already attested, so this workflow only verifies that attestation. A
+# push without a valid attestation {fallback_text}.
+# With the Actions variables AQ_INTEGRATION_ATTESTATION_APP_ID and
+# AQ_INTEGRATION_REQUIRED_CHECK_VERSION unset the repository is not in App
+# mode yet, and nothing runs. The verify step embeds agent-queue's
+# src/integration/hosted_attestation.py verbatim: regenerate this file, never
+# edit it. It holds no secret and deploys nothing.
+on:
+  push:
+    branches: [{branch}]
+permissions:
+  contents: read
+  checks: read
+jobs:
+  attestation:
+    name: Main attestation
+    runs-on: ubuntu-latest
+    outputs:
+      attested: ${{{{ steps.verify.outputs.attested }}}}
+      configured: ${{{{ steps.verify.outputs.configured }}}}
+      reason: ${{{{ steps.verify.outputs.reason }}}}
+    steps:
+      - id: verify
+        env:
+          GH_TOKEN: ${{{{ github.token }}}}
+          REPOSITORY: ${{{{ github.repository }}}}
+          REPOSITORY_ID: ${{{{ github.repository_id }}}}
+          SHA: ${{{{ github.sha }}}}
+          APP_ID: ${{{{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}}}
+          CHECK_VERSION: ${{{{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}}}
+        run: |
+          cat > {_VERIFIER_FILE} <<'{VERIFIER_DELIMITER}'
+{body}
+          {VERIFIER_DELIMITER}
+          python3 {_VERIFIER_FILE}
+{"".join(jobs)}"""
+
+
+def embedded_verifier(workflow_text: str) -> str:
+    """The verifier a rendered audit workflow embeds, as the runner would write it."""
+    document = yaml.safe_load(workflow_text)
+    steps = document["jobs"]["attestation"]["steps"]
+    script = next(step["run"] for step in steps if step.get("id") == "verify")
+    head, _, rest = script.partition("\n")
+    if not head.endswith(f"<<'{VERIFIER_DELIMITER}'"):
+        raise ValueError("the verify step does not open the verifier heredoc")
+    source, found, _ = rest.partition(f"\n{VERIFIER_DELIMITER}\n")
+    if not found:
+        raise ValueError("the verify step does not close the verifier heredoc")
+    return source + "\n"
+
+
+# ---------------------------------------------------------------------------
 # The plan
 # ---------------------------------------------------------------------------
 
@@ -1018,6 +1321,11 @@ class OnboardingPlan:
     workflows: tuple[WorkflowReport, ...]
     problems: list[str] = field(default_factory=list)
     steps: list[Step] = field(default_factory=list)
+    #: App mode: the default branch's target ruleset (``--write-ruleset``).
+    ruleset: dict[str, Any] | None = None
+    #: GitHub projects: what the ``main`` push audit runs for an unattested push
+    #: (:meth:`AuditFallback.as_dict` and the workflow's path).
+    audit_workflow: dict[str, Any] | None = None
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -1047,6 +1355,167 @@ def _q(value: str) -> str:
     return shlex.quote(value)
 
 
+@dataclass(frozen=True)
+class _AppAnchors:
+    """App credential mode's repository-side trust anchors, as plan steps (spec §11).
+
+    The daemon's App-mode commands resolve the project's repository record, so
+    the steps run them with ``--repository-id`` when one is designated.  Before
+    the bind creates the record there is nothing to resolve: the steps then use
+    the local equivalents this run writes (``--write-trust-manifest``,
+    ``--write-ruleset``) and ``gh variable set``, and ``app-verify`` confirms
+    everything after the bind.
+    """
+
+    facts: ProjectFacts
+    full_name: str
+    app_id: int | None
+    check_version: str | None
+    policy_path: str
+    manifest_path: str
+    audit_workflow_path: str
+    ruleset_path: str
+    fallback: AuditFallback
+
+    def _aq(self, verb: str, *extra: str) -> str:
+        parts = ["aq", "integration", verb, self.facts.project_id, "--policy", self.policy_path]
+        if self.facts.integration_repository_id:
+            parts += ["--repository-id", self.facts.integration_repository_id]
+        return shlex.join([*parts, *extra])
+
+    def _audit_note(self) -> str:
+        calls, uncalled = self.fallback.calls, self.fallback.uncalled
+        text = (
+            f"For a push to {self.facts.default_branch} without a valid attestation the audit "
+        )
+        if calls:
+            text += f"re-runs {', '.join(calls)} through workflow_call."
+        else:
+            text += "fails an `Unattested push` job: it has no gating CI workflow to call."
+        if uncalled:
+            text += (
+                " It does not call "
+                + "; ".join(f"{path} ({reason})" for path, reason in uncalled)
+                + ", and fails an `Unattested push` job in its place. A gating workflow that "
+                "declares workflow_call, and has no environment, required inputs or secrets, "
+                "and no permission beyond contents: read and checks: read, is re-run instead."
+            )
+        return text
+
+    def land_step(self) -> Step:
+        branch = self.facts.default_branch
+        audit = (
+            AUDIT_WORKFLOW_PATH
+            if self.audit_workflow_path == AUDIT_WORKFLOW_PATH
+            else f"{self.audit_workflow_path} as {AUDIT_WORKFLOW_PATH}"
+        )
+        if self.facts.integration_repository_id:
+            manifest = f"{TRUST_MANIFEST_PATH} (trust-manifest --write)"
+            commands: tuple[str, ...] = (
+                self._aq("trust-manifest", "--write", TRUST_MANIFEST_PATH),
+            )
+            source = (
+                "The daemon renders the manifest from what it trusts: the authenticated "
+                "binding, its own App and the policy."
+            )
+        else:
+            manifest = (
+                TRUST_MANIFEST_PATH
+                if self.manifest_path == TRUST_MANIFEST_PATH
+                else f"{self.manifest_path} as {TRUST_MANIFEST_PATH}"
+            ) + " (--write-trust-manifest)"
+            commands = ()
+            source = (
+                "The daemon's trust-manifest command resolves the repository record, which "
+                "the bind step creates, so --write-trust-manifest writes the same bytes now."
+            )
+        commands += (
+            (
+                f"# commit {manifest} and {audit} "
+                f"(--write-audit-workflow) to {branch}, through the project's current delivery "
+                "path"
+            ),
+        )
+        return Step(
+            "App mode: land the trust manifest and the audit workflow",
+            commands,
+            "Both files are inert until the Actions variables are set: with them unset the "
+            "audit reports configured=false and runs nothing. So they land before the drain, "
+            "through the project's current path (disabled mode: a pull request a human "
+            f"merges; development mode: the development publisher). {source} "
+            + self._audit_note(),
+        )
+
+    def variables_step(self) -> Step:
+        app_id = str(self.app_id or "APP_ID")
+        version = self.check_version or "CHECK_VERSION"
+        if self.facts.integration_repository_id:
+            commands: tuple[str, ...] = (self._aq("app-setup", "--apply"),)
+            how = (
+                "app-setup --apply runs gh variable set only for a variable that differs, then "
+                "re-verifies through the App: its variables item must be ok."
+            )
+        else:
+            commands = tuple(
+                f"gh variable set {name} --repo {self.full_name} --body {_q(value)}"
+                for name, value in (
+                    ("AQ_INTEGRATION_ATTESTATION_APP_ID", app_id),
+                    ("AQ_INTEGRATION_REQUIRED_CHECK_VERSION", version),
+                )
+            )
+            how = (
+                "Before the bind creates the repository record the daemon's app-setup cannot "
+                "resolve it, so set them with gh directly; app-verify confirms them after the bind."
+            )
+        return Step(
+            "App mode: set the Actions variables (repository admin)",
+            commands,
+            f"AQ_INTEGRATION_ATTESTATION_APP_ID={app_id} (the daemon's App) and "
+            f"AQ_INTEGRATION_REQUIRED_CHECK_VERSION={version} (the policy's root check-set "
+            "version), set with your own gh login, which must be a repository admin: the "
+            "daemon's App reads them and never writes them. They switch the audit on, so set "
+            f"them once the drain has stopped every unattested push to "
+            f"{self.facts.default_branch}. {how}",
+        )
+
+    def ruleset_step(self) -> Step:
+        from src.integration.app_mode import target_ruleset_name
+
+        branch = self.facts.default_branch
+        name = target_ruleset_name(branch)
+        ruleset = _q(self.ruleset_path)
+        post = f"gh api --method POST repos/{self.full_name}/rulesets --input {ruleset}"
+        put = f"gh api --method PUT repos/{self.full_name}/rulesets/RULESET_ID --input {ruleset}"
+        if self.facts.integration_repository_id:
+            commands: tuple[str, ...] = (
+                self._aq("app-setup"),
+                post,
+                f"# or, to replace the ruleset app-setup names: {put}",
+                self._aq("app-verify"),
+            )
+            verify = "app-verify must then report protection attested_only."
+        else:
+            commands = (
+                f"gh api repos/{self.full_name}/rulesets --jq '.[] | [.id, .name] | @tsv'",
+                post,
+                f"# or, to replace an existing ruleset named {name}: {put}",
+            )
+            verify = "After the bind, app-verify must report protection attested_only."
+        return Step(
+            f"App mode: require the attestation on {branch} (repository admin)",
+            commands,
+            f"{self.ruleset_path} is written by --write-ruleset: ruleset {name!r} requires "
+            f"{ATTESTATION_NAME!r} pinned to App {self.app_id or 'APP_ID'} and has no bypass "
+            f"actor. A promotion fast-forwards {branch} to a candidate the daemon already "
+            "attested, so it satisfies the rule without bypassing it, and GitHub refuses "
+            "every unattested push, the daemon's included. Remove any other rule the App "
+            "cannot satisfy (a pull-request, signature or unpinned status-check rule, or "
+            "classic branch protection): app-verify reports it as "
+            f"branch_protection_incompatible. {verify} Leaving the train for development "
+            "needs the App's bypass back first (runbook §9.6).",
+        )
+
+
 def plan_onboarding(
     facts: ProjectFacts,
     classification: Classification,
@@ -1065,13 +1534,18 @@ def plan_onboarding(
     policy_path: str = "train-policy.json",
     manifest_path: str = TRUST_MANIFEST_PATH,
     workflow_path: str = ".github/workflows/ci.yml",
+    audit_workflow_path: str = AUDIT_WORKFLOW_PATH,
+    ruleset_path: str | None = None,
 ) -> OnboardingPlan:
     """Every step from the project's current state to a ready observe-mode train.
 
     A plan stops at the first prerequisite that changes the repository (a CI
     workflow, a trigger fix) or at a problem that makes the policy unsafe to
     bind: the rest depends on a re-run once that change is on the default
-    branch.
+    branch.  In App credential mode the repository-side trust anchors come in
+    the App-mode spec's §11 order: the manifest and audit workflow land through
+    the project's current path, then the drain, the Actions variables, the
+    ruleset, the bind and observe (``docs/config/app-mode-train.md``).
     """
     project = facts.project_id
     shape = classification.shape
@@ -1138,6 +1612,24 @@ def plan_onboarding(
         workflows=classification.workflows,
         problems=problems,
     )
+    fallback = audit_fallback(classification)
+    plan.audit_workflow = {"path": audit_workflow_path, **fallback.as_dict()}
+    app = credential_mode == "app" and classification.full_name is not None
+    if app and attestation_app_id is not None:
+        from src.integration.app_mode import target_ruleset
+
+        plan.ruleset = target_ruleset(attestation_app_id, facts.default_branch)
+    anchors = _AppAnchors(
+        facts=facts,
+        full_name=classification.full_name or "",
+        app_id=attestation_app_id,
+        check_version=version,
+        policy_path=policy_path,
+        manifest_path=manifest_path,
+        audit_workflow_path=audit_workflow_path,
+        ruleset_path=ruleset_path or f"ruleset.{project}.json",
+        fallback=fallback,
+    )
     steps = plan.steps
     if shape == "github_no_ci":
         steps.append(
@@ -1197,31 +1689,8 @@ def plan_onboarding(
                 note,
             )
         )
-    if credential_mode == "app" and classification.full_name:
-        steps.append(
-            Step(
-                "App credential mode: publish the trust manifest and Actions variables",
-                (
-                    (
-                        f"# commit {manifest_path} (--write-trust-manifest) as "
-                        f"{TRUST_MANIFEST_PATH} on {facts.default_branch}, through the project's "
-                        "current delivery path"
-                    ),
-                    (
-                        f"gh variable set AQ_INTEGRATION_ATTESTATION_APP_ID --repo "
-                        f"{classification.full_name} --body {attestation_app_id or 'APP_ID'}"
-                    ),
-                    (
-                        f"gh variable set AQ_INTEGRATION_REQUIRED_CHECK_VERSION --repo "
-                        f"{classification.full_name} --body {version}"
-                    ),
-                ),
-                "With integration.github_app configured the functional preflight reads "
-                f"{TRUST_MANIFEST_PATH} from the default branch and both Actions variables, and "
-                "requires the policy producer to be the numeric GitHub Actions App id. The App "
-                "installation must cover this repository (with Actions variables readable).",
-            )
-        )
+    if app:
+        steps.append(anchors.land_step())
     if shape == "github_ci_trigger_missing":
         return plan
     if policy is None or repository_id is None:
@@ -1275,6 +1744,9 @@ def plan_onboarding(
                 "drain finishes once every frozen integration operation is terminal.",
             )
         )
+    if app:
+        steps.append(anchors.variables_step())
+        steps.append(anchors.ruleset_step())
     if facts.integration_repository_id:
         bind = (
             f"aq project set {_q(project)} integration-repository-id {_q(repository_id)} "
@@ -1329,8 +1801,15 @@ def plan_onboarding(
                 f"aq integration flush {_q(project)}",
                 f"aq integration adopt-legacy-deliveries --project-id {_q(project)} --dry-run",
                 f"aq integration bind-legacy-repositories {_q(project)}",
+                *((f"aq integration app-verify {_q(project)}",) if app else ()),
             ),
-            "Adopt or bind only what the dry runs prove; both are safe to repeat.",
+            "Adopt or bind only what the dry runs prove; both are safe to repeat."
+            + (
+                " app-verify reads the bound policy: every item must be ok (the preflight "
+                "turns each fail into a blocker of the same name)."
+                if app
+                else ""
+            ),
         )
     )
     steps.append(
@@ -1477,6 +1956,7 @@ def _development_plan(
 
 
 __all__ = [
+    "AuditFallback",
     "Classification",
     "JobChecks",
     "OnboardingPlan",
@@ -1484,6 +1964,8 @@ __all__ = [
     "Step",
     "WorkflowReport",
     "analyze_workflow",
+    "audit_fallback",
+    "audit_workflow_template",
     "branch_filter_matches",
     "build_policy",
     "build_trust_manifest",
@@ -1492,6 +1974,8 @@ __all__ = [
     "ci_workflow_template",
     "classify",
     "detect_stack",
+    "embedded_verifier",
+    "hosted_verifier_source",
     "job_check_names",
     "job_runs_on_push",
     "plan_onboarding",

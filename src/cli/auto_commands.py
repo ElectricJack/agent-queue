@@ -118,6 +118,8 @@ HANDCRAFTED_COVERAGE = {
     "onboard_project",
     # integration.py — positional identities and explicit rollout CAS fences.
     "integration_status",
+    "integration_trust_manifest",
+    "integration_app_verify",
     "integration_flush",
     "integration_enable",
     "integration_reconcile_unmaterialized",
@@ -129,6 +131,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_migrate_provenance",
     "integration_development_sweep",
     "integration_cancel_preserving",
+    "integration_settle_parked",
     "integration_retry_cleanup",
     "integration_release_owner",
     "integration_reserve_owner",

@@ -423,6 +423,28 @@ class TestAsyncCommitAll:
 
 class TestAsyncReservedDeliveryDiff:
     @pytest.mark.asyncio
+    async def test_manifest_passes_development_delivery_gate(self, clone, mgr):
+        repo = pathlib.Path(clone)
+        _git(["switch", "-c", "task/manifest"], cwd=clone)
+        (repo / ".github").mkdir()
+        manifest = repo / ".github" / "agent-queue-integration.json"
+        manifest.write_text('{"required_checks": []}\n')
+        _git(["add", ".github/agent-queue-integration.json"], cwd=clone)
+        assert await mgr.areserved_paths_in_index(clone) == []
+        _git(["commit", "-m", "add trust manifest"], cwd=clone)
+
+        ops = GitOpsMixin()
+        ops.git = mgr
+        assert await ops._reserved_delivery_failure(
+            clone, "main", "refs/heads/task/manifest", has_remote=True
+        ) is None
+        tip = await mgr.apush_validated_delivery(
+            clone, "refs/remotes/origin/main", "refs/heads/task/manifest", "task/manifest"
+        )
+        assert _git(["rev-parse", "refs/remotes/origin/task/manifest"], cwd=clone) == tip
+        assert await mgr.areserved_paths_in_tree(clone, tip) == []
+
+    @pytest.mark.asyncio
     async def test_reports_task_changes_to_reserved_paths(self, clone, mgr):
         repo = pathlib.Path(clone)
         tracked = repo / ".codex" / "settings.json"

@@ -209,6 +209,153 @@ async def _check_operational(ctx: DoctorContext) -> CheckResult:
     )
 
 
+#: What development mode depends on under App credentials: the App's token, the
+#: repository it names, and a protection the publisher's unattested push gets
+#: through (App-mode spec §8.2).  The manifest, variables and audit serve the
+#: train, and stay unset on purpose until its cutover.
+_DEVELOPMENT_APP_ITEMS = frozenset({"credential", "repository", "protection"})
+_APP_MODE_SEVERITY = {"fail": Severity.ERROR, "warn": Severity.WARN}
+
+
+async def _check_app_mode(ctx: DoctorContext) -> CheckResult:
+    """Run ``aq integration app-verify`` for every App-mode project not disabled.
+
+    App-mode integration train spec §9.6: each ``fail`` item is an ERROR and each
+    ``warn`` item a WARN.  A project counts when the install configures
+    ``integration.github_app`` and its repository is on github.com; a local
+    remote never uses the App.  A development project is judged on the items
+    its publisher needs (credential, repository, protection); the train's
+    anchors are listed but not judged until the cutover.  A project the command
+    refuses (no binding, no designated repository) is an ERROR: App mode cannot
+    run it.  Read-only: the command only reads GitHub through the App.
+    """
+    from src.integration.train_onboarding import github_full_name
+
+    check_id = "integration.app_mode"
+    if ctx.db is None or ctx.handler is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="App-mode readiness unavailable without database and command handler",
+        )
+    integration = getattr(ctx.config, "integration", None)
+    if getattr(integration, "github_app", None) is None:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="App credential mode is not configured (integration.github_app)",
+        )
+    try:
+        projects = sorted(await ctx.db.list_projects(), key=lambda project: project.id)
+    except Exception as exc:  # noqa: BLE001 - any read failure is the named finding
+        return CheckResult(
+            id=check_id,
+            severity=Severity.ERROR,
+            detail="could not enumerate projects; check db.migrations",
+            data={"errors": [{"error": f"{type(exc).__name__}: {exc}"}]},
+        )
+
+    reports: list[dict] = []
+    findings: list[dict] = []
+    unverified: list[dict] = []
+    for project in projects:
+        mode = getattr(project, "hierarchical_integration_mode", None) or "disabled"
+        if mode == "disabled":
+            continue
+        repository_id = getattr(project, "integration_repository_id", None)
+        repository = await ctx.db.get_repo(repository_id) if repository_id else None
+        url = getattr(repository, "url", None) or getattr(project, "repo_url", None)
+        if github_full_name(url) is None:
+            continue
+        try:
+            result = await ctx.handler.execute("integration_app_verify", {"project_id": project.id})
+        except Exception as exc:  # noqa: BLE001 - a crashed read is a finding, not a crash
+            result = {"success": False, "outcome": "error", "error": f"{type(exc).__name__}: {exc}"}
+        if not isinstance(result, dict) or not result.get("success"):
+            refusal = result if isinstance(result, dict) else {}
+            code = str(refusal.get("outcome") or "invalid_result")
+            entry = {
+                "project_id": project.id,
+                "mode": mode,
+                "code": code,
+                "error": refusal.get("error"),
+            }
+            if code == "policy_missing" and mode == "development":
+                # The command needs a policy; a development project may have none yet.
+                unverified.append(entry)
+            else:
+                findings.append(
+                    {
+                        **entry,
+                        "item": "app_verify",
+                        "status": "fail",
+                        "codes": [code],
+                        "fix": refusal.get("error"),
+                    }
+                )
+            continue
+        judged = _DEVELOPMENT_APP_ITEMS if mode == "development" else None
+        items = []
+        for item in result.get("items") or []:
+            status = item.get("status")
+            counted = judged is None or item.get("id") in judged
+            items.append(
+                {
+                    "id": item.get("id"),
+                    "status": status,
+                    "codes": list(item.get("codes") or []),
+                    "judged": counted,
+                }
+            )
+            if counted and status in _APP_MODE_SEVERITY:
+                findings.append(
+                    {
+                        "project_id": project.id,
+                        "mode": mode,
+                        "item": item.get("id"),
+                        "status": status,
+                        "codes": list(item.get("codes") or []),
+                        "fix": item.get("fix"),
+                    }
+                )
+        reports.append(
+            {
+                "project_id": project.id,
+                "mode": mode,
+                "ready": bool(result.get("ready")),
+                "items": items,
+            }
+        )
+
+    data = {"projects": reports, "findings": findings, "unverified": unverified}
+    if findings:
+        severity = Severity.ERROR if any(f["status"] == "fail" for f in findings) else Severity.WARN
+        return CheckResult(
+            id=check_id,
+            severity=severity,
+            detail="; ".join(
+                f"{f['project_id']}: {f['item']} {f['status']} ({', '.join(f['codes'])})"
+                for f in findings
+            )
+            + "; run `aq integration app-verify PROJECT` for each fix",
+            data=data,
+        )
+    if not reports and not unverified:
+        return CheckResult(
+            id=check_id,
+            severity=Severity.INFO,
+            detail="no enabled GitHub project to verify for App credential mode",
+            data=data,
+        )
+    detail = f"{len(reports)} App-mode project(s) verified"
+    if unverified:
+        detail += "; not verified (development, no bound policy): " + ", ".join(
+            entry["project_id"] for entry in unverified
+        )
+    severity = Severity.OK if reports else Severity.INFO
+    return CheckResult(id=check_id, severity=severity, detail=detail, data=data)
+
+
 async def _check_orphaned_operations(ctx: DoctorContext) -> CheckResult:
     """Report hierarchy operations that no configured runner can advance.
 
@@ -1332,7 +1479,7 @@ async def _find_unrepaired_conflicts(ctx: DoctorContext) -> list[dict]:
             continue
         result = repair_chain(
             row["manifest"], history[row["project_id"]], statuses,
-            repository_id=row["repository_id"], target_ref=row["target_ref"],
+            repository_id=row["repository_id"], target_ref=row["target_ref"], row=row,
         )
         first = result["chain"][0]["task_id"]
         if result["open_repair"] or first in seen:
@@ -2056,6 +2203,14 @@ def integration_checks() -> list[DoctorCheck]:
             run=_check_stranded_delegates,
             fix=_fix_stranded_delegates,
             owner=OWNER,
+        ),
+        # Report-only: app-verify reads GitHub through the App and writes nothing.
+        # One run is a handful of API reads per enabled GitHub project.
+        DoctorCheck(
+            id="integration.app_mode",
+            run=_check_app_mode,
+            owner=OWNER,
+            timeout_s=120.0,
         ),
         DoctorCheck(
             id="integration.stale_repair_intents",

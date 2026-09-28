@@ -61,6 +61,8 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release",
         "integration_cleanup",
         "integration_status",
+        "integration_trust_manifest",
+        "integration_app_verify",
         "integration_flush",
         "integration_eject",
         "integration_enable",
@@ -73,6 +75,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_migrate_provenance",
         "integration_development_sweep",
         "integration_cancel_preserving",
+        "integration_settle_parked",
         "integration_retry_cleanup",
         "integration_release_delegates",
         "integration_release_owner",
@@ -98,6 +101,51 @@ class IntegrationScheduleDueArgs(CommandArgs):
 
 class IntegrationStatusArgs(CommandArgs):
     project_id: str = Field(min_length=1)
+
+
+class IntegrationTrustManifestArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    #: A policy document to build from instead of the bound one (``--policy FILE``).
+    policy: dict[str, Any] | None = None
+    #: Defaults to the project's designated integration repository.
+    repository_id: str | None = Field(default=None, min_length=1)
+
+
+class IntegrationTrustManifestValue(CommandValue):
+    project_id: str | None = None
+    repository_id: str | None = None
+    policy_source: Literal["argument", "bound"] | None = None
+    github_repository_id: int | None = None
+    full_name: str | None = None
+    attestation_app_id: int | None = None
+    path: str | None = None
+    manifest: dict[str, Any] | None = None
+    text: str | None = None
+    sha256: str | None = None
+    committed: dict[str, Any] | None = None
+
+
+class IntegrationAppVerifyArgs(IntegrationTrustManifestArgs):
+    #: Where the caller read ``policy`` from; only repeated in fix commands.
+    policy_path: str | None = Field(default=None, min_length=1)
+
+
+class IntegrationAppVerifyValue(CommandValue):
+    project_id: str | None = None
+    repository_id: str | None = None
+    policy_source: Literal["argument", "bound"] | None = None
+    github_repository_id: int | None = None
+    full_name: str | None = None
+    attestation_app_id: int | None = None
+    default_branch: str | None = None
+    #: No item is ``fail``.
+    ready: bool | None = None
+    blockers: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    #: One per concern: ``id``, ``status``, ``code``, ``expected``, ``observed``, ``fix``.
+    items: tuple[dict[str, Any], ...] = ()
+    #: The manifest text, the two variable values and the target ruleset.
+    expected: dict[str, Any] | None = None
 
 
 class IntegrationEjectArgs(CommandArgs):
@@ -386,6 +434,27 @@ class IntegrationDevelopmentSweepArgs(CommandArgs):
     recover_child: str | None = Field(default=None, min_length=1)
 
 
+class IntegrationSettleParkedArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    #: A ``parked`` row of ``aq integration status``.
+    operation_id: str = Field(min_length=1)
+    #: Only withdraw the park; its sources are merged again on the next sweep.
+    dismiss: bool = False
+    reason: str = Field(min_length=1)
+
+
+class IntegrationSettleParkedValue(CommandValue):
+    id: str | None = None
+    target_ref: str | None = None
+    state: str | None = None
+    members: list[str] = Field(default_factory=list)
+    #: Tasks recorded as not owed to ``target_ref`` (members and their repairs).
+    settled: list[str] = Field(default_factory=list)
+    repairs: list[dict[str, Any]] = Field(default_factory=list)
+    #: Repairs still being worked on; retire one with ``aq task close --obsolete``.
+    open_repairs: list[str] = Field(default_factory=list)
+
+
 class IntegrationOperationalValue(CommandValue):
     id: str | None = None
     head_sha: str | None = None
@@ -443,6 +512,12 @@ class IntegrationOperationalValue(CommandValue):
     leases: tuple[dict[str, Any], ...] = ()
     bound: tuple[dict[str, Any], ...] = ()
     unproven: tuple[str, ...] = ()
+
+
+class IntegrationStatusValue(IntegrationOperationalValue):
+    #: Non-blocking App-mode configuration warnings (spec §6.2); never part
+    #: of ``blockers``, their digest or ``ready``.
+    warnings: tuple[dict[str, Any], ...] = ()
 
 
 class IntegrationRedriveRootValue(CommandValue):
@@ -922,7 +997,71 @@ INTEGRATION_STATUS = _operational_contract(
     ("status", "not_found"),
     successes=frozenset({"status"}),
     side_effect=SideEffectClass.READ,
+    result_model=IntegrationStatusValue,
 )
+#: Every refusal names its cause (spec §3 I6); ``manifest`` is the only success.
+TRUST_MANIFEST_OUTCOMES = (
+    "manifest",
+    "not_found",
+    "policy_missing",
+    "policy_invalid",
+    "repository_not_designated",
+    "repository_mismatch",
+    "repository_default_branch_missing",
+    "provider_not_wired",
+    "repository_binding_failed",
+    "provider_binding_failed",
+    "not_app_mode",
+    "ci_policy_invalid",
+    "ci_producer_not_numeric",
+    "ci_producer_mismatch",
+    "trust_manifest_invalid",
+)
+INTEGRATION_TRUST_MANIFEST = _operational_contract(
+    "integration_trust_manifest",
+    IntegrationTrustManifestArgs,
+    TRUST_MANIFEST_OUTCOMES,
+    successes=frozenset({"manifest"}),
+    side_effect=SideEffectClass.READ,
+    result_model=IntegrationTrustManifestValue,
+)
+INTEGRATION_TRUST_MANIFEST = INTEGRATION_TRUST_MANIFEST.model_copy(update={
+    "presentation": INTEGRATION_TRUST_MANIFEST.presentation.model_copy(update={
+        "summary": (
+            "Render the App-mode trust manifest from the policy, the authenticated "
+            "binding and the daemon's App, and compare the default-branch copy."
+        ),
+    }),
+})
+#: A finding is an item, never a refusal; the refusals are the inputs' (spec I6).
+APP_VERIFY_OUTCOMES = (
+    "verified",
+    "not_found",
+    "policy_missing",
+    "policy_invalid",
+    "repository_not_designated",
+    "repository_mismatch",
+    "repository_default_branch_missing",
+    "provider_not_wired",
+    "repository_binding_failed",
+    "provider_binding_failed",
+)
+INTEGRATION_APP_VERIFY = _operational_contract(
+    "integration_app_verify",
+    IntegrationAppVerifyArgs,
+    APP_VERIFY_OUTCOMES,
+    successes=frozenset({"verified"}),
+    side_effect=SideEffectClass.READ,
+    result_model=IntegrationAppVerifyValue,
+)
+INTEGRATION_APP_VERIFY = INTEGRATION_APP_VERIFY.model_copy(update={
+    "presentation": INTEGRATION_APP_VERIFY.presentation.model_copy(update={
+        "summary": (
+            "Check the App credential, repository, producer, trust manifest, Actions "
+            "variables, protection and audit workflow App mode depends on; one item each."
+        ),
+    }),
+})
 INTEGRATION_FLUSH = _operational_contract(
     "integration_flush",
     IntegrationStatusArgs,
@@ -2382,7 +2521,23 @@ async def _seal_adapter(args: IntegrationSealArgs, ctx: CommandContext | None):
 
 async def _status_adapter(args: IntegrationStatusArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
-        "integration_status", args, ctx, IntegrationOperationalValue, {"status", "not_found"}
+        "integration_status", args, ctx, IntegrationStatusValue, {"status", "not_found"}
+    )
+
+
+async def _trust_manifest_adapter(
+    args: IntegrationTrustManifestArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_trust_manifest", args, ctx, IntegrationTrustManifestValue,
+        set(TRUST_MANIFEST_OUTCOMES),
+    )
+
+
+async def _app_verify_adapter(args: IntegrationAppVerifyArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_app_verify", args, ctx, IntegrationAppVerifyValue,
+        set(APP_VERIFY_OUTCOMES),
     )
 
 
@@ -2658,6 +2813,25 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
                                              {"inventory", "migrated", "blocked"})
 
         registry.register(CommandRegistration(name, contract, migrate))
+    name = "integration_settle_parked"
+    if registry.get(name) is None:
+        contract = _operational_contract(name, IntegrationSettleParkedArgs,
+            ("settled", "dismissed", "already_terminal", "blocked"),
+            successes=frozenset({"settled", "dismissed", "already_terminal"}),
+            side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationSettleParkedValue)
+        contract = contract.model_copy(update={
+            "presentation": contract.presentation.model_copy(update={
+                "summary": "Settle a parked development delivery as not owed, or dismiss it.",
+            }),
+        })
+
+        async def settle_parked(args, ctx):
+            return await _hierarchy_adapter(
+                "integration_settle_parked", args, ctx, IntegrationSettleParkedValue,
+                {"settled", "dismissed", "already_terminal", "blocked"},
+            )
+
+        registry.register(CommandRegistration(name, contract, settle_parked))
     for name, args_model in _DEVELOPMENT_CONTRACT_ARGS:
         if registry.get(name) is None:
             contract = _operational_contract(name, args_model, _DEVELOPMENT_OUTCOMES,
@@ -2674,6 +2848,8 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         )
     for contract, adapter in (
         (INTEGRATION_STATUS, _status_adapter),
+        (INTEGRATION_TRUST_MANIFEST, _trust_manifest_adapter),
+        (INTEGRATION_APP_VERIFY, _app_verify_adapter),
         (INTEGRATION_FLUSH, _flush_adapter),
         (INTEGRATION_EJECT, _eject_adapter),
         (INTEGRATION_ENABLE, _enable_adapter),

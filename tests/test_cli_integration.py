@@ -38,6 +38,11 @@ def _client(result):
             {"project_id": "p", "retry": False, "recover_child": "child"},
         ),
         (
+            ["settle-parked", "p", "op-1", "--dismiss", "--reason", "stale park"],
+            "integration_settle_parked",
+            {"project_id": "p", "operation_id": "op-1", "dismiss": True, "reason": "stale park"},
+        ),
+        (
             [
                 "resolve-candidate-member",
                 "--resolved-head-sha",
@@ -308,6 +313,7 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
         "ready": False,
         "blockers": [{"code": "human_hold", "detail": "needs operator", "ref": "op"}],
         "blocker_digest": "sha256:" + "b" * 64,
+        "warnings": [{"code": "audit_workflow_missing", "detail": "warns", "ref": "repo"}],
         "schedule": {"next_due_at": 123.0},
         "members": [{"task_id": "t"}],
     }
@@ -331,6 +337,8 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
         "ready": False,
         "blockers": response["blockers"],
         "blocker_digest": response["blocker_digest"],
+        # Non-blocking App-mode warnings stay visible in the brief projection.
+        "warnings": response["warnings"],
         "state": None,
         "stage": None,
         "count": None,

@@ -359,6 +359,7 @@ areas:
       - tests/test_integration_ci.py
       - tests/test_integration_cleanup.py
       - tests/test_attestation_check_run_id.py
+      - tests/test_hosted_attestation.py
   - id: integration-ownership
     description: "Integration branch ownership: fenced repository-qualified owners, owner recovery and its sweeps, restoring missing canonical train owners, stale and finished owners, ownership transfer, workspace handoff, identity rebinding, ejection and delegate release."
     match:
@@ -395,6 +396,9 @@ areas:
       - tests/test_integration_operator_controls.py
       - tests/test_integration_troubleshooting_doc.py
       - tests/test_cli_integration.py
+      - tests/test_integration_trust_manifest.py
+      - tests/test_integration_app_mode.py
+      - tests/test_integration_protection.py
       - tests/test_doctor_integration_checks.py
   - id: epic-trains
     description: "Epic trains: legible epic branch names, epic dependencies ordering batches, epic pull requests and review evidence, rebase warnings, batch CI repair adoption and rebuild, the reviewed train policies, and onboarding a project onto the train."

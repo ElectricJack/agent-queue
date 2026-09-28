@@ -497,10 +497,13 @@
       "modules": [
         "tests/test_cli_integration.py",
         "tests/test_doctor_integration_checks.py",
+        "tests/test_integration_app_mode.py",
         "tests/test_integration_controls.py",
         "tests/test_integration_operational_controls.py",
         "tests/test_integration_operator_controls.py",
-        "tests/test_integration_troubleshooting_doc.py"
+        "tests/test_integration_protection.py",
+        "tests/test_integration_troubleshooting_doc.py",
+        "tests/test_integration_trust_manifest.py"
       ]
     },
     "integration-ownership": {
@@ -541,6 +544,7 @@
       "description": "Hierarchical integration trains: durable integration state, the reconciliation service and schedules, settling and sealing, candidate construction, the outbox, integration mode policy, attestations, CI and cleanup.",
       "modules": [
         "tests/test_attestation_check_run_id.py",
+        "tests/test_hosted_attestation.py",
         "tests/test_integration_attestation.py",
         "tests/test_integration_candidates.py",
         "tests/test_integration_ci.py",
@@ -1283,7 +1287,7 @@
       ]
     }
   },
-  "digest": "sha256:d5f21c28fafd7168b8be969bb2cb52b711489130b80afe7a65f2e3b2b715be59",
+  "digest": "sha256:9185e30f2702586f6f4cd5d98c15d0787f12e732095a069f67e3adade5dc94f4",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2863,7 +2867,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Full CI runs on pull requests and integration boundaries, never on a push to main."
+      "summary": "Full CI runs on pull requests and integration boundaries, and on `main` only unattested."
     },
     "tests/test_claim_commands.py": {
       "areas": [
@@ -4602,6 +4606,7 @@
         "src.config",
         "src.database",
         "src.database.queries.hierarchy_queries",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.doctor.git_checks",
         "src.doctor.integration_checks",
@@ -4615,9 +4620,11 @@
         "src.integration.delivery_branches",
         "src.integration.delivery_truth",
         "src.integration.development",
+        "src.integration.development_settlement",
         "src.integration.development_stalls",
         "src.integration.development_validation",
         "src.integration.owner_recovery",
+        "src.integration.protection",
         "src.integration.provenance",
         "src.integration.provenance_migration",
         "src.integration.publishable_artifact",
@@ -6342,6 +6349,21 @@
       "markers": [],
       "summary": "Container settlement — spec §7."
     },
+    "tests/test_hosted_attestation.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.integration",
+        "src.integration.ci",
+        "src.integration.hosted_attestation"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Shared vectors for the hosted `main` push attestation verifier (App-mode spec §7.2)."
+    },
     "tests/test_import_cycles.py": {
       "areas": [
         "claims",
@@ -6707,6 +6729,34 @@
       "markers": [],
       "summary": "``aq install`` — the WSL2 platform adapter (``src/install/wsl.py``)."
     },
+    "tests/test_integration_app_mode.py": {
+      "areas": [
+        "integration-controls"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.git.github_contracts",
+        "src.integration",
+        "src.integration.app_mode",
+        "src.integration.models",
+        "src.integration.preflight",
+        "src.integration.trust_manifest",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "App-mode readiness items: app-verify, app-setup and the preflight (spec §6.2-6.4)."
+    },
     "tests/test_integration_attestation.py": {
       "areas": [
         "integration-trains"
@@ -6718,6 +6768,7 @@
         "src.git.github_contracts",
         "src.integration.attestation",
         "src.integration.ci",
+        "src.integration.controls",
         "src.integration.main_promotion",
         "src.integration.repair",
         "src.models"
@@ -7072,10 +7123,12 @@
       "default_arm": true,
       "imports": [
         "src.config",
+        "src.database.queries.task_queries",
         "src.database.tables",
         "src.git.github_contracts",
         "src.git.manager",
         "src.integration.delivery_path",
+        "src.integration.delivery_truth",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.context",
@@ -7100,13 +7153,17 @@
         "src.git.github_app",
         "src.git.github_auth",
         "src.git.github_contracts",
+        "src.integration",
+        "src.integration.app_mode",
         "src.integration.cleanup",
         "src.integration.controls",
         "src.integration.hierarchy",
         "src.integration.models",
+        "src.integration.preflight",
         "src.integration.recovery_controls",
         "src.integration.scheduler",
         "src.integration.status",
+        "src.integration.trust_manifest",
         "src.models",
         "src.playbooks.artifact_ref",
         "src.playbooks.definition",
@@ -7266,6 +7323,25 @@
         "parametrize"
       ],
       "summary": "Prepared child-to-parent promotion and crash recovery."
+    },
+    "tests/test_integration_protection.py": {
+      "areas": [
+        "integration-controls"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.integration_commands",
+        "src.git.github_contracts",
+        "src.integration",
+        "src.integration.attestation",
+        "src.integration.models",
+        "src.integration.protection",
+        "src.integration.trust_manifest"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The default branch's protection, classified for the App (App-mode spec §8.2-8.3)."
     },
     "tests/test_integration_repair.py": {
       "areas": [
@@ -7501,6 +7577,33 @@
       "imports": [],
       "markers": [],
       "summary": "The integration troubleshooting guide teaches stranded branch-owner recovery."
+    },
+    "tests/test_integration_trust_manifest.py": {
+      "areas": [
+        "integration-controls"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.git.github_contracts",
+        "src.integration",
+        "src.integration.ci",
+        "src.integration.train_onboarding",
+        "src.integration.trust_manifest",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The App-mode trust manifest: shared builder, daemon command and CLI (spec §6.1)."
     },
     "tests/test_integration_workspace_handoff.py": {
       "areas": [
@@ -9065,7 +9168,9 @@
       "default_arm": true,
       "imports": [
         "src.database.tables",
+        "src.git.github_contracts",
         "src.git.manager",
+        "src.integration.attestation",
         "src.integration.ci",
         "src.integration.parent_ci"
       ],
@@ -13232,6 +13337,7 @@
         "src.integration.ci",
         "src.integration.models",
         "src.integration.train_onboarding",
+        "src.integration.trust_manifest",
         "src.jobs.adapters",
         "src.playbooks.required"
       ],

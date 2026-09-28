@@ -89,6 +89,8 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["dashboard/src/pages/playbook-graph-v2/__tests__/graph.fixture.json"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine"] }
   - { paths: ["packages/**", "openapi.json"], areas: ["api-contract", "file-access"] }
   - { paths: [".github/workflows/**"], areas: ["ci-sentinel", "epic-trains"] }
+  # The committed trust manifest is pinned to the reviewed policy's builder output.
+  - { paths: [".github/agent-queue-integration.json", "docs/config/agent-queue-train-policy.json"], areas: ["integration-controls"] }
   - { paths: [".test_durations", "scripts/merge_test_durations.py"], areas: ["ci-sentinel"] }
   - { paths: ["setup.sh"], areas: ["install"] }
   - { paths: ["scripts/e2e*", "scripts/e2e/**"], areas: ["e2e-kit"] }
@@ -330,7 +332,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/integration/development*.py", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
   - { paths: ["src/integration/delivery_path.py", "src/integration/manual_delivery.py"], areas: ["development-delivery", "integration-trains"] }
   - { paths: ["src/integration/provenance*.py"], areas: ["development-delivery", "git-manager", "session-runtime"] }
-  - { paths: ["src/integration/train_onboarding.py"], areas: ["epic-trains", "integration-controls"] }
+  - { paths: ["src/integration/train_onboarding.py", "src/integration/trust_manifest.py", "src/integration/app_mode.py"], areas: ["epic-trains", "integration-controls"] }
 
   - { paths: ["src/integrations/**"], areas: ["plugins"] }
   - { paths: ["src/intelligence_classes/**"], areas: ["intelligence-classes"] }

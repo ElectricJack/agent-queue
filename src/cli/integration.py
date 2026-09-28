@@ -657,6 +657,29 @@ def integration_development_sweep(ctx, project_id, retry, recover_child):
     })
 
 
+@integration.command("settle-parked")
+@click.argument("project_id")
+@click.argument("operation_id")
+@click.option("--dismiss", is_flag=True,
+              help="Only withdraw the park: its sources are merged again on the next sweep "
+                   "(and park again if they still conflict). Default: settle them as not owed.")
+@click.option("--reason", required=True)
+@click.pass_context
+@_handle_errors
+def integration_settle_parked(ctx, project_id, operation_id, dismiss, reason):
+    """Settle a parked development delivery as not owed, or dismiss it.
+
+    OPERATION_ID is a row from `aq integration status PROJECT_ID` `parked`.
+    Settling records each parked source (and every repair filed for it) as not
+    owed to the row's target: the publisher never merges it there and its
+    dependents are released.
+    """
+    _execute(ctx, "integration_settle_parked", {
+        "project_id": project_id, "operation_id": operation_id, "dismiss": dismiss,
+        "reason": reason,
+    })
+
+
 @integration.command("migrate-provenance")
 @click.argument("project_id")
 @click.option("--apply", is_flag=True, help="Publish verified evidence; default is read-only inventory.")
@@ -802,6 +825,23 @@ def _render_onboarding(data: dict[str, Any]) -> None:
         console.print(f"validation command: {command}", markup=False, soft_wrap=True)
     if data.get("trust_manifest"):
         console.print("App-mode trust manifest: ready (--write-trust-manifest writes it)")
+    audit = data.get("audit_workflow") or {}
+    if audit and data.get("credential_mode") == "app":
+        calls = ", ".join(audit.get("calls") or [])
+        if not calls:
+            does = "fails an Unattested push job (no gating CI it can call)"
+        elif audit.get("fails"):
+            does = f"re-runs {calls}; fails an Unattested push job for the rest"
+        else:
+            does = f"re-runs {calls}"
+        console.print(
+            f"main push audit: {does} (--write-audit-workflow writes it)", highlight=False
+        )
+        for item in audit.get("uncalled") or []:
+            console.print(
+                f"[yellow]  note: not called: {item['path']}: {item['reason']}[/]",
+                highlight=False,
+            )
     for problem in data.get("problems") or []:
         console.print(f"[red]problem:[/] {problem}", highlight=False)
     for path in data.get("written") or []:
@@ -850,6 +890,10 @@ def _render_onboarding(data: dict[str, Any]) -> None:
               help="Write the App-mode .github/agent-queue-integration.json here.")
 @click.option("--write-workflow", type=click.Path(dir_okay=False),
               help="Write a starting CI workflow here (projects without CI).")
+@click.option("--write-audit-workflow", type=click.Path(dir_okay=False),
+              help="Write the App-mode main push audit (main-attestation.yml) here.")
+@click.option("--write-ruleset", type=click.Path(dir_okay=False),
+              help="Write the App-mode default-branch ruleset JSON here.")
 @click.option("--check-prs/--no-check-prs", default=True, show_default=True,
               help="Ask gh which legacy pull requests are still open.")
 @click.pass_context
@@ -859,7 +903,8 @@ def integration_onboard_train(
     intelligence_class, harness,
     checks, check_version, github_repository_id, validation_commands, repository_id,
     test_command,
-    interval_seconds, write_policy, write_trust_manifest, write_workflow, check_prs,
+    interval_seconds, write_policy, write_trust_manifest, write_workflow,
+    write_audit_workflow, write_ruleset, check_prs,
 ):
     """Plan PROJECT_ID's move onto the integration train; print every step.
 
@@ -867,8 +912,10 @@ def integration_onboard_train(
     required check-run names, and prints the drain, bind, policy, observe and
     ready-check commands.  Nothing is changed: the mode flips stay with the
     supervisor or local operator.  With --repo and --repo-url it plans from Git
-    alone when the daemon's records are out of scope or unreachable.  Runbook:
-    docs/config/train-onboarding.md.
+    alone when the daemon's records are out of scope or unreachable.  In App
+    credential mode it adds the trust manifest and main push audit, the Actions
+    variables and the ruleset, in that order around the drain.  Runbooks:
+    docs/config/train-onboarding.md, docs/config/app-mode-train.md.
     """
     import json
     from pathlib import Path
@@ -1003,6 +1050,8 @@ def integration_onboard_train(
         policy_path=policy_path,
         manifest_path=write_trust_manifest or onboarding.TRUST_MANIFEST_PATH,
         workflow_path=write_workflow or ".github/workflows/ci.yml",
+        audit_workflow_path=write_audit_workflow or onboarding.AUDIT_WORKFLOW_PATH,
+        ruleset_path=write_ruleset or f"ruleset.{project_id}.json",
     )
 
     written: list[str] = []
@@ -1014,9 +1063,33 @@ def integration_onboard_train(
     if write_policy and plan.policy is not None:
         _write(write_policy, json.dumps(plan.policy, indent=2) + "\n")
     if write_trust_manifest and plan.trust_manifest is not None:
-        _write(write_trust_manifest, json.dumps(plan.trust_manifest, indent=2) + "\n")
+        from src.integration.trust_manifest import canonical_text
+
+        # The same bytes ``aq integration trust-manifest --write`` produces.
+        _write(write_trust_manifest, canonical_text(plan.trust_manifest))
     if write_workflow:
         _write(write_workflow, onboarding.ci_workflow_template(files, test_command=test_command))
+    if write_audit_workflow:
+        if plan.audit_workflow is None:
+            notes.append(
+                "--write-audit-workflow: only a GitHub project has the main push audit; "
+                "nothing written"
+            )
+        else:
+            _write(
+                write_audit_workflow,
+                onboarding.audit_workflow_template(
+                    onboarding.audit_fallback(classification), default_branch=branch
+                ),
+            )
+    if write_ruleset:
+        if plan.ruleset is None:
+            notes.append(
+                "--write-ruleset: the target ruleset needs App credential mode on a GitHub "
+                "project and the App id; nothing written"
+            )
+        else:
+            _write(write_ruleset, json.dumps(plan.ruleset, indent=2) + "\n")
     by_path = {report.path: report for report in classification.workflows}
     data = plan.as_dict()
     data["problems"] = [*notes, *data["problems"]]
@@ -1029,3 +1102,487 @@ def integration_onboard_train(
         written=written,
     )
     emit(ctx, data, entity="integration", render=_render_onboarding)
+
+
+# ---------------------------------------------------------------------------
+# aq integration trust-manifest
+# ---------------------------------------------------------------------------
+
+
+def _trust_manifest_write_command(
+    project_id: str, policy_path: str | None, repository_id: str | None
+) -> str:
+    import shlex
+
+    from src.integration.trust_manifest import TRUST_MANIFEST_PATH
+
+    parts = ["aq", "integration", "trust-manifest", project_id]
+    if policy_path:
+        parts += ["--policy", policy_path]
+    if repository_id:
+        parts += ["--repository-id", repository_id]
+    parts += ["--write", TRUST_MANIFEST_PATH]
+    return shlex.join(parts)
+
+
+def _check_verdict(committed: dict[str, Any]) -> tuple[bool, list[str]]:
+    """``(passes, warning codes)`` for ``--check``: identity decides, the check set warns."""
+    passes = bool(committed.get("present") and committed.get("identity_equal"))
+    return passes, list(committed.get("warnings") or []) if passes else []
+
+
+def _render_diff(committed: dict[str, Any], *, indent: str = "  ") -> None:
+    import json
+
+    from .app import console
+
+    for item in committed.get("diff") or []:
+        have = (
+            json.dumps(item.get("committed"))
+            if item.get("committed_present", True)
+            else "<absent>"
+        )
+        console.print(
+            f"{indent}{item['field']} ({item['kind']}): "
+            f"expected {json.dumps(item.get('expected'))}, "
+            f"committed {have}",
+            markup=False, highlight=False, soft_wrap=True,
+        )
+
+
+def _render_trust_manifest(data: dict[str, Any], *, mode: str, fix: str) -> None:
+    from .app import console
+
+    committed = data.get("committed") or {}
+    where = (
+        f"{committed.get('path')} on {committed.get('ref')}"
+        + (f" ({committed['sha']})" if committed.get("sha") else "")
+    )
+    if mode == "print":
+        click.echo(data["text"], nl=False)
+        return
+    if mode == "write":
+        console.print(
+            f"[green]wrote[/] {data['written']} (sha256 {data['sha256']}) for "
+            f"{data['full_name']} ({data['github_repository_id']}), App "
+            f"{data['attestation_app_id']}, {data['policy_source']} policy",
+            highlight=False,
+        )
+    passes, warnings = _check_verdict(committed)
+    if not committed.get("present"):
+        reason = committed.get("error") or "absent"
+        console.print(f"[red]committed copy unavailable[/]: {where}: {reason}", highlight=False)
+    elif passes and not warnings:
+        console.print(f"[green]committed copy matches[/]: {where}", highlight=False)
+    elif passes:
+        console.print(f"committed copy matches on identity: {where}", highlight=False)
+        for code in warnings:
+            console.print(f"[yellow]warning:[/] {code}", highlight=False)
+        _render_diff(committed)
+    else:
+        detail = f": {committed['error']}" if committed.get("error") else ""
+        console.print(
+            f"[red]committed copy differs[/] ({committed.get('code')}): {where}{detail}",
+            highlight=False,
+        )
+        _render_diff(committed)
+    if mode == "check" and not (passes and not warnings):
+        console.print("regenerate with:", highlight=False)
+        console.print(fix, markup=False, highlight=False, soft_wrap=True)
+
+
+@integration.command("trust-manifest")
+@click.argument("project_id")
+@click.option("--policy", "policy_path", type=click.Path(exists=True, dir_okay=False),
+              help="Build from this policy JSON instead of the project's bound policy.")
+@click.option("--repository-id",
+              help="Integration repository id (default: the project's designated one).")
+@click.option("--write", "write_path", type=click.Path(dir_okay=False),
+              help="Write the canonical manifest to this path.")
+@click.option("--check", "check", is_flag=True,
+              help="Exit 1 unless the default-branch copy matches on identity.")
+@click.option("--print", "print_text", is_flag=True,
+              help="Print the canonical manifest text.")
+@click.pass_context
+@_handle_errors
+def integration_trust_manifest(
+    ctx: click.Context,
+    project_id: str,
+    policy_path: str | None,
+    repository_id: str | None,
+    write_path: str | None,
+    check: bool,
+    print_text: bool,
+) -> None:
+    """Render PROJECT_ID's App-mode trust manifest (.github/agent-queue-integration.json).
+
+    The daemon builds it from the policy (--policy FILE, else the bound one),
+    the authenticated GitHub binding and its own App, and compares the copy
+    committed on the default branch.  --write writes the canonical text,
+    --print prints it, and --check exits 1 when the committed copy is missing
+    or differs on an identity field; a check-set or formatting difference is a
+    warning, because the frozen policy snapshot owns the check set.  Read-only;
+    refused under existing-login credentials (not_app_mode).
+    """
+    import json
+    from pathlib import Path
+
+    modes = [name for name, chosen in (
+        ("write", write_path is not None), ("check", check), ("print", print_text),
+    ) if chosen]
+    if len(modes) != 1:
+        raise click.UsageError("pass exactly one of --write PATH, --check and --print")
+    mode = modes[0]
+    args: dict[str, Any] = {"project_id": project_id}
+    if policy_path:
+        try:
+            args["policy"] = json.loads(Path(policy_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise click.UsageError(f"cannot read the policy {policy_path}: {exc}") from exc
+    if repository_id:
+        args["repository_id"] = repository_id
+
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _request():
+        async with _get_client(api_url) as client:
+            return await client.execute("integration_trust_manifest", args)
+
+    data = dict(_run(_request()))
+    if mode == "write":
+        Path(write_path).write_text(data["text"], encoding="utf-8")
+        data["written"] = write_path
+    fix = _trust_manifest_write_command(project_id, policy_path, repository_id)
+    data["write_command"] = fix
+    emit(ctx, data, render=lambda value: _render_trust_manifest(value, mode=mode, fix=fix))
+    if mode == "check" and not _check_verdict(data.get("committed") or {})[0]:
+        raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# aq integration app-verify / app-setup
+# ---------------------------------------------------------------------------
+
+_STATUS_STYLE = {"ok": "green", "warn": "yellow", "fail": "red"}
+
+
+def _app_mode_args(
+    project_id: str, policy_path: str | None, repository_id: str | None
+) -> dict[str, Any]:
+    import json
+    from pathlib import Path
+
+    args: dict[str, Any] = {"project_id": project_id}
+    if policy_path:
+        try:
+            args["policy"] = json.loads(Path(policy_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise click.UsageError(f"cannot read the policy {policy_path}: {exc}") from exc
+        args["policy_path"] = policy_path
+    if repository_id:
+        args["repository_id"] = repository_id
+    return args
+
+
+def _app_verify(ctx: click.Context, args: dict[str, Any]) -> dict[str, Any]:
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _request():
+        async with _get_client(api_url) as client:
+            return await client.execute("integration_app_verify", args)
+
+    return dict(_run(_request()))
+
+
+def _app_item(data: dict[str, Any], item_id: str) -> dict[str, Any]:
+    return next((item for item in data.get("items") or [] if item.get("id") == item_id), {})
+
+
+def _compact(value: Any) -> str:
+    import json
+
+    return json.dumps(value, sort_keys=True, separators=(", ", ": "))
+
+
+def _render_app_item(item: dict[str, Any], *, detail: bool = True) -> None:
+    from .app import console
+
+    status = item.get("status") or "?"
+    style = _STATUS_STYLE.get(status, "white")
+    codes = ", ".join(item.get("codes") or [])
+    observed = item.get("observed")
+    if item.get("id") == "protection" and isinstance(observed, dict):
+        # The classification is what runbook §9.3 checks, even when ok.
+        classification = observed.get("classification")
+        if classification:
+            codes = f"{codes} ({classification})" if codes else str(classification)
+    console.print(
+        f"  [{style}]{status:<4}[/] {item.get('id', '?'):<15} {codes}".rstrip(),
+        highlight=False,
+    )
+    if not detail or status == "ok":
+        return
+    if item.get("id") == "manifest" and isinstance(observed, dict):
+        if observed.get("error"):
+            console.print(f"       {observed['error']}", markup=False, highlight=False)
+        _render_diff(observed, indent="       ")
+    else:
+        if item.get("expected") is not None:
+            console.print(
+                f"       expected: {_compact(item['expected'])}",
+                markup=False, highlight=False, soft_wrap=True,
+            )
+        if observed is not None:
+            console.print(
+                f"       observed: {_compact(observed)}",
+                markup=False, highlight=False, soft_wrap=True,
+            )
+    if item.get("fix"):
+        console.print(f"       fix: {item['fix']}", markup=False, highlight=False, soft_wrap=True)
+
+
+def _render_app_verify(data: dict[str, Any]) -> None:
+    from .app import console
+
+    console.print(
+        f"App mode for {data.get('project_id')}: {data.get('repository_id')} "
+        f"({data.get('full_name')} {data.get('github_repository_id')}), "
+        f"App {data.get('attestation_app_id')}, {data.get('policy_source')} policy",
+        highlight=False,
+    )
+    for item in data.get("items") or []:
+        _render_app_item(item)
+    blockers, warnings = data.get("blockers") or [], data.get("warnings") or []
+    verdict = "[green]ready[/]" if data.get("ready") else "[red]not ready[/]"
+    console.print(
+        f"{verdict}: {len(blockers)} blocker(s), {len(warnings)} warning(s)", highlight=False
+    )
+
+
+@integration.command("app-verify")
+@click.argument("project_id")
+@click.option("--policy", "policy_path", type=click.Path(exists=True, dir_okay=False),
+              help="Verify against this policy JSON instead of the project's bound policy.")
+@click.option("--repository-id",
+              help="Integration repository id (default: the project's designated one).")
+@click.pass_context
+@_handle_errors
+def integration_app_verify(
+    ctx: click.Context, project_id: str, policy_path: str | None, repository_id: str | None
+) -> None:
+    """Check everything PROJECT_ID's App credential mode depends on.
+
+    One item per concern -- credential, repository, producer, manifest,
+    variables, protection, audit_workflow -- each ok, warn or fail with a
+    code, what was expected, what GitHub showed and the exact fix.  The same
+    items drive the functional preflight: every fail is a blocker of the same
+    name and every warn a status warning.  Read-only; exits 1 when an item
+    fails.  --json carries expected.ruleset, the target ruleset JSON.
+    """
+    data = _app_verify(ctx, _app_mode_args(project_id, policy_path, repository_id))
+    emit(ctx, data, render=_render_app_verify)
+    if not data.get("ready"):
+        raise SystemExit(1)
+
+
+def _gh_variable_set(name: str, full_name: str, value: str) -> list[str]:
+    return ["gh", "variable", "set", name, "--repo", full_name, "--body", value]
+
+
+def _differing_variables(item: dict[str, Any]) -> list[str] | None:
+    """Names whose value differs from the expected one; ``None`` when unread."""
+    expected, observed = item.get("expected"), item.get("observed")
+    values = observed.get("values") if isinstance(observed, dict) else None
+    if not isinstance(expected, dict) or not isinstance(values, dict):
+        return None
+    return [
+        name for name, value in expected.items()
+        if value is not None and values.get(name) != value
+    ]
+
+
+def _run_gh(argv: list[str]) -> dict[str, Any]:
+    import subprocess
+
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"returncode": None, "error": f"{type(exc).__name__}: {exc}"}
+    outcome: dict[str, Any] = {"returncode": result.returncode}
+    if result.returncode != 0:
+        outcome["error"] = result.stderr.strip() or f"exit {result.returncode}"
+    return outcome
+
+
+#: Protection codes the §8.1 target ruleset resolves; any other code keeps its own fix.
+_RULESET_FIXES = frozenset({
+    "main_protection_missing", "branch_protection_incompatible", "main_protection_app_bypass",
+})
+
+
+def _ruleset_commands(full_name: str, ruleset_id: Any) -> list[str]:
+    put = f"gh api --method PUT repos/{full_name}/rulesets/{ruleset_id or 'RULESET_ID'} --input FILE"
+    post = f"gh api --method POST repos/{full_name}/rulesets --input FILE"
+    return [put] if ruleset_id else [put, post]
+
+
+def _render_app_setup(data: dict[str, Any]) -> None:
+    import json
+
+    from .app import console
+
+    verify = data["verify"]
+    console.print(
+        f"App-mode setup for {verify.get('project_id')}: {verify.get('full_name')} "
+        f"({verify.get('github_repository_id')}), App {verify.get('attestation_app_id')}",
+        highlight=False,
+    )
+
+    variables = data["variables"]
+    console.print("\n[bold]variables[/]", highlight=False)
+    _render_app_item(variables["item"], detail=False)
+    if variables["differing"] is None:
+        console.print(
+            "  not checked; fix the credential first", markup=False, highlight=False
+        )
+    elif not variables["differing"]:
+        console.print("  both variables are already correct; nothing to set", highlight=False)
+    elif variables["applied"] is None:
+        console.print("  set the differing variables (or rerun with --apply):", highlight=False)
+        for command in variables["commands"]:
+            console.print(f"  {command}", markup=False, highlight=False, soft_wrap=True)
+    else:
+        for applied in variables["applied"]:
+            result = "set" if applied.get("returncode") == 0 else f"failed: {applied.get('error')}"
+            console.print(f"  {applied['name']}: {result}", markup=False, highlight=False)
+        console.print("  re-verified:", highlight=False)
+        _render_app_item(variables["reverified"] or {})
+
+    manifest = data["manifest"]
+    console.print("\n[bold]manifest[/]", highlight=False)
+    _render_app_item(manifest["item"], detail=False)
+    if manifest["item"].get("status") != "ok":
+        console.print(f"  {manifest['command']}", markup=False, highlight=False, soft_wrap=True)
+        console.print(
+            f"  then commit {manifest['path']} to {manifest['ref']} of {manifest['full_name']} "
+            "through the project's current delivery path (runbook §9.2 step 3)",
+            markup=False, highlight=False, soft_wrap=True,
+        )
+
+    protection = data["protection"]
+    console.print("\n[bold]protection[/]", highlight=False)
+    _render_app_item(protection["item"], detail=False)
+    codes = set(protection["item"].get("codes") or ())
+    if codes & _RULESET_FIXES and protection["ruleset"] is not None:
+        console.print(
+            "  the target ruleset (save it as FILE; applying it is the repository admin's step, "
+            "runbook §9.3 step 4):",
+            highlight=False,
+        )
+        click.echo(json.dumps(protection["ruleset"], indent=2))
+        for command in protection["commands"]:
+            console.print(f"  {command}", markup=False, highlight=False, soft_wrap=True)
+    elif protection["item"].get("status") != "ok" and protection["item"].get("fix"):
+        # Unreadable, or a development project the target ruleset would keep
+        # blocked: the item's own fix, never a ruleset write.
+        console.print(
+            f"  {protection['item']['fix']}", markup=False, highlight=False, soft_wrap=True
+        )
+
+    others = [
+        item for item in verify.get("items") or []
+        if item.get("id") not in {"variables", "manifest", "protection"}
+        and item.get("status") != "ok"
+    ]
+    if others:
+        console.print("\n[bold]other items[/]", highlight=False)
+        for item in others:
+            _render_app_item(item)
+
+
+@integration.command("app-setup")
+@click.argument("project_id")
+@click.option("--policy", "policy_path", type=click.Path(exists=True, dir_okay=False),
+              help="Set up against this policy JSON instead of the project's bound policy.")
+@click.option("--repository-id",
+              help="Integration repository id (default: the project's designated one).")
+@click.option("--apply", "apply", is_flag=True,
+              help="Run gh variable set for every variable that differs, then verify again.")
+@click.pass_context
+@_handle_errors
+def integration_app_setup(
+    ctx: click.Context,
+    project_id: str,
+    policy_path: str | None,
+    repository_id: str | None,
+    apply: bool,
+) -> None:
+    """Print, per App-mode concern, what is wrong and the exact fix.
+
+    Runs app-verify, then: for the two Actions variables prints the
+    `gh variable set` commands, and with --apply runs them with your own gh
+    login (a repository admin) for exactly the variables that differ, then
+    verifies again and prints the variables item; a variable that is already
+    correct is never touched.  For the trust manifest it prints the
+    trust-manifest --write command and where to commit the file; for
+    protection the target ruleset JSON and the gh api command.  It never
+    writes repository files and never applies a ruleset.
+    """
+    args = _app_mode_args(project_id, policy_path, repository_id)
+    verify = _app_verify(ctx, args)
+    full_name = verify.get("full_name")
+    expected = verify.get("expected") or {}
+
+    variables_item = _app_item(verify, "variables")
+    differing = _differing_variables(variables_item)
+    wanted = variables_item.get("expected") or {}
+    commands = [
+        _gh_variable_set(name, full_name, wanted[name]) for name in differing or []
+    ]
+    applied = reverified = None
+    if apply and commands:
+        applied = [
+            {"name": argv[3], "command": _shlex_join(argv), **_run_gh(argv)} for argv in commands
+        ]
+        reverified = _app_item(_app_verify(ctx, args), "variables")
+
+    manifest_item = _app_item(verify, "manifest")
+    protection_item = _app_item(verify, "protection")
+    observed_protection = protection_item.get("observed")
+    ruleset_id = (
+        observed_protection.get("ruleset_id") if isinstance(observed_protection, dict) else None
+    )
+    data = {
+        "verify": verify,
+        "variables": {
+            "item": variables_item,
+            "differing": differing,
+            "commands": [_shlex_join(argv) for argv in commands],
+            "applied": applied,
+            "reverified": reverified,
+        },
+        "manifest": {
+            "item": manifest_item,
+            "command": _trust_manifest_write_command(project_id, policy_path, repository_id),
+            "path": expected.get("manifest_path"),
+            "ref": verify.get("default_branch"),
+            "full_name": full_name,
+        },
+        "protection": {
+            "item": protection_item,
+            "ruleset": expected.get("ruleset"),
+            "commands": _ruleset_commands(full_name, ruleset_id),
+        },
+    }
+    emit(ctx, data, render=_render_app_setup)
+    if applied is not None and (
+        any(item.get("returncode") != 0 for item in applied)
+        or (reverified or {}).get("status") != "ok"
+    ):
+        raise SystemExit(1)
+
+
+def _shlex_join(argv: list[str]) -> str:
+    import shlex
+
+    return shlex.join(argv)

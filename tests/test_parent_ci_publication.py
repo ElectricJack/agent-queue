@@ -1,3 +1,5 @@
+import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -6,9 +8,16 @@ import pytest
 from src.integration.parent_ci import publish_parent_snapshot
 
 from sqlalchemy import select, update
-from tests.test_integration_ci import ci_db as ci_db, trust, payload_dict, SHA
-from src.database.tables import integration_outbox, task_integration_checkpoints
-from src.integration.ci import TrustedFixtureObserver, TrustedCIObservation, AttestationPayload
+from tests.test_integration_ci import ci_db as ci_db, trust, payload_dict, policy_snapshot, SHA, FakeGitHubClient
+from src.database.tables import (
+    integration_check_evidence, integration_outbox, integration_repair_operations,
+    task_integration_checkpoints,
+)
+from src.git.github_contracts import GitHubCredentialIdentity, GitHubRepositoryBinding
+from src.integration.ci import (
+    TrustedFixtureObserver, TrustedCIObservation, AttestationPayload, IntegrationTrustManifest,
+)
+from src.integration.attestation import IntegrationAttestationService
 from src.integration.parent_ci import ParentCIService
 
 
@@ -106,6 +115,86 @@ async def test_legacy_parent_tick_publishes_exact_ci_and_fenced_event(ci_db, tmp
         backend.git.apush_repository_oid.assert_awaited_once()
 
 
+async def test_parent_completed_push_without_required_checks_emits_red(ci_db, tmp_path):
+    policy = policy_snapshot()
+    policy['parent']['required_checks']['names'] = ['unit', 'postgres', 'lint']
+    async with ci_db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == 'parent-op')
+            .values(policy_snapshot=policy)
+        )
+    manifest = trust().model_dump(by_alias=True)
+    manifest['required_checks']['names'] = ['unit', 'postgres', 'lint']
+    parent_trust = IntegrationTrustManifest.model_validate(manifest)
+    binding = GitHubRepositoryBinding(303, 'acme/widgets')
+    client = FakeGitHubClient(
+        {
+            'unit': [{
+                'id': 11, 'name': 'unit', 'head_sha': SHA, 'status': 'completed',
+                'conclusion': 'success', 'app': {'id': 404}, 'check_suite': {'id': 21},
+            }],
+            'postgres': [{
+                'id': 12, 'name': 'postgres', 'head_sha': SHA, 'status': 'completed',
+                'conclusion': 'success', 'app': {'id': 404}, 'check_suite': {'id': 22},
+            }],
+        },
+        [
+            {
+                'id': 31 + index, 'workflow_id': 301 + index, 'run_attempt': 1,
+                'check_suite_id': 21 + index, 'head_sha': SHA, 'status': 'completed',
+                'conclusion': 'success', 'event': 'push',
+            }
+            for index in range(2)
+        ],
+    )
+    original = client.paged_items
+
+    async def pages(path, *, key, max_pages=20):
+        if 'check_name=lint' in path:
+            return []
+        return await original(path, key=key, max_pages=max_pages)
+
+    client.paged_items = pages
+    client.repository = binding
+    client.credential_identity = GitHubCredentialIdentity.app(101, 202)
+    remote = {}
+
+    async def exact(branch):
+        return remote.get(branch)
+
+    async def push(_store, **kwargs):
+        remote[kwargs['branch']] = kwargs['tip_oid']
+        return kwargs['tip_oid']
+
+    client.exact_head_ref = exact
+    backend = SimpleNamespace(
+        db=ci_db,
+        git=SimpleNamespace(
+            afetch_repository_oid=AsyncMock(return_value=SHA),
+            apush_repository_oid=push,
+        ),
+        _load_trust=AsyncMock(return_value=(parent_trust, client)),
+        _store=lambda _: tmp_path,
+        clock=lambda: 100.0,
+    )
+    service = ParentCIService(backend, AsyncMock(return_value=binding))
+
+    await service.tick(100.0)
+
+    async with ci_db._engine.connect() as conn:
+        events = (await conn.execute(select(integration_outbox))).mappings().all()
+        evidence = (await conn.execute(select(integration_check_evidence))).mappings().all()
+    assert len(events) == 1
+    assert events[0]['event_type'] == 'integration.ci_completed'
+    assert events[0]['payload']['conclusion'] == 'failure'
+    assert len(events[0]['payload']['evidence_ids']) == 2
+    assert len(evidence) == 2
+    missing = next(row for row in evidence if row['checks'].get('lint') == 'missing')
+    assert missing['checks'] == {'unit': 'success', 'lint': 'missing'}
+    assert events[0]['payload']['evidence_id'] == missing['id']
+
+
 async def test_first_parent_initializes_a_real_bare_ci_store(tmp_path):
     from src.git.manager import GitManager
     from src.integration.parent_ci import ensure_parent_store
@@ -116,3 +205,112 @@ async def test_first_parent_initializes_a_real_bare_ci_store(tmp_path):
     await ensure_parent_store(git, store)
     result = await git.arun_git_result(['rev-parse', '--is-bare-repository'], cwd=str(store))
     assert result.returncode == 0 and result.stdout.strip() == 'true'
+
+
+class _AppParentTree:
+    """The parent subject tree, read and published through the daemon's App."""
+
+    def __init__(self, manifest):
+        self.manifest = manifest
+        self.pushed = {}
+
+    async def afetch_repository_oid(self, _store, **kwargs):
+        return kwargs['oid']
+
+    async def apush_repository_oid(self, _store, **kwargs):
+        self.pushed[kwargs['branch']] = kwargs['tip_oid']
+        return kwargs['tip_oid']
+
+    async def arun_git_result(self, args, **_kwargs):
+        if args[0] == 'init':
+            return SimpleNamespace(returncode=0, stdout='', stderr='')
+        assert args == ['show', f'{SHA}:.github/agent-queue-integration.json']
+        if self.manifest is None:
+            return SimpleNamespace(returncode=128, stdout='', stderr='fatal: path does not exist')
+        return SimpleNamespace(returncode=0, stdout=self.manifest, stderr='')
+
+
+class _AppParentClient:
+    auth_mode = 'gh'
+
+    def __init__(self, tree):
+        self.credential_identity = GitHubCredentialIdentity.app(101, 202)
+        self.repository = GitHubRepositoryBinding(303, 'acme/widgets')
+        self.tree = tree
+        self.asked = []
+
+    async def installation_token(self):
+        return 'installation-token'
+
+    async def exact_head_ref(self, branch):
+        return self.tree.pushed.get(branch)
+
+    async def paged_items(self, path, *, key, max_pages=20):
+        if key == 'workflow_runs':
+            return [{'id': 31, 'workflow_id': 301, 'run_attempt': 1, 'check_suite_id': 21,
+                     'head_sha': SHA, 'status': 'completed', 'conclusion': 'success',
+                     'event': 'push'}]
+        name = path.split('check_name=', 1)[1].split('&', 1)[0]
+        self.asked.append(name)
+        return [{'id': 11, 'name': name, 'head_sha': SHA, 'status': 'completed',
+                 'conclusion': 'success', 'app': {'id': 404}, 'check_suite': {'id': 21}}]
+
+
+def _app_parent_service(ci_db, tmp_path, manifest):
+    tree = _AppParentTree(manifest)
+    client = _AppParentClient(tree)
+    attestation = IntegrationAttestationService(
+        ci_db, data_dir=tmp_path, git_manager=tree,
+        github_client_factory=lambda binding: client, clock=lambda: 100.0,
+    )
+    return ParentCIService(attestation, AsyncMock(return_value=client.repository)), client
+
+
+async def test_app_parent_observes_its_snapshot_checks_not_the_tree_manifest(ci_db, tmp_path):
+    # The tree's manifest lists the root set; the parent boundary is narrower.
+    policy = policy_snapshot()
+    policy['parent'] = {
+        'required_checks': {'version': 'focused-v1', 'names': ['unit'], 'producer_id': '404'}
+    }
+    async with ci_db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == 'parent-op')
+            .values(policy_snapshot=policy, required_check_version='focused-v1')
+        )
+    manifest = json.dumps(trust().model_dump(mode='json', by_alias=True))
+    service, client = _app_parent_service(ci_db, tmp_path, manifest)
+
+    await service.tick(100.0)
+
+    assert client.asked == ['unit']
+    assert list(client.tree.pushed.values()) == [SHA]
+    async with ci_db._engine.connect() as conn:
+        evidence = (await conn.execute(select(integration_check_evidence))).mappings().all()
+        events = (await conn.execute(select(integration_outbox))).mappings().all()
+    assert [(row['required_check_version'], row['checks']) for row in evidence] == [
+        ('focused-v1', {'unit': 'success'})
+    ]
+    assert [event['payload']['conclusion'] for event in events] == ['success']
+    assert await service.attestation.subject_trust_blockers('p') == []
+
+
+async def test_app_parent_tree_without_manifest_is_named_in_status(ci_db, tmp_path, caplog):
+    service, client = _app_parent_service(ci_db, tmp_path, None)
+
+    with caplog.at_level(logging.WARNING, logger='src.integration'):
+        await service.tick(100.0)
+
+    assert client.tree.pushed == {} and client.asked == []
+    async with ci_db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_outbox))).mappings().all() == []
+    blockers = await service.attestation.subject_trust_blockers('p')
+    assert [{k: v for k, v in blocker.items() if k != 'detail'} for blocker in blockers] == [{
+        'code': 'subject_trust_invalid', 'ref': 'parent-op', 'target_kind': 'parent',
+        'subject': {'parent_task_id': 'parent', 'generation': 3}, 'head_sha': SHA,
+        'cause': 'missing', 'fields': [],
+    }]
+    assert blockers[0]['detail'].startswith(f'parent parent generation 3 at {SHA}: ')
+    # One named warning instead of a retry traceback every poll.
+    assert 'Integration subject trust invalid' in caplog.text
+    assert 'Parent CI remains retryable' not in caplog.text

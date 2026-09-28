@@ -1221,7 +1221,7 @@ async def test_exact_green_ci_never_reclaims_attached_or_assigned_delegate(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["red", "unknown", "pull_request_only"])
+@pytest.mark.parametrize("outcome", ["red", "unknown", "missing", "pull_request_only"])
 async def test_non_green_ci_keeps_deadline_delegate_reserved(prepared_db, outcome):
     db, data_dir = prepared_db
     delegate_id = await _escalate_to_unclaimed_root_delegate(db)
@@ -1229,11 +1229,15 @@ async def test_non_green_ci_keeps_deadline_delegate_reserved(prepared_db, outcom
     original = provider.paged_items
 
     async def non_green(path, *, key):
-        if outcome == "unknown" and key == "check_runs":
+        if outcome in {"unknown", "missing"} and key == "check_runs":
             return []
         rows = await original(path, key=key)
         if outcome == "red" and key == "workflow_runs":
             return [{**rows[0], "conclusion": "failure"}, *rows[1:]]
+        if outcome == "unknown" and key == "workflow_runs":
+            # No check runs yet while the push workflows still run: pending.
+            # Once they complete, the same absence is conclusive ("missing").
+            return [{**row, "status": "in_progress", "conclusion": None} for row in rows]
         if outcome == "pull_request_only" and key == "workflow_runs":
             # A green pull_request run tested a merge ref, not the exact
             # candidate SHA: it must never stand in for the push run.
@@ -1256,10 +1260,26 @@ async def test_non_green_ci_keeps_deadline_delegate_reserved(prepared_db, outcom
         candidate_state = (
             await conn.execute(select(integration_candidate_revisions.c.state))
         ).scalar_one()
+        dossier = (
+            await conn.execute(
+                select(integration_repair_stages.c.dossier).where(
+                    integration_repair_stages.c.operation_id == "root-op",
+                    integration_repair_stages.c.ordinal == 1,
+                )
+            )
+        ).scalar_one()
 
-    assert observed["outcome"] == ("red" if outcome == "red" else "not_green")
+    assert observed["outcome"] == ("red" if outcome in {"red", "missing"} else "not_green")
     assert owner == delegate_id
     assert candidate_state != "green"
+    # The reserved delegate is dispatched without evidence arguments, so an
+    # absent required check must reach it through the stage dossier.
+    recorded = {
+        name: conclusion
+        for item in (dossier or {}).get("failed_checks", [])
+        for name, conclusion in item["checks"].items()
+    }
+    assert recorded == ({"unit": "missing", "postgres": "missing"} if outcome == "missing" else {})
 
 
 @pytest.mark.asyncio

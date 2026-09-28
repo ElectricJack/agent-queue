@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -24,6 +25,7 @@ from src.database.tables import (
     integration_repair_operations,
     integration_repair_stages,
     projects,
+    task_integration_checkpoints,
 )
 from src.git.github_contracts import (
     GitHubAccessError,
@@ -41,14 +43,18 @@ from src.integration.ci import (
     CIReceiptPayload,
     IntegrationCITrust,
     IntegrationTrustManifest,
+    SubjectTrustError,
     TrustedCIObservation,
     ci_trust_from_policy,
+    is_numeric_producer_id,
     select_trusted_attestation,
 )
+from src.integration.live_operations import ACTIVE_OPERATION_STATES
 from src.integration.main_promotion import RootAttestationProof, RootAttestationSubject
 from src.integration.repair import RepairService
 from src.integration.outbox import enqueue_integration_event
 
+logger = logging.getLogger(__name__)
 
 _MAX_TRUST_BYTES = 64 * 1024
 _PUBLICATION_LEASE_SECONDS = 300.0
@@ -100,6 +106,8 @@ class IntegrationAttestationService:
         self.clock = clock
         self._clients: dict[GitHubRepositoryBinding, Any] = {}
         self._owned_publications: dict[str, str] = {}
+        # Refused subject trees by operation id, for ``aq integration status``.
+        self._subject_trust: dict[str, dict[str, Any]] = {}
 
     async def publish(self, subject: RootAttestationSubject) -> AttestationPublicationResult:
         if not isinstance(subject, RootAttestationSubject):
@@ -328,17 +336,63 @@ class IntegrationAttestationService:
         )
         client = await self._client(binding)
         identity = credential_identity_from_client(client)
+        # The frozen snapshot boundary is the only authority for the required
+        # check set and its producer (spec I3).  A subject tree can be refused
+        # on identity, but nothing it contains reaches this value.
+        authority = ci_trust_from_policy(
+            canonical_repository_id=state["canonical_repository_id"],
+            repository_id=binding.repository_id,
+            full_name=binding.full_name,
+            policy=state["policy_snapshot"],
+            boundary=boundary,
+        )
         if identity.mode is GitHubCredentialMode.EXISTING_LOGIN:
-            return (
-                ci_trust_from_policy(
-                    canonical_repository_id=state["canonical_repository_id"],
-                    repository_id=binding.repository_id,
-                    full_name=binding.full_name,
-                    policy=state["policy_snapshot"],
-                    boundary=boundary,
-                ),
-                client,
+            self._subject_trust.pop(state.get("operation_id"), None)
+            return authority, client
+        if not is_numeric_producer_id(authority.producer_id):
+            # A policy fault (the preflight's ci_producer_not_numeric), never
+            # blamed on the subject tree.
+            raise AttestationError("App-mode CI producer is not a numeric App id")
+        try:
+            manifest = await self._subject_manifest(state, binding)
+            mismatched = tuple(
+                field
+                for field, observed, expected in (
+                    (
+                        "canonical_repository_id",
+                        manifest.canonical_repository_id,
+                        state["canonical_repository_id"],
+                    ),
+                    ("repository_id", manifest.repository_id, binding.repository_id),
+                    ("full_name", manifest.full_name, binding.full_name),
+                    ("attestation_app_id", manifest.attestation_app_id, identity.app_id),
+                    (
+                        "ci_producer_app_id",
+                        str(manifest.ci_producer_app_id),
+                        authority.producer_id,
+                    ),
+                )
+                if observed != expected
             )
+            if mismatched:
+                raise SubjectTrustError(
+                    "identity_mismatch",
+                    "subject trust manifest names another identity: " + ", ".join(mismatched),
+                    fields=mismatched,
+                )
+        except SubjectTrustError as exc:
+            self._record_subject_trust(state, boundary, exc)
+            raise
+        self._subject_trust.pop(state.get("operation_id"), None)
+        # The tree's check set is informational: every consumer downstream
+        # (observer name selection, payload version, attestation selection)
+        # reads the snapshot's checks through this one trust object.
+        return manifest.model_copy(update={"required_checks": authority.required_checks}), client
+
+    async def _subject_manifest(
+        self, state: dict[str, Any], binding: GitHubRepositoryBinding
+    ) -> IntegrationTrustManifest:
+        """Read the trust manifest from the exact subject tree, classifying refusals."""
         store = self._store(state["canonical_repository_id"])
         destination_ref = "refs/aq/attestation-trust/" + hashlib.sha256(
             f"{state['batch_id']}:{state['revision']}".encode()
@@ -357,22 +411,142 @@ class IntegrationAttestationService:
             env={"LC_ALL": "C"},
         )
         if result.returncode != 0:
-            raise AttestationError("candidate trust manifest is missing")
+            raise SubjectTrustError("missing", f"subject tree has no {TRUST_MANIFEST_PATH}")
         raw = result.stdout.encode("utf-8")
         if len(raw) > _MAX_TRUST_BYTES:
-            raise AttestationError("candidate trust manifest is too large")
-        trust = _parse_trust_manifest(raw)
-        if (
-            trust.canonical_repository_id != state["canonical_repository_id"]
-            or trust.repository_id != binding.repository_id
-            or trust.full_name != binding.full_name
-            or trust.attestation_app_id != identity.app_id
-            or trust.required_checks.version != state["required_check_version"]
-            or trust.required_checks.names != state["required_check_names"]
-            or str(trust.ci_producer_app_id) != state["ci_producer_id"]
-        ):
-            raise AttestationError("candidate trust manifest does not match durable authority")
-        return trust, client
+            raise SubjectTrustError(
+                "too_large", f"subject trust manifest exceeds {_MAX_TRUST_BYTES} bytes"
+            )
+        return _parse_trust_manifest(raw)
+
+    def _record_subject_trust(
+        self, state: dict[str, Any], boundary: str, error: SubjectTrustError
+    ) -> None:
+        """Remember one refused subject for ``aq integration status`` (spec §5.3).
+
+        Like the external preflight, this is a live observation of provider
+        state: every poll of the subject re-derives it, and a later successful
+        load, a moved subject or an ended operation retires it.
+        """
+        operation_id = state.get("operation_id")
+        project_id = state.get("project_id")
+        if not operation_id or not project_id:
+            return
+        subject = (
+            {"parent_task_id": state["parent_task_id"], "generation": state["generation"]}
+            if boundary == "parent"
+            else {"batch_id": state["batch_id"], "revision": state["revision"]}
+        )
+        failure = {
+            "operation_id": operation_id,
+            "project_id": project_id,
+            "target_kind": "parent" if boundary == "parent" else "batch",
+            "subject": subject,
+            "head_sha": state["candidate_sha"],
+            "cause": error.cause,
+            "fields": list(error.fields),
+            "detail": str(error),
+        }
+        if self._subject_trust.get(operation_id) != failure:
+            logger.warning(
+                "Integration subject trust invalid for %s %s at %s: %s",
+                failure["target_kind"],
+                subject,
+                failure["head_sha"],
+                failure["detail"],
+            )
+        self._subject_trust[operation_id] = failure
+
+    async def subject_trust_blockers(self, project_id: str) -> list[dict[str, Any]]:
+        """Status blockers for refused subjects that are still current (spec I6)."""
+        failures = [
+            failure
+            for failure in list(self._subject_trust.values())
+            if failure["project_id"] == project_id
+        ]
+        if not failures:
+            return []
+        blockers: list[dict[str, Any]] = []
+        async with self.db._engine.connect() as conn:
+            for failure in failures:
+                if not await self._subject_still_current_on(conn, failure):
+                    if self._subject_trust.get(failure["operation_id"]) == failure:
+                        del self._subject_trust[failure["operation_id"]]
+                    continue
+                subject = failure["subject"]
+                named = (
+                    f"parent {subject['parent_task_id']} generation {subject['generation']}"
+                    if failure["target_kind"] == "parent"
+                    else f"batch {subject['batch_id']} revision {subject['revision']}"
+                )
+                blockers.append(
+                    {
+                        "code": "subject_trust_invalid",
+                        "detail": (
+                            f"{named} at {failure['head_sha']}: {failure['detail']}; "
+                            "refresh the branch from the default branch"
+                        ),
+                        "ref": failure["operation_id"],
+                        "target_kind": failure["target_kind"],
+                        "subject": dict(subject),
+                        "head_sha": failure["head_sha"],
+                        "cause": failure["cause"],
+                        "fields": list(failure["fields"]),
+                    }
+                )
+        return blockers
+
+    @staticmethod
+    async def _subject_still_current_on(conn: Any, failure: dict[str, Any]) -> bool:
+        operation = (
+            await conn.execute(
+                select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == failure["operation_id"]
+                )
+            )
+        ).mappings().one_or_none()
+        if operation is None or operation["state"] not in ACTIVE_OPERATION_STATES:
+            return False
+        subject = failure["subject"]
+        if failure["target_kind"] == "parent":
+            checkpoint = (
+                await conn.execute(
+                    select(task_integration_checkpoints).where(
+                        task_integration_checkpoints.c.task_id == subject["parent_task_id"]
+                    )
+                )
+            ).mappings().one_or_none()
+            return bool(
+                checkpoint is not None
+                and operation["parent_task_id"] == subject["parent_task_id"]
+                and operation["episode_id"] == checkpoint["episode_id"]
+                and checkpoint["generation"] == subject["generation"]
+                and checkpoint["checkpoint_sha"] == failure["head_sha"]
+            )
+        row = (
+            await conn.execute(
+                select(
+                    integration_batches.c.current_revision,
+                    integration_candidate_revisions.c.head_sha,
+                )
+                .select_from(integration_batches)
+                .join(
+                    integration_candidate_revisions,
+                    (integration_candidate_revisions.c.batch_id == integration_batches.c.id)
+                    & (
+                        integration_candidate_revisions.c.revision
+                        == integration_batches.c.current_revision
+                    ),
+                )
+                .where(integration_batches.c.id == subject["batch_id"])
+            )
+        ).mappings().one_or_none()
+        return bool(
+            row is not None
+            and operation["batch_id"] == subject["batch_id"]
+            and int(row["current_revision"]) == subject["revision"]
+            and row["head_sha"] == failure["head_sha"]
+        )
 
     async def _client(self, binding: GitHubRepositoryBinding) -> Any:
         if self.github_client_factory is None:
@@ -540,6 +714,30 @@ class IntegrationAttestationService:
                 ):
                     return False
                 identities = tuple(sorted(evidence_ids))
+                # The red event dispatches a repair delegate without evidence
+                # arguments. Put absent snapshot checks in its durable dossier
+                # before enqueueing the event so the delegate can see them.
+                missing_rows = [
+                    row for row in rows if "missing" in (row["checks"] or {}).values()
+                ]
+                if missing_rows:
+                    dossier = dict(stage["dossier"] or {})
+                    failed_checks = list(dossier.get("failed_checks", []))
+                    recorded_ids = {item.get("evidence_id") for item in failed_checks}
+                    for row in missing_rows:
+                        if row["id"] not in recorded_ids:
+                            failed_checks.append(
+                                {"evidence_id": row["id"], "checks": row["checks"]}
+                            )
+                    dossier["failed_checks"] = failed_checks
+                    await conn.execute(
+                        update(integration_repair_stages)
+                        .where(
+                            integration_repair_stages.c.operation_id == subject.operation_id,
+                            integration_repair_stages.c.ordinal == stage["ordinal"],
+                        )
+                        .values(dossier=dossier)
+                    )
 
             identity = json.dumps(
                 {
@@ -919,8 +1117,6 @@ class IntegrationAttestationService:
                 "candidate_sha": candidate["head_sha"],
                 "operation_id": operation["id"],
                 "required_check_version": required["version"],
-                "required_check_names": tuple(names),
-                "ci_producer_id": required["producer_id"],
                 "policy_snapshot": operation["policy_snapshot"],
                 "ci_evidence_id": candidate["ci_evidence_id"],
                 "aggregate_external_id": evidence["run_id"] if evidence is not None else None,
@@ -1068,11 +1264,28 @@ class IntegrationAttestationService:
 
 
 def _parse_trust_manifest(raw: bytes) -> IntegrationTrustManifest:
+    malformed = "subject trust manifest is not a valid aq.integration-trust.v1 document"
     try:
         decoded = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError, AttestationError) as exc:
+        raise SubjectTrustError("malformed", malformed) from exc
+    try:
         return IntegrationTrustManifest.model_validate(decoded)
-    except (UnicodeDecodeError, json.JSONDecodeError, AttestationError, ValidationError) as exc:
-        raise AttestationError("candidate trust manifest is invalid") from exc
+    except ValidationError as exc:
+        # The attestation name is an identity field (spec §5.1) that the schema
+        # pins as a literal; a well-formed document naming another check is an
+        # identity mismatch, not a malformed one.
+        errors = exc.errors()
+        if all(
+            error["type"] == "literal_error" and tuple(error["loc"]) == ("attestation_name",)
+            for error in errors
+        ):
+            raise SubjectTrustError(
+                "identity_mismatch",
+                "subject trust manifest names another identity: attestation_name",
+                fields=("attestation_name",),
+            ) from exc
+        raise SubjectTrustError("malformed", malformed) from exc
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:

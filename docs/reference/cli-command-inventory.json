@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 444,
+    "leaf_commands": 448,
     "registration": {
       "generated": 287,
-      "handwritten": 157
+      "handwritten": 161
     },
     "ownership": {
-      "core": 405,
+      "core": 409,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 443
+      "supported": 447
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 287,
-      "registration": 143
+      "registration": 147
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 384
+      "untested": 388
     }
   },
   "commands": [
@@ -3558,6 +3558,71 @@
       }
     },
     {
+      "path": "aq integration app-setup",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_app_setup",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id"
+        ],
+        "optional": [
+          "--policy",
+          "--repository-id",
+          "--apply",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration app-verify",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_app_verify",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id"
+        ],
+        "optional": [
+          "--policy",
+          "--repository-id",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration bind-legacy-repositories",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -3863,6 +3928,8 @@
           "--write-policy",
           "--write-trust-manifest",
           "--write-workflow",
+          "--write-audit-workflow",
+          "--write-ruleset",
           "--check-prs",
           "--json",
           "--brief",
@@ -4314,6 +4381,39 @@
       }
     },
     {
+      "path": "aq integration settle-parked",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_settle_parked",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id",
+          "operation_id",
+          "--reason"
+        ],
+        "optional": [
+          "--dismiss",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration status",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -4367,6 +4467,42 @@
         "optional": [
           "--retry",
           "--recover-child",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration trust-manifest",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "integration_trust_manifest",
+      "callback": "src.cli.integration.integration_trust_manifest",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id"
+        ],
+        "optional": [
+          "--policy",
+          "--repository-id",
+          "--write",
+          "--check",
+          "--print",
           "--json",
           "--brief",
           "--api-url"

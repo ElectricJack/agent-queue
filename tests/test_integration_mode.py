@@ -9,7 +9,7 @@ is available only through explicit policy.
 """
 
 import os
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1849,6 +1849,36 @@ class TestDevelopmentModeCompletion:
         assert await orch._run_completion_pipeline(ctx) == (None, True)
         assert ctx.verification_issues == []
         assert ctx.verification_retry_in_session is False
+
+    async def test_close_exposes_generation_before_completed_subscribers(self, orch):
+        from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+        from src.integration.delivery_truth import load_delivery_requests
+
+        task, _ctx = await self._dev_ctx(orch, "t-dev-generation", "aq/t-dev-generation")
+        observed = []
+
+        async def inspect_completed(event_type, *_args, **_kwargs):
+            if event_type != "task.completed":
+                return
+            request = (await load_delivery_requests(
+                orch.db, [task.id], repository_id="r-1", target_ref="refs/heads/main",
+            ))[task.id]
+            observed.append(request.completion_id)
+            assert request.completion_id == "generation-new"
+            assert await orch.db.get_task_meta(task.id, DEVELOPMENT_COMPLETION_ID_KEY) == (
+                "generation-new"
+            )
+            assert await orch.db.get_task_completion(task.id) is None
+
+        orch._emit_task_event = AsyncMock(side_effect=inspect_completed)
+        with patch("src.integration.provenance.record_worker_completion", new_callable=AsyncMock) as record:
+            record.return_value = self.HEAD
+            result = await orch.complete_session_task(
+                task, outcome="pass", completion_id="generation-new", notes="done"
+            )
+
+        assert result["status"] == TaskStatus.COMPLETED.value
+        assert observed == ["generation-new"]
 
     async def _vault_ctx(self, orch, task_id):
         task, ctx = await self._dev_ctx(orch, task_id, f"aq/{task_id}")
