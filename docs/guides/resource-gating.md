@@ -163,6 +163,33 @@ like the slots, so a crashed holder releases it without a reaper. It stays
 held while an orphaned pytest is still running, because pytest inherits the
 descriptor.
 
+### Other projects' tests
+
+The slots are box policy, so every project's workers use `aq test`. The
+interpreter and the preconditions belong to the project whose tests are
+named — the common directory of the path arguments, else the cwd
+(`src/resources/project_tests.py`):
+
+| Project | Interpreter | `POSTGRES_TEST_DSN` |
+|---|---|---|
+| pinned in `resources.test_interpreters[<project id>]` | the pinned path; one that does not exist refuses the run (exit 4) | agent-queue only |
+| agent-queue itself (the nearest `pyproject.toml` names the `agent-queue` distribution) | `aq`'s own | required |
+| any other | `.venv/bin/python` in the project root, the repository root or — from a worker slot, a linked worktree — the main checkout; else `aq`'s own, with a warning | not required |
+
+```yaml
+resources:
+  test_interpreters:
+    quilt-trader: ~/dev/quilt-trader/.venv/bin/python
+```
+
+The project id is `--aq-project`, else the session's `AQ_PROJECT_ID`. A
+foreign venv is activated for the pytest child (`VIRTUAL_ENV`, its `bin`
+first on `PATH`), and when that interpreter has no pytest-xdist the run is
+serial — still under its slot — instead of an `-n` pytest would reject.
+`aq test` names the interpreter it chose on stderr, so `--aq-dry-run`'s
+stdout stays a command line you can paste. `--aq-detach` jobs still run
+under the daemon's interpreter.
+
 ### Test scope and the recorded baseline
 
 The fleet series' `perf.host` block reports PSI, test-slot occupancy and
@@ -196,8 +223,9 @@ weaken or skip the test because main is red. If your task changes the failing
 area, investigate its result rather than assuming the old classification still
 applies. Never run another full suite just to capture your own baseline.
 
-PostgreSQL is required for the suite. Configure a disposable server before
-running tests (the base database is used only as a maintenance connection):
+PostgreSQL is required for agent-queue's own suite. Configure a disposable
+server before running tests (the base database is used only as a maintenance
+connection):
 
 ```bash
 docker compose up -d postgres-test
@@ -206,7 +234,8 @@ aq test tests/test_config.py
 ```
 
 If `POSTGRES_TEST_DSN` is absent, `aq test` exits before taking a global test
-slot or launching pytest, with the setup commands above. Bare pytest has the
+slot or launching pytest, with the setup commands above. That preflight is
+agent-queue's alone: another project's tests are never refused for it. Bare pytest has the
 same session-level preflight, so a missing DSN is one configuration error, not
 one fixture error per collected test. This is an environment failure: no test
 assertions ran.

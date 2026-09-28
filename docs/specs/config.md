@@ -654,6 +654,7 @@ reads it per launch and `aq test` reads it per run.
 | `test_wait_timeout` | `int` | `1800` | Seconds `aq test` waits for a slot before exiting `75` (`EX_TEMPFAIL`). |
 | `test_poll_interval` | `float` | `2.0` | Slot poll interval while waiting; also the cadence of the "waiting" line. |
 | `test_deselect_markers` | `str` | `"not perf and not migration and not slow and not tmux and not integration"` | `-m` expression `aq test` applies when the caller passed none. |
+| `test_interpreters` | `dict[str, str]` | `{}` | Interpreter `aq test` runs pytest with, per project id (`--aq-project`, else the session's `AQ_PROJECT_ID`), e.g. `{quilt-trader: ~/dev/quilt-trader/.venv/bin/python}`. `~` is expanded; a relative path is tried against the project root, the repository root and a linked worktree's main checkout. A pinned path that does not exist refuses the run (exit 4). An unlisted project is detected: agent-queue itself uses `aq`'s interpreter, any other project the `.venv/bin/python` of its project root, repository root or main checkout, else `aq`'s interpreter with a warning (`src/resources/project_tests.py`). |
 | `load_warn_ratio` | `float` | `1.0` | `resources.load` warns when the 5-minute load average exceeds `cores × this`. |
 | `max_pytest_processes` | `int` | `24` | `resources.test_pressure` warns above this many pytest processes box-wide (xdist workers included). `0` disables the check. |
 | `cgroups.enabled` | `bool` | `False` | Launch each session inside a `systemd-run --user --scope`. Requires a one-time root step (`scripts/setup-cgroup-delegation.sh`); degrades to the other layers with a startup log line and a doctor warning when delegation is absent. |
@@ -664,7 +665,8 @@ Validation (`ResourcesConfig.validate`): `cores`, `per_session_cpu_share` and
 `test_workers` must be positive or null; `max_concurrent_agents` and
 `test_slots` must be positive; `test_wait_timeout`, `test_poll_interval` and
 `max_pytest_processes` must be `>= 0`; `session_nice` must be within
-`-20..19`; `load_warn_ratio` must be positive; `cgroups.cpu_quota_percent`
+`-20..19`; `load_warn_ratio` must be positive; `test_interpreters` must be a
+mapping whose values are non-empty paths; `cgroups.cpu_quota_percent`
 must be positive and `cgroups.memory_max` non-empty.
 
 **Harness `env` blocks win.** `session_env_caps()` skips any key already
