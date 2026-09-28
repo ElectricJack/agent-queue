@@ -1332,7 +1332,7 @@ async def _find_unrepaired_conflicts(ctx: DoctorContext) -> list[dict]:
             continue
         result = repair_chain(
             row["manifest"], history[row["project_id"]], statuses,
-            repository_id=row["repository_id"], target_ref=row["target_ref"],
+            repository_id=row["repository_id"], target_ref=row["target_ref"], row=row,
         )
         first = result["chain"][0]["task_id"]
         if result["open_repair"] or first in seen:

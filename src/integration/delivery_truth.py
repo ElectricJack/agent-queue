@@ -12,9 +12,10 @@ for it, so it is unknown until an operator retains it
 A *settlement* is the one database answer the evaluator honours, and it is not
 a delivery: it records that a generation is **not owed** to one target (work
 already delivered to the target a retarget replaced, a repair built for another
-target, or an operator's ``aq integration settle-parked``). It is fenced to the
-target and, for ordinary work, to the exact completion generation it settled,
-so a reopened task owes its new work again.
+target, or an operator's ``aq integration settle-parked``). Git is asked first:
+a settlement only turns *pending* into *settled*, never contained or unknown
+work. It is fenced to the repository, the target and, for ordinary work, the
+exact completion generation it settled, so a reopened task owes its new work.
 """
 
 from __future__ import annotations
@@ -71,16 +72,17 @@ class DeliveryRequest:
     claim_epoch: int = 0
     #: The recorded settlement (:data:`SETTLEMENT_KEY`), whatever it fences;
     #: :meth:`settles` decides whether it answers this request.
+    settled_repository_id: str | None = None
     settled_target_ref: str | None = None
     settled_completion_id: str | None = None
     settled_reason: str | None = None
-    settled_source: str | None = None
 
     @property
     def settles(self):
         """Whether the recorded settlement covers this target and generation."""
         return bool(
             self.settled_reason and self.settled_target_ref == self.target_ref
+            and self.settled_repository_id == self.repository_id
             and self.settled_completion_id in {None, self.completion_id}
         )
 
@@ -187,10 +189,6 @@ class DeliverySnapshot:
             return result(DeliveryState.UNKNOWN, "scope_mismatch")
         if self.error or not self.target_oid:
             return result(DeliveryState.UNKNOWN, self.error or "missing_target")
-        if request.settles:
-            # Not owed here, by a recorded decision; never read as delivered.
-            return result(DeliveryState.SETTLED, "settled: " + request.settled_reason,
-                          request.settled_source)
         try:
             provenance = GitProvenance(self.git, self.store, repository_url=self.repository_url)
             if request.completion_id:
@@ -207,6 +205,11 @@ class DeliverySnapshot:
                         return result(DeliveryState.NO_ARTIFACT, "git_no_artifact", source)
                     if await provenance.contained(CompletedSource(identity, source), self.target_oid):
                         return result(DeliveryState.CONTAINED, "git_completion", source)
+                    if request.settles:
+                        # Git first: a settlement only answers work the target
+                        # lacks, and says it is not owed, never delivered.
+                        return result(DeliveryState.SETTLED,
+                                      "settled: " + request.settled_reason, source)
                     return result(DeliveryState.PENDING, "git_completion", source)
             # Without its retained record, a branch head, a reported commit or
             # a historical manifest could at best locate *a* commit, never the
@@ -319,18 +322,17 @@ def settlement_fields(value):
         return {}
     if not isinstance(record, dict) or not all(
         isinstance(record.get(key), str) and record[key]
-        for key in ("target_ref", "reason")
+        for key in ("repository_id", "target_ref", "reason")
     ):
         return {}
     completion = record.get("completion_id")
     if completion is not None and not (isinstance(completion, str) and completion):
         return {}  # never widen a damaged generation fence to every generation
-    source = record.get("source_oid")
     return {
+        "settled_repository_id": record["repository_id"],
         "settled_target_ref": record["target_ref"],
         "settled_completion_id": completion,
         "settled_reason": record["reason"],
-        "settled_source": source if is_valid_git_oid(source) else None,
     }
 
 

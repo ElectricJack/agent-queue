@@ -30,22 +30,30 @@ this note records why it is shaped this way.
    metadata `development_delivery_settlement` says a generation is *not owed* to
    one target. `DeliverySnapshot.evaluate` answers `settled` (satisfied, never
    "delivered"), so readiness, admission, publisher, settlement, archive and
-   status agree without new readers. It is fenced to its target and, for ordinary
-   work, to the exact completion id; a repair, whose purpose is fixed at filing,
-   is settled for every generation. A malformed record settles nothing.
+   status agree without new readers. Git is asked first: a settlement only turns
+   `pending` into `settled`, so contained work always reads contained. It is
+   fenced to repository, target and, for ordinary work, the exact completion id;
+   a repair, whose purpose is fixed at filing, is settled for every generation
+   and reclaimed if a live park of its manifest on that target needs it again. A
+   malformed record settles nothing.
 2. **Retarget: record work already on the old target as not owed** rather than
-   asking the operator per task. The previous target is read from the journal
-   (the newest publication row on another target; configuration rows now also
-   record `retarget`). A generation completed before the first configuration
-   onto the new target whose source the old target contains — or that was
+   asking the operator per task. Only configuration rows (`develop`) move the
+   target; they now record `retarget.from_ref`, and older journals are read from
+   the configuration, or the publisher's own batch/park row, before the first
+   configuration onto the new target. Adoption rows never count. A generation
+   completed before the first configuration onto the new target whose source
+   the old target contains — or that was
    settled there, so hops chain — is settled (`delivered_to_previous_target`).
    Everything else stays owed. If the old branch is gone nothing is proven and
    everything stays owed. The supervisor gets one message per settlement batch
    and the journal one `settlement` row, so nothing is decided silently.
 3. **A repair is owed only to the target it was filed for**
    (`repair_for_previous_target`); its evidence now records `target_ref`, older
-   ones are read through their parked row or description. A park on the current
-   target whose members all turn out not to be owed is cancelled instead of
+   ones are read through their parked row or description. Repair ids are the
+   manifest digest, except that a park whose manifest's repair was filed for
+   another target records a target-specific `evidence.repair_id`, which every
+   chain reader follows. A park on the current target whose members all turn
+   out not to be owed is cancelled instead of
    repaired, and its repairs are settled with it (`repair_sources_not_owed`).
 4. **Parks are scoped to their target.** The sweep's parked set and parked
    reconciliation only consider rows on the current target; rows on another
@@ -62,3 +70,7 @@ this note records why it is shaped this way.
 Pausing or obsolete-closing a stale repair that a live worker still holds: it is
 settled when it completes, and the supervisor is told to retire it with
 `aq task close --obsolete` once its session stops.
+
+Archiving a task deletes its metadata, settlement included, so an archived
+settled task would read pending again; nothing live can depend on an archived
+task (`task_dependencies` references live tasks only), so this is left as is.

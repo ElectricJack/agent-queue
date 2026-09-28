@@ -71,53 +71,91 @@ def publication_target(ref) -> bool:
     )
 
 
-def _ordered(history, repository_id):
+#: Journal rows the publisher itself writes onto its target.  Operator
+#: adoption names a ref of its own choosing, so it never says what the target
+#: was; nor does a settlement or candidate preservation.
+_PUBLISHER_REASONS = frozenset({
+    "development batch",
+    "source conflict; independent work may continue",
+    "selected validation failed",
+})
+
+
+def _configurations(history, repository_id):
     return sorted(
         (
             row for row in history
             if row.get("repository_id") == repository_id
+            and (row.get("evidence") or {}).get("kind") == "configuration"
             and publication_target(row.get("target_ref"))
         ),
         key=lambda row: (row.get("created_at") or 0, str(row.get("id"))),
     )
 
 
-def previous_target(history, repository_id, target_ref):
-    """The target the newest publication row names, when it is not *target_ref*.
-
-    Read by ``aq integration develop`` before it writes its configuration row:
-    ``None`` means the repository keeps its target (or never published).
-    """
-    rows = _ordered(history, repository_id)
-    if not rows or rows[-1]["target_ref"] == target_ref:
+def _published_before(history, repository_id, created_at):
+    """The target of the newest publisher row older than *created_at*, if any."""
+    rows = [
+        row for row in history
+        if row.get("repository_id") == repository_id
+        and row.get("reason") in _PUBLISHER_REASONS
+        and publication_target(row.get("target_ref"))
+        and (created_at is None or (row.get("created_at") or 0) < created_at)
+    ]
+    if not rows:
         return None
-    return rows[-1]["target_ref"]
+    return max(rows, key=lambda row: (row.get("created_at") or 0, str(row.get("id"))))[
+        "target_ref"
+    ]
+
+
+def previous_target(history, repository_id, target_ref):
+    """The target ``aq integration develop`` is moving away from, or ``None``.
+
+    The newest configuration names it; a journal older than configuration
+    rows is read from the publisher's own batch and park rows.
+    """
+    configurations = _configurations(history, repository_id)
+    previous = (
+        configurations[-1]["target_ref"] if configurations
+        else _published_before(history, repository_id, None)
+    )
+    return previous if previous and previous != target_ref else None
 
 
 def retarget_of(history, repository_id, target_ref):
     """The retarget onto *target_ref*, or ``None`` when there was none.
 
-    Returns ``{"from_ref", "at", "operation_id"}``: the target of the newest
-    publication row on another target, and the first development configuration
-    onto *target_ref* after it.  ``at`` fences the generations that could have
-    been delivered to the previous target.  Journals older than this module
-    record no retarget explicitly, which is why it is read from the rows'
-    targets rather than from configuration evidence.
+    Returns ``{"from_ref", "at", "operation_id"}``.  Only configuration rows
+    move the target: the first of the newest run of configurations on
+    *target_ref* is the retarget (``at`` fences the generations that could have
+    been delivered before it), and it records the target it replaced; older
+    journals name it by the configuration, or failing that the publisher row,
+    before it.  Adoptions and settlements written later never move it.
     """
-    moved = None
-    for row in reversed(_ordered(history, repository_id)):
-        if row["target_ref"] == target_ref:
-            if (row.get("evidence") or {}).get("kind") == "configuration":
-                moved = row
-            continue
-        if moved is None:
-            return None
-        return {
-            "from_ref": row["target_ref"],
-            "at": float(moved.get("created_at") or 0),
-            "operation_id": moved["id"],
-        }
-    return None
+    configurations = _configurations(history, repository_id)
+    first = None
+    for row in reversed(configurations):
+        if row["target_ref"] != target_ref:
+            break
+        first = row
+    if first is None:
+        return None
+    recorded = ((first.get("evidence") or {}).get("retarget") or {}).get("from_ref")
+    index = configurations.index(first)
+    if publication_target(recorded):
+        from_ref = recorded
+    elif index:
+        from_ref = configurations[index - 1]["target_ref"]
+    else:
+        from_ref = _published_before(history, repository_id, first.get("created_at"))
+    if not from_ref or from_ref == target_ref:
+        return None
+    return {
+        "from_ref": from_ref,
+        "at": float(first.get("created_at") or 0),
+        "operation_id": first["id"],
+    }
 
 
 def repair_target_of(description, evidence, history):

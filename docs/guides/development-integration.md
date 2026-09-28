@@ -213,10 +213,12 @@ task with no recorded commits is organizational and has no artifact of its own.
 
 The one database answer every reader honours is a **settlement**: a record that
 a generation is *not owed* to one target (task metadata
-`development_delivery_settlement`). It reads `settled`, which satisfies
-dependents and settlement like a delivery, and it never says the work was
-delivered. It is fenced to its target and, for ordinary work, to the exact
-completion it settled, so reopening and closing the task owes the new work again.
+`development_delivery_settlement`). Git is still asked first: a settlement only
+turns work the target lacks from `pending` into `settled`, which satisfies
+dependents and settlement like a delivery but never says the work was delivered;
+contained work reads `contained` whatever was settled. It is fenced to its
+repository, its target and, for ordinary work, the exact completion it settled,
+so reopening and closing the task owes the new work again.
 Settlements come only from a [retarget](#when-the-default-branch-changes) and
 from [`settle-parked`](#settle-or-dismiss-a-parked-delivery).
 
@@ -546,8 +548,10 @@ aq integration settle-parked demo <operation-id> --reason 'Superseded by demo.9'
 aq integration settle-parked demo <operation-id> --dismiss --reason 'Stale park'
 ```
 
-* **Settle** (the default) records each member's parked completion, and every
-  repair filed for the row, as not owed to the row's target. The publisher never
+* **Settle** (the default) checks in git that each member's current completion
+  is still the one that parked, then records it, and every repair filed for the
+  row, as not owed to the target. Only a row on the current target can be
+  settled; the next sweep retires a row parked on an old one. The publisher never
   merges them there, their dependents are released on the next evaluation and no
   further repair is filed. The result lists `open_repairs`: repairs still being
   worked on, which you retire with `aq task close <id> --obsolete` once their
@@ -580,15 +584,20 @@ things about the old target are not carried over
 * **Repairs built for the old target.** A repair starts from the target its park
   named and carries that branch's history, so it is settled as not owed to any
   other target (`repair_for_previous_target`); its sources are judged on the new
-  target on their own. A park on the current target whose members all turn out
-  not to be owed is cancelled, and its repairs are settled with it.
+  target on their own. A source that conflicts on the new target too gets a repair
+  of its own there (the park records it as `evidence.repair_id`), never the old
+  one. A park on the current target whose members all turn out not to be owed is
+  cancelled, and its repairs are settled with it; if the same content parks there
+  again later, its repair is owed again.
 * **Parks on the old target.** A park is a conflict with one base of one target.
   Parks are scoped to the current target, so a source parked on the old one is
   merged into the new one on the next sweep; the stale row is cancelled with
   `evidence.retired` naming the new target.
 
-`aq integration develop` names the change in its result and journal row
-(`retarget: {from_ref, to_ref}`). The first sweep on the new target writes one
+Only `aq integration develop` moves the target: its configuration row records
+`retarget: {from_ref, to_ref}` (and its result says so), and the first
+configuration onto the new target fences which completions came before it. An
+`aq integration adopt` onto another ref is not a retarget. The first sweep on the new target writes one
 journal row of kind `settlement` listing what it settled, and sends
 `supervisor-<project>` one message naming each task. If some of that work does
 belong on the new target, merge its source there on a branch that keeps it as an
