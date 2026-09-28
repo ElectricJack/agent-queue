@@ -54,11 +54,16 @@ TRAIN_REF_SAMPLES = (
 #: The patterns a trigger fix adds to ``on.push.branches``.
 TRAIN_BRANCH_PATTERNS = ("aq/integration/**", "aq/parent/**")
 
-#: The GitHub Actions App.  Existing-login credential mode matches it by slug;
-#: App credential mode compares the policy producer with the trust manifest's
-#: numeric ``ci_producer_app_id`` (``src/integration/preflight.py``).
-GITHUB_ACTIONS_SLUG = "github-actions"
+#: The GitHub Actions App.  Every policy the planner emits names it by its
+#: numeric id, the canonical producer in both credential modes, so a project can
+#: move between them without rebinding: App credential mode compares it with the
+#: trust manifest's ``ci_producer_app_id`` and refuses a slug as
+#: ``ci_producer_not_numeric`` (``src/integration/preflight.py``).
 GITHUB_ACTIONS_APP_ID = 15368
+#: Legacy only: policies bound before the numeric id was canonical name GitHub
+#: Actions by this slug.  Existing-login credentials still match it (frozen
+#: snapshots and evidence rows hold it); the planner never emits it.
+GITHUB_ACTIONS_SLUG = "github-actions"
 ATTESTATION_NAME = "Agent Queue Integration Attestation"
 TRUST_MANIFEST_PATH = ".github/agent-queue-integration.json"
 
@@ -760,9 +765,10 @@ def select_routes(
 
 
 def producer_for(credential_mode: str) -> str:
+    """The policy producer: GitHub Actions' numeric App id in every credential mode."""
     if credential_mode not in CREDENTIAL_MODES:
         raise ValueError(f"credential mode must be one of {', '.join(CREDENTIAL_MODES)}")
-    return str(GITHUB_ACTIONS_APP_ID) if credential_mode == "app" else GITHUB_ACTIONS_SLUG
+    return str(GITHUB_ACTIONS_APP_ID)
 
 
 def build_policy(

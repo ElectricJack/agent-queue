@@ -35,8 +35,9 @@ def test_required_checks_match_workflow_matrix() -> None:
     expected += tuple(f"E2E CLI ({group})" for group in e2e["strategy"]["matrix"]["group"])
     assert policy.parent.required_checks.names == expected
     assert policy.root.required_checks.names == expected
-    assert policy.parent.required_checks.producer_id == "github-actions"
-    assert policy.root.required_checks.producer_id == "github-actions"
+    # GitHub Actions by its numeric App id: canonical in both credential modes.
+    assert policy.parent.required_checks.producer_id == "15368"
+    assert policy.root.required_checks.producer_id == "15368"
     for boundary in ("parent", "root"):
         trust = ci_trust_from_policy(
             canonical_repository_id="agent-queue2",
@@ -45,7 +46,7 @@ def test_required_checks_match_workflow_matrix() -> None:
             policy=policy,
             boundary=boundary,
         )
-        assert trust.producer_id == "github-actions"
+        assert trust.producer_id == "15368"
         assert trust.required_checks.names == expected
 
 

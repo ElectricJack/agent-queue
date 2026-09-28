@@ -19,7 +19,7 @@ from click.testing import CliRunner
 
 from src.cli.exceptions import ScopeDeniedError
 from src.integration import train_onboarding as onboarding
-from src.integration.ci import IntegrationTrustManifest
+from src.integration.ci import IntegrationTrustManifest, is_numeric_producer_id
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.playbooks.required import reviewed_bundle_source
 
@@ -136,7 +136,8 @@ def test_self_hosted_runners_are_named():
     assert any("self-hosted" in note for note in matter.workflows[0].notes)
 
 
-def test_agent_queue_workflows_reproduce_the_reviewed_policy():
+@pytest.mark.parametrize("mode", onboarding.CREDENTIAL_MODES)
+def test_agent_queue_workflows_reproduce_the_reviewed_policy(mode):
     classification = onboarding.classify(GITHUB.format("agent-queue"), _own_workflows())
     parent, root = onboarding.select_routes(BUNDLES, "agent-queue", "auto")
     facts = onboarding.ProjectFacts(
@@ -148,6 +149,7 @@ def test_agent_queue_workflows_reproduce_the_reviewed_policy():
         classification,
         parent_route=parent,
         root_route=root,
+        credential_mode=mode,
         check_version="tests-yml-v3",
     )
 
@@ -313,10 +315,8 @@ def test_route_selection_refuses_a_missing_project_pair():
         onboarding.select_routes(BUNDLES, "outrider-ide", "bogus")
 
 
-@pytest.mark.parametrize(
-    ("mode", "producer"), [("existing-login", "github-actions"), ("app", "15368")]
-)
-def test_policy_producer_follows_the_credential_mode(mode, producer):
+@pytest.mark.parametrize("mode", onboarding.CREDENTIAL_MODES)
+def test_policy_producer_is_the_numeric_id_in_every_credential_mode(mode):
     parent, root = _shared_routes()
     policy = onboarding.build_policy(
         checks=("Tests",),
@@ -328,7 +328,10 @@ def test_policy_producer_follows_the_credential_mode(mode, producer):
         profile_id="standard-high-codex",
     )
     validated = HierarchicalIntegrationPolicy.model_validate(policy)
-    assert validated.root.required_checks.producer_id == producer
+    # One producer, so a project moves between credential modes without a rebind.
+    assert validated.parent.required_checks.producer_id == "15368"
+    assert validated.root.required_checks.producer_id == "15368"
+    assert is_numeric_producer_id(onboarding.producer_for(mode))
     assert validated.parent.route.playbook_id == "parent-integration"
     assert validated.branchless_parent == "verifier"
 
@@ -763,10 +766,57 @@ def test_cli_plans_from_the_daemon_and_git_and_writes_the_policy(tmp_path):
     assert data["steps"][0]["title"] == "Resolve legacy pull requests before the drain"
     assert "pull/9" not in json.dumps(data["steps"][0])
     policy = HierarchicalIntegrationPolicy.model_validate(json.loads(policy_path.read_text()))
-    assert policy.root.required_checks.producer_id == "github-actions"
+    assert policy.root.required_checks.producer_id == "15368"
     assert policy.root.route.playbook_id == "root-train"
     commands = [command for command, _args in (call.args for call in client.execute.call_args_list)]
     assert set(commands) == {"get_project", "integration_status", "list_tasks"}
+
+
+@pytest.mark.parametrize("mode", onboarding.CREDENTIAL_MODES)
+def test_cli_writes_the_reviewed_agent_queue_policy_byte_for_byte(tmp_path, mode):
+    from src.cli.app import cli
+
+    repo = _repo(tmp_path, _own_workflows())
+    client = _client(
+        {
+            "get_project": {
+                "repo_url": GITHUB.format("agent-queue"),
+                "repo_default_branch": "main",
+                "workspace": str(repo),
+            },
+            "integration_status": {"repository_id": "agent-queue2", "effective_mode": "disabled"},
+        }
+    )
+    app_config = {"integration": {"github_app": {"app_id": 5075923}}}
+    policy_path = tmp_path / "policy.json"
+    with (
+        patch("src.cli.integration._get_client", return_value=client),
+        patch("src.cli.integration._daemon_config", return_value=app_config),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--json",
+                "integration",
+                "onboard-train",
+                "agent-queue",
+                "--credential-mode",
+                mode,
+                "--check-version",
+                "tests-yml-v3",
+                "--github-repository-id",
+                "1160639300",
+                "--no-check-prs",
+                "--write-policy",
+                str(policy_path),
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output)["data"]["credential_mode"] == mode
+    assert policy_path.read_bytes() == (
+        ROOT / "docs/config/agent-queue-train-policy.json"
+    ).read_bytes()
 
 
 def test_cli_plans_from_git_alone_when_daemon_records_are_out_of_scope(tmp_path):

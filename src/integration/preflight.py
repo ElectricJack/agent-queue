@@ -15,7 +15,7 @@ from src.git.github_contracts import (
     credential_identity_from_client,
 )
 from src.integration.attestation import _parse_trust_manifest
-from src.integration.ci import TRUST_MANIFEST_PATH
+from src.integration.ci import TRUST_MANIFEST_PATH, is_numeric_producer_id
 from src.integration.models import HierarchicalIntegrationPolicy
 
 
@@ -204,6 +204,18 @@ async def daemon_functional_preflight(
                 blockers.append("ci_policy_invalid")
         return tuple(dict.fromkeys(blockers))
 
+    # App credentials compare the policy producer with the manifest's numeric
+    # ``ci_producer_app_id``. A slug there is a policy fault, named as such,
+    # never a manifest mismatch.
+    producers_numeric = True
+    if credential_identity is not None and policy is not None:
+        producers_numeric = all(
+            is_numeric_producer_id(boundary.required_checks.producer_id)
+            for boundary in (policy.parent, policy.root)
+        )
+        if not producers_numeric:
+            blockers.append("ci_producer_not_numeric")
+
     trust = None
     if client is not None and repository is not None and repository.default_branch:
         try:
@@ -222,7 +234,7 @@ async def daemon_functional_preflight(
                 or trust.repository_id != binding.repository_id
                 or trust.full_name != binding.full_name
                 or trust.attestation_app_id != app_id
-                or producer_ids != {str(trust.ci_producer_app_id)}
+                or (producers_numeric and producer_ids != {str(trust.ci_producer_app_id)})
                 or trust.required_checks.version != root_checks.version
                 or trust.required_checks.names != root_checks.names
             ):

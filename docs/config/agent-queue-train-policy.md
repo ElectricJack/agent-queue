@@ -5,7 +5,19 @@ against the current V2 command and event registries. The parent route handles
 the current `integration_complete_parent` outcomes, including idempotent
 `already_completed` and terminal `failed`. The policy JSON binds their exact
 artifact identities and the fifteen `Tests (...)` and `E2E CLI (...)` checks from
-`.github/workflows/tests.yml` to the `github-actions` producer.
+`.github/workflows/tests.yml` to the producer `"15368"`, GitHub Actions' numeric
+App id, on both boundaries.
+
+The numeric id is the canonical producer in both credential modes, and it is
+what `aq integration onboard-train` emits in either one. GitHub reports it as
+`check_run.app.id`, and the App-mode trust manifest names it as
+`ci_producer_app_id`, so the same policy binds under existing-login or App
+credentials without a rebind. The slug `github-actions` is legacy. A policy
+that already holds it keeps working under existing-login credentials, because
+frozen snapshots and CI evidence rows record it, but App credential mode
+refuses it with the preflight blocker `ci_producer_not_numeric`. The earlier
+revision of this file used the slug, so an installed agent-queue policy bound
+from it must be rebound to this JSON before App mode.
 
 The `tests-yml-v3` check set requires all eight `Tests (default-N/8)` shards
 and all four `E2E CLI (...)` scenario groups. When adopting the split workflow,
@@ -126,10 +138,10 @@ ones: task `swift-pinnacle` asks for that decision, and `bold-cascade` fixes the
 creation paths that leave the repository unset.
 
 While `integration.github_app` is configured (App credential mode) the
-functional preflight also needs `.github/agent-queue-integration.json`, the two
-`AQ_INTEGRATION_*` Actions variables and the numeric producer `15368` in place
-of `github-actions`. Every other project's cutover, and this App-mode
-requirement, is in [train-onboarding.md](train-onboarding.md).
+functional preflight also needs `.github/agent-queue-integration.json` and the
+two `AQ_INTEGRATION_*` Actions variables; the numeric producer above is already
+the one App mode requires. Every other project's cutover, and these App-mode
+requirements, are in [train-onboarding.md](train-onboarding.md).
 
 The status response in observe mode must report zero functional blockers and
 `ready: true`; activation health above confirms the exact active route hashes.
