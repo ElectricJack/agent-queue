@@ -131,6 +131,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["tests/fixtures/playbooks/**"], areas: ["playbook-authoring", "playbook-definition", "playbook-engine", "shipped-playbooks", "ci-sentinel", "supervisor", "task-routing", "epic-trains", "integration-promotion", "document-reviews", "docs-guards"] }
   - { paths: ["tests/fixtures/provider_failover/**"], areas: ["provider-failover", "e2e-kit"] }
   - { paths: ["tests/fixtures/reports/**"], areas: ["digest"] }
+  - { paths: ["tests/fixtures/train_onboarding/**"], areas: ["epic-trains"] }
   - { paths: ["tests/fixtures/task_graphs/**"], areas: ["task-graph-creation", "intelligence-classes", "integration-trains"] }
   - { paths: ["tests/fixtures/transcripts/**"], areas: ["transcripts"] }
 
@@ -194,7 +195,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/cli/doctor.py"], areas: ["doctor"] }
   - { paths: ["src/cli/formulas.py"], areas: ["formulas"] }
   - { paths: ["src/cli/install.py", "src/cli/uninstall.py", "src/cli/update.py", "src/cli/service.py"], areas: ["install"] }
-  - { paths: ["src/cli/integration.py"], areas: ["integration-controls"] }
+  - { paths: ["src/cli/integration.py"], areas: ["integration-controls", "epic-trains"] }
   - { paths: ["src/cli/logs.py"], areas: ["logging"] }
   - { paths: ["src/cli/messages.py"], areas: ["messages"] }
   - { paths: ["src/cli/playbook.py"], areas: ["playbook-authoring"] }
@@ -329,6 +330,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/integration/development*.py", "src/integration/branch_discard.py", "src/integration/delivery_branches.py", "src/integration/publishable_artifact.py", "src/integration/preflight.py"], areas: ["development-delivery"] }
   - { paths: ["src/integration/delivery_path.py", "src/integration/manual_delivery.py"], areas: ["development-delivery", "integration-trains"] }
   - { paths: ["src/integration/provenance*.py"], areas: ["development-delivery", "git-manager", "session-runtime"] }
+  - { paths: ["src/integration/train_onboarding.py"], areas: ["epic-trains", "integration-controls"] }
 
   - { paths: ["src/integrations/**"], areas: ["plugins"] }
   - { paths: ["src/intelligence_classes/**"], areas: ["intelligence-classes"] }
@@ -372,7 +374,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/projects/github.py"], areas: ["github"] }
   - { paths: ["src/prompts/**"], areas: ["prompts", "shipped-playbooks"] }
   - { paths: ["src/prompts/default_intelligence_classes/**"], areas: ["intelligence-classes", "task-routing", "provider-failover", "worker-pools", "session-runtime", "profiles"] }
-  - { paths: ["src/prompts/default_playbooks/**", "src/prompts/project_playbooks/**", "src/prompts/reviewed_playbooks/**"], areas: ["playbook-authoring", "supervisor", "task-routing", "ci-sentinel", "epic-trains", "provider-failover", "docs-guards"] }
+  - { paths: ["src/prompts/default_playbooks/**", "src/prompts/project_playbooks/**", "src/prompts/integration_playbooks/**", "src/prompts/reviewed_playbooks/**"], areas: ["playbook-authoring", "supervisor", "task-routing", "ci-sentinel", "epic-trains", "provider-failover", "docs-guards"] }
   - { paths: ["src/prompts/memory_*.py"], areas: ["memory-facts"] }
   - { paths: ["src/providers/**"], areas: ["provider-failover", "provider-usage"] }
   - { paths: ["src/resources/**"], areas: ["resource-gating", "cli-test-runner"] }

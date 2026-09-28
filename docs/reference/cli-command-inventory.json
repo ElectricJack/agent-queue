@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 443,
+    "leaf_commands": 444,
     "registration": {
       "generated": 287,
-      "handwritten": 156
+      "handwritten": 157
     },
     "ownership": {
-      "core": 404,
+      "core": 405,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 442
+      "supported": 443
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 287,
-      "registration": 142
+      "registration": 143
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 383
+      "untested": 384
     }
   },
   "commands": [
@@ -3815,6 +3815,54 @@
           "--offset",
           "--task-id",
           "--source",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq integration onboard-train",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_onboard_train",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id"
+        ],
+        "optional": [
+          "--repo",
+          "--ref",
+          "--repo-url",
+          "--default-branch",
+          "--credential-mode",
+          "--route",
+          "--intelligence-class",
+          "--harness",
+          "--check",
+          "--check-version",
+          "--github-repository-id",
+          "--validation-command",
+          "--test-command",
+          "--interval-seconds",
+          "--write-policy",
+          "--write-trust-manifest",
+          "--write-workflow",
+          "--check-prs",
           "--json",
           "--brief",
           "--api-url"

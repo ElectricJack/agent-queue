@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ASTRO_TELEMETRY_DISABLED: '1'
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The token stylesheets are generated from packages/ui/src/tokens; a
+      # hand-edit here would silently desync the CSS from the palette that
+      # packages/three reads.
+      - name: Token stylesheets are in sync
+        run: pnpm --filter @aqw/ui tokens:check
+
+      - run: pnpm lint
+      - run: pnpm format:check
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+      - name: Upload built site
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: sites/agent-queue/dist
+          retention-days: 7
+
+  lighthouse:
+    name: Lighthouse budget
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build the site under test
+        run: pnpm --filter @aqw/site-agent-queue build
+
+      # Browser-level checks cover the paths Lighthouse navigation cannot: a
+      # WebGL-less or data-saving device must retain the static hero, and a
+      # real keyboard click must get a paint inside the interaction budget.
+      - name: Verify progressive enhancement and interaction budget
+        run: pnpm --filter @aqw/capture test:site-quality
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+
+      # The static server Lighthouse uses sends no headers at all, so the
+      # deploy's Content-Security-Policy is unverified by every other job here.
+      # This one serves the built site under the generated dist/_headers and
+      # fails on any violation the browser reports.
+      - name: Verify the deploy's security headers against a browser
+        run: pnpm --filter @aqw/capture test:csp
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+
+      # Performance and accessibility are budgets, not a polish pass: this job
+      # fails the build when a page regresses past them.
+      - name: Assert Lighthouse budgets
+        run: pnpm lighthouse
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+
+      - name: Upload Lighthouse reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lighthouse
+          path: .lighthouseci
+          retention-days: 7

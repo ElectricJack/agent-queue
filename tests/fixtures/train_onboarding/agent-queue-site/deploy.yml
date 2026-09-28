@@ -1,0 +1,131 @@
+name: Deploy
+
+# Every branch deploys. `main` publishes to the production domain; anything
+# else gets its own preview URL, which is what makes "look at it" the normal
+# way to review a change to a marketing site.
+#
+# The credentials this needs are described in docs/runbooks/deploy.md. Until
+# they exist the workflow reports that it is unconfigured and exits green —
+# a repository without them should not show a wall of red on every push.
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  ASTRO_TELEMETRY_DISABLED: '1'
+
+jobs:
+  guard:
+    name: Deploy target
+    runs-on: ubuntu-latest
+    outputs:
+      configured: ${{ steps.check.outputs.configured }}
+      environment: ${{ steps.check.outputs.environment }}
+    steps:
+      # `secrets` is not readable from a job-level `if`, so the presence check
+      # happens in a step that only ever emits a boolean. No secret value is
+      # printed, compared in the log, or passed to a later job.
+      - id: check
+        env:
+          HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+          HAS_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+          REF: ${{ github.ref }}
+        run: |
+          if [ "$HAS_TOKEN" = 'true' ] && [ "$HAS_ACCOUNT" = 'true' ]; then
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'configured=false' >> "$GITHUB_OUTPUT"
+            echo '### Deploy skipped' >> "$GITHUB_STEP_SUMMARY"
+            echo 'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are not set on this repository.' \
+              >> "$GITHUB_STEP_SUMMARY"
+            echo 'See docs/runbooks/deploy.md, "First-time setup".' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$REF" = 'refs/heads/main' ]; then
+            echo 'environment=production' >> "$GITHUB_OUTPUT"
+          else
+            echo 'environment=preview' >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    name: ${{ needs.guard.outputs.environment }}
+    needs: guard
+    if: needs.guard.outputs.configured == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: ${{ needs.guard.outputs.environment }}
+      url: ${{ steps.publish.outputs.deployment-url }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Production re-runs everything CI runs before it publishes. CI and this
+      # job can race on a fast merge, and the apex is not the place to find out
+      # which one won.
+      - name: Verify (production only)
+        if: needs.guard.outputs.environment == 'production'
+        run: pnpm --filter @aqw/ui tokens:check && pnpm lint && pnpm format:check && pnpm typecheck && pnpm test
+        env:
+          PUBLIC_ANALYTICS_PROVIDER: ${{ vars.PUBLIC_ANALYTICS_PROVIDER }}
+          PUBLIC_ANALYTICS_TOKEN: ${{ vars.PUBLIC_ANALYTICS_TOKEN }}
+          PUBLIC_ANALYTICS_HOST: ${{ vars.PUBLIC_ANALYTICS_HOST }}
+
+      # The build bakes in the analytics variables and, through
+      # scripts/postbuild.ts, writes dist/_headers and dist/_redirects. A
+      # preview deploys with analytics off and `X-Robots-Tag: noindex`, so
+      # preview traffic never lands in the production numbers or in an index.
+      # The Outrider links (footer family line, home FAQ) ship only once
+      # PUBLIC_OUTRIDER_URL is set.
+      - name: Build
+        run: pnpm --filter @aqw/site-agent-queue build
+        env:
+          DEPLOY_ENV: ${{ needs.guard.outputs.environment }}
+          PUBLIC_OUTRIDER_URL: ${{ vars.PUBLIC_OUTRIDER_URL }}
+          PUBLIC_ANALYTICS_PROVIDER: >-
+            ${{ needs.guard.outputs.environment == 'production' && vars.PUBLIC_ANALYTICS_PROVIDER || '' }}
+          PUBLIC_ANALYTICS_TOKEN: >-
+            ${{ needs.guard.outputs.environment == 'production' && vars.PUBLIC_ANALYTICS_TOKEN || '' }}
+          PUBLIC_ANALYTICS_HOST: >-
+            ${{ needs.guard.outputs.environment == 'production' && vars.PUBLIC_ANALYTICS_HOST || '' }}
+
+      - name: The edge config the deploy is about to publish
+        run: |
+          echo '### Headers' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat sites/agent-queue/dist/_headers >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Cloudflare Pages decides production vs preview from --branch: the
+      # project's production branch publishes to the custom domain, every other
+      # branch gets <branch>.<project>.pages.dev and keeps its own history.
+      - name: Publish
+        id: publish
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            pages deploy sites/agent-queue/dist
+            --project-name=${{ vars.CLOUDFLARE_PAGES_PROJECT || 'agent-queue' }}
+            --branch=${{ github.ref_name }}
+            --commit-dirty=true
+
+      - name: Where it went
+        run: |
+          echo "### ${{ needs.guard.outputs.environment }} deploy" >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.publish.outputs.deployment-url }}" >> "$GITHUB_STEP_SUMMARY"

@@ -39,7 +39,14 @@ INSTALLED_SOURCE_ROOTS = (
 #: reviewed bundle (``tests/fixtures/playbooks/v2/ci-main-sentinel/``), which
 #: ``tests/test_default_playbook_v2_artifacts.py`` validates against the live
 #: registries.
-EXCLUDED_SAMPLE_ROOTS: tuple[str, ...] = ("src/prompts/project_playbooks",)
+#: ``src/prompts/integration_playbooks/`` holds the system-scoped shared train
+#: routes (``parent-integration``, ``root-train``): never copied into a vault as
+#: live sources, they reach one only through their reviewed bundles, and an
+#: operator imports and activates them by hand (``docs/config/train-onboarding.md``).
+EXCLUDED_SAMPLE_ROOTS: tuple[str, ...] = (
+    "src/prompts/project_playbooks",
+    "src/prompts/integration_playbooks",
+)
 
 #: Reviewed V2 bundles the daemon itself ships and seeds into a new vault
 #: (``src/playbooks/required.py``: ``ensure_reviewed_playbook_bundles``).  These

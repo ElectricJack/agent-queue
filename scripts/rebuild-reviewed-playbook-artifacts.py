@@ -74,6 +74,8 @@ SHIPPED = {
     "morning-report": "src/prompts/default_playbooks/morning-report.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
+    "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",
+    "root-train": "src/prompts/integration_playbooks/root-train.md",
 }
 SOURCES = SHIPPED
 
@@ -137,6 +139,38 @@ def _recorded_semantic_body(playbook_id: str) -> dict[str, Any]:
         (FIXTURE_ROOT / playbook_id / "artifact.json").read_text(encoding="utf-8")
     )
     return {"rules": payload["rules"], "steps": payload["steps"]}
+
+
+def _rebased_recorded_body(template_id: str, source: PlaybookSource) -> dict[str, Any]:
+    """A reviewed template's graph with every source ref moved onto ``source``.
+
+    ``parent-integration`` is ``agent-queue-parent-integration`` at system
+    scope: its rule prose is verbatim, so the reviewed graph is reused as is and
+    each ref, which names a rule heading, moves to that heading's line in the
+    new source.  A heading the new source lacks is a refusal, not a guess.
+    """
+    body = _recorded_semantic_body(template_id)
+    template_lines = (
+        (FIXTURE_ROOT / template_id / "source.md").read_text(encoding="utf-8").splitlines()
+    )
+    headings = {
+        line.strip(): number
+        for number, line in enumerate(source.raw.splitlines(), start=1)
+        if line.startswith("## ")
+    }
+
+    def rebase(ref: dict[str, Any]) -> dict[str, Any]:
+        heading = template_lines[ref["start_line"] - 1].strip()
+        if heading not in headings:
+            raise SystemExit(f"{source.vault_path}: missing template heading {heading!r}")
+        line = headings[heading]
+        return {**ref, "path": source.vault_path, "start_line": line, "end_line": line}
+
+    for rule in body["rules"]:
+        rule["source"] = rebase(rule["source"])
+    for step in body["steps"].values():
+        step["source"] = rebase(step["source"])
+    return body
 
 
 def _default_pipeline_body(source: PlaybookSource) -> dict[str, Any]:
@@ -276,8 +310,10 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _default_assignment_routing_body(source)
     if playbook_id == "ci-main-sentinel":
         return _ci_main_sentinel_body(source)
-    if playbook_id == "agent-queue-root-train":
+    if playbook_id in ("agent-queue-root-train", "root-train"):
         return _root_integration_train_body(source)
+    if playbook_id == "parent-integration":
+        return _rebased_recorded_body("agent-queue-parent-integration", source)
     if playbook_id == "blocked-task-escalation":
         return _blocked_task_escalation_body(source)
     if playbook_id == "supervisor-failure-triage":

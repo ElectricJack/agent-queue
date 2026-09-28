@@ -219,3 +219,39 @@ async def test_enabled_project_uses_shared_route_without_activation_id(db):
         "task.completed",
         {"project_id": "enabled", "task_id": "task-1", "title": "done"},
     ) == ["default-pipeline", "hierarchical-delivery"]
+
+
+@pytest.mark.parametrize("playbook_id", ["parent-integration", "root-train"])
+async def test_shared_train_route_serves_only_projects_whose_policy_names_it(db, playbook_id):
+    """One system activation of a shipped shared route must not fan out.
+
+    ``parent-integration`` subscribes to ``task.completed``; without the
+    lifecycle fence a single system activation would run integration commands
+    for every project on the install.
+    """
+    other = "root-train" if playbook_id == "parent-integration" else "parent-integration"
+    for project_id in ("disabled", "named", "elsewhere"):
+        await db.create_project(Project(id=project_id, name=project_id))
+    await _activate(db, "default-pipeline", "system", "", "5")
+    await _activate(db, playbook_id, "system", "", "6")
+    await _activate(db, other, "system", "", "7")
+    await _enable_system_integration_route(
+        db, project_id="named", playbook_id=playbook_id, artifact_sha256="sha256:" + "6" * 64
+    )
+    await _enable_system_integration_route(
+        db, project_id="elsewhere", playbook_id=other, artifact_sha256="sha256:" + "7" * 64
+    )
+    source = DatabaseActivationSource(db)
+
+    def event(project_id: str) -> dict:
+        return {"project_id": project_id, "task_id": "task-1", "title": "done"}
+
+    assert await _ids(source, "task.completed", event("disabled")) == ["default-pipeline"]
+    assert await _ids(source, "task.completed", event("named")) == [
+        "default-pipeline",
+        playbook_id,
+    ]
+    assert await _ids(source, "task.completed", event("elsewhere")) == [
+        "default-pipeline",
+        other,
+    ]

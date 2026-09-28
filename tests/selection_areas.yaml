@@ -397,11 +397,12 @@ areas:
       - tests/test_cli_integration.py
       - tests/test_doctor_integration_checks.py
   - id: epic-trains
-    description: "Epic trains: legible epic branch names, epic dependencies ordering batches, epic pull requests and review evidence, rebase warnings, batch CI repair adoption and rebuild, and the reviewed train policies."
+    description: "Epic trains: legible epic branch names, epic dependencies ordering batches, epic pull requests and review evidence, rebase warnings, batch CI repair adoption and rebuild, the reviewed train policies, and onboarding a project onto the train."
     match:
       - tests/test_epic_*.py
       - tests/test_batch_ci_repair_*.py
       - tests/test_agent_queue_train_policy.py
+      - tests/test_train_onboarding.py
       - tests/test_root_integration_playbook.py
       - tests/test_hierarchical_delivery_playbook.py
   - id: development-delivery

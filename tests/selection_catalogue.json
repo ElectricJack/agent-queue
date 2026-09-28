@@ -322,7 +322,7 @@
       ]
     },
     "epic-trains": {
-      "description": "Epic trains: legible epic branch names, epic dependencies ordering batches, epic pull requests and review evidence, rebase warnings, batch CI repair adoption and rebuild, and the reviewed train policies.",
+      "description": "Epic trains: legible epic branch names, epic dependencies ordering batches, epic pull requests and review evidence, rebase warnings, batch CI repair adoption and rebuild, the reviewed train policies, and onboarding a project onto the train.",
       "modules": [
         "tests/test_agent_queue_train_policy.py",
         "tests/test_batch_ci_repair_adoption.py",
@@ -334,7 +334,8 @@
         "tests/test_epic_rebase_and_escalation.py",
         "tests/test_epic_train_end_to_end.py",
         "tests/test_hierarchical_delivery_playbook.py",
-        "tests/test_root_integration_playbook.py"
+        "tests/test_root_integration_playbook.py",
+        "tests/test_train_onboarding.py"
       ]
     },
     "escalations": {
@@ -1282,7 +1283,7 @@
       ]
     }
   },
-  "digest": "sha256:1c3ba1873e1072de02adc64497b31e98e258a3e1d6c84f3c43c0601b896e675f",
+  "digest": "sha256:a4fe23c34a45877a1de8badbd239d1c5e68fad324bcb4afafa9303e633baf928",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1731,7 +1732,9 @@
         "src.playbooks.artifact_ref",
         "src.playbooks.services"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "``DatabaseActivationSource.ready_activations`` scope selection."
     },
     "tests/test_agent_deletion_supply.py": {
@@ -11088,7 +11091,11 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api",
         "src.api.auth",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.api.middleware",
         "src.api.scope",
         "src.api.websocket",
         "src.cli",
@@ -13212,6 +13219,25 @@
       ],
       "markers": [],
       "summary": "Tests for ToolRegistry -- tool categorization and on-demand loading."
+    },
+    "tests/test_train_onboarding.py": {
+      "areas": [
+        "epic-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.cli.app",
+        "src.cli.exceptions",
+        "src.integration",
+        "src.integration.ci",
+        "src.integration.models",
+        "src.integration.train_onboarding",
+        "src.playbooks.required"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "`aq integration onboard-train`: shapes, check names, policy and plan."
     },
     "tests/test_transcript_checkpoints.py": {
       "areas": [

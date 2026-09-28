@@ -64,6 +64,8 @@ SHIPPED_SOURCES: dict[str, str] = {
     "morning-report": "src/prompts/default_playbooks/morning-report.md",
     "provider-failover": "src/prompts/default_playbooks/provider-failover.md",
     "github-issue-triage": "src/prompts/project_playbooks/agent-queue/github-issue-triage.md",
+    "parent-integration": "src/prompts/integration_playbooks/parent-integration.md",
+    "root-train": "src/prompts/integration_playbooks/root-train.md",
 }
 
 PLAYBOOK_IDS = tuple(SHIPPED_SOURCES)

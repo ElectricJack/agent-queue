@@ -1,0 +1,29 @@
+name: Native Windows
+on:
+  push:
+    branches: [main, 'aq/**']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  native:
+    name: Native Windows build and tests
+    runs-on: [self-hosted, Windows, X64, matter-engine-msvc]
+    timeout-minutes: 90
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '4'
+      CTEST_PARALLEL_LEVEL: '2'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build, test and validate package
+        shell: powershell
+        run: ./tools/ci-windows.ps1
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-windows-${{ github.sha }}-${{ github.run_attempt }}
+          path: artifacts/ci/
+          if-no-files-found: error
