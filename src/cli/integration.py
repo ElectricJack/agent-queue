@@ -593,7 +593,8 @@ def integration_recover_candidate_member(ctx: click.Context, reservation_id: str
 @integration.command("develop")
 @click.argument("project_id")
 @click.option("--validation", type=click.Choice(["focused", "advisory", "none"]), default="focused")
-@click.option("--command", "commands", multiple=True, help="Local validation command; repeatable.")
+@click.option("--command", "commands", multiple=True,
+              help="Finite validation preset command; repeatable. No shell or wrapper scripts.")
 @click.option("--interval-seconds", type=click.IntRange(min=1), default=300)
 @click.option("--timeout-seconds", type=click.IntRange(1, 3600), default=None,
               help="Seconds each command may run (default 300); slot wait is not counted.")

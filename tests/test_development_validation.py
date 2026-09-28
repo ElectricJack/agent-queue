@@ -50,7 +50,7 @@ async def _run(result, tmp_path, *, timeout=1, slot_wait=5):
     )
     client.submit.assert_awaited_once_with(
         project_id="p", operation_id="operation", store=str(tmp_path), input_ref="candidate",
-        preset="test", argv=["tests/test_a.py"], idempotency_key="key",
+        preset="test", argv=["tests/test_a.py"], snapshot_group=None, idempotency_key="key",
         queue_seconds=slot_wait, run_seconds=timeout,
     )
     return check

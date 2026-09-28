@@ -179,6 +179,26 @@ async def test_feature_off_and_accepted_contract_immutable_on_reload(db, tmp_pat
             await service.submit(**{**args, "args": bad, "idempotency_key": str(bad)})
 
 
+async def test_node_job_path_contains_server_resolved_runtime(db, tmp_path, monkeypatch):
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    monkeypatch.setattr(
+        "src.jobs.policy.node_executable", lambda name: str(binaries / name)
+    )
+    monkeypatch.setattr(
+        "src.jobs.service.node_executable", lambda name: str(binaries / name)
+    )
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.resources.jobs.enabled = True
+    job = await JobService(db, config).submit(
+        project_id="p", task_id="t", session_id=None, claim_epoch=1,
+        workspace_id="w", generation=0, preset="npm_test", args=[],
+        idempotency_key="node-path",
+    )
+    assert job["argv"] == [str(binaries / "npm"), "test"]
+    assert job["contract"]["env"]["PATH"].startswith(str(binaries) + ":")
+
+
 async def test_output_budget_keeps_accepted_reservations_on_config_change(db):
     first = await db.submit_job(values(), reservation=64, log_budget=100)
     with pytest.raises(JobError, match="output_capacity"):

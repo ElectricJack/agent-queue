@@ -1866,6 +1866,75 @@ def test_focused_policy_requires_commands():
         DevelopmentPolicy().checked()
 
 
+async def test_development_configure_rejects_unsupported_validation_before_mutation(
+    setup, monkeypatch,
+):
+    from src.jobs.adapters import finite_command
+
+    db, service, *_ = setup
+    before = (await db.get_project("p")).hierarchical_integration_policy
+    monkeypatch.setattr("src.integration.development_validation.finite_command", finite_command)
+    with pytest.raises(ValueError, match="unsupported development validation command"):
+        await service.configure(
+            "p", {"commands": ["npm ci && npm test"]},
+            reason="unsupported shell validation", operator_id="local",
+        )
+    with pytest.raises(ValueError, match="unsupported development validation command"):
+        await service.configure(
+            "p", {"commands": ["aq test -n 32"]},
+            reason="resource cap override", operator_id="local",
+        )
+    monkeypatch.setattr("src.integration.development.presets", lambda _root: {"test": object()})
+    with pytest.raises(ValueError, match="preset 'npm_ci' is unavailable"):
+        await service.configure(
+            "p", {"commands": ["npm ci"]},
+            reason="missing executable", operator_id="local",
+        )
+    assert (await db.get_project("p")).hierarchical_integration_policy == before
+
+
+async def test_development_checks_share_one_snapshot_per_attempt(setup):
+    db, service, source, *_ = setup
+    client = service.job_client
+    head = git(source, "rev-parse", "HEAD")
+    first = await client.submit(
+        project_id="p", operation_id="grouped-checks", store=str(source), input_ref=head,
+        preset="lint", argv=["true"], snapshot_group="attempt-0", idempotency_key="check-0",
+        queue_seconds=30, run_seconds=30,
+    )
+    await client.wait(first, poll_seconds=0.02)
+    snapshot = Path(first["contract"]["cwd"])
+    (snapshot / ".git" / "info" / "exclude").write_text("node_modules/\n")
+    (snapshot / "node_modules").mkdir()
+    (snapshot / "node_modules" / "installed.txt").write_text("installed\n")
+    second = await client.submit(
+        project_id="p", operation_id="grouped-checks", store=str(source), input_ref=head,
+        preset="lint", argv=["true"], snapshot_group="attempt-0", idempotency_key="check-1",
+        queue_seconds=30, run_seconds=30,
+    )
+    assert first["workspace_id"] == second["workspace_id"]
+    assert first["id"] != second["id"]
+    assert (Path(second["contract"]["cwd"]) / "node_modules" / "installed.txt").exists()
+    await client.wait(second, poll_seconds=0.02)
+
+    from src.database.tables import jobs
+
+    async with db._engine.begin() as conn:
+        await conn.execute(update(jobs).where(jobs.c.id == first["id"]).values(
+            ended_at=time.time() - 91 * 86400,
+        ))
+    await client.handler._jobs().sweep()
+    assert await db.get_job(first["id"]) is None
+    assert snapshot.exists() and await db.get_workspace(first["workspace_id"])
+    async with db._engine.begin() as conn:
+        await conn.execute(update(jobs).where(jobs.c.id == second["id"]).values(
+            ended_at=time.time() - 91 * 86400,
+        ))
+    await client.handler._jobs().sweep()
+    assert await db.get_job(second["id"]) is None
+    assert not snapshot.exists() and await db.get_workspace(second["workspace_id"]) is None
+
+
 async def test_child_publishes_directly_without_parent_assembly_or_verifier(setup):
     """Parent grouping is optional: the member records its parent, nothing gates on it."""
     db, service, _source, remote, _repo = setup
@@ -4379,6 +4448,7 @@ async def test_publisher_queue_replay_uses_one_snapshot_job_and_immutable_result
     request = dict(
         project_id="p", operation_id=job["owner_id"], store=str(await service.store(repo)),
         input_ref=job["input_ref"], preset="lint", argv=["test -f base.txt"],
+        snapshot_group=job["idempotency_key"].rsplit(":", 1)[0],
         idempotency_key=job["idempotency_key"], queue_seconds=600, run_seconds=300,
     )
     # A lost response followed by publisher restart attaches to the same row,

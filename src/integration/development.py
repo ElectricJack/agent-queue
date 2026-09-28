@@ -36,6 +36,7 @@ from src.database.tables import (
 )
 from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration import development_validation as validation_outcomes
+from src.jobs.policy import JobError, presets, validate_args
 from src.integration.delegate_release import release_delegates_on
 from src.integration.delivery_branches import (
     ASSEMBLY_PREFIX,
@@ -939,6 +940,7 @@ class DevelopmentIntegration:
                 slot_wait_seconds=policy.slot_wait_seconds,
                 job_client=self.job_client, project_id=project_id,
                 operation_id=operation_id, input_ref=head,
+                snapshot_group=f"{operation_id}:{attempt}" if operation_id else None,
                 idempotency_key=f"{operation_id}:{attempt}:{index}",
                 poll_seconds=self.validation_poll_seconds,
             )
@@ -2746,6 +2748,20 @@ class DevelopmentIntegration:
         from src.integration.live_operations import describe_live_operation, live_operations_on
 
         policy = DevelopmentPolicy.model_validate(policy).checked()
+        if policy.validation != "none":
+            available = presets(Path(__file__).resolve().parents[2])
+            for command in policy.commands:
+                try:
+                    preset, argv = validation_outcomes.finite_command(command)
+                    if preset not in available:
+                        raise ValueError(
+                            f"development validation preset {preset!r} is unavailable on this server"
+                        )
+                    validate_args(available[preset], argv, Path.cwd(), 1)
+                except JobError as exc:
+                    raise ValueError(
+                        f"unsupported development validation command {command!r}: {exc}"
+                    ) from exc
         if not reason.strip():
             raise ValueError("configuration reason is required")
         project = await self.db.get_project(project_id)

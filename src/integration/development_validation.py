@@ -77,6 +77,7 @@ async def run_check(
     project_id=None,
     operation_id=None,
     input_ref=None,
+    snapshot_group=None,
     idempotency_key=None,
     poll_seconds: float = 1.0,
 ) -> dict:
@@ -94,6 +95,7 @@ async def run_check(
         job = await job_client.submit(
             project_id=project_id, operation_id=operation_id, store=str(cwd),
             input_ref=input_ref, preset=preset, argv=argv,
+            snapshot_group=snapshot_group,
             idempotency_key=idempotency_key,
             queue_seconds=slot_wait_seconds, run_seconds=timeout_seconds,
         )

@@ -23,13 +23,20 @@ def finite_command(command: str | list[str]) -> tuple[str, list[str]]:
         (["python", "-m", "ruff", "check"], "lint"),
         (["python3", "-m", "ruff", "check"], "lint"),
         (["npm", "run", "build"], "build"),
+        (["npm", "ci"], "npm_ci"),
+        (["npm", "test"], "npm_test"),
+        (["pnpm", "install", "--frozen-lockfile"], "pnpm_install"),
+        (["pnpm", "check"], "pnpm_check"),
+        (["pnpm", "run", "build"], "pnpm_build"),
         (["scripts/e2e-smoke.sh"], "e2e"),
     ):
         if argv[:len(prefix)] == prefix:
             args = argv[len(prefix):]
             if any(a in {";", "&&", "||", "|", "&", ">", ">>", "<"} for a in args):
                 break
-            if preset in {"build", "e2e"} and args:
+            if preset in {
+                "build", "npm_ci", "npm_test", "pnpm_install", "pnpm_check", "pnpm_build", "e2e"
+            } and args:
                 break
             return preset, args
     raise JobError("jobs.preset_denied")

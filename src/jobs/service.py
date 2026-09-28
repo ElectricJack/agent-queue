@@ -14,7 +14,10 @@ import uuid
 from pathlib import Path
 from src.jobs.artifacts import OutputStore, atomic_json, job_directory, read_json
 from src.jobs.identity import processes, verified
-from src.jobs.policy import JobError, TERMINAL, presets, next_admission, request_hash, validate_args
+from src.jobs.policy import (
+    JobError, NODE_PRESETS, TERMINAL, next_admission, node_executable, presets,
+    request_hash, validate_args,
+)
 from src.jobs.result import build_result
 from src.resources.limits import session_env_caps
 from src.sessions.env import SCRATCH_DB_SENTINEL
@@ -119,6 +122,14 @@ class JobService:
             "AGENT_QUEUE_DB": SCRATCH_DB_SENTINEL,
             **session_env_caps(self.config),
         }
+        if preset in NODE_PRESETS:
+            # npm/pnpm launchers and package scripts commonly use /usr/bin/env node.
+            # Keep that server-resolved runtime on PATH inside the detached job.
+            node = node_executable("node")
+            if node is None:
+                raise JobError("jobs.preset_denied")
+            dirs = dict.fromkeys((str(Path(accepted.argv[0]).parent), str(Path(node).parent)))
+            env["PATH"] = ":".join((*dirs, env["PATH"]))
         if accepted.pytest or preset == "e2e":
             from src.database.migration_guard import same_database
 
@@ -445,25 +456,39 @@ class JobService:
                 import shutil
 
                 snapshot_ws = None
+                remove_snapshot = False
                 if job["owner_kind"] == "integration" and job["input_mode"] == "snapshot":
                     snapshot = Path(job["contract"]["cwd"])
                     root = Path(self.config.data_dir) / "job-snapshots"
                     ws = await self.db.get_workspace(job["workspace_id"])
-                    # Only internally provisioned, disabled snapshots may be
-                    # removed. Keep metadata on I/O failure so a sweep retries.
+                    # Only internally provisioned, disabled snapshots may be removed.
                     if (
                         ws and ws.kind_id == "job-snapshot" and not ws.enabled
                         and snapshot.parent == root
                         and job["workspace_id"] == "job-snapshot-" + snapshot.name
                     ):
+                        snapshot_ws = ws
+                        from sqlalchemy import select
+
+                        from src.database.tables import jobs
                         from src.jobs.workspace import mutation_guard
 
                         async with mutation_guard(self.db, ws):
-                            if await asyncio.to_thread(snapshot.exists):
-                                await asyncio.to_thread(shutil.rmtree, snapshot)
-                        snapshot_ws = ws
+                            async with self.db._engine.connect() as conn:
+                                other = await conn.scalar(
+                                    select(jobs.c.id)
+                                    .where(
+                                        jobs.c.workspace_id == ws.id,
+                                        jobs.c.id != job["id"],
+                                    )
+                                    .limit(1)
+                                )
+                            if other is None and not await self.db.workspace_has_job_pin(ws.id):
+                                if await asyncio.to_thread(snapshot.exists):
+                                    await asyncio.to_thread(shutil.rmtree, snapshot)
+                                remove_snapshot = True
                 if await self.db.purge_terminal_job(job["id"]):
-                    if snapshot_ws:
+                    if remove_snapshot and snapshot_ws:
                         await self.db.delete_workspace(snapshot_ws.id)
                     directory = await asyncio.to_thread(
                         job_directory, Path(self.config.data_dir), job["id"]
