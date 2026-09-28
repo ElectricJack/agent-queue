@@ -12,7 +12,6 @@ from src.database import Database
 from src.models import DepType, Project, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
 
-
 PROJECT = "p-dep"
 
 
@@ -121,3 +120,40 @@ async def test_get_task_statuses_returns_only_existing_ids(db):
 
     assert await db.get_task_statuses(["a", "b", "ghost"]) == {"a": "DEFINED", "b": "COMPLETED"}
     assert await db.get_task_statuses([]) == {}
+
+
+async def test_get_stuck_defined_tasks_reads_tasks_that_carry_a_route(db):
+    """Outage 2026-09-28: with ``tasks.route`` typed ``json``, this query's
+    ``SELECT DISTINCT tasks.*`` failed every scheduler cycle (``could not
+    identify an equality operator for type json``).  The route here is not
+    null, and ``stuck`` has two failed blockers, which the old DISTINCT
+    collapsed into one row."""
+    route = {"reason": "router", "candidates": [{"profile_id": "p", "score": 1}]}
+    statuses = {
+        "failed": TaskStatus.FAILED,
+        "blocked": TaskStatus.BLOCKED,
+        "done": TaskStatus.COMPLETED,
+    }
+    for tid, status in statuses.items():
+        await db.create_task(
+            Task(id=tid, project_id=PROJECT, title=tid, description="", status=status)
+        )
+    for tid in ("stuck", "fine", "discovered", "second"):
+        await db.create_task(
+            Task(id=tid, project_id=PROJECT, title=tid, description="", route=route)
+        )
+    await db.create_task(
+        Task(id="ready", project_id=PROJECT, title="ready", description="",
+             status=TaskStatus.READY, route=route)
+    )
+    await db.add_dependency("stuck", "failed")
+    await db.add_dependency("stuck", "blocked")
+    await db.add_dependency("second", "blocked")
+    await db.add_dependency("fine", "done")
+    await db.add_dependency("discovered", "failed", DepType.DISCOVERED_FROM.value)
+    await db.add_dependency("ready", "failed")
+
+    stuck = await db.get_stuck_defined_tasks(0)
+
+    assert sorted(task.id for task in stuck) == ["second", "stuck"]  # one row per task
+    assert all(task.route == route for task in stuck)

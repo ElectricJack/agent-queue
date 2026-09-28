@@ -360,6 +360,7 @@ one fails, the message names the side to fix.
 | [`test_docs_sync.py`](../../tests/test_docs_sync.py) | Every table in `src/database/tables.py` has a row in the database spec. |
 | [`test_migration_string_defaults.py`](../../tests/test_migration_string_defaults.py), [`test_migration_boolean_defaults.py`](../../tests/test_migration_boolean_defaults.py) | Migration `server_default` values are bare, and booleans use `sa.false()`/`sa.true()`. |
 | [`test_migration_single_head.py`](../../tests/test_migration_single_head.py) | The Alembic chain has exactly one head. |
+| [`test_migration_json_columns.py`](../../tests/test_migration_json_columns.py) | No new column is plain `json` (no equality operator, so a whole-row `DISTINCT` fails); declare `JSONB`. Pre-existing columns are grandfathered and the list only shrinks. |
 | [`test_import_cycles.py`](../../tests/test_import_cycles.py) | Package import cycles stay broken. |
 
 ## Frontend tests

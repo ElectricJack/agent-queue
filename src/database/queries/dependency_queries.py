@@ -8,7 +8,7 @@ the projection can never lag the graph.
 
 from __future__ import annotations
 
-from sqlalchemy import and_, delete, or_, select
+from sqlalchemy import and_, delete, exists, literal, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.blocked_state import unmet_dependency_predicate
@@ -378,24 +378,30 @@ class DependencyQueryMixin:
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
     async def get_stuck_defined_tasks(self, threshold_seconds: int) -> list[Task]:
-        """Return DEFINED tasks blocked by a BLOCKED or FAILED dependency."""
+        """Return DEFINED tasks blocked by a BLOCKED or FAILED dependency.
+
+        A semi-join, not ``SELECT DISTINCT tasks.*``: DISTINCT compares every
+        column, and one without an equality operator (``json``) failed the
+        query on every scheduler cycle (outage 2026-09-28).
+        """
+        dep_tasks = tasks.alias("dep")
+        failed_blocker = exists(
+            select(literal(1))
+            .select_from(
+                task_dependencies.join(
+                    dep_tasks, dep_tasks.c.id == task_dependencies.c.depends_on_task_id
+                )
+            )
+            .where(
+                task_dependencies.c.task_id == tasks.c.id,
+                _dep_type_filter(None),
+                dep_tasks.c.status.in_([TaskStatus.BLOCKED.value, TaskStatus.FAILED.value]),
+            )
+        )
         async with self._engine.begin() as conn:
-            dep_tasks = tasks.alias("dep")
             result = await conn.execute(
                 select(tasks)
-                .distinct()
-                .select_from(
-                    tasks.join(task_dependencies, task_dependencies.c.task_id == tasks.c.id).join(
-                        dep_tasks, dep_tasks.c.id == task_dependencies.c.depends_on_task_id
-                    )
-                )
-                .where(
-                    and_(
-                        tasks.c.status == TaskStatus.DEFINED.value,
-                        _dep_type_filter(None),
-                        dep_tasks.c.status.in_([TaskStatus.BLOCKED.value, TaskStatus.FAILED.value]),
-                    )
-                )
+                .where(tasks.c.status == TaskStatus.DEFINED.value, failed_blocker)
                 .order_by(tasks.c.created_at.asc())
             )
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
