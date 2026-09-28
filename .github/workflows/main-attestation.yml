@@ -1,0 +1,41 @@
+name: Main attestation
+# The break-glass audit (App-mode integration train spec §7.2). A train
+# promotion moves `main` to a candidate the daemon already attested, so this
+# workflow only verifies that attestation and runs no second CI. A push to
+# `main` without a valid attestation runs the full suite after the fact. With
+# the two Actions variables unset the repository is not in App mode yet, and
+# nothing runs.
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  checks: read
+jobs:
+  attestation:
+    name: Main attestation
+    runs-on: ubuntu-latest
+    outputs:
+      attested: ${{ steps.verify.outputs.attested }}
+      configured: ${{ steps.verify.outputs.configured }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: src/integration/hosted_attestation.py
+          sparse-checkout-cone-mode: false
+      - id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          SHA: ${{ github.sha }}
+          APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}
+          CHECK_VERSION: ${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}
+        run: python3 src/integration/hosted_attestation.py
+  unattested-ci:
+    needs: attestation
+    if: >-
+      needs.attestation.outputs.configured == 'true' &&
+      needs.attestation.outputs.attested != 'true'
+    uses: ./.github/workflows/tests.yml
