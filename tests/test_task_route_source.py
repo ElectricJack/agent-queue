@@ -339,21 +339,37 @@ async def test_kinds_round_trip_through_create_task_and_the_api_model(handler, d
     assert detail.route_source in ROUTE_SOURCES
 
 
-async def test_a_graph_node_carries_a_kind_and_a_stamped_source(handler, db):
+async def test_a_graph_node_carries_a_kind_and_is_filed_unrouted(handler, db):
+    graph = {
+        "version": 1,
+        "parent": {"title": "Epic"},
+        "nodes": [
+            {"key": "d", "title": "D", "acceptance": ["x"], "task_type": "design",
+             "intelligence_class": "deep-high"},
+            {"key": "a", "title": "A", "acceptance": ["x"], "task_type": "art"},
+        ],
+    }
+    result = await handler._cmd_create_task_graph({"project_id": "p", "graph": graph})
+    assert "error" not in result, result
+    ids = {node["key"]: node["task_id"] for node in result["nodes"]}
+    design, art = await db.get_task(ids["d"]), await db.get_task(ids["a"])
+    assert (design.task_type, design.route_source) == (TaskType.DESIGN, UNROUTED)
+    assert (design.profile_id, design.intelligence_class, design.class_hint) == (
+        None, None, "deep-high",
+    )
+    assert (art.task_type, art.route_source) == (TaskType.ART, UNROUTED)
+
+
+async def test_a_graph_node_naming_a_profile_is_refused(handler, db):
+    """A node carries hints, never a route (mandatory-routing spec §5.1)."""
     result = await handler._cmd_create_task_graph({
         "project_id": "p",
         "graph": {
             "version": 1,
-            "parent": {"title": "Epic"},
-            "nodes": [
-                {"key": "d", "title": "D", "acceptance": ["x"], "task_type": "design",
-                 "profile": "worker"},
-                {"key": "a", "title": "A", "acceptance": ["x"], "task_type": "art"},
-            ],
+            "nodes": [{"key": "d", "title": "D", "acceptance": ["x"], "task_type": "design",
+                       "profile": "worker"}],
         },
     })
-    assert "error" not in result, result
-    ids = {node["key"]: node["task_id"] for node in result["nodes"]}
-    design, art = await db.get_task(ids["d"]), await db.get_task(ids["a"])
-    assert (design.task_type, design.route_source) == (TaskType.DESIGN, LEGACY)
-    assert art.task_type is TaskType.ART
+    assert result["code"] == "routing.choice_forbidden"
+    assert result["refused"] == ["d.profile"]
+    assert await db.list_tasks(project_id="p") == []

@@ -45,7 +45,13 @@ from src.models import (
     WorkspaceMode,
 )
 from src.review_keys import REVIEW_PROFILE_IDS, is_review_completion, reviewed_task_id
-from src.routing.sources import ROLE, ROLE_PROFILE_IDS, UNROUTED
+from src.routing.filing import (
+    REFUSED_ROUTING_ARGS,
+    choice_forbidden,
+    graph_route_refusal,
+    refused_arguments,
+)
+from src.routing.sources import ROLE, UNROUTED
 from src.state_machine import (
     CyclicDependencyError,
     validate_dag_with_new_edge,
@@ -180,6 +186,17 @@ def _role_creator() -> bool:
 
     principal = current_principal()
     return principal is None or principal.kind in (PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK)
+
+
+def _filing_refusal(command: str, args: dict) -> dict | None:
+    """The routing refusal for a filing handler (mandatory-routing spec §5.1).
+
+    ``CommandHandler.execute`` refuses these arguments before any handler
+    runs; an in-process caller reaches the handler directly, so the handler
+    repeats the check.  Only a role creator's role ``profile_id`` passes.
+    """
+    refused = refused_arguments(command, args, role_creator=_role_creator())
+    return choice_forbidden(command, refused) if refused else None
 
 
 def provider_intent_actor() -> str:
@@ -2190,20 +2207,15 @@ class TaskCommandsMixin:
                 "success": False,
                 "error": "--root and parent_id are mutually exclusive",
             }
-        # Provider intent (provider-failover D9).  Validated and permission-
-        # checked before anything else reads the scope, so a worker's pin is
-        # refused however the rest of the request would have gone.
-        requested_intent = args.get("provider_intent")
-        pin_requested = bool(args.get("pin"))
-        refusal = provider_intent_refusal(requested_intent)
+        # A route is never chosen at filing (mandatory-routing spec §5.1).
+        # ``CommandHandler.execute`` refuses the routing arguments before any
+        # handler runs; this is the same refusal for an in-process caller,
+        # which reaches the handler directly.  The one profile admitted is a
+        # role profile named by a role creator (spec §4, D3).
+        refusal = _filing_refusal("create_task", args)
         if refusal is not None:
             return refusal
-        if pin_requested or requested_intent == "pinned":
-            refusal = pin_not_permitted_refusal(
-                self._current_scope, "pin" if pin_requested else "provider_intent"
-            )
-            if refusal is not None:
-                return refusal
+        profile_id = args.get("profile_id") or None
 
         # ----- Worker-filed work (swarm work model §12) --------------------
         # A session-scoped, non-elevated caller is a pool worker currently
@@ -2400,19 +2412,15 @@ class TaskCommandsMixin:
         # caller, the supervisor or the project default, and no class is
         # matched to a profile here.
         #
-        # Two callers still name a profile:
+        # The one caller that still names a profile is a ``SERVICE`` or
+        # ``PLAYBOOK`` principal (or an in-process internal caller) naming a
+        # role profile — ``triage``, ``spec-ingest``, ``reviewer``,
+        # ``final-reviewer``; every other profile was refused above.  A role
+        # task keeps its stage profile with ``route_source='role'`` and runs
+        # the role profile's own class (spec §4, D3).
         #
-        # * a ``SERVICE`` or ``PLAYBOOK`` principal (or an in-process
-        #   internal caller) naming a role profile — ``triage``,
-        #   ``spec-ingest``, ``reviewer``, ``final-reviewer``.  A role task
-        #   keeps its stage profile with ``route_source='role'`` and runs the
-        #   role profile's own class (spec §4, D3);
-        # * an explicit ``profile_id`` from any other caller, which the
-        #   database layer stamps ``legacy`` until the filing surfaces refuse
-        #   it (spec §9.2, Task 5).
-        #
-        # An explicitly named profile is still bounded by the caller's
-        # capabilities (no upward escalation): ``child.allowed_tools ⊆
+        # A named role profile is still bounded by the caller's capabilities
+        # (no upward escalation): ``child.allowed_tools ⊆
         # parent.allowed_tools`` AND ``child.mcp_servers ⊆
         # parent.mcp_servers``.  This blocks the confused-deputy attack where
         # prompt-injected text in a sandboxed playbook says "create a task
@@ -2421,7 +2429,6 @@ class TaskCommandsMixin:
         # ``ExecutionPrincipal``, which ``CommandHandler.execute`` derives
         # from the *session row* keyed by the token's ``session_id``; see
         # ``docs/specs/design/sandboxed-playbooks.md``.
-        profile_id = args.get("profile_id")
         caller_profile_id = getattr(self, "_caller_profile_id", None)
         caller_profile = None
         # Both fail-closed branches below are conditioned on ``profile_id``
@@ -2455,7 +2462,7 @@ class TaskCommandsMixin:
         if class_id is not None and (class_error := self._validate_routing_class(class_id)):
             return {"success": False, "error": class_error}
         # Which rule chose the route, reported as ``profile_source``:
-        # ``explicit`` or ``role``, and absent for an unrouted task.
+        # ``role``, and absent for an unrouted task.
         profile_source: str | None = None
         route_source: str | None = None
         stored_class: str | None = None
@@ -2488,37 +2495,22 @@ class TaskCommandsMixin:
                             f"'{caller_profile.id}'. {escalation}"
                         )
                     }
-            if profile.id in ROLE_PROFILE_IDS and _role_creator():
-                route_source = ROLE
-                profile_source = ROLE
-                stored_class = str(profile.default_class or "").strip() or class_id
-            else:
-                profile_source = "explicit"
-                stored_class = class_id
-            # A named profile must run the class stored with it.
+            route_source = ROLE
+            profile_source = ROLE
+            stored_class = str(profile.default_class or "").strip() or class_id
+            # A role profile must run the class stored with it.
             class_error = self._validate_routing_class(stored_class, profile)
             if class_error:
                 return {"success": False, "error": class_error}
         if filing_session is not None and not profile_id:
             # The filer's profile is provenance, never the child's route.
             filed_by_profile_id = caller_profile_id or filing_session.profile_id or ""
-        # D9: a profile the caller supplied is a preference; no profile is
-        # ``class_only``.  A pin or an explicit preference needs a profile.
+        # D9: a role profile is a preference; an unrouted task is
+        # ``class_only`` until the router writes its route.
         from src.providers.intent import CLASS_ONLY, resolve_intent
 
-        if (pin_requested or requested_intent in ("pinned", "preferred")) and not profile_id:
-            return {
-                "success": False,
-                "code": "provider_intent.profile_required",
-                "error": (
-                    f"provider_intent '{'pinned' if pin_requested else requested_intent}' "
-                    "names a provider, so it needs a profile_id; pass profile_id (or omit "
-                    "the intent and let routing place the task)"
-                ),
-            }
         provider_intent = resolve_intent(
-            requested_intent,
-            pin=pin_requested,
+            None,
             profile_supplied=profile_source is not None,
             profile_id=profile_id,
         )
@@ -2804,8 +2796,8 @@ class TaskCommandsMixin:
         from src.playbooks.routing import requires_routing_gate
         manager = getattr(self.orchestrator, "playbook_manager", None)
         routing_policy = None
-        # Every task without a route goes through routing; explicit profiles
-        # keep their existing behaviour until the filing surfaces refuse them.
+        # Every task without a route goes through routing; a role task keeps
+        # its stage profile and is never routed (spec §4, D3).
         if (
             manager is not None
             and not profile_id
@@ -3007,7 +2999,7 @@ class TaskCommandsMixin:
 
         # D9: who meant the provider, and when.  Only a meaningful intent is
         # audited -- a routed ``class_only`` row is the default and costs no write.
-        if provider_intent != CLASS_ONLY or requested_intent is not None or pin_requested:
+        if provider_intent != CLASS_ONLY:
             await self._record_provider_intent_audit(task_id, provider_intent, previous=None)
 
         # Graph edges and labels, now that the FK target exists.  Each
@@ -3402,6 +3394,9 @@ class TaskCommandsMixin:
         from src.task_graph.creator import GraphFilingError
         from src.task_graph.validator import resolve_spec_path_checked
 
+        refusal = _filing_refusal("create_task_graph", args)
+        if refusal is not None:
+            return refusal
         scope = self._current_scope or {}
         scoped_session = scope.get("kind") == "session" and not scope.get("elevated")
         project_id = args.get("project_id") or scope.get("project_id") or self._active_project_id
@@ -3468,6 +3463,9 @@ class TaskCommandsMixin:
             else:
                 graph = parse_graph(raw_graph)
         except GraphParseError as exc:
+            refused = graph_route_refusal("create_task_graph", exc.errors)
+            if refused is not None:
+                return refused
             return {
                 "error": "graph document is invalid",
                 "errors": [e.to_dict() for e in exc.errors],
@@ -3479,14 +3477,6 @@ class TaskCommandsMixin:
             phases_refusal = self._phases_need_root_refusal(graph, parent_id)
             if phases_refusal is not None:
                 return phases_refusal
-
-        # A session graph is authored by the held worker irrespective of
-        # whether its text arrived inline or through a vault spec.  It may
-        # name profile preferences but cannot pin a provider (D9).
-        if any(node.pin for node in graph.nodes) and (raw_graph or scoped_session):
-            refusal = pin_not_permitted_refusal(self._current_scope, "pin")
-            if refusal is not None:
-                return refusal
 
         filing = None
         container_parent_id = None
@@ -3540,34 +3530,33 @@ class TaskCommandsMixin:
                 return phases_refusal
 
         for node in graph.nodes:
-            if node.profile is None and args.get("profile_id"):
-                node.profile = args["profile_id"]
-                # The caller supplied it, so it is a preference (D9).
-                node.profile_source = "fill_in"
             if node.intelligence_class is None and args.get("intelligence_class"):
                 node.intelligence_class = args["intelligence_class"]
 
-        # A node class without a profile is a hint: the node is written
-        # unrouted with the class as its ``class_hint``, and the project's
-        # router picks the profile (mandatory-routing spec §5.1, §5.3).
-        # Nothing here resolves a class onto a profile.
+        # A node class is a hint: the node is written unrouted with the class
+        # as its ``class_hint``, and the project's router picks the profile
+        # (mandatory-routing spec §5.1, §5.3).  Nothing here resolves a class
+        # onto a profile; an unknown class is still refused, so a typo does
+        # not silently lose the hint.
         from src.task_graph.models import GraphError
 
         findings = await validate_graph(
             graph, project_id=project_id, db=self.db, vault_root=vault_root,
             parent_id=parent_id, filed_by=filing.held_task_id if filing else None,
         )
-        class_errors: dict[tuple[str | None, str], str | None] = {}
+        class_errors: dict[str, str | None] = {}
         for node in graph.nodes:
             if node.intelligence_class is None:
                 continue
-            route = (node.profile, node.intelligence_class)
-            if route not in class_errors:
-                profile = await self.db.get_profile(node.profile) if node.profile else None
-                class_errors[route] = self._validate_routing_class(node.intelligence_class, profile)
-            if class_errors[route]:
+            if node.intelligence_class not in class_errors:
+                class_errors[node.intelligence_class] = self._validate_routing_class(
+                    node.intelligence_class
+                )
+            if class_errors[node.intelligence_class]:
                 findings.append(GraphError(
-                    rule="invalid_intelligence_class", detail=class_errors[route], node=node.key,
+                    rule="invalid_intelligence_class",
+                    detail=class_errors[node.intelligence_class],
+                    node=node.key,
                 ))
         errors, warnings = split_findings(findings)
         if errors:
@@ -4020,25 +4009,16 @@ class TaskCommandsMixin:
         if "status" in args and task.status == TaskStatus.PAUSED and task.resume_after is None:
             return {"error": "Task is manually paused; use resume_task."}
 
-        routing_fields = {"profile_id", "intelligence_class"} & args.keys()
-        # Provider intent rides the routing guard (provider-failover D8/D9).
-        # ``pin`` counts only when set: a CLI that always sends ``pin: false``
-        # must not make every edit a routing edit.
-        if args.get("provider_intent") is not None:
-            routing_fields.add("provider_intent")
-        if args.get("pin"):
-            routing_fields.add("pin")
-        if routing_fields and (task.status == TaskStatus.IN_PROGRESS or task.assigned_agent_id):
-            return {"error": "Task is running or claimed; stop the task before changing its routing."}
-        refusal = provider_intent_refusal(args.get("provider_intent"))
+        # A route is never edited: the router writes it (mandatory-routing
+        # spec §5.1).  The hints stay editable — the class hint and the kind —
+        # and on a task no worker holds, a hint edit sends the task back to
+        # its router (``_reset_route_for_hint_edit`` below).
+        refusal = _filing_refusal("edit_task", args)
         if refusal is not None:
             return refusal
-        if args.get("pin") or args.get("provider_intent") == "pinned":
-            refusal = pin_not_permitted_refusal(
-                self._current_scope, "pin" if args.get("pin") else "provider_intent"
-            )
-            if refusal is not None:
-                return refusal
+        claimed = task.status == TaskStatus.IN_PROGRESS or bool(task.assigned_agent_id)
+        if "intelligence_class" in args and claimed:
+            return {"error": "Task is running or claimed; stop the task before changing its class hint."}
 
         VERIFICATION_VALUES = frozenset(v.value for v in VerificationType)
 
@@ -4091,61 +4071,13 @@ class TaskCommandsMixin:
                 return {
                     "error": f"Invalid verification_type '{raw_vt}'. Allowed: {', '.join(sorted(VERIFICATION_VALUES))}"
                 }
-        if "profile_id" in args:
-            pid = args["profile_id"]
-            if pid is not None:
-                profile = await self.db.get_profile(pid)
-                if not profile:
-                    return {"error": f"Profile '{pid}' not found"}
-                if error := self._task_execution_profile_error(profile):
-                    return {"error": error}
-            updates["profile_id"] = pid  # None clears the profile
         if "intelligence_class" in args:
-            updates["intelligence_class"] = args["intelligence_class"]
-        # D9: naming a profile is a preference (``pin`` makes it a pin);
-        # clearing it clears the intent; ``provider_intent`` alone sets it.
-        new_intent: str | None = None
-        if {"profile_id", "provider_intent", "pin"} & routing_fields:
-            from src.providers.intent import CLASS_ONLY, resolve_intent
-
-            requested_intent = args.get("provider_intent")
-            pin_requested = bool(args.get("pin"))
-            routed_profile_id = updates.get("profile_id", task.profile_id)
-            if (pin_requested or requested_intent in ("pinned", "preferred")) and not routed_profile_id:
-                return {
-                    "success": False,
-                    "code": "provider_intent.profile_required",
-                    "error": (
-                        f"provider_intent '{'pinned' if pin_requested else requested_intent}' "
-                        "names a provider, so the task needs a profile_id; set one in the "
-                        "same edit"
-                    ),
-                }
-            if "profile_id" in updates and updates["profile_id"] is None:
-                new_intent = CLASS_ONLY
-            elif "profile_id" in updates:
-                new_intent = resolve_intent(
-                    requested_intent,
-                    pin=pin_requested,
-                    profile_supplied=True,
-                    profile_id=updates["profile_id"],
-                )
-            else:
-                new_intent = resolve_intent(
-                    requested_intent,
-                    pin=pin_requested,
-                    profile_supplied=False,
-                    profile_id=task.profile_id,
-                )
-            updates["provider_intent"] = new_intent
-        if routing_fields:
-            routed_profile_id = updates.get("profile_id", task.profile_id)
-            routed_profile = await self.db.get_profile(routed_profile_id) if routed_profile_id else None
-            class_error = self._validate_routing_class(
-                updates.get("intelligence_class", task.intelligence_class), routed_profile
-            )
-            if class_error:
+            class_hint = args["intelligence_class"] or None
+            # An unknown class is refused, as at filing: the router ignores a
+            # class missing from its policy, so a typo would lose the hint.
+            if class_hint is not None and (class_error := self._validate_routing_class(class_hint)):
                 return {"error": class_error}
+            updates["class_hint"] = class_hint  # None clears the hint
         if "integration_mode" in args:
             mode = args["integration_mode"]
             if mode is not None and mode not in INTEGRATION_MODES:
@@ -4188,27 +4120,12 @@ class TaskCommandsMixin:
                     f"Allowed: {', '.join(sorted(WORKSPACE_MODE_VALUES))}"
                 }
 
-        if routing_fields:
-            updated = await self.db.update_task_routing(
-                task.id,
-                profile_id=updates.get("profile_id", task.profile_id),
-                intelligence_class=updates.get("intelligence_class", task.intelligence_class),
-                preferred_workspace_id=None,
-                clear_intelligence_class=(
-                    "intelligence_class" in updates and updates["intelligence_class"] is None
-                ),
-                provider_intent=new_intent,
-            )
-            if not updated:
-                return {"error": "Task is running or claimed; stop the task before changing its routing."}
-            if new_intent is not None:
-                await self._record_provider_intent_audit(
-                    task.id, new_intent, previous=task.provider_intent
-                )
+        if {"class_hint", "task_type"} & updates.keys():
+            refusal = await self._reset_route_for_hint_edit(task, updates, claimed=claimed)
+            if refusal is not None:
+                return refusal
         other_updates = {
-            key: value
-            for key, value in updates.items()
-            if key not in routing_fields and key != "provider_intent"
+            key: value for key, value in updates.items() if key != "class_hint"
         }
         if other_updates:
             try:
@@ -4245,7 +4162,9 @@ class TaskCommandsMixin:
                 args["task_id"], "needs_attention", args["needs_attention"]
             )
 
-        all_fields = list(updates.keys())
+        # The class hint is stored as ``class_hint`` but edited, and
+        # reported, as ``intelligence_class``.
+        all_fields = ["intelligence_class" if key == "class_hint" else key for key in updates]
         if status_changed:
             all_fields.append("status")
         if after_review is not None:
@@ -4259,9 +4178,9 @@ class TaskCommandsMixin:
             return {
                 "error": (
                     "No fields to update. Provide project_id, title, description, priority, "
-                    "task_type, status, max_retries, verification_type, profile_id, "
-                    "integration_mode, skip_verification, intelligence_class, affinity_agent_id, "
-                    "affinity_reason, workspace_mode, provider_intent, pin, after_review, needs_attention, or "
+                    "task_type, status, max_retries, verification_type, integration_mode, "
+                    "skip_verification, intelligence_class, affinity_agent_id, "
+                    "affinity_reason, workspace_mode, after_review, needs_attention, or "
                     "clear_needs_attention."
                 )
             }
@@ -4284,6 +4203,35 @@ class TaskCommandsMixin:
                 "task.updated", task, project_id=updates["project_id"]
             )
         return result
+
+    async def _reset_route_for_hint_edit(
+        self, task, updates: dict, *, claimed: bool
+    ) -> dict | None:
+        """Store an edited hint and send a queued task back to its router.
+
+        ``edit_task`` keeps edits to the class hint and the kind
+        (mandatory-routing spec §5.1).  On a queued task no worker holds,
+        such an edit resets the route to ``unrouted``, so the router plans
+        again with the new hints.  A role task keeps its stage profile, an
+        override keeps its pin, and a claimed or finished task keeps the
+        route it ran with: for those only the hint is stored.
+        """
+        from src.routing.sources import LEGACY, ROUTER
+
+        hint = {"class_hint": updates["class_hint"]} if "class_hint" in updates else {}
+        queued = task.status in (
+            TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.PAUSED,
+        )
+        resettable = (task.route_source or UNROUTED) in (UNROUTED, ROUTER, LEGACY)
+        if claimed or not queued or not resettable:
+            if hint:
+                await self.db.update_task(task.id, **hint)
+            return None
+        if not await self.db.reset_task_route(task.id, **hint):
+            return {
+                "error": "Task is running or claimed; stop the task before changing its hints."
+            }
+        return None
 
     async def _task_control_scope_error(self, task_id: str) -> dict | None:
         scope = self._current_scope or {}
@@ -5783,9 +5731,11 @@ class TaskCommandsMixin:
         with the same key are returned as-is; terminal tasks (COMPLETED,
         FAILED) are ignored so the key can be reused.
 
-        ``profile_id`` and ``intelligence_class`` are create-time routing
-        intent only: an existing task is returned untouched, so re-running the
-        node never re-routes work that is already in flight.
+        ``intelligence_class`` (a hint) and a role creator's role
+        ``profile_id`` are create-time only: an existing task is returned
+        untouched, so re-running the node never re-routes work that is
+        already in flight.  Every other routing argument is refused
+        (mandatory-routing spec §5.1).
         """
         project_id = args.get("project_id") or self._active_project_id
         if not project_id:
@@ -5796,6 +5746,11 @@ class TaskCommandsMixin:
         title = args.get("title")
         if not title:
             return {"success": False, "error": "title is required"}
+        # Refused before the dedup lookup, so a replay cannot slip a route
+        # past the create path below.
+        refusal = _filing_refusal("ensure_task", args)
+        if refusal is not None:
+            return refusal
 
         # Placement refusals are re-stated here rather than left to
         # ``_cmd_create_task`` at the bottom: the triage branch below writes,
@@ -5914,19 +5869,15 @@ class TaskCommandsMixin:
                     "error": f"Invalid playbook-run initial status '{args['initial_status']}'",
                 }
             create_args["_initial_status"] = args["initial_status"]
-        # Optional pre-routing: control-plane tasks skip triage, so the
-        # ensuring pipeline may pin the executing profile directly (e.g.
-        # the default pipeline pins 'triage' on the triage task).
-        if args.get("profile_id"):
-            create_args["profile_id"] = args["profile_id"]
-        # Provider intent is create-time routing intent like the profile
-        # (provider-failover D9); ``_create_task`` validates and permission-checks it.
-        if args.get("provider_intent") is not None:
-            create_args["provider_intent"] = args["provider_intent"]
-        if args.get("pin"):
-            create_args["pin"] = True
+        # A role creator may name a role profile (the default pipeline's
+        # ``spec-ingest``, the triage reconciler's ``triage``); every other
+        # routing argument, and any other profile, is refused by
+        # ``_create_task`` (mandatory-routing spec §4, §5.1).
+        for key in REFUSED_ROUTING_ARGS:
+            if key in args:
+                create_args[key] = args[key]
         # Validated by ``_cmd_create_task``, so an unknown class (or, on a
-        # named profile, one with no model mapping) fails the node loudly
+        # role profile, one with no model mapping) fails the node loudly
         # instead of silently losing the hint.
         if intelligence_class:
             create_args["intelligence_class"] = intelligence_class

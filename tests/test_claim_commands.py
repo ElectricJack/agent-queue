@@ -1456,10 +1456,16 @@ class TestContainerClaims:
         handler.orchestrator.bus.emit = AsyncMock()
         created = await elevated(handler).execute("create_task", {
             "project_id": PROJECT_ID, "title": "Epic", "description": "epic",
-            "profile_id": "worker", "container": True,
+            "container": True,
         })
         assert "task_id" in created, created
         epic = created["task_id"]
+        # A filing names no route (mandatory task routing §5.1); give the epic
+        # one anyway, so the claims below prove the container flag alone keeps
+        # it off the frontier.
+        assert await db.update_task_routing(
+            epic, profile_id="worker", intelligence_class=None, preferred_workspace_id=None
+        )
         async with db._engine.connect() as conn:
             assert await db.is_container(epic, conn=conn)
         # The cascade releases it the way it releases any flagged READY task,

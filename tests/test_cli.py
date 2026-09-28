@@ -871,20 +871,17 @@ class TestCLICommands:
             assert result.exit_code == 0
             assert "Test task" in result.output
 
-    def test_task_create_with_profile_flag(self, runner):
-        """--profile is passed through as profile_id in create_task args."""
+    @pytest.mark.parametrize(
+        "flag", [["--profile", "claude-opus"], ["-P", "claude-opus"], ["--pin"],
+                 ["--provider-intent", "pinned"], ["--agent-type", "claude-code"]],
+    )
+    def test_task_create_has_no_routing_flags(self, runner, flag):
+        """A filing names hints, never a route: the routing flags are gone
+        (mandatory task routing), so the CLI refuses them before any call."""
         from src.cli.app import cli
 
-        captured_args = {}
-
-        async def mock_execute(command, args=None):
-            if command == "create_task":
-                captured_args.update(args or {})
-                return {"created": "task-42", "title": args.get("title", "")}
-            return {}
-
         mock = self._mock_client({})
-        mock.execute = AsyncMock(side_effect=mock_execute)
+        mock.execute = AsyncMock(return_value={"created": "task-42"})
 
         with patch("src.cli.tasks._get_client", return_value=mock):
             result = runner.invoke(
@@ -898,15 +895,13 @@ class TestCLICommands:
                     "Pick a model",
                     "--description",
                     "test task",
-                    "--profile",
-                    "claude-opus",
+                    *flag,
                 ],
             )
 
-        assert result.exit_code == 0, result.output
-        assert captured_args["profile_id"] == "claude-opus"
-        assert captured_args["project_id"] == "proj"
-        assert captured_args["title"] == "Pick a model"
+        assert result.exit_code == 2, result.output
+        assert "No such option" in result.output
+        mock.execute.assert_not_called()
 
     def test_task_create_partial_flags_seed_wizard_and_preserve_overrides(self, runner):
         """Partial input prompts only for missing fields without losing flags."""
@@ -1045,43 +1040,8 @@ class TestCLICommands:
         assert "Task creation cancelled." in result.output
         mock.execute.assert_not_awaited()
 
-    def test_task_create_with_agent_type_flag(self, runner):
-        """--agent-type is passed through as agent_type in create_task args."""
-        from src.cli.app import cli
-
-        captured_args = {}
-
-        async def mock_execute(command, args=None):
-            if command == "create_task":
-                captured_args.update(args or {})
-                return {"created": "task-43", "title": args.get("title", "")}
-            return {}
-
-        mock = self._mock_client({})
-        mock.execute = AsyncMock(side_effect=mock_execute)
-
-        with patch("src.cli.tasks._get_client", return_value=mock):
-            result = runner.invoke(
-                cli,
-                [
-                    "task",
-                    "create",
-                    "--project",
-                    "proj",
-                    "--title",
-                    "T",
-                    "--description",
-                    "D",
-                    "--agent-type",
-                    "claude-code",
-                ],
-            )
-
-        assert result.exit_code == 0, result.output
-        assert captured_args["agent_type"] == "claude-code"
-
-    def test_task_create_without_profile_flag_omits_field(self, runner):
-        """When --profile is not given, profile_id is absent from create_task args."""
+    def test_task_create_sends_no_routing_field(self, runner):
+        """A plain create sends no routing field: the router picks the route."""
         from src.cli.app import cli
 
         captured_args = {}
@@ -1111,8 +1071,9 @@ class TestCLICommands:
             )
 
         assert result.exit_code == 0, result.output
-        assert "profile_id" not in captured_args
-        assert "agent_type" not in captured_args
+        from src.routing.filing import REFUSED_ROUTING_ARGS
+
+        assert not set(REFUSED_ROUTING_ARGS) & set(captured_args)
 
     def test_task_create_with_parent_flag(self, runner):
         """--parent is passed through as parent_id in create_task args."""

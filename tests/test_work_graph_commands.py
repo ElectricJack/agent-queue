@@ -595,17 +595,17 @@ class TestParentKey:
 
     async def test_a_refused_child_leaves_one_reusable_empty_container(self, handler, db):
         """The container commits before the child, so the child can still be
-        refused (a bad profile, an unknown class, a crash) — and the cascade
-        runs every five seconds in that window.  The orphan must survive it
-        and be reused, not settled and not duplicated."""
+        refused (an unknown class, a crash) — and the cascade runs every five
+        seconds in that window.  The orphan must survive it and be reused, not
+        settled and not duplicated."""
         refused = await handler._cmd_create_task({
             "project_id": PROJECT_ID,
             "title": "one",
             "parent_key": "maintenance",
-            "profile_id": "no-such-profile",
+            "intelligence_class": "no-such-class",
         })
         assert refused.get("success") is not True
-        assert "no-such-profile" in refused["error"]
+        assert "no-such-class" in refused["error"]
 
         container_ids = await standing(db)
         assert len(container_ids) == 1, container_ids

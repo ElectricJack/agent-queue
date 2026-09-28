@@ -8,7 +8,8 @@ those paths is gone.  A task filed without a profile by the supervisor, a
 playbook or the operator is stored ``unrouted`` with the class as its
 ``class_hint`` and no profile or class, for the project's router to route.
 Role tasks (``triage``, ``spec-ingest``, …) filed by a service or playbook keep
-their stage profile with ``route_source='role'`` and the role's own class.
+their stage profile with ``route_source='role'`` and the role's own class; any
+other profile is refused (``routing.choice_forbidden``, spec §5.1).
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -137,25 +138,20 @@ async def test_a_filing_with_no_class_has_no_hint(setup):
     _assert_unrouted(await db.get_task(result["created"]), None)
 
 
-async def test_supervisor_may_name_a_worker_profile_it_does_not_contain(setup):
+async def test_the_supervisor_may_not_name_a_worker_profile(setup):
+    """The supervisor routes nothing: it files with hints (spec §5.2)."""
     handler, db = setup
     supervisor = await db.get_profile("supervisor")
     worker = await db.get_profile("standard-high-codex")
-    # The subset check would reject this pair; the supervisor routes work
-    # rather than delegating its own capabilities, so it is not applied.
+    # The subset check would reject this pair; it is not what refuses it.
     assert _check_capability_escalation(supervisor, worker)
     result = await _create_as(
         handler, "supervisor", profile_id="standard-high-codex",
         intelligence_class="standard-high",
     )
-    assert result.get("success") is True, result
-    assert result["profile_source"] == "explicit"
-    task = await db.get_task(result["created"])
-    # An explicit profile still works until the filing surfaces refuse it
-    # (spec Task 5), stamped ``legacy``.
-    assert task.profile_id == "standard-high-codex"
-    assert task.route_source == "legacy"
-    assert (task.intelligence_class, task.class_hint) == ("standard-high", "standard-high")
+    assert result.get("code") == "routing.choice_forbidden", result
+    assert result["refused"] == ["profile_id"]
+    assert await db.list_tasks(project_id="p") == []
 
 
 async def test_worker_caller_escalation_is_still_enforced(setup):
@@ -163,8 +159,13 @@ async def test_worker_caller_escalation_is_still_enforced(setup):
     await db.create_profile(_worker(
         "narrow-worker", "claude", "fast-high", lifecycle="task", harness_tools=[],
     ))
+    # A worker profile is refused outright (spec §5.1) ...
     explicit = await _create_as(handler, "narrow-worker", profile_id="standard-high-claude")
-    assert "Capability escalation rejected" in explicit["error"]
+    assert explicit.get("code") == "routing.choice_forbidden", explicit
+    # ... and a role profile an in-process creator names is still bounded by
+    # the caller's capabilities: ``triage`` holds tools ``narrow-worker`` lacks.
+    role = await _create_as(handler, "narrow-worker", profile_id="triage")
+    assert "Capability escalation rejected" in role["error"]
     assert await db.list_tasks(project_id="p") == []
     # A class is a hint, not a delegation: nothing is matched, so nothing
     # escalates, and the filing is stored unrouted.
@@ -196,29 +197,34 @@ async def test_unknown_class_is_rejected_before_selection(setup):
     assert await db.list_tasks(project_id="p") == []
 
 
-async def test_graph_class_nodes_are_hints_and_named_profiles_keep_their_class(setup):
+async def test_graph_class_nodes_are_hints_and_named_profiles_are_refused(setup):
     handler, db = setup
     await db.update_project("p", preferred_provider="codex")
-    report = await handler._cmd_create_task_graph({
+    nodes = [
+        {"key": "high", "title": "High", "intelligence_class": "standard-high"},
+        # No enabled worker runs fast-low: still only a hint.
+        {"key": "low", "title": "Low", "intelligence_class": "fast-low"},
+        {"key": "bare", "title": "Bare"},
+    ]
+    # A node naming a profile refuses the whole graph (spec §5.1).
+    refused = await handler._cmd_create_task_graph({
         "project_id": "p",
-        "graph": {"nodes": [
-            {"key": "high", "title": "High", "intelligence_class": "standard-high"},
-            # No enabled worker runs fast-low: still only a hint.
-            {"key": "low", "title": "Low", "intelligence_class": "fast-low"},
-            {"key": "bare", "title": "Bare"},
-            {"key": "pinned", "title": "Pinned", "profile": "standard-high-claude",
-             "intelligence_class": "standard-high"},
-        ]},
+        "graph": {"nodes": [*nodes, {
+            "key": "pinned", "title": "Pinned", "profile": "standard-high-claude",
+            "intelligence_class": "standard-high",
+        }]},
     })
+    assert refused.get("code") == "routing.choice_forbidden", refused
+    assert refused["refused"] == ["pinned.profile"]
+    assert await db.list_tasks(project_id="p") == []
+
+    report = await handler._cmd_create_task_graph({"project_id": "p", "graph": {"nodes": nodes}})
     assert "error" not in report, report
     assert "class_matched_profiles" not in report
     ids = {node["key"]: node["task_id"] for node in report["nodes"]}
     _assert_unrouted(await db.get_task(ids["high"]), "standard-high")
     _assert_unrouted(await db.get_task(ids["low"]), "fast-low")
     _assert_unrouted(await db.get_task(ids["bare"]), None)
-    pinned = await db.get_task(ids["pinned"])
-    assert (pinned.profile_id, pinned.intelligence_class) == ("standard-high-claude", "standard-high")
-    assert pinned.route_source == "legacy"
 
 
 async def test_graph_node_with_an_unknown_class_fails_the_whole_graph(setup):
@@ -293,15 +299,13 @@ async def test_triage_is_a_role_task_with_the_role_class(setup):
     assert task.class_hint == "standard-high"
 
 
-async def test_an_operator_naming_a_role_profile_keeps_its_class(setup):
-    """Only a service or playbook creates role tasks with the role class; an
-    operator's explicit profile is the legacy path until Task 5 refuses it."""
+async def test_an_operator_may_not_name_a_role_profile(setup):
+    """Only a service or playbook creates role tasks (spec §4, D3); an
+    operator's profile is refused like any other routing choice."""
     handler, db = setup
     with principal_context(TRUSTED_LOCAL):
         result = await _create_as(
             handler, None, profile_id="spec-ingest", intelligence_class="standard-high",
         )
-    assert result.get("success") is True, result
-    assert result["profile_source"] == "explicit"
-    task = await db.get_task(result["created"])
-    assert task.intelligence_class == "standard-high"
+    assert result.get("code") == "routing.choice_forbidden", result
+    assert await db.list_tasks(project_id="p") == []

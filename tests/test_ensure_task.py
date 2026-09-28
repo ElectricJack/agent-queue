@@ -42,6 +42,19 @@ async def handler(db, config):
     return CommandHandler(o, config)
 
 
+async def _ensure_as_pipeline(handler, args: dict) -> dict:
+    """``ensure_task`` as a playbook command step dispatches it.
+
+    Only a SERVICE or PLAYBOOK principal may name a role profile (reviewer,
+    triage, ...); the local operator is refused like any other filer
+    (mandatory task routing §4, §5.1).
+    """
+    from src.commands.principal import ExecutionPrincipal, principal_context
+
+    with principal_context(ExecutionPrincipal.service("playbook-dispatch")):
+        return await handler.execute("ensure_task", args)
+
+
 async def test_ensure_task_creates_when_missing(handler):
     res = await handler.execute(
         "ensure_task",
@@ -153,8 +166,8 @@ async def reviewer(db):
 
 
 async def test_ensure_task_records_explicit_intelligence_class(handler, db, reviewer):
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:t1",
@@ -171,8 +184,8 @@ async def test_ensure_task_records_explicit_intelligence_class(handler, db, revi
 
 async def test_ensure_task_without_class_invents_none(handler, db, reviewer):
     """A profile default must never stand in for the task's route."""
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:t2",
@@ -186,8 +199,8 @@ async def test_ensure_task_without_class_invents_none(handler, db, reviewer):
 
 
 async def test_ensure_task_rejects_unknown_intelligence_class(handler, db, reviewer):
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:t3",
@@ -202,8 +215,8 @@ async def test_ensure_task_rejects_unknown_intelligence_class(handler, db, revie
 
 
 async def test_ensure_task_class_applies_only_on_create(handler, db, reviewer):
-    first = await handler.execute(
-        "ensure_task",
+    first = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:t4",
@@ -212,8 +225,8 @@ async def test_ensure_task_class_applies_only_on_create(handler, db, reviewer):
             "intelligence_class": "deep-low",
         },
     )
-    second = await handler.execute(
-        "ensure_task",
+    second = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:t4",
@@ -237,8 +250,8 @@ async def test_ensure_task_routes_canonical_triage_task(handler, db):
         Task(id="unrouted", project_id=PROJECT_ID, title="Unrouted", description="")
     )
     await db.create_gate(PROJECT_ID, "routing", "Route task", waiter_task_ids=["unrouted"])
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "triage-open",
@@ -257,8 +270,8 @@ async def test_ensure_task_rejects_unknown_class_for_triage(handler, db):
     await db.create_profile(
         AgentProfile(id="triage", name="Triage", harness="claude", needs_workspace=False)
     )
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "triage-open",
@@ -298,8 +311,8 @@ async def test_ensure_task_refuses_a_review_of_a_pipeline_review(handler, db):
             status=TaskStatus.COMPLETED,
         )
     )
-    first = await handler.execute(
-        "ensure_task",
+    first = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:orig",
@@ -310,8 +323,8 @@ async def test_ensure_task_refuses_a_review_of_a_pipeline_review(handler, db):
     assert first["success"] is True and first["created"] is True
     review_id = first["task_id"]
 
-    second = await handler.execute(
-        "ensure_task",
+    second = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": f"review:task:{review_id}",
@@ -339,8 +352,8 @@ async def test_ensure_task_refuses_a_review_of_a_final_review(handler, db):
             dedup_key="branch-review:feat/x",
         )
     )
-    res = await handler.execute(
-        "ensure_task",
+    res = await _ensure_as_pipeline(
+        handler,
         {
             "project_id": PROJECT_ID,
             "dedup_key": "review:task:final-1",
@@ -349,6 +362,7 @@ async def test_ensure_task_refuses_a_review_of_a_final_review(handler, db):
         },
     )
     assert res["success"] is False
+    assert "review" in res["error"].lower(), res
     assert await db.find_task_by_dedup_key(PROJECT_ID, "review:task:final-1") is None
 
 
@@ -366,8 +380,8 @@ async def test_ensure_task_still_reviews_ordinary_and_unknown_tasks(handler, db)
         )
     )
     for reviewed in ("work-1", "no-such-row"):
-        res = await handler.execute(
-            "ensure_task",
+        res = await _ensure_as_pipeline(
+            handler,
             {
                 "project_id": PROJECT_ID,
                 "dedup_key": f"review:task:{reviewed}",

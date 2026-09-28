@@ -66,16 +66,18 @@ def sync_detailed(
     body: EditTaskRequest,
 ) -> Response[EditTaskResponse | EditTaskResponse422]:
     """Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
-    affinity_agent_id, affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use
-    this to move a task to a different project, rename tasks, change priority, override status (admin),
-    assign a profile, adjust retry/verification settings, or set coordination parameters.
+    verification_type, integration_mode, skip_verification, intelligence_class, affinity_agent_id,
+    affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use this to move a task
+    to a different project, rename tasks, change priority, override status (admin), change the routing
+    hints, adjust retry/verification settings, or set coordination parameters. A task's route (profile,
+    provider, model, pin) is the router's and is refused here (routing.choice_forbidden).
 
      Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
-    affinity_agent_id, affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use
-    this to move a task to a different project, rename tasks, change priority, override status (admin),
-    assign a profile, adjust retry/verification settings, or set coordination parameters.
+    verification_type, integration_mode, skip_verification, intelligence_class, affinity_agent_id,
+    affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use this to move a task
+    to a different project, rename tasks, change priority, override status (admin), change the routing
+    hints, adjust retry/verification settings, or set coordination parameters. A task's route (profile,
+    provider, model, pin) is the router's and is refused here (routing.choice_forbidden).
 
     Args:
         body (EditTaskRequest):
@@ -105,16 +107,18 @@ def sync(
     body: EditTaskRequest,
 ) -> EditTaskResponse | EditTaskResponse422 | None:
     """Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
-    affinity_agent_id, affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use
-    this to move a task to a different project, rename tasks, change priority, override status (admin),
-    assign a profile, adjust retry/verification settings, or set coordination parameters.
+    verification_type, integration_mode, skip_verification, intelligence_class, affinity_agent_id,
+    affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use this to move a task
+    to a different project, rename tasks, change priority, override status (admin), change the routing
+    hints, adjust retry/verification settings, or set coordination parameters. A task's route (profile,
+    provider, model, pin) is the router's and is refused here (routing.choice_forbidden).
 
      Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
-    affinity_agent_id, affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use
-    this to move a task to a different project, rename tasks, change priority, override status (admin),
-    assign a profile, adjust retry/verification settings, or set coordination parameters.
+    verification_type, integration_mode, skip_verification, intelligence_class, affinity_agent_id,
+    affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use this to move a task
+    to a different project, rename tasks, change priority, override status (admin), change the routing
+    hints, adjust retry/verification settings, or set coordination parameters. A task's route (profile,
+    provider, model, pin) is the router's and is refused here (routing.choice_forbidden).
 
     Args:
         body (EditTaskRequest):
@@ -139,16 +143,18 @@ async def asyncio_detailed(
     body: EditTaskRequest,
 ) -> Response[EditTaskResponse | EditTaskResponse422]:
     """Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
-    affinity_agent_id, affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use
-    this to move a task to a different project, rename tasks, change priority, override status (admin),
-    assign a profile, adjust retry/verification settings, or set coordination parameters.
+    verification_type, integration_mode, skip_verification, intelligence_class, affinity_agent_id,
+    affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use this to move a task
+    to a different project, rename tasks, change priority, override status (admin), change the routing
+    hints, adjust retry/verification settings, or set coordination parameters. A task's route (profile,
+    provider, model, pin) is the router's and is refused here (routing.choice_forbidden).
 
      Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
-    affinity_agent_id, affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use
-    this to move a task to a different project, rename tasks, change priority, override status (admin),
-    assign a profile, adjust retry/verification settings, or set coordination parameters.
+    verification_type, integration_mode, skip_verification, intelligence_class, affinity_agent_id,
+    affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use this to move a task
+    to a different project, rename tasks, change priority, override status (admin), change the routing
+    hints, adjust retry/verification settings, or set coordination parameters. A task's route (profile,
+    provider, model, pin) is the router's and is refused here (routing.choice_forbidden).
 
     Args:
         body (EditTaskRequest):
@@ -176,16 +182,18 @@ async def asyncio(
     body: EditTaskRequest,
 ) -> EditTaskResponse | EditTaskResponse422 | None:
     """Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
-    affinity_agent_id, affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use
-    this to move a task to a different project, rename tasks, change priority, override status (admin),
-    assign a profile, adjust retry/verification settings, or set coordination parameters.
+    verification_type, integration_mode, skip_verification, intelligence_class, affinity_agent_id,
+    affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use this to move a task
+    to a different project, rename tasks, change priority, override status (admin), change the routing
+    hints, adjust retry/verification settings, or set coordination parameters. A task's route (profile,
+    provider, model, pin) is the router's and is refused here (routing.choice_forbidden).
 
      Edit a task's properties: project_id, title, description, priority, task_type, status, max_retries,
-    verification_type, profile_id, integration_mode, skip_verification, intelligence_class,
-    affinity_agent_id, affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use
-    this to move a task to a different project, rename tasks, change priority, override status (admin),
-    assign a profile, adjust retry/verification settings, or set coordination parameters.
+    verification_type, integration_mode, skip_verification, intelligence_class, affinity_agent_id,
+    affinity_reason, workspace_mode, needs_attention, or clear_needs_attention. Use this to move a task
+    to a different project, rename tasks, change priority, override status (admin), change the routing
+    hints, adjust retry/verification settings, or set coordination parameters. A task's route (profile,
+    provider, model, pin) is the router's and is refused here (routing.choice_forbidden).
 
     Args:
         body (EditTaskRequest):

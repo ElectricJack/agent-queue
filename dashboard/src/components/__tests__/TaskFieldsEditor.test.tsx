@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import TaskDetail from "../../pages/TaskDetail";
 import TaskDetailPane from "../../panes/task-detail";
+import { diffTaskForm, type FormState } from "../TaskFieldsEditor";
 
 const data = vi.hoisted(() => ({ task: {
   id: "t", project_id: "p", title: "Task", description: "Original", status: "READY",
@@ -40,6 +41,7 @@ beforeEach(() => {
   api.taskComments.mockResolvedValue({ data: { comments: [], total: 0, limit: 50, offset: 0 } });
   api.taskSubtasks.mockResolvedValue({ data: { success: true, task_id: "t", subtasks: [], total: 0, settled: 0 } });
   data.task = { ...data.task, status: "READY", assigned_agent: null, profile_id: null,
+    intelligence_class: "standard-medium", class_hint: null, route_source: "unrouted",
     provider_intent: "class_only", provider_hold: null, rerouted_from: null, reroute: null };
 });
 afterEach(() => { cleanup(); client.clear(); });
@@ -55,7 +57,7 @@ const select = (name: string) => screen.getByRole("combobox", { name }) as HTMLS
 const input = (name: string) => screen.getByRole("spinbutton", { name });
 
 describe("task fields editor", () => {
-  it.each(["full", "drawer"] as const)("edits priority, class, type, profile and integration mode in %s", async (surface) => {
+  it.each(["full", "drawer"] as const)("edits priority, class hint, type and integration mode in %s", async (surface) => {
     mount(surface);
     expect(screen.getAllByText("standard-medium").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
@@ -65,13 +67,12 @@ describe("task fields editor", () => {
     fireEvent.change(input("Priority"), { target: { value: "5" } });
     fireEvent.change(select("Intelligence class"), { target: { value: "deep-high" } });
     fireEvent.change(select("Task type"), { target: { value: "bugfix" } });
-    fireEvent.change(select("Profile"), { target: { value: "worker-deep-high-claude" } });
     fireEvent.change(select("Integration mode"), { target: { value: "direct" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(api.editTask).toHaveBeenCalledWith({
       body: {
         task_id: "t", priority: 5, intelligence_class: "deep-high", task_type: "bugfix",
-        profile_id: "worker-deep-high-claude", integration_mode: "direct",
+        integration_mode: "direct",
       },
       throwOnError: true,
     }));
@@ -98,7 +99,7 @@ describe("task fields editor", () => {
     mount("drawer");
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     expect(select("Intelligence class")).toBeDisabled();
-    expect(select("Profile")).toBeDisabled();
+    expect(screen.queryByRole("combobox", { name: "Profile" })).toBeNull();
     expect(select("Task type")).toBeEnabled();
     api.editTask.mockRejectedValueOnce(new Error("Task is running or claimed; stop the task before changing its routing."));
     fireEvent.change(input("Priority"), { target: { value: "1" } });
@@ -118,64 +119,58 @@ describe("task fields editor", () => {
     expect(api.editTask).not.toHaveBeenCalled();
   });
 
-  it.each(["full", "drawer"] as const)("shows the intent chip and pins the current route in %s", async (surface) => {
-    data.task = { ...data.task, profile_id: "worker-deep-high-claude", provider_intent: "preferred" };
+  it.each(["full", "drawer"] as const)("shows the route read-only and never sends it in %s", async (surface) => {
+    data.task = { ...data.task, profile_id: "worker-deep-high-claude", provider_intent: "preferred",
+      route_source: "router" };
     mount(surface);
     // The header chip and the details field both read the stored intent.
     expect(screen.getAllByTestId("provider-intent-chip").map((chip) => chip.textContent))
       .toEqual(["Preferred", "Preferred"]);
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const pin = screen.getByRole("checkbox", { name: "Pin to this provider" });
-    expect(pin).not.toBeChecked();
-    fireEvent.click(pin);
-    expect(select("Provider intent")).toHaveValue("pinned");
+    // The route is the router's: no profile picker, pin or intent select.
+    expect(screen.queryByRole("combobox", { name: "Profile" })).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Pin to this provider" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Provider intent" })).toBeNull();
+    expect(screen.getAllByText("worker-deep-high-claude").length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId("provider-intent-chip")).toHaveLength(2);
+    fireEvent.change(input("Priority"), { target: { value: "7" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(api.editTask).toHaveBeenCalledWith({
-      body: { task_id: "t", pin: true }, throwOnError: true,
+      body: { task_id: "t", priority: 7 }, throwOnError: true,
     }));
   });
 
-  it("starts a newly chosen route unpinned and sends pin only when it is ticked", async () => {
-    mount("drawer");
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const pin = screen.getByRole("checkbox", { name: "Pin to this provider" });
-    // No profile: nothing to pin, and only "Class only" is selectable.
-    expect(pin).toBeDisabled();
-    const options = Array.from(select("Provider intent").options);
-    expect(options.filter((o) => o.disabled).map((o) => o.value)).toEqual(["pinned", "preferred"]);
-
-    fireEvent.change(select("Profile"), { target: { value: "worker-deep-high-claude" } });
-    expect(pin).toBeEnabled();
-    expect(pin).not.toBeChecked();
-    expect(select("Provider intent")).toHaveValue("preferred");
-    fireEvent.click(pin);
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => expect(api.editTask).toHaveBeenCalledWith({
-      body: { task_id: "t", profile_id: "worker-deep-high-claude", pin: true }, throwOnError: true,
-    }));
-  });
-
-  it("unpins through the intent select and sends the explicit intent", async () => {
-    data.task = { ...data.task, profile_id: "worker-deep-high-claude", provider_intent: "pinned" };
+  it("edits the class hint, not the class the router chose", async () => {
+    data.task = { ...data.task, profile_id: "worker-deep-high-claude", route_source: "router",
+      intelligence_class: "deep-high", class_hint: "standard-medium" };
     mount("full");
+    expect(screen.getByText("deep-high (hint standard-medium)")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    const pin = screen.getByRole("checkbox", { name: "Pin to this provider" });
-    expect(pin).toBeChecked();
-    fireEvent.change(select("Provider intent"), { target: { value: "class_only" } });
-    expect(pin).not.toBeChecked();
+    expect(select("Intelligence class")).toHaveValue("standard-medium");
+    expect(screen.getByText(/hint to the project's router/)).toBeInTheDocument();
+    fireEvent.change(select("Intelligence class"), { target: { value: "fast-low" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(api.editTask).toHaveBeenCalledWith({
-      body: { task_id: "t", provider_intent: "class_only" }, throwOnError: true,
+      body: { task_id: "t", intelligence_class: "fast-low" }, throwOnError: true,
     }));
   });
 
-  it("locks the intent with the other routing fields while the task runs", () => {
-    data.task = { ...data.task, status: "IN_PROGRESS", assigned_agent: "agent-1",
-      profile_id: "worker-deep-high-claude", provider_intent: "preferred" };
-    mount("drawer");
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
-    expect(select("Provider intent")).toBeDisabled();
-    expect(screen.getByRole("checkbox", { name: "Pin to this provider" })).toBeDisabled();
+  it("builds an edit_task body with no routing choice in it", () => {
+    const baseline: FormState = {
+      title: "Task", status: "READY", priority: "100", task_type: "feature",
+      intelligence_class: "standard-medium", max_retries: "3", integration_mode: "",
+      skip_verification: false,
+    };
+    // Stray route keys on the form (an older draft, a widened object) never leak.
+    const form = {
+      ...baseline, priority: "1", intelligence_class: "deep-high",
+      profile_id: "worker-deep-high-claude", provider_intent: "pinned", pin: true,
+    } as FormState;
+    const body = diffTaskForm({ id: "t", status: "READY" }, form, baseline);
+    expect(body).toEqual({ task_id: "t", priority: 1, intelligence_class: "deep-high" });
+    for (const refused of ["profile_id", "pin", "provider_intent"]) {
+      expect(body).not.toHaveProperty(refused);
+    }
   });
 
   it.each(["full", "drawer"] as const)("renders the provider hold and re-route in %s", (surface) => {

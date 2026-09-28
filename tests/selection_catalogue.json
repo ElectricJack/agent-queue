@@ -1109,6 +1109,7 @@
         "tests/test_pool_agent_routing.py",
         "tests/test_routing_admission_v2.py",
         "tests/test_routing_gate_guard.py",
+        "tests/test_routing_mandatory.py",
         "tests/test_routing_planner.py",
         "tests/test_routing_router.py",
         "tests/test_task_class_routing.py",
@@ -1294,7 +1295,7 @@
       ]
     }
   },
-  "digest": "sha256:78edd15710328e2a23e176c0645887c147f19c08bed7390b7eb110ef68c6ab4e",
+  "digest": "sha256:7cf2d3b8b1ad857092f0cdff4ed02a1aa3eb2d3a721244f9285864cb6dc504ca",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2961,7 +2962,8 @@
         "src.cli.exceptions",
         "src.cli.formatter_registry",
         "src.cli.formatters",
-        "src.cli.styles"
+        "src.cli.styles",
+        "src.routing.filing"
       ],
       "markers": [
         "asyncio",
@@ -5258,6 +5260,7 @@
       "default_arm": true,
       "imports": [
         "src.commands.handler",
+        "src.commands.principal",
         "src.config",
         "src.database",
         "src.database.tables",
@@ -11536,6 +11539,43 @@
       ],
       "summary": "A routing gate is only for tasks that still need a profile."
     },
+    "tests/test_routing_mandatory.py": {
+      "areas": [
+        "task-routing"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.cli.tasks",
+        "src.commands.authorization",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.models",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries",
+        "src.database.queries.proposal_queries",
+        "src.database.tables",
+        "src.mcp_registration",
+        "src.models",
+        "src.orchestrator",
+        "src.playbooks.executors",
+        "src.playbooks.executors.llm",
+        "src.profiles.capabilities",
+        "src.routing.filing",
+        "src.task_graph",
+        "src.tools.definitions",
+        "src.vault"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Mandatory task routing ratchet (spec 2026-09-28-mandatory-task-routing §9.3)."
+    },
     "tests/test_routing_planner.py": {
       "areas": [
         "task-routing"
@@ -12698,7 +12738,8 @@
         "src.commands.proposal_commands",
         "src.database.queries.proposal_queries",
         "src.database.tables",
-        "src.models"
+        "src.models",
+        "src.vault"
       ],
       "markers": [
         "parametrize"
@@ -13083,7 +13124,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Explicit routing survives every task-creation boundary before scheduling."
+      "summary": "Routing survives every task-creation boundary before scheduling."
     },
     "tests/test_task_session_attempts.py": {
       "areas": [

@@ -1137,10 +1137,10 @@ def create_epic(args) -> None:
         },
         "defaults": {"intelligence_class": TRAIN_CLASS, "task_type": "feature"},
         "nodes": [
-            {"key": "leaf", "title": f"{args.scenario}: {args.title}", "profile": WORKER_PROFILE,
+            {"key": "leaf", "title": f"{args.scenario}: {args.title}",
              "description": f"Change the fixture: {sorted(changes)}"},
             {"key": "review", "title": f"{args.scenario}: review the leaf",
-             "profile": REVIEWER_PROFILE, "task_type": "chore",
+             "task_type": "chore",
              "description": "Review the leaf's exact head and approve it.",
              "needs": [{"on": "leaf", "dep_type": "discovered-from"}]},
         ],
@@ -1154,6 +1154,11 @@ def create_epic(args) -> None:
     created = operator("task", "create", "--project", pid, "--graph", str(path))
     save_payload(f"{args.scenario.lower()}-epic-created", created)
     ids = _graph_ids(created)
+    # A graph node carries hints, never a route (mandatory task routing): the
+    # operator routes the leaf and its review to the profiles that play them.
+    for key, profile in (("leaf", WORKER_PROFILE), ("review", REVIEWER_PROFILE)):
+        operator("task", "route", "--task-id", ids[key], "--profile-id", profile,
+                 "--intelligence-class", TRAIN_CLASS)
     sc.update(epic_id=ids["parent"], leaf_id=ids["leaf"], review_id=ids["review"],
               changes=changes)
     save_state(state)

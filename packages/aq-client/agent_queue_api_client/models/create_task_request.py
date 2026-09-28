@@ -26,17 +26,11 @@ class CreateTaskRequest:
             inherit the project/system policy.
         task_type (None | str | Unset): The kind of work, a hint to the router (optional): design is code or system
             design, art is art-heavy design
-        profile_id (None | str | Unset): Eligible worker profile ID to configure the task (optional; supervisor is not
-            executable)
-        provider_intent (None | str | Unset): Whether anyone meant the provider profile_id names (provider-failover D8).
-            Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the
-            same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a
-            profile_id; pinning is refused for worker tokens.
-        pin (bool | None | Unset): Shorthand for provider_intent=pinned.
         intelligence_class (None | str | Unset): Intelligence-class hint for the router, e.g. deep-high or standard-
             high. Use list_intelligence_classes for current IDs. The task is stored unrouted with this class as its
-            class_hint; the project's routing playbook picks the profile and the final class within its policy. Creation
-            never picks a profile from the class. An unknown class is refused.
+            class_hint; the project's routing playbook picks the profile, provider and final class within its policy. A task
+            never names its profile, provider, model or pin: those are refused (routing.choice_forbidden). An unknown class
+            is refused.
         preferred_workspace_id (None | str | Unset): Workspace ID to prefer when assigning this task to an agent. Use
             this when the task must run in a specific workspace (e.g. one that contains a merge conflict). Get the ID from
             find_merge_conflict_workspaces or list_workspaces.
@@ -94,9 +88,6 @@ class CreateTaskRequest:
     priority: int | Unset = 100
     integration_mode: None | str | Unset = UNSET
     task_type: None | str | Unset = UNSET
-    profile_id: None | str | Unset = UNSET
-    provider_intent: None | str | Unset = UNSET
-    pin: bool | None | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
     preferred_workspace_id: None | str | Unset = UNSET
     attachments: list[Any] | None | Unset = UNSET
@@ -146,24 +137,6 @@ class CreateTaskRequest:
             task_type = UNSET
         else:
             task_type = self.task_type
-
-        profile_id: None | str | Unset
-        if isinstance(self.profile_id, Unset):
-            profile_id = UNSET
-        else:
-            profile_id = self.profile_id
-
-        provider_intent: None | str | Unset
-        if isinstance(self.provider_intent, Unset):
-            provider_intent = UNSET
-        else:
-            provider_intent = self.provider_intent
-
-        pin: bool | None | Unset
-        if isinstance(self.pin, Unset):
-            pin = UNSET
-        else:
-            pin = self.pin
 
         intelligence_class: None | str | Unset
         if isinstance(self.intelligence_class, Unset):
@@ -296,12 +269,6 @@ class CreateTaskRequest:
             field_dict["integration_mode"] = integration_mode
         if task_type is not UNSET:
             field_dict["task_type"] = task_type
-        if profile_id is not UNSET:
-            field_dict["profile_id"] = profile_id
-        if provider_intent is not UNSET:
-            field_dict["provider_intent"] = provider_intent
-        if pin is not UNSET:
-            field_dict["pin"] = pin
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
         if preferred_workspace_id is not UNSET:
@@ -385,33 +352,6 @@ class CreateTaskRequest:
             return cast(None | str | Unset, data)
 
         task_type = _parse_task_type(d.pop("task_type", UNSET))
-
-        def _parse_profile_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
-
-        def _parse_provider_intent(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        provider_intent = _parse_provider_intent(d.pop("provider_intent", UNSET))
-
-        def _parse_pin(data: object) -> bool | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(bool | None | Unset, data)
-
-        pin = _parse_pin(d.pop("pin", UNSET))
 
         def _parse_intelligence_class(data: object) -> None | str | Unset:
             if data is None:
@@ -602,9 +542,6 @@ class CreateTaskRequest:
             priority=priority,
             integration_mode=integration_mode,
             task_type=task_type,
-            profile_id=profile_id,
-            provider_intent=provider_intent,
-            pin=pin,
             intelligence_class=intelligence_class,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,

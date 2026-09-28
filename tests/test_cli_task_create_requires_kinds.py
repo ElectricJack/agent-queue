@@ -408,7 +408,6 @@ BACKEND_ARG_TO_CLI_PARAM = {
     "description": "description",
     "priority": "priority",
     "task_type": "task_type",
-    "profile_id": "profile_id",
     "intelligence_class": "intelligence_class",
     "integration_mode": "integration_mode",
     "parent_id": "parent_id",
@@ -418,8 +417,6 @@ BACKEND_ARG_TO_CLI_PARAM = {
     "reason": "reason",
     "deliverables": "deliverables",
     "requires_kinds": "requires_kinds",
-    "provider_intent": "provider_intent",
-    "pin": "pin",
 }
 
 #: Backend arguments deliberately not exposed by the handwritten command.
@@ -442,6 +439,11 @@ INTENTIONALLY_EXCLUDED = {
         "Superseded by requires_kinds; workspace instances are chosen at acquisition."
     ),
     "skip_verification": "Policy switch reserved for the daemon and playbooks.",
+    # Legacy routing fields the contract model keeps so its fingerprint does
+    # not move; every surface refuses them (mandatory task routing §5.1).
+    "profile_id": "Refused routing choice: the project's router picks the profile.",
+    "provider_intent": "Refused routing choice: the router records the intent.",
+    "pin": "Refused routing choice: only the router or an audited override pins.",
     "workspace_mode": (
         "'directory-isolated' is unimplemented and 'branch-isolated' is a deprecated "
         "alias, so the only reachable value is the default."
@@ -450,7 +452,6 @@ INTENTIONALLY_EXCLUDED = {
 
 #: CLI options with no matching backend argument, and why.
 CLI_ONLY_PARAMS = {
-    "agent_type": "Handler-level cascade override; not part of the contract model.",
     "api_url": "Position-independent global daemon URL; not a create_task argument.",
     "brief": "Position-independent global output projection; not a create_task argument.",
     "graph_file": "Selects the create_task_graph command instead.",

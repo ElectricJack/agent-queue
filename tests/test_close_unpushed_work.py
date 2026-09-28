@@ -104,12 +104,13 @@ async def handler(request, tmp_path, repo):
 
 
 async def _task_on_workspace(h: CommandHandler, repo: dict, task_title="Do work") -> str:
+    # Filed with hints only (mandatory task routing §5.1), then routed.
     task_id = (
-        await h.execute(
-            "create_task",
-            {"project_id": "p", "title": task_title, "profile_id": "worker"},
-        )
+        await h.execute("create_task", {"project_id": "p", "title": task_title})
     )["created"]
+    assert await h.db.update_task_routing(
+        task_id, profile_id="worker", intelligence_class=None, preferred_workspace_id=None
+    )
     await h.db.create_workspace(
         Workspace(
             id=f"ws-{task_id}",

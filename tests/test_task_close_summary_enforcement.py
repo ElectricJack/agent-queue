@@ -78,6 +78,20 @@ def handler(db, config):
     return CommandHandler(orch, config)
 
 
+async def _create_routed(handler, db, profile_id: str) -> str:
+    """File a task with hints only, then route it as the router would.
+
+    A filing may not name a profile (mandatory task routing §5.1); the tests
+    below only need a task running on *profile_id*.
+    """
+    created = await handler.execute("create_task", {"project_id": "p", "title": "t"})
+    tid = created["created"]
+    assert await db.update_task_routing(
+        tid, profile_id=profile_id, intelligence_class=None, preferred_workspace_id=None
+    )
+    return tid
+
+
 # ---------------------------------------------------------------------------
 # Test 1: summary required for workspace-needing profile
 # ---------------------------------------------------------------------------
@@ -87,10 +101,7 @@ def handler(db, config):
 async def test_close_rejects_missing_summary_for_workspace_profile(handler, db):
     await db.create_project(Project(id="p", name="P"))
     await db.upsert_profile(AgentProfile(id="worker", name="Worker", needs_workspace=True))
-    task = await handler.execute(
-        "create_task", {"project_id": "p", "title": "t", "profile_id": "worker"}
-    )
-    tid = task["created"]
+    tid = await _create_routed(handler, db, "worker")
     await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
 
     result = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
@@ -109,10 +120,7 @@ async def test_close_rejects_missing_summary_for_workspace_profile(handler, db):
 async def test_close_allows_missing_summary_for_non_workspace_profile(handler, db):
     await db.create_project(Project(id="p", name="P"))
     await db.upsert_profile(AgentProfile(id="chat", name="Chat", needs_workspace=False))
-    task = await handler.execute(
-        "create_task", {"project_id": "p", "title": "t", "profile_id": "chat"}
-    )
-    tid = task["created"]
+    tid = await _create_routed(handler, db, "chat")
     await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
 
     result = await handler.execute("task_close", {"task_id": tid, "outcome": "pass"})
@@ -145,10 +153,7 @@ async def test_close_allows_missing_summary_for_profileless_task(handler, db):
 async def test_close_with_summary_succeeds_and_stores_meta(handler, db):
     await db.create_project(Project(id="p", name="P"))
     await db.upsert_profile(AgentProfile(id="worker", name="Worker", needs_workspace=True))
-    task = await handler.execute(
-        "create_task", {"project_id": "p", "title": "t", "profile_id": "worker"}
-    )
-    tid = task["created"]
+    tid = await _create_routed(handler, db, "worker")
     await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
 
     result = await handler.execute(
@@ -169,10 +174,7 @@ async def test_close_with_summary_succeeds_and_stores_meta(handler, db):
 async def test_close_captures_commit_from_branch(handler, db, monkeypatch):
     await db.create_project(Project(id="p", name="P"))
     await db.upsert_profile(AgentProfile(id="worker", name="Worker", needs_workspace=True))
-    task = await handler.execute(
-        "create_task", {"project_id": "p", "title": "t", "profile_id": "worker"}
-    )
-    tid = task["created"]
+    tid = await _create_routed(handler, db, "worker")
     await db.update_task(tid, branch_name="feature/x")
     await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
 
@@ -215,10 +217,7 @@ async def test_close_captures_commit_from_branch(handler, db, monkeypatch):
 async def test_close_skips_auto_commit_when_explicit_commit_provided(handler, db, monkeypatch):
     await db.create_project(Project(id="p", name="P"))
     await db.upsert_profile(AgentProfile(id="worker", name="Worker", needs_workspace=True))
-    task = await handler.execute(
-        "create_task", {"project_id": "p", "title": "t", "profile_id": "worker"}
-    )
-    tid = task["created"]
+    tid = await _create_routed(handler, db, "worker")
     await db.update_task(tid, branch_name="feature/y")
     await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
 
@@ -254,10 +253,7 @@ async def test_close_skips_auto_commit_when_explicit_commit_provided(handler, db
 async def test_close_succeeds_even_when_arev_parse_returns_none(handler, db, monkeypatch):
     await db.create_project(Project(id="p", name="P"))
     await db.upsert_profile(AgentProfile(id="worker", name="Worker", needs_workspace=True))
-    task = await handler.execute(
-        "create_task", {"project_id": "p", "title": "t", "profile_id": "worker"}
-    )
-    tid = task["created"]
+    tid = await _create_routed(handler, db, "worker")
     await db.update_task(tid, branch_name="feature/z")
     await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
 
@@ -290,10 +286,7 @@ async def test_close_captures_auto_commit_sha_after_completion_pipeline(handler,
     """Auto-remediation in the pipeline must be reflected in the durable commit."""
     await db.create_project(Project(id="p", name="P"))
     await db.upsert_profile(AgentProfile(id="worker", name="Worker", needs_workspace=True))
-    created = await handler.execute(
-        "create_task", {"project_id": "p", "title": "t", "profile_id": "worker"}
-    )
-    tid = created["created"]
+    tid = await _create_routed(handler, db, "worker")
     await db.update_task(tid, branch_name="feature/auto-remediated")
     await db.transition_task(tid, TaskStatus.IN_PROGRESS, context="test")
 
@@ -339,10 +332,7 @@ async def test_close_persists_structured_completion_story(handler, db):
     """A successful close must save the normalized completion account."""
     await db.create_project(Project(id="p", name="P"))
     await db.upsert_profile(AgentProfile(id="worker", name="Worker", needs_workspace=True))
-    created = await handler.execute(
-        "create_task", {"project_id": "p", "title": "t", "profile_id": "worker"}
-    )
-    tid = created["created"]
+    tid = await _create_routed(handler, db, "worker")
     await db.update_task(
         tid,
         branch_name="feature/completion-story",

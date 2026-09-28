@@ -406,6 +406,21 @@ def session_token(session_id: str) -> str:
     return aq("session", "token", session_id)["token"]
 
 
+def route_task(task_id: str, profile: str, intelligence_class: str, **intent) -> dict:
+    """Route *task_id* the way the operator does: ``task_route``.
+
+    Filing carries hints, never routes (mandatory task routing): a task is
+    created unrouted, with its class as a hint.  Tier 1 has no
+    assignment-playbook LLM, so the fixture's deterministic assignment
+    decision is the operator's ``task_route`` right after filing.  *intent*
+    is ``pin=True`` or ``provider_intent=...``.
+    """
+    return api_checked("task_route", {
+        "task_id": task_id, "profile_id": profile,
+        "intelligence_class": intelligence_class, **intent,
+    })
+
+
 def create_task(
     title: str,
     *,
@@ -413,19 +428,22 @@ def create_task(
     profile: str | None = None,
     intelligence_class: str | None = None,
 ) -> str:
-    """``create_task`` over REST — ``aq task create`` has no JSON envelope yet."""
+    """``create_task`` over REST — ``aq task create`` has no JSON envelope yet.
+
+    With *profile*, the task is filed with its class as a hint and then routed
+    to *profile* by :func:`route_task`.
+    """
     args = {"project_id": project_id, "title": title, "description": f"e2e: {title}"}
-    if profile:
-        args["profile_id"] = profile
     if intelligence_class is None and profile == POOL_PROFILE:
-        # Tier 1 has no assignment-playbook LLM. Explicit classification is
-        # therefore the fixture's deterministic assignment decision.
         intelligence_class = POOL_CLASS
     if intelligence_class is not None:
         args["intelligence_class"] = intelligence_class
     result = api("create_task", args)
     task_id = result.get("created") or result.get("task_id")
     check(task_id, f"create_task({title}) returned no id: {result}")
+    if profile:
+        check(intelligence_class, f"routing {title} to {profile} needs a class")
+        route_task(task_id, profile, intelligence_class)
     return task_id
 
 
@@ -871,6 +889,13 @@ def s4_formulas(state: dict) -> str:
     container = cooked["container_id"]
     state["s4_container"] = container
     check(len(cooked["task_ids"]) == 2, f"expected 2 children, got {cooked['task_ids']}")
+    # Formula nodes carry hints, never a route: the operator routes each to
+    # the task-lifecycle profile its label names.
+    routes = {"review": ("reviewer", "fast-low"), "fix": ("coding", "standard-high")}
+    nodes = {node["key"]: node["task_id"] for node in cooked["nodes"]}
+    check(set(nodes) == set(routes), f"cooked nodes: {cooked['nodes']}")
+    for key, (profile, cls) in routes.items():
+        route_task(nodes[key], profile, cls)
 
     row = task_show(container)
     check(
@@ -892,7 +917,7 @@ def s4_formulas(state: dict) -> str:
         f"as-cooked titles differ from the resolved ones: {snap_titles} vs {titles}",
     )
 
-    # Close both children through their own sessions.  Both are routed to
+    # Close both children through their own sessions.  Both were routed to
     # task-lifecycle profiles, so the push scheduler launches a session for
     # each as it enters the frontier — `review` first, `fix` once `review`
     # is done.  Minting each session's token and closing through it is the
@@ -1258,8 +1283,6 @@ def s9_task_lifecycle(state: dict) -> str:
             "137",
             "--type",
             "test",
-            "--profile",
-            POOL_PROFILE,
             "--intelligence-class",
             POOL_CLASS,
             "--requires-kind",
@@ -1664,10 +1687,11 @@ def s15_development_delivery(state: dict) -> str:
     successor = api("create_task", {
         "project_id": "e2e-development", "title": "wait for delivered code",
         "description": "must not start before the prerequisite reaches main",
-        "profile_id": POOL_PROFILE, "intelligence_class": POOL_CLASS,
+        "intelligence_class": POOL_CLASS,
     })
     successor_id = successor.get("task_id") or successor.get("created")
     check(bool(successor_id), str(successor))
+    route_task(successor_id, POOL_PROFILE, POOL_CLASS)
     api("add_dependency", {"task_id": successor_id, "depends_on": task_id})
     check(not task_show(successor_id)["is_blocked"], "delivery leaked into graph projection")
     waiting = api("explain_task", {"task_id": successor_id})
@@ -1863,19 +1887,30 @@ def live_sessions_for(profile_id: str) -> list[dict]:
     ]
 
 
-def failover_task(title: str, profile: str, cls: str, *, priority: int, **extra) -> str:
+def failover_task(
+    title: str, profile: str, cls: str, *, priority: int, pin: bool = False,
+    provider_intent: str | None = None,
+) -> str:
+    """File a hint-only task, then route it to *profile*.
+
+    ``pin`` pins it; ``provider_intent`` sets the intent outright.  Either
+    is given in this one route: ``task_route`` never downgrades an intent
+    on the same provider, so a later ``class_only`` route would not stick.
+    """
     args = {
         "project_id": PROJECT,
         "title": title,
         "description": f"e2e S16: {title}",
-        "profile_id": profile,
         "intelligence_class": cls,
         "priority": priority,
-        **extra,
     }
     result = api("create_task", args)
     task_id = result.get("created") or result.get("task_id")
     check(task_id, f"create_task({title}) returned no id: {result}")
+    intent = {"pin": True} if pin else {}
+    if provider_intent is not None:
+        intent["provider_intent"] = provider_intent
+    route_task(task_id, profile, cls, **intent)
     return task_id
 
 
@@ -1965,10 +2000,9 @@ def _s16_outage(state: dict) -> dict:
     solo = failover_task("S16 solo-high", SOLO_A, "solo-high", priority=40)
     class_only = []
     for n, p in ((1, 25), (2, 35)):
-        task_id = failover_task(f"S16 class-only {n}", STD_A, "std-high", priority=p)
-        edited = api("edit_task", {"task_id": task_id, "provider_intent": "class_only"})
-        check(edited.get("updated") == task_id, f"could not make {task_id} class_only: {edited}")
-        class_only.append(task_id)
+        class_only.append(failover_task(
+            f"S16 class-only {n}", STD_A, "std-high", priority=p, provider_intent="class_only",
+        ))
     intents = {tid: task_show(tid)["provider_intent"] for tid in pref + [pinned, solo] + class_only}
     check(all(intents[t] == "preferred" for t in pref + [solo]), f"explicit profile != preferred: {intents}")
     check(intents[pinned] == "pinned", f"--pin did not pin: {intents[pinned]}")
@@ -2249,9 +2283,10 @@ def _prepare_failover_recovery(state: dict) -> str:
     solo = failover_task("S16 recovery solo", SOLO_A, "solo-high", priority=40)
     failover_task("S16 recovery preferred", STD_A, "std-high", priority=30)
     for priority in (25, 35):
-        task_id = failover_task("S16 recovery class-only", STD_A, "std-high", priority=priority)
-        edited = api("edit_task", {"task_id": task_id, "provider_intent": "class_only"})
-        check(edited.get("updated") == task_id, f"recovery fixture class-only edit: {edited}")
+        failover_task(
+            "S16 recovery class-only", STD_A, "std-high", priority=priority,
+            provider_intent="class_only",
+        )
     wait_provider(PROVA, ("unauthenticated",), what="the recovery fixture login failure")
     sweep = reroute()
     check([row["task_id"] for row in sweep["moved"]] == [moved], f"recovery fixture sweep: {sweep}")
@@ -2345,7 +2380,7 @@ def s17_phased_graph(state: dict) -> str:
 
     graph = {
         "version": 1,
-        "defaults": {"profile": POOL_PROFILE, "intelligence_class": POOL_CLASS},
+        "defaults": {"intelligence_class": POOL_CLASS},
         "parent": {"title": "S17 phased graph"},
         "phases": [
             {"key": "prepare", "title": "Prepare fixture"},
@@ -2401,8 +2436,6 @@ def s17_phased_graph(state: dict) -> str:
         project_id,
         "--from-spec",
         spec_relative,
-        "--profile",
-        POOL_PROFILE,
         "--intelligence-class",
         POOL_CLASS,
     )
@@ -2420,6 +2453,9 @@ def s17_phased_graph(state: dict) -> str:
     epic = cooked["parent_id"]
     phases = {row["key"]: row["task_id"] for row in cooked["phases"]}
     nodes = {row["key"]: row["task_id"] for row in cooked["nodes"]}
+    # Graph nodes carry their class as a hint; the operator routes them.
+    for node_id in nodes.values():
+        route_task(node_id, POOL_PROFILE, POOL_CLASS)
     check(set(phases) == {"prepare", "exercise"}, f"cooked phases: {cooked}")
     check(set(nodes) == {"fixture", "verification", "runner"}, f"cooked nodes: {cooked}")
 
@@ -2691,7 +2727,7 @@ def s19_scoped_planner_graph(state: dict) -> str:
     graph_path.write_text(json.dumps(graph), encoding="utf-8")
     graph_args = (
         "task", "create", "--project", PROJECT, "--graph", str(graph_path),
-        "--profile", POOL_PROFILE, "--intelligence-class", POOL_CLASS,
+        "--intelligence-class", POOL_CLASS,
         "--reason", "S19 verifies planner-scoped graph filing",
     )
 
@@ -2757,6 +2793,10 @@ def s19_scoped_planner_graph(state: dict) -> str:
     after_denials = api("task_children", {"task_id": held_task}, token=planner.token)
     check(after_denials.get("count") == 1, f"denied graphs wrote children: {after_denials}")
 
+    # A worker-filed node waits on its routing gate; the operator's route
+    # resolves it (the router's job once a project's router is ready).
+    route_task(child_id, POOL_PROFILE, POOL_CLASS)
+
     def child_ready() -> dict | None:
         row = task_show(child_id)
         return row if row.get("status") == "READY" else None
@@ -2797,7 +2837,7 @@ def s19_scoped_planner_graph(state: dict) -> str:
     batch_path.write_text(json.dumps(batch), encoding="utf-8")
     batch_args = (
         "task", "create", "--project", PROJECT, "--graph", str(batch_path),
-        "--profile", POOL_PROFILE, "--intelligence-class", POOL_CLASS,
+        "--intelligence-class", POOL_CLASS,
     )
 
     def file_batch(reason: str) -> dict:

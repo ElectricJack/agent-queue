@@ -27,6 +27,7 @@ from src.playbooks.executors.base import (
 )
 from src.playbooks.receipts import idempotency_key
 from src.profiles.capabilities import capability_policy_for
+from src.routing.filing import routing_choice_refusal
 
 
 def _attempt_key(ctx: StepContext) -> str:
@@ -449,6 +450,12 @@ class LiveLlmExecutor:
                     registration = ctx.services.contracts.get(name)
                     if registration is None:
                         return {"success": False, "error": "tool is not contracted"}
+                    # Ahead of the args model, as in ``CommandHandler.execute``:
+                    # a model-chosen ``provider`` or ``model`` is a routing
+                    # choice, not a validation slip (mandatory-routing §5.1).
+                    refusal = routing_choice_refusal(name, args, ctx.principal)
+                    if refusal is not None:
+                        return refusal
                     try:
                         validated = registration.contract.execution.args_model.model_validate(args)
                         response = await registration.invoke(validated, ctx.principal)

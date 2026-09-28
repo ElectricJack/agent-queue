@@ -4,7 +4,7 @@ Implements docs/specs/implementation/supervisor-agent.md §8's
 :func:`parse_graph` / :func:`extract_graph_from_spec`.
 
 Parsing is *structural* only: it decides what the document says, never
-whether it is coherent.  Everything semantic — vars, cycles, profiles, dep
+whether it is coherent.  Everything semantic — vars, cycles, classes, dep
 types, spec sections — belongs to :mod:`src.task_graph.validator`, so a
 caller can always parse first and report every semantic problem at once
 instead of dying on the first one.
@@ -23,6 +23,7 @@ from src.database.queries.task_subtask_queries import (
     MAX_SUBTASK_TITLE,
     MAX_SUBTASKS_PER_CALL,
 )
+from src.routing.filing import GRAPH_RULE, REFUSED_GRAPH_KEYS, is_routing_choice
 from src.task_graph.models import (
     DEFAULT_DEP_TYPE,
     GraphContext,
@@ -207,24 +208,11 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
     else:
         node.priority = priority
 
-    profile = raw.get("profile", defaults.get("profile"))
-    if profile is not None and not isinstance(profile, str):
-        errors.append(_err("bad_field_type", f"'profile' must be a string, got {profile!r}", key))
-    else:
-        node.profile = profile
-        if profile is not None:
-            node.profile_source = "document"
-
-    # ``pin: true`` makes the profile a pinned provider (provider-failover D9).
-    # Whether the node has a profile to pin is checked after ``create_task_graph``
-    # fills one in (``validate_graph``'s ``pin_without_profile``).
-    pin = raw.get("pin", defaults.get("pin", False))
-    if pin is None:
-        pin = False
-    if not isinstance(pin, bool):
-        errors.append(_err("bad_field_type", f"'pin' must be true or false, got {pin!r}", key))
-    else:
-        node.pin = pin
+    # A node carries hints, never a route (mandatory-routing spec §5.1): a
+    # profile, a pin, a provider or a model is refused, not dropped, so the
+    # author learns the router ignores it.  ``defaults`` is checked once, in
+    # :func:`parse_graph`.
+    errors.extend(_route_key_errors(raw, "", key))
 
     intelligence_class = raw.get("intelligence_class", defaults.get("intelligence_class"))
     if intelligence_class is not None and (
@@ -234,12 +222,15 @@ def _parse_node(raw: Any, index: int, defaults: dict) -> tuple[GraphNode | None,
     else:
         node.intelligence_class = intelligence_class
 
-    # Worker affinity and model/provider pins are not graph fields. Report
-    # attempted routing instead of accepting it and discarding user intent.
-    for unsupported in ("affinity_agent_id", "agent_id", "assigned_agent_id", "model", "provider", "harness"):
+    # Worker affinity is not a graph field. Report attempted placement
+    # instead of accepting it and discarding user intent.
+    for unsupported in ("affinity_agent_id", "agent_id", "assigned_agent_id"):
         if unsupported in raw or unsupported in defaults:
             errors.append(_err(
-                "unsupported_routing", f"'{unsupported}' is not supported in graphs; use profile and intelligence_class", key,
+                "unsupported_routing",
+                f"'{unsupported}' is not supported in graphs; the project's router places "
+                "the work (use intelligence_class and task_type as hints)",
+                key,
             ))
 
     task_type = raw.get("task_type", defaults.get("task_type"))
@@ -350,6 +341,23 @@ def _parse_phase(raw: Any, index: int) -> tuple[GraphPhase | None, list[GraphErr
     return GraphPhase(key=key, title=title, label=label), []
 
 
+def _route_key_errors(raw: dict, where: str, node_key: str | None) -> list[GraphError]:
+    """One ``routing_choice_forbidden`` finding per route key in *raw*.
+
+    *where* prefixes the key in the message (``defaults.``, ``parent.``).
+    """
+    return [
+        _err(
+            GRAPH_RULE,
+            f"'{where}{field}' chooses a route, which only the project's router may do; "
+            "give intelligence_class and task_type as hints instead",
+            node_key,
+        )
+        for field in REFUSED_GRAPH_KEYS
+        if field in raw and is_routing_choice(raw[field])
+    ]
+
+
 def _parse_parent(raw: Any) -> tuple[GraphParent | None, list[GraphError]]:
     if raw is None:
         return None, []
@@ -357,7 +365,7 @@ def _parse_parent(raw: Any) -> tuple[GraphParent | None, list[GraphError]]:
         return GraphParent(title=raw), []
     if not isinstance(raw, dict):
         return None, [_err("bad_parent", f"'parent' must be an object, got {type(raw).__name__}")]
-    errors: list[GraphError] = []
+    errors: list[GraphError] = _route_key_errors(raw, "parent.", None)
     if raw.get("subtasks"):
         errors.append(
             _err(
@@ -376,7 +384,6 @@ def _parse_parent(raw: Any) -> tuple[GraphParent | None, list[GraphError]]:
         GraphParent(
             title=raw.get("title", "") or "",
             description=raw.get("description", "") or "",
-            profile=raw.get("profile"),
             labels=labels,
             priority=priority,
         ),
@@ -467,6 +474,7 @@ def parse_graph(source: str | dict, *, fmt: str = "auto") -> TaskGraph:
             _err("bad_defaults", f"'defaults' must be an object, got {type(defaults).__name__}")
         )
         defaults = {}
+    errors.extend(_route_key_errors(defaults, "defaults.", None))
 
     parent, parent_errors = _parse_parent(data.get("parent"))
     errors.extend(parent_errors)

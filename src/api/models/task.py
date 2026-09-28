@@ -189,9 +189,10 @@ class CreateTaskResponse(BaseModel):
     integration_mode: str | None = None
     task_type: str | None = None
     profile_id: str | None = None
-    # Why the task names a profile: ``explicit`` (the caller named it) or
-    # ``role`` (a stage profile).  Absent for an unrouted task: creation never
-    # resolves a route, the project's router does (mandatory-routing spec §1).
+    # Why the task names a profile: ``role`` (a stage profile a role creator
+    # named).  Absent for an unrouted task: creation never resolves a route,
+    # the project's router does, and every other profile is refused
+    # (mandatory-routing spec §1, §5.1).
     profile_source: str | None = None
     intelligence_class: str | None = None
     # Who wrote the route (``unrouted`` until the router writes one) and the

@@ -435,8 +435,10 @@ Plan a graph only beneath the task currently held by this session.
 - Supply a filing reason, use dry-run first, and never retry an ambiguous result.
 MD
 
-# `review-and-fix` names `reviewer` and `coding` as node profiles; graph
-# validation resolves both against the DB, so the vault must carry them.
+# The `reviewer` and `coding` profiles.  `review-and-fix` once named them as
+# node profiles; a graph node now carries hints only (mandatory task routing),
+# and the formula keeps the names as labels.  The profiles stay: S4's review
+# child is a no-code task by the reviewer's `read_only` declaration.
 #
 # The reviewer mirrors the shipped `reviewer` profile: `read_only: true`
 # and no write tools.  That flag is the pipeline's declarative "this task
@@ -465,8 +467,8 @@ tags: [profile, agent-type, e2e]
 # E2E $role
 
 ## Role
-A task-lifecycle profile the formula fixtures route nodes to.  Present so
-\`aq formula show\` / \`aq formula cook\` can resolve \`profile: $role\`.
+A task-lifecycle profile S4 routes the cooked formula nodes to with
+\`aq task route\`; a formula node carries hints only.
 
 ## Config
 \`\`\`json

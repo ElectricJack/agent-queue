@@ -131,7 +131,6 @@ def _create_task_graph(
     from_spec: str | None,
     dry_run: bool,
     parent_id: str | None = None,
-    profile_id: str | None = None,
     intelligence_class: str | None = None,
     reason: str | None = None,
     root: bool = False,
@@ -151,8 +150,6 @@ def _create_task_graph(
         params["spec_path"] = from_spec
     if parent_id:
         params["parent_id"] = parent_id
-    if profile_id:
-        params["profile_id"] = profile_id
     if intelligence_class:
         params["intelligence_class"] = intelligence_class
     if reason:
@@ -223,31 +220,13 @@ def _create_task_graph(
     help="Integration policy override (omit to inherit the project/system policy)",
 )
 @click.option(
-    "-P",
-    "--profile",
-    "profile_id",
-    default=None,
-    help=(
-        "Worker profile id; supervisor is control-plane only. Omit to let "
-        "--intelligence-class pick it, else the project default. "
-        "Run `aq agent list-profiles` for the profile ids this install currently has; "
-        "prefer an enabled lifecycle: pool profile for ordinary worker work."
-    ),
-)
-@click.option(
     "--intelligence-class",
     default=None,
     help=(
-        "Intelligence class id (e.g. deep-high); also fills missing graph node classes. "
-        "Without --profile, a class the project default does not run picks an enabled "
-        "worker whose default_class matches (pool first, project default's provider, "
-        "then Claude) before the task is created; no match is an error"
+        "Intelligence-class hint for the router (e.g. deep-high); also fills missing "
+        "graph node classes. The project's router picks the profile, provider and final "
+        "class; an unknown class is refused"
     ),
-)
-@click.option(
-    "--agent-type",
-    default=None,
-    help="Agent type override (cascade falls back to the global profile of this name)",
 )
 @click.option(
     "--graph",
@@ -333,22 +312,6 @@ def _create_task_graph(
         "Not supported with --graph/--from-spec."
     ),
 )
-@click.option(
-    "--pin",
-    is_flag=True,
-    default=False,
-    help=(
-        "Pin the task to --profile's provider: it holds instead of failing over while "
-        "that provider is unavailable. Without it an explicit --profile is a preference."
-    ),
-)
-@click.option(
-    "--provider-intent",
-    "provider_intent",
-    type=click.Choice(["pinned", "preferred", "class_only"]),
-    default=None,
-    help="Set the provider intent explicitly (pinned/preferred need --profile)",
-)
 @click.pass_context
 @_handle_errors
 def task_create(
@@ -359,9 +322,7 @@ def task_create(
     priority: int | None,
     task_type: str | None,
     integration_mode: str | None,
-    profile_id: str | None,
     intelligence_class: str | None,
-    agent_type: str | None,
     graph_file: str | None,
     from_spec: str | None,
     dry_run: bool,
@@ -372,26 +333,17 @@ def task_create(
     reason: str | None,
     deliverables: tuple[str, ...],
     requires_kinds: tuple[str, ...],
-    pin: bool = False,
-    provider_intent: str | None = None,
 ) -> None:
     """Create a new task (interactive wizard or via flags).
 
-    Use ``--profile`` / ``-P`` to pin a specific agent profile (model +
-    tools + system prompt). Use ``--agent-type`` to pick the scope the
-    task runs under when no explicit profile is given.
-
-    ``--intelligence-class`` is a hint to the router, not a route: the task
-    is stored unrouted with the class as its ``class_hint``, and the
-    project's routing playbook picks the profile and the final class (a
-    class outside the policy's bounds for the kind is clamped). A class that
-    is not in the vault is refused. Creation never picks a profile from the
-    class, the project default or the caller's own profile.
-
-    An explicit ``--profile`` is a *preference* (``provider_intent:
-    preferred``): if its provider runs out of usage or loses its login, the
-    task fails over to the same class on another provider. ``--pin`` makes it
-    a requirement (``pinned``) — the task holds until that provider is back.
+    A task is filed with hints, never a route: the project's routing
+    playbook picks its profile, provider and model (mandatory task routing).
+    ``--intelligence-class`` and ``--type`` are the two hints: the task is
+    stored unrouted with the class as its ``class_hint``, and the router
+    picks the profile and the final class (a class outside the policy's
+    bounds for the kind is clamped). A class that is not in the vault is
+    refused. A profile, provider, model or pin is refused on every surface
+    with ``routing.choice_forbidden``.
 
     ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
     in one transaction instead of a single task; add ``--dry-run`` to see the
@@ -426,11 +378,6 @@ def task_create(
             "nodes carry no workspace requirements. Create the task on its own "
             "with --requires-kind, or attach it to the graph afterwards."
         )
-    if (pin or provider_intent) and (graph_file or from_spec):
-        raise click.UsageError(
-            "--pin/--provider-intent apply to single-task creation; in a graph put "
-            "'pin: true' on the nodes to pin"
-        )
     if graph_file or from_spec:
         _create_task_graph(
             ctx,
@@ -439,7 +386,6 @@ def task_create(
             from_spec=from_spec,
             dry_run=dry_run,
             parent_id=parent_id,
-            profile_id=profile_id,
             intelligence_class=intelligence_class,
             reason=reason,
             root=root,
@@ -462,10 +408,6 @@ def task_create(
         }
         if integration_mode:
             params["integration_mode"] = integration_mode
-        if profile_id:
-            params["profile_id"] = profile_id
-        if agent_type:
-            params["agent_type"] = agent_type
     else:
         from .menus import task_creation_wizard
 
@@ -508,19 +450,9 @@ def task_create(
                 render=lambda _data: console.print("[dim]Task creation cancelled.[/]"),
             )
             return
-        # CLI flag overrides persist through the wizard if the caller
-        # mixed interactive + flag usage.
-        if profile_id and "profile_id" not in params:
-            params["profile_id"] = profile_id
-        if agent_type and "agent_type" not in params:
-            params["agent_type"] = agent_type
 
     if intelligence_class:
         params["intelligence_class"] = intelligence_class
-    if pin:
-        params["pin"] = True
-    if provider_intent:
-        params["provider_intent"] = provider_intent
 
     if parent_id and "parent_id" not in params:
         params["parent_id"] = parent_id

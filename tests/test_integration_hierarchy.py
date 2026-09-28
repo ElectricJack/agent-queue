@@ -45,7 +45,6 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.models import (
-    AgentProfile,
     Project,
     RepoConfig,
     RepoSourceType,
@@ -376,12 +375,18 @@ async def test_proposal_commit_uses_one_atomic_hierarchy_transaction(
     assert len(await _origins(db)) == 3
 
 
-async def test_hierarchical_proposal_preserves_explicit_task_route(
+async def test_hierarchical_proposal_keeps_a_task_class_as_its_hint(
     db, hierarchy, internal_plugins_handler
 ):
+    """A batch carries hints, never a route (mandatory task routing §5.1): the
+    hierarchical commit files the spec's class as the task's class hint and
+    leaves the route to the router."""
+    from src.vault import ensure_default_intelligence_classes
+
     handler = await internal_plugins_handler(db=db)
     handler.orchestrator.hierarchy_integration = hierarchy
-    await db.create_profile(AgentProfile(id="worker", name="Worker", harness="claude"))
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
     proposal = await handler.execute(
         "task_batch_propose",
         {
@@ -392,7 +397,7 @@ async def test_hierarchical_proposal_preserves_explicit_task_route(
                     "tempId": "root",
                     "title": "root",
                     "description": "",
-                    "profile_id": "worker",
+                    "intelligence_class": "standard-high",
                 }
             ],
             "edges": [],
@@ -404,8 +409,11 @@ async def test_hierarchical_proposal_preserves_explicit_task_route(
         "task_batch_commit", {"proposal_id": proposal["proposal_id"]}
     )
 
-    assert committed["success"] is True
-    assert (await db.get_task(committed["task_ids"][0])).profile_id == "worker"
+    assert committed["success"] is True, committed
+    task = await db.get_task(committed["task_ids"][0])
+    assert (task.profile_id, task.intelligence_class, task.class_hint, task.route_source) == (
+        None, None, "standard-high", "unrouted",
+    )
 
 
 async def test_bulk_hierarchy_children_apply_routing_admission(db, hierarchy):

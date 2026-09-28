@@ -131,37 +131,38 @@ class TestFiling:
             )
             monkeypatch.setattr(handler, "_hierarchy_integration_service", lambda: service)
 
+        tasks_before = len(await db.list_tasks(PROJECT_ID))
         result = await scoped(handler, sid)._cmd_create_task({
             "title": "Root finding", "description": "d", "reason": "held exposed it",
             "intelligence_class": "standard-high", **placement,
             **({"profile_id": "worker"} if routed else {}),
         })
 
+        if routed:
+            # A worker files hints, never a route (mandatory routing §5.2):
+            # the named profile is refused and nothing is written.
+            assert result.get("success") is False, result
+            assert result["code"] == "routing.choice_forbidden"
+            assert result["refused"] == ["profile_id"]
+            assert len(await db.list_tasks(PROJECT_ID)) == tasks_before
+            assert (await db.get_task("held")).filed_count == 0
+            return
         assert result.get("success") is True, result
         task = await db.get_task(result["task_id"])
         assert task.parent_task_id is None
         assert task.status == TaskStatus.DEFINED
-        # Unrouted, the class is only the filer's hint (mandatory routing
-        # §5.3); a named profile keeps its class until Task 5 refuses it.
+        # Unrouted, the class is only the filer's hint (mandatory routing §5.3).
         assert task.class_hint == "standard-high"
-        assert task.intelligence_class == ("standard-high" if routed else None)
+        assert task.intelligence_class is None
         assert await db.get_typed_dependencies(task.id) == [("held", "discovered-from")]
         gates = await db.get_gates_for_task(task.id)
         gate_events = [c.args[1] for c in handler.orchestrator.bus.emit.await_args_list
                        if c.args[0] == "gate.created"]
-        if routed:
-            assert task.profile_id == "worker"
-            assert task.is_blocked is False
-            assert result["gate_id"] is None
-            assert gates == []
-            assert gate_events == []
-            assert result["profile_source"] == "explicit"
-        else:
-            assert task.profile_id is None
-            assert task.is_blocked is True
-            assert [g["gate_type"] for g in gates] == ["routing"]
-            assert result["gate_id"] == gates[0]["id"]
-            assert [event["gate_id"] for event in gate_events] == [result["gate_id"]]
+        assert task.profile_id is None
+        assert task.is_blocked is True
+        assert [g["gate_type"] for g in gates] == ["routing"]
+        assert result["gate_id"] == gates[0]["id"]
+        assert [event["gate_id"] for event in gate_events] == [result["gate_id"]]
         event = created_events(handler)[0]
         assert (event["parent_task_id"], event["discovered_from"]) == (None, "held")
         assert (await db.get_task("held")).filed_count == 1
@@ -184,17 +185,24 @@ class TestFiling:
         await db.create_task(Task(
             id="prereq", project_id=PROJECT_ID, title="prereq", description="p",
         ))
+        # A worker files hints only (mandatory routing §5.2); the route comes
+        # later, here from the operator's task_route, which resolves the
+        # filing's routing gate.
         result = await scoped(handler, sid)._cmd_create_task({
             "title": "Follow-up", "description": "d", "root": True,
             "reason": "held exposed it", "depends_on": "prereq",
-            "profile_id": "worker", "intelligence_class": "standard-high",
+            "intelligence_class": "standard-high",
         })
         assert result.get("success") is True, result
         task_id = result["task_id"]
+        handler._current_scope = None
+        routed = await handler._cmd_task_route({
+            "task_id": task_id, "profile_id": "worker", "intelligence_class": "standard-high",
+        })
+        assert routed.get("success") is True, routed
         await handler.orchestrator._check_defined_tasks()
         assert (await db.get_task(task_id)).status == TaskStatus.DEFINED
 
-        handler._current_scope = None
         removed = await handler._cmd_remove_dependency({"task_id": task_id, "depends_on": "prereq"})
         assert removed.get("ok") is True, removed
         await handler.orchestrator._check_defined_tasks()
@@ -202,7 +210,7 @@ class TestFiling:
         task = await db.get_task(task_id)
         assert task.status == TaskStatus.READY
         assert task.is_blocked is False
-        assert await db.get_gates_for_task(task_id) == []
+        assert all(gate["status"] == "resolved" for gate in await db.get_gates_for_task(task_id))
 
     async def test_legacy_null_instance_claim_keeps_unmanaged_worker_filing_compatible(
         self, handler, db
