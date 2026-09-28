@@ -825,21 +825,23 @@ def build_trust_manifest(
     checks: Sequence[str],
     check_version: str,
 ) -> dict[str, Any]:
-    """``.github/agent-queue-integration.json`` for App credential mode."""
-    from src.integration.ci import IntegrationTrustManifest
+    """``.github/agent-queue-integration.json`` for App credential mode.
 
-    manifest = {
-        "schema": "aq.integration-trust.v1",
-        "canonical_repository_id": canonical_repository_id,
-        "repository_id": github_repository_id,
-        "full_name": full_name,
-        "ci_producer_app_id": GITHUB_ACTIONS_APP_ID,
-        "attestation_app_id": attestation_app_id,
-        "attestation_name": ATTESTATION_NAME,
-        "required_checks": {"version": check_version, "names": list(checks)},
-    }
-    IntegrationTrustManifest.model_validate(manifest)
-    return manifest
+    A thin wrapper over the shared builder (``src/integration/trust_manifest.py``)
+    that ``aq integration trust-manifest`` and the preflight use too; the planner's
+    producer is always GitHub Actions.
+    """
+    from src.integration import trust_manifest
+
+    return trust_manifest.build_trust_manifest(
+        canonical_repository_id=canonical_repository_id,
+        repository_id=github_repository_id,
+        full_name=full_name,
+        ci_producer_app_id=GITHUB_ACTIONS_APP_ID,
+        attestation_app_id=attestation_app_id,
+        checks=checks,
+        check_version=check_version,
+    )
 
 
 def detect_stack(files: Mapping[str, str]) -> str:

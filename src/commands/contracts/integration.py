@@ -61,6 +61,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release",
         "integration_cleanup",
         "integration_status",
+        "integration_trust_manifest",
         "integration_flush",
         "integration_eject",
         "integration_enable",
@@ -98,6 +99,28 @@ class IntegrationScheduleDueArgs(CommandArgs):
 
 class IntegrationStatusArgs(CommandArgs):
     project_id: str = Field(min_length=1)
+
+
+class IntegrationTrustManifestArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    #: A policy document to build from instead of the bound one (``--policy FILE``).
+    policy: dict[str, Any] | None = None
+    #: Defaults to the project's designated integration repository.
+    repository_id: str | None = Field(default=None, min_length=1)
+
+
+class IntegrationTrustManifestValue(CommandValue):
+    project_id: str | None = None
+    repository_id: str | None = None
+    policy_source: Literal["argument", "bound"] | None = None
+    github_repository_id: int | None = None
+    full_name: str | None = None
+    attestation_app_id: int | None = None
+    path: str | None = None
+    manifest: dict[str, Any] | None = None
+    text: str | None = None
+    sha256: str | None = None
+    committed: dict[str, Any] | None = None
 
 
 class IntegrationEjectArgs(CommandArgs):
@@ -923,6 +946,40 @@ INTEGRATION_STATUS = _operational_contract(
     successes=frozenset({"status"}),
     side_effect=SideEffectClass.READ,
 )
+#: Every refusal names its cause (spec §3 I6); ``manifest`` is the only success.
+TRUST_MANIFEST_OUTCOMES = (
+    "manifest",
+    "not_found",
+    "policy_missing",
+    "policy_invalid",
+    "repository_not_designated",
+    "repository_mismatch",
+    "repository_default_branch_missing",
+    "provider_not_wired",
+    "repository_binding_failed",
+    "provider_binding_failed",
+    "not_app_mode",
+    "ci_policy_invalid",
+    "ci_producer_not_numeric",
+    "ci_producer_mismatch",
+    "trust_manifest_invalid",
+)
+INTEGRATION_TRUST_MANIFEST = _operational_contract(
+    "integration_trust_manifest",
+    IntegrationTrustManifestArgs,
+    TRUST_MANIFEST_OUTCOMES,
+    successes=frozenset({"manifest"}),
+    side_effect=SideEffectClass.READ,
+    result_model=IntegrationTrustManifestValue,
+)
+INTEGRATION_TRUST_MANIFEST = INTEGRATION_TRUST_MANIFEST.model_copy(update={
+    "presentation": INTEGRATION_TRUST_MANIFEST.presentation.model_copy(update={
+        "summary": (
+            "Render the App-mode trust manifest from the policy, the authenticated "
+            "binding and the daemon's App, and compare the default-branch copy."
+        ),
+    }),
+})
 INTEGRATION_FLUSH = _operational_contract(
     "integration_flush",
     IntegrationStatusArgs,
@@ -2386,6 +2443,15 @@ async def _status_adapter(args: IntegrationStatusArgs, ctx: CommandContext | Non
     )
 
 
+async def _trust_manifest_adapter(
+    args: IntegrationTrustManifestArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_trust_manifest", args, ctx, IntegrationTrustManifestValue,
+        set(TRUST_MANIFEST_OUTCOMES),
+    )
+
+
 async def _flush_adapter(args: IntegrationStatusArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_flush",
@@ -2674,6 +2740,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         )
     for contract, adapter in (
         (INTEGRATION_STATUS, _status_adapter),
+        (INTEGRATION_TRUST_MANIFEST, _trust_manifest_adapter),
         (INTEGRATION_FLUSH, _flush_adapter),
         (INTEGRATION_EJECT, _eject_adapter),
         (INTEGRATION_ENABLE, _enable_adapter),
