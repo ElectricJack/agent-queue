@@ -1,8 +1,10 @@
 """Idempotency races, atomic outbox and non-expiring workspace pins."""
 
 import asyncio
+import sys
 import time
 import uuid
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select, update
@@ -240,6 +242,7 @@ async def test_jobs_migration_handles_existing_workspace_schema_and_is_idempoten
 
 
 async def test_configured_test_database_cannot_alias_daemon_database(db, tmp_path):
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "agent-queue"\n')
     config = AppConfig(data_dir=str(tmp_path / "data"))
     config.resources.jobs.enabled = True
     config.database.url = "postgresql+asyncpg://operator@localhost:5534/operator"
@@ -266,3 +269,95 @@ async def test_configured_test_database_cannot_alias_daemon_database(db, tmp_pat
     assert accepted["contract"]["env"]["AQ_DB_SCOPE"] == "worker"
     assert accepted["contract"]["env"]["AQ_DATABASE_URL"].startswith("aq-worker-")
     await svc.cancel(accepted)
+
+
+@pytest.mark.parametrize("project_name", ["agent-queue", "quilt-trader"])
+async def test_managed_test_job_uses_project_interpreter_and_preconditions(
+    db, tmp_path, monkeypatch, project_name
+):
+    (tmp_path / "pyproject.toml").write_text(f'[project]\nname = "{project_name}"\n')
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.resources.jobs.enabled = True
+    config.resources.test_workers = 3
+    config.resources.jobs.test_database_url = (
+        "postgresql+asyncpg://test@localhost:5534/disposable"
+        if project_name == "agent-queue" else None
+    )
+    if project_name == "quilt-trader":
+        venv = tmp_path / ".venv"
+        (venv / "bin").mkdir(parents=True)
+        (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+        python = venv / "bin" / "python"
+        python.write_text("#!/bin/sh\nexit 0\n")
+        python.chmod(0o755)
+    else:
+        python = Path(sys.executable)
+    monkeypatch.setattr(
+        "src.resources.project_tests.has_xdist",
+        lambda _: project_name == "agent-queue",
+    )
+    job = await JobService(db, config).submit(
+        project_id="p", task_id="t", session_id="s", claim_epoch=1,
+        workspace_id="w", generation=0, preset="test", args=["tests/test_example.py"],
+        idempotency_key=f"test-{project_name}",
+    )
+    assert job["argv"][:3] == [str(python), "-m", "pytest"]
+    assert ("-n" in job["argv"]) == (project_name == "agent-queue")
+    assert ("POSTGRES_TEST_DSN" in job["contract"]["env"]) == (
+        project_name == "agent-queue"
+    )
+    if project_name == "quilt-trader":
+        assert job["contract"]["env"]["VIRTUAL_ENV"] == str(venv)
+        assert job["contract"]["env"]["PATH"].startswith(str(venv / "bin") + ":")
+
+
+async def test_managed_test_job_rejects_missing_pinned_interpreter(db, tmp_path):
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.resources.jobs.enabled = True
+    config.resources.test_interpreters["p"] = str(tmp_path / "missing-python")
+    with pytest.raises(JobError, match="jobs.test_interpreter_unavailable"):
+        await JobService(db, config).submit(
+            project_id="p", task_id="t", session_id="s", claim_epoch=1,
+            workspace_id="w", generation=0, preset="test", args=["tests/test_example.py"],
+            idempotency_key="missing-python",
+        )
+
+
+async def test_integration_test_job_uses_configured_interpreter_outside_snapshot(
+    db, tmp_path, monkeypatch
+):
+    from src.git.manager import GitManager
+
+    (tmp_path / "pyproject.toml").write_text('[project]\nname = "quilt-trader"\n')
+    git = GitManager()
+    await git._arun(["init"], cwd=str(tmp_path))
+    await git._arun(["add", "pyproject.toml"], cwd=str(tmp_path))
+    await git._arun([
+        "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+        "commit", "-m", "snapshot",
+    ], cwd=str(tmp_path))
+    head = await git._arun(["rev-parse", "HEAD"], cwd=str(tmp_path))
+    async with db._engine.begin() as conn:
+        await conn.execute(update(workspaces).where(workspaces.c.id == "w").values(
+            kind_id="job-snapshot", enabled=False, locked_by_task_id=None,
+        ))
+    venv = tmp_path.parent / f"{tmp_path.name}-venv"
+    (venv / "bin").mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /usr/bin\n")
+    python = venv / "bin" / "python"
+    python.write_text("#!/bin/sh\nexit 0\n")
+    python.chmod(0o755)
+    config = AppConfig(data_dir=str(tmp_path.parent / "data"))
+    config.resources.jobs.enabled = True
+    config.resources.test_interpreters["p"] = str(python)
+    monkeypatch.setattr("src.resources.project_tests.has_xdist", lambda _: False)
+    job = await JobService(db, config).submit(
+        project_id="p", task_id=None, session_id=None, claim_epoch=None,
+        workspace_id="w", generation=0, owner_kind="integration", owner_id="operation",
+        input_mode="snapshot", input_ref=head, preset="test",
+        args=["tests/test_example.py"], idempotency_key="publisher-test",
+    )
+    assert job["argv"][:3] == [str(python), "-m", "pytest"]
+    assert "-n" not in job["argv"]
+    assert job["contract"]["env"]["VIRTUAL_ENV"] == str(venv)
+    assert "POSTGRES_TEST_DSN" not in job["contract"]["env"]
