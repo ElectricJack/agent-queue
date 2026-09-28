@@ -225,7 +225,11 @@ than left stuck in IN_PROGRESS forever.
 
 `run_one_cycle()` is the top-level method called by the outer loop on every tick.  It
 executes the following steps in strict order, wrapped in a single broad `try/except` that
-logs unexpected errors with a full traceback but does not crash the loop.
+logs unexpected errors with a full traceback but does not crash the loop. Pool and session
+reconciliation run at their usual positions on a healthy cycle. After an earlier step fails,
+the error handler attempts whichever reconciler was not reached, independently, so one
+failure cannot strand pool starts or session teardown. A cycle logs at most one traceback
+for its original error and one for each failed reconciler.
 
 ```
 Step 0   _sweep_resolve_pr_ci_gates     — resolve satisfied pr-merged/ci-run gates (polls `gh` via `_poll_pr_merged`, `src/orchestrator/pr_polling.py`)
