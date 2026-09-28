@@ -419,6 +419,25 @@ def test_agent_task_step_explains_its_objective_and_its_delegation():
     assert [item["kind"] for item in explanation["effects"]] == ["delegates", "binds"]
 
 
+def test_hint_only_agent_task_projects_an_unresolved_route_and_hints():
+    from src.api.models.playbook_v2 import GraphNodeDTO
+    from src.playbooks.definition import PlaybookDefinition
+
+    payload = _definition().model_dump(mode="json")
+    step = payload["steps"]["escalate"]
+    step.pop("profile_id")
+    step.update(intelligence_class="deep-high", task_type="design")
+    graph = _project(PlaybookDefinition.model_validate(payload))
+    node = _node(graph, "escalate")
+    parsed = GraphNodeDTO.model_validate(node)
+    assert parsed.ai.profile_id is None
+    assert parsed.ai.delegation.child_profile_id is None
+    assert "project router" in node["explanation"]["effect_summary"]
+    assert "None" not in node["explanation"]["effect_summary"]
+    assert _inputs(graph, "escalate")["Class hint"][0] == "deep-high"
+    assert _inputs(graph, "escalate")["Kind hint"][0] == "design"
+
+
 def test_agent_task_step_badges_whether_a_cancel_takes_the_child_with_it():
     """§6.2 puts ``cancel_child`` on an agent-task card.  A rule that leaves a
     child agent running after it is cancelled is a fleet an operator has to go

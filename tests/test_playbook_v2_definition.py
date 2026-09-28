@@ -554,6 +554,18 @@ def _run_generator(*args: str) -> subprocess.CompletedProcess[str]:
 class TestGeneratedSchema:
     """§8 — the published schema and the accepting loader are one source."""
 
+    def test_agent_task_schema_allows_hints_and_only_optional_role_profiles(self, golden):
+        from src.routing.sources import ROLE_PROFILE_IDS
+
+        schema = json.loads(SCHEMA_FILE.read_text())["$defs"]["AgentTaskStep"]
+        assert "profile_id" not in schema["required"]
+        assert "pin_provider" not in schema["properties"]
+        assert {"intelligence_class", "task_type"} <= schema["properties"].keys()
+        assert set(schema["properties"]["profile_id"]["anyOf"][0]["enum"]) == ROLE_PROFILE_IDS
+        step = golden.steps["escalate"].model_dump()
+        step.pop("profile_id")
+        assert D.AgentTaskStep.model_validate(step).profile_id is None
+
     def test_generated_schema_matches_checked_in_file(self):
         """T-15 — the CI guard, mirroring V1's ``test_schema_file_matches_generated``."""
         result = _run_generator("--check")

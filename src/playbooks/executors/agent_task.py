@@ -5,8 +5,11 @@ schedules, persists, waits, costs and cancels differently.  Three properties
 this module is responsible for, each of which is a security property rather
 than a convenience:
 
-* **Delegation narrows three ways and cannot widen.**  The child principal is
-  ``parent ∩ child_profile ∩ step.capability_narrowing``.
+* **Delegation cannot widen.** A named role uses
+  ``parent ∩ child_profile ∩ step.capability_narrowing``. A hint-only step
+  checks every enabled worker candidate against ``parent ∩ narrowing``
+  before filing; the router may pick any of them, including after clamping
+  a class hint or a provider recovering. Unknown candidates fail closed.
   :meth:`~src.profiles.capabilities.CapabilityPolicy.intersect` is the only
   transform used, and the type exposes no union, so "the child got a
   capability the parent lacked" is unrepresentable rather than merely
@@ -51,7 +54,7 @@ from pydantic import ValidationError
 from src.commands.contracts.models import CommandResult, OutcomeClass
 from src.commands.contracts.registry import CommandRegistration, UnknownContract
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, check_delegation
-from src.playbooks.definition import AgentTaskStep, CapabilityNarrowing
+from src.playbooks.definition import AGENT_TASK_ROUTE_INPUTS, AgentTaskStep, CapabilityNarrowing
 from src.playbooks.executors.base import (
     EngineServices,
     ExecutionMode,
@@ -68,6 +71,7 @@ from src.profiles.capabilities import (
     CapabilityPolicy,
     capability_policy_for,
 )
+from src.profiles.catalog import worker_route
 
 #: The command that creates the child task.  Package 1 contracts it; a
 #: ``CommandStep`` could name it too, which is the point — an agent task is
@@ -214,6 +218,69 @@ async def resolve_profile_policy(
     )
 
 
+async def unrouted_child_policy(
+    services: EngineServices, principal: ExecutionPrincipal, step: AgentTaskStep
+) -> tuple[CapabilityPolicy | None, str]:
+    """Admit only a worker set wholly within the parent/step ceiling.
+
+    No profile is selected here. Deliberately include unavailable providers,
+    full pools and other classes: those facts can change before routing, and
+    hints are not constraints. As with named-role delegation, operator edits
+    to profiles remain trusted configuration changes.
+    """
+    db = _database(services)
+    if db is None or not callable(getattr(db, "list_profiles", None)):
+        return None, "no worker profile store is wired"
+    ceiling = narrowing_policy(step.capability_narrowing, principal.policy)
+    count = 0
+    try:
+        profiles = await db.list_profiles()
+        for profile in profiles:
+            if not profile.enabled:
+                continue
+            # Task-lifecycle workers may run any class mapped by their provider.
+            lifecycle = profile.lifecycle or "task"
+            class_id = profile.default_class or ("unclassified" if lifecycle == "task" else "")
+            if worker_route(
+                profile.id, harness=profile.harness, default_class=class_id,
+                lifecycle=lifecycle, template=bool(getattr(profile, "template", False)),
+                read_only=profile.read_only,
+            ) is None:
+                continue
+            count += 1
+            candidate = capability_policy_for(
+                profile, plugin_command_names=_plugin_command_names(services)
+            )
+            if reason := check_delegation(ceiling, candidate):
+                return None, f"worker candidate {profile.id!r}: {reason}"
+    except Exception as exc:  # noqa: BLE001 - inability to bound any candidate is a denial
+        return None, f"worker profile lookup failed: {type(exc).__name__}"
+    if not count:
+        return None, "no worker candidates to bound delegation"
+    return ceiling, ""
+
+
+async def cancellation_policy(
+    services: EngineServices, step: AgentTaskStep, principal: ExecutionPrincipal, task_id: str
+) -> tuple[CapabilityPolicy | None, str]:
+    """Resolve the actual route, or the ceiling of a still-unrouted child."""
+    if step.profile_id is not None:
+        return await resolve_profile_policy(services, step.profile_id)
+    db = _database(services)
+    if db is None or not callable(getattr(db, "get_task", None)):
+        return None, "no child task store is wired"
+    try:
+        task = await db.get_task(task_id)
+        if task is None:
+            return None, f"unknown child task {task_id!r}"
+        profile_id = task.profile_id
+    except Exception as exc:  # noqa: BLE001 - cancellation grants nothing on lookup failure
+        return None, f"child task lookup failed: {type(exc).__name__}"
+    if profile_id is not None:
+        return await resolve_profile_policy(services, profile_id)
+    return narrowing_policy(step.capability_narrowing, principal.policy), ""
+
+
 # --------------------------------------------------------------------------
 # Result helpers
 # --------------------------------------------------------------------------
@@ -262,7 +329,7 @@ class LiveAgentTaskExecutor:
     no_side_effects: ClassVar[bool] = False
 
     async def execute(self, step: AgentTaskStep, ctx: StepContext) -> ExecutorResult:
-        operation = f"agent_task:{step.profile_id}"
+        operation = f"agent_task:{step.profile_id or 'unrouted'}"
         key = _attempt_key(ctx)
 
         if ctx.principal is None:
@@ -273,7 +340,22 @@ class LiveAgentTaskExecutor:
                 key=key,
             )
 
-        profile_policy, reason = await resolve_profile_policy(ctx.services, step.profile_id)
+        if forbidden := AGENT_TASK_ROUTE_INPUTS.intersection(ctx.inputs):
+            return _fail(
+                "unauthorized", operation=operation,
+                diagnostics=(f"agent_task inputs cannot choose a route: {sorted(forbidden)}",),
+                key=key,
+            )
+        if step.profile_id is not None:
+            if ctx.principal.kind not in {PrincipalKind.SERVICE, PrincipalKind.PLAYBOOK}:
+                return _fail(
+                    "unauthorized", operation=operation,
+                    diagnostics=("only service and playbook principals may create role tasks",),
+                    key=key,
+                )
+            profile_policy, reason = await resolve_profile_policy(ctx.services, step.profile_id)
+        else:
+            profile_policy, reason = await unrouted_child_policy(ctx.services, ctx.principal, step)
         if profile_policy is None:
             return _fail("unauthorized", operation=operation, diagnostics=(reason,), key=key)
 
@@ -312,11 +394,12 @@ class LiveAgentTaskExecutor:
         execution = registration.contract.execution
         payload: dict[str, Any] = dict(ctx.inputs)
         payload.setdefault("title", str(objective))
-        payload.setdefault("profile_id", step.profile_id)
-        # A named profile is a preference (``preferred``); ``pin_provider``
-        # makes it a pin (provider-failover D9).
-        if step.pin_provider:
-            payload.setdefault("pin", True)
+        if step.profile_id is not None:
+            payload["profile_id"] = step.profile_id
+        if step.intelligence_class is not None:
+            payload["intelligence_class"] = step.intelligence_class
+        if step.task_type is not None:
+            payload["task_type"] = step.task_type
         try:
             args = execution.args_model(**payload)
         except ValidationError as exc:
@@ -440,7 +523,7 @@ class SymbolicAgentTaskExecutor:
         return ExecutorResult(
             control=StepControl.UNRESOLVED,
             outcome="unavailable",
-            operation=f"agent_task:{step.profile_id}",
+            operation=f"agent_task:{step.profile_id or 'unrouted'}",
             diagnostics=("an agent task is not simulated",),
             possible_outcomes=possible,
         )
@@ -485,9 +568,11 @@ __all__ = [
     "LiveAgentTaskExecutor",
     "SymbolicAgentTaskExecutor",
     "cancel_child_task",
+    "cancellation_policy",
     "child_outcome_for_status",
     "child_policy",
     "narrow_for_child",
     "narrowing_policy",
     "resolve_profile_policy",
+    "unrouted_child_policy",
 ]

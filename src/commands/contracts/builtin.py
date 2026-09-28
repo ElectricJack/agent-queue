@@ -61,8 +61,8 @@ class CreateTaskArgs(CommandArgs):
     affinity_reason: str | None = None
     dedup_key: str | None = None
     # Provider intent (provider-failover D9): ``pinned`` | ``preferred`` |
-    # ``class_only``; ``pin`` is sugar for ``pinned``.  An ``agent_task``
-    # step's ``pin_provider`` arrives here as ``pin``.
+    # ``class_only``; ``pin`` is sugar for ``pinned``. Retained for contract
+    # fingerprint compatibility; agent_task steps cannot supply either field.
     provider_intent: str | None = None
     pin: bool | None = None
 

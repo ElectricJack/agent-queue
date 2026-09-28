@@ -18,9 +18,11 @@ The two shapes worth reading twice:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from src.commands.contracts.models import (
     CommandArgs,
@@ -67,6 +69,8 @@ class CreateTaskArgs(CommandArgs):
     title: str
     project_id: str | None = None
     profile_id: str | None = None
+    intelligence_class: str | None = None
+    task_type: str | None = None
 
 
 class CreateTaskResult(CommandValue):
@@ -134,6 +138,13 @@ class StubProfile:
     harness_tools: list[str] | None = field(default_factory=list)
     aq_commands: list[str] | None = field(default_factory=list)
     plugin_tools: list[str] | None = field(default_factory=list)
+    id: str = ""
+    enabled: bool = True
+    harness: str = "codex"
+    default_class: str = "standard-high"
+    lifecycle: str = "pool"
+    template: bool = False
+    read_only: bool = False
 
 
 class StubDatabase:
@@ -142,10 +153,19 @@ class StubDatabase:
     def __init__(self, profiles: dict[str, StubProfile] | None = None) -> None:
         self.profiles = profiles or {}
         self.lookups: list[str] = []
+        self.tasks: dict[str, Any] = {}
 
     async def get_profile(self, profile_id: str) -> StubProfile | None:
         self.lookups.append(profile_id)
         return self.profiles.get(profile_id)
+
+    async def list_profiles(self) -> list[StubProfile]:
+        for profile_id, profile in self.profiles.items():
+            profile.id = profile_id
+        return list(self.profiles.values())
+
+    async def get_task(self, task_id: str) -> Any:
+        return self.tasks.get(task_id)
 
 
 def policy(**namespaces: set[str] | list[str]) -> CapabilityPolicy:
@@ -398,6 +418,136 @@ class TestDelegationNarrowing:
 # --------------------------------------------------------------------------
 
 
+class TestHintOnlyDelegation:
+    @pytest.mark.parametrize("value", [True, False, None])
+    def test_pin_provider_is_rejected_even_when_false(self, value):
+        with pytest.raises(ValidationError, match="pin_provider"):
+            agent_task_step(pin_provider=value)
+
+    @pytest.mark.parametrize("profile_id", ["standard-high-codex", "worker", "supervisor"])
+    def test_only_role_profiles_can_be_named(self, profile_id):
+        with pytest.raises(ValidationError, match="profile_id"):
+            agent_task_step(profile_id=profile_id)
+
+    @pytest.mark.parametrize("key", ["profile_id", "pin", "provider_intent", "model", "harness"])
+    def test_inputs_cannot_hide_routing_choices(self, key):
+        with pytest.raises(ValidationError, match="cannot choose a route"):
+            agent_task_step(inputs={key: {"type": "literal", "value": "forbidden"}})
+
+    async def test_hint_only_dispatch_carries_no_profile(self):
+        registry, adapter = registry_with(CREATE_TASK)
+        adapter.queue.append(created())
+        db = StubDatabase({"worker": StubProfile(aq_commands=["create_task"])})
+        step = agent_task_step(
+            profile_id=None, intelligence_class="deep-high", task_type="design",
+            wait_for_completion=False, capability_narrowing={"harness_tools": []},
+        )
+        ctx = context(
+            registry, db=db,
+            principal=parent_principal(aq_commands={"create_task"}, harness_tools={"Read"}),
+        )
+        result = await run(step, ctx)
+        assert result.outcome == "dispatched"
+        _, args, child = adapter.calls[0]
+        assert "profile_id" not in args.model_fields_set
+        assert args.intelligence_class == "deep-high"
+        assert args.task_type == "design"
+        assert child.policy.harness_tools == frozenset()
+        assert child.policy.aq_commands == frozenset({"create_task"})
+
+    @pytest.mark.parametrize("namespace", ["harness_tools", "aq_commands", "plugin_tools"])
+    @pytest.mark.parametrize("narrow_step", [False, True])
+    async def test_every_candidate_must_fit_parent_and_step(self, namespace, narrow_step):
+        registry, adapter = registry_with(CREATE_TASK)
+        capability = {"harness_tools": "Bash", "aq_commands": "delete_task",
+                      "plugin_tools": "read_file"}[namespace]
+        # A different class is still a candidate: hints can be clamped.
+        db = StubDatabase({
+            "safe": StubProfile(),
+            "broader": StubProfile(default_class="deep-high", **{namespace: [capability]}),
+        })
+        step = agent_task_step(
+            profile_id=None, intelligence_class="fast-low",
+            capability_narrowing={namespace: []} if narrow_step else None,
+        )
+        ctx = context(
+            registry, db=db,
+            principal=parent_principal(**({namespace: [capability]} if narrow_step else {})),
+        )
+        result = await run(step, ctx)
+        assert result.outcome == "unauthorized"
+        assert "broader" in result.diagnostics[0]
+        assert adapter.calls == []
+
+    async def test_unclassified_task_lifecycle_worker_is_checked(self):
+        registry, adapter = registry_with(CREATE_TASK)
+        db = StubDatabase({
+            "dynamic": StubProfile(lifecycle="task", default_class="", harness_tools=["Bash"]),
+        })
+        result = await run(
+            agent_task_step(profile_id=None), context(registry, principal=parent_principal(), db=db)
+        )
+        assert result.outcome == "unauthorized"
+        assert "dynamic" in result.diagnostics[0]
+        assert adapter.calls == []
+
+    async def test_non_candidates_are_not_delegation_targets(self):
+        registry, adapter = registry_with(CREATE_TASK)
+        adapter.queue.append(created())
+        db = StubDatabase({
+            "worker": StubProfile(),
+            "reviewer": StubProfile(harness_tools=["Bash"]),
+            "disabled": StubProfile(enabled=False, harness_tools=["Bash"]),
+            "template": StubProfile(template=True, harness_tools=["Bash"]),
+            "named": StubProfile(lifecycle="named", harness_tools=["Bash"]),
+            "reader": StubProfile(read_only=True, harness_tools=["Bash"]),
+        })
+        result = await run(
+            agent_task_step(profile_id=None, wait_for_completion=False),
+            context(registry, principal=parent_principal(), db=db),
+        )
+        assert result.outcome == "dispatched"
+
+    @pytest.mark.parametrize("failure", ["empty", "unavailable", "broken", "missing"])
+    async def test_missing_candidate_information_fails_closed(self, failure):
+        from unittest.mock import AsyncMock
+
+        registry, adapter = registry_with(CREATE_TASK)
+        db = StubDatabase()
+        if failure == "unavailable":
+            db.list_profiles = AsyncMock(side_effect=OSError("private detail"))
+        elif failure == "broken":
+            db.list_profiles = AsyncMock(return_value=[object()])
+        elif failure == "missing":
+            db.list_profiles = None
+        result = await run(
+            agent_task_step(profile_id=None), context(registry, principal=parent_principal(), db=db)
+        )
+        assert result.outcome == "unauthorized"
+        assert "private detail" not in str(result.diagnostics)
+        assert adapter.calls == []
+
+    @pytest.mark.parametrize("kind", [PrincipalKind.SESSION, PrincipalKind.LOCAL])
+    async def test_role_creation_requires_a_role_creator(self, kind):
+        registry, adapter = registry_with(CREATE_TASK)
+        db = StubDatabase({"reviewer": StubProfile()})
+        result = await run(
+            agent_task_step(), context(registry, principal=parent_principal(kind=kind), db=db)
+        )
+        assert result.outcome == "unauthorized"
+        assert adapter.calls == []
+
+    async def test_resolved_inputs_cannot_override_the_checked_role(self):
+        registry, adapter = registry_with(CREATE_TASK)
+        ctx = context(
+            registry, principal=parent_principal(),
+            db=StubDatabase({"reviewer": StubProfile()}), inputs={"profile_id": "worker"},
+        )
+        result = await run(agent_task_step(), ctx)
+        assert result.outcome == "unauthorized"
+        assert adapter.calls == []
+
+
 class TestDispatch:
     @pytest.mark.asyncio
     async def test_wait_for_completion_false_advances_on_dispatched(self):
@@ -571,6 +721,29 @@ def engine_for(
         services=services, runs=repository, activations=StubActivations([ref])
     )
     return engine, ref
+
+
+@pytest.mark.parametrize("route", [None, "worker", "missing-profile", "missing-task"])
+async def test_hint_only_child_cancellation_uses_its_actual_route(route):
+    registry, adapter = registry_with(CREATE_TASK, STOP_TASK)
+    adapter.queue.append(created("child"))
+    db = StubDatabase({"worker": StubProfile(aq_commands=["a", "b"])})
+    artifact = agent_task_artifact(agent_task_step(profile_id=None, cancel_child=True))
+    engine, ref = engine_for(artifact, registry, db, RecordingRunRepository())
+    principal = parent_principal(aq_commands={"a", "b"})
+    outcome = await engine.run_rule(ref, "r", {"event_id": "e1"}, principal)
+    assert outcome.lifecycle is RunLifecycle.PAUSED
+    if route != "missing-task":
+        db.tasks["child"] = SimpleNamespace(profile_id=route)
+    # Current caller authority may shrink while the child waits for routing.
+    await engine.cancel(outcome.run_id, parent_principal(aq_commands={"a"}))
+    if route in {"missing-profile", "missing-task"}:
+        assert len(adapter.calls) == 1
+    else:
+        name, args, cancelling = adapter.calls[-1]
+        assert name == "stop_task"
+        assert args.task_id == "child"
+        assert cancelling.policy.aq_commands == frozenset({"a"})
 
 
 class TestDurableChildIdentity:

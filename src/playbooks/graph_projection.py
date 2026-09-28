@@ -22,7 +22,7 @@ from src.playbooks.definition import (
     result_schema_for,
 )
 from src.playbooks.explanation import render_node_explanation
-from src.playbooks.expressions import condition_values
+from src.playbooks.expressions import LiteralValue, condition_values
 
 
 class GraphProjectionError(ValueError):
@@ -611,11 +611,12 @@ def _llm_explanation(step: LlmStep) -> tuple[str, list[dict], list[dict]]:
 
 def _agent_task_explanation(step: AgentTaskStep) -> tuple[str, list[dict], list[dict]]:
     waiting = "and wait for it" if step.wait_for_completion else "without waiting for it"
-    summary = f"Delegate a task to the {step.profile_id} profile {waiting}"
-    detail = f"Delegates a child agent task to the {step.profile_id} profile"
+    target = f"the {step.profile_id} profile" if step.profile_id else "the project router"
+    summary = f"Delegate a task to {target} {waiting}"
+    detail = f"Delegates a child agent task to {target}"
     if step.cancel_child:
         detail += "; the child is cancelled when this step is"
-    effects = [_effect("delegates", step.profile_id, detail)]
+    effects = [_effect("delegates", step.profile_id or "router", detail)]
     narrowing = step.capability_narrowing
     if narrowing is not None:
         narrowed = sorted(
@@ -627,12 +628,17 @@ def _agent_task_explanation(step: AgentTaskStep) -> tuple[str, list[dict], list[
             effects.append(
                 _effect(
                     "delegates",
-                    step.profile_id,
+                    step.profile_id or "router",
                     "Narrows the child's capabilities in " + ", ".join(narrowed),
                 )
             )
     effects.extend(_binds_effect(step))
     inputs = [_row("Objective", step.objective, type_name="string"), *_named_input_rows(step)]
+    if step.intelligence_class is not None:
+        inputs.append(_row("Class hint", LiteralValue(value=step.intelligence_class),
+                           type_name="string"))
+    if step.task_type is not None:
+        inputs.append(_row("Kind hint", LiteralValue(value=step.task_type), type_name="string"))
     return summary, effects, inputs
 
 
@@ -795,8 +801,11 @@ def _routing(profiles: Any, step: Any, profile_id: str) -> Any | None:
 def _ai_detail(step: Any, profiles: Any) -> dict | None:
     if not isinstance(step, (LlmStep, AgentTaskStep)):
         return None
-    policy = profiles.policy(step.profile_id) if profiles is not None else None
-    routing = _routing(profiles, step, step.profile_id) if profiles is not None else None
+    policy = profiles.policy(step.profile_id) if profiles is not None and step.profile_id else None
+    routing = (
+        _routing(profiles, step, step.profile_id)
+        if profiles is not None and step.profile_id else None
+    )
     capabilities = {
         "harness_tools": sorted(getattr(policy, "harness_tools", ())),
         "aq_commands": sorted(getattr(policy, "aq_commands", ())),
@@ -868,7 +877,8 @@ def _badges(
     """
     badges: list[dict] = []
     if isinstance(step, (LlmStep, AgentTaskStep)):
-        badges.append({"kind": "profile", "label": "Profile", "value": step.profile_id})
+        badges.append({"kind": "profile", "label": "Profile",
+                       "value": step.profile_id or "Chosen by router"})
     if isinstance(step, LlmStep):
         badges.append(
             {

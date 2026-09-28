@@ -48,9 +48,9 @@ from src.playbooks.definition import (
 from src.playbooks.executors import executor_for
 from src.playbooks.executors.agent_task import (
     cancel_child_task,
+    cancellation_policy,
     child_outcome_for_status,
     narrow_for_child,
-    resolve_profile_policy,
 )
 from src.playbooks.executors.llm import resolve_profile_principal
 from src.playbooks.executors.base import (
@@ -1939,16 +1939,16 @@ class PlaybookEngine:
             return
         if not (step.cancel_child if cancel_children is None else cancel_children):
             return
-        policy, reason = await resolve_profile_policy(self.services, step.profile_id)
-        if policy is None:
-            logger.warning(
-                "v2 run %s could not cancel its child: %s", snapshot.run_id, reason
-            )
-            return
-        child_principal = narrow_for_child(
-            step, principal, policy, snapshot.current_step_id or ""
-        )
         for task_id in snapshot.agent_task_ids:
+            policy, reason = await cancellation_policy(self.services, step, principal, task_id)
+            if policy is None:
+                logger.warning(
+                    "v2 run %s could not cancel its child: %s", snapshot.run_id, reason
+                )
+                continue
+            child_principal = narrow_for_child(
+                step, principal, policy, snapshot.current_step_id or ""
+            )
             cancelled, diagnostic = await cancel_child_task(
                 task_id, principal=child_principal, services=self.services
             )

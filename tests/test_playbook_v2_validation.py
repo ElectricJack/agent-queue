@@ -61,6 +61,8 @@ TWIN_INVENTORY = StubInventory(
         "item",
         "leaf",
         "worker",
+        "reviewer",
+        "final-reviewer",
         "wide",
         "hollow",
         "ghost",
@@ -753,9 +755,28 @@ class TestProfilesAndCapabilities:
     def test_a_narrowing_agent_task_is_accepted(self):
         artifact = json.loads((INVALID_DIR / "capability_not_subset.json").read_text())
         artifact["steps"]["classify"]["profile_id"] = "wide"
-        artifact["steps"]["delegate"]["profile_id"] = "worker"
+        artifact["steps"]["delegate"]["profile_id"] = "reviewer"
         found = check(PlaybookDefinition.model_validate(artifact))
         assert "capability_not_subset" not in codes(found)
+
+    def test_hint_only_delegation_defers_capability_checks_to_runtime(self):
+        artifact = json.loads((INVALID_DIR / "capability_not_subset.json").read_text())
+        artifact["steps"]["delegate"].pop("profile_id")
+        artifact["steps"]["delegate"]["intelligence_class"] = "deep-high"
+        artifact["steps"]["delegate"]["task_type"] = "design"
+        found = check(PlaybookDefinition.model_validate(artifact))
+        assert "unknown_profile" not in codes(found)
+        assert "capability_not_subset" not in codes(found)
+        assert "delegation_runtime_checked" in codes(found)
+
+        definition = PlaybookDefinition.model_validate(artifact)
+        inventory = StubInventory(TWIN_INVENTORY.names | {"deep-high", "design"})
+        assert "unknown_identifier" not in codes(check(definition, inventory=inventory))
+        undeclared = check(definition, inventory=TWIN_INVENTORY)
+        missing = [d.message for d in undeclared if d.code == "unknown_identifier"]
+        assert len(missing) == 2
+        assert any("deep-high" in message for message in missing)
+        assert any("design" in message for message in missing)
 
     def test_a_narrowing_naming_an_ungranted_capability_is_an_error(self):
         """The executor intersects, so this would otherwise be a silent no-op."""
