@@ -1513,11 +1513,12 @@ _ALL_TOOL_DEFINITIONS = [
                 "intelligence_class": {
                     "type": "string",
                     "description": (
-                        "Vault intelligence class for the task on create. A "
-                        "pinned profile is not a route on its own: without an "
-                        "explicit class the task waits for the assignment "
-                        "playbook to choose one. Both apply only when this "
-                        "call creates the task."
+                        "Intelligence-class hint for the task on create: the task "
+                        "is stored unrouted and the project's router picks its "
+                        "profile and class. A role profile (triage, spec-ingest, "
+                        "reviewer, final-reviewer) named by a playbook runs the "
+                        "role's own class instead. Applies only when this call "
+                        "creates the task."
                     ),
                 },
                 "parent_key": {

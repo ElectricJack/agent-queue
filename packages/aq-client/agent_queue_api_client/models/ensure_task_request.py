@@ -29,9 +29,10 @@ class EnsureTaskRequest:
             same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a
             profile_id; pinning is refused for worker tokens.
         pin (bool | None | Unset): Shorthand for provider_intent=pinned.
-        intelligence_class (None | str | Unset): Vault intelligence class for the task on create. A pinned profile is
-            not a route on its own: without an explicit class the task waits for the assignment playbook to choose one. Both
-            apply only when this call creates the task.
+        intelligence_class (None | str | Unset): Intelligence-class hint for the task on create: the task is stored
+            unrouted and the project's router picks its profile and class. A role profile (triage, spec-ingest, reviewer,
+            final-reviewer) named by a playbook runs the role's own class instead. Applies only when this call creates the
+            task.
         parent_key (None | str | Unset): File the task under the standing container keyed by this name, creating it if
             none is open (e.g. 'maintenance'). Applies only when this call creates the task; a dedup replay returns the
             existing task untouched.
