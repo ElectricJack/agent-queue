@@ -23,6 +23,7 @@ from src.git.github_contracts import GitHubCredentialIdentity
 from src.integration.attestation import IntegrationAttestationService
 from src.integration.ci import (
     ATTESTATION_CHECK_NAME,
+    AttestationError,
     AttestationPayload,
     IntegrationTrustManifest,
     SubjectTrustError,
@@ -951,6 +952,39 @@ async def test_subject_producer_is_compared_with_the_snapshot_boundary(tmp_path)
         "identity_mismatch",
         ("ci_producer_app_id",),
     )
+
+
+@pytest.mark.asyncio
+async def test_slug_producer_in_app_mode_is_a_policy_fault_not_a_subject_refusal(tmp_path):
+    client = ProviderClient()
+    service = IntegrationAttestationService(
+        None,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        github_client_factory=lambda binding: client,
+    )
+    required = {
+        "version": "checks-v1",
+        "names": list(SNAPSHOT_CHECKS),
+        "producer_id": "github-actions",
+    }
+    state = {
+        "project_id": "p",
+        "operation_id": "root-op",
+        "canonical_repository_id": "repo-config-1",
+        "repository_numeric_id": 303,
+        "repository_full_name": "acme/widgets",
+        "policy_snapshot": {"root": {"required_checks": required}},
+        "batch_id": "batch",
+        "revision": 0,
+        "candidate_sha": SHA,
+    }
+
+    with pytest.raises(AttestationError, match="numeric") as refused:
+        await service._load_trust(state)
+
+    assert not isinstance(refused.value, SubjectTrustError)
+    assert service._subject_trust == {}
 
 
 @pytest.mark.asyncio

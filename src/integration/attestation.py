@@ -46,6 +46,7 @@ from src.integration.ci import (
     SubjectTrustError,
     TrustedCIObservation,
     ci_trust_from_policy,
+    is_numeric_producer_id,
     select_trusted_attestation,
 )
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
@@ -348,6 +349,10 @@ class IntegrationAttestationService:
         if identity.mode is GitHubCredentialMode.EXISTING_LOGIN:
             self._subject_trust.pop(state.get("operation_id"), None)
             return authority, client
+        if not is_numeric_producer_id(authority.producer_id):
+            # A policy fault (the preflight's ci_producer_not_numeric), never
+            # blamed on the subject tree.
+            raise AttestationError("App-mode CI producer is not a numeric App id")
         try:
             manifest = await self._subject_manifest(state, binding)
             mismatched = tuple(
