@@ -2794,7 +2794,8 @@ async def test_askpass_helper_username_is_local_with_inherited_request_fd_only()
     broker.close()
 
 
-def test_trust_manifest_path_is_reserved_from_worker_delivery():
+def test_trust_manifest_path_is_deliverable_repository_content():
     assert GitManager._daemon_bookkeeping_paths(
         ".github/agent-queue-integration.json\0.github/agent-queue-integration.example.json\0"
-    ) == [".github/agent-queue-integration.json"]
+        ".aq/claim.json\0.codex/settings.json\0"
+    ) == [".aq/claim.json", ".codex/settings.json"]

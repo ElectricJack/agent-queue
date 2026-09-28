@@ -180,6 +180,15 @@ target repository, with Actions variables readable; otherwise status reports
 reviewed agent-queue policy already names `15368`, so the agent-queue cutover
 needs only the manifest and the variables while this mode is configured.
 
+The manifest is reviewed repository content, so its initial commit may pass
+through the development publisher. Later check-set rotations may update it
+through the train while the frozen policy snapshot still requires the old
+checks. AQ's reserved delivery-path guard protects daemon bookkeeping files,
+not this manifest. App-mode preflight and subject-trust checks still compare
+its identity fields to the binding, App and policy; the tree's check list is
+informational during a rotation. Actions variables and rulesets remain
+operator-managed trust anchors.
+
 The daemon renders the same manifest from what it actually trusts:
 
 ```text

@@ -2032,6 +2032,42 @@ async def test_reserved_member_path_never_marks_partial_candidate_built(db, tmp_
     assert member["conflict_evidence"]["detail"] == "reserved_path"
 
 
+async def test_manifest_member_path_builds_candidate(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, work, base, _members = _make_origin(tmp_path)
+    _git(work, "switch", "-C", "root-manifest", base)
+    (work / ".github").mkdir()
+    (work / ".github" / "agent-queue-integration.json").write_text(
+        '{"required_checks": ["new-check"]}\n'
+    )
+    _git(work, "add", ".github/agent-queue-integration.json")
+    _git(work, "commit", "-m", "rotate trust manifest")
+    head = _git(work, "rev-parse", "HEAD")
+    tree = _git(work, "rev-parse", f"{head}^{{tree}}")
+    _git(work, "push", "origin", "HEAD:refs/heads/root-manifest")
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=((base, head, tree),), base_sha=base)
+
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    result = await CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        clock=lambda: 100.0,
+    ).build("batch")
+
+    assert result.outcome == "built"
+    store = next((tmp_path / "data" / "integration-repositories").iterdir())
+    assert _git(store, "show", f"{result.head_sha}:.github/agent-queue-integration.json") == (
+        '{"required_checks": ["new-check"]}'
+    )
+
+
 async def test_expired_project_lease_cannot_advance_candidate(db, tmp_path):
     from src.integration.candidates import CandidateService
 

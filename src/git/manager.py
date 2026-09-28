@@ -1449,7 +1449,6 @@ class GitManager:
                 path == ".aq-worktree.json"
                 or path.startswith(".aq/")
                 or path.startswith(".codex/")
-                or path == ".github/agent-queue-integration.json"
             )
         ]
 
