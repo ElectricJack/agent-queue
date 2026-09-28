@@ -1,8 +1,8 @@
 """Provider intent: who meant the provider a task's profile names (provider-failover D8-D10).
 
 Every row of the D9 table, the pin permission rule, ``task_route``'s
-never-downgrade, the graph ``pin`` key, the playbook ``pin_provider`` step
-field, ``explicit_route``'s pinned vendor, ``delete_profile``'s reset and the
+never-downgrade, the graph ``pin`` key, unpinned playbook role delegation,
+``explicit_route``'s pinned vendor, ``delete_profile``'s reset and the
 ``a00000000013`` migration (named constraints, idempotent backfill to
 ``preferred`` and never ``pinned``, the ``archived_tasks`` mirror).  On
 PostgreSQL, like the rest of the suite.
@@ -549,8 +549,7 @@ _CREATE = CommandContract(
 )
 
 
-@pytest.mark.parametrize(("pin_provider", "expected"), [(None, None), (True, True)])
-async def test_agent_task_pin_provider_reaches_create_task(pin_provider, expected) -> None:
+async def test_agent_task_role_reaches_create_task_without_a_pin() -> None:
     from tests.fixtures.contracts.engine_contracts import registry_with
     from tests.test_agent_task_executor import (
         StubDatabase,
@@ -565,26 +564,21 @@ async def test_agent_task_pin_provider_reaches_create_task(pin_provider, expecte
     adapter.queue.append(
         CommandResult(outcome="created", value=_CreateResult(task_id="child"), summary="ok")
     )
-    overrides: dict[str, Any] = {"wait_for_completion": False}
-    if pin_provider is not None:
-        overrides["pin_provider"] = pin_provider
-    step = agent_task_step(**overrides)
+    step = agent_task_step(wait_for_completion=False)
     ctx = context(registry, principal=parent_principal(), db=StubDatabase({
         "reviewer": StubProfile()}))
     result = await run(step, ctx)
     assert result.outcome == "dispatched"
     (_name, args, _principal) = adapter.calls[0]
     assert args.profile_id == "reviewer"
-    assert args.pin is expected
+    assert args.pin is None
+    assert "pin" not in args.model_fields_set
 
 
 def test_absent_pin_provider_leaves_artifact_bytes_unchanged() -> None:
     from tests.test_agent_task_executor import agent_task_artifact, agent_task_step
 
     assert b"pin_provider" not in canonical_bytes(agent_task_artifact(agent_task_step()))
-    assert b"pin_provider" in canonical_bytes(
-        agent_task_artifact(agent_task_step(pin_provider=True))
-    )
 
 
 # -- explicit_route ------------------------------------------------------------------

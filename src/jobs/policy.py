@@ -49,11 +49,11 @@ def node_executable(name: str) -> str | None:
     return str(Path(found).absolute()) if found else None
 
 
-def presets(root: Path) -> dict[str, Preset]:
+def presets(root: Path, *, test_python: str | None = None) -> dict[str, Preset]:
     """Executable paths are supplied by the server, never by a submitter."""
     python = str(Path(sys.executable).absolute())
     available = {
-        "test": Preset("test", (python, "-m", "pytest"), pytest=True),
+        "test": Preset("test", (test_python or python, "-m", "pytest"), pytest=True),
         "lint": Preset("lint", (python, "-m", "ruff", "check")),
         "e2e": Preset("e2e", (python, str(root / "src/jobs/e2e.py")), "exclusive"),
     }
@@ -86,7 +86,9 @@ def queue_key(row: dict, now: float) -> tuple:
     return band, row["submitted_at"], row["id"]
 
 
-def validate_args(preset: Preset, args: list[str], root: Path, worker_cap: int) -> list[str]:
+def validate_args(
+    preset: Preset, args: list[str], root: Path, worker_cap: int, *, xdist: bool = True
+) -> list[str]:
     if not isinstance(args, list) or any(not isinstance(a, str) or "\0" in a for a in args):
         raise JobError("jobs.preset_denied")
     if len(args) > 256 or sum(len(a) for a in args) > 32768:
@@ -104,7 +106,10 @@ def validate_args(preset: Preset, args: list[str], root: Path, worker_cap: int) 
             raise JobError("jobs.cwd_invalid")
         if preset.name in NODE_PRESETS | {"e2e"} and args:
             raise JobError("jobs.preset_denied")
-    if preset.pytest:
+    if preset.pytest and xdist and not any(
+        arg == "-pno:xdist" or (arg == "-p" and next_arg == "no:xdist")
+        for arg, next_arg in zip(args, [*args[1:], ""])
+    ):
         args = [*args, "-n", str(worker_cap)]
     return [*preset.argv, *args]
 

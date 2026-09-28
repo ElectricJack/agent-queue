@@ -59,6 +59,52 @@ async def test_unrouted_create_preserves_existing_policy_without_pipeline(setup)
     assert await db.get_gates_for_task(persisted.id) == []
 
 
+@pytest.mark.parametrize("profile_id", [None, "reviewer"])
+async def test_agent_task_files_hints_or_a_role_through_real_dispatch(setup, monkeypatch, profile_id):
+    from src.commands.contracts import builtin
+    from src.commands.contracts.registry import CONTRACTS
+    from tests.test_agent_task_executor import agent_task_step, context, parent_principal, run
+
+    handler, db = setup
+    caps = {"harness_tools": [], "aq_commands": ["create_task"], "plugin_tools": []}
+    await db.update_profile("coder", **caps)
+    for name in ("parent", "reviewer"):
+        await db.create_profile(AgentProfile(
+            id=name, name=name, harness="codex", default_class="standard-high",
+            needs_workspace=False, **caps,
+        ))
+    monkeypatch.setattr(builtin, "_handler_provider", lambda: handler)
+    responses = []
+    execute = handler.execute
+
+    async def capture(*args, **kwargs):
+        response = await execute(*args, **kwargs)
+        responses.append(response)
+        return response
+
+    monkeypatch.setattr(handler, "execute", capture)
+    step = agent_task_step(
+        profile_id=profile_id, intelligence_class="deep-high", task_type="design",
+        wait_for_completion=False,
+    )
+    result = await run(step, context(
+        CONTRACTS, principal=parent_principal(profile_id="parent", aq_commands={"create_task"}),
+        db=db,
+    ))
+    assert result.outcome == "dispatched", (result.diagnostics, responses)
+    task = await db.get_task(result.child_task_id)
+    assert task.class_hint == "deep-high"
+    assert task.task_type.value == "design"
+    assert task.profile_id == profile_id
+    if profile_id is None:
+        assert task.intelligence_class is None
+        assert task.route_source == "unrouted"
+        assert task.provider_intent == "class_only"
+    else:
+        assert task.intelligence_class == "standard-high"
+        assert task.route_source == "role"
+
+
 async def test_creation_pipeline_gate_is_present_before_return(setup):
     handler, db = setup
 

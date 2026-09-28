@@ -81,6 +81,19 @@
           "title": "Inputs",
           "type": "object"
         },
+        "intelligence_class": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Intelligence Class"
+        },
         "objective": {
           "discriminator": {
             "mapping": {
@@ -127,22 +140,23 @@
           ],
           "title": "Objective"
         },
-        "pin_provider": {
+        "profile_id": {
           "anyOf": [
             {
-              "type": "boolean"
+              "enum": [
+                "triage",
+                "spec-ingest",
+                "reviewer",
+                "final-reviewer"
+              ],
+              "type": "string"
             },
             {
               "type": "null"
             }
           ],
           "default": null,
-          "title": "Pin Provider"
-        },
-        "profile_id": {
-          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
-          "title": "Profile Id",
-          "type": "string"
+          "title": "Profile Id"
         },
         "retry": {
           "anyOf": [
@@ -175,6 +189,19 @@
         },
         "source": {
           "$ref": "#/$defs/SourceRef"
+        },
+        "task_type": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Task Type"
         },
         "timeout_seconds": {
           "anyOf": [
@@ -218,7 +245,6 @@
         "rule",
         "title",
         "source",
-        "profile_id",
         "objective",
         "transitions"
       ],
