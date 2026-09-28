@@ -39,7 +39,6 @@ from tests.test_routing_planner import POLICY as ROUTING_POLICY
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SMOKE = REPO_ROOT / "scripts" / "e2e" / "smoke.py"
-APP_TRAIN = REPO_ROOT / "scripts" / "e2e" / "app_train.py"
 E2E_ENV = REPO_ROOT / "scripts" / "e2e-env.sh"
 CLEANUP = REPO_ROOT / "scripts" / "e2e-clean.sh"
 DBSETUP = REPO_ROOT / "scripts" / "e2e" / "dbsetup.py"
