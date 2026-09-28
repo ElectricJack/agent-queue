@@ -121,3 +121,44 @@ async def test_get_task_statuses_returns_only_existing_ids(db):
 
     assert await db.get_task_statuses(["a", "b", "ghost"]) == {"a": "DEFINED", "b": "COMPLETED"}
     assert await db.get_task_statuses([]) == {}
+
+
+async def test_stuck_defined_tasks_are_listed_once_with_their_route(db):
+    """A task blocked by two failed upstreams is one row, whatever its route holds.
+
+    ``tasks.route`` is a PostgreSQL ``json`` column, which has no equality
+    operator, so a ``SELECT DISTINCT`` over whole task rows cannot even be
+    planned.  On 2026-09-28 that made this query raise on every scheduler
+    cycle, and the cycle never reached pool or session reconciliation
+    (fair-grove-86).
+    """
+    for tid, status in (
+        ("failed-up", TaskStatus.FAILED),
+        ("blocked-up", TaskStatus.BLOCKED),
+        ("done-up", TaskStatus.COMPLETED),
+    ):
+        await db.create_task(
+            Task(id=tid, project_id=PROJECT, title=tid, description="", status=status)
+        )
+    route = {"profile_id": "standard-high-claude", "reasons": ["class standard-high"]}
+    for tid in ("stuck", "waiting", "later"):
+        await db.create_task(
+            Task(
+                id=tid,
+                project_id=PROJECT,
+                title=tid,
+                description="",
+                status=TaskStatus.DEFINED,
+                route=route,
+            )
+        )
+    await db.add_dependency("stuck", "failed-up")
+    await db.add_dependency("stuck", "blocked-up", DepType.WAITS_FOR.value)
+    await db.add_dependency("stuck", "done-up")
+    await db.add_dependency("waiting", "done-up")
+    await db.add_dependency("later", "blocked-up")
+
+    rows = await db.get_stuck_defined_tasks(threshold_seconds=3600)
+
+    assert sorted(t.id for t in rows) == ["later", "stuck"]
+    assert all(t.route == route for t in rows)

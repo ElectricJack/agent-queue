@@ -9,7 +9,8 @@ allowed-tools:
 
 A spec or plan is a **review**, not a commit. The daemon stores every
 revision, mirrors the current one to the vault, and gates the work filed with
-`--after-review <id>` until the decider approves. The decider is Jack, or the
+`--after-review <id>` (a single task, or every node of a `--graph` /
+`--from-spec` graph) until the decider approves. The decider is Jack, or the
 supervisor when he delegated that review. The operator's guide is
 `docs/guides/reviews.md` in the agent-queue repository; this skill is the
 seat-by-seat version.

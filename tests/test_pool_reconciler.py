@@ -709,6 +709,34 @@ async def test_idle_worker_whose_claim_loop_went_silent_is_not_supply(orch, db):
     assert (await db.get_session(stuck.id)).desired_state == "running"
 
 
+async def test_draining_idle_worker_is_not_supply_and_the_ready_task_gets_a_new_one(orch, db):
+    """fair-grove-86: a worker retired after its task never absorbs new demand.
+
+    ``fresh_context_per_task`` leaves a closed worker idle at its prompt with
+    ``desired_state='stopped'`` until the session reconciler tears it down.
+    Until then it is draining: not idle, not offered to a drain, not part of
+    placement's ``live`` -- so READY work behind it still gets a worker.
+    """
+    from src.scheduler import PoolKey
+
+    await ready(db, "t1")
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    retired = (await db.list_sessions(lifecycle="pool"))[0]
+    await db.update_session(retired.id, desired_state="stopped")
+
+    measurement = await orch._measure_pools()
+    sup = measurement.supply[PoolKey("worker")]
+    assert (sup.draining, sup.running_idle, sup.idle_session_ids) == (1, 0, [])
+    (cand,) = measurement.candidates[PoolKey("worker")]
+    assert (cand.live, cand.project_live_total, cand.idle_session_ids) == (0, 0, ())
+
+    await orch._reconcile_pools()
+    await orch.wait_for_pool_launches()
+    live = [s for s in await db.list_sessions(lifecycle="pool") if s.id != retired.id]
+    assert len(live) == 1 and (live[0].state, live[0].desired_state) == ("running", "running")
+
+
 async def test_measure_pools_records_placement_inputs_per_project(orch, db, tmp_path):
     from src.scheduler import PoolKey
 

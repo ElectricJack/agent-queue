@@ -23,7 +23,7 @@
       "E2E CLI (graphs)",
       "E2E CLI (failover)"
     ],
-    "version": "tests-yml-v3"
+    "version": "ci-4c6e0c2a989c"
   },
   "schema": "aq.integration-trust.v1"
 }

@@ -150,7 +150,6 @@ def test_agent_queue_workflows_reproduce_the_reviewed_policy(mode):
         parent_route=parent,
         root_route=root,
         credential_mode=mode,
-        check_version="tests-yml-v3",
     )
 
     assert classification.shape == "github_ci"
@@ -832,8 +831,6 @@ def test_cli_writes_the_reviewed_agent_queue_policy_byte_for_byte(tmp_path, mode
                 "agent-queue",
                 "--credential-mode",
                 mode,
-                "--check-version",
-                "tests-yml-v3",
                 "--github-repository-id",
                 "1160639300",
                 "--no-check-prs",
@@ -875,7 +872,7 @@ def test_cli_writes_the_trust_manifest_the_daemon_command_renders(tmp_path):
             cli,
             [
                 "--json", "integration", "onboard-train", "agent-queue",
-                "--credential-mode", "app", "--check-version", "tests-yml-v3",
+                "--credential-mode", "app",
                 "--github-repository-id", "1160639300", "--no-check-prs",
                 "--write-trust-manifest", str(manifest_path),
             ],

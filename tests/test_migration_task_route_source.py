@@ -1,11 +1,12 @@
-"""Mandatory-routing revisions on owned disposable PostgreSQL.
+"""Task route schema revisions on owned disposable PostgreSQL databases.
 
-a00000000039 (§11 revision 1) and a00000000040 (review dispatches name a class
-hint, §5.3).
+a00000000039 (mandatory-routing §11 revision 1), a00000000040 (``tasks.route``
+as JSONB) and a00000000041 (review dispatches name a class hint, §5.3).
 """
 
 from __future__ import annotations
 
+import json
 from importlib import import_module
 from pathlib import Path
 
@@ -16,17 +17,21 @@ from alembic.config import Config
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
+from sqlalchemy.dialects.postgresql import JSONB
 
 from src.database.engine import create_postgres_engine
+from src.database.tables import tasks
 from tests.alembic_revisions import previous_revision
 from tests.pg_dsn import create_scratch_database
 
 pytestmark = pytest.mark.migration
 ROOT = Path(__file__).resolve().parent.parent
 REVISION = "a00000000039"
+JSONB_REVISION = "a00000000040"
+DISPATCH_REVISION = "a00000000041"
+HEAD_REVISION = DISPATCH_REVISION
 PRECEDING_REVISION = previous_revision(REVISION)
 CHECK = "ck_tasks_route_source"
-DISPATCH_REVISION = "a00000000040"
 COLUMNS = ("route_source", "class_hint", "route")
 
 # (task id, profile, class) -> (route_source, class_hint) after the upgrade.
@@ -75,12 +80,91 @@ def bindings(conn) -> dict[str, str | None]:
     return dict(rows)
 
 
-def test_revisions_are_on_the_single_line():
+def test_single_head():
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    [head] = script.get_heads()
-    line = {rev.revision for rev in script.iterate_revisions(head, "base")}
-    assert {REVISION, DISPATCH_REVISION} <= line
-    assert script.get_revision(DISPATCH_REVISION).down_revision == REVISION
+    assert script.get_heads() == [HEAD_REVISION]
+    assert script.get_revision(DISPATCH_REVISION).down_revision == JSONB_REVISION
+    assert script.get_revision(JSONB_REVISION).down_revision == REVISION
+
+
+def test_route_metadata_uses_jsonb():
+    assert isinstance(tasks.c.route.type, JSONB)
+    assert tasks.c.route.type.none_as_null
+
+
+@pytest.mark.parametrize("existing_type", ["json", "jsonb"])
+async def test_route_jsonb_upgrade_preserves_records_and_is_idempotent(existing_type):
+    engine = create_postgres_engine(await create_scratch_database("routejsonbmigration"))
+    revision = import_module("migrations.versions.a00000000040_task_route_jsonb")
+    payload = {"rule": "balanced", "candidates": ["worker-a", "worker-b"]}
+    column_type = sa.text(
+        "SELECT data_type FROM information_schema.columns "
+        "WHERE table_name = 'tasks' AND column_name = 'route'"
+    )
+    relfilenode = sa.text("SELECT pg_relation_filenode('tasks'::regclass)")
+    try:
+        await migrate(engine, "upgrade", REVISION)
+        async with engine.begin() as conn:
+            if existing_type == "json":
+                await conn.execute(sa.text(
+                    "ALTER TABLE tasks ALTER COLUMN route TYPE json USING route::json"
+                ))
+            await conn.execute(sa.text(
+                "INSERT INTO projects (id, name, created_at) VALUES ('p', 'P', 1)"
+            ))
+            await conn.execute(sa.text(
+                "INSERT INTO tasks (id, project_id, title, description, created_at, "
+                "updated_at) VALUES ('t', 'p', 'T', 'D', 1, 1), "
+                "('empty', 'p', 'Empty', 'D', 1, 1)"
+            ))
+            await conn.execute(
+                sa.text("UPDATE tasks SET route = CAST(:payload AS json) WHERE id = 't'"),
+                {"payload": json.dumps(payload)},
+            )
+            assert await conn.scalar(column_type) == existing_type
+            before = await conn.scalar(relfilenode)
+
+        await migrate(engine, "upgrade", JSONB_REVISION)
+        async with engine.begin() as conn:
+            assert await conn.scalar(column_type) == "jsonb"
+            if existing_type == "jsonb":
+                assert await conn.scalar(relfilenode) == before
+            records = (await conn.execute(sa.text(
+                "SELECT id, route::text FROM tasks ORDER BY id"
+            ))).all()
+            assert [
+                (task_id, json.loads(route) if route else None) for task_id, route in records
+            ] == [("empty", None), ("t", payload)]
+            # The original failure was SELECT DISTINCT over a json route.
+            distinct = await conn.execute(sa.text("SELECT DISTINCT route FROM tasks"))
+            assert len(distinct.all()) == 2
+            converted = await conn.scalar(relfilenode)
+
+            def repeat_upgrade(sync_conn):
+                with Operations.context(MigrationContext.configure(sync_conn)):
+                    revision.upgrade()
+
+            await conn.run_sync(repeat_upgrade)
+            assert await conn.scalar(relfilenode) == converted
+
+        await migrate(engine, "downgrade", REVISION)
+        async with engine.begin() as conn:
+            assert await conn.scalar(column_type) == "json"
+
+            def repeat_downgrade(sync_conn):
+                with Operations.context(MigrationContext.configure(sync_conn)):
+                    revision.downgrade()
+
+            await conn.run_sync(repeat_downgrade)
+            assert await conn.scalar(column_type) == "json"
+        await migrate(engine, "upgrade", JSONB_REVISION)
+        async with engine.begin() as conn:
+            assert await conn.scalar(column_type) == "jsonb"
+            assert json.loads(await conn.scalar(sa.text(
+                "SELECT route::text FROM tasks WHERE id = 't'"
+            ))) == payload
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.parametrize("existing", ["legacy", "fresh"])
@@ -182,9 +266,9 @@ def dispatch_columns(conn) -> dict[str, dict]:
 @pytest.mark.parametrize("existing", ["legacy", "fresh"])
 async def test_dispatch_class_hint_revision_is_idempotent_and_reverses(existing):
     engine = create_postgres_engine(await create_scratch_database("dispatchhintmigration"))
-    revision = import_module("migrations.versions.a00000000040_review_dispatch_class_hint")
+    revision = import_module("migrations.versions.a00000000041_review_dispatch_class_hint")
     try:
-        await migrate(engine, "upgrade", REVISION)
+        await migrate(engine, "upgrade", JSONB_REVISION)
 
         def prepare(conn):
             if existing == "legacy":
@@ -228,7 +312,7 @@ async def test_dispatch_class_hint_revision_is_idempotent_and_reverses(existing)
         async with engine.begin() as conn:
             await conn.run_sync(verify_and_repeat)
         # A row without a profile keeps the column nullable on downgrade.
-        await migrate(engine, "downgrade", REVISION)
+        await migrate(engine, "downgrade", JSONB_REVISION)
 
         def verify_downgrade(conn):
             columns = dispatch_columns(conn)

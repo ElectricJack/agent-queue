@@ -235,6 +235,8 @@ task it holds. A document-level `parent:` block creates the graph's own containe
 in the same transaction: under the held task by default, or at the project root
 with `--root`, where the container carries the routing gate a root filing gets
 and its children wait behind it. A root graph must declare that `parent:` block.
+`--after-review <review-id>` gates every node of the graph on that document
+review until it is approved; an unknown or withdrawn review creates nothing.
 Never file an epic as a plain task: a pool worker can claim it before its
 children arrive. The supervisor or an operator can file a single epic with
 `aq task create --container` and add its children afterwards; a worker session
@@ -260,6 +262,7 @@ aq task create --project <pid> --title "..." --description "..." \
 # From a spec (preferred for multi-task graphs)
 aq task create --from-spec vault/projects/<pid>/specs/<slug>.md
 aq task create --from-spec <path> --dry-run   # validate first, always
+aq task create --from-spec <path> --after-review <review-id>  # every node waits on the review
 
 # Create under an existing container (single task or a --from-spec graph)
 aq task create --project <pid> --title "..." --description "..." \

@@ -135,6 +135,7 @@ def _create_task_graph(
     intelligence_class: str | None = None,
     reason: str | None = None,
     root: bool = False,
+    after_review: str | None = None,
 ) -> None:
     """Back ``aq task create --graph|--from-spec|--dry-run``."""
     if graph_file and from_spec:
@@ -158,6 +159,8 @@ def _create_task_graph(
         params["reason"] = reason
     if root:
         params["root"] = True
+    if after_review:
+        params["after_review"] = after_review
 
     async def _create():
         async with _get_client(api_url) as client:
@@ -276,7 +279,10 @@ def _create_task_graph(
 @click.option(
     "--after-review",
     default=None,
-    help="Attach the task to this document review's gate until it is approved",
+    help=(
+        "Attach the task to this document review's gate until it is approved. "
+        "With --graph/--from-spec, every node of the graph is attached"
+    ),
 )
 @click.option(
     "--root",
@@ -388,7 +394,9 @@ def task_create(
 
     ``--graph FILE`` / ``--from-spec PATH`` create a whole dependency graph
     in one transaction instead of a single task; add ``--dry-run`` to see the
-    validation report and the ids that would be assigned.
+    validation report and the ids that would be assigned.  With
+    ``--after-review`` every node of the graph waits on that review's gate
+    until it is approved; an unknown or withdrawn review creates nothing.
 
     ``--requires-kind`` declares the workspace kinds the task needs
     (workspaces-v2 spec §5). It is repeatable and takes either a bare kind id
@@ -422,8 +430,6 @@ def task_create(
             "--pin/--provider-intent apply to single-task creation; in a graph put "
             "'pin: true' on the nodes to pin"
         )
-    if after_review and (graph_file or from_spec):
-        raise click.UsageError("--after-review only applies to single-task creation")
     if graph_file or from_spec:
         _create_task_graph(
             ctx,
@@ -436,6 +442,7 @@ def task_create(
             intelligence_class=intelligence_class,
             reason=reason,
             root=root,
+            after_review=after_review,
         )
         return
     if dry_run:

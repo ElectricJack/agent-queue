@@ -1,7 +1,7 @@
 """Review dispatches name a class hint, not a reviewer profile.
 
-Revision ID: a00000000040
-Revises: a00000000039
+Revision ID: a00000000041
+Revises: a00000000040
 
 Mandatory-task-routing spec (2026-09-28) §5.3, Task 4: ``aq review dispatch``
 files ``--count`` reviewer tasks with a ``--class`` hint and the constraint
@@ -21,8 +21,8 @@ and restores NOT NULL only when no row lacks a profile.
 import sqlalchemy as sa
 from alembic import op
 
-revision = "a00000000040"
-down_revision = "a00000000039"
+revision = "a00000000041"
+down_revision = "a00000000040"
 branch_labels = None
 depends_on = None
 

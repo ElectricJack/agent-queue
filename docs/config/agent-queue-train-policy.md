@@ -19,7 +19,8 @@ refuses it with the preflight blocker `ci_producer_not_numeric`. The earlier
 revision of this file used the slug, so an installed agent-queue policy bound
 from it must be rebound to this JSON before App mode.
 
-The `tests-yml-v3` check set requires all eight `Tests (default-N/8)` shards
+The `ci-4c6e0c2a989c` check set (the planner's digest of the names; the same
+fifteen names were earlier labelled `tests-yml-v3`) requires all eight `Tests (default-N/8)` shards
 and all four `E2E CLI (...)` scenario groups. When adopting the split workflow,
 a supervisor or operator must rebind the
 installed policy to this JSON and replace any explicit `Tests (default)` merge
