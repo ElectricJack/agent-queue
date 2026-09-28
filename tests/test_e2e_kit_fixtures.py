@@ -17,6 +17,7 @@ S4 into "close refused: No open PR found" (task solid-forge-63):
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -25,6 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from src.config import load_config
 from src.jobs.adapters import finite_command
@@ -37,6 +39,7 @@ SMOKE = REPO_ROOT / "scripts" / "e2e" / "smoke.py"
 E2E_ENV = REPO_ROOT / "scripts" / "e2e-env.sh"
 CLEANUP = REPO_ROOT / "scripts" / "e2e-clean.sh"
 DBSETUP = REPO_ROOT / "scripts" / "e2e" / "dbsetup.py"
+APP_TRAIN = REPO_ROOT / "scripts" / "e2e" / "app_train.py"
 
 
 def _load_smoke():
@@ -52,6 +55,71 @@ def _load_smoke():
     finally:
         sys.modules.pop(spec.name, None)
     return module
+
+
+def _load_app_train(monkeypatch, tmp_path):
+    monkeypatch.setenv("AQ_E2E_HOME", str(tmp_path))
+    monkeypatch.syspath_prepend(str(APP_TRAIN.parent))
+    spec = importlib.util.spec_from_file_location("e2e_app_train", APP_TRAIN)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_app_train_files_hint_only_graph_and_playbook_created_review(monkeypatch, tmp_path):
+    app = _load_app_train(monkeypatch, tmp_path)
+    app.write_profiles(None)
+    state = {"project_id": "fixture-project"}
+    calls = []
+
+    def fake_operator_text(*args, **_kwargs):
+        assert args[:4] == ("task", "create", "--project", "fixture-project")
+        graph = yaml.safe_load((tmp_path / "epic-s4.yaml").read_text())
+        assert graph["defaults"] == {"intelligence_class": app.TRAIN_CLASS,
+                                     "task_type": "feature"}
+        assert [node["key"] for node in graph["nodes"]] == ["leaf"]
+        assert "profile" not in graph["nodes"][0]
+        return 0, "valid"
+
+    def fake_operator(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("task", "create"):
+            return {"parent_id": "epic-1", "nodes": [{"key": "leaf", "task_id": "epic-1.1"}]}
+        if args[:2] == ("playbook", "import"):
+            return {"success": True, "activated": True}
+        if args[:2] == ("playbook", "run"):
+            return {"status": "completed", "failed_steps": []}
+        if args[:2] == ("task", "children"):
+            children = [{"id": "epic-1.1", "profile_id": "train-worker"}]
+            if any(call[:2] == ("playbook", "run") for call in calls):
+                children.append({"id": "epic-1.2", "profile_id": "reviewer"})
+            return children
+        if args[:2] == ("task", "deps"):
+            return {"provenance": [{"id": "epic-1.1", "dep_type": "discovered-from"}],
+                    "depends_on": [{"id": "epic-1.1", "dep_type": "blocks"}]}
+        raise AssertionError(args)
+
+    monkeypatch.setattr(app, "require_approval", lambda: "approved")
+    monkeypatch.setattr(app, "load_state", lambda: state)
+    monkeypatch.setattr(app, "save_state", lambda _state: None)
+    monkeypatch.setattr(app, "operator_text", fake_operator_text)
+    monkeypatch.setattr(app, "operator", fake_operator)
+    monkeypatch.setattr(app, "save_payload", lambda *_args: None)
+    monkeypatch.setattr(app, "_fixture_branch_exists", lambda _branch: False)
+    monkeypatch.setattr(app, "record", lambda *_args, **_kwargs: None)
+
+    app.create_epic(SimpleNamespace(scenario="S4", title="fixture change", write=["x.txt=x"],
+                                    copy=None, delete=None))
+
+    assert state["scenarios"]["S4"]["review_id"] == "epic-1.2"
+    artifact_path = tmp_path / "vault" / "reviewed-playbooks" / "app-train-review-s4" / "artifact.json"
+    artifact = json.loads(artifact_path.read_text())
+    steps = artifact["steps"]
+    assert steps["file-review--ensure"]["inputs"]["profile_id"]["value"] == "reviewer"
+    assert steps["file-review--provenance"]["inputs"]["dep_type"]["value"] == "discovered-from"
+    assert steps["file-review--blocks"]["inputs"]["dep_type"]["value"] == "blocks"
+    assert any(call[:2] == ("playbook", "run") for call in calls)
 
 
 def test_development_validation_preset_checks_the_committed_readme(tmp_path):
