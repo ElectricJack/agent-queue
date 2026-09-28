@@ -100,6 +100,13 @@ request-scoped answer. Unknown git evidence withholds work; absent or misleading
 SQL delivery rows never establish containment. Branchless organizational tasks
 have no own artifact; a missing worker ref is unknown.
 
+For a development worker close, the completion generation id becomes visible in
+the same database transaction as the `COMPLETED` transition. Git provenance is
+already retained before that transition. Delivery readers use this current id
+even while the full task completion record is being saved after close hooks;
+an earlier generation's record must never stand in for a reopened close. The
+transition out of `COMPLETED` clears the current id.
+
 Claim selection receives an ephemeral allowed set and retains priority, age,
 affinity and `SKIP LOCKED` exclusivity. Keyset paging continues past withheld
 candidates. Activation rechecks prerequisite completion generation, dependency

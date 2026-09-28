@@ -12,6 +12,7 @@ for it, so it is unknown until an operator retains it
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -209,16 +210,24 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
     """
     from contextlib import nullcontext
 
-    from sqlalchemy import select
+    from sqlalchemy import and_, select
 
-    from src.database.tables import archived_tasks, task_completion_records, tasks
+    from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+    from src.database.tables import archived_tasks, task_completion_records, task_metadata, tasks
     from src.integration.publishable_artifact import legacy_artifact
 
     task_ids = set(task_ids)
     opened = nullcontext(conn) if conn is not None else db._engine.connect()
     async with opened as reader:
         live = (
-            await reader.execute(select(tasks).where(tasks.c.id.in_(task_ids)))
+            await reader.execute(
+                select(tasks, task_metadata.c.value.label("current_generation"))
+                .select_from(tasks.outerjoin(task_metadata, and_(
+                    task_metadata.c.task_id == tasks.c.id,
+                    task_metadata.c.key == DEVELOPMENT_COMPLETION_ID_KEY,
+                )))
+                .where(tasks.c.id.in_(task_ids))
+            )
         ).mappings().all()
         missing = task_ids - {row["id"] for row in live}
         archived = (await reader.execute(
@@ -246,16 +255,29 @@ async def load_delivery_requests(db, task_ids, *, repository_id, target_ref, con
     completion_by_id = {
         row["task_id"]: db._row_to_task_completion(row) for row in completions
     }
-    return {
-        row["id"]: replace(
-            DeliveryRequest.from_task(
+    requests = {}
+    for rows, is_archived in ((live, False), (archived, True)):
+        for row in rows:
+            request = DeliveryRequest.from_task(
                 {**row, "archived": is_archived}, completion_by_id.get(row["id"]),
                 repository_id=repository_id, target_ref=target_ref,
-            ),
-            has_recorded_source=row["id"] in recorded_ids,
-        )
-        for rows, is_archived in ((live, False), (archived, True)) for row in rows
-    }
+            )
+            current_id = json.loads(row["current_generation"]) if not is_archived and row[
+                "current_generation"
+            ] is not None else None
+            if current_id and current_id != request.completion_id:
+                # The transition committed but its descriptive completion row
+                # has not: never evaluate an older, perhaps already contained,
+                # generation for this newly completed incarnation.
+                request = replace(
+                    request, completion_id=current_id, completed_at=None,
+                    reported_source=None,
+                )
+            requests[row["id"]] = replace(
+                request,
+                has_recorded_source=(row["id"] in recorded_ids or bool(current_id)),
+            )
+    return requests
 
 
 async def delivery_snapshot(git, store, *, project_id, repository_id, repository_url,

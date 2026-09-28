@@ -4712,6 +4712,67 @@ async def test_snapshot_scopes_generation_and_fences_target_movement(setup):
     assert (await latest.evaluate(current["reopened"])).state is DeliveryState.CONTAINED
 
 
+@pytest.mark.parametrize("prior_completion", [False, True])
+async def test_delivery_uses_current_generation_before_close_record_is_saved(
+    setup, prior_completion
+):
+    """A completed transition cannot borrow an older, delivered generation."""
+    from src.database.queries.task_queries import DEVELOPMENT_COMPLETION_ID_KEY
+    from src.integration.delivery_truth import DeliveryState, load_delivery_requests
+    from src.integration.provenance import CompletedSource, CompletionIdentity, GitProvenance
+
+    db, service, source, _remote, repo = setup
+    task_id = "closing"
+    old_head = await feature(setup, task_id, retain=prior_completion)
+    if prior_completion:
+        git(source, "push", "origin", f"{old_head}:main")
+        previous = (await load_delivery_requests(
+            db, [task_id], repository_id="r", target_ref="refs/heads/main",
+        ))[task_id]
+        assert (await (await truth_snapshot(setup)).evaluate(previous)).state is (
+            DeliveryState.CONTAINED
+        )
+
+    await db.transition_task(task_id, TaskStatus.READY, context="reopen_with_feedback")
+    assert await db.get_task_meta(task_id, DEVELOPMENT_COMPLETION_ID_KEY) is None
+    await db.transition_task(task_id, TaskStatus.IN_PROGRESS, context="claim")
+    git(source, "checkout", task_id)
+    (source / "new-generation.txt").write_text("new generation\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "new completion")
+    new_head = git(source, "rev-parse", "HEAD")
+    git(source, "push", "origin", task_id)
+    new_id = "closing-new"
+    await GitProvenance(service.git, str(source), repository_url=repo.url).write_completion(
+        CompletedSource(CompletionIdentity("p", "r", task_id, new_id), new_head)
+    )
+    # This is the exact point after the terminal transition and before the
+    # command has saved its descriptive TaskCompletion row.
+    await db.transition_task_with_meta(
+        task_id, TaskStatus.COMPLETED,
+        meta={DEVELOPMENT_COMPLETION_ID_KEY: new_id}, context="session_close",
+    )
+    request = (await load_delivery_requests(
+        db, [task_id], repository_id="r", target_ref="refs/heads/main",
+    ))[task_id]
+    assert request.completion_id == new_id
+    assert request.completed_at is None
+    evidence = await (await truth_snapshot(setup)).evaluate(request)
+    assert evidence.state is DeliveryState.PENDING
+    assert evidence.source_oid == new_head
+
+    await db.save_task_completion(TaskCompletion(
+        id=new_id, task_id=task_id, outcome="pass", commits=[new_head],
+        completed_at=time.time(),
+    ))
+    recorded = (await load_delivery_requests(
+        db, [task_id], repository_id="r", target_ref="refs/heads/main",
+    ))[task_id]
+    assert recorded.completion_id == new_id and recorded.completed_at is not None
+    await db.transition_task(task_id, TaskStatus.READY, context="reopen_with_feedback")
+    assert await db.get_task_meta(task_id, DEVELOPMENT_COMPLETION_ID_KEY) is None
+
+
 async def test_snapshot_archived_completion_survives_ref_cleanup(setup):
     from src.integration.delivery_truth import DeliveryState, load_delivery_requests
 
