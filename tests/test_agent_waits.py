@@ -69,3 +69,9 @@ def test_job_predicate_is_typed():
     assert typed_match("job", "j", None, None) == {"job_id": "j"}
     with pytest.raises(WaitError):
         typed_match("job", "j", 1, None)
+
+
+def test_message_predicate_requires_cursor_with_named_error():
+    with pytest.raises(WaitError, match="message waits require after_seq") as error:
+        typed_match("message", "thread", None, None)
+    assert error.value.code == "wait.invalid"
