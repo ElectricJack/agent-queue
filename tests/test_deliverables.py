@@ -13,7 +13,8 @@ from pathlib import Path
 import pytest
 
 from src.commands.task_commands import normalize_deliverables
-from src.deliverables import evaluate_deliverables
+from src.deliverables import effective_deliverables, evaluate_deliverables
+from src.models import TaskType
 
 
 def _one(kind: str, target: str):
@@ -199,3 +200,85 @@ def test_test_command_target_accepts_directories_and_node_ids(repo):
     assert _met(item, root=repo, tests=["pytest tests/test_a.py::test_a"]) is True
     item = {"id": "gone", "kind": "test", "target": "pytest tests/test_gone.py::test_a"}
     assert _met(item, root=repo, tests=["pytest tests/test_gone.py::test_a"]) is False
+
+
+# --- kind=review: the document goes to Reviews, not only a branch ----------
+#
+# vivid-delta: research task crisp-orbit-37 closed with its proposal committed
+# to its branch and never submitted, so Jack saw nothing in the Reviews tab.
+
+
+class TestReviewDeclaration:
+    @pytest.mark.parametrize("target", ["spec", "plan", "other", "any"])
+    def test_review_kind_targets_are_stored(self, target):
+        items, error = _one("review", target)
+        assert error is None
+        assert items == [{"id": "item", "kind": "review", "target": target}]
+
+    def test_review_target_must_be_a_review_kind_or_any(self):
+        items, error = _one("review", "docs/design/proposal.md")
+        assert items == []
+        assert error and "'spec', 'plan', 'other' or 'any'" in error
+
+
+def _review_met(target, reviews):
+    item = {"id": "review", "kind": "review", "target": target}
+    [result] = evaluate_deliverables([item], root=Path("."), tests=[], reviews=reviews)
+    return result["met"]
+
+
+def test_review_item_is_unmet_without_a_submitted_review():
+    assert _review_met("any", []) is False
+    assert _review_met("spec", None) is False
+
+
+def test_review_item_any_is_met_by_any_submitted_review():
+    assert _review_met("any", [{"id": "rev-a", "kind": "other", "state": "in_review"}]) is True
+
+
+def test_review_item_with_a_kind_needs_a_review_of_that_kind():
+    reviews = [{"id": "rev-a", "kind": "other", "state": "approved"}]
+    assert _review_met("spec", reviews) is False
+    assert _review_met("other", reviews) is True
+
+
+def test_a_withdrawn_review_does_not_meet_a_review_item():
+    assert _review_met("any", [{"id": "rev-a", "kind": "spec", "state": "withdrawn"}]) is False
+
+
+_IMPLICIT_REVIEW = {"id": "review", "kind": "review", "target": "any"}
+
+
+class TestEffectiveDeliverables:
+    @pytest.mark.parametrize("task_type", ["research", "design", TaskType.RESEARCH])
+    def test_document_task_types_get_an_implicit_review_item(self, task_type):
+        declared = [{"id": "notes", "kind": "file", "target": "docs/notes.md"}]
+        assert effective_deliverables(declared, task_type=task_type) == [
+            *declared,
+            _IMPLICIT_REVIEW,
+        ]
+
+    @pytest.mark.parametrize("task_type", [None, "feature", "bugfix", "docs", "plan", "art"])
+    def test_other_task_types_keep_their_declared_items(self, task_type):
+        assert effective_deliverables([], task_type=task_type) == []
+
+    def test_a_declared_review_item_replaces_the_implicit_one(self):
+        declared = [{"id": "proposal", "kind": "review", "target": "spec"}]
+        assert effective_deliverables(declared, task_type="research") == declared
+
+    def test_a_feature_task_can_declare_a_review_item(self):
+        declared = [{"id": "proposal", "kind": "review", "target": "other"}]
+        assert effective_deliverables(declared, task_type="feature") == declared
+
+    def test_a_dispatched_reviewer_answers_with_comments_and_is_exempt(self):
+        assert effective_deliverables([], task_type="research", dispatched_reviewer=True) == []
+
+    def test_the_implicit_id_never_collides_with_a_declared_one(self):
+        declared = [{"id": "review", "kind": "file", "target": "docs/review.md"}]
+        [_, implicit] = effective_deliverables(declared, task_type="design")
+        assert implicit == {"id": "review-2", "kind": "review", "target": "any"}
+
+    def test_the_declared_list_is_not_mutated(self):
+        declared: list[dict[str, str]] = []
+        effective_deliverables(declared, task_type="research")
+        assert declared == []

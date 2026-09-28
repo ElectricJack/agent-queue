@@ -1,13 +1,14 @@
 ---
 name: aq-reviews
-description: Document reviews in aq — submitting a spec or plan, answering requested changes on a revision task, acting as a dispatched adversarial reviewer, and the opt-in recipe for adversarial review across model families (author on one family, reviewer on another, at most three rounds, [blocking]/[nit] findings, fixed/rebutted/deferred dispositions). Use when you submit or revise a review, hold an "Adversarial review:" or "Revise … (review …)" task, or run a cross-family review loop as the operator or a delegated supervisor.
+description: Document reviews in aq — submitting a spec, plan, design proposal or research report, answering requested changes on a revision task, acting as a dispatched adversarial reviewer, and the opt-in recipe for adversarial review across model families (author on one family, reviewer on another, at most three rounds, [blocking]/[nit] findings, fixed/rebutted/deferred dispositions). Use when you submit or revise a review, hold an "Adversarial review:" or "Revise … (review …)" task, or run a cross-family review loop as the operator or a delegated supervisor.
 allowed-tools:
   - Bash
 ---
 
 # aq reviews
 
-A spec or plan is a **review**, not a commit. The daemon stores every
+A spec, a plan, a design proposal or a research report is a **review**, not
+a commit. The daemon stores every
 revision, mirrors the current one to the vault, and gates the work filed with
 `--after-review <id>` until the decider approves. The decider is Jack, or the
 supervisor when he delegated that review. The operator's guide is
@@ -18,7 +19,7 @@ seat-by-seat version.
 
 | You hold | You are | Read |
 |---|---|---|
-| A task that asks you to write a spec or plan | author | § Author |
+| A task that asks you to write a spec, plan, proposal or report; any research or design task | author | § Author |
 | *Revise \<title> (review \<id>)* | reviser | § Reviser |
 | *Adversarial review: \<title>* | dispatched reviewer | § Dispatched reviewer |
 | The local operator, or the supervisor with the review delegated | decider | § Running the cross-family loop |
@@ -35,15 +36,24 @@ aq review show --review-id <id> --diff-from 1        # block diff against an ear
 ## Author
 
 1. Write the document in your checkout. Do not commit it.
-2. Submit it:
+2. Submit it (`--kind spec`, `plan`, or `other` for a proposal or report):
 
    ```bash
    aq review submit --task-id <task> --file <draft> --kind spec --title "<title>"
    ```
 
+   Submit even when the task also asks for a committed copy: a document that
+   is only on a branch never reaches the Reviews tab.
 3. Close the task with the review id, the vault path and the revision's
    content hash (`revision.content_sha256` from `aq review show --review-id
    <id> --json`). Do not wait for the decision; closing approves nothing.
+
+The close gate checks this. A task with a `review` deliverable — and every
+research or design task, which carries one (`review`) even when none is
+listed — is refused a passing close (`deliverables.unmet`) until it has
+submitted a review. When the task honestly produced no document, waive it
+visibly: `--deliverable-unmet 'review: <reason>'`. A dispatched reviewer is
+exempt; its answer is its comments.
 
 A rejection never reopens your task. The daemon files a separate revision
 task, which may land on another worker.

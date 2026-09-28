@@ -28,6 +28,7 @@ from src.database.queries.task_queries import (
     TaskProjectMoveError,
     task_repository_id,
 )
+from src.deliverables import REVIEW_TARGETS
 from src.discord.embeds import STATUS_EMOJIS, progress_bar
 from src.discord.notifications import classify_error
 from src.models import (
@@ -274,7 +275,7 @@ def _normalize_label_list(raw) -> list[str]:
     return out
 
 
-_DELIVERABLE_KINDS = frozenset({"file", "test", "command", "flag", "registration"})
+_DELIVERABLE_KINDS = frozenset({"file", "test", "command", "flag", "registration", "review"})
 
 
 def _path_target_error(target: str) -> str | None:
@@ -300,6 +301,8 @@ def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
     A ``file`` target must be one repo-relative file path. A ``test`` target
     may instead be a command line (which close-time evidence matches against
     ``--test``), but a path-shaped test target must also be repo-relative.
+    A ``review`` target names the kind of document review the task submits
+    (``spec``, ``plan``, ``other``) or ``any``.
     """
     if raw is None:
         return [], None
@@ -323,6 +326,11 @@ def normalize_deliverables(raw) -> tuple[list[dict[str, str]], str | None]:
             )
         if not target:
             return [], f"deliverables[{index}].target is required"
+        if kind == "review" and target not in REVIEW_TARGETS:
+            return [], (
+                f"deliverables[{index}].target must be 'spec', 'plan', 'other' or 'any' "
+                "for a [review] item: the kind of document review the task submits"
+            )
         path_only = kind == "file" or (kind == "test" and not any(ch.isspace() for ch in target))
         if path_only and (why := _path_target_error(target)):
             shape = (

@@ -7,6 +7,11 @@ tests/b.py`` or ``ruff check <changed files>`` — is checked against the
 repeatable ``--test`` / ``--command`` values recorded on the close, because a
 shell command is never a file under the worktree and is not text the repo
 is expected to contain.
+
+A ``review`` item is different again: its evidence is a document review the
+task submitted (``aq review submit``), so the caller passes the task's
+reviews in.  Research and design tasks carry one implicitly (see
+:func:`effective_deliverables`).
 """
 
 from __future__ import annotations
@@ -18,6 +23,80 @@ from typing import Any
 _TEXT_SUFFIXES = {".py", ".md", ".toml", ".yaml", ".yml", ".json", ".ts", ".tsx", ".js"}
 _SKIP_PARTS = {".git", "node_modules", ".venv", "dist", "build", "__pycache__"}
 _PLACEHOLDER = re.compile(r"<[^<>]*>")
+
+#: A ``review`` item's target: the kind of document review the task must
+#: submit (``doc_reviews.kind``), or ``any``.
+REVIEW_TARGETS = ("spec", "plan", "other", "any")
+
+#: Task types whose product is a document for a human decision: a research
+#: report or a design proposal.
+DOCUMENT_TASK_TYPES = frozenset({"research", "design"})
+
+
+def effective_deliverables(
+    deliverables: list[dict[str, str]] | None,
+    *,
+    task_type: Any,
+    dispatched_reviewer: bool = False,
+) -> list[dict[str, str]]:
+    """The task's declared deliverables plus its implicit document review.
+
+    A research or design task hands back a document, and a document is for a
+    human decision: it goes to Reviews through ``aq review submit``, not only
+    onto a branch where nobody sees it (vivid-delta: research task
+    crisp-orbit-37 committed its proposal and never reached the Reviews tab).
+    Such a task that declares no ``review`` item gets ``{"id": "review",
+    "kind": "review", "target": "any"}``; a task with nothing to submit waives
+    it at close with ``--deliverable-unmet 'review: <reason>'``.
+
+    The rule reads the type the task has *now*, not at creation, because the
+    assignment router writes the type of an untyped task after it is filed.
+    A dispatched adversarial reviewer is research-typed but answers with
+    comments on someone else's revision, so it is exempt.
+    """
+    items = [dict(item) for item in deliverables or []]
+    kind = getattr(task_type, "value", task_type)
+    if (
+        dispatched_reviewer
+        or kind not in DOCUMENT_TASK_TYPES
+        or any(item["kind"] == "review" for item in items)
+    ):
+        return items
+    taken = {item["id"] for item in items}
+    item_id, suffix = "review", 2
+    while item_id in taken:
+        item_id, suffix = f"review-{suffix}", suffix + 1
+    return [*items, {"id": item_id, "kind": "review", "target": "any"}]
+
+
+async def resolve_task_deliverables(db: Any, task: Any) -> list[dict[str, str]]:
+    """:func:`effective_deliverables` for a stored task (one lookup at most)."""
+    task_type = getattr(task, "task_type", None)
+    task_type = getattr(task_type, "value", task_type)
+    dispatched = (
+        task_type in DOCUMENT_TASK_TYPES
+        and await db.get_review_dispatch_for_task(task.id) is not None
+    )
+    return effective_deliverables(
+        getattr(task, "deliverables", None), task_type=task_type, dispatched_reviewer=dispatched
+    )
+
+
+def review_submit_guidance(task_id: str, items: list[dict[str, Any]]) -> str:
+    """How to meet (or visibly waive) the ``review`` items among *items*."""
+    reviews = [item for item in items if item["kind"] == "review"]
+    if not reviews:
+        return ""
+    kinds = sorted({str(item["target"]) for item in reviews} - {"any"})
+    kind = "|".join(kinds) if kinds else "spec|plan|other"
+    waiver = " ".join(f"--deliverable-unmet '{item['id']}: <reason>'" for item in reviews)
+    return (
+        "A review item is met by a document review this task submitted: write the "
+        "document in your checkout, do not commit it, and run "
+        f"`aq review submit --task-id {task_id} --file <draft.md> --kind {kind} "
+        '--title "<title>"`; put the review id in your close summary. '
+        f"Only when the task produced no document, close with {waiver}."
+    )
 
 
 def parse_unmet_reasons(
@@ -50,23 +129,44 @@ def evaluate_deliverables(
     root: Path,
     tests: list[str],
     commands: list[str] | None = None,
+    reviews: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, str | bool]]:
     """Evaluate declared items using only local, reproducible evidence.
 
     ``tests`` and ``commands`` are the repeatable ``--test`` / ``--command``
     values recorded on the close.  A ``test`` item is only ever satisfied by
     ``tests``; a ``command`` item accepts either list, since a test command is
-    also a command that was run.
+    also a command that was run.  ``reviews`` are the document reviews the
+    task submitted (``kind`` and ``state`` each), the evidence for a
+    ``review`` item.
     """
     commands = commands or []
+    reviews = reviews or []
     return [
-        {**item, "met": _is_met(item, root=root, tests=tests, commands=commands), "reason": ""}
+        {
+            **item,
+            "met": _is_met(item, root=root, tests=tests, commands=commands, reviews=reviews),
+            "reason": "",
+        }
         for item in deliverables
     ]
 
 
-def _is_met(item: dict[str, str], *, root: Path, tests: list[str], commands: list[str]) -> bool:
+def _is_met(
+    item: dict[str, str],
+    *,
+    root: Path,
+    tests: list[str],
+    commands: list[str],
+    reviews: list[dict[str, Any]],
+) -> bool:
     kind, target = item["kind"], item["target"].strip()
+    if kind == "review":
+        # A withdrawn review is no longer awaiting anyone's decision.
+        return any(
+            review.get("state") != "withdrawn" and target in ("any", review.get("kind"))
+            for review in reviews
+        )
     command_like = _is_command_like(target)
     if kind == "test":
         if command_like:

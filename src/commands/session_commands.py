@@ -921,7 +921,14 @@ class SessionCommandsMixin:
         # Refuse before any metadata, hierarchy, or pipeline side effect so
         # the same claim can add evidence or make a visible exception and
         # retry the close.
-        from src.deliverables import evaluate_deliverables, parse_unmet_reasons
+        # A research or design task's document is a ``review`` item even
+        # when nobody declared one (``effective_deliverables``).
+        from src.deliverables import (
+            evaluate_deliverables,
+            parse_unmet_reasons,
+            resolve_task_deliverables,
+            review_submit_guidance,
+        )
 
         def _string_list(value) -> list[str]:
             if value is None:
@@ -930,15 +937,22 @@ class SessionCommandsMixin:
                 return [value] if value.strip() else []
             return [str(item) for item in value if str(item).strip()]
 
-        waivers, waiver_error = parse_unmet_reasons(args.get("deliverable_unmet"), task.deliverables)
+        deliverables = await resolve_task_deliverables(self.db, task)
+        waivers, waiver_error = parse_unmet_reasons(args.get("deliverable_unmet"), deliverables)
         if waiver_error:
             return {"success": False, "code": "deliverables.invalid_waiver", "error": waiver_error}
         work_dir = getattr(session, "work_dir", None) if session is not None else None
+        submitted_reviews = (
+            await self.db.list_reviews_submitted_by_task(task.id)
+            if any(item["kind"] == "review" for item in deliverables)
+            else []
+        )
         deliverable_results = evaluate_deliverables(
-            task.deliverables,
+            deliverables,
             root=Path(work_dir) if work_dir else Path.cwd(),
             tests=_string_list(args.get("tests")),
             commands=_string_list(args.get("commands")),
+            reviews=submitted_reviews,
         )
         unmet = [item for item in deliverable_results if not item["met"]]
         for item in unmet:
@@ -948,14 +962,17 @@ class SessionCommandsMixin:
             listed = ", ".join(
                 f"{item['id']} ({item['kind']}: {item['target']})" for item in unwaived
             )
+            error = (
+                f"close refused: declared deliverables are unmet: {listed}. "
+                "Ship them, or pass --deliverable-unmet 'id: reason' for each intentional gap."
+            )
+            if guidance := review_submit_guidance(task.id, unwaived):
+                error = f"{error} {guidance}"
             return {
                 "success": False,
                 "code": "deliverables.unmet",
                 "unmet_deliverables": unwaived,
-                "error": (
-                    f"close refused: declared deliverables are unmet: {listed}. "
-                    "Ship them, or pass --deliverable-unmet 'id: reason' for each intentional gap."
-                ),
+                "error": error,
             }
 
         # A worker's own subtasks are a checklist contract, not the deliverables

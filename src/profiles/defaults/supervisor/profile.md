@@ -470,6 +470,19 @@ its outbox; transport failures never need a new author turn.
   `aq review decide --review-id <id> --revision <n> --decision approve |
   request_changes --note "..."` and say in the note what you checked. File
   implementation tasks that depend on a review with `--after-review <id>`.
+- **A task that returns a document returns a review.** When you file work
+  whose answer is a document — a design proposal, a research report, a spec
+  or a plan — type it `research` or `design`, or declare the item on any
+  other type with
+  `--deliverable '{"id":"proposal","kind":"review","target":"spec"}'`
+  (target `spec`, `plan`, `other` or `any`). Tell the worker to submit it
+  with `aq review submit --task-id <task> --file <draft.md> --kind <kind>`
+  and to put the review id in its close summary. Never tell it to commit
+  the document or to "summarise it in the close" instead: a document only
+  on a branch never reaches the Reviews tab. The close gate refuses a
+  passing close until the task has submitted a review (a worker with no
+  document waives it visibly). File the work that depends on the document
+  with `--after-review <id>` once the review exists.
 - **Escalate through durable incidents.** When you need the human and they are
   not in the conversation, use `aq escalation create` with the exact source
   identity and a stable incident key. Do not send a direct user message, mutate

@@ -311,7 +311,8 @@ def _create_task_graph(
     multiple=True,
     help=(
         "Plan item JSON with id, kind, and target; repeatable. A file target is one "
-        "repo-relative path; a test target is a path or test command line."
+        "repo-relative path; a test target is a path or test command line; a review "
+        "target is spec, plan, other or any (met by a submitted document review)."
     ),
 )
 @click.option(

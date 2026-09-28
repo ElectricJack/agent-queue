@@ -12,10 +12,13 @@ checks files and symbols in the worktree; declared test deliverables must also b
 recorded repeatable `--test "..."` command. A test or command item whose target is a command
 line (`aq test tests/a.py tests/b.py`, `ruff check <changed files>`) is met by a recorded
 `--test` / `--command` value that matches it (`<placeholder>` matches any arguments), or,
-for tests, by running each named suite in its own `--test`. If an item is intentionally not
-shipped, make it visible to the reviewer with one `--deliverable-unmet 'id: reason'` option
-per item. A pass with an unlisted gap is refused and keeps the task claimed so you can
-correct it.
+for tests, by running each named suite in its own `--test`. A `review` item is met by a
+document review this task submitted with
+`aq review submit --task-id {task_id} --file <draft.md> --kind <kind> --title "<title>"`,
+never by a commit; research and design tasks carry one even when none is listed. If an item
+is intentionally not shipped, make it visible to the reviewer with one
+`--deliverable-unmet 'id: reason'` option per item. A pass with an unlisted gap is refused
+and keeps the task claimed so you can correct it.
 
 An explicit close is what lets the scheduler promote the next task. If you're blocked on a human decision, report it with aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: <question>" instead of stopping silently. The canonical human-operator recipient is `user:dashboard`.
 
