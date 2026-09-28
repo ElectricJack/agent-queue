@@ -40,7 +40,7 @@ from src.database.tables import (
     repos,
     tasks,
 )
-from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.models import HierarchicalIntegrationPolicy, deprecated_route_fields
 from src.integration.drain_owners import terminal_reservation_clause
 from src.integration.live_operations import ACTIVE_OPERATION_STATES
 from src.integration.preflight import daemon_functional_preflight
@@ -435,25 +435,14 @@ class IntegrationControlService:
                             ref,
                         )
                     )
-                required_profiles = [
-                    boundary.primary_profile_id,
-                    boundary.repair.debug_profile_id,
-                ]
+                # Only the class hints are required: the router assigns the
+                # profile, so the deprecated ``*_profile_id`` fields are ignored.
                 required_classes = [
                     boundary.primary_intelligence_class,
                     boundary.repair.debug_intelligence_class,
                 ]
                 if policy.branchless_parent == "verifier":
-                    required_profiles.append(boundary.verifier_profile_id)
                     required_classes.append(boundary.verifier_intelligence_class)
-                if any(value is None for value in required_profiles):
-                    blockers.append(
-                        _blocker(
-                            "profile_route_missing",
-                            "primary, debug, and required verifier profiles must be explicit",
-                            boundary_name,
-                        )
-                    )
                 if any(value is None for value in required_classes):
                     blockers.append(
                         _blocker(
@@ -805,6 +794,13 @@ class IntegrationControlService:
             policy = HierarchicalIntegrationPolicy.model_validate(
                 updates["hierarchical_integration_policy"]
             )
+            deprecated = deprecated_route_fields(policy)
+            if deprecated:
+                raise ValueError(
+                    "integration policy profile fields are deprecated; repairs and "
+                    "verifiers take intelligence-class hints and the router assigns "
+                    "profiles. Remove: " + ", ".join(deprecated)
+                )
             for boundary in (policy.parent, policy.root):
                 if not boundary.route.is_available_to_project(project_id):
                     raise ValueError(

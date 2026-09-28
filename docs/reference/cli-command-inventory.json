@@ -3917,7 +3917,6 @@
           "--credential-mode",
           "--route",
           "--intelligence-class",
-          "--harness",
           "--check",
           "--check-version",
           "--github-repository-id",
@@ -9066,7 +9065,6 @@
         "optional": [
           "--note",
           "--responder-class",
-          "--responder-profile",
           "--json",
           "--brief",
           "--api-url"
@@ -9128,10 +9126,11 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--review-id",
-          "--to"
+          "--review-id"
         ],
         "optional": [
+          "--count",
+          "--class",
           "--revision",
           "--with-comments",
           "--focus",

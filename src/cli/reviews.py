@@ -100,7 +100,10 @@ def review_submit(
 
 @review.command("dispatch")
 @click.option("--review-id", required=True)
-@click.option("--to", "profiles", multiple=True, required=True)
+@click.option("--count", type=click.IntRange(min=1, max=10), default=1, show_default=True,
+              help="Number of adversarial reviewer tasks.")
+@click.option("--class", "intelligence_class", default="deep-high", show_default=True,
+              help="Intelligence-class hint for the reviewers.")
 @click.option("--revision", type=click.IntRange(min=1), default=None)
 @click.option("--with-comments/--no-comments", default=True)
 @click.option("--focus", default=None)
@@ -110,16 +113,23 @@ def review_submit(
 def review_dispatch(
     ctx: click.Context,
     review_id: str,
-    profiles: tuple[str, ...],
+    count: int,
+    intelligence_class: str,
     revision: int | None,
     with_comments: bool,
     focus: str | None,
     force: bool,
 ) -> None:
-    """Send a pinned review revision to one or more adversarial reviewers."""
+    """Send a pinned review revision to COUNT adversarial reviewers.
+
+    Each reviewer task carries the --class hint and excludes the provider the
+    author revision ran on; the project's router picks its profile, so a
+    dispatch lands on another model family. No reviewer profile is named.
+    """
     params = {
         "review_id": review_id,
-        "to": list(profiles),
+        "count": count,
+        "intelligence_class": intelligence_class,
         "with_comments": with_comments,
         "force": force,
     }

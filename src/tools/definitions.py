@@ -1241,13 +1241,12 @@ _ALL_TOOL_DEFINITIONS = [
                 "intelligence_class": {
                     "type": "string",
                     "description": (
-                        "Execution intelligence class id, e.g. deep-high or standard-high. "
-                        "Use list_intelligence_classes for current IDs. Without profile_id, "
-                        "a class the implicit route (project default, supervisor fallback, "
-                        "caller profile) does not run selects an enabled worker whose "
-                        "default_class matches — pool first, then that route's provider, then "
-                        "Claude — before the task is written; with no match the create fails. "
-                        "The response's profile_source names the rule that picked the profile."
+                        "Intelligence-class hint for the router, e.g. deep-high or "
+                        "standard-high. Use list_intelligence_classes for current IDs. The "
+                        "task is stored unrouted with this class as its class_hint; the "
+                        "project's routing playbook picks the profile and the final class "
+                        "within its policy. Creation never picks a profile from the class. "
+                        "An unknown class is refused."
                     ),
                 },
                 "preferred_workspace_id": {
@@ -1516,11 +1515,12 @@ _ALL_TOOL_DEFINITIONS = [
                 "intelligence_class": {
                     "type": "string",
                     "description": (
-                        "Vault intelligence class for the task on create. A "
-                        "pinned profile is not a route on its own: without an "
-                        "explicit class the task waits for the assignment "
-                        "playbook to choose one. Both apply only when this "
-                        "call creates the task."
+                        "Intelligence-class hint for the task on create: the task "
+                        "is stored unrouted and the project's router picks its "
+                        "profile and class. A role profile (triage, spec-ingest, "
+                        "reviewer, final-reviewer) named by a playbook runs the "
+                        "role's own class instead. Applies only when this call "
+                        "creates the task."
                     ),
                 },
                 "parent_key": {
@@ -6823,8 +6823,7 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "revision": {"type": "integer", "minimum": 1},
                     "decision": {"type": "string", "enum": ["approve", "request_changes", "reject"]},
                     "note": {"type": "string"},
-                    "responder_class": {"type": "string", "description": "Who revises after request_changes or reject: intelligence class for the new revision task."},
-                    "responder_profile": {"type": "string", "description": "Optional worker profile for that revision class."},
+                    "responder_class": {"type": "string", "description": "After request_changes or reject: intelligence-class hint for the new revision task, which the project's router routes. A responder profile is not accepted."},
                 },
                 "required": ["review_id", "revision", "decision"],
                 "additionalProperties": False,
@@ -6848,18 +6847,30 @@ _ALL_TOOL_DEFINITIONS.extend(
         },
         {
             "name": "review_dispatch",
-            "description": "Send an open review revision to selected profiles for adversarial review without moving its decision gate.",
+            "description": (
+                "Send an open review revision to adversarial reviewers without moving its "
+                "decision gate. Files count reviewer tasks with an intelligence-class hint; "
+                "the project's router picks each reviewer's profile, excluding the provider "
+                "the author revision ran on. A dispatch never names a profile."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "review_id": {"type": "string"},
-                    "to": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "count": {
+                        "type": "integer", "minimum": 1, "maximum": 10,
+                        "description": "Number of reviewer tasks (default 1).",
+                    },
+                    "intelligence_class": {
+                        "type": "string",
+                        "description": "Class hint for the reviewers (default deep-high).",
+                    },
                     "revision": {"type": "integer", "minimum": 1},
                     "with_comments": {"type": "boolean"},
                     "focus": {"type": "string", "maxLength": 4000},
                     "force": {"type": "boolean"},
                 },
-                "required": ["review_id", "to"],
+                "required": ["review_id"],
                 "additionalProperties": False,
             },
         },

@@ -373,6 +373,15 @@ def write_profiles(_args) -> None:
 
     The kit's own ``reviewer`` is task-lifecycle; the review evidence path
     requires the profile id ``reviewer``, so it is replaced by a pool profile.
+
+    Parent verifiers and repair delegates are filed unrouted, with
+    ``TRAIN_CLASS`` as a class hint, and the router picks their profile.
+    ``play_verifier`` and ``play_repair`` claim them as ``WORKER_PROFILE``, so
+    it must stay the router's only worker candidate at ``TRAIN_CLASS``: a
+    writable pool with slots (it needs no ``extends``).  ``TRAIN_CLASS`` must
+    not be ``deep-high``: the routing policy reserves deep-high Claude for the
+    design lanes.  ``tests/test_e2e_kit_fixtures.py`` plans both delegates
+    against these profiles.
     """
     for profile_id, read_only in ((WORKER_PROFILE, False), (REVIEWER_PROFILE, True)):
         config = {
@@ -547,7 +556,7 @@ def _onboard_train(clone: Path, checks: tuple[str, str], out: Path) -> dict[str,
     code, text = operator_text(
         "integration", "onboard-train", pid, "--repo", str(clone), "--ref", "HEAD",
         "--route", "shared", "--check", checks[1], "--check-version", checks[0],
-        "--harness", "claude", "--intelligence-class", TRAIN_CLASS,
+        "--intelligence-class", TRAIN_CLASS,
         "--credential-mode", "app", "--github-repository-id", str(repository_id()),
         "--repository-id", pid, "--interval-seconds", "60",
         "--write-policy", str(paths["policy"]),
@@ -561,9 +570,8 @@ def _onboard_train(clone: Path, checks: tuple[str, str], out: Path) -> dict[str,
     policy = json.loads(paths["policy"].read_text())
     for boundary in ("parent", "root"):
         section = policy[boundary]
-        for key in ("primary_profile_id", "verifier_profile_id"):
-            section[key] = WORKER_PROFILE
-        section["repair"]["debug_profile_id"] = WORKER_PROFILE
+        # Repairs and verifiers carry TRAIN_CLASS as a hint only; the router
+        # assigns their profile (the policy's profile fields are refused).
         # A live repair is played by hand; the stage deadline must not expire
         # while a human reads the dossier (the 09-24 run's stage 0 did).
         section["repair"]["primary_seconds"] = 7200

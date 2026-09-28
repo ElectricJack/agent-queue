@@ -32,10 +32,14 @@ from src.config import load_config
 from src.jobs.adapters import finite_command
 from src.jobs.policy import presets, validate_args
 from src.profiles.parser import parse_profile
+from src.routing.planner import ProfileFacts, Snapshot, TaskFacts, plan_route, worker_classes
 from tests.test_e2e_cli_stateful import SCENARIO_GROUPS
+from tests.test_routing_planner import DIGEST as ROUTING_DIGEST
+from tests.test_routing_planner import POLICY as ROUTING_POLICY
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SMOKE = REPO_ROOT / "scripts" / "e2e" / "smoke.py"
+APP_TRAIN = REPO_ROOT / "scripts" / "e2e" / "app_train.py"
 E2E_ENV = REPO_ROOT / "scripts" / "e2e-env.sh"
 CLEANUP = REPO_ROOT / "scripts" / "e2e-clean.sh"
 DBSETUP = REPO_ROOT / "scripts" / "e2e" / "dbsetup.py"
@@ -239,6 +243,83 @@ def test_e2e_coding_fixture_keeps_its_write_tools(generated_profiles):
     assert not coding.config.get("read_only")
     allowed = set((coding.tools or {}).get("allowed") or [])
     assert {"Write", "Edit"} <= allowed, allowed
+
+
+def _load_app_train(monkeypatch, home: Path):
+    """Import ``scripts/e2e/app_train.py`` against *home* as its ``AQ_E2E_HOME``."""
+    monkeypatch.setenv("AQ_E2E_HOME", str(home))
+    # app_train puts its own directory on sys.path to import ``smoke``; a
+    # copy keeps that insert out of the real sys.path.
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    spec = importlib.util.spec_from_file_location("e2e_app_train", APP_TRAIN)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _pool_routing_facts(profile_id: str, parsed) -> ProfileFacts:
+    """``_routing_static_facts`` for one vault pool profile (``slots`` is ``max_active``).
+
+    Every policy class is taken to have a model on the profile's provider.
+    """
+    config = parsed.config
+    return ProfileFacts(
+        id=profile_id,
+        harness=str(config.get("harness") or ""),
+        provider=str(config.get("harness") or ""),
+        lifecycle="pool",
+        default_class=str(config.get("default_class") or ""),
+        classes=frozenset(ROUTING_POLICY.class_order),
+        slots=int(config.get("max_active") or 1),
+        template=bool(parsed.frontmatter.template),
+        read_only=config.get("read_only") is True,
+    )
+
+
+def test_app_train_delegates_route_to_the_train_worker_pool(
+    generated_profiles, tmp_path, monkeypatch
+):
+    """The router sends the App-mode train's verifier and repair delegates to train-worker.
+
+    Integration repairs and parent verifiers are filed unrouted, with the train
+    policy's class as a hint, and ``play_verifier`` / ``play_repair`` claim
+    them as ``WORKER_PROFILE``.  That works only while train-worker is the
+    router's one worker candidate at ``TRAIN_CLASS``.  A hand-written pool
+    profile qualifies (mandatory-routing spec §4); it needs no ``extends``.
+    Pools are the only candidates in this world: a task-lifecycle profile's
+    slots are its enabled worker agents, and the kit registers none.
+    """
+    app_train = _load_app_train(monkeypatch, tmp_path)
+    app_train.write_profiles(None)
+
+    pools = []
+    for path in sorted((tmp_path / "vault" / "agent-types").glob("*/profile.md")):
+        parsed = parse_profile(path.read_text())
+        if not parsed.errors and parsed.config.get("lifecycle") == "pool":
+            pools.append(_pool_routing_facts(path.parent.name, parsed))
+    by_id = {facts.id: facts for facts in pools}
+    assert worker_classes(by_id[app_train.WORKER_PROFILE]) == {app_train.TRAIN_CLASS}
+    assert worker_classes(by_id[app_train.REVIEWER_PROFILE]) == frozenset()
+    assert [p.id for p in pools if app_train.TRAIN_CLASS in worker_classes(p)] == [
+        app_train.WORKER_PROFILE
+    ]
+
+    snapshot = Snapshot(profiles=tuple(pools))
+    delegates = {
+        "repair": TaskFacts(
+            task_id="repair-op-0", class_hint=app_train.TRAIN_CLASS,
+            created_by_kind="integration_repair",
+        ),
+        "verifier": TaskFacts(task_id="verify-op", class_hint=app_train.TRAIN_CLASS),
+    }
+    for name, task in delegates.items():
+        result = plan_route(task, ROUTING_POLICY, snapshot, policy_sha256=ROUTING_DIGEST)
+        assert result.outcome == "planned", (name, result)
+        assert result.value["profile_id"] == app_train.WORKER_PROFILE, (name, result.value)
+        assert result.value["intelligence_class"] == app_train.TRAIN_CLASS, name
+        assert result.value["classification"] is None, name
 
 
 def test_pool_worker_close_reports_a_no_op_work_outcome(monkeypatch):

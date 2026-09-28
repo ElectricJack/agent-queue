@@ -273,7 +273,10 @@ class ParentCompletion:
         ).first()
         if attempts is None and policy.branchless_parent == "verifier":
             route = policy.parent
-            if not route.verifier_intelligence_class or not route.verifier_profile_id:
+            # Only the class hint is required: the verifier is filed unrouted
+            # and the router writes its profile (``verifier_profile_id`` is
+            # deprecated and ignored).
+            if not route.verifier_intelligence_class:
                 await enqueue_integration_event(
                     conn,
                     event_id=f"parent-verifier-route-missing-{operation['id']}",
@@ -313,8 +316,7 @@ class ParentCompletion:
                             status=TaskStatus.PAUSED,
                             repo_id=checkpoint["repository_id"],
                             branch_name=checkpoint["branch"],
-                            profile_id=route.verifier_profile_id,
-                            intelligence_class=route.verifier_intelligence_class,
+                            class_hint=route.verifier_intelligence_class,
                             dedup_key=f"integration-verifier:{operation['id']}",
                         ),
                         conn=conn,

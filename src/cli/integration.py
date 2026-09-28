@@ -869,9 +869,8 @@ def _render_onboarding(data: dict[str, Any]) -> None:
               show_default=True,
               help="auto: the project's own reviewed pair when shipped, else the shared pair.")
 @click.option("--intelligence-class", default="standard-high", show_default=True,
-              help="Class for primary, verifier and debug repair work.")
-@click.option("--harness", default="codex", show_default=True,
-              help="Harness of the derived <class>-<harness> rung those use.")
+              help="Class hint for primary, verifier and debug repair work; the "
+                   "router assigns their profiles.")
 @click.option("--check", "checks", multiple=True,
               help="Required check name; repeatable. Replaces the derived set.")
 @click.option("--check-version", help="Required-check set version (default: a digest of names).")
@@ -900,7 +899,7 @@ def _render_onboarding(data: dict[str, Any]) -> None:
 @_handle_errors
 def integration_onboard_train(
     ctx, project_id, repo_path, ref, repo_url, default_branch, credential_mode, route,
-    intelligence_class, harness,
+    intelligence_class,
     checks, check_version, github_repository_id, validation_commands, repository_id,
     test_command,
     interval_seconds, write_policy, write_trust_manifest, write_workflow,
@@ -1040,7 +1039,6 @@ def integration_onboard_train(
         root_route=root_route,
         credential_mode=credential_mode,
         intelligence_class=intelligence_class,
-        profile_id=f"{intelligence_class}-{harness}",
         check_names=checks or None,
         check_version=check_version,
         attestation_app_id=app_id,

@@ -161,9 +161,9 @@ class GraphNode:
     #: preference (provider-failover D9).  Meaningless without a profile.
     pin: bool = False
     #: How ``profile`` was chosen: ``document`` (written on the node or in
-    #: ``defaults``), ``fill_in`` (``create_task_graph``'s ``profile_id``) or
-    #: ``class_match`` (resolved from the class).  Decides the task's
-    #: ``provider_intent``; not part of the document, so never serialised.
+    #: ``defaults``) or ``fill_in`` (``create_task_graph``'s ``profile_id``).
+    #: A class is never resolved onto a profile at creation (mandatory
+    #: routing); not part of the document, so never serialised.
     profile_source: str | None = None
     task_type: str | None = None
     #: Present only when the author (wrongly) scoped a node to a project —
@@ -175,10 +175,9 @@ class GraphNode:
         """The ``tasks.provider_intent`` this node's task is written with (D9).
 
         A profile the document or the caller named is ``preferred`` --
-        ``pinned`` with ``pin: true``; one resolved from the class, or none,
-        is ``class_only``.
+        ``pinned`` with ``pin: true``; no profile is ``class_only``.
         """
-        if not self.profile or self.profile_source == "class_match":
+        if not self.profile:
             return "class_only"
         return "pinned" if self.pin else "preferred"
 

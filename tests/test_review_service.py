@@ -383,7 +383,7 @@ async def test_request_changes_keeps_the_gate_open_and_hands_back_feedback(
 
     [(changed_id, decided_revision, feedback)] = hooks.changes
     assert changed_id == review_id
-    assert decided_revision["responder_profile_source"] == "project_default"
+    assert decided_revision["responder_profile_source"] == "router"
     assert feedback == ReviewService.feedback_text(review, "Two things.", 2)
     assert f"aq review show --review-id {review_id} --comments" in feedback
     assert "2 open comment(s)" in feedback
@@ -425,7 +425,7 @@ async def test_response_choice_belongs_to_each_decided_revision(svc, db):
         "standard-high", "standard-high-codex", "explicit",
     )
     assert (second["responder_class"], second["responder_profile"],
-            second["responder_profile_source"]) == (None, None, "project_default")
+            second["responder_profile_source"]) == (None, None, "router")
 
 
 # ── 6. decide on a closed review ──────────────────────────────────────────

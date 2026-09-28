@@ -50,7 +50,12 @@ from typing import Any
 
 import yaml
 
-from src.integration.models import HierarchicalIntegrationPolicy, PlaybookRoute
+from src.integration.models import (
+    DEPRECATED_BOUNDARY_ROUTE_FIELDS,
+    DEPRECATED_REPAIR_ROUTE_FIELDS,
+    HierarchicalIntegrationPolicy,
+    PlaybookRoute,
+)
 
 #: Branch names the train pushes and reads CI from.  Samples, not patterns:
 #: a workflow's push filter must match a real ref of each kind.
@@ -860,9 +865,13 @@ def build_policy(
     parent_route: PlaybookRoute,
     root_route: PlaybookRoute,
     intelligence_class: str,
-    profile_id: str,
 ) -> dict[str, Any]:
-    """The project's hierarchical integration policy, validated by its model."""
+    """The project's hierarchical integration policy, validated by its model.
+
+    Repairs and verifiers name ``intelligence_class`` as a hint only: the
+    router assigns their profiles, so the deprecated ``*_profile_id`` fields
+    are never written (routing spec §5.3).
+    """
     if not checks:
         raise ValueError("a train policy needs at least one required check")
 
@@ -873,15 +882,10 @@ def build_policy(
                 "names": list(checks),
                 "producer_id": producer_id,
             },
-            "repair": {
-                "debug_intelligence_class": intelligence_class,
-                "debug_profile_id": profile_id,
-            },
+            "repair": {"debug_intelligence_class": intelligence_class},
             "route": route.model_dump(mode="json"),
             "primary_intelligence_class": intelligence_class,
-            "primary_profile_id": profile_id,
             "verifier_intelligence_class": intelligence_class,
-            "verifier_profile_id": profile_id,
         }
 
     policy = HierarchicalIntegrationPolicy.model_validate(
@@ -894,7 +898,15 @@ def build_policy(
             "on_main_moved": "rebuild",
         }
     )
-    return policy.model_dump(mode="json")
+    dumped = policy.model_dump(mode="json")
+    # The deprecated profile fields dump as nulls; omit them so the written
+    # policy file never suggests filling them in (a bind would refuse them).
+    for boundary_name in ("parent", "root"):
+        for name in DEPRECATED_BOUNDARY_ROUTE_FIELDS:
+            dumped[boundary_name].pop(name)
+        for name in DEPRECATED_REPAIR_ROUTE_FIELDS:
+            dumped[boundary_name]["repair"].pop(name)
+    return dumped
 
 
 def build_trust_manifest(
@@ -1524,7 +1536,6 @@ def plan_onboarding(
     root_route: PlaybookRoute | None,
     credential_mode: str = "existing-login",
     intelligence_class: str = "standard-high",
-    profile_id: str = "standard-high-codex",
     check_names: Sequence[str] | None = None,
     check_version: str | None = None,
     attestation_app_id: int | None = None,
@@ -1568,7 +1579,6 @@ def plan_onboarding(
             parent_route=parent_route,
             root_route=root_route,
             intelligence_class=intelligence_class,
-            profile_id=profile_id,
         )
     # Status reports the designated repository outside development mode; with no
     # designation the project's own id names the record the binding creates.

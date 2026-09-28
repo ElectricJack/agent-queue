@@ -33,11 +33,10 @@ class CreateTaskRequest:
             same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a
             profile_id; pinning is refused for worker tokens.
         pin (bool | None | Unset): Shorthand for provider_intent=pinned.
-        intelligence_class (None | str | Unset): Execution intelligence class id, e.g. deep-high or standard-high. Use
-            list_intelligence_classes for current IDs. Without profile_id, a class the implicit route (project default,
-            supervisor fallback, caller profile) does not run selects an enabled worker whose default_class matches — pool
-            first, then that route's provider, then Claude — before the task is written; with no match the create fails. The
-            response's profile_source names the rule that picked the profile.
+        intelligence_class (None | str | Unset): Intelligence-class hint for the router, e.g. deep-high or standard-
+            high. Use list_intelligence_classes for current IDs. The task is stored unrouted with this class as its
+            class_hint; the project's routing playbook picks the profile and the final class within its policy. Creation
+            never picks a profile from the class. An unknown class is refused.
         preferred_workspace_id (None | str | Unset): Workspace ID to prefer when assigning this task to an agent. Use
             this when the task must run in a specific workspace (e.g. one that contains a merge conflict). Get the ID from
             find_merge_conflict_workspaces or list_workspaces.

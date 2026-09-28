@@ -176,10 +176,11 @@ On the shipped ladder Fable is `deep-high`'s `anthropic` slice
 (`astra-high-codex`). An install whose `deep-high` OpenAI slice is
 `gpt-6-astra` has Astra on `deep-high-codex`; the commands below assume that.
 
-**Family diversity is observed, not configured.** Dispatch has no `--pin`
-(the reviewer task is `preferred`); a revision task is `preferred` with
-`--responder-profile`, `class_only` without; an author task's `--pin` does not
-carry over to later tasks. Failover inside a class crosses families: an
+**Family diversity is observed, not configured.** Dispatch names no profile:
+each reviewer excludes the provider the author revision ran on and the router
+picks among the other families; a revision task is unrouted with the
+`--responder-class` hint; an author task's `--pin` does not carry over to
+later tasks. Failover inside a class crosses families: an
 Anthropic outage can move `deep-high-claude` work to `deep-high-codex`. So for
 every writing and reviewing task, check what actually ran:
 
@@ -215,7 +216,7 @@ record it so, and never claim coverage you did not observe.
    later rounds keep the default `--with-comments`.
 
    ```bash
-   aq review dispatch --review-id <id> --revision <n> --to deep-high-codex --no-comments --focus "Verify claims against code; label each finding [blocking] or [nit]"
+   aq review dispatch --review-id <id> --revision <n> --class deep-high --no-comments --focus "Verify claims against code; label each finding [blocking] or [nit]"
    ```
 
 4. Wait for the reviewer task to end (`aq task show <task-id>`). A failed or
@@ -230,7 +231,7 @@ record it so, and never claim coverage you did not observe.
    the responder class and profile:
 
    ```bash
-   aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high --responder-profile deep-high-claude
+   aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high
    ```
 
    After the revision task resubmits, check its attribution and record every
@@ -269,8 +270,9 @@ that pretends otherwise; contracting the verbs is a separate feature.
 | `not_your_task` | Resubmitting without holding the revision task, or acting on another project's review. |
 | `not_dispatched` / `wrong_revision` | Commenting without holding the dispatch task, or on another revision. |
 | `anchor_required` | A dispatched reviewer's comment had neither `--quote` nor `--heading-path`. |
-| `duplicate_dispatch` | That profile already has this revision. |
+| `duplicate_dispatch` | This revision was already dispatched; `--force` dispatches more. |
+| `routing.choice_forbidden` | `--to <profile>` on dispatch or a responder profile on a decision; the router routes both. |
 | `operator_only` | Dispatch from a session that is neither the local operator nor elevated. |
-| `invalid_responder` / `invalid_responder_class` / `invalid_responder_profile` | `--responder-profile` without `--responder-class`, responder options on an approval, or a class or worker that does not exist. |
+| `invalid_responder` / `invalid_responder_class` | Responder options on an approval, or a class that does not exist. |
 | `stale_revision` / `not_in_review` | The review moved or is not awaiting a decision; re-read it. |
 | `vault_diverged` | The vault file was edited outside the review. |

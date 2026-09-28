@@ -24,6 +24,7 @@ from src.database.tables import (
     tasks,
 )
 from src.models import Task, TaskStatus
+from src.routing.sources import ROLE
 from src.task_names import fresh_root_id
 
 TRIAGE_PROFILE = "triage"
@@ -131,8 +132,10 @@ async def ensure_triage_task(
     prevents starting the canonical row concurrently. Manual stops, holds,
     claims and live sessions are never overridden.
 
-    ``intelligence_class`` is the caller's explicit route for the canonical
-    task and applies only when this call creates it; waking an existing row
+    The canonical task is a role task (``route_source='role'``) and runs the
+    ``triage`` profile's own class.  ``intelligence_class`` is the caller's
+    class hint, and the class used only when the profile names none; it
+    applies only when this call creates the row: waking an existing row
     leaves its route alone.
     """
     transition = None
@@ -228,11 +231,14 @@ async def ensure_triage_task(
             await _preserve_close_report(conn, canonical)
             response["restarted"] = True
         else:
-            if (
+            triage_profile = (
                 await conn.execute(
-                    select(agent_profiles.c.id).where(agent_profiles.c.id == TRIAGE_PROFILE)
+                    select(agent_profiles.c.id, agent_profiles.c.default_class).where(
+                        agent_profiles.c.id == TRIAGE_PROFILE
+                    )
                 )
-            ).scalar() is None:
+            ).first()
+            if triage_profile is None:
                 return {"success": False, "error": "Profile 'triage' not found"}
             task_id = await fresh_root_id(conn)
             await db.create_task(
@@ -245,7 +251,14 @@ async def ensure_triage_task(
                     status=TaskStatus.READY,
                     profile_id=TRIAGE_PROFILE,
                     dedup_key=TRIAGE_KEY,
-                    intelligence_class=intelligence_class,
+                    # A role task keeps its stage profile and runs the role's
+                    # own class; a caller's class is kept as the hint
+                    # (mandatory-routing spec §4, D3).
+                    intelligence_class=(
+                        (triage_profile.default_class or "").strip() or intelligence_class
+                    ),
+                    class_hint=intelligence_class,
+                    route_source=ROLE,
                 ),
                 conn=conn,
             )

@@ -7,7 +7,6 @@ import re
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import fields
 from typing import Any
 
 from sqlalchemy import and_, insert, select, update
@@ -38,6 +37,27 @@ from src.models import RepoConfig, Task, TaskStatus
 from src.task_names import child_task_id, fresh_root_id
 
 _OID = re.compile(r"^[0-9a-f]{40}$")
+#: The ``Task`` fields a child filing may supply (``_build_child``): what the
+#: work is, never how it is routed (mandatory-routing spec §5.3).
+_CHILD_FIELDS = frozenset({
+    "title",
+    "description",
+    "priority",
+    "task_type",
+    "class_hint",
+    "deliverables",
+    "attachments",
+    "skip_verification",
+    "verification_type",
+    "max_retries",
+    "integration_mode",
+    "workspace_mode",
+    "preferred_workspace_id",
+    "affinity_agent_id",
+    "affinity_reason",
+    "workflow_id",
+    "dedup_key",
+})
 _ACTIVE_BATCH_STATES = (
     "sealing",
     "sealed",
@@ -1461,21 +1481,20 @@ class HierarchyIntegration:
 
     @staticmethod
     def _build_child(parent: dict, repository_id: str, task_id: str, values: dict) -> Task:
-        allowed = {field.name for field in fields(Task)} - {
-            "id",
-            "project_id",
-            "repo_id",
-            "parent_task_id",
-            "branch_name",
-            "status",
-        }
-        unknown = set(values) - allowed - {"reason"}
+        # A child filing names its work, never its route (mandatory-routing
+        # spec §5.3): ``profile_id``, ``route_source``, ``route`` and
+        # ``provider_intent`` are refused like any other field outside the
+        # whitelist, and an ``intelligence_class`` is the child's class hint.
+        # The project's router writes the route.
+        unknown = set(values) - _CHILD_FIELDS - {"reason", "intelligence_class"}
         if unknown:
             raise HierarchyError("invalid", "unknown child fields: " + ", ".join(sorted(unknown)))
         title = str(values.get("title") or "").strip()
         if not title:
             raise HierarchyError("invalid", "child title is required")
-        supplied = {key: value for key, value in values.items() if key in allowed}
+        supplied = {key: value for key, value in values.items() if key in _CHILD_FIELDS}
+        if values.get("intelligence_class") and not supplied.get("class_hint"):
+            supplied["class_hint"] = values["intelligence_class"]
         supplied["title"] = title
         supplied.setdefault("description", title)
         return Task(
