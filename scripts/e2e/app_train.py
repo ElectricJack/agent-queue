@@ -1231,9 +1231,8 @@ def _install_review_role_playbook(pid: str, scenario: str, leaf_title: str) -> s
     return playbook_id
 
 
-def _file_review_role(pid: str, scenario: str, epic_id: str, leaf_id: str,
-                      playbook_id: str) -> str:
-    """Read the service-dispatched role task, falling back on pre-Task-5 builds."""
+def _file_review_role(scenario: str, epic_id: str, leaf_id: str) -> str:
+    """Wait for the daemon's playbook dispatch to file the reviewer role."""
     def reviewer_child() -> str | None:
         response = operator("task", "children", "--task-id", epic_id)
         children = response.get("children", []) if isinstance(response, dict) else response
@@ -1249,24 +1248,8 @@ def _file_review_role(pid: str, scenario: str, epic_id: str, leaf_id: str,
                 operator("task", "add-dependency", "--task-id", review_id,
                          "--depends-on", leaf_id, "--dep-type", kind)
 
-    existing = reviewer_child()
-    if existing:
-        ensure_edges(existing)
-        return existing
-    try:
-        created = wait_for(reviewer_child, what=f"{scenario} reviewer role task",
-                           timeout=10, interval=1)
-    except Failure:
-        # Before mandatory routing's Task 5, class-matched graph nodes have
-        # no routing gate and create_graph emits no task.created event. A
-        # manual playbook run works on that older build; Task 5 uses the
-        # service-dispatched path above and will refuse a local role filing.
-        run = operator("playbook", "run", "--playbook-id", playbook_id,
-                       "--event", json.dumps({"type": "task.created", "task_id": leaf_id,
-                                              "project_id": pid, "parent_task_id": epic_id}))
-        check(run.get("status") == "completed" and not run.get("failed_steps"),
-              f"review role playbook failed: {run}")
-        created = reviewer_child()
+    created = wait_for(reviewer_child, what=f"{scenario} reviewer role task",
+                       timeout=60, interval=1)
     check(created is not None, f"playbook created no reviewer child of {epic_id}")
     ensure_edges(created)
     return created
@@ -1303,8 +1286,8 @@ def create_epic(args) -> None:
         "nodes": [{"key": "leaf", "title": f"{args.scenario}: {args.title}",
                    "description": f"Change the fixture: {sorted(changes)}"}],
     }
-    playbook_id = _install_review_role_playbook(
-        pid, args.scenario, f"{args.scenario}: {sc.get('title', args.title)}")
+    _install_review_role_playbook(pid, args.scenario,
+                                  f"{args.scenario}: {sc.get('title', args.title)}")
     if not sc.get("epic_id"):
         path = HOME / f"epic-{args.scenario.lower()}.yaml"
         path.write_text(yaml.safe_dump(graph, sort_keys=False))
@@ -1318,8 +1301,7 @@ def create_epic(args) -> None:
         sc.update(epic_id=ids["parent"], leaf_id=ids["leaf"], title=args.title,
                   changes=changes)
         save_state(state)
-    review_id = _file_review_role(pid, args.scenario, sc["epic_id"], sc["leaf_id"],
-                                  playbook_id)
+    review_id = _file_review_role(args.scenario, sc["epic_id"], sc["leaf_id"])
     sc["review_id"] = review_id
     save_state(state)
     # Task ids are per database: an earlier scratch database may have left
