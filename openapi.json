@@ -11867,8 +11867,8 @@
         "tags": [
           "review"
         ],
-        "summary": "Send an open review revision to selected profiles for adversarial review without moving its decision gate.",
-        "description": "Send an open review revision to selected profiles for adversarial review without moving its decision gate.",
+        "summary": "Send an open review revision to adversarial reviewers without moving its decision gate. Files count reviewer tasks with an intelligence-class hint; the project's router picks each reviewer's profile, excluding the provider the author revision ran on. A dispatch never names a profile.",
+        "description": "Send an open review revision to adversarial reviewers without moving its decision gate. Files count reviewer tasks with an intelligence-class hint; the project's router picks each reviewer's profile, excluding the provider the author revision ran on. A dispatch never names a profile.",
         "operationId": "review_dispatch",
         "requestBody": {
           "content": {
@@ -23329,7 +23329,7 @@
               }
             ],
             "title": "Intelligence Class",
-            "description": "Execution intelligence class id, e.g. deep-high or standard-high. Use list_intelligence_classes for current IDs. Without profile_id, a class the implicit route (project default, supervisor fallback, caller profile) does not run selects an enabled worker whose default_class matches \u2014 pool first, then that route's provider, then Claude \u2014 before the task is written; with no match the create fails. The response's profile_source names the rule that picked the profile."
+            "description": "Intelligence-class hint for the router, e.g. deep-high or standard-high. Use list_intelligence_classes for current IDs. The task is stored unrouted with this class as its class_hint; the project's routing playbook picks the profile and the final class within its policy. Creation never picks a profile from the class. An unknown class is refused."
           },
           "preferred_workspace_id": {
             "anyOf": [
@@ -23608,6 +23608,28 @@
               }
             ],
             "title": "Intelligence Class"
+          },
+          "route_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route Source"
+          },
+          "class_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Class Hint"
           },
           "provider_intent": {
             "anyOf": [
@@ -26608,7 +26630,7 @@
               }
             ],
             "title": "Intelligence Class",
-            "description": "Vault intelligence class for the task on create. A pinned profile is not a route on its own: without an explicit class the task waits for the assignment playbook to choose one. Both apply only when this call creates the task."
+            "description": "Intelligence-class hint for the task on create: the task is stored unrouted and the project's router picks its profile and class. A role profile (triage, spec-ingest, reviewer, final-reviewer) named by a playbook runs the role's own class instead. Applies only when this call creates the task."
           },
           "parent_key": {
             "anyOf": [
@@ -51053,19 +51075,7 @@
               }
             ],
             "title": "Responder Class",
-            "description": "Who revises after request_changes or reject: intelligence class for the new revision task."
-          },
-          "responder_profile": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Responder Profile",
-            "description": "Optional worker profile for that revision class."
+            "description": "After request_changes or reject: intelligence-class hint for the new revision task, which the project's router routes. A responder profile is not accepted."
           }
         },
         "type": "object",
@@ -51169,11 +51179,29 @@
             "title": "Review Id",
             "description": ""
           },
-          "to": {
-            "items": {},
-            "type": "array",
-            "title": "To",
-            "description": ""
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count",
+            "description": "Number of reviewer tasks (default 1)."
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class",
+            "description": "Class hint for the reviewers (default deep-high)."
           },
           "revision": {
             "anyOf": [
@@ -51226,8 +51254,7 @@
         },
         "type": "object",
         "required": [
-          "review_id",
-          "to"
+          "review_id"
         ],
         "title": "ReviewDispatchRequest"
       },

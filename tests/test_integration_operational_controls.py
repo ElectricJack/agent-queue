@@ -50,6 +50,7 @@ from src.integration.models import (
     PlaybookRoute,
     RepairPolicy,
     RequiredCheckSet,
+    deprecated_route_fields,
 )
 from src.integration.scheduler import IntegrationScheduler
 from src.integration.status import IntegrationStatusService
@@ -129,15 +130,20 @@ def _policy(
     scope_identifier: str = "p",
     parent_artifact: ArtifactSnapshot | None = None,
     root_artifact: ArtifactSnapshot | None = None,
+    legacy_profiles: bool = False,
 ) -> dict:
+    """A policy; ``legacy_profiles`` adds the deprecated profile fields a
+    pre-routing policy stored (still valid to read, refused as a new write)."""
+
     def boundary(artifact: ArtifactSnapshot) -> IntegrationBoundaryPolicy:
+        verifier = branchless_parent == "verifier"
         return IntegrationBoundaryPolicy(
             required_checks=RequiredCheckSet(
                 version="checks-v1", names=("Tests (default)",), producer_id="1234"
             ),
             repair=RepairPolicy(
                 debug_intelligence_class="deep",
-                debug_profile_id="debugger",
+                debug_profile_id="debugger" if legacy_profiles else None,
             ),
             route=PlaybookRoute(
                 playbook_id=artifact.playbook_id,
@@ -147,11 +153,9 @@ def _policy(
                 artifact=artifact,
             ),
             primary_intelligence_class="standard",
-            primary_profile_id="worker",
-            verifier_intelligence_class=(
-                "standard" if branchless_parent == "verifier" else None
-            ),
-            verifier_profile_id="verifier" if branchless_parent == "verifier" else None,
+            primary_profile_id="worker" if legacy_profiles else None,
+            verifier_intelligence_class="standard" if verifier else None,
+            verifier_profile_id="verifier" if verifier and legacy_profiles else None,
         )
 
     parent_artifact = parent_artifact or _artifact()
@@ -198,7 +202,8 @@ async def db(tmp_path, reuse_database):
     await database.update_project(
         "p",
         integration_repository_id="repo",
-        hierarchical_integration_policy=_policy(),
+        # Stored before mandatory routing: enable's preflight must accept it.
+        hierarchical_integration_policy=_policy(legacy_profiles=True),
         integration_mode="pull_request",
     )
     yield database
@@ -739,6 +744,72 @@ async def test_configure_keeps_exact_project_route_override(db):
         "activation_id": None,
         "artifact": _artifact().model_dump(mode="json"),
     }
+
+
+async def test_configure_refuses_deprecated_profile_fields(db):
+    raw = _policy(legacy_profiles=True)
+    stored = HierarchicalIntegrationPolicy.model_validate(raw)
+    # A stored pre-routing snapshot still validates and re-dumps unchanged, so
+    # the repair and scheduler snapshot comparisons keep matching it.
+    assert stored.model_dump(mode="json") == raw
+    assert deprecated_route_fields(stored) == [
+        "parent.primary_profile_id",
+        "parent.verifier_profile_id",
+        "parent.repair.debug_profile_id",
+        "root.primary_profile_id",
+        "root.verifier_profile_id",
+        "root.repair.debug_profile_id",
+    ]
+    assert deprecated_route_fields(HierarchicalIntegrationPolicy.model_validate(_policy())) == []
+
+    with pytest.raises(ValueError, match="deprecated") as refusal:
+        await IntegrationControlService(db).configure(
+            "p",
+            updates={"hierarchical_integration_policy": _policy(legacy_profiles=True)},
+            expected_generation=0,
+            reason="bind a pre-routing policy",
+            operator_id="local:operator",
+        )
+    assert "parent.primary_profile_id" in str(refusal.value)
+    assert "root.repair.debug_profile_id" in str(refusal.value)
+    project = await db.get_project("p")
+    assert project.hierarchical_integration_generation == 0
+
+    # One field alone is enough to refuse the write.
+    single = _policy()
+    single["root"]["verifier_profile_id"] = "verifier"
+    with pytest.raises(ValueError, match="root.verifier_profile_id"):
+        await IntegrationControlService(db).configure(
+            "p",
+            updates={"hierarchical_integration_policy": single},
+            expected_generation=0,
+            reason="bind a pre-routing policy",
+            operator_id="local:operator",
+        )
+
+
+async def test_stored_pre_routing_policy_still_enables(db):
+    """A stored policy naming the deprecated profiles passes enable's preflight.
+
+    The ``db`` fixture binds ``_policy(legacy_profiles=True)`` directly; no
+    profile named in it exists, and only the class hints are required.
+    """
+    project = await db.get_project("p")
+    assert project.hierarchical_integration_policy["parent"]["primary_profile_id"] == "worker"
+    assert await db.get_profile("worker") is None
+
+    service = IntegrationControlService(db, external_preflight=_external_ready)
+    preflight = await service.preflight("p")
+    assert preflight["blockers"] == []
+    enabled = await service.enable(
+        "p",
+        mode="observe",
+        expected_generation=0,
+        reason="observe a stored pre-routing policy",
+        operator_id="local:operator",
+    )
+
+    assert enabled["outcome"] == "enabled", enabled
 
 
 async def test_configure_rejects_project_route_for_another_project(db):

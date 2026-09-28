@@ -414,7 +414,7 @@ class ReviewService:
                     responder={
                         "responder_class": responder_class,
                         "responder_profile": responder_profile,
-                        "responder_profile_source": responder_profile_source or "project_default",
+                        "responder_profile_source": responder_profile_source or "router",
                     },
                     conn=conn,
                 )
@@ -694,9 +694,13 @@ class ReviewService:
             task = await self.db.get_task(dispatch["task_id"])
             if task is not None:
                 dispatch["task_state"] = task.status.value
+                # The router picks a dispatched reviewer's profile after the
+                # dispatch is written (mandatory-routing spec §5.3).
+                dispatch["routed_profile_id"] = task.profile_id
             else:
                 archived = await self.db.get_archived_task(dispatch["task_id"])
                 dispatch["task_state"] = archived["status"] if archived else "missing"
+                dispatch["routed_profile_id"] = archived.get("profile_id") if archived else None
         out["dispatches"] = dispatches
         if comments:
             out["comments"] = await self.db.list_review_comments(review_id)

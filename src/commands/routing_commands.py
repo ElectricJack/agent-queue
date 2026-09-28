@@ -453,12 +453,11 @@ class RoutingCommandsMixin:
         task_type = getattr(task.task_type, "value", task.task_type)
         class_hint = (getattr(task, "class_hint", None) or "").strip() or None
         if class_hint is None and (getattr(task, "route_source", None) or UNROUTED) == UNROUTED:
-            # Transitional, until creation records the filer's class as
-            # ``class_hint`` (mandatory routing Task 4): a worker filing with
-            # ``--intelligence-class`` and no profile is stored unrouted with
-            # the class in ``intelligence_class``.  The superseded router
-            # honoured it; so does this one, as the migration's backfill did
-            # for every row that existed before the column.
+            # Rows filed before creation recorded the filer's class as
+            # ``class_hint`` (mandatory routing Task 4) are unrouted with the
+            # class in ``intelligence_class``.  The superseded router honoured
+            # it; so does this one, as the migration's backfill did for every
+            # row that existed before the column.
             class_hint = (task.intelligence_class or "").strip() or None
         return TaskFacts(
             task_id=task.id,

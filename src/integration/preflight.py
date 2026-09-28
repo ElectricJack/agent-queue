@@ -132,24 +132,19 @@ async def daemon_functional_preflight(
 
     if policy is not None:
         class_ids = set(getattr(orchestrator, "intelligence_classes", None) or ())
-        profile_ids = {profile.id for profile in await orchestrator.db.list_profiles()}
         store = getattr(runtime, "_store", None)
         for boundary in (policy.parent, policy.root):
+            # Repairs and verifiers are filed with class hints and routed later,
+            # so only the classes gate the boundary; the deprecated
+            # ``*_profile_id`` fields are ignored.
             required_classes = {
                 boundary.primary_intelligence_class,
                 boundary.repair.debug_intelligence_class,
             }
-            required_profiles = {
-                boundary.primary_profile_id,
-                boundary.repair.debug_profile_id,
-            }
             if policy.branchless_parent == "verifier":
                 required_classes.add(boundary.verifier_intelligence_class)
-                required_profiles.add(boundary.verifier_profile_id)
             if None in required_classes or not required_classes.issubset(class_ids):
                 blockers.append("intelligence_route_unavailable")
-            if None in required_profiles or not required_profiles.issubset(profile_ids):
-                blockers.append("profile_route_unavailable")
             try:
                 definition = store.load(boundary.route.artifact.artifact_sha256)
             except Exception:

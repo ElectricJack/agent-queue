@@ -27,6 +27,8 @@ class CreateTaskResponse:
         profile_id (None | str | Unset):
         profile_source (None | str | Unset):
         intelligence_class (None | str | Unset):
+        route_source (None | str | Unset):
+        class_hint (None | str | Unset):
         provider_intent (None | str | Unset):
         preferred_workspace_id (None | str | Unset):
         attachments (list[str] | None | Unset):
@@ -49,6 +51,8 @@ class CreateTaskResponse:
     profile_id: None | str | Unset = UNSET
     profile_source: None | str | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
+    route_source: None | str | Unset = UNSET
+    class_hint: None | str | Unset = UNSET
     provider_intent: None | str | Unset = UNSET
     preferred_workspace_id: None | str | Unset = UNSET
     attachments: list[str] | None | Unset = UNSET
@@ -99,6 +103,18 @@ class CreateTaskResponse:
             intelligence_class = UNSET
         else:
             intelligence_class = self.intelligence_class
+
+        route_source: None | str | Unset
+        if isinstance(self.route_source, Unset):
+            route_source = UNSET
+        else:
+            route_source = self.route_source
+
+        class_hint: None | str | Unset
+        if isinstance(self.class_hint, Unset):
+            class_hint = UNSET
+        else:
+            class_hint = self.class_hint
 
         provider_intent: None | str | Unset
         if isinstance(self.provider_intent, Unset):
@@ -191,6 +207,10 @@ class CreateTaskResponse:
             field_dict["profile_source"] = profile_source
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
+        if route_source is not UNSET:
+            field_dict["route_source"] = route_source
+        if class_hint is not UNSET:
+            field_dict["class_hint"] = class_hint
         if provider_intent is not UNSET:
             field_dict["provider_intent"] = provider_intent
         if preferred_workspace_id is not UNSET:
@@ -273,6 +293,24 @@ class CreateTaskResponse:
             return cast(None | str | Unset, data)
 
         intelligence_class = _parse_intelligence_class(d.pop("intelligence_class", UNSET))
+
+        def _parse_route_source(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        route_source = _parse_route_source(d.pop("route_source", UNSET))
+
+        def _parse_class_hint(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        class_hint = _parse_class_hint(d.pop("class_hint", UNSET))
 
         def _parse_provider_intent(data: object) -> None | str | Unset:
             if data is None:
@@ -392,6 +430,8 @@ class CreateTaskResponse:
             profile_id=profile_id,
             profile_source=profile_source,
             intelligence_class=intelligence_class,
+            route_source=route_source,
+            class_hint=class_hint,
             provider_intent=provider_intent,
             preferred_workspace_id=preferred_workspace_id,
             attachments=attachments,

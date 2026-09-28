@@ -1607,12 +1607,6 @@ class IntegrationCommandsMixin:
             return service
         from src.integration.repair import RepairService
 
-        async def route_valid(intelligence_class, profile_id):
-            profile = await self.db.get_profile(profile_id) if profile_id else None
-            if profile_id and profile is None:
-                return False
-            return self._validate_routing_class(intelligence_class, profile) is None
-
         return RepairService(
             self.db,
             confirm_handoff=getattr(
@@ -1623,7 +1617,6 @@ class IntegrationCommandsMixin:
                 "aconfirm_integration_owner_stopped_for_repair",
                 None,
             ),
-            route_validator=route_valid,
         )
 
     async def _integration_operation_project_id(self, operation: dict) -> str | None:

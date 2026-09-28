@@ -37,9 +37,9 @@ const response = {
   vault_state: "ok",
   response_route: {
     kind: "new_task",
-    summary: "Request changes → new revision task on fast-high (project_default); Approve → sent to the supervisor.",
+    summary: "Request changes → new revision task, routed by the project's router (no class hint); Approve → sent to the supervisor.",
     class_summaries: {
-      "standard-high": "Request changes → new revision task on standard-high (explicit); Approve → sent to the supervisor.",
+      "standard-high": "Request changes → new revision task, routed by the project's router (class hint standard-high); Approve → sent to the supervisor.",
     },
   },
   comments: [],
@@ -121,21 +121,19 @@ describe("review pane", () => {
 
   it("submits the selected response route with requested changes", async () => {
     renderPane();
-    expect(screen.getByLabelText("Response route")).toHaveTextContent("new revision task on fast-high (project_default)");
+    expect(screen.getByLabelText("Response route")).toHaveTextContent("routed by the project's router (no class hint)");
     expect(screen.queryByLabelText("Revision intelligence class")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
     expect(screen.getByText("Who revises this after your feedback?")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("Revision intelligence class"), {
       target: { value: "standard-high" },
     });
-    expect(screen.getByLabelText("Response route")).toHaveTextContent("new revision task on standard-high (explicit)");
-    fireEvent.change(screen.getByLabelText("Revision profile"), {
-      target: { value: "standard-high-codex" },
-    });
+    expect(screen.getByLabelText("Response route")).toHaveTextContent("(class hint standard-high)");
+    expect(screen.queryByLabelText("Revision profile")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Send changes request" }));
     await waitFor(() => expect(hooks.decide.mutateAsync).toHaveBeenCalledWith({
       review_id: "rev-x", revision: 2, decision: "request_changes",
-      responder_class: "standard-high", responder_profile: "standard-high-codex",
+      responder_class: "standard-high",
     }));
   });
 

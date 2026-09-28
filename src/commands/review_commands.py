@@ -23,6 +23,16 @@ def _error(code: str, message: str) -> dict[str, Any]:
     return {"success": False, "error_code": code, "error": message}
 
 
+#: ``aq review dispatch`` defaults (mandatory-routing spec §5.3): one reviewer
+#: on a deep-high class hint.  The router picks the profile, and the
+#: dispatch's ``exclude_providers`` constraint keeps it off the author's family.
+DISPATCH_DEFAULT_CLASS = "deep-high"
+DISPATCH_MAX_COUNT = 10
+#: The ``created_by_kind`` of a dispatched reviewer task: the routing policy's
+#: ``origins.review_dispatch`` rule matches it.
+REVIEW_DISPATCH_ORIGIN = "review_dispatch"
+
+
 #: The ``review_submit`` arguments that attach a playbook to a revision.
 _PLAYBOOK_ARGS = ("playbook_id", "semantic_body", "semantic_body_path", "activate_on_approval")
 
@@ -506,71 +516,36 @@ class ReviewCommandsMixin:
             return _error(error.code, error.message)
 
     async def _review_response_route(self, review: dict, revision: dict) -> dict:
-        """Preview the revision task route and the approval recipient."""
-        selected_class = revision.get("responder_class")
-        selected_profile = revision.get("responder_profile")
-        route = {
-            "kind": "new_task",
-            "summary": "",
-            "class_id": None,
-            "profile_id": None,
-            "source": None,
-            "selected_class": selected_class,
-            "selected_profile": selected_profile,
-            "class_summaries": {},
-        }
-        project = await self.db.get_project(review["project_id"])
-        implicit, error = await self._supervisor_default_worker_profile(project)
-        if selected_profile and (error or implicit is None):
-            profile = await self.db.get_profile(selected_profile)
-            if profile is not None:
-                class_id = selected_class or profile.default_class
-                route.update(profile_id=profile.id, class_id=class_id, source="explicit")
-                route["summary"] = (
-                    f"Request changes → new revision task on {class_id} (explicit); "
-                    "Approve → sent to the supervisor."
-                )
-                return route
-        if error or implicit is None:
-            route["summary"] = f"Request changes → worker route unavailable: {error or 'missing project'}. Approve → sent to the supervisor."
-            return route
+        """Preview the revision task route and the approval recipient.
 
-        def describe(class_id: str | None, source: str) -> str:
-            label = class_id or "class unspecified"
+        A revision task is filed unrouted with the decision's class as its
+        hint, and the project's router picks the profile (mandatory-routing
+        spec §5.3); so the preview names the hint, never a profile.
+        """
+        selected_class = revision.get("responder_class")
+
+        def describe(class_id: str | None) -> str:
+            hint = f"class hint {class_id}" if class_id else "no class hint"
             return (
-                f"Request changes → new revision task on {label} ({source}); "
-                "Approve → sent to the supervisor."
+                f"Request changes → new revision task, routed by the project's router "
+                f"({hint}); Approve → sent to the supervisor."
             )
 
-        route["class_summaries"] = {}
         from src.intelligence_classes import load_intelligence_classes
 
-        for class_id in load_intelligence_classes(self.config.data_dir):
-            _, match_error = await self._resolve_class_route(class_id, implicit)
-            if match_error:
-                continue
-            route["class_summaries"][class_id] = describe(class_id, "explicit")
-
-        if selected_profile:
-            profile = await self.db.get_profile(selected_profile)
-            if profile is None:
-                route["summary"] = f"Request changes → selected revision profile {selected_profile} is unavailable. Approve → sent to the supervisor."
-                return route
-            source = "explicit"
-        elif selected_class:
-            matched, match_error = await self._resolve_class_route(selected_class, implicit)
-            if match_error:
-                route["summary"] = f"Request changes → selected revision class {selected_class}: {match_error}. Approve → sent to the supervisor."
-                return route
-            profile = matched or implicit
-            source = "explicit"
-        else:
-            profile = implicit
-            source = "project_default"
-        class_id = selected_class or profile.default_class
-        route.update(profile_id=profile.id, class_id=class_id, source=source)
-        route["summary"] = describe(class_id, source)
-        return route
+        return {
+            "kind": "new_task",
+            "summary": describe(selected_class),
+            "class_id": selected_class,
+            "profile_id": None,
+            "source": "router",
+            "selected_class": selected_class,
+            "selected_profile": None,
+            "class_summaries": {
+                class_id: describe(class_id)
+                for class_id in load_intelligence_classes(self.config.data_dir)
+            },
+        }
 
     async def _cmd_review_list(self, args: dict) -> dict:
         principal = current_principal() or TRUSTED_LOCAL
@@ -668,24 +643,22 @@ class ReviewCommandsMixin:
         if decision not in {"approve", "request_changes", "reject"}:
             return _error("not_in_review", "decision must be approve, request_changes or reject")
         responder_class = args.get("responder_class")
-        responder_profile = args.get("responder_profile")
+        if args.get("responder_profile") is not None:
+            # The revision task is routed by the project's router; a decision
+            # may give it a class hint, never a profile (mandatory-routing §5.3).
+            return _error(
+                "routing.choice_forbidden",
+                "responder_profile is not accepted: the revision task is routed by the "
+                "project's router; pass responder_class as its class hint",
+            )
         if decision in {"request_changes", "reject"} and responder_class is None:
             from src.commands.github_issue_commands import INVESTIGATION_KEY
 
             author = await self.db.get_task(review.get("author_task_id")) if review.get("author_task_id") else None
             if author is not None and (author.dedup_key or "").startswith(INVESTIGATION_KEY):
                 responder_class = "standard-high"
-        if decision == "approve" and (responder_class is not None or responder_profile is not None):
+        if decision == "approve" and responder_class is not None:
             return _error("invalid_responder", "responder routing applies only to feedback decisions")
-        if responder_profile is not None and responder_class is None:
-            return _error("invalid_responder", "responder_profile requires responder_class")
-        profile_source = "project_default"
-        implicit = None
-        if decision in {"request_changes", "reject"} and responder_profile is None:
-            project = await self.db.get_project(review["project_id"])
-            implicit, route_error = await self._supervisor_default_worker_profile(project)
-            if route_error:
-                return _error("invalid_responder_class", route_error)
         if responder_class is not None:
             from src.intelligence_classes import load_intelligence_classes
 
@@ -701,37 +674,6 @@ class ReviewCommandsMixin:
                     "invalid_responder_class",
                     f"{class_error}; {available}",
                 )
-            if responder_profile is not None:
-                profile = await self.db.get_profile(responder_profile)
-                eligible = {row.id for row in await self._eligible_worker_profiles()}
-                if profile is None or profile.id not in eligible:
-                    return _error(
-                        "invalid_responder_profile",
-                        f"responder profile '{responder_profile}' is not an enabled worker profile",
-                    )
-                if not self._profile_runs_class(profile, responder_class):
-                    return _error(
-                        "invalid_responder_profile",
-                        f"responder profile '{responder_profile}' runs '{profile.default_class}', "
-                        f"not '{responder_class}'",
-                    )
-                if class_error := self._validate_routing_class(responder_class, profile):
-                    return _error("invalid_responder_profile", class_error)
-                profile_source = "explicit"
-            else:
-                routed, route_error = await self._resolve_class_route(responder_class, implicit)
-                if route_error:
-                    return _error("invalid_responder_class", route_error)
-                profile_source = "explicit"
-        elif decision in {"request_changes", "reject"} and (
-            implicit is None or not implicit.default_class
-            or (class_error := self._validate_routing_class(implicit.default_class, implicit))
-        ):
-            return _error(
-                "invalid_responder_class",
-                class_error if implicit is not None and implicit.default_class else
-                "project default worker profile has no intelligence class",
-            )
         try:
             result = await self._review_service().decide(
                     review_id=review["id"],
@@ -740,8 +682,8 @@ class ReviewCommandsMixin:
                     note=str(args.get("note") or ""),
                     decided_by=label,
                     responder_class=responder_class,
-                    responder_profile=responder_profile,
-                    responder_profile_source=profile_source,
+                    responder_profile=None,
+                    responder_profile_source="router",
                 )
             playbook = None
             if decision == "approve":
@@ -832,44 +774,84 @@ class ReviewCommandsMixin:
         dispatch = await self.db.get_review_dispatch_for_task(task.id)
         return dispatch if dispatch is not None and dispatch["review_id"] == review_id else None
 
+    async def _review_author_provider(
+        self, review: dict, revision: dict | None
+    ) -> str | None:
+        """The provider the author revision was written on (spec §5.3, D5).
+
+        The observed attempt is the latest session attempt of the task that
+        submitted the revision that started no later than the submission (its
+        latest attempt otherwise), falling back to the review's author task.
+        The answer is the availability key the router's candidates carry
+        (``harness.base or harness.id``).  ``None`` when no attempt was
+        observed, e.g. a revision the operator submitted by hand.
+        """
+        from src.providers.availability import provider_key
+
+        task_ids: list[str] = []
+        for task_id in ((revision or {}).get("submitted_task_id"), review.get("author_task_id")):
+            if task_id and task_id not in task_ids:
+                task_ids.append(task_id)
+        submitted_at = (revision or {}).get("submitted_at")
+        for task_id in task_ids:
+            attempts = await self.db.list_task_session_attempts(task_id)
+            if not attempts:
+                continue
+            attempt = next(
+                (
+                    row for row in attempts
+                    if submitted_at is None or (row.get("started_at") or 0) <= submitted_at
+                ),
+                attempts[0],
+            )
+            harness = str(attempt.get("harness") or "").strip()
+            if not harness:
+                continue
+            availability = getattr(self.orchestrator, "provider_availability", None)
+            if availability is not None:
+                return availability.provider_for_harness(harness, review["project_id"]) or harness
+            registry = getattr(self.orchestrator, "harness_registry", None)
+            resolved = registry.get(harness, review["project_id"]) if registry is not None else None
+            return provider_key(resolved if resolved is not None else harness)
+        return None
+
     async def _cmd_review_dispatch(self, args: dict) -> dict:
+        """File *count* adversarial reviewer tasks for one review revision.
+
+        Each reviewer is filed unrouted with the ``--class`` hint (default
+        ``deep-high``), the origin ``review_dispatch`` and the constraint
+        ``exclude_providers: [<author's provider>]``, so the project's router
+        picks another model family for it (mandatory-routing spec §5.3, D5).
+        A dispatch never names a profile.
+        """
         principal = current_principal() or TRUSTED_LOCAL
         if not (
             principal.kind is PrincipalKind.LOCAL
             or (principal.kind is PrincipalKind.SESSION and principal.elevated)
         ):
             return _error("operator_only", "review dispatch requires an operator or supervisor")
+        if args.get("to"):
+            return _error(
+                "routing.choice_forbidden",
+                "review dispatch no longer names reviewer profiles: pass --count and --class; "
+                "the router picks each reviewer's profile, excluding the author's provider",
+            )
         review, error = await self._review_for_caller(args.get("review_id"))
         if error:
             return error
-        targets = args.get("to") or []
-        if isinstance(targets, str):
-            targets = [targets]
-        if not isinstance(targets, list) or not targets or any(
-            not isinstance(target, str) or not target.strip() for target in targets
+        count = args.get("count", 1)
+        if count is None:
+            count = 1
+        if (
+            not isinstance(count, int) or isinstance(count, bool)
+            or not 1 <= count <= DISPATCH_MAX_COUNT
         ):
-            return _error("profile_required", "at least one --to profile is required")
-        if len(set(targets)) != len(targets):
-            return _error("duplicate_profile", "--to profiles must be distinct in one dispatch")
-        profiles = []
-        for profile_id in targets:
-            profile = await self.db.get_profile(profile_id)
-            if profile is None:
-                return _error("unknown_profile", f"profile {profile_id!r} was not found")
-            if not profile.enabled:
-                return _error("disabled_profile", f"profile {profile_id!r} is disabled")
-            if reason := self._task_execution_profile_error(profile):
-                return _error("invalid_profile", reason)
-            if profile.lifecycle not in {"pool", "task"}:
-                return _error(
-                    "invalid_profile", f"profile {profile_id!r} cannot execute a queued task"
-                )
-            if profile.aq_commands is not None and "review_show" not in profile.aq_commands:
-                return _error(
-                    "profile_cannot_review",
-                    f"profile {profile_id!r} cannot read reviews (missing review_show grant)",
-                )
-            profiles.append(profile)
+            return _error(
+                "invalid_count", f"count must be an integer from 1 to {DISPATCH_MAX_COUNT}"
+            )
+        class_id = args.get("intelligence_class") or DISPATCH_DEFAULT_CLASS
+        if not isinstance(class_id, str) or (class_error := self._validate_routing_class(class_id)):
+            return _error("invalid_class", class_error if isinstance(class_id, str) else "class must be a string")
 
         requested_revision = args.get("revision")
         with_comments = bool(args.get("with_comments", True))
@@ -887,17 +869,20 @@ class ReviewCommandsMixin:
             revision = current["current_revision"] if requested_revision is None else requested_revision
             if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
                 return _error("revision_not_found", f"invalid review revision {revision!r}")
-            if await self.db.get_review_revision(review["id"], revision, conn=lock_conn) is None:
+            revision_row = await self.db.get_review_revision(review["id"], revision, conn=lock_conn)
+            if revision_row is None:
                 return _error("revision_not_found", f"review {review['id']!r} has no revision {revision}")
             existing = await self.db.list_review_dispatches(review["id"], conn=lock_conn)
-            if not args.get("force"):
-                for profile in profiles:
-                    if any(d["profile_id"] == profile.id and d["revision"] == revision for d in existing):
-                        return _error(
-                            "duplicate_dispatch",
-                            f"review {review['id']} revision {revision} was already dispatched to {profile.id}; use --force to repeat",
-                        )
-            for profile in profiles:
+            prior = [d for d in existing if d["revision"] == revision]
+            if prior and not args.get("force"):
+                return _error(
+                    "duplicate_dispatch",
+                    f"review {review['id']} revision {revision} was already dispatched to "
+                    f"{len(prior)} reviewer(s); use --force to dispatch more",
+                )
+            author_provider = await self._review_author_provider(current, revision_row)
+            constraints = {"exclude_providers": [author_provider]} if author_provider else None
+            for ordinal in range(1, count + 1):
                 show_command = f"aq review show --review-id {review['id']} --revision {revision}"
                 if with_comments:
                     show_command += " --comments"
@@ -920,7 +905,8 @@ class ReviewCommandsMixin:
                 dispatch = {
                     "id": f"dsp-{uuid.uuid4().hex}",
                     "review_id": review["id"],
-                    "profile_id": profile.id,
+                    "profile_id": None,
+                    "intelligence_class": class_id,
                     "revision": revision,
                     "with_comments": with_comments,
                     "focus": focus or None,
@@ -936,37 +922,41 @@ class ReviewCommandsMixin:
                         {
                             "review_id": entry["review_id"],
                             "revision": entry["revision"],
-                            "profile_id": entry["profile_id"],
+                            "intelligence_class": entry["intelligence_class"],
                             "with_comments": entry["with_comments"],
                             "focus": entry["focus"],
                         },
                         conn=conn,
                     )
 
+                title = f"Adversarial review: {current['title']}"
+                if count > 1:
+                    title += f" ({ordinal}/{count})"
                 created = await self._cmd_create_task({
                     "project_id": current["project_id"],
-                    "title": f"Adversarial review: {current['title']}",
+                    "title": title,
                     "description": description,
-                    "profile_id": profile.id,
                     "task_type": "research",
+                    "intelligence_class": class_id,
                     "root": True,
                     "_after_create_on": record,
-                    **({"intelligence_class": profile.default_class} if profile.default_class else {}),
+                    "_created_by_kind": REVIEW_DISPATCH_ORIGIN,
+                    "_created_by_id": review["id"],
+                    **({"_route_constraints": constraints} if constraints else {}),
                 })
                 if not created.get("success"):
                     creation_error = _error(
                         "task_creation_failed", created.get("error", "could not create task")
                     )
                     break
-                capacity_reason = None
-                if profile.lifecycle == "pool":
-                    if profile.max_active == 0:
-                        capacity_reason = f"pool {profile.id} has max_active=0"
-                    elif not getattr(self.config.swarm, "enabled", True):
-                        capacity_reason = "worker pools are disabled"
-                result = {**dispatch, "task_id": created["task_id"], "task_state": created["status"]}
-                if capacity_reason:
-                    result["capacity_warning"] = capacity_reason
+                result = {
+                    **dispatch,
+                    "task_id": created["task_id"],
+                    "task_state": created["status"],
+                    "exclude_providers": list((constraints or {}).get("exclude_providers", [])),
+                }
+                if not getattr(self.config.swarm, "enabled", True):
+                    result["capacity_warning"] = "worker pools are disabled"
                 results.append(result)
         for result in results:
             await self._emit_review_event(
@@ -975,7 +965,8 @@ class ReviewCommandsMixin:
                     "review_id": review["id"],
                     "project_id": review["project_id"],
                     "task_id": result["task_id"],
-                    "profile_id": result["profile_id"],
+                    "intelligence_class": result["intelligence_class"],
+                    "exclude_providers": result["exclude_providers"],
                     "revision": result["revision"],
                     "with_comments": result["with_comments"],
                 },
@@ -1028,26 +1019,10 @@ class ReviewCommandsMixin:
         parent_id = (author.parent_task_id if author else archived.get("parent_task_id") if archived else None)
         if parent_id is not None and await self.db.get_task(parent_id) is None:
             parent_id = None
-        selected_class = revision.get("responder_class")
-        selected_profile = revision.get("responder_profile")
-        if selected_profile:
-            profile = await self.db.get_profile(selected_profile)
-        else:
-            project = await self.db.get_project(review["project_id"])
-            implicit, route_error = await self._supervisor_default_worker_profile(project)
-            if route_error or implicit is None:
-                raise RuntimeError(f"review {review['id']} revision route unavailable: {route_error}")
-            if selected_class:
-                matched, route_error = await self._resolve_class_route(selected_class, implicit)
-                if route_error:
-                    raise RuntimeError(f"review {review['id']} revision route unavailable: {route_error}")
-                profile = matched or implicit
-            else:
-                profile = implicit
-        if profile is None:
-            raise RuntimeError(f"review {review['id']} revision profile is unavailable")
-        class_id = selected_class or profile.default_class
-        source = "explicit" if selected_class else "project_default"
+        # The revision task carries the decision's class as a hint and is
+        # routed by the project's router (mandatory-routing spec §5.3).  A
+        # profile a decision recorded before that is not a route any more.
+        class_id = revision.get("responder_class") or None
         comments = [
             c for c in await self.db.list_review_comments(review["id"])
             if c["resolved_in_revision"] is None
@@ -1055,7 +1030,8 @@ class ReviewCommandsMixin:
         lines = [
             feedback,
             "",
-            f"Revision worker route: {class_id} on {profile.id} ({source}).",
+            "Revision route: chosen by the project's router"
+            + (f" (class hint {class_id})." if class_id else "."),
             "",
             "Unresolved inline comments:",
         ]
@@ -1089,7 +1065,7 @@ class ReviewCommandsMixin:
         async def record(conn, task_id, _parent_id):
             await self.db._upsert_meta(task_id, "review_response", {
                 "review_id": review["id"], "revision": revision["revision"],
-                "profile_source": source,
+                "profile_source": "router",
             }, conn=conn)
 
         created = await self._cmd_create_task(
@@ -1097,9 +1073,7 @@ class ReviewCommandsMixin:
                 "project_id": review["project_id"],
                 "title": f"Revise {review['title']} (review {review['id']})",
                 "description": "\n".join(lines),
-                "profile_id": profile.id,
-                "intelligence_class": class_id,
-                "provider_intent": "preferred" if selected_profile else "class_only",
+                **({"intelligence_class": class_id} if class_id else {}),
                 "parent_id": parent_id,
                 "root": parent_id is None,
                 "dedup_key": key,

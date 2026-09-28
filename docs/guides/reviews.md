@@ -62,9 +62,9 @@ for, so two decisions racing on different revisions cannot both succeed.
 | `aq review list` | yes | Everything that exists, newest first. |
 | `aq review show --review-id <id> [--revision N] [--comments]` | yes | Print the current (or a given) revision, and with `--comments` the whole comment thread with each comment's quote, heading path, revision, and resolved state. |
 | `aq review decide --review-id <id> --revision N --decision approve --note "…"` | yes | Approve. Resolves the gate, releases dependent tasks, rewrites the vault file. |
-| `aq review decide --review-id <id> --revision N --decision request_changes --note "…" [--responder-class <class> [--responder-profile <profile>]]` | yes | Reject the revision and file a new revision task with the note as feedback. `--responder-class` picks who revises (default: the project's default worker); `--responder-profile` names a worker for that class and needs `--responder-class`. |
+| `aq review decide --review-id <id> --revision N --decision request_changes --note "…" [--responder-class <class>]` | yes | Reject the revision and file a new revision task with the note as feedback. The revision task is routed by the project's router; `--responder-class` is its class hint. A responder profile is refused (`routing.choice_forbidden`). |
 | `aq review comment --review-id <id> --revision N --body "…" [--quote "…"] [--heading-path "…"]` | yes | Add one anchored comment without deciding. The author sees it in the thread the next time they `aq review show --comments`. |
-| `aq review dispatch --review-id <id> --to <profile> [--to <profile>] [--revision N] [--no-comments] [--focus "…"] [--force]` | yes | Send one fixed revision (the current one by default) to one task per selected profile for adversarial review. The default `--with-comments` includes prior comments; `--no-comments` gives a clean read. A repeat for the same profile and revision needs `--force`. The result warns when a selected pool has no capacity. The reviewer task's provider intent is `preferred`: it can fail over to another provider (§ Adversarial review across model families). |
+| `aq review dispatch --review-id <id> [--count N] [--class <class>] [--revision N] [--no-comments] [--focus "…"] [--force]` | yes | Send one fixed revision (the current one by default) to `--count` adversarial reviewer tasks (default 1). Each is filed unrouted with the `--class` hint (default `deep-high`) and the constraint `exclude_providers: [<provider the author revision ran on>]`, so the project's router picks each reviewer's profile on another family. A dispatch never names a profile; `--to` is refused (`routing.choice_forbidden`). The default `--with-comments` includes prior comments; `--no-comments` gives a clean read. A second dispatch of the same revision needs `--force`. |
 | `aq review withdraw --review-id <id> --reason "…"` | yes (`local_operator_only`) | Close the review with no decision. The gate stays open and the tasks waiting on it are flagged `needs_attention=review_withdrawn`. The reason (it may be empty) is recorded as the review's `decision_note`, with `decided_by`. When anyone but the author withdraws it, the author task gets a comment with the reason, which also wakes its live session. The dashboard's Reviews page does the same thing from the **Close** button on each open review, with an optional reason. |
 | `aq review delegate --review-id <id> --to supervisor\|user` | yes (`local_operator_only`) | Change `decider` on one review. `supervisor` lets the live named supervisor session approve it. |
 | `aq review import-edits --review-id <id>` | yes (`local_operator_only`) | Turn your out-of-band Obsidian edit into revision N+1. Refuses if the current revision is already decided. |
@@ -177,11 +177,10 @@ creates **one new revision task**, whatever state the authoring task is in:
 - **Deduplicated per revision.** The task carries the dedup key
   `review-revision:<review>:<revision>`, so one decision on one revision files
   one task, however often the hook runs.
-- **Route.** `--responder-class` (and optionally `--responder-profile`) on the
-  decision chooses who revises; without them it is the project's default
-  worker profile and its class. `aq review show` previews the route before you
-  decide (`response_route`). A named responder profile gives the task provider
-  intent `preferred`; a class or the default gives `class_only`. Neither is
+- **Route.** The revision task is filed unrouted and the project's router
+  routes it (mandatory routing). `--responder-class` on the decision is its
+  class hint; a responder profile is refused. `aq review show` previews the
+  route before you decide (`response_route`). The task is `class_only`, never
   `pinned`, so the revision can fail over to the same class on another
   provider.
 - **Description.** Your note, the route line, every unresolved anchored
@@ -274,11 +273,11 @@ install — Fable authors on `deep-high-claude`, Astra reviews on
 
 No flag guarantees which family runs a turn:
 
-- `aq review dispatch` has no `--pin`. The reviewer task is filed on the named
-  profile with provider intent `preferred`, which fails over.
-- `aq review decide --decision request_changes` files the revision task as
-  `preferred` when you name `--responder-profile`, `class_only` otherwise —
-  never `pinned`.
+- `aq review dispatch` names no profile. Each reviewer task excludes the
+  provider the author revision was observed on, and the router picks among the
+  other families; it is `class_only`, so it can fail over.
+- `aq review decide --decision request_changes` files the revision task
+  unrouted with the class hint, `class_only` — never `pinned`.
 - `aq task create --pin` pins the first author task only. The pin does not
   carry over to later reviewer or revision tasks.
 - Failover inside one class crosses families. During an Anthropic outage a
@@ -336,7 +335,7 @@ the same revision twice. Count rounds in your record.
    author's dispositions.
 
    ```bash
-   aq review dispatch --review-id <id> --revision <n> --to deep-high-codex --no-comments --focus "Verify claims against code; label each finding [blocking] or [nit]"
+   aq review dispatch --review-id <id> --revision <n> --class deep-high --no-comments --focus "Verify claims against code; label each finding [blocking] or [nit]"
    ```
 
 3. **Wait for the reviewer task to end.** It is an ordinary task:
@@ -353,7 +352,7 @@ the same revision twice. Count rounds in your record.
    naming both the responder class and the profile:
 
    ```bash
-   aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high --responder-profile deep-high-claude
+   aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high
    ```
 
    The daemon files the revision task ([What happens when you
@@ -440,7 +439,7 @@ them:
 
 | Round | Revision | What happened | Record |
 |---|---|---|---|
-| 1 | 1 | Dispatched clean-room to `deep-high-codex`; attempts report `gpt-6-astra`. Two `[blocking]`, one `[nit]`. Request changes with `--responder-class deep-high --responder-profile deep-high-claude`; the revision task's attempts report a Fable model and it resubmits revision 2: `fixed`, `rebutted`, `fixed`. | Cross-family. Hash of revision 2. |
+| 1 | 1 | Dispatched clean-room to `deep-high-codex`; attempts report `gpt-6-astra`. Two `[blocking]`, one `[nit]`. Request changes with `--responder-class deep-high`; the revision task's attempts report a Fable model and it resubmits revision 2: `fixed`, `rebutted`, `fixed`. | Cross-family. Hash of revision 2. |
 | 2 | 2 | Dispatched with comments to `deep-high-codex`; during an OpenAI outage the reviewer task was re-routed and its attempts report a Claude model. | **Inconclusive** for cross-family coverage; the round does not count as a pass. |
 | 2 (replaced) | 2 | After recovery, dispatched again with `--force` ("replacing inconclusive round 2"); attempts report `gpt-6-astra`. No `[blocking]` and the rebuttal is not re-raised; the verdict names the sections and code paths checked. | Cross-family. The decider checks the rebuttal and approves revision 2. |
 
@@ -494,9 +493,10 @@ most likely to meet:
 | `not_decider` | You tried to `decide` or `comment` on a review whose `decider` does not include your principal. | `aq review delegate --review-id <id> --to user` (if you are Jack) or wait for the supervisor to accept the delegation. |
 | `not_dispatched` / `wrong_revision` | A worker tried to comment without holding the matching dispatch task, or on a different revision. | Read the pinned revision in the task description and comment from that task's session. |
 | `anchor_required` | A dispatched reviewer commented without `--quote` or `--heading-path`. | Anchor the finding to the text or section it is about. |
-| `duplicate_dispatch` | The profile has already been asked to review this revision. | Inspect `aq review show`, or pass `--force` for a deliberate repeat. |
+| `duplicate_dispatch` | This revision has already been dispatched. | Inspect `aq review show`, or pass `--force` to dispatch more reviewers. |
+| `routing.choice_forbidden` | `aq review dispatch --to <profile>` or a responder profile on a decision: reviewers and revision tasks are routed by the router. | Pass `--count`/`--class` to dispatch, `--responder-class` to decide. |
 | `operator_only` | `aq review dispatch` from a session that is neither the local operator nor elevated. | Dispatch as the local operator or from the supervisor. |
-| `invalid_responder` / `invalid_responder_class` / `invalid_responder_profile` | Responder routing on an approval, `--responder-profile` without `--responder-class`, an unknown class, or a profile that is not an enabled worker for that class. | `aq system list-intelligence-classes` and `aq agent list-profiles`, then name a class (and a matching worker) that exists. |
+| `invalid_responder` / `invalid_responder_class` | Responder routing on an approval, or an unknown class. | `aq system list-intelligence-classes`, then name a class that exists. |
 | `local_operator_only` | A session-scoped principal tried to `delegate` or `import-edits`, or the supervisor tried to set `review_delegate_to`. | Re-run the command as the local operator. |
 | `vault_diverged` | The vault file no longer matches the current revision's hash. | `aq review import-edits --review-id <id>` to promote your Obsidian edits, then decide. |
 | `review_gate` | The task you filed with `--after-review <id>` hit the open gate and the scheduler refused to route it. | Approve the review, or `aq review withdraw --review-id <id> --reason "…"`. |

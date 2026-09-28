@@ -3940,6 +3940,10 @@ class DevelopmentIntegration:
                 status=TaskStatus.READY,
                 task_type=TaskType.BUGFIX,
                 max_retries=3,
+                # The routing policy names this origin
+                # (``origins.development_repair``) instead of matching the
+                # title (mandatory-routing spec §5.3).
+                created_by_kind="development_repair",
             )
         # Service work has no authenticated held-task context, so root
         # placement is an explicit policy choice rather than an accidental

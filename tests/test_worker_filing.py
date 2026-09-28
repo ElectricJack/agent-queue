@@ -141,7 +141,10 @@ class TestFiling:
         task = await db.get_task(result["task_id"])
         assert task.parent_task_id is None
         assert task.status == TaskStatus.DEFINED
-        assert task.intelligence_class == "standard-high"
+        # Unrouted, the class is only the filer's hint (mandatory routing
+        # §5.3); a named profile keeps its class until Task 5 refuses it.
+        assert task.class_hint == "standard-high"
+        assert task.intelligence_class == ("standard-high" if routed else None)
         assert await db.get_typed_dependencies(task.id) == [("held", "discovered-from")]
         gates = await db.get_gates_for_task(task.id)
         gate_events = [c.args[1] for c in handler.orchestrator.bus.emit.await_args_list

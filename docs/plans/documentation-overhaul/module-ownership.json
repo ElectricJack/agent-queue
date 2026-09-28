@@ -26551,13 +26551,6 @@
       "purpose": "Orchestrator cycle step.",
       "catalog": "docs/reference/modules/scheduler.md"
     },
-    "src/orchestrator/provider_distribution.py": {
-      "shard": "scheduler",
-      "component": "docs/concepts/scheduling.md",
-      "category": "production",
-      "purpose": "Orchestrator cycle step.",
-      "catalog": "docs/reference/modules/scheduler.md"
-    },
     "src/orchestrator/provider_failover.py": {
       "shard": "scheduler",
       "component": "docs/concepts/scheduling.md",

@@ -786,12 +786,16 @@ doc_review_comments = Table(
 
 # The reviewer task is a soft reference so archiving it never erases the
 # dispatch history or the review's activity. A forced repeat gets a new row.
+# A dispatch files its reviewer unrouted with a class hint; the router picks
+# the profile (mandatory-routing spec §5.3), so ``profile_id`` is set only on
+# rows written before that (revision a00000000041).
 doc_review_dispatches = Table(
     "doc_review_dispatches",
     metadata,
     Column("id", Text, primary_key=True),
     Column("review_id", Text, nullable=False),
-    Column("profile_id", Text, nullable=False),
+    Column("profile_id", Text, nullable=True),
+    Column("intelligence_class", Text, nullable=True),
     Column("revision", Integer, nullable=False),
     Column("with_comments", Boolean, nullable=False),
     Column("focus", Text, nullable=True),

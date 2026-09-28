@@ -107,7 +107,9 @@ async def test_unknown_creation_class_rejected_without_task(setup):
     assert await db.list_tasks(project_id="p") == []
 
 
-async def test_supervisor_omission_uses_project_worker_default(setup):
+async def test_supervisor_omission_is_unrouted_not_the_project_default(setup):
+    """The supervisor routes nothing: an omitted profile is left for the
+    project's router (mandatory-routing spec §5.2)."""
     handler, db = setup
     await db.create_profile(AgentProfile(
         id="supervisor", name="Supervisor", harness="claude", lifecycle="named",
@@ -124,7 +126,8 @@ async def test_supervisor_omission_uses_project_worker_default(setup):
     finally:
         handler._caller_profile_id = None
     assert "error" not in result
-    assert (await db.get_task(result["created"])).profile_id == "worker"
+    task = await db.get_task(result["created"])
+    assert (task.profile_id, task.route_source) == (None, "unrouted")
 
 
 async def test_supervisor_profile_is_rejected_on_creation_edit_route_and_graph(setup):
@@ -160,12 +163,13 @@ async def test_project_default_rejects_supervisor_profile(setup):
     result = await handler._cmd_edit_project({"project_id": "p", "default_profile_id": "supervisor"})
     assert "project default is invalid" in result["error"]
 
-    # A legacy/stale database value is also checked before it can create an
-    # unroutable READY row.
+    # Creation no longer reads the project default (mandatory-routing spec
+    # §1): a stale value cannot become a task's route.
     await db.update_project("p", default_profile_id="supervisor")
     created = await handler._cmd_create_task({"project_id": "p", "title": "No stale default"})
-    assert "project default is invalid" in created["error"]
-    assert await db.list_tasks(project_id="p") == []
+    assert "error" not in created, created
+    task = await db.get_task(created["created"])
+    assert (task.profile_id, task.route_source) == (None, "unrouted")
 
 
 async def test_claim_frontier_skips_legacy_supervisor_route_without_hiding_worker_work(setup):

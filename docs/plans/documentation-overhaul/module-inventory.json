@@ -5,7 +5,7 @@
   "counts": {
     "documentation": 722,
     "generated": 1926,
-    "production": 1076,
+    "production": 1075,
     "prompt": 48,
     "supporting": 159,
     "test": 1194
@@ -856,7 +856,6 @@
     "src/orchestrator/monitoring.py",
     "src/orchestrator/pools.py",
     "src/orchestrator/pr_polling.py",
-    "src/orchestrator/provider_distribution.py",
     "src/orchestrator/provider_failover.py",
     "src/orchestrator/route_needed.py",
     "src/orchestrator/stranded_work.py",

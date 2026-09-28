@@ -594,7 +594,7 @@ async def test_repair_origin_uses_exact_active_branch_reservation(db, invalid):
             owner_role="collector", fence_token=1, handoff_state="reserved",
             created_at=1.0, updated_at=1.0,
         ))
-    service = RepairService(db, route_validator=lambda *_: True)
+    service = RepairService(db)
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     result = await service.dispatch("operation", 0)
     task_id = result["repair_task_id"]
@@ -1167,7 +1167,9 @@ async def test_primary_attempt_exhaustion_activates_one_debug_stage(db):
     assert rows[1]["started_at"] == 110.0
     assert rows[1]["deadline_at"] == 170.0
     assert rows[1]["intelligence_class"] == "debug-high"
-    assert rows[1]["profile_id"] == "debugger"
+    # The stored policy still names ``debug_profile_id``; it is ignored.
+    assert rows[0]["profile_id"] is None
+    assert rows[1]["profile_id"] is None
     assert rows[1]["repair_task_id"] is None
     dossier = rows[1]["dossier"]
     assert dossier["previous_stage"]["attempts"] == 2
@@ -1806,7 +1808,6 @@ async def test_dispatch_persists_paused_delegate_before_handoff_then_wakes_it(db
     service = RepairService(
         db,
         confirm_handoff=confirm_handoff,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
 
@@ -1923,7 +1924,6 @@ async def test_resumed_event_redispatches_established_repair_delegate(db):
     repair = RepairService(
         db,
         confirm_handoff=lambda _owner: True,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await repair.start("operation", STARTING_SHA, "failed-check", now=100.0)
     await repair.record_result("operation", "failed-check", now=101.0)
@@ -2114,7 +2114,6 @@ async def test_integration_resume_recovers_damaged_stopped_pool_handoff_and_rear
     repair = RepairService(
         handler.db,
         confirm_handoff=lambda _owner: True,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await repair.start("operation", STARTING_SHA, "failed-check", now=100.0)
     await repair.record_result("operation", "failed-check", now=101.0)
@@ -2274,7 +2273,6 @@ async def test_resume_continues_current_parent_conflict_before_playbook_dispatch
 
     handler.orchestrator.repair_service = RepairService(
         handler.db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     principal = ExecutionPrincipal(
         kind=PrincipalKind.PLAYBOOK,
@@ -2378,7 +2376,6 @@ async def test_first_human_resume_continues_current_parent_conflict_before_playb
 
     handler.orchestrator.repair_service = RepairService(
         handler.db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     principal = ExecutionPrincipal(
         kind=PrincipalKind.PLAYBOOK,
@@ -2485,7 +2482,6 @@ async def test_repair_dispatch_command_derives_current_stage_with_real_service(
     service = RepairService(
         handler.db,
         confirm_handoff=lambda _owner: True,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     handler.orchestrator.repair_service = service
@@ -2604,7 +2600,6 @@ async def test_primary_dispatch_reuses_only_exact_live_attached_verifier(
     service = RepairService(
         db,
         confirm_stopped=stopped,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     reused = await service.dispatch("operation", 0)
@@ -2773,7 +2768,6 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
 
     service = RepairService(
         db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
         confirm_stopped=stopped,
     )
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
@@ -2827,7 +2821,6 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
 
     failed_stop = await RepairService(
         db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
         confirm_stopped=lambda _owner: False,
     ).dispatch("operation", 1)
     assert failed_stop["outcome"] == "busy"
@@ -2959,9 +2952,7 @@ async def test_debug_dossier_refreshes_exact_unpushed_commits_and_late_receipts(
                 updated_at=1.0,
             )
         )
-    service = RepairService(
-        db, route_validator=lambda _intelligence_class, _profile_id: True
-    )
+    service = RepairService(db)
     await service.start("operation", base_sha, "failed-check", now=100.0)
     async with db._engine.connect() as conn:
         initial_dossier = (
@@ -3067,7 +3058,6 @@ async def test_debug_dossier_refreshes_exact_unpushed_commits_and_late_receipts(
 
     handoff_service = RepairService(
         db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
         confirm_stopped=stopped,
     )
     debug = await handoff_service.dispatch("operation", 1)
@@ -3151,9 +3141,7 @@ async def _prepare_retained_debug_boundary(db, workspace_path: str, head_sha: st
                 updated_at=1.0,
             )
         )
-    primary_service = RepairService(
-        db, route_validator=lambda _intelligence_class, _profile_id: True
-    )
+    primary_service = RepairService(db)
     await primary_service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     primary = await primary_service.dispatch("operation", 0)
     primary_task_id = primary["repair_task_id"]
@@ -3248,7 +3236,6 @@ async def test_retained_dispatch_recovers_at_each_durable_boundary(
         stopped = stopped_once
     service = RepairService(
         db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
         confirm_stopped=stopped,
     )
     if crash_point == "after_cas":
@@ -3357,7 +3344,6 @@ async def test_scheduler_launches_retained_debug_in_exact_workspace(
     )
     debug = await RepairService(
         db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
         confirm_stopped=stopped,
     ).dispatch("operation", 1)
     debug_task_id = debug["repair_task_id"]
@@ -3434,7 +3420,6 @@ async def test_retained_handoff_rejects_mismatched_writer_kind_and_owner_role(
         )
     service = RepairService(
         db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
         confirm_stopped=lambda owner: {
             "session_id": owner["session_id"],
             "workspace_id": owner["workspace_id"],
@@ -3610,7 +3595,6 @@ async def test_running_repair_delegate_files_real_child_from_clean_pushed_head(
         )
     service = RepairService(
         handler.db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     await service.record_result("operation", "failed-check", now=101.0)
@@ -3969,7 +3953,6 @@ async def test_real_task_close_bypasses_legacy_pipeline_and_rejects_stale_stage(
         )
     service = RepairService(
         handler.db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     dispatched = await service.dispatch("operation", 0)
@@ -4173,7 +4156,6 @@ async def test_batch_repair_delegate_can_file_only_explicit_project_root(
         )
     service = RepairService(
         handler.db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
     dispatched = await service.dispatch(operation_id, 0)
@@ -4287,7 +4269,6 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
         )
     service = RepairService(
         handler.db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await service.start(operation_id, STARTING_SHA, "batch", now=time.time())
     dispatched = await service.dispatch(operation_id, 0)
@@ -4515,7 +4496,6 @@ async def test_debug_escalation_accepts_a_released_primary_repair_writer(db):
         )
     service = RepairService(
         db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     primary = await service.dispatch("operation", 0)
@@ -4580,7 +4560,6 @@ async def test_debug_escalation_still_refuses_an_unrelated_repair_owner(db):
         )
     service = RepairService(
         db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     await service.dispatch("operation", 0)
@@ -4604,19 +4583,22 @@ async def test_debug_escalation_still_refuses_an_unrelated_repair_owner(db):
     assert debug["outcome"] == "human_required"
 
 
-async def test_repair_route_dispatches_to_a_pool_lifecycle_profile(
-    command_handler_factory, monkeypatch
+async def test_repair_delegate_is_filed_unrouted_with_the_stage_class_hint(
+    command_handler_factory,
 ):
-    """A ``lifecycle: pool`` repairer is a normal route, not a config error.
+    """Mandatory routing: the delegate carries the stage class as a hint only.
 
-    Both shipped repair profiles (``standard-medium-claude``,
-    ``deep-high-claude``) are pool profiles, so refusing them would make every
-    repair dispatch ``configuration_blocked``.  The pull model is accommodated
-    in the ownership handoff instead (amber-delta).
+    The stored policy still names ``primary_profile_id`` (a pre-routing
+    snapshot); it validates, is ignored, and the delegate gets no profile or
+    class: the router writes its route later.  The command handler's repair
+    service needs no route validator for this.
     """
     handler = await command_handler_factory()
     await _configure_db(handler.db)
     await _seed_parent_operation(handler.db)
+    snapshot = HierarchicalIntegrationPolicy.model_validate(_policy())
+    assert snapshot.parent.primary_profile_id == "repairer"
+    assert snapshot.parent.repair.debug_profile_id == "debugger"
     async with handler.db.immediate() as conn:
         await conn.execute(
             insert(integration_branch_owners).values(
@@ -4631,18 +4613,62 @@ async def test_repair_route_dispatches_to_a_pool_lifecycle_profile(
                 updated_at=1.0,
             )
         )
-    # The class half of the route is exercised elsewhere; this test is about
-    # the lifecycle half only.
-    monkeypatch.setattr(
-        handler, "_validate_routing_class", lambda *_args, **_kwargs: None
-    )
     service = handler._integration_repair_service()
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
 
-    await handler.db.update_profile("repairer", lifecycle="pool")
+    dispatched = await service.dispatch("operation", 0)
 
-    assert (await service.dispatch("operation", 0))["outcome"] == "dispatched"
-    assert await handler.db.get_task("repair-operation-0") is not None
+    assert dispatched["outcome"] == "dispatched"
+    delegate = await handler.db.get_task(dispatched["repair_task_id"])
+    assert delegate.created_by_kind == "integration_repair"
+    assert delegate.profile_id is None
+    assert delegate.intelligence_class is None
+    assert delegate.class_hint == "primary-medium"
+    assert delegate.route_source == "unrouted"
+    async with handler.db._engine.connect() as conn:
+        stage = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == "operation"
+                )
+            )
+        ).mappings().one()
+    assert stage["intelligence_class"] == "primary-medium"
+    assert stage["profile_id"] is None
+
+
+async def test_repair_stage_without_a_class_is_configuration_blocked(db):
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="repo",
+                ref="aq/parent",
+                owner_id="operation",
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="reserved",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    service = RepairService(db)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    async with db.immediate() as conn:
+        # A legacy stage that recorded only a (now ignored) profile.
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(integration_repair_stages.c.operation_id == "operation")
+            .values(intelligence_class=None, profile_id="repairer")
+        )
+
+    blocked = await service.dispatch("operation", 0)
+
+    assert blocked["outcome"] == "configuration_blocked"
+    assert await db.get_task("repair-operation-0") is None
 
 
 async def _claim_epoch_args(handler, task_id: str, lifecycle: str) -> dict:
@@ -4682,7 +4708,6 @@ async def _stage_closable_repair_delegate(
         )
     service = RepairService(
         handler.db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
     )
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     repair_task_id = (await service.dispatch("operation", 0))["repair_task_id"]
@@ -4934,13 +4959,16 @@ async def test_active_repair_delegate_cannot_archive_and_legacy_archive_is_resto
             owner_id="operation", owner_role="collector", fence_token=1,
             handoff_state="reserved", created_at=1.0, updated_at=1.0,
         ))
-    service = RepairService(db, confirm_handoff=lambda _owner: True,
-                            route_validator=lambda _ic, _profile: True)
+    service = RepairService(db, confirm_handoff=lambda _owner: True)
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     dispatched = await service.dispatch("operation", 0)
     task_id = dispatched["repair_task_id"]
     async with db.immediate() as conn:
-        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(status="COMPLETED"))
+        # A routed delegate: the restore below must file it unrouted again.
+        await conn.execute(update(tasks).where(tasks.c.id == task_id).values(
+            status="COMPLETED", profile_id="repairer", intelligence_class="primary-medium",
+            route_source="router",
+        ))
     # The refusal names the operation, its state, the seat this task occupies
     # in it and what would let go -- not a bare code the operator has to guess at.
     with pytest.raises(
@@ -4966,7 +4994,11 @@ async def test_active_repair_delegate_cannot_archive_and_legacy_archive_is_resto
     restored = await service.dispatch("operation", 0)
     assert restored["outcome"] in {"dispatched", "already_dispatched"}
     assert restored["repair_task_id"] == task_id
-    assert (await db.get_task(task_id)).status is TaskStatus.READY
+    restored_task = await db.get_task(task_id)
+    assert restored_task.status is TaskStatus.READY
+    assert (restored_task.profile_id, restored_task.intelligence_class) == (None, None)
+    assert restored_task.class_hint == "primary-medium"
+    assert restored_task.route_source == "unrouted"
     async with db._engine.connect() as conn:
         assert (await conn.execute(select(archived_tasks.c.id).where(
             archived_tasks.c.id == task_id
@@ -5073,7 +5105,7 @@ async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db, pr
                 handoff_state="reserved", created_at=1.0, updated_at=1.0,
             )
         )
-    repair = RepairService(db, route_validator=lambda *_args: True)
+    repair = RepairService(db)
     await repair.start("operation", STARTING_SHA, "failed-check", now=100.0)
     await repair.record_result("operation", "failed-check", now=101.0)
     await repair.record_result("operation", "failed-check-2", now=102.0)

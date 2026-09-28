@@ -87,6 +87,11 @@ class RepairPolicy(BaseModel):
     debug_seconds: int = Field(default=3600, gt=0)
     debug_attempts: int = Field(default=3, gt=0)
     debug_intelligence_class: str
+    # Deprecated and ignored: mandatory routing files repairs with the
+    # ``debug_intelligence_class`` hint only and the router writes the
+    # route.  The field stays so stored ``policy_snapshot`` values naming it
+    # still validate under ``extra="forbid"``; new writes naming it are
+    # refused (``deprecated_route_fields``).
     debug_profile_id: str | None = None
 
 
@@ -144,8 +149,11 @@ class IntegrationBoundaryPolicy(BaseModel):
     repair: RepairPolicy
     route: PlaybookRoute
     primary_intelligence_class: str | None = Field(default=None, min_length=1)
+    # Deprecated and ignored, like ``RepairPolicy.debug_profile_id``: repair
+    # and verifier tasks carry the ``*_intelligence_class`` hint only.
     primary_profile_id: str | None = Field(default=None, min_length=1)
     verifier_intelligence_class: str | None = Field(default=None, min_length=1)
+    # Deprecated and ignored; see ``primary_profile_id``.
     verifier_profile_id: str | None = Field(default=None, min_length=1)
 
 
@@ -179,3 +187,28 @@ class HierarchicalIntegrationPolicy(BaseModel):
     on_failed_child: Literal["block", "ask"]
     on_main_moved: Literal["rebuild", "wait"] = "rebuild"
     cleanup: IntegrationCleanupPolicy = Field(default_factory=IntegrationCleanupPolicy)
+
+
+# Profile fields mandatory routing retired.  Each stays on its model so stored
+# snapshots still validate, but nothing reads it and a new policy write that
+# sets one is refused.
+DEPRECATED_BOUNDARY_ROUTE_FIELDS = ("primary_profile_id", "verifier_profile_id")
+DEPRECATED_REPAIR_ROUTE_FIELDS = ("debug_profile_id",)
+
+
+def deprecated_route_fields(policy: HierarchicalIntegrationPolicy) -> list[str]:
+    """Dotted paths of every deprecated profile field ``policy`` sets non-null.
+
+    For example ``root.primary_profile_id`` or ``parent.repair.debug_profile_id``.
+    An empty list means the policy is admissible as a new write.
+    """
+    named: list[str] = []
+    for boundary_name in ("parent", "root"):
+        boundary: IntegrationBoundaryPolicy = getattr(policy, boundary_name)
+        for field in DEPRECATED_BOUNDARY_ROUTE_FIELDS:
+            if getattr(boundary, field) is not None:
+                named.append(f"{boundary_name}.{field}")
+        for field in DEPRECATED_REPAIR_ROUTE_FIELDS:
+            if getattr(boundary.repair, field) is not None:
+                named.append(f"{boundary_name}.repair.{field}")
+    return named

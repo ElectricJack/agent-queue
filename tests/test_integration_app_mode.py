@@ -185,21 +185,12 @@ def _db(policy: dict) -> SimpleNamespace:
         default_branch="main",
         url="https://github.com/ElectricJack/agent-queue.git",
     )
-    parsed = HierarchicalIntegrationPolicy.model_validate(_policy())
-    profiles = {
-        profile
-        for boundary in (parsed.parent, parsed.root)
-        for profile in (
-            boundary.primary_profile_id,
-            boundary.repair.debug_profile_id,
-            boundary.verifier_profile_id,
-        )
-    }
+    # No list_profiles: preflight gates on the class hints only; the router
+    # assigns repair and verifier profiles.
     return SimpleNamespace(
         get_project=AsyncMock(return_value=_project(policy)),
         get_repo=AsyncMock(side_effect=lambda rid: repository if rid == "agent-queue2" else None),
         get_session=AsyncMock(return_value=None),
-        list_profiles=AsyncMock(return_value=[SimpleNamespace(id=value) for value in profiles]),
     )
 
 
