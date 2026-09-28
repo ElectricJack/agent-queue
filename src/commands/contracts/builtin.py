@@ -444,6 +444,68 @@ class TaskRouteValue(CommandValue):
     provider_intent: str | None = None
 
 
+class TaskRoutePlanArgs(CommandArgs):
+    task_id: str
+    #: The routing playbook's policy block, verbatim (mandatory-routing §6.3).
+    policy: str
+    #: The §6.5 answer, ``{"failed": true}`` when classification failed, or
+    #: omitted before any classification.
+    classification: dict[str, Any] | None = None
+
+
+class TaskRoutePlanValue(CommandValue):
+    """One value for every ``task_route_plan`` outcome (§6.2); unused fields stay empty."""
+
+    task_id: str | None = None
+    intelligence_class: str | None = None
+    profile_id: str | None = None
+    provider: str | None = None
+    provider_intent: str | None = None
+    #: ``planned``: the kind the policy applied.  ``needs_classification``:
+    #: the task's own kind, empty when it has none.
+    task_type: str | None = None
+    lane: str | None = None
+    rule: str | None = None
+    candidates: list[dict[str, Any]] = Field(default_factory=list)
+    scores: list[dict[str, Any]] = Field(default_factory=list)
+    reason: str | None = None
+    policy_sha256: str | None = None
+    class_clamped_from: str | None = None
+    classification: dict[str, Any] | None = None
+    #: The policy's ``balance`` block, for ``task_route_apply``'s re-selection.
+    balance: dict[str, Any] | None = None
+    title: str | None = None
+    description: str | None = None
+    class_hint: str | None = None
+    questions: list[str] = Field(default_factory=list)
+    allowed_kinds: list[str] = Field(default_factory=list)
+    allowed_classes: list[str] = Field(default_factory=list)
+    providers: list[str] = Field(default_factory=list)
+    detail: str | None = None
+    route_source: str | None = None
+    route: dict[str, Any] | None = None
+
+
+class TaskRouteApplyArgs(CommandArgs):
+    task_id: str
+    #: A ``planned`` ``task_route_plan`` value.
+    plan: dict[str, Any]
+
+
+class TaskRouteApplyValue(CommandValue):
+    task_id: str | None = None
+    profile_id: str | None = None
+    intelligence_class: str | None = None
+    provider: str | None = None
+    provider_intent: str | None = None
+    lane: str | None = None
+    #: ``routed``: the route's reason.  ``stale``: why nothing was written.
+    reason: str | None = None
+    planned_profile_id: str | None = None
+    adjusted_at_apply: bool = False
+    resolved_gate_ids: list[str] = Field(default_factory=list)
+
+
 class CiBaselineStatusArgs(CommandArgs):
     project_id: str
     ref: str | None = None
@@ -790,6 +852,12 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "task_route_options":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _ROUTE_OPTION_OUTCOMES else "rejected"
+    if name == "task_route_plan":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _ROUTE_PLAN_OUTCOMES else "rejected"
+    if name == "task_route_apply":
+        outcome = str(raw.get("outcome") or "")
+        return outcome if outcome in _ROUTE_APPLY_OUTCOMES else "rejected"
     if name == "gate_create":
         if raw.get("skipped"):
             return "skipped"
@@ -884,6 +952,14 @@ def _adapter(name: str, value_type: type[CommandValue]):
 _ROUTE_OPTION_OUTCOMES = frozenset(
     {"already_routed", "explicit", "undecided", "no_options", "held"}
 )
+#: ``task_route_plan`` (mandatory-routing §6.2): a route, a question for the
+#: classifier, every candidate on an unlaunchable provider, nothing the policy
+#: allows, or a route the router leaves alone.
+_ROUTE_PLAN_OUTCOMES = frozenset(
+    {"planned", "needs_classification", "held", "no_candidates", "already_routed"}
+)
+#: ``task_route_apply`` (§6.6): written, or the plan no longer holds.
+_ROUTE_APPLY_OUTCOMES = frozenset({"routed", "stale"})
 #: Every ``provider_reroute`` success (D11): moved something, held
 #: something, nothing to do, or re-routing is off.
 _PROVIDER_REROUTE_OUTCOMES = frozenset({"rerouted", "held", "idle", "disabled"})
@@ -1495,6 +1571,73 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         subject_labels={},
     ),
+    "task_route_plan": CommandPresentation(
+        title="Plan a task's route",
+        summary=(
+            "Apply the routing policy to the task's hints and the live pool capacity, "
+            "provider availability and usage, and propose a route without writing it."
+        ),
+        arg_labels={
+            "task_id": "Task",
+            "policy": "Routing policy",
+            "classification": "Classification",
+        },
+        outcome_labels={
+            "planned": "Planned",
+            "needs_classification": "Needs classification",
+            "held": "Held: every candidate's provider is unavailable",
+            "no_candidates": "No candidate satisfies the policy",
+            "already_routed": "Already routed",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "intelligence_class": "Intelligence class",
+            "profile_id": "Agent profile",
+            "provider": "Provider",
+            "lane": "Lane",
+            "rule": "Policy rule",
+            "candidates": "Candidates",
+            "scores": "Load scores",
+            "reason": "Reason",
+            "policy_sha256": "Policy digest",
+            "questions": "Questions for the classifier",
+            "allowed_kinds": "Kinds the classifier may answer",
+            "allowed_classes": "Classes the classifier may answer",
+            "providers": "Unavailable providers",
+            "class_clamped_from": "Hint clamped from",
+            "classification": "Classification",
+            "balance": "Load-score weights",
+        },
+        subject_labels={},
+    ),
+    "task_route_apply": CommandPresentation(
+        title="Apply a planned route",
+        summary=(
+            "Re-select among the plan's candidates on fresh capacity, write the route, "
+            "and clear the task's routing gate. Only the project's bound router may call it."
+        ),
+        arg_labels={"task_id": "Task", "plan": "Plan"},
+        outcome_labels={
+            "routed": "Routed",
+            "stale": "Stale: the plan no longer applies",
+            "rejected": "Rejected",
+        },
+        result_labels={
+            "profile_id": "Agent profile",
+            "intelligence_class": "Intelligence class",
+            "provider": "Provider",
+            "provider_intent": "Provider intent",
+            "lane": "Lane",
+            "reason": "Reason",
+            "planned_profile_id": "Profile the plan named",
+            "adjusted_at_apply": "Changed at apply",
+            "resolved_gate_ids": "Resolved gates",
+        },
+        subject_labels={
+            "task_routing": "the task's routing",
+            "routing_gate": "the task's routing gate",
+        },
+    ),
     "task_route": CommandPresentation(
         title="Route a task to a profile",
         summary="Assign the agent profile that will run the task, and clear its routing gate.",
@@ -1721,6 +1864,31 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             "task_route_options", TaskRouteOptionsArgs, TaskRouteOptionsValue,
             _outcomes("already_routed", "explicit", "undecided", "no_options", "held"),
             SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
+        ),
+        (
+            "task_route_plan",
+            TaskRoutePlanArgs,
+            TaskRoutePlanValue,
+            _outcomes(
+                "planned", "needs_classification", "held", "no_candidates", "already_routed",
+            ),
+            SideEffectClass.READ,
+            (),
+            IdempotencySpec(mode="natural"),
+            True,
+        ),
+        (
+            "task_route_apply",
+            TaskRouteApplyArgs,
+            TaskRouteApplyValue,
+            _outcomes("routed", "stale"),
+            SideEffectClass.UPDATE,
+            (
+                UpdateClause(subject=EffectSubject.TASK_ROUTING),
+                ResolveClause(subject=EffectSubject.ROUTING_GATE, target_arg="task_id"),
+            ),
+            IdempotencySpec(mode="natural"),
+            True,
         ),
         (
             "task_route",

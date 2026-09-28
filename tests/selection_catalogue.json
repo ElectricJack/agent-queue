@@ -1098,7 +1098,7 @@
       ]
     },
     "task-routing": {
-      "description": "Task routing: routing gates, the task_route command, explicit class/profile requirements surviving creation and assignment, admission from active V2 artifacts, cross-project routing and the shipped assignment-routing policy.",
+      "description": "Task routing: routing gates, task_route, class/profile requirements surviving creation and assignment, admission from active V2 artifacts, cross-project routing, the shipped assignment-routing policy, and the router's policy, planner and task_route_plan/task_route_apply.",
       "modules": [
         "tests/test_agent_task_routing.py",
         "tests/test_assignment_routing.py",
@@ -1107,6 +1107,8 @@
         "tests/test_pool_agent_routing.py",
         "tests/test_routing_admission_v2.py",
         "tests/test_routing_gate_guard.py",
+        "tests/test_routing_planner.py",
+        "tests/test_routing_router.py",
         "tests/test_task_class_routing.py",
         "tests/test_task_route.py",
         "tests/test_task_route_source.py",
@@ -1290,7 +1292,7 @@
       ]
     }
   },
-  "digest": "sha256:c6b689784f09964b118d1a88ca15bd664d50c13c15d1ed072ed5d4bd4f956b57",
+  "digest": "sha256:175411ace48a790b9b8147b8c26afd3f14478fcb3c091bfaea3aa2e9b7e5be9c",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11496,6 +11498,49 @@
         "asyncio"
       ],
       "summary": "A routing gate is only for tasks that still need a profile."
+    },
+    "tests/test_routing_planner.py": {
+      "areas": [
+        "task-routing"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.routing.planner",
+        "src.routing.policy"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The pure route planner and the routing policy schema."
+    },
+    "tests/test_routing_router.py": {
+      "areas": [
+        "task-routing"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.commands.routing_commands",
+        "src.config",
+        "src.database",
+        "src.database.queries.routing_queries",
+        "src.event_schemas",
+        "src.intelligence_classes",
+        "src.models",
+        "src.orchestrator",
+        "src.playbooks.artifact_ref",
+        "src.playbooks.definition",
+        "src.playbooks.invocation",
+        "src.routing.sources",
+        "src.sessions.harness_parser"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "``task_route_plan`` and ``task_route_apply`` through a real handler."
     },
     "tests/test_runtimes_base.py": {
       "areas": [

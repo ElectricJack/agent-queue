@@ -105,6 +105,11 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
             "task_type",
             "intelligence_class",
             "profile_id",
+            # Mandatory routing §6.1: the project's bound routing playbook
+            # (``assignment_playbook_id``), which the router's guard compares
+            # with its own id, and the filer's class hint.
+            "router",
+            "class_hint",
             # The router's delivery guard reads the row at dispatch time, not
             # the possibly stale fields from an event that sat in a queue.
             # The engine supplies this hydrated object from ``task_id``.
@@ -122,12 +127,18 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
                 "description": "requested intelligence class",
             },
             "profile_id": {"type": "string", "description": "requested worker profile"},
+            "router": {"type": "string", "description": "project's bound routing playbook"},
+            "class_hint": {"type": "string", "description": "filer's class hint"},
             "task": {
                 "type": "object",
                 "description": "current task row",
                 "hydrated": True,
                 "fields": {
                     "status": {"type": "string", "description": "task status"},
+                    "route_source": {
+                        "type": "string",
+                        "description": "writer of the current route",
+                    },
                     "intelligence_class": {
                         "type": "string",
                         "description": "current intelligence class",
@@ -139,6 +150,29 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
                 },
             },
         },
+    },
+    # Emitted by ``task_route_apply`` once the bound router's route is written
+    # (mandatory-routing §10): the route, the candidates it was chosen from
+    # and why, so a route is explainable from the event alone (I6).
+    "task.routed": {
+        "required": [
+            "task_id",
+            "project_id",
+            "title",
+            "intelligence_class",
+            "profile_id",
+            "provider",
+            "provider_intent",
+        ],
+        "optional": [
+            "lane",
+            "rule",
+            "reason",
+            "candidates",
+            "policy_sha256",
+            "run_id",
+            "adjusted_at_apply",
+        ],
     },
     "task.completed": {
         "required": ["task_id", "project_id", "title"],

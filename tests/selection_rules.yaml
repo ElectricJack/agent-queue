@@ -264,7 +264,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["src/database/queries/agent_question_queries.py"], areas: ["agent-questions"] }
   - { paths: ["src/database/queries/api_session_token_queries.py"], areas: ["api-scope"] }
   - { paths: ["src/database/queries/archive_queries.py"], areas: ["task-archive"] }
-  - { paths: ["src/database/queries/assignment_route_queries.py", "src/database/queries/triage_queries.py"], areas: ["task-routing"] }
+  - { paths: ["src/database/queries/assignment_route_queries.py", "src/database/queries/routing_queries.py", "src/database/queries/triage_queries.py"], areas: ["task-routing"] }
   - { paths: ["src/database/queries/blocked_state.py", "src/database/queries/gate_queries.py", "src/database/queries/event_queries.py"], areas: ["work-graph"] }
   - { paths: ["src/database/queries/chat_queries.py"], areas: ["metrics"] }
   - { paths: ["src/database/queries/claim_queries.py"], areas: ["claims", "worker-pools"] }

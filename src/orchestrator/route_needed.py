@@ -109,11 +109,17 @@ class RouteNeededMixin:
         for task_id in [t for t in emitted_at if t not in live]:
             emitted_at.pop(task_id, None)
         count = 0
+        routers: dict[str, str | None] = {}
         for task in candidates:
             last = emitted_at.get(task.id, 0.0)
             if now - last < ROUTE_NEEDED_INTERVAL_SECONDS:
                 continue
             emitted_at[task.id] = now
+            if task.project_id not in routers:
+                project = await self.db.get_project(task.project_id)
+                routers[task.project_id] = (
+                    getattr(project, "assignment_playbook_id", None) if project else None
+                )
             await self._emit_task_event(
                 "task.route_needed",
                 task,
@@ -122,6 +128,11 @@ class RouteNeededMixin:
                 task_type=str(_value(task.task_type) or ""),
                 intelligence_class=(task.intelligence_class or "").strip() or None,
                 profile_id=task.profile_id or None,
+                # Mandatory routing §6.1 (additive): the project's bound
+                # router, which the router's guard compares with its own id,
+                # and the filer's class hint.
+                router=routers[task.project_id],
+                class_hint=(getattr(task, "class_hint", None) or "").strip() or None,
             )
             count += 1
         if count:
