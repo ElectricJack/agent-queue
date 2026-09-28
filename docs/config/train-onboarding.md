@@ -153,18 +153,36 @@ Run from agent-queue itself, the planner reproduces
 This install configures `integration.github_app` (the `agent-queue-train`
 App, id 5075923), so the daemon runs in App credential mode. In that mode
 `daemon_functional_preflight` (`src/integration/preflight.py`) takes the path
-that needs repository-side trust, not the existing-login path:
+that needs repository-side trust, not the existing-login path. That path is
+the App-mode item report (`src/integration/app_mode.py`), the same one
+`aq integration app-verify` prints: every `fail` code is a blocker of the same
+name, and every `warn` code is a non-blocking entry in the `warnings` list of
+`aq integration status`.
 
-- `.github/agent-queue-integration.json` on the default branch, schema
-  `aq.integration-trust.v1`. Missing: `trust_manifest_unavailable`.
-- Actions variables `AQ_INTEGRATION_ATTESTATION_APP_ID` (the App id) and
-  `AQ_INTEGRATION_REQUIRED_CHECK_VERSION` (the check-set version). Missing:
-  `hosted_workflow_variables_unavailable`.
-- A numeric policy producer on both boundaries: a positive decimal, with no
-  sign or leading zero. A legacy slug such as `github-actions` is the blocker
-  `ci_producer_not_numeric`.
-- That producer equal to the manifest's numeric `ci_producer_app_id`, which is
-  15368, GitHub Actions. A different number is `trust_manifest_mismatch`.
+- `credential`: an installation token mints for the repository. Otherwise
+  `app_token_unavailable`; every item that reads GitHub then carries that code.
+- `repository`: GitHub's id, name and default branch equal the binding and
+  the AQ record. Otherwise `repository_mismatch`.
+- `producer`: a numeric policy producer on both boundaries, a positive
+  decimal with no sign or leading zero. A legacy slug such as `github-actions`
+  is `ci_producer_not_numeric`; two different numbers are `ci_producer_mismatch`.
+- `manifest`: `.github/agent-queue-integration.json` on the default branch,
+  schema `aq.integration-trust.v1`, equal on every identity field. Missing or
+  unparseable: `trust_manifest_unavailable`. A different identity, such as a
+  `ci_producer_app_id` other than the policy producer (15368, GitHub Actions),
+  is `trust_manifest_mismatch`. A check set that differs from the bound policy
+  only warns, `trust_manifest_check_set_differs`: it is expected during a
+  rotation, and the frozen snapshot owns the runtime check set.
+- `variables`: Actions variables `AQ_INTEGRATION_ATTESTATION_APP_ID` (the
+  daemon's App id) and `AQ_INTEGRATION_REQUIRED_CHECK_VERSION` (the bound
+  policy's root check-set version). They are compared with those two values
+  only, never with the manifest. Missing: `hosted_workflow_variables_unavailable`;
+  different: `hosted_workflow_variables_mismatch`.
+- `protection`: reported `main_protection_unverifiable` until the protection
+  reader lands. That is a blocker in App mode, never "unprotected".
+- `audit_workflow`: a default-branch workflow that reads
+  `vars.AQ_INTEGRATION_ATTESTATION_APP_ID`. Missing only warns,
+  `audit_workflow_missing`.
 
 The planner emits the producer `15368` in both credential modes, so a policy
 it writes binds under either one without a rebind. Existing-login credentials
@@ -218,6 +236,34 @@ The shipped supervisor profile holds the grant. For agent-queue:
 aq integration trust-manifest agent-queue --policy docs/config/agent-queue-train-policy.json \
     --repository-id agent-queue2 --write .github/agent-queue-integration.json
 ```
+
+Two more commands check and set up the rest:
+
+```text
+aq integration app-verify PROJECT [--policy FILE] [--repository-id ID] [--json]
+aq integration app-setup PROJECT [--policy FILE] [--repository-id ID] [--apply]
+```
+
+`app-verify` (daemon command `integration_app_verify`, read-only) prints the
+seven items, each `ok`, `warn` or `fail` with its code, what was expected, what
+GitHub showed and the exact fix, and exits 1 when an item fails. `--json` adds
+`expected`: the manifest text, the two variable values and the target ruleset
+for the default branch, which requires the attestation pinned to the App's
+integration id and has no bypass. Existing-login credentials are reported as
+the `credential` item's `not_app_mode`, not refused. The shipped supervisor
+profile holds the grant.
+
+`app-setup` runs locally. It calls `app-verify` and prints, per concern, what is
+wrong and the fix. For the variables it prints `gh variable set NAME --repo
+OWNER/REPO --body VALUE` for each variable that differs. With `--apply` it runs
+those commands with your own `gh` login, which must be a repository admin, then
+verifies again and prints the `variables` item. A variable that is already
+correct is never touched. For the manifest it prints the `trust-manifest
+--write` command and where to commit the file. For protection it prints the
+target ruleset JSON and the `gh api --method PUT|POST …/rulesets` command. It
+never writes repository files and never applies a ruleset: the daemon's App
+holds no write permission over its own trust anchors, so these writes are the
+operator's.
 
 ## 4. By shape
 

@@ -497,6 +497,7 @@
       "modules": [
         "tests/test_cli_integration.py",
         "tests/test_doctor_integration_checks.py",
+        "tests/test_integration_app_mode.py",
         "tests/test_integration_controls.py",
         "tests/test_integration_operational_controls.py",
         "tests/test_integration_operator_controls.py",
@@ -1285,7 +1286,7 @@
       ]
     }
   },
-  "digest": "sha256:a880b0c1740126932a314e72a63fd2a69708fedb48ed3b507b2d7da26c89c73c",
+  "digest": "sha256:5c2bb7a53589f602035d3b5787a39c5e6a1b2402f1c636f39fbb458cc44dafc5",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6724,6 +6725,34 @@
       "markers": [],
       "summary": "``aq install`` — the WSL2 platform adapter (``src/install/wsl.py``)."
     },
+    "tests/test_integration_app_mode.py": {
+      "areas": [
+        "integration-controls"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api.auth",
+        "src.api.scope",
+        "src.cli.app",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.integration",
+        "src.commands.contracts.models",
+        "src.commands.contracts.registry",
+        "src.commands.integration_commands",
+        "src.commands.principal",
+        "src.git.github_contracts",
+        "src.integration",
+        "src.integration.app_mode",
+        "src.integration.models",
+        "src.integration.preflight",
+        "src.integration.trust_manifest",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "App-mode readiness items: app-verify, app-setup and the preflight (spec §6.2-6.4)."
+    },
     "tests/test_integration_attestation.py": {
       "areas": [
         "integration-trains"
@@ -7118,13 +7147,17 @@
         "src.git.github_app",
         "src.git.github_auth",
         "src.git.github_contracts",
+        "src.integration",
+        "src.integration.app_mode",
         "src.integration.cleanup",
         "src.integration.controls",
         "src.integration.hierarchy",
         "src.integration.models",
+        "src.integration.preflight",
         "src.integration.recovery_controls",
         "src.integration.scheduler",
         "src.integration.status",
+        "src.integration.trust_manifest",
         "src.models",
         "src.playbooks.artifact_ref",
         "src.playbooks.definition",

@@ -62,6 +62,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_cleanup",
         "integration_status",
         "integration_trust_manifest",
+        "integration_app_verify",
         "integration_flush",
         "integration_eject",
         "integration_enable",
@@ -121,6 +122,29 @@ class IntegrationTrustManifestValue(CommandValue):
     text: str | None = None
     sha256: str | None = None
     committed: dict[str, Any] | None = None
+
+
+class IntegrationAppVerifyArgs(IntegrationTrustManifestArgs):
+    #: Where the caller read ``policy`` from; only repeated in fix commands.
+    policy_path: str | None = Field(default=None, min_length=1)
+
+
+class IntegrationAppVerifyValue(CommandValue):
+    project_id: str | None = None
+    repository_id: str | None = None
+    policy_source: Literal["argument", "bound"] | None = None
+    github_repository_id: int | None = None
+    full_name: str | None = None
+    attestation_app_id: int | None = None
+    default_branch: str | None = None
+    #: No item is ``fail``.
+    ready: bool | None = None
+    blockers: tuple[str, ...] = ()
+    warnings: tuple[str, ...] = ()
+    #: One per concern: ``id``, ``status``, ``code``, ``expected``, ``observed``, ``fix``.
+    items: tuple[dict[str, Any], ...] = ()
+    #: The manifest text, the two variable values and the target ruleset.
+    expected: dict[str, Any] | None = None
 
 
 class IntegrationEjectArgs(CommandArgs):
@@ -466,6 +490,12 @@ class IntegrationOperationalValue(CommandValue):
     leases: tuple[dict[str, Any], ...] = ()
     bound: tuple[dict[str, Any], ...] = ()
     unproven: tuple[str, ...] = ()
+
+
+class IntegrationStatusValue(IntegrationOperationalValue):
+    #: Non-blocking App-mode configuration warnings (spec §6.2); never part
+    #: of ``blockers``, their digest or ``ready``.
+    warnings: tuple[dict[str, Any], ...] = ()
 
 
 class IntegrationRedriveRootValue(CommandValue):
@@ -945,6 +975,7 @@ INTEGRATION_STATUS = _operational_contract(
     ("status", "not_found"),
     successes=frozenset({"status"}),
     side_effect=SideEffectClass.READ,
+    result_model=IntegrationStatusValue,
 )
 #: Every refusal names its cause (spec §3 I6); ``manifest`` is the only success.
 TRUST_MANIFEST_OUTCOMES = (
@@ -977,6 +1008,35 @@ INTEGRATION_TRUST_MANIFEST = INTEGRATION_TRUST_MANIFEST.model_copy(update={
         "summary": (
             "Render the App-mode trust manifest from the policy, the authenticated "
             "binding and the daemon's App, and compare the default-branch copy."
+        ),
+    }),
+})
+#: A finding is an item, never a refusal; the refusals are the inputs' (spec I6).
+APP_VERIFY_OUTCOMES = (
+    "verified",
+    "not_found",
+    "policy_missing",
+    "policy_invalid",
+    "repository_not_designated",
+    "repository_mismatch",
+    "repository_default_branch_missing",
+    "provider_not_wired",
+    "repository_binding_failed",
+    "provider_binding_failed",
+)
+INTEGRATION_APP_VERIFY = _operational_contract(
+    "integration_app_verify",
+    IntegrationAppVerifyArgs,
+    APP_VERIFY_OUTCOMES,
+    successes=frozenset({"verified"}),
+    side_effect=SideEffectClass.READ,
+    result_model=IntegrationAppVerifyValue,
+)
+INTEGRATION_APP_VERIFY = INTEGRATION_APP_VERIFY.model_copy(update={
+    "presentation": INTEGRATION_APP_VERIFY.presentation.model_copy(update={
+        "summary": (
+            "Check the App credential, repository, producer, trust manifest, Actions "
+            "variables, protection and audit workflow App mode depends on; one item each."
         ),
     }),
 })
@@ -2439,7 +2499,7 @@ async def _seal_adapter(args: IntegrationSealArgs, ctx: CommandContext | None):
 
 async def _status_adapter(args: IntegrationStatusArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
-        "integration_status", args, ctx, IntegrationOperationalValue, {"status", "not_found"}
+        "integration_status", args, ctx, IntegrationStatusValue, {"status", "not_found"}
     )
 
 
@@ -2449,6 +2509,13 @@ async def _trust_manifest_adapter(
     return await _hierarchy_adapter(
         "integration_trust_manifest", args, ctx, IntegrationTrustManifestValue,
         set(TRUST_MANIFEST_OUTCOMES),
+    )
+
+
+async def _app_verify_adapter(args: IntegrationAppVerifyArgs, ctx: CommandContext | None):
+    return await _hierarchy_adapter(
+        "integration_app_verify", args, ctx, IntegrationAppVerifyValue,
+        set(APP_VERIFY_OUTCOMES),
     )
 
 
@@ -2741,6 +2808,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
     for contract, adapter in (
         (INTEGRATION_STATUS, _status_adapter),
         (INTEGRATION_TRUST_MANIFEST, _trust_manifest_adapter),
+        (INTEGRATION_APP_VERIFY, _app_verify_adapter),
         (INTEGRATION_FLUSH, _flush_adapter),
         (INTEGRATION_EJECT, _eject_adapter),
         (INTEGRATION_ENABLE, _enable_adapter),

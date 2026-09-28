@@ -1061,7 +1061,7 @@ def _check_verdict(committed: dict[str, Any]) -> tuple[bool, list[str]]:
     return passes, list(committed.get("warnings") or []) if passes else []
 
 
-def _render_diff(committed: dict[str, Any]) -> None:
+def _render_diff(committed: dict[str, Any], *, indent: str = "  ") -> None:
     import json
 
     from .app import console
@@ -1073,7 +1073,8 @@ def _render_diff(committed: dict[str, Any]) -> None:
             else "<absent>"
         )
         console.print(
-            f"  {item['field']} ({item['kind']}): expected {json.dumps(item.get('expected'))}, "
+            f"{indent}{item['field']} ({item['kind']}): "
+            f"expected {json.dumps(item.get('expected'))}, "
             f"committed {have}",
             markup=False, highlight=False, soft_wrap=True,
         )
@@ -1186,3 +1187,314 @@ def integration_trust_manifest(
     emit(ctx, data, render=lambda value: _render_trust_manifest(value, mode=mode, fix=fix))
     if mode == "check" and not _check_verdict(data.get("committed") or {})[0]:
         raise SystemExit(1)
+
+
+# ---------------------------------------------------------------------------
+# aq integration app-verify / app-setup
+# ---------------------------------------------------------------------------
+
+_STATUS_STYLE = {"ok": "green", "warn": "yellow", "fail": "red"}
+
+
+def _app_mode_args(
+    project_id: str, policy_path: str | None, repository_id: str | None
+) -> dict[str, Any]:
+    import json
+    from pathlib import Path
+
+    args: dict[str, Any] = {"project_id": project_id}
+    if policy_path:
+        try:
+            args["policy"] = json.loads(Path(policy_path).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise click.UsageError(f"cannot read the policy {policy_path}: {exc}") from exc
+        args["policy_path"] = policy_path
+    if repository_id:
+        args["repository_id"] = repository_id
+    return args
+
+
+def _app_verify(ctx: click.Context, args: dict[str, Any]) -> dict[str, Any]:
+    api_url = ctx.obj.get("api_url") if ctx.obj else None
+
+    async def _request():
+        async with _get_client(api_url) as client:
+            return await client.execute("integration_app_verify", args)
+
+    return dict(_run(_request()))
+
+
+def _app_item(data: dict[str, Any], item_id: str) -> dict[str, Any]:
+    return next((item for item in data.get("items") or [] if item.get("id") == item_id), {})
+
+
+def _compact(value: Any) -> str:
+    import json
+
+    return json.dumps(value, sort_keys=True, separators=(", ", ": "))
+
+
+def _render_app_item(item: dict[str, Any], *, detail: bool = True) -> None:
+    from .app import console
+
+    status = item.get("status") or "?"
+    style = _STATUS_STYLE.get(status, "white")
+    codes = ", ".join(item.get("codes") or [])
+    console.print(
+        f"  [{style}]{status:<4}[/] {item.get('id', '?'):<15} {codes}".rstrip(),
+        highlight=False,
+    )
+    if not detail or status == "ok":
+        return
+    observed = item.get("observed")
+    if item.get("id") == "manifest" and isinstance(observed, dict):
+        if observed.get("error"):
+            console.print(f"       {observed['error']}", markup=False, highlight=False)
+        _render_diff(observed, indent="       ")
+    else:
+        if item.get("expected") is not None:
+            console.print(
+                f"       expected: {_compact(item['expected'])}",
+                markup=False, highlight=False, soft_wrap=True,
+            )
+        if observed is not None:
+            console.print(
+                f"       observed: {_compact(observed)}",
+                markup=False, highlight=False, soft_wrap=True,
+            )
+    if item.get("fix"):
+        console.print(f"       fix: {item['fix']}", markup=False, highlight=False, soft_wrap=True)
+
+
+def _render_app_verify(data: dict[str, Any]) -> None:
+    from .app import console
+
+    console.print(
+        f"App mode for {data.get('project_id')}: {data.get('repository_id')} "
+        f"({data.get('full_name')} {data.get('github_repository_id')}), "
+        f"App {data.get('attestation_app_id')}, {data.get('policy_source')} policy",
+        highlight=False,
+    )
+    for item in data.get("items") or []:
+        _render_app_item(item)
+    blockers, warnings = data.get("blockers") or [], data.get("warnings") or []
+    verdict = "[green]ready[/]" if data.get("ready") else "[red]not ready[/]"
+    console.print(
+        f"{verdict}: {len(blockers)} blocker(s), {len(warnings)} warning(s)", highlight=False
+    )
+
+
+@integration.command("app-verify")
+@click.argument("project_id")
+@click.option("--policy", "policy_path", type=click.Path(exists=True, dir_okay=False),
+              help="Verify against this policy JSON instead of the project's bound policy.")
+@click.option("--repository-id",
+              help="Integration repository id (default: the project's designated one).")
+@click.pass_context
+@_handle_errors
+def integration_app_verify(
+    ctx: click.Context, project_id: str, policy_path: str | None, repository_id: str | None
+) -> None:
+    """Check everything PROJECT_ID's App credential mode depends on.
+
+    One item per concern -- credential, repository, producer, manifest,
+    variables, protection, audit_workflow -- each ok, warn or fail with a
+    code, what was expected, what GitHub showed and the exact fix.  The same
+    items drive the functional preflight: every fail is a blocker of the same
+    name and every warn a status warning.  Read-only; exits 1 when an item
+    fails.  --json carries expected.ruleset, the target ruleset JSON.
+    """
+    data = _app_verify(ctx, _app_mode_args(project_id, policy_path, repository_id))
+    emit(ctx, data, render=_render_app_verify)
+    if not data.get("ready"):
+        raise SystemExit(1)
+
+
+def _gh_variable_set(name: str, full_name: str, value: str) -> list[str]:
+    return ["gh", "variable", "set", name, "--repo", full_name, "--body", value]
+
+
+def _differing_variables(item: dict[str, Any]) -> list[str] | None:
+    """Names whose value differs from the expected one; ``None`` when unread."""
+    expected, observed = item.get("expected"), item.get("observed")
+    values = observed.get("values") if isinstance(observed, dict) else None
+    if not isinstance(expected, dict) or not isinstance(values, dict):
+        return None
+    return [
+        name for name, value in expected.items()
+        if value is not None and values.get(name) != value
+    ]
+
+
+def _run_gh(argv: list[str]) -> dict[str, Any]:
+    import subprocess
+
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"returncode": None, "error": f"{type(exc).__name__}: {exc}"}
+    outcome: dict[str, Any] = {"returncode": result.returncode}
+    if result.returncode != 0:
+        outcome["error"] = result.stderr.strip() or f"exit {result.returncode}"
+    return outcome
+
+
+def _ruleset_commands(full_name: str, ruleset_id: Any) -> list[str]:
+    put = f"gh api --method PUT repos/{full_name}/rulesets/{ruleset_id or 'RULESET_ID'} --input FILE"
+    post = f"gh api --method POST repos/{full_name}/rulesets --input FILE"
+    return [put] if ruleset_id else [put, post]
+
+
+def _render_app_setup(data: dict[str, Any]) -> None:
+    import json
+
+    from .app import console
+
+    verify = data["verify"]
+    console.print(
+        f"App-mode setup for {verify.get('project_id')}: {verify.get('full_name')} "
+        f"({verify.get('github_repository_id')}), App {verify.get('attestation_app_id')}",
+        highlight=False,
+    )
+
+    variables = data["variables"]
+    console.print("\n[bold]variables[/]", highlight=False)
+    _render_app_item(variables["item"], detail=False)
+    if variables["differing"] is None:
+        console.print(
+            "  not checked; fix the credential first", markup=False, highlight=False
+        )
+    elif not variables["differing"]:
+        console.print("  both variables are already correct; nothing to set", highlight=False)
+    elif variables["applied"] is None:
+        console.print("  set the differing variables (or rerun with --apply):", highlight=False)
+        for command in variables["commands"]:
+            console.print(f"  {command}", markup=False, highlight=False, soft_wrap=True)
+    else:
+        for applied in variables["applied"]:
+            result = "set" if applied.get("returncode") == 0 else f"failed: {applied.get('error')}"
+            console.print(f"  {applied['name']}: {result}", markup=False, highlight=False)
+        console.print("  re-verified:", highlight=False)
+        _render_app_item(variables["reverified"] or {})
+
+    manifest = data["manifest"]
+    console.print("\n[bold]manifest[/]", highlight=False)
+    _render_app_item(manifest["item"], detail=False)
+    if manifest["item"].get("status") != "ok":
+        console.print(f"  {manifest['command']}", markup=False, highlight=False, soft_wrap=True)
+        console.print(
+            f"  then commit {manifest['path']} to {manifest['ref']} of {manifest['full_name']} "
+            "through the project's current delivery path (runbook §9.2 step 3)",
+            markup=False, highlight=False, soft_wrap=True,
+        )
+
+    protection = data["protection"]
+    console.print("\n[bold]protection[/]", highlight=False)
+    _render_app_item(protection["item"], detail=False)
+    if protection["item"].get("status") != "ok" and protection["ruleset"] is not None:
+        console.print(
+            "  the target ruleset (save it as FILE; applying it is the repository admin's step, "
+            "runbook §9.3 step 4):",
+            highlight=False,
+        )
+        click.echo(json.dumps(protection["ruleset"], indent=2))
+        for command in protection["commands"]:
+            console.print(f"  {command}", markup=False, highlight=False, soft_wrap=True)
+
+    others = [
+        item for item in verify.get("items") or []
+        if item.get("id") not in {"variables", "manifest", "protection"}
+        and item.get("status") != "ok"
+    ]
+    if others:
+        console.print("\n[bold]other items[/]", highlight=False)
+        for item in others:
+            _render_app_item(item)
+
+
+@integration.command("app-setup")
+@click.argument("project_id")
+@click.option("--policy", "policy_path", type=click.Path(exists=True, dir_okay=False),
+              help="Set up against this policy JSON instead of the project's bound policy.")
+@click.option("--repository-id",
+              help="Integration repository id (default: the project's designated one).")
+@click.option("--apply", "apply", is_flag=True,
+              help="Run gh variable set for every variable that differs, then verify again.")
+@click.pass_context
+@_handle_errors
+def integration_app_setup(
+    ctx: click.Context,
+    project_id: str,
+    policy_path: str | None,
+    repository_id: str | None,
+    apply: bool,
+) -> None:
+    """Print, per App-mode concern, what is wrong and the exact fix.
+
+    Runs app-verify, then: for the two Actions variables prints the
+    `gh variable set` commands, and with --apply runs them with your own gh
+    login (a repository admin) for exactly the variables that differ, then
+    verifies again and prints the variables item; a variable that is already
+    correct is never touched.  For the trust manifest it prints the
+    trust-manifest --write command and where to commit the file; for
+    protection the target ruleset JSON and the gh api command.  It never
+    writes repository files and never applies a ruleset.
+    """
+    args = _app_mode_args(project_id, policy_path, repository_id)
+    verify = _app_verify(ctx, args)
+    full_name = verify.get("full_name")
+    expected = verify.get("expected") or {}
+
+    variables_item = _app_item(verify, "variables")
+    differing = _differing_variables(variables_item)
+    wanted = variables_item.get("expected") or {}
+    commands = [
+        _gh_variable_set(name, full_name, wanted[name]) for name in differing or []
+    ]
+    applied = reverified = None
+    if apply and commands:
+        applied = [
+            {"name": argv[3], "command": _shlex_join(argv), **_run_gh(argv)} for argv in commands
+        ]
+        reverified = _app_item(_app_verify(ctx, args), "variables")
+
+    manifest_item = _app_item(verify, "manifest")
+    protection_item = _app_item(verify, "protection")
+    observed_protection = protection_item.get("observed")
+    ruleset_id = (
+        observed_protection.get("ruleset_id") if isinstance(observed_protection, dict) else None
+    )
+    data = {
+        "verify": verify,
+        "variables": {
+            "item": variables_item,
+            "differing": differing,
+            "commands": [_shlex_join(argv) for argv in commands],
+            "applied": applied,
+            "reverified": reverified,
+        },
+        "manifest": {
+            "item": manifest_item,
+            "command": _trust_manifest_write_command(project_id, policy_path, repository_id),
+            "path": expected.get("manifest_path"),
+            "ref": verify.get("default_branch"),
+            "full_name": full_name,
+        },
+        "protection": {
+            "item": protection_item,
+            "ruleset": expected.get("ruleset"),
+            "commands": _ruleset_commands(full_name, ruleset_id),
+        },
+    }
+    emit(ctx, data, render=_render_app_setup)
+    if applied is not None and (
+        any(item.get("returncode") != 0 for item in applied)
+        or (reverified or {}).get("status") != "ok"
+    ):
+        raise SystemExit(1)
+
+
+def _shlex_join(argv: list[str]) -> str:
+    import shlex
+
+    return shlex.join(argv)
