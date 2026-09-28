@@ -137,12 +137,17 @@ must be bound or finished before cutover. Nothing can yet settle the terminal
 ones: task `swift-pinnacle` asks for that decision, and `bold-cascade` fixes the
 creation paths that leave the repository unset.
 
-While `integration.github_app` is configured (App credential mode) the
-functional preflight also needs `.github/agent-queue-integration.json`
-(committed, and pinned to this policy by `tests/test_integration_trust_manifest.py`)
-and the two `AQ_INTEGRATION_*` Actions variables; the numeric producer above is
-already the one App mode requires. Every other project's cutover, and these App-mode
-requirements, are in [train-onboarding.md](train-onboarding.md).
+This install configures `integration.github_app`, so agent-queue's train runs
+in App credential mode, the production configuration. Its functional preflight
+also needs `.github/agent-queue-integration.json` (committed, and pinned to this
+policy by `tests/test_integration_trust_manifest.py`), the two
+`AQ_INTEGRATION_*` Actions variables, and a `main` ruleset that requires the
+integration attestation pinned to the App with no bypass; the numeric producer
+above is already the one App mode requires. The App-mode cutover interleaves
+those anchors with the commands above (the variables and the ruleset go between
+the drain and the bind), with the output to expect at each step:
+[app-mode-train.md §9.3](app-mode-train.md#93-cutover-supervisor-with-the-repository-admin-at-the-marked-steps).
+Every other project's cutover is in [train-onboarding.md](train-onboarding.md).
 
 The status response in observe mode must report zero functional blockers and
 `ready: true`; activation health above confirms the exact active route hashes.

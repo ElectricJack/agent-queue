@@ -472,10 +472,17 @@ def test_trigger_missing_plan_stops_after_the_repository_changes():
     )
     assert _titles(plan) == [
         "Make CI run on the train's refs first",
-        "App credential mode: publish the trust manifest and Actions variables",
+        "App mode: land the trust manifest and the audit workflow",
     ]
     assert plan.policy is not None
-    assert ".github/agent-queue-integration.json on main" in plan.steps[1].commands[0]
+    # No repository is designated yet, so the files come from this run's writers.
+    assert plan.steps[1].commands == (
+        (
+            "# commit .github/agent-queue-integration.json (--write-trust-manifest) and "
+            ".github/workflows/main-attestation.yml (--write-audit-workflow) to main, through "
+            "the project's current delivery path"
+        ),
+    )
 
 
 def test_no_ci_plan_stops_at_the_workflow():
@@ -980,3 +987,479 @@ def test_runbook_quotes_the_shipped_shared_route_hashes():
             f"--playbook-id {route.playbook_id} --artifact-sha256 "
             f"{route.artifact.artifact_sha256} --enabled"
         ) in runbook
+
+
+# ---------------------------------------------------------------------------
+# App credential mode (App-mode integration train spec §11)
+# ---------------------------------------------------------------------------
+
+APP_TITLES = (
+    "App mode: land the trust manifest and the audit workflow",
+    "Drain the development publisher",
+    "App mode: set the Actions variables (repository admin)",
+    "App mode: require the attestation on main (repository admin)",
+    "Bind repository, review mode and policy (disabled and drained)",
+    "Observe: preflight without scheduling",
+)
+
+
+def _app_plan(project: str, repository: str, **facts):
+    classification = onboarding.classify(GITHUB.format(repository), _workflows(project))
+    parent, root = _shared_routes()
+    plan = onboarding.plan_onboarding(
+        onboarding.ProjectFacts(project, GITHUB.format(repository), **facts),
+        classification,
+        parent_route=parent,
+        root_route=root,
+        credential_mode="app",
+        attestation_app_id=5075923,
+        github_repository_id=4242,
+        policy_path=f"train-policy.{project}.json",
+    )
+    return plan, {step.title: step for step in plan.steps}
+
+
+def test_app_mode_plan_runs_manifest_drain_variables_ruleset_bind_observe_in_order():
+    plan, steps = _app_plan(
+        "matter-engine-cpp",
+        "matter-engine",
+        integration_repository_id="matter-engine-cpp",
+        current_mode="development",
+    )
+
+    titles = _titles(plan)
+    assert [titles.index(title) for title in APP_TITLES] == sorted(
+        titles.index(title) for title in APP_TITLES
+    )
+    inputs = (
+        "matter-engine-cpp --policy train-policy.matter-engine-cpp.json "
+        "--repository-id matter-engine-cpp"
+    )
+    land = steps[APP_TITLES[0]]
+    assert land.commands[0] == (
+        f"aq integration trust-manifest {inputs} --write .github/agent-queue-integration.json"
+    )
+    assert "main-attestation.yml (--write-audit-workflow) to main" in land.commands[1]
+    variables = steps[APP_TITLES[2]]
+    assert variables.commands == (f"aq integration app-setup {inputs} --apply",)
+    assert "AQ_INTEGRATION_ATTESTATION_APP_ID=5075923" in variables.note
+    assert f"AQ_INTEGRATION_REQUIRED_CHECK_VERSION={plan.check_version}" in variables.note
+    ruleset = steps[APP_TITLES[3]]
+    assert ruleset.commands[0] == f"aq integration app-setup {inputs}"
+    assert ruleset.commands[1] == (
+        "gh api --method POST repos/ElectricJack/matter-engine/rulesets "
+        "--input ruleset.matter-engine-cpp.json"
+    )
+    assert ruleset.commands[-1] == f"aq integration app-verify {inputs}"
+    assert "aq integration app-verify matter-engine-cpp" in steps[APP_TITLES[5]].commands
+    assert not any("gh variable set" in c for step in plan.steps for c in step.commands)
+
+    rule = plan.ruleset["rules"][0]["parameters"]["required_status_checks"]
+    assert rule == [{"context": onboarding.ATTESTATION_NAME, "integration_id": 5075923}]
+    assert plan.ruleset["bypass_actors"] == []
+    assert plan.ruleset["name"] == "Train-only main"
+
+
+def test_app_mode_plan_before_a_repository_record_uses_this_runs_files_and_gh():
+    plan, steps = _app_plan("outrider-ide", "outrider-ide", current_mode="disabled")
+
+    titles = _titles(plan)
+    expected = [title for title in APP_TITLES if not title.startswith("Drain")]
+    assert [title for title in titles if title in APP_TITLES] == expected
+    assert not any("aq integration trust-manifest" in c for c in steps[expected[0]].commands)
+    assert steps[expected[1]].commands == (
+        (
+            "gh variable set AQ_INTEGRATION_ATTESTATION_APP_ID --repo ElectricJack/outrider-ide "
+            "--body 5075923"
+        ),
+        (
+            "gh variable set AQ_INTEGRATION_REQUIRED_CHECK_VERSION --repo "
+            f"ElectricJack/outrider-ide --body {plan.check_version}"
+        ),
+    )
+    assert (
+        "gh api --method POST repos/ElectricJack/outrider-ide/rulesets "
+        "--input ruleset.outrider-ide.json"
+    ) in steps[expected[2]].commands
+    assert "--write-ruleset" in steps[expected[2]].note
+    assert "aq integration app-verify outrider-ide" in steps[expected[4]].commands
+
+
+def test_existing_login_plan_has_no_app_steps():
+    classification = onboarding.classify(GITHUB.format("outrider-ide"), _workflows("outrider-ide"))
+    parent, root = _shared_routes()
+    plan = onboarding.plan_onboarding(
+        onboarding.ProjectFacts("outrider-ide", GITHUB.format("outrider-ide"), current_mode="disabled"),
+        classification,
+        parent_route=parent,
+        root_route=root,
+    )
+    assert not any(title.startswith("App mode") for title in _titles(plan))
+    assert plan.ruleset is None
+    assert not any("app-verify" in c for step in plan.steps for c in step.commands)
+
+
+# ---------------------------------------------------------------------------
+# The main push audit workflow
+# ---------------------------------------------------------------------------
+
+VERIFIER = ROOT / "src/integration/hosted_attestation.py"
+
+
+def _audit(project: str | None, workflows: dict[str, str] | None = None):
+    workflows = _own_workflows() if project is None else (workflows or _workflows(project))
+    url = GITHUB.format(project or "agent-queue")
+    classification = onboarding.classify(url, workflows)
+    fallback = onboarding.audit_fallback(classification)
+    return fallback, onboarding.audit_workflow_template(fallback)
+
+
+def test_audit_workflow_embeds_the_hosted_verifier_verbatim():
+    _fallback, text = _audit("outrider-ide")
+    assert onboarding.embedded_verifier(text) == VERIFIER.read_text(encoding="utf-8")
+
+
+def test_agent_queue_audit_calls_its_ci_like_the_committed_workflow():
+    fallback, text = _audit(None)
+    assert fallback.calls == (".github/workflows/tests.yml",)
+    assert not fallback.fails
+    rendered = yaml.safe_load(text)
+    committed = yaml.safe_load(
+        (ROOT / ".github/workflows/main-attestation.yml").read_text(encoding="utf-8")
+    )
+    for key in ("name", True, "permissions"):
+        assert rendered[key] == committed[key]
+    assert rendered["jobs"]["unattested-ci"] == committed["jobs"]["unattested-ci"]
+    attestation = rendered["jobs"]["attestation"]
+    assert attestation["runs-on"] == "ubuntu-latest"
+    assert {
+        key: value for key, value in attestation["outputs"].items() if key != "reason"
+    } == committed["jobs"]["attestation"]["outputs"]
+    verify = next(step for step in attestation["steps"] if step.get("id") == "verify")
+    committed_verify = committed["jobs"]["attestation"]["steps"][-1]
+    assert verify["env"] == committed_verify["env"]
+
+
+def test_the_audit_is_never_a_gating_workflow():
+    _fallback, text = _audit(None)
+    report = onboarding.analyze_workflow(onboarding.AUDIT_WORKFLOW_PATH, text)
+    assert report.audit and not report.is_ci_candidate
+    assert not report.required_names
+    workflows = {**_workflows("jackkern.com"), onboarding.AUDIT_WORKFLOW_PATH: text}
+    classification = onboarding.classify(GITHUB.format("jackkern.com"), workflows)
+    assert classification.required.sources == (".github/workflows/ci.yml",)
+    assert onboarding.AUDIT_WORKFLOW_PATH not in classification.trigger_fixes
+
+
+def test_audit_without_a_callable_ci_fails_an_unattested_push_job():
+    fallback, text = _audit("matter-engine-cpp")
+    assert fallback.calls == ()
+    assert fallback.uncalled == (
+        (".github/workflows/native-windows.yml", "does not declare workflow_call"),
+    )
+    jobs = yaml.safe_load(text)["jobs"]
+    assert set(jobs) == {"attestation", "unattested-push"}
+    # The project's CI is self-hosted; the audit is not.
+    assert jobs["attestation"]["runs-on"] == "ubuntu-latest"
+    job = jobs["unattested-push"]
+    assert job["needs"] == "attestation"
+    assert "configured == 'true'" in job["if"] and "attested != 'true'" in job["if"]
+    assert "native-windows.yml does not declare workflow_call" in job["steps"][0]["env"]["UNCALLED"]
+    assert "secrets." not in text and "environment" not in text
+
+
+def _gating(extra: str = "", jobs: str = "") -> str:
+    return (
+        "name: CI\n"
+        "on:\n"
+        "  pull_request:\n"
+        "  push:\n"
+        "    branches: [main, 'aq/integration/**', 'aq/parent/**']\n"
+        f"  workflow_call:{extra}\n"
+        "jobs:\n"
+        "  tests:\n"
+        "    name: Tests\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: pytest\n"
+        f"{jobs}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        (
+            _gating(
+                jobs=(
+                    "  deploy:\n"
+                    "    if: github.ref == 'refs/heads/main'\n"
+                    "    environment: production\n"
+                    "    runs-on: ubuntu-latest\n"
+                    "    steps:\n"
+                    "      - run: ./deploy\n"
+                )
+            ),
+            "declares an environment (deploy), so it may deploy",
+        ),
+        (
+            _gating("\n    secrets:\n      TOKEN:\n        required: true"),
+            "workflow_call requires secrets the audit does not pass: TOKEN",
+        ),
+        (
+            _gating("\n    inputs:\n      target:\n        required: true\n        type: string"),
+            "workflow_call requires inputs the audit does not pass: target",
+        ),
+        (
+            _gating() + "permissions:\n  contents: write\n",
+            (
+                "asks for contents: write; the audit's token holds only contents: read and "
+                "checks: read"
+            ),
+        ),
+    ],
+)
+def test_audit_refuses_to_call_a_workflow_that_could_deploy_or_widen_its_token(text, reason):
+    fallback, rendered = _audit("outrider-ide", {".github/workflows/ci.yml": text})
+    assert fallback.calls == ()
+    assert fallback.uncalled == ((".github/workflows/ci.yml", reason),)
+    assert "uses:" not in rendered.split("  unattested-push:")[1]
+
+
+def test_audit_calls_a_workflow_that_declares_workflow_call_safely():
+    text = _gating("\n    inputs:\n      target:\n        type: string\n        default: all")
+    fallback, rendered = _audit("outrider-ide", {".github/workflows/ci.yml": text})
+    assert fallback.calls == (".github/workflows/ci.yml",)
+    jobs = yaml.safe_load(rendered)["jobs"]
+    assert jobs["unattested-ci"]["uses"] == "./.github/workflows/ci.yml"
+    assert "unattested-push" not in jobs
+
+
+def test_the_ci_template_is_callable_by_the_audit():
+    template = onboarding.ci_workflow_template(_files("quilt-trader"))
+    classification = onboarding.classify(
+        GITHUB.format("quilt-trader"), {".github/workflows/ci.yml": template}
+    )
+    assert onboarding.audit_fallback(classification).calls == (".github/workflows/ci.yml",)
+
+
+def test_audit_template_refuses_text_it_would_change():
+    fallback = onboarding.AuditFallback((), ())
+    for verifier in ("x = '${{ github.token }}'\n", "a\nAQ_HOSTED_ATTESTATION_PY\n", "a  \n"):
+        with pytest.raises(ValueError):
+            onboarding.audit_workflow_template(fallback, verifier=verifier)
+    with pytest.raises(ValueError):
+        onboarding.audit_workflow_template(fallback, default_branch="main$(id)")
+
+
+def _shell(script: str, env: dict[str, str], cwd: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["bash", "-e", "-c", script],
+        env={"PATH": "/usr/bin:/bin", **env},
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_rendered_steps_run_as_written(tmp_path):
+    """The verify step writes and runs the embedded verifier; the fallback fails loudly."""
+    import sys
+
+    _fallback, text = _audit("outrider-ide")
+    jobs = yaml.safe_load(text)["jobs"]
+    python = Path(sys.executable).parent
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    verify = next(step for step in jobs["attestation"]["steps"] if step.get("id") == "verify")
+    result = _shell(
+        verify["run"],
+        {
+            "PATH": f"{python}:/usr/bin:/bin",
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "APP_ID": "",
+            "CHECK_VERSION": "",
+        },
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "aq_hosted_attestation.py").read_text() == VERIFIER.read_text()
+    assert "configured=false\n" in output.read_text()
+
+    step = jobs["unattested-push"]["steps"][0]
+    result = _shell(
+        step["run"],
+        {
+            "GITHUB_STEP_SUMMARY": str(summary),
+            "REASON": "no check run",
+            "UNCALLED": step["env"]["UNCALLED"],
+        },
+        tmp_path,
+    )
+    assert result.returncode == 1
+    assert "::error title=Unattested push to main::no check run" in result.stdout
+    assert "### Unattested push to main" in summary.read_text()
+
+
+def test_cli_writes_the_audit_workflow_and_ruleset_in_app_mode(tmp_path):
+    from src.cli.app import cli
+
+    repo = _repo(tmp_path, _own_workflows())
+    client = _client(
+        {
+            "get_project": {
+                "repo_url": GITHUB.format("agent-queue"),
+                "repo_default_branch": "main",
+                "workspace": str(repo),
+            },
+            "integration_status": {"repository_id": "agent-queue2", "effective_mode": "development"},
+        }
+    )
+    app_config = {"integration": {"github_app": {"app_id": 5075923}}}
+    audit, ruleset = tmp_path / "main-attestation.yml", tmp_path / "ruleset.json"
+    with (
+        patch("src.cli.integration._get_client", return_value=client),
+        patch("src.cli.integration._daemon_config", return_value=app_config),
+    ):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--json", "integration", "onboard-train", "agent-queue",
+                "--check-version", "tests-yml-v3", "--github-repository-id", "1160639300",
+                "--repository-id", "agent-queue2", "--no-check-prs",
+                "--write-policy", str(tmp_path / "policy.json"),
+                "--write-audit-workflow", str(audit), "--write-ruleset", str(ruleset),
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.output)["data"]
+    assert data["credential_mode"] == "app"
+    assert data["audit_workflow"]["calls"] == [".github/workflows/tests.yml"]
+    assert onboarding.embedded_verifier(audit.read_text()) == VERIFIER.read_text()
+    assert json.loads(ruleset.read_text()) == data["ruleset"]
+    titles = [step["title"] for step in data["steps"]]
+    assert [title for title in titles if title in APP_TITLES] == list(APP_TITLES)
+
+
+# ---------------------------------------------------------------------------
+# The App-mode runbook (docs/config/app-mode-train.md)
+# ---------------------------------------------------------------------------
+
+APP_RUNBOOK = ROOT / "docs/config/app-mode-train.md"
+_GLOBAL_OPTIONS = {"--json", "--brief"}
+_SHELL_ENDS = {"|", ">", ";", "&&", "#", "||"}
+
+
+def _runbook_commands(text: str) -> list[str]:
+    """Every ``aq ...`` line of a fenced block and every inline ``aq ...`` span."""
+    import re
+
+    commands: list[str] = []
+    prose: list[str] = []
+    fenced = False
+    for line in text.splitlines():
+        if line.strip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            candidate = line.strip().removeprefix("$ ")
+            if candidate.startswith("aq "):
+                commands.append(candidate)
+        else:
+            prose.append(line)
+    for span in re.findall(r"`([^`]+)`", "\n".join(prose)):
+        span = " ".join(span.split())
+        if span.startswith("aq "):
+            commands.append(span)
+    return commands
+
+
+def _resolve_command(command: str, inventory: dict[str, set[str]]) -> tuple[str | None, list]:
+    """``(inventory path, options used)`` for one documented ``aq`` command line."""
+    import shlex
+
+    tokens = [token.strip("[]()") for token in shlex.split(command, comments=True)]
+    words: list[str] = []
+    rest = iter(tokens[1:])
+    for token in rest:
+        if token in _GLOBAL_OPTIONS:
+            continue
+        if token == "--api-url":
+            next(rest, None)
+            continue
+        words.append(token)
+    path, options = None, []
+    for size in range(len(words), 0, -1):
+        candidate = "aq " + " ".join(words[:size])
+        if candidate in inventory:
+            path, remainder = candidate, words[size:]
+            break
+    if path is None:
+        return None, []
+    for index, token in enumerate(remainder):
+        following = remainder[index + 1] if index + 1 < len(remainder) else ""
+        if token in _SHELL_ENDS and not following.startswith("--"):
+            break
+        if token.startswith("--"):
+            options.append(token.split("=", 1)[0])
+    return path, options
+
+
+def _command_problem(command: str, inventory: dict[str, set[str]]) -> str | None:
+    path, options = _resolve_command(command, inventory)
+    if path is None:
+        return f"no CLI command: {command}"
+    unknown = [
+        option
+        for option in options
+        if option not in inventory[path]
+        and option.replace("--no-", "--", 1) not in inventory[path]
+    ]
+    return f"{path} has no option {', '.join(unknown)}: {command}" if unknown else None
+
+
+def test_every_command_in_the_app_mode_runbook_exists_in_the_cli_inventory():
+    recorded = json.loads(
+        (ROOT / "docs/reference/cli-command-inventory.json").read_text(encoding="utf-8")
+    )
+    inventory = {
+        record["path"]: {
+            *record["parameters"]["required"],
+            *record["parameters"]["optional"],
+        }
+        for record in recorded["commands"]
+    }
+    commands = _runbook_commands(APP_RUNBOOK.read_text(encoding="utf-8"))
+
+    assert len(commands) >= 20
+    assert {
+        "aq integration trust-manifest",
+        "aq integration app-verify",
+        "aq integration app-setup",
+        "aq integration onboard-train",
+        "aq doctor",
+    } <= {_resolve_command(command, inventory)[0] for command in commands}
+    problems = [problem for c in commands if (problem := _command_problem(c, inventory))]
+    assert problems == []
+
+
+def test_command_check_rejects_unknown_commands_and_options():
+    inventory = {"aq integration app-verify": {"--policy", "--json"}}
+    assert _command_problem("aq integration app-verify P --policy F", inventory) is None
+    assert _command_problem("aq --json integration app-verify P | python3 -c x", inventory) is None
+    assert "no CLI command" in _command_problem("aq integration app-check P", inventory)
+    assert "no option --apply" in _command_problem(
+        "aq integration app-verify P --apply", inventory
+    )
+
+
+def test_app_mode_docs_point_to_the_runbook():
+    for doc in (
+        "docs/config/train-onboarding.md",
+        "docs/config/agent-queue-train-policy.md",
+        "docs/guides/hierarchical-integration-trains.md",
+    ):
+        assert "app-mode-train.md" in (ROOT / doc).read_text(encoding="utf-8"), doc

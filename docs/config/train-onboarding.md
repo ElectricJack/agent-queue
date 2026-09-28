@@ -15,6 +15,12 @@ Two pieces make any project bindable:
   prints every command from the project's current state to a ready
   observe-mode train. It changes nothing.
 
+This install runs App credential mode, so each GitHub project also needs the
+App-mode trust anchors: the manifest, the main push audit workflow, the Actions
+variables and the ruleset. The planner prints them in order (section 3); the
+end-to-end procedure, with the command output to expect, is
+[app-mode-train.md](app-mode-train.md).
+
 The mode flips are operator-scoped. A LOCAL operator, or a live named
 supervisor of the project (or the global supervisor), runs the integration and
 `aq project set` commands below. The once-per-install playbook import in
@@ -81,6 +87,7 @@ aq integration onboard-train PROJECT \
   [--repo CHECKOUT] [--ref origin/main] \
   [--write-policy train-policy.PROJECT.json] \
   [--write-trust-manifest agent-queue-integration.json] \
+  [--write-audit-workflow main-attestation.yml] [--write-ruleset ruleset.PROJECT.json] \
   [--write-workflow ci.yml]
 ```
 
@@ -150,6 +157,11 @@ Run from agent-queue itself, the planner reproduces
 
 ## 3. App credential mode
 
+The operator runbook for App mode, from prerequisites through cutover,
+rotation, rollback and key rotation, is [app-mode-train.md](app-mode-train.md).
+This section is the reference for what the daemon checks and what the planner
+prints.
+
 This install configures `integration.github_app` (the `agent-queue-train`
 App, id 5075923), so the daemon runs in App credential mode. In that mode
 `daemon_functional_preflight` (`src/integration/preflight.py`) takes the path
@@ -209,16 +221,45 @@ The planner emits the producer `15368` in both credential modes, so a policy
 it writes binds under either one without a rebind. Existing-login credentials
 still accept a slug that an older policy holds. `--credential-mode auto` (the
 default) detects App mode from `~/.agent-queue/config.yaml` and looks up the
-repository's numeric id with `gh api`. `--write-trust-manifest PATH` writes the
-file locally. Commit it as `.github/agent-queue-integration.json` through the
-project's current delivery path before the observe step. It can ride in the
-same change as a trigger fix or a CI workflow. The plan also prints the two
-`gh variable set` commands. The App's single installation must cover every
-target repository, with Actions variables readable; otherwise status reports
-`repository_binding_failed` or `hosted_workflow_variables_unavailable`. The
-reviewed agent-queue policy already names `15368`, and its manifest is committed
-(below), so the agent-queue cutover needs only the variables while this mode is
-configured.
+repository's numeric id with `gh api`. In App mode the plan orders the trust
+anchors around the drain (App-mode spec §11; [app-mode-train.md
+§9.7](app-mode-train.md#97-every-other-project)):
+
+1. **App mode: land the trust manifest and the audit workflow** through the
+   project's current delivery path. Both are inert until the variables are
+   set, and they can ride in the same change as a trigger fix or a CI
+   workflow. With a designated repository the manifest comes from
+   `aq integration trust-manifest PROJECT --policy train-policy.PROJECT.json
+   --repository-id ID --write .github/agent-queue-integration.json`; before
+   the bind creates the repository record, `--write-trust-manifest PATH`
+   writes the same bytes locally. `--write-audit-workflow PATH` renders
+   `main-attestation.yml`.
+2. The drain.
+3. **App mode: set the Actions variables (repository admin)**: `aq integration
+   app-setup PROJECT --policy ... --repository-id ID --apply`, or the two `gh
+   variable set` commands before a repository record exists.
+4. **App mode: require the attestation on main (repository admin)**: the
+   ruleset `--write-ruleset PATH` writes (the §8.1 shape: the attestation
+   pinned to the App, no bypass), posted with `gh api`, then `app-verify`.
+5. The bind, then observe, where `aq integration app-verify PROJECT` checks
+   every item against the bound policy.
+
+The rendered audit workflow embeds `src/integration/hosted_attestation.py`
+verbatim and runs on `ubuntu-latest` whatever runners the project's CI uses.
+For an unattested push it re-runs each gating CI workflow through
+`workflow_call` when that is safe: the workflow declares `workflow_call`, has
+no job with an `environment`, needs no inputs or secrets, and asks for no
+permission beyond `contents: read` and `checks: read`. A workflow with an
+`environment` is never called, because a called workflow runs with the
+caller's `main` ref and a main-only deploy would fire. Any gating workflow it
+cannot call is replaced by a failing `Unattested push to main` job. The CI
+template `--write-workflow` writes declares `workflow_call`. The App's single
+installation must cover every target repository, with Actions variables
+readable; otherwise status reports `repository_binding_failed` or
+`hosted_workflow_variables_unavailable`. The reviewed agent-queue policy
+already names `15368`, and its manifest and audit workflow are committed, so
+the agent-queue cutover needs the variables and the ruleset
+([app-mode-train.md §9.3](app-mode-train.md#93-cutover-supervisor-with-the-repository-admin-at-the-marked-steps)).
 
 The manifest is reviewed repository content, so its initial commit may pass
 through the development publisher. Later check-set rotations may update it
@@ -312,14 +353,18 @@ project's values and a fresh generation read before each mutation:
    `bind-legacy-repositories` preview;
 6. run the ready check: status must report `ready` with zero blockers.
 
+In App credential mode the manifest and audit workflow land before the drain,
+and the Actions variables and the ruleset come between the drain and the bind
+(section 3).
+
 The planner never prints `--mode hierarchy` or `--mode train`. Those flips
 belong to the supervisor after observe is clean (section 7).
 
 ### GitHub with CI: outrider-ide, matter-engine-cpp
 
 ```bash
-aq integration onboard-train outrider-ide --write-policy train-policy.outrider-ide.json --write-trust-manifest agent-queue-integration.json
-aq integration onboard-train matter-engine-cpp --write-policy train-policy.matter-engine-cpp.json --write-trust-manifest agent-queue-integration.json
+aq integration onboard-train outrider-ide --write-policy train-policy.outrider-ide.json --write-trust-manifest agent-queue-integration.json --write-audit-workflow main-attestation.yml --write-ruleset ruleset.outrider-ide.json
+aq integration onboard-train matter-engine-cpp --write-policy train-policy.matter-engine-cpp.json --write-trust-manifest agent-queue-integration.json --write-audit-workflow main-attestation.yml --write-ruleset ruleset.matter-engine-cpp.json
 ```
 
 - outrider-ide pushes CI on every branch and has no designated repository. The
@@ -488,6 +533,10 @@ redeploy nor restart it:
   or editing the watchdog. A CI workflow in this repository must not deploy,
   hold secrets, or reach Trader1. Deploying a new `main` to the coordinator
   stays Jack's manual decision.
+- **The main push audit** (`--write-audit-workflow`) holds no secret and
+  deploys nothing, and the planner never names a fallback workflow that
+  declares an `environment`: such a workflow is replaced by a failing
+  `Unattested push to main` job instead of being called on `main`.
 - **Check after every mutation:**
 
   ```bash

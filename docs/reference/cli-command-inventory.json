@@ -3928,6 +3928,8 @@
           "--write-policy",
           "--write-trust-manifest",
           "--write-workflow",
+          "--write-audit-workflow",
+          "--write-ruleset",
           "--check-prs",
           "--json",
           "--brief",

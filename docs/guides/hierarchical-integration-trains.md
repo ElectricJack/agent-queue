@@ -34,7 +34,8 @@ The command synopsis used below is:
 
 ```text
 aq integration status PROJECT_ID
-aq integration onboard-train PROJECT_ID [--write-policy PATH] [--write-trust-manifest PATH] [--write-workflow PATH]
+aq integration onboard-train PROJECT_ID [--write-policy PATH] [--write-trust-manifest PATH] [--write-workflow PATH] [--write-audit-workflow PATH] [--write-ruleset PATH]
+aq integration app-verify PROJECT_ID [--policy FILE] [--repository-id ID]
 aq integration flush PROJECT_ID
 aq integration enable PROJECT_ID --mode observe --expected-generation GENERATION --reason REASON
 aq integration enable PROJECT_ID --mode train --interval-seconds SECONDS --expected-generation GENERATION --reason REASON
@@ -121,10 +122,42 @@ The two `migrate_sqlite_to_pg` copiers this page used to warn about no longer
 exist. An in-place schema upgrade of the existing PostgreSQL database is
 unaffected.
 
-## 2. Use the daemon user's existing GitHub login
+## 2. GitHub credentials: App mode or existing login
 
-A GitHub App is **not required**. AQ defaults to `gh api` for repository,
-PR, and CI reads/writes, and existing authenticated Git transport for exact
+AQ reaches GitHub in one of two credential modes. Changing the mode requires a
+daemon restart, and an App failure never falls back to a stored login.
+
+**App credential mode is the production configuration.** When
+`~/.agent-queue/config.yaml` sets `integration.github_app` (`app_id`,
+`installation_id`, `private_key_path`), every GitHub read and write goes
+through that App's installation token, and the train trusts three things: CI
+from the policy's producer on the exact candidate, the `Agent Queue
+Integration Attestation` check run the daemon publishes through its own App
+once CI is green, and repository-side trust anchors that nothing in AQ
+writes: the trust manifest `.github/agent-queue-integration.json`, the Actions
+variables `AQ_INTEGRATION_ATTESTATION_APP_ID` and
+`AQ_INTEGRATION_REQUIRED_CHECK_VERSION`, the `main` ruleset that requires the
+attestation pinned to the App with no bypass, and the `main` push audit
+workflow. The operator runbook, from prerequisites through cutover, rotation,
+rollback and key rotation, with the command output to expect, is
+[docs/config/app-mode-train.md](../config/app-mode-train.md).
+`aq integration app-verify PROJECT` checks every anchor read-only, and the
+functional preflight reads the same items, so each `fail` is a status blocker
+of the same name.
+
+In App mode every subject (a root candidate and each parent snapshot) must
+carry the manifest in its own tree. AQ compares it on identity only
+(repository, attestation App, attestation name and CI producer); the frozen
+policy snapshot alone decides which checks are required, so no tree can add,
+drop or rename one, and parent and root may require different sets. A subject
+whose manifest is missing, oversized, malformed or names another identity is
+refused: `aq integration status` shows `subject_trust_invalid` with the
+subject, head SHA, cause and mismatching fields. Refresh that branch from the
+default branch.
+
+**Existing-login mode is for development installs without an App.** With no
+`integration.github_app`, AQ uses `gh api` for repository, PR and CI
+reads/writes, and the existing authenticated Git transport for exact
 fetch/push operations. Run these as the same OS user that runs the daemon:
 
 ```bash
@@ -135,9 +168,12 @@ git ls-remote https://github.com/OWNER/REPOSITORY.git HEAD
 If the account is not logged in, run `gh auth login --hostname github.com`.
 The account needs write access to the project repositories and permission to
 read their CI results. AQ does not print or persist a copy of the gh token.
-GitHub repository protections remain enforced; AQ does not bypass them.
-
-The ordinary integration configuration needs no App IDs or private key:
+GitHub repository protections remain enforced; AQ does not bypass them. This
+mode needs no App ids, private key, trust manifest, attestation or
+`AQ_INTEGRATION_*` variables: AQ verifies the repository identity and exact
+commit against authenticated GitHub results and records durable CI receipts
+before guarded promotion, but GitHub itself enforces nothing about which
+commit reaches `main`.
 
 ```yaml
 integration:
@@ -149,39 +185,24 @@ integration:
 
 The parent and root policy below declare the exact CI check names, version,
 and producer: the producer App's numeric id as a decimal string, `"15368"` for
-GitHub Actions. That is canonical in both credential modes; a legacy
-`github-actions` slug still matches under existing-login credentials, and App
-credential mode refuses it as `ci_producer_not_numeric`. This identifies who
-ran CI, not a separate AQ App you must register.
-AQ verifies the repository identity and exact commit against authenticated
-GitHub results, then records durable CI receipts before guarded promotion.
-No `.github/agent-queue-integration.json`, AQ attestation App, or
-`AQ_INTEGRATION_*` Actions variables are needed in the default gh mode.
-
-Existing installations that explicitly configure `integration.github_app`
-use its installation credential through the shared `gh` path and retain the
-App trust manifest, producer-identity and hosted-variable checks. The default
-existing-login mode uses its policy-derived checks. In App mode every subject
-(a root candidate and each parent snapshot) must carry that manifest in its own
-tree. AQ compares it on identity only (repository, attestation App, attestation
-name and CI producer); the frozen policy snapshot alone decides which checks are
-required, so no tree can add, drop or rename one, and parent and root may
-require different sets. A subject whose manifest is missing, oversized,
-malformed or names another identity is refused: `aq integration status` shows
-`subject_trust_invalid` with the subject, head SHA, cause and mismatching
-fields. Refresh that branch from the default branch. Changing credential mode
-requires a daemon restart; an App failure never falls back to the stored
-login. Historical internal names containing `app_client` are staged
+GitHub Actions. That is canonical in both credential modes, so a policy binds
+under either without a rebind; a legacy `github-actions` slug still matches
+under existing-login credentials, and App credential mode refuses it as
+`ci_producer_not_numeric`. The producer identifies who ran CI, not a separate
+AQ App. Historical internal names containing `app_client` are staged
 compatibility names, not another transport to configure. See
 [GitHub credentials](../reference/configuration.md#github-credentials).
 
 The repository's CI workflow must run on the exact pushed parent and generated
 integration branch commits, not only on `main` or a pull request's synthetic
-merge commit. Declare every full-CI job required at each boundary. The AQ
-repository ships exact-candidate CI reuse on promotion to `main`; other
-repositories need equivalent workflow support before train enablement if they
-must avoid a second full CI run after promotion. Do not waive missing CI or
-substitute an empty required-check set.
+merge commit. Declare every full-CI job required at each boundary. A train
+promotion reuses the candidate's CI and runs no second full CI on `main`. In
+App credential mode the `main` push audit workflow is the safety net: it
+verifies the attestation on every push to `main` and runs full CI after one
+that carries none. agent-queue ships `.github/workflows/main-attestation.yml`;
+`aq integration onboard-train PROJECT --write-audit-workflow PATH` renders one
+for any other project. Do not waive missing CI or substitute an empty
+required-check set.
 
 ## 3. Bind reviewed shared artifacts, classes, and profiles
 
@@ -390,7 +411,8 @@ aq integration enable example --mode hierarchy --expected-generation 4 --reason 
 
 Otherwise do not waive: fix the repository, policy, artifact, activation,
 profile, intelligence-class, GitHub authentication, CI-policy, or runtime-wiring
-blocker (manifest/hosted-variable checks apply only to legacy App mode).
+blocker (in App credential mode also the manifest, hosted-variable and
+protection blockers `aq integration app-verify` names).
 In hierarchy mode, terminal children integrate children-first and the
 parent is completed only after exact current-generation/head receipt and parent
 verification. Root train sweeps remain off.

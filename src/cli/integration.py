@@ -802,6 +802,23 @@ def _render_onboarding(data: dict[str, Any]) -> None:
         console.print(f"validation command: {command}", markup=False, soft_wrap=True)
     if data.get("trust_manifest"):
         console.print("App-mode trust manifest: ready (--write-trust-manifest writes it)")
+    audit = data.get("audit_workflow") or {}
+    if audit and data.get("credential_mode") == "app":
+        calls = ", ".join(audit.get("calls") or [])
+        if not calls:
+            does = "fails an Unattested push job (no gating CI it can call)"
+        elif audit.get("fails"):
+            does = f"re-runs {calls}; fails an Unattested push job for the rest"
+        else:
+            does = f"re-runs {calls}"
+        console.print(
+            f"main push audit: {does} (--write-audit-workflow writes it)", highlight=False
+        )
+        for item in audit.get("uncalled") or []:
+            console.print(
+                f"[yellow]  note: not called: {item['path']}: {item['reason']}[/]",
+                highlight=False,
+            )
     for problem in data.get("problems") or []:
         console.print(f"[red]problem:[/] {problem}", highlight=False)
     for path in data.get("written") or []:
@@ -850,6 +867,10 @@ def _render_onboarding(data: dict[str, Any]) -> None:
               help="Write the App-mode .github/agent-queue-integration.json here.")
 @click.option("--write-workflow", type=click.Path(dir_okay=False),
               help="Write a starting CI workflow here (projects without CI).")
+@click.option("--write-audit-workflow", type=click.Path(dir_okay=False),
+              help="Write the App-mode main push audit (main-attestation.yml) here.")
+@click.option("--write-ruleset", type=click.Path(dir_okay=False),
+              help="Write the App-mode default-branch ruleset JSON here.")
 @click.option("--check-prs/--no-check-prs", default=True, show_default=True,
               help="Ask gh which legacy pull requests are still open.")
 @click.pass_context
@@ -859,7 +880,8 @@ def integration_onboard_train(
     intelligence_class, harness,
     checks, check_version, github_repository_id, validation_commands, repository_id,
     test_command,
-    interval_seconds, write_policy, write_trust_manifest, write_workflow, check_prs,
+    interval_seconds, write_policy, write_trust_manifest, write_workflow,
+    write_audit_workflow, write_ruleset, check_prs,
 ):
     """Plan PROJECT_ID's move onto the integration train; print every step.
 
@@ -867,8 +889,10 @@ def integration_onboard_train(
     required check-run names, and prints the drain, bind, policy, observe and
     ready-check commands.  Nothing is changed: the mode flips stay with the
     supervisor or local operator.  With --repo and --repo-url it plans from Git
-    alone when the daemon's records are out of scope or unreachable.  Runbook:
-    docs/config/train-onboarding.md.
+    alone when the daemon's records are out of scope or unreachable.  In App
+    credential mode it adds the trust manifest and main push audit, the Actions
+    variables and the ruleset, in that order around the drain.  Runbooks:
+    docs/config/train-onboarding.md, docs/config/app-mode-train.md.
     """
     import json
     from pathlib import Path
@@ -1003,6 +1027,8 @@ def integration_onboard_train(
         policy_path=policy_path,
         manifest_path=write_trust_manifest or onboarding.TRUST_MANIFEST_PATH,
         workflow_path=write_workflow or ".github/workflows/ci.yml",
+        audit_workflow_path=write_audit_workflow or onboarding.AUDIT_WORKFLOW_PATH,
+        ruleset_path=write_ruleset or f"ruleset.{project_id}.json",
     )
 
     written: list[str] = []
@@ -1020,6 +1046,27 @@ def integration_onboard_train(
         _write(write_trust_manifest, canonical_text(plan.trust_manifest))
     if write_workflow:
         _write(write_workflow, onboarding.ci_workflow_template(files, test_command=test_command))
+    if write_audit_workflow:
+        if plan.audit_workflow is None:
+            notes.append(
+                "--write-audit-workflow: only a GitHub project has the main push audit; "
+                "nothing written"
+            )
+        else:
+            _write(
+                write_audit_workflow,
+                onboarding.audit_workflow_template(
+                    onboarding.audit_fallback(classification), default_branch=branch
+                ),
+            )
+    if write_ruleset:
+        if plan.ruleset is None:
+            notes.append(
+                "--write-ruleset: the target ruleset needs App credential mode on a GitHub "
+                "project and the App id; nothing written"
+            )
+        else:
+            _write(write_ruleset, json.dumps(plan.ruleset, indent=2) + "\n")
     by_path = {report.path: report for report in classification.workflows}
     data = plan.as_dict()
     data["problems"] = [*notes, *data["problems"]]
