@@ -2,7 +2,7 @@
   "version": 1,
   "parent": {
     "required_checks": {
-      "version": "tests-yml-v3",
+      "version": "ci-4c6e0c2a989c",
       "names": [
         "Tests (cli-conformance)",
         "Tests (default-1/8)",
@@ -53,7 +53,7 @@
   },
   "root": {
     "required_checks": {
-      "version": "tests-yml-v3",
+      "version": "ci-4c6e0c2a989c",
       "names": [
         "Tests (cli-conformance)",
         "Tests (default-1/8)",
