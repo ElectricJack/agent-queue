@@ -29,9 +29,9 @@ from src.git.manager import GitError
 from src.integration.delivery_truth import (
     SETTLEMENT_KEY,
     DeliveryRequest,
-    delivery_snapshot,
     settlement_fields,
 )
+from src.integration.delivery_observer import DeliveryTarget
 from src.integration.publishable_artifact import legacy_artifact
 
 
@@ -359,14 +359,8 @@ async def observe_admission(db, candidate_ids, service):
         if not repo or repo["project_id"] != project_id:
             continue  # Missing/wrong configuration withholds the prerequisite.
         try:
-            store = await service.store(db._row_to_repo(repo), fetch=False)
-            snapshot = await delivery_snapshot(
-                service.git,
-                store,
-                project_id=project_id,
-                repository_id=repo_id,
-                repository_url=repo["url"],
-                target_ref=target,
+            snapshot = await service.delivery_observer.snapshot(
+                DeliveryTarget(project_id, repo_id, repo["url"], target)
             )
             batch.snapshots.append(snapshot)
             scoped = [

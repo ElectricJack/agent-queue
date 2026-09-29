@@ -352,6 +352,10 @@ class DeliveryObserver:
                 f"observer_error: {type(exc).__name__}",
             )
 
+    async def snapshot(self, target: DeliveryTarget) -> DeliverySnapshot:
+        """Fetch one isolated, request-scoped snapshot for an external reader."""
+        return (await self._snapshot(target)).for_request()
+
     async def _evaluate(self, target: DeliveryTarget, task_ids: set[str], max_age: float = 0.0):
         snapshot = (await self._snapshot(target, max_age)).for_request()
         requests = await load_delivery_requests(

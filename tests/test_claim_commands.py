@@ -2397,6 +2397,38 @@ async def test_development_parallel_claims_can_skip_locked_peer(
     assert {r["task"]["id"] for r in results} == {"dependent", "second"}
 
 
+async def test_development_parallel_admission_reads_serialize_fetches(
+    db, development_admission, monkeypatch
+):
+    from src.integration.admission import observe_admission
+
+    env = development_admission
+    env.git(env.source, "push", "origin", "prerequisite:main")
+    assert (await observe_admission(db, ["dependent"], env.service)).allowed == {"dependent"}
+
+    original_fetch = env.service.git.afetch_origin
+    active = 0
+    peak = 0
+
+    async def observed_fetch(*args, **kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        try:
+            await asyncio.sleep(0.05)
+            return await original_fetch(*args, **kwargs)
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(env.service.git, "afetch_origin", observed_fetch)
+    batches = await asyncio.gather(
+        observe_admission(db, ["dependent"], env.service),
+        observe_admission(db, ["dependent"], env.service),
+    )
+    assert [batch.allowed for batch in batches] == [{"dependent"}, {"dependent"}]
+    assert peak == 1
+
+
 async def test_development_waits_for_requires_current_child_delivery(
     handler, db, tmp_path, development_admission
 ):
