@@ -62,7 +62,6 @@ _TASK_COMMANDS = frozenset(
         "stop_task",
         "task_batch_commit",
         "task_recovery_notify",
-        "task_route",
         "task_route_apply",
         "task_route_options",
         "task_route_plan",

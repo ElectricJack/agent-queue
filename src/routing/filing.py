@@ -84,12 +84,21 @@ FILING_HINTS: dict[str, tuple[str, ...]] = {
     "task_batch_propose": ("a task's intelligence_class",),
     "task_batch_update": ("a task's intelligence_class",),
     "task_batch_commit": ("a task's intelligence_class",),
+    # ``aq task route`` re-runs the router (spec §7): it takes hints, and the
+    # override is the only way a human names the profile.
+    "task_route": ("intelligence_class", "task_type"),
 }
 
 FILING_COMMANDS: frozenset[str] = frozenset(FILING_HINTS)
 
 #: The surfaces on which a role creator may name a role profile (§4, D3).
 ROLE_FILING_COMMANDS: frozenset[str] = frozenset({"create_task", "ensure_task"})
+
+#: The one lever that names a profile, which every refusal points to (§7, D2).
+OVERRIDE_HINT = (
+    "In an emergency the local operator or the supervisor may pin one task with "
+    "`aq task route-override --task-id <id> --profile-id <profile> --reason \"...\"`."
+)
 
 
 def is_routing_choice(value: Any) -> bool:
@@ -162,7 +171,7 @@ def choice_forbidden(command: str, refused: list[str] | tuple[str, ...]) -> dict
         "error": (
             f"{command} does not accept routing choices ({', '.join(refused)}): the "
             "project's router picks every task's profile, provider and model. File with "
-            f"hints instead: {', '.join(hints)}."
+            f"hints instead: {', '.join(hints)}. {OVERRIDE_HINT}"
         ),
         "refused": list(refused),
         "hints": list(hints),

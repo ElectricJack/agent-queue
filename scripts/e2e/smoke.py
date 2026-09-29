@@ -406,18 +406,79 @@ def session_token(session_id: str) -> str:
     return aq("session", "token", session_id)["token"]
 
 
-def route_task(task_id: str, profile: str, intelligence_class: str, **intent) -> dict:
-    """Route *task_id* the way the operator does: ``task_route``.
+#: The stage profiles a role task keeps (mandatory routing §4, D3): never routed.
+ROLE_PROFILES = frozenset({"triage", "spec-ingest", "reviewer", "final-reviewer"})
+#: Why the operator overrides a route in this kit; the override needs 10-400 chars.
+OVERRIDE_REASON = "e2e Tier 1: the operator routes this task by hand"
 
-    Filing carries hints, never routes (mandatory task routing): a task is
-    created unrouted, with its class as a hint.  Tier 1 has no
-    assignment-playbook LLM, so the fixture's deterministic assignment
-    decision is the operator's ``task_route`` right after filing.  *intent*
-    is ``pin=True`` or ``provider_intent=...``.
+
+def _e2e_sql(statement: str, *params) -> str:
+    """Run one statement on the disposable e2e database (Tier 1 stand-ins only)."""
+    import asyncio
+
+    import asyncpg
+
+    url = os.environ.get("E2E_DB_URL", "")
+    check(url, "E2E_DB_URL is not set: run the kit through scripts/e2e-smoke.sh")
+
+    async def run() -> str:
+        conn = await asyncpg.connect(url.replace("postgresql+asyncpg://", "postgresql://", 1))
+        try:
+            return await conn.execute(statement, *params)
+        finally:
+            await conn.close()
+
+    return asyncio.run(run())
+
+
+def route_task(task_id: str, profile: str, intelligence_class: str) -> None:
+    """Write the route the project's router would write for *task_id*.
+
+    Filing carries hints, never routes, and only the bound routing playbook
+    writes a route (mandatory task routing).  Tier 1 runs no router LLM and
+    its fixture profiles and classes are not in the shipped policy, so this
+    stands in for the router's choice: a ``router`` route -- ``role`` for a
+    stage profile -- whose candidates are every enabled profile of the class
+    with the chosen one first, which is what failover, spill and undo move
+    among.  The operator's audited lever, ``aq task route-override``, is
+    exercised by S3, S16 and S19 (:func:`override_route`).
     """
-    return api_checked("task_route", {
+    profiles = collection_rows(api("list_profiles", {}), "profiles")
+    same_class = [
+        row for row in profiles
+        if row.get("default_class") == intelligence_class and row.get("enabled", True)
+        and row.get("id") != profile and row.get("id") not in ROLE_PROFILES
+    ]
+    chosen = next((row for row in profiles if row.get("id") == profile), {"id": profile})
+    candidates = [
+        {
+            "profile_id": row["id"], "intelligence_class": intelligence_class,
+            "harness": row.get("harness") or "", "lifecycle": row.get("lifecycle") or "task",
+        }
+        for row in ([chosen] + ([] if profile in ROLE_PROFILES else same_class))
+    ]
+    route = {
+        "version": 1, "profile_id": profile, "intelligence_class": intelligence_class,
+        "provider_intent": "class_only", "candidates": candidates, "rule": "e2e",
+        "reason": "e2e Tier 1 stand-in for the router's deterministic choice",
+    }
+    source = "role" if profile in ROLE_PROFILES else "router"
+    status = _e2e_sql(
+        "UPDATE tasks SET profile_id = $1, intelligence_class = $2, "
+        "provider_intent = 'class_only', route_source = $3, route = $4::jsonb, "
+        "updated_at = extract(epoch from now()) "
+        "WHERE id = $5 AND assigned_agent_id IS NULL "
+        "AND status IN ('DEFINED', 'READY', 'BLOCKED', 'PAUSED')",
+        profile, intelligence_class, source, json.dumps(route), task_id,
+    )
+    check(status == "UPDATE 1", f"could not route {task_id} to {profile}: {status}")
+
+
+def override_route(task_id: str, profile: str, intelligence_class: str) -> dict:
+    """The operator's audited emergency override: pinned, and resolves a routing gate."""
+    return api_checked("task_route_override", {
         "task_id": task_id, "profile_id": profile,
-        "intelligence_class": intelligence_class, **intent,
+        "intelligence_class": intelligence_class, "reason": OVERRIDE_REASON,
     })
 
 
@@ -430,8 +491,8 @@ def create_task(
 ) -> str:
     """``create_task`` over REST — ``aq task create`` has no JSON envelope yet.
 
-    With *profile*, the task is filed with its class as a hint and then routed
-    to *profile* by :func:`route_task`.
+    With *profile*, the task is filed with its class as a hint and then given
+    the route the router would write for *profile* (:func:`route_task`).
     """
     args = {"project_id": project_id, "title": title, "description": f"e2e: {title}"}
     if intelligence_class is None and profile == POOL_PROFILE:
@@ -832,17 +893,19 @@ def s3_worker_filed_work(state: dict) -> str:
     check(gate_reasons, f"no open routing gate on {filed_id}; explain said {reasons}")
     gate_id = gate_reasons[0]["ref"]
 
-    # `task_route` is the only resolver for a routing gate (dv2 phase 1).
-    # A triage *agent* calls it; with no LLM in Tier 1 the operator surface
-    # stands in, which exercises the same command the agent would run.
+    # Only a route write resolves a routing gate: the project's router, or
+    # the operator's audited override (mandatory routing §7).  With no router
+    # LLM in Tier 1 the operator's override stands in.
     routed = aq(
-        "task", "route",
+        "task", "route-override",
         "--task-id", filed_id,
         "--profile-id", POOL_PROFILE,
         "--intelligence-class", POOL_CLASS,
+        "--reason", OVERRIDE_REASON,
     )
-    check(routed.get("success"), f"task route failed: {routed}")
-    check(routed["resolved_gate_ids"], "routing did not resolve the gate")
+    check(routed.get("success"), f"task route-override failed: {routed}")
+    check(routed["resolved_gate_ids"], "the override did not resolve the gate")
+    check(routed["route_source"] == "override", f"not an override: {routed}")
 
     after = task_show(filed_id)
     check(after["profile_id"] == POOL_PROFILE, f"profile not written: {after['profile_id']}")
@@ -1887,15 +1950,12 @@ def live_sessions_for(profile_id: str) -> list[dict]:
     ]
 
 
-def failover_task(
-    title: str, profile: str, cls: str, *, priority: int, pin: bool = False,
-    provider_intent: str | None = None,
-) -> str:
+def failover_task(title: str, profile: str, cls: str, *, priority: int, pin: bool = False) -> str:
     """File a hint-only task, then route it to *profile*.
 
-    ``pin`` pins it; ``provider_intent`` sets the intent outright.  Either
-    is given in this one route: ``task_route`` never downgrades an intent
-    on the same provider, so a later ``class_only`` route would not stick.
+    Unpinned, it carries the route the router would write: ``class_only``,
+    with every profile of its class as a candidate.  ``pin`` pins it by the
+    operator's audited override instead, the only pin there is.
     """
     args = {
         "project_id": PROJECT,
@@ -1907,10 +1967,10 @@ def failover_task(
     result = api("create_task", args)
     task_id = result.get("created") or result.get("task_id")
     check(task_id, f"create_task({title}) returned no id: {result}")
-    intent = {"pin": True} if pin else {}
-    if provider_intent is not None:
-        intent["provider_intent"] = provider_intent
-    route_task(task_id, profile, cls, **intent)
+    if pin:
+        override_route(task_id, profile, cls)
+    else:
+        route_task(task_id, profile, cls)
     return task_id
 
 
@@ -2000,13 +2060,13 @@ def _s16_outage(state: dict) -> dict:
     solo = failover_task("S16 solo-high", SOLO_A, "solo-high", priority=40)
     class_only = []
     for n, p in ((1, 25), (2, 35)):
-        class_only.append(failover_task(
-            f"S16 class-only {n}", STD_A, "std-high", priority=p, provider_intent="class_only",
-        ))
+        class_only.append(failover_task(f"S16 class-only {n}", STD_A, "std-high", priority=p))
     intents = {tid: task_show(tid)["provider_intent"] for tid in pref + [pinned, solo] + class_only}
-    check(all(intents[t] == "preferred" for t in pref + [solo]), f"explicit profile != preferred: {intents}")
-    check(intents[pinned] == "pinned", f"--pin did not pin: {intents[pinned]}")
-    check(all(intents[t] == "class_only" for t in class_only), f"class_only edit lost: {intents}")
+    check(
+        all(intents[t] == "class_only" for t in pref + [solo] + class_only),
+        f"a router route is class_only: {intents}",
+    )
+    check(intents[pinned] == "pinned", f"the override did not pin: {intents[pinned]}")
     note(f"queued 3 preferred {pref}, pinned {pinned}, solo-high {solo}, class_only {class_only}")
 
     # -- 2. detected within two launches; nothing further launches ------------
@@ -2063,7 +2123,7 @@ def _s16_outage(state: dict) -> dict:
     moved = task_show(pref[0])
     check(moved["profile_id"] == STD_B, f"moved task is on {moved['profile_id']}")
     check(moved["rerouted_from"] == STD_A, f"rerouted_from: {moved['rerouted_from']}")
-    check(moved["provider_intent"] == "preferred", "a re-route changed the intent")
+    check(moved["provider_intent"] == "class_only", "a re-route changed the intent")
     check(moved["intelligence_class"] == "std-high", "a re-route changed the class")
     comments = aq("task", "comments", pref[0])
     bodies = [c.get("body", "") for c in collection_rows(comments, "comments")]
@@ -2283,10 +2343,7 @@ def _prepare_failover_recovery(state: dict) -> str:
     solo = failover_task("S16 recovery solo", SOLO_A, "solo-high", priority=40)
     failover_task("S16 recovery preferred", STD_A, "std-high", priority=30)
     for priority in (25, 35):
-        failover_task(
-            "S16 recovery class-only", STD_A, "std-high", priority=priority,
-            provider_intent="class_only",
-        )
+        failover_task("S16 recovery class-only", STD_A, "std-high", priority=priority)
     wait_provider(PROVA, ("unauthenticated",), what="the recovery fixture login failure")
     sweep = reroute()
     check([row["task_id"] for row in sweep["moved"]] == [moved], f"recovery fixture sweep: {sweep}")
@@ -2793,9 +2850,9 @@ def s19_scoped_planner_graph(state: dict) -> str:
     after_denials = api("task_children", {"task_id": held_task}, token=planner.token)
     check(after_denials.get("count") == 1, f"denied graphs wrote children: {after_denials}")
 
-    # A worker-filed node waits on its routing gate; the operator's route
+    # A worker-filed node waits on its routing gate; the operator's override
     # resolves it (the router's job once a project's router is ready).
-    route_task(child_id, POOL_PROFILE, POOL_CLASS)
+    override_route(child_id, POOL_PROFILE, POOL_CLASS)
 
     def child_ready() -> dict | None:
         row = task_show(child_id)

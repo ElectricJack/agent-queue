@@ -337,57 +337,56 @@ async def test_worker_may_not_pin_by_edit(setup) -> None:
     assert (await db.get_task("t1")).provider_intent == CLASS_ONLY
 
 
-# -- task_route ------------------------------------------------------------------
+# -- the override and aq task route ------------------------------------------------
 
 
-async def test_task_route_by_a_caller_is_preferred(setup) -> None:
+async def test_an_override_pins_its_provider_and_audits_the_intent(setup) -> None:
+    """Mandatory routing §7: an override is a human's statement, so it pins."""
     handler, db = setup
+    handler.config.swarm.enabled = True  # a pool has slots only while the swarm runs
     await _plain_task(db)
-    result = await handler._cmd_task_route({"task_id": "t1", "profile_id": "standard-high-codex"})
-    assert result["success"] is True and result["provider_intent"] == PREFERRED
-    assert (await db.get_task("t1")).provider_intent == PREFERRED
+    result = await handler._cmd_task_route_override({
+        "task_id": "t1", "profile_id": "standard-high-codex",
+        "reason": "the provider is the requirement here",
+    })
+    assert result["success"] is True and result["provider_intent"] == PINNED, result
+    assert (await db.get_task("t1")).provider_intent == PINNED
+    audit = await db.get_task_meta("t1", "provider_intent_audit")
+    assert (audit["intent"], audit["previous"]) == (PINNED, CLASS_ONLY)
 
 
-async def test_task_route_from_the_playbook_is_class_only(setup) -> None:
+async def test_task_route_hands_a_pinned_task_back_class_only(setup) -> None:
     handler, db = setup
+    handler.config.swarm.enabled = True
     await _plain_task(db)
-    result = await handler._cmd_task_route({"task_id": "t1", "profile_id": "standard-high-codex",
-                                            "provider_intent": CLASS_ONLY})
-    assert result["success"] is True
+    await handler._cmd_task_route_override({
+        "task_id": "t1", "profile_id": "standard-high-codex",
+        "reason": "the provider is the requirement here",
+    })
+    result = await handler._cmd_task_route({"task_id": "t1"})
+    assert result["success"] is True, result
+    task = await db.get_task("t1")
+    assert (task.profile_id, task.provider_intent) == (None, CLASS_ONLY)
+
+
+async def test_a_worker_may_not_pin_by_override(setup) -> None:
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import CapabilityPolicy
+
+    handler, db = setup
+    handler.config.swarm.enabled = True
+    await _plain_task(db)
+    worker = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, session_id="s1", project_id="p",
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["task_route_override"]),
+    )
+    with principal_context(worker):
+        result = await handler.execute("task_route_override", {
+            "task_id": "t1", "profile_id": "standard-high-codex",
+            "reason": "the provider is the requirement here",
+        })
+    assert result["code"] == "routing.not_permitted", result
     assert (await db.get_task("t1")).provider_intent == CLASS_ONLY
-    # A routed class_only row is the default: no audit write.
-    assert await db.get_task_meta("t1", "provider_intent_audit") is None
-
-
-async def test_task_route_never_downgrades_on_the_same_provider(setup) -> None:
-    handler, db = setup
-    await _plain_task(db, profile_id="standard-high-claude", provider_intent=PREFERRED)
-    await handler._cmd_task_route({"task_id": "t1", "profile_id": "standard-high-claude",
-                                   "provider_intent": CLASS_ONLY})
-    assert (await db.get_task("t1")).provider_intent == PREFERRED
-    # pinned stays pinned against a weaker intent on the same provider...
-    await db.update_task_routing("t1", profile_id="standard-high-claude", route_source="legacy",
-                                 intelligence_class=None, preferred_workspace_id=None,
-                                 provider_intent=PINNED)
-    result = await handler._cmd_task_route({"task_id": "t1", "profile_id": "standard-high-claude",
-                                            "provider_intent": PREFERRED})
-    assert result["provider_intent"] == PINNED
-    # ...but a route onto another provider takes the intent it was given.
-    result = await handler._cmd_task_route({"task_id": "t1", "profile_id": "standard-high-codex",
-                                            "provider_intent": CLASS_ONLY})
-    assert result["provider_intent"] == CLASS_ONLY
-    assert (await db.get_task("t1")).provider_intent == CLASS_ONLY
-
-
-async def test_task_route_pin_permission(setup) -> None:
-    handler, db = setup
-    await _plain_task(db)
-    result = await _as(handler, WORKER_SCOPE, lambda: handler._cmd_task_route(
-        {"task_id": "t1", "profile_id": "standard-high-codex", "pin": True}))
-    assert result["code"] == "provider_intent.pin_not_permitted"
-    result = await handler._cmd_task_route(
-        {"task_id": "t1", "profile_id": "standard-high-codex", "pin": True})
-    assert result["provider_intent"] == PINNED
 
 
 # -- aq-graph ------------------------------------------------------------------

@@ -2545,6 +2545,7 @@ class TaskQueryMixin:
         task_id: str,
         *,
         class_hint: str | None | object = _UNSET,
+        task_type: str | None | object = _UNSET,
         route_source: str | None = None,
         queued_only: bool = False,
     ) -> bool:
@@ -2553,11 +2554,12 @@ class TaskQueryMixin:
         Clears the route — ``profile_id``, ``intelligence_class`` and the
         ``route`` record — and stores ``route_source='unrouted'`` and
         ``provider_intent='class_only'``, so the next cascade emits
-        ``task.route_needed`` (mandatory-routing spec §5.1).  The record's
+        ``task.route_needed`` (mandatory-routing spec §5.1, §7).  The record's
         ``constraints`` (review dispatch's ``exclude_providers``) and its
         ``legacy`` audit survive: they are the task's, not the route's, and
         the router re-plans under them.  *class_hint* replaces the filer's
-        hint when given; ``None`` clears it.  *route_source* resets only a
+        hint when given; ``None`` clears it.  *task_type* likewise replaces
+        the kind (``aq task route --task-type``).  *route_source* resets only a
         task whose current route has that source, and *queued_only* only a
         DEFINED, READY or BLOCKED one.  Guarded like
         :meth:`update_task_routing`: a task that is claimed, running or in a
@@ -2583,6 +2585,8 @@ class TaskQueryMixin:
         }
         if class_hint is not _UNSET:
             vals["class_hint"] = class_hint
+        if task_type is not _UNSET:
+            vals["task_type"] = task_type
         active_session = select(sessions.c.id).where(
             sessions.c.task_id == tasks.c.id,
             sessions.c.state.in_(("starting", "running", "draining")),

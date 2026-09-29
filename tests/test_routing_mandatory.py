@@ -291,6 +291,10 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
     ("src/database/queries/routing_queries.py", "RoutingQueryMixin.write_router_route"): (
         "task_route_apply: the bound router's single route write (spec §6.6)"
     ),
+    # -- the audited emergency override (spec §7, D2) -------------------------
+    ("src/database/queries/routing_queries.py", "RoutingQueryMixin.write_override_route"): (
+        "task_route_override: the local operator's or supervisor's pinned override"
+    ),
     # -- failover, spill and reroute-undo -------------------------------------
     ("src/database/queries/task_reroute_queries.py", "TaskRerouteQueryMixin.apply_task_reroute"): (
         "provider failover, capacity spill and preferred-work moves (spec §6.8, Task 6)"
@@ -314,7 +318,8 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
         "nulls the profile a deleted profile leaves behind (spec §9.2)"
     ),
     ("src/database/queries/task_queries.py", "TaskQueryMixin.reset_task_route"): (
-        "sends a queued task back to its router: clears the route (edit_task hint edits)"
+        "sends a queued task back to its router: clears the route (aq task route, "
+        "edit_task hint edits)"
     ),
     # -- the persistence layer -------------------------------------------------
     ("src/database/queries/task_queries.py", "TaskQueryMixin._insert_task_row"): (
@@ -339,11 +344,6 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
     ),
     ("src/orchestrator/pools.py", "PoolsMixin._launch_pool_session_inner"): (
         "a throwaway Task describing a pool worker's requirement"
-    ),
-    # -- reworked by later tasks of the spec -----------------------------------
-    ("src/commands/task_commands.py", "TaskCommandsMixin._cmd_task_route"): (
-        "the manual route command: an override for the operator or elevated supervisor, "
-        "legacy for anyone else; Task 7 makes it re-run the router instead"
     ),
 }
 
@@ -601,6 +601,7 @@ def _surface_args(surface: str) -> dict:
         "task_batch_propose": {"project_id": "p", "source": "s", "tasks": [spec], "edges": []},
         "task_batch_update": {"proposal_id": "none", "payload": {"tasks": [spec], "edges": []}},
         "task_batch_commit": {"proposal_id": "none"},
+        "task_route": {"task_id": "queued"},
     }[surface]
 
 
@@ -621,6 +622,8 @@ def _assert_refused(result: dict, refused: str) -> None:
     assert result.get("code") == ROUTING_CHOICE_FORBIDDEN, result
     assert refused in result["refused"], result
     assert "intelligence_class" in result["error"], result
+    # The one lever that names a profile (spec §5.1, §7).
+    assert "aq task route-override" in result["error"], result
 
 
 @pytest.mark.parametrize("principal", PRINCIPALS)
@@ -635,6 +638,7 @@ def _assert_refused(result: dict, refused: str) -> None:
         "task_batch_propose",
         "task_batch_update",
         "task_batch_commit",
+        "task_route",
     ],
 )
 async def test_every_surface_refuses_every_routing_argument(env, surface, principal) -> None:
@@ -985,7 +989,7 @@ def test_filing_contract_fingerprints_are_unchanged(command: str) -> None:
     assert "rejected" in {spec.name for spec in contract.execution.outcomes}
 
 
-@pytest.mark.parametrize("command", ["create_task", "ensure_task", "edit_task"])
+@pytest.mark.parametrize("command", ["create_task", "ensure_task", "edit_task", "task_route"])
 def test_the_tool_definitions_drop_the_routing_arguments(command: str) -> None:
     """The LLM-facing schema, the CLI and the typed route no longer offer them."""
     from src.routing.filing import REFUSED_ROUTING_ARGS

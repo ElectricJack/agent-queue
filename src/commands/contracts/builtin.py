@@ -403,20 +403,6 @@ class TaskBatchCommitValue(CommandValue):
     task_ids: list[str]
 
 
-class TaskRouteArgs(CommandArgs):
-    task_id: str
-    profile_id: str
-    intelligence_class: str | None = None
-    workspace_id: str | None = None
-    reason: str | None = None
-    # Provider intent (provider-failover D9).  The routing playbook passes
-    # ``class_only``; a caller that omits it means the profile as a
-    # preference.  ``task_route`` never downgrades an intent on the same
-    # provider.
-    provider_intent: str | None = None
-    pin: bool | None = None
-
-
 class TaskRouteOptionsArgs(CommandArgs):
     task_id: str
 
@@ -436,12 +422,6 @@ class TaskRouteOptionsValue(CommandValue):
     # Rows on an unavailable provider (provider-failover D11 mechanism 3):
     # reported, never offered for automatic selection.
     unavailable_options: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class TaskRouteValue(CommandValue):
-    task_id: str
-    resolved_gate_ids: list[str]
-    provider_intent: str | None = None
 
 
 class TaskRoutePlanArgs(CommandArgs):
@@ -886,7 +866,6 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         "memory_save": "saved",
         "memory_search": "searched",
         "get_downstream_tasks": "listed",
-        "task_route": "routed",
         "stop_task": "stopped",
         "message_send": "queued",
         "provider_allocation_status": "read",
@@ -1638,23 +1617,6 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "routing_gate": "the task's routing gate",
         },
     ),
-    "task_route": CommandPresentation(
-        title="Route a task to a profile",
-        summary="Assign the agent profile that will run the task, and clear its routing gate.",
-        arg_labels={
-            "task_id": "Task",
-            "profile_id": "Agent profile",
-            "intelligence_class": "Intelligence class",
-            "workspace_id": "Workspace",
-            "reason": "Reason",
-        },
-        outcome_labels={"routed": "Routed", "rejected": "Rejected"},
-        result_labels={"resolved_gate_ids": "Resolved gates"},
-        subject_labels={
-            "task_routing": "the task's routing",
-            "routing_gate": "the task's routing gate",
-        },
-    ),
 }
 
 
@@ -1883,19 +1845,6 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             TaskRouteApplyValue,
             _outcomes("routed", "stale"),
             SideEffectClass.UPDATE,
-            (
-                UpdateClause(subject=EffectSubject.TASK_ROUTING),
-                ResolveClause(subject=EffectSubject.ROUTING_GATE, target_arg="task_id"),
-            ),
-            IdempotencySpec(mode="natural"),
-            True,
-        ),
-        (
-            "task_route",
-            TaskRouteArgs,
-            TaskRouteValue,
-            _outcomes("routed"),
-            SideEffectClass.COMPOSITE,
             (
                 UpdateClause(subject=EffectSubject.TASK_ROUTING),
                 ResolveClause(subject=EffectSubject.ROUTING_GATE, target_arg="task_id"),

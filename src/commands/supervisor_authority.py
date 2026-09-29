@@ -1,4 +1,4 @@
-"""Shared authority checks for integration controls run by supervisors."""
+"""Shared authority checks for controls run by the operator or a supervisor."""
 
 from __future__ import annotations
 
@@ -8,14 +8,18 @@ from src.commands.principal import PrincipalKind, TRUSTED_LOCAL, current_princip
 LIVE_SESSION_STATES = frozenset({"starting", "running", "draining"})
 
 
-async def integration_operator(db, project_id: str | None) -> tuple[str | None, str | None]:
-    """Return an audit principal label or a refusal for an integration control.
+async def operator_or_supervisor(
+    db, project_id: str | None, *, subject: str = "control"
+) -> tuple[str | None, str | None]:
+    """Return an audit principal label or a refusal for an operator control.
 
     The loopback operator is always admitted.  A session principal must be an
     elevated, live, named supervisor for this project (or the global
     supervisor) before it may run a control.  The database row is consulted
     rather than trusting the request scope alone, so a stale token cannot keep
-    operating after its supervisor has stopped.
+    operating after its supervisor has stopped.  Every other principal -- a
+    worker or any other session token, a playbook step, a daemon service -- is
+    refused.  *subject* names the control in the cross-project refusal.
     """
     principal = current_principal() or TRUSTED_LOCAL
     if principal.kind is PrincipalKind.LOCAL:
@@ -34,7 +38,12 @@ async def integration_operator(db, project_id: str | None) -> tuple[str | None, 
     ):
         return None, "a live named supervisor session is required"
     if principal.project_id is not None and principal.project_id != project_id:
-        return None, "integration control belongs to another project"
+        return None, f"{subject} belongs to another project"
     if row.project_id is not None and row.project_id != project_id:
-        return None, "integration control belongs to another project"
+        return None, f"{subject} belongs to another project"
     return f"supervisor session:{row.id}", None
+
+
+async def integration_operator(db, project_id: str | None) -> tuple[str | None, str | None]:
+    """:func:`operator_or_supervisor` for an integration control."""
+    return await operator_or_supervisor(db, project_id, subject="integration control")

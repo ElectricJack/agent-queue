@@ -82,7 +82,7 @@ rule's whole shape:
 | Outcome | What the rule does |
 |---|---|
 | `already_routed` | Ends the rule; the task carries a class and a profile that serves it. |
-| `explicit` | Goes to step 3 — [`task_route`](task_route.md) with `routing.explicit_profile_id`. |
+| `explicit` | Goes to step 3 — `task_route` with `routing.explicit_profile_id` (the superseded router; the manual route write is gone, see [`task_route_apply`](task_route_apply.md)). |
 | `undecided` | Goes to step 2 — an LLM step picks a row from `options`. |
 | `no_options` | Fails the rule; nothing configured can execute the task. |
 | `held` | Ends the rule quietly; options exist, but every one is on a provider that is unavailable right now ([provider failover](../../specs/provider-failover.md) D13a). |

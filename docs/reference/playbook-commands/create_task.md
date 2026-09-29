@@ -198,7 +198,8 @@ their own generation/edge rows inside one transaction.
 
 Everything is committed database state and survives a restart, including the
 open routing gate: a task created without an executable route stays `DEFINED`
-and blocked until [`task_route`](task_route.md) resolves the gate. Bus emission
+and blocked until a route write -- the router's
+[`task_route_apply`](task_route_apply.md) -- resolves the gate. Bus emission
 is best-effort and *after* the commit — a subscriber failure is logged, never
 rolled back (`task_commands.py:2490-2507`), and assignment routing reconciles
 from the database rather than from the event.

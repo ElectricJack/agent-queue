@@ -186,8 +186,8 @@ class TestFiling:
             id="prereq", project_id=PROJECT_ID, title="prereq", description="p",
         ))
         # A worker files hints only (mandatory routing §5.2); the route comes
-        # later, here from the operator's task_route, which resolves the
-        # filing's routing gate.
+        # later, here from the operator's audited override (§7), which, like
+        # the router's apply, resolves the filing's routing gate.
         result = await scoped(handler, sid)._cmd_create_task({
             "title": "Follow-up", "description": "d", "root": True,
             "reason": "held exposed it", "depends_on": "prereq",
@@ -196,8 +196,10 @@ class TestFiling:
         assert result.get("success") is True, result
         task_id = result["task_id"]
         handler._current_scope = None
-        routed = await handler._cmd_task_route({
+        handler.config.swarm.enabled = True  # a pool has slots only while the swarm runs
+        routed = await handler._cmd_task_route_override({
             "task_id": task_id, "profile_id": "worker", "intelligence_class": "standard-high",
+            "reason": "operator routes the filing by hand in this test",
         })
         assert routed.get("success") is True, routed
         await handler.orchestrator._check_defined_tasks()
@@ -1438,7 +1440,7 @@ class TestRootFilingCLI:
 
 
 async def route(db, task_id):
-    """Route *task_id* as ``task_route`` would: a profile and a class on the row."""
+    """Put a legacy route on *task_id*: a profile and a class on the row."""
     if await db.get_profile("standard-high-claude") is None:
         await db.create_profile(
             AgentProfile(id="standard-high-claude", name="standard-high-claude", harness="claude")

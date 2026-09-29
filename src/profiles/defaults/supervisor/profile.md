@@ -206,6 +206,7 @@ its outbox; transport failures never need a new author turn.
     "task_claim",
     "task_recover",
     "task_route",
+    "task_route_override",
     "task_set",
     "task_show",
     "task_subtask_add",

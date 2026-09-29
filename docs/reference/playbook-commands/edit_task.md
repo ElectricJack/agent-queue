@@ -87,8 +87,8 @@ No shipped playbook in
 [`src/prompts/default_playbooks/`](../../../src/prompts/default_playbooks) calls
 `edit_task`, and that is a design position rather than an omission: the default
 pipeline creates work and gates it, and *routing* — the field a pipeline most
-often wants to write — has its own narrower command,
-[`task_route`](task_route.md), which also resolves the routing gate. A custom
+often wants to write — belongs to the project's router alone,
+[`task_route_apply`](task_route_apply.md), which also resolves the routing gate. A custom
 policy reaches for `edit_task` when it needs to re-prioritise, retype or
 re-describe an existing task, or to raise and clear `needs_attention` from an
 automated observer.

@@ -193,6 +193,50 @@ def format_task_table(
     return table
 
 
+def _as_mapping(value: Any) -> dict[str, Any]:
+    """A free-form object field as a dict: a plain dict or a generated model."""
+    if isinstance(value, dict):
+        return value
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            data = to_dict()
+        except Exception:  # noqa: BLE001 - an unreadable field renders as absent
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _route_fields(task: Any) -> list[tuple[str, str]]:
+    """Who routed the task and why (mandatory routing §10).
+
+    ``Route`` is the source and the target; the router's lane, rule and
+    reason, or an override's author and reason, follow when recorded.
+    """
+    source = getattr(task, "route_source", None)
+    if not isinstance(source, str) or not source:
+        return []
+    profile = getattr(task, "profile_id", None)
+    klass = getattr(task, "intelligence_class", None)
+    target = ""
+    if isinstance(profile, str) and profile:
+        target = f" -> {profile}" + (f" ({klass})" if isinstance(klass, str) and klass else "")
+    fields = [("Route", f"{source}{target}")]
+    route = _as_mapping(getattr(task, "route", None))
+    override = _as_mapping(route.get("override"))
+    if source == "override" and override:
+        by, why = override.get("by") or "?", override.get("reason") or ""
+        fields.append(("Override", f"by {by}: {why}"))
+        return fields
+    lane, rule = route.get("lane"), route.get("rule")
+    if lane or rule:
+        parts = (rule, f"lane {lane}" if lane else None)
+        fields.append(("Route rule", " / ".join(str(part) for part in parts if part)))
+    if route.get("reason"):
+        fields.append(("Route reason", str(route["reason"])))
+    return fields
+
+
 def format_task_detail(
     task: Any,
     deps_on: list[str | dict] | None = None,
@@ -234,6 +278,7 @@ def format_task_detail(
     rerouted = getattr(task, "rerouted_from", None)
     if isinstance(rerouted, str) and rerouted:
         fields.append(("Re-routed from", rerouted))
+    fields.extend(_route_fields(task))
     hold = getattr(task, "provider_hold", None)
     hold_get = hold.get if isinstance(hold, dict) else (lambda k: getattr(hold, k, None))
     hold_kind = hold_get("kind") if hold is not None else None

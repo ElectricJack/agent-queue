@@ -1296,7 +1296,7 @@
       ]
     }
   },
-  "digest": "sha256:43ea8bc9070b26f6cff122fdc50335cfeb55da50193c6f9760a963d8a0cfc324",
+  "digest": "sha256:900f8232cbca77db6e766ecc3348f0462e691de3ac56dda1d643519596e85696",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -10751,11 +10751,13 @@
         "src.assignment_routing",
         "src.commands.contracts.models",
         "src.commands.handler",
+        "src.commands.principal",
         "src.config",
         "src.database",
         "src.models",
         "src.orchestrator",
         "src.playbooks.definition",
+        "src.profiles.capabilities",
         "src.providers.intent",
         "src.task_graph",
         "src.task_graph.formulas",
@@ -13089,15 +13091,18 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.commands.handler",
-        "src.config",
-        "src.database",
+        "src.commands.principal",
+        "src.commands.routing_commands",
+        "src.database.tables",
         "src.models",
-        "src.orchestrator",
-        "src.vault"
+        "src.profiles.capabilities",
+        "src.routing.filing",
+        "src.routing.sources"
       ],
-      "markers": [],
-      "summary": "Task 12 (dv2-p1): ``task_route`` command + ``routing`` gate integration."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "``aq task route`` re-runs the router; ``task_route_override`` is the audited"
     },
     "tests/test_task_route_source.py": {
       "areas": [
@@ -13662,7 +13667,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Triage tokens can route their project's queue without operator authority."
+      "summary": "Triage tokens can read their project's routing queue without operator authority."
     },
     "tests/test_uninstall_cli.py": {
       "areas": [

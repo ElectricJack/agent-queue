@@ -276,24 +276,6 @@ async def test_capacity_spill_explanation_keeps_frontier_exclusions(handler, db,
     assert "frontier_hold_label" in result["reason_codes"]
 
 
-@pytest.mark.parametrize("profile_id", [None, "worker"])
-async def test_project_preferred_provider_unavailable_is_explained(handler, db, profile_id):
-    await db.update_project(PROJECT_ID, default_profile_id="worker", preferred_provider="codex")
-    await mktask(db, "preferred-held", status=TaskStatus.READY,
-                 intelligence_class="fast-low", profile_id=profile_id)
-    result = await handler._cmd_explain_task({"task_id": "preferred-held"})
-    reason = next(r for r in result["reasons"] if r["code"] == "preferred_provider_unavailable")
-    assert reason["ref"] == "codex"
-    assert "fast-low" in reason["detail"]
-    assert "codex" in reason["detail"]
-
-    await db.update_task("preferred-held", profile_id="worker",
-    route_source="legacy", provider_intent="pinned")
-    assert "preferred_provider_unavailable" not in (
-        await handler._cmd_explain_task({"task_id": "preferred-held"})
-    )["reason_codes"]
-
-
 # ── Golden per reason code ───────────────────────────────────────────────
 
 
@@ -352,20 +334,32 @@ class TestExplainCommand:
         handler.orchestrator.router_readiness = readiness
         assert await codes("legacy-ready") == {"frontier_route_not_claimable"}
 
-    async def test_unrouted_ready_task_reports_awaiting_intelligence_route(
-        self, handler, db
-    ):
+    async def test_unrouted_ready_task_reports_its_router(self, handler, db):
+        """Mandatory routing §10: not ready, then awaiting the router's answer."""
+        from src.routing.readiness import RouterReadiness
+
         await mktask(db, "unrouted", status=TaskStatus.READY)
 
         res = await handler._cmd_explain_task({"task_id": "unrouted"})
-
-        assert "awaiting_intelligence_route" in res["reason_codes"]
+        assert "router_not_ready" in res["reason_codes"]
         assert res["assignment_route"] is None
 
-    async def test_unrouted_task_reports_the_playbook_not_the_scheduler(
+        readiness = RouterReadiness(db_getter=lambda: db, artifact_loader=lambda sha: None)
+        readiness._ready = frozenset({PROJECT_ID})
+        handler.orchestrator.router_readiness = readiness
+        res = await handler._cmd_explain_task({"task_id": "unrouted"})
+        assert "awaiting_route" in res["reason_codes"]
+        assert "router_not_ready" not in res["reason_codes"]
+
+    async def test_unrouted_task_reports_the_router_not_the_scheduler(
         self, handler, db
     ):
+        from src.routing.readiness import RouterReadiness
+
         await mktask(db, "unrouted-2", status=TaskStatus.READY)
+        readiness = RouterReadiness(db_getter=lambda: db, artifact_loader=lambda sha: None)
+        readiness._ready = frozenset({PROJECT_ID})
+        handler.orchestrator.router_readiness = readiness
         state = make_state(
             projects=[Project(id=PROJECT_ID, name="Explain")],
             project_available_workspaces={PROJECT_ID: 1},
@@ -377,11 +371,11 @@ class TestExplainCommand:
 
         res = await handler._cmd_explain_task({"task_id": "unrouted-2"})
 
-        assert res["reason_codes"].count("awaiting_intelligence_route") == 1
-        [reason] = [r for r in res["reasons"] if r["code"] == "awaiting_intelligence_route"]
+        assert "awaiting_intelligence_route" not in res["reason_codes"]
+        [reason] = [r for r in res["reasons"] if r["code"] == "awaiting_route"]
         assert "task.route_needed" in reason["detail"]
 
-    async def test_explicit_class_is_exposed_as_effective_assignment_route(
+    async def test_a_route_is_exposed_as_the_effective_assignment_route(
         self, handler, db
     ):
         await mktask(
@@ -389,12 +383,13 @@ class TestExplainCommand:
             "explicit",
             status=TaskStatus.READY,
             intelligence_class="fast-low",
+            profile_id="worker",
         )
 
         res = await handler._cmd_explain_task({"task_id": "explicit"})
 
         assert res["assignment_route"] == {
-            "source": "explicit",
+            "source": "legacy",
             "intelligence_class": "fast-low",
             "provider": None,
             "reason": None,
@@ -402,6 +397,11 @@ class TestExplainCommand:
             "playbook_version": None,
             "playbook_run_id": None,
             "freshness": "fresh",
+            "profile_id": "worker",
+            "provider_intent": "class_only",
+            "lane": None,
+            "rule": None,
+            "override": None,
         }
         assert "route_waiting_for_compatible_agent" in res["reason_codes"]
 

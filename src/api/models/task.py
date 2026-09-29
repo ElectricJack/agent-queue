@@ -694,6 +694,9 @@ class ExplainReason(BaseModel):
 
 
 class AssignmentRouteDetail(BaseModel):
+    """A routed task's route, as ``aq task explain`` prints it (mandatory routing §10)."""
+
+    #: ``tasks.route_source``: router | override | role | legacy.
     source: str
     intelligence_class: str
     provider: str | None = None
@@ -702,6 +705,12 @@ class AssignmentRouteDetail(BaseModel):
     playbook_version: int | None = None
     playbook_run_id: str | None = None
     freshness: str
+    profile_id: str | None = None
+    provider_intent: str | None = None
+    lane: str | None = None
+    rule: str | None = None
+    #: ``route.override``: ``{by, at, reason}`` of an emergency override.
+    override: dict[str, Any] | None = None
 
 
 class ExplainTaskResponse(BaseModel):
@@ -763,9 +772,38 @@ class GetDownstreamTasksResponse(BaseModel):
     tasks: list[DownstreamTask] = []
 
 
+class TaskRouteClearedRoute(BaseModel):
+    """The route ``task_route`` cleared (mandatory routing §7)."""
+
+    route_source: str | None = None
+    profile_id: str | None = None
+    intelligence_class: str | None = None
+    provider_intent: str | None = None
+
+
 class TaskRouteResponse(BaseModel):
+    """``task_route`` re-runs the router: the task is ``unrouted`` again, with its hints."""
+
     success: bool = True
     task_id: str
+    route_source: str = "unrouted"
+    class_hint: str | None = None
+    task_type: str | None = None
+    cleared: TaskRouteClearedRoute | None = None
+
+
+class TaskRouteOverrideResponse(BaseModel):
+    """An audited emergency override (mandatory routing §7, D2)."""
+
+    success: bool = True
+    task_id: str
+    profile_id: str
+    intelligence_class: str
+    provider: str | None = None
+    provider_intent: str = "pinned"
+    route_source: str = "override"
+    #: Who overrode it: ``human:local-operator`` or ``supervisor session:<id>``.
+    by: str
     resolved_gate_ids: list[str] = []
 
 
@@ -1148,6 +1186,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "ensure_task": EnsureTaskResponse,
     "get_downstream_tasks": GetDownstreamTasksResponse,
     "task_route": TaskRouteResponse,
+    "task_route_override": TaskRouteOverrideResponse,
     "spec_approve": SpecApproveResponse,
     "task_batch_propose": TaskBatchProposeResponse,
     "task_batch_update": TaskBatchAckResponse,

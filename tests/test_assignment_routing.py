@@ -311,18 +311,18 @@ async def test_project_preference_never_offers_another_provider(handler, orch, c
     assert all(row["profile_id"] == "deep-low-codex" for row in result["options"])
 
 
-async def test_task_route_writes_class_profile_and_reason(handler, orch):
+async def test_an_override_writes_class_profile_and_reason(handler, orch):
     await _create(orch.db, "t")
-    res = await handler._cmd_task_route({
+    res = await handler._cmd_task_route_override({
         "task_id": "t", "profile_id": "deep-low-claude",
-        "intelligence_class": "deep-low", "reason": "hard problem",
+        "intelligence_class": "deep-low", "reason": "hard problem, pinned by hand",
     })
     assert res["success"], res
     task = await orch.db.get_task("t")
     assert (task.intelligence_class, task.profile_id) == ("deep-low", "deep-low-claude")
     explained = await handler._cmd_explain_task({"task_id": "t"})
-    assert explained["assignment_route"]["reason"] == "hard problem"
-    assert explained["assignment_route"]["source"] == "explicit"
+    assert "hard problem, pinned by hand" in explained["assignment_route"]["reason"]
+    assert explained["assignment_route"]["source"] == "override"
     # the pool that runs the class now sees the demand
     assert await orch.db.count_ready_by_profile("p") == {"deep-low-claude": 1}
 

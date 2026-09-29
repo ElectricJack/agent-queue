@@ -195,16 +195,19 @@ class GateCommandsMixin:
             }
 
         # dv2 phase 1: ``routing`` gates carry a pinned cross-phase
-        # contract — ONLY ``task_route`` writes the profile/class/workspace
-        # fields on the task and then resolves the gate.  Refuse the
+        # contract — only a route write resolves them: the project's router
+        # (``task_route_apply``) or the audited emergency override
+        # (``task_route_override``, mandatory routing §7).  Refuse the
         # generic path so operators can't half-resolve a routing gate and
         # leave the task un-routed for the runner.
         if gate["gate_type"] == "routing":
             return {
                 "success": False,
                 "error": (
-                    "routing gates can only be resolved via task_route; "
-                    "call task_route(task_id, profile_id, ...) instead"
+                    "routing gates resolve when the task is routed: by the project's "
+                    "router (task_route_apply), or in an emergency by "
+                    "`aq task route-override --task-id <id> --profile-id <profile> "
+                    "--reason \"...\"`"
                 ),
             }
 

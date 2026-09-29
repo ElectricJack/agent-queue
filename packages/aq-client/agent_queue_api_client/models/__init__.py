@@ -47,6 +47,7 @@ from .archive_task_request import ArchiveTaskRequest
 from .archive_task_response import ArchiveTaskResponse
 from .artifact_ref_dto import ArtifactRefDTO
 from .assignment_route_detail import AssignmentRouteDetail
+from .assignment_route_detail_override_type_0 import AssignmentRouteDetailOverrideType0
 from .body_upload_attachment_api_tasks_task_id_attachments_post import BodyUploadAttachmentApiTasksTaskIdAttachmentsPost
 from .browse_entry import BrowseEntry
 from .browse_project_root_request import BrowseProjectRootRequest
@@ -1422,6 +1423,10 @@ from .task_recover_response_422 import TaskRecoverResponse422
 from .task_recovery_response import TaskRecoveryResponse
 from .task_ref import TaskRef
 from .task_reroute import TaskReroute
+from .task_route_cleared_route import TaskRouteClearedRoute
+from .task_route_override_request import TaskRouteOverrideRequest
+from .task_route_override_response import TaskRouteOverrideResponse
+from .task_route_override_response_422 import TaskRouteOverrideResponse422
 from .task_route_request import TaskRouteRequest
 from .task_route_response import TaskRouteResponse
 from .task_route_response_422 import TaskRouteResponse422
@@ -1607,6 +1612,7 @@ __all__ = (
     "ArchiveTaskResponse",
     "ArtifactRefDTO",
     "AssignmentRouteDetail",
+    "AssignmentRouteDetailOverrideType0",
     "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
     "BrowseEntry",
     "BrowseProjectRootRequest",
@@ -2968,6 +2974,10 @@ __all__ = (
     "TaskRecoveryResponse",
     "TaskRef",
     "TaskReroute",
+    "TaskRouteClearedRoute",
+    "TaskRouteOverrideRequest",
+    "TaskRouteOverrideResponse",
+    "TaskRouteOverrideResponse422",
     "TaskRouteRequest",
     "TaskRouteResponse",
     "TaskRouteResponse422",
