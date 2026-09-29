@@ -29,7 +29,10 @@ async def commands(env):
         AgentProfile(
             id="worker-codex",
             name="Worker",
-            aq_commands=["wait_register", "wait_get", "wait_list", "wait_cancel"],
+            # message_status is the shipped worker's way to read a nudged message.
+            aq_commands=[
+                "wait_register", "wait_get", "wait_list", "wait_cancel", "message_status",
+            ],
             harness_tools=[],
             plugin_tools=[],
         )
@@ -421,6 +424,60 @@ async def test_unthreaded_guidance_does_not_satisfy_a_thread_wait(commands, env,
     await Orchestrator._reconcile_sessions(orch)
 
     assert (await env.db.get_agent_wait(wait_id))["state"] == "active"
+
+
+async def _over_api(commands, command, args, **scope_fields):
+    """Run *command* as ``/api/execute`` does: scope guard first, then the handler."""
+    from src.api.auth import RequestScope
+    from src.api.scope import check_request_scope
+
+    scope = RequestScope(kind="session", **scope_fields)
+    args = dict(args)
+    error = await check_request_scope(command, args, scope, db=commands.db)
+    assert error is None, error
+    return await commands.execute(command, {**args, "_scope": {"kind": "session", **scope_fields}})
+
+
+@pytest.mark.parametrize("recipient", [("task", "owner"), ("session", "s")])
+async def test_operator_approval_on_the_wait_thread_satisfies_it(
+    commands, env, monkeypatch, recipient
+):
+    """The 2026-09-28 smart-ember miss: the global supervisor's approval, sent with
+    ``aq message send --to task:<owner> --thread-id <wait thread>`` and no
+    ``--project``, was stored projectless.  The wait's project-fenced predicate never
+    matched it and the worker's ``aq message status`` answered "Message not found"."""
+    from src.orchestrator.core import Orchestrator
+
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    provider, _typed = _terminal("fake", env)
+    orch = await _wire_delivery(commands, env, monkeypatch, provider)
+    _asked_id, wait_id = await _ask_on_thread(commands, env)
+    to_kind, to_id = recipient
+
+    approved = await _over_api(
+        commands,
+        "message_send",
+        {
+            "to_kind": to_kind, "to_id": to_id, "thread_id": "owner:graph-filing",
+            "from_kind": "user", "from_id": "cli", "body": "APPROVED: file the graph",
+        },
+        session_id="global-admin", project_id=None, elevated=True,
+    )
+    assert approved["message"]["project_id"] == "p", approved
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 30)
+
+    await Orchestrator._reconcile_sessions(orch)
+
+    resolved = await env.db.get_agent_wait(wait_id)
+    assert resolved["state"] == "satisfied", resolved
+    assert resolved["digest"]["message_id"] == approved["message_id"]
+    status = await _over_api(
+        commands,
+        "message_status",
+        {"message_id": approved["message_id"]},
+        session_id="s", session_instance_token="token", project_id="p", elevated=False,
+    )
+    assert status["message"]["body"] == "APPROVED: file the graph", status
 
 
 @pytest.mark.parametrize("terminal", ["COMPLETED", "FAILED", "BLOCKED"])
