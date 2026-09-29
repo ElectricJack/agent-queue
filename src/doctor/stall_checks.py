@@ -13,6 +13,10 @@ import time
 from collections import Counter
 from pathlib import Path
 
+from sqlalchemy import and_, or_, select
+
+from src.database.tables import projects as project_table, task_branch_origins, task_integration_checkpoints, tasks as task_table
+
 from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 from src.models import ProjectStatus, TaskStatus
 
@@ -321,6 +325,38 @@ async def _provider_findings(ctx: DoctorContext, tasks: list) -> list[dict]:
     return findings
 
 
+async def _unmaterialized_pr_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
+    checkpoint = task_integration_checkpoints
+    origin = task_branch_origins
+    async with ctx.db._engine.connect() as conn:
+        rows = (await conn.execute(
+            select(task_table.c.id, task_table.c.project_id, task_table.c.pr_url)
+            .select_from(
+                task_table.join(project_table, project_table.c.id == task_table.c.project_id)
+                .outerjoin(checkpoint, checkpoint.c.task_id == task_table.c.id)
+                .outerjoin(origin, and_(origin.c.task_id == task_table.c.id,
+                                        origin.c.retired_at.is_(None)))
+            )
+            .where(
+                task_table.c.project_id.in_(active),
+                project_table.c.hierarchical_integration_mode == "train",
+                project_table.c.integration_repository_id == task_table.c.repo_id,
+                task_table.c.parent_task_id.is_(None),
+                task_table.c.status == TaskStatus.COMPLETED.value,
+                task_table.c.pr_url.is_not(None), task_table.c.pr_url != "",
+                or_(checkpoint.c.task_id.is_(None), origin.c.id.is_(None)),
+            )
+            .order_by(task_table.c.id).limit(100)
+        )).mappings().all()
+    return [
+        _finding("unmaterialized_train_pr", row["project_id"],
+                 f"{row['id']} has a PR but is missing a train checkpoint or live origin; "
+                 f"run aq integration materialize-root {row['id']}",
+                 task_id=row["id"], pr_url=row["pr_url"])
+        for row in rows
+    ]
+
+
 async def _check_sweep(ctx: DoctorContext) -> CheckResult:
     if ctx.db is None or ctx.handler is None:
         return CheckResult(CHECK_ID, Severity.INFO, "database and command handler required")
@@ -342,6 +378,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _session_findings(ctx, active, tasks, now),
         _delivery_findings(ctx, active, tasks, now),
         _provider_findings(ctx, tasks),
+        _unmaterialized_pr_findings(ctx, active),
         asyncio.to_thread(_log_findings, ctx, active, tasks),
         _validation_findings(),
     )

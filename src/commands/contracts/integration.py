@@ -83,6 +83,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_release_stale_owners",
         "integration_clear_stale_request",
         "integration_redrive_root",
+        "integration_materialize_root",
         "integration_redrive_child",
         "integration_rebind_reused_identity",
         "integration_rebind_repair",
@@ -257,6 +258,10 @@ class IntegrationRedriveRootArgs(CommandArgs):
         ):
             raise ValueError("applying requires expected_head_sha and reason")
         return self
+
+
+class IntegrationMaterializeRootArgs(IntegrationRedriveRootArgs):
+    """The same dry-run/head/reason fence used by root redrive."""
 
 
 class IntegrationRedriveChildArgs(CommandArgs):
@@ -534,6 +539,16 @@ class IntegrationRedriveRootValue(CommandValue):
     pr_url: str | None = None
     checkpoint: dict[str, Any] | None = None
     owner: dict[str, Any] | None = None
+    reason: str | None = None
+
+
+class IntegrationMaterializeRootValue(CommandValue):
+    task_id: str | None = None
+    project_id: str | None = None
+    branch: str | None = None
+    pr_url: str | None = None
+    head_sha: str | None = None
+    base_sha: str | None = None
     reason: str | None = None
 
 
@@ -1199,6 +1214,17 @@ INTEGRATION_REDRIVE_ROOT = _operational_contract(
     successes=frozenset({"would_open", "opened", "would_collect", "collecting", "nothing_to_redrive"}),
     side_effect=SideEffectClass.COMPOSITE,
     result_model=IntegrationRedriveRootValue,
+)
+
+MATERIALIZE_ROOT_OUTCOMES = (
+    "would_materialize", "materialized", "changed", "blocked", "not_eligible", "not_found",
+    "invalid",
+)
+
+INTEGRATION_MATERIALIZE_ROOT = _operational_contract(
+    "integration_materialize_root", IntegrationMaterializeRootArgs, MATERIALIZE_ROOT_OUTCOMES,
+    successes=frozenset({"would_materialize", "materialized"}),
+    side_effect=SideEffectClass.COMPOSITE, result_model=IntegrationMaterializeRootValue,
 )
 
 REDRIVE_CHILD_OUTCOMES = (
@@ -2703,6 +2729,15 @@ async def _redrive_root_adapter(args: IntegrationRedriveRootArgs, ctx: CommandCo
     )
 
 
+async def _materialize_root_adapter(
+    args: IntegrationMaterializeRootArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_materialize_root", args, ctx,
+        IntegrationMaterializeRootValue, set(MATERIALIZE_ROOT_OUTCOMES),
+    )
+
+
 async def _redrive_child_adapter(args: IntegrationRedriveChildArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_redrive_child",
@@ -2864,6 +2899,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_RELEASE_STALE_OWNERS, _release_stale_owners_adapter),
         (INTEGRATION_CLEAR_STALE_REQUEST, _clear_stale_request_adapter),
         (INTEGRATION_REDRIVE_ROOT, _redrive_root_adapter),
+        (INTEGRATION_MATERIALIZE_ROOT, _materialize_root_adapter),
         (INTEGRATION_REDRIVE_CHILD, _redrive_child_adapter),
         (INTEGRATION_REBIND_REUSED_IDENTITY, _rebind_reused_identity_adapter),
         (INTEGRATION_REBIND_REPAIR, _rebind_repair_adapter),

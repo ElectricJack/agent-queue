@@ -32,6 +32,12 @@ def _client(result):
             {"child_task_id": "parent.1", "expected_head_sha": "a" * 40},
         ),
         (["flush", "p"], "integration_flush", {"project_id": "p"}),
+        (["materialize-root", "legacy"], "integration_materialize_root",
+         {"task_id": "legacy", "dry_run": True}),
+        (["materialize-root", "legacy", "--apply", "--head", "a" * 40,
+          "--reason", "recover legacy PR"], "integration_materialize_root",
+         {"task_id": "legacy", "dry_run": False, "expected_head_sha": "a" * 40,
+          "reason": "recover legacy PR"}),
         (
             ["sweep", "p", "--recover-child", "child"],
             "integration_development_sweep",

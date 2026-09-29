@@ -137,6 +137,7 @@ its outbox; transport failures never need a new author turn.
     "integration_recover_unwritten_resolution",
     "integration_redrive_child",
     "integration_redrive_root",
+    "integration_materialize_root",
     "integration_release_delegates",
     "integration_release_owner",
     "integration_reserve_owner",
@@ -357,6 +358,12 @@ its outbox; transport failures never need a new author turn.
   (already open, already on the default branch, or delivered) and `blocked`
   (unverified epic, head never recorded, remote branch moved) are reported,
   never forced.
+- **A completed train root with a PR but no train identity.** The stall sweep
+  reports `unmaterialized_train_pr`, and the GitHub review poller warns. Run
+  `aq integration materialize-root <task>` (dry run). For a childless root,
+  `would_materialize` can be applied with `--apply --head <head_sha> --reason ...`;
+  then flush the project. A root with children needs its original parent
+  verification evidence and must be reported for separate recovery.
 - **A completed child its parent never assembled.** A collecting parent
   assembles a COMPLETED child only once approved evidence pins the child's
   exact head; the collector records that evidence on its own once the child's
