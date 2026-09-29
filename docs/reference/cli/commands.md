@@ -769,7 +769,8 @@ proposal flow a spec ingest produces.
 | `aq task reparent` | `reparent_task` | gen | Move a task under another container (parent_id) or to the root (root=true). |
 | `aq task restart` | `restart_task` | hand | Restart a failed or stopped task. |
 | `aq task resume` | `resume_task` | gen | Resume a paused task, respecting its existing gates and approval state. |
-| `aq task route` | `task_route` | gen | Route a task: assign its agent profile, optional intelligence class, and optional workspace, then resolve any open 'routing' gates on the task. |
+| `aq task route` | `task_route` | gen | Send a task back to its project's router with optional new hints (intelligence class, kind); never picks a profile. |
+| `aq task route-override` | `task_route_override` | gen | Emergency override: pin one queued task to a worker profile, with a mandatory reason. Local operator and supervisor only. |
 | `aq task search` | `list_tasks` | hand | Search tasks by title or description. |
 | `aq task select` | `—` | hand | Interactively select a task and show its details. |
 | `aq task set` | `task_set` | hand | Work-state writes: findings, branch, PR URL, work dir, notes, labels, metadata. |

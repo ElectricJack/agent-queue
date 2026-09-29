@@ -233,6 +233,34 @@ class TestFormatterCompatibility:
         console.print(renderable)
         return console.export_text()
 
+    def test_format_task_detail_prints_the_route(self):
+        """Mandatory routing §10: the source, the target and the router's why."""
+        routed = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Routed",
+            "route_source": "router", "profile_id": "standard-high-codex",
+            "intelligence_class": "standard-high",
+            "route": {"lane": "code-design", "rule": "kind:design",
+                      "reason": "lowest pressure"},
+        })
+        text = self._render(format_task_detail(routed))
+        assert "Route: router -> standard-high-codex (standard-high)" in text
+        assert "Route rule: kind:design / lane code-design" in text
+        assert "Route reason: lowest pressure" in text
+
+        pinned = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Pinned",
+            "route_source": "override", "profile_id": "standard-high-claude",
+            "route": {"override": {"by": "human:local-operator", "reason": "outage"}},
+        })
+        text = self._render(format_task_detail(pinned))
+        assert "Override: by human:local-operator: outage" in text
+
+        unrouted = task_proxy({
+            "id": "t", "project_id": "p", "status": "READY", "title": "Waiting",
+            "route_source": "unrouted",
+        })
+        assert "Route: unrouted" in self._render(format_task_detail(unrouted))
+
     def test_format_task_detail_groups_edges_by_type(self):
         # A parent-child edge and a real blocks edge must land in two
         # separately labelled buckets ("Part of" ≠ "Blocked by").

@@ -1110,7 +1110,7 @@ at the old profile, and deleting it clears those references.
 
 ```bash
 aq task list --project agent-queue --status READY   # find the ones still pinned
-aq task route --task-id <task-id> --profile-id standard-high-claude
+aq task route --task-id <task-id>   # hand it back to the project's router
 aq project set agent-queue default-profile standard-high-claude
 ```
 
