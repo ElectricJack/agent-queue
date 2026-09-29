@@ -1297,7 +1297,7 @@
       ]
     }
   },
-  "digest": "sha256:8452613bbb7dd79a7c73a918e8d217cec7ea3ac9ffaea88136786eb40147d0b0",
+  "digest": "sha256:28dedd337dfa292a2ac39388461ceb693ed8885b5cc45108e3a46bcfeb095448",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3119,7 +3119,9 @@
       "imports": [
         "src.cli.app",
         "src.cli.auto_commands",
-        "src.cli.exceptions"
+        "src.cli.exceptions",
+        "src.cli.integration",
+        "src.git.github_cli"
       ],
       "markers": [
         "parametrize"
