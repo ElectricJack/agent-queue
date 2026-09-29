@@ -69,6 +69,8 @@ class TestBuildConfigSchema:
         assert props["scheduling"]["type"] == "object"
         assert props["validate_events"]["type"] == "boolean"
         assert props["env"]["type"] == "string"
+        assert "default" not in props["data_dir"]
+        assert "default" not in props["workspace_dir"]
 
     def test_nested_dataclass_resolved(self):
         schema = build_config_schema()

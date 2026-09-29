@@ -295,6 +295,36 @@ async def test_redrive_root_runs_under_the_derived_operator_label(db, monkeypatc
     run.assert_not_awaited()
 
 
+async def test_materialize_root_requires_operator_and_exact_apply_head(db, monkeypatch):
+    from src.models import Task
+
+    await db.create_task(Task(id="legacy", project_id="p", title="root", description=""))
+    run = AsyncMock(return_value={"outcome": "would_materialize", "task_id": "legacy"})
+
+    class _Materialize:
+        def __init__(self, database, promotion):
+            assert database is db
+            assert promotion == "promotion-service"
+            self.run = run
+
+    monkeypatch.setattr("src.integration.root_materialization.RootMaterialization", _Materialize)
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler._integration_promotion_service = lambda: "promotion-service"
+    local = await handler._cmd_integration_materialize_root({"task_id": "legacy"})
+    assert (local["success"], local["outcome"]) == (True, "would_materialize")
+    assert run.await_args.kwargs["operator_id"] == "human:local-operator"
+    invalid = await handler._cmd_integration_materialize_root(
+        {"task_id": "legacy", "dry_run": False}
+    )
+    assert invalid["outcome"] == "invalid"
+    run.reset_mock()
+    with principal_context(_session("worker", "p")):
+        refused = await handler._cmd_integration_materialize_root({"task_id": "legacy"})
+    assert refused["outcome"] == "unauthorized"
+    run.assert_not_awaited()
+
+
 async def test_redrive_child_runs_under_the_derived_operator_label(db, monkeypatch):
     from src.models import Task
 

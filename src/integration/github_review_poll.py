@@ -82,6 +82,11 @@ class GitHubReviewPoller:
         async with self.db._engine.connect() as conn:
             source = await self.producer._pull_request_source_on(conn, row["id"])
         if source is None:
+            logger.warning(
+                "Completed train root %s has PR %s but no eligible review source; "
+                "inspect its checkpoint and branch origin (aq integration materialize-root %s)",
+                row["id"], row["pr_url"], row["id"],
+            )
             return
         binding = await self.git.bind_github_repository(row["url"])
         number = GitHubAccess.validate_pr_url(binding, source["pr_url"])

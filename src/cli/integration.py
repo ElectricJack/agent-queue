@@ -455,6 +455,28 @@ def integration_redrive_root(
     _execute(ctx, "integration_redrive_root", args)
 
 
+@integration.command("materialize-root")
+@click.argument("task_id")
+@click.option("--apply", is_flag=True, help="Record the proven root identity.")
+@click.option("--head", "expected_head_sha", help="Exact head reported by the dry run.")
+@click.option("--reason", help="Audit reason required when applying.")
+@click.pass_context
+@_handle_errors
+def integration_materialize_root(
+    ctx: click.Context, task_id: str, apply: bool,
+    expected_head_sha: str | None, reason: str | None,
+) -> None:
+    """Prove a completed legacy train root's PR head and record its missing identity."""
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_materialize_root", args)
+
+
 @integration.command("redrive-child")
 @click.argument("task_id")
 @click.option(
@@ -782,15 +804,31 @@ def _github_app_id(config: dict[str, Any]) -> int | None:
 
 def _gh_json(*args: str) -> str | None:
     """One best-effort ``gh`` read; ``None`` when gh is absent or refuses."""
-    import subprocess
+    from urllib.parse import urlsplit
+
+    from src.git.github_cli import ExistingLoginCredentials, GhRunner
+    from src.git.github_contracts import GitHubAccessError
+
+    pr_view = args[:2] == ("pr", "view")
+    if pr_view:
+        parsed = urlsplit(args[2])
+        parts = parsed.path.strip("/").split("/")
+        if parsed.netloc != "github.com" or len(parts) != 4 or parts[2] != "pull":
+            return None
+        args = ("api", f"repos/{parts[0]}/{parts[1]}/pulls/{parts[3]}", "--jq", ".state")
+
+    async def _read() -> str | None:
+        runner = GhRunner(ExistingLoginCredentials(), timeout=20)
+        result = await runner.run(args, hostname="github.com", check=False)
+        if result.returncode != 0:
+            return None
+        value = result.stdout.decode("utf-8").strip()
+        return value.upper() if pr_view else value
 
     try:
-        result = subprocess.run(
-            ["gh", *args], capture_output=True, text=True, timeout=20, check=False
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        return _run(_read())
+    except (GitHubAccessError, OSError, UnicodeDecodeError):
         return None
-    return result.stdout.strip() if result.returncode == 0 else None
 
 
 def _render_onboarding(data: dict[str, Any]) -> None:

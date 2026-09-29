@@ -250,7 +250,6 @@
       "x-reload": "hot"
     },
     "data_dir": {
-      "default": "/home/jkern/.agent-queue",
       "type": "string",
       "x-reload": "restart"
     },
@@ -2833,7 +2832,6 @@
       "x-reload": "hot"
     },
     "workspace_dir": {
-      "default": "/home/jkern/agent-queue-workspaces",
       "type": "string",
       "x-reload": "restart"
     },

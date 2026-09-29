@@ -457,7 +457,6 @@ class ClaimQueryMixin:
                 .order_by(
                     tasks.c.priority.asc(),
                     tasks.c.created_at.asc(),
-                    tasks.c.id.asc(),
                 )
                 .limit(1)
             )

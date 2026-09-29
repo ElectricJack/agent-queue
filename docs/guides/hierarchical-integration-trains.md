@@ -47,6 +47,7 @@ aq integration abort OPERATION_ID --reason REASON
 aq integration retry-cleanup BATCH_ID
 aq integration clear-stale-request PROJECT_ID [--apply --request-id REQUEST_ID --reason REASON]
 aq integration redrive-root TASK_ID [--apply --head HEAD_SHA --reason REASON]
+aq integration materialize-root TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration redrive-child CHILD_TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration record-noop CHILD_TASK_ID --expected-head-sha CHECKPOINT_SHA
 aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-integration-generation GENERATION --reason REASON
@@ -112,6 +113,23 @@ checks the task, checkpoint, materialized origin, session and workspace under
 the project lock and refuses an unresolved or competing branch owner. A stopped
 task's ordinary `aq task restart` performs the same check before moving it to
 READY. Doctor reports this condition but does not reserve branches itself.
+
+`aq doctor --check stall.sweep` reports `unmaterialized_train_pr` for a
+COMPLETED train root with a PR but no checkpoint or live branch origin. The
+GitHub review poller also warns when such a root has no eligible review source.
+For a **childless** legacy root, run `aq integration materialize-root TASK_ID`
+to read its PR, remote branch head and merge-base with the default branch.
+If the dry run returns `would_materialize`, apply with its exact `head_sha`:
+
+```bash
+aq integration materialize-root TASK_ID --apply --head HEAD_SHA --reason "legacy train cutover"
+aq integration flush PROJECT_ID
+```
+
+The control rechecks the PR head and the task under the project lock before
+recording the branch origin and leaf checkpoint. A root with children needs its
+original parent verification evidence and is refused; the control does not
+manufacture that evidence.
 
 Do not import another database during this release. PostgreSQL is the only
 backend; the one-way carry-over importer

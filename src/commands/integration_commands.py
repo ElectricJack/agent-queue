@@ -899,6 +899,35 @@ class IntegrationCommandsMixin:
             **result,
         }
 
+    async def _cmd_integration_materialize_root(self, args: dict) -> dict:
+        """Prove and record a completed legacy root's PR source identity."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationMaterializeRootArgs
+        from src.integration.root_materialization import RootMaterialization
+
+        try:
+            request = IntegrationMaterializeRootArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid root materialization request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        principal, refusal = await integration_operator(
+            self.db, task.project_id if task is not None else None
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        result = await RootMaterialization(
+            self.db, self._integration_promotion_service()
+        ).run(
+            request.task_id, dry_run=request.dry_run,
+            expected_head_sha=request.expected_head_sha, reason=request.reason,
+            operator_id=principal,
+        )
+        return {
+            "success": result["outcome"] in {"would_materialize", "materialized"},
+            "dry_run": request.dry_run, **result,
+        }
+
     async def _cmd_integration_redrive_child(self, args: dict) -> dict:
         """Diagnose a completed child its parent never assembled; advance it for the head."""
         from pydantic import ValidationError

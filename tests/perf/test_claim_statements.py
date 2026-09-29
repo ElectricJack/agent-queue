@@ -349,7 +349,7 @@ class TestClaimStatementBudgets:
 
         prepared = {}
 
-        async def _fake_prepare(session, row, task, cap=None, *, slot=None):
+        async def _fake_prepare(session, row, task, cap=None, *, slot=None, admission=None):
             prepared["task"] = task
             return {"success": True, "result": "claimed", "task": None, "claim_epoch": None}
 
