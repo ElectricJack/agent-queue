@@ -734,6 +734,19 @@ from .node_overlay_dto import NodeOverlayDTO
 from .node_overlay_dto_state import NodeOverlayDTOState
 from .node_response import NodeResponse
 from .note_summary import NoteSummary
+from .object_checkpoint_read_request import ObjectCheckpointReadRequest
+from .object_checkpoint_read_response_422 import ObjectCheckpointReadResponse422
+from .object_loop_reconcile_request import ObjectLoopReconcileRequest
+from .object_loop_reconcile_response_422 import ObjectLoopReconcileResponse422
+from .object_loop_start_request import ObjectLoopStartRequest
+from .object_loop_start_request_final_reserve import ObjectLoopStartRequestFinalReserve
+from .object_loop_start_request_incumbent_artifact_type_0 import ObjectLoopStartRequestIncumbentArtifactType0
+from .object_loop_start_request_limits import ObjectLoopStartRequestLimits
+from .object_loop_start_request_score_reservation import ObjectLoopStartRequestScoreReservation
+from .object_loop_start_response_422 import ObjectLoopStartResponse422
+from .object_score_record_request import ObjectScoreRecordRequest
+from .object_score_record_request_spent_type_0 import ObjectScoreRecordRequestSpentType0
+from .object_score_record_response_422 import ObjectScoreRecordResponse422
 from .onboard_project_request import OnboardProjectRequest
 from .onboard_project_request_github_repository_type_0 import OnboardProjectRequestGithubRepositoryType0
 from .onboard_project_response import OnboardProjectResponse
@@ -2291,6 +2304,19 @@ __all__ = (
     "NodeOverlayDTOState",
     "NodeResponse",
     "NoteSummary",
+    "ObjectCheckpointReadRequest",
+    "ObjectCheckpointReadResponse422",
+    "ObjectLoopReconcileRequest",
+    "ObjectLoopReconcileResponse422",
+    "ObjectLoopStartRequest",
+    "ObjectLoopStartRequestFinalReserve",
+    "ObjectLoopStartRequestIncumbentArtifactType0",
+    "ObjectLoopStartRequestLimits",
+    "ObjectLoopStartRequestScoreReservation",
+    "ObjectLoopStartResponse422",
+    "ObjectScoreRecordRequest",
+    "ObjectScoreRecordRequestSpentType0",
+    "ObjectScoreRecordResponse422",
     "OnboardingErrorInfo",
     "OnboardingErrorInfoDetails",
     "OnboardingErrorInfoFieldErrorsItem",

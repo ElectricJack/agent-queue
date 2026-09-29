@@ -9,6 +9,10 @@ from __future__ import annotations
 # Which category each tool belongs to.
 # Tools not listed here are "core" (always loaded).
 _TOOL_CATEGORIES: dict[str, str] = {
+    "object_loop_start": "task",
+    "object_loop_reconcile": "task",
+    "object_score_record": "task",
+    "object_checkpoint_read": "task",
     "test_select": "test_selection",
     "test_selection_recheck": "test_selection",
     "test_selection_observe": "test_selection",
