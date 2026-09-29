@@ -809,7 +809,8 @@ def _gh_json(*args: str) -> str | None:
     from src.git.github_cli import ExistingLoginCredentials, GhRunner
     from src.git.github_contracts import GitHubAccessError
 
-    if args[:2] == ("pr", "view"):
+    pr_view = args[:2] == ("pr", "view")
+    if pr_view:
         parsed = urlsplit(args[2])
         parts = parsed.path.strip("/").split("/")
         if parsed.netloc != "github.com" or len(parts) != 4 or parts[2] != "pull":
@@ -819,7 +820,10 @@ def _gh_json(*args: str) -> str | None:
     async def _read() -> str | None:
         runner = GhRunner(ExistingLoginCredentials(), timeout=20)
         result = await runner.run(args, hostname="github.com", check=False)
-        return result.stdout.decode("utf-8").strip() if result.returncode == 0 else None
+        if result.returncode != 0:
+            return None
+        value = result.stdout.decode("utf-8").strip()
+        return value.upper() if pr_view else value
 
     try:
         return _run(_read())

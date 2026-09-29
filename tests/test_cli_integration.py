@@ -12,6 +12,21 @@ from click.testing import CliRunner
 from src.cli.exceptions import CommandError, ScopeDeniedError
 
 
+def test_onboarding_pr_read_uses_scoped_runner_and_normalizes_state(monkeypatch):
+    from src.cli.integration import _gh_json
+    from src.git.github_cli import GhResult, GhRunner
+
+    async def fake_run(self, args, **kwargs):
+        assert args == (
+            "api", "repos/ElectricJack/agent-queue/pulls/123", "--jq", ".state"
+        )
+        assert kwargs["hostname"] == "github.com"
+        return GhResult(0, b"open\n", "")
+
+    monkeypatch.setattr(GhRunner, "run", fake_run)
+    assert _gh_json("pr", "view", "https://github.com/ElectricJack/agent-queue/pull/123") == "OPEN"
+
+
 def _client(result):
     client = AsyncMock()
     client.__aenter__ = AsyncMock(return_value=client)
