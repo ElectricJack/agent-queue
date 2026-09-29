@@ -5,11 +5,19 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import re
 import time
 import uuid
 from typing import Any
 
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
+from src.api.auth import operator_viewer_allowed
+from src.database.queries.pull_request_queries import (
+    list_known_pull_requests, read_pull_request_snapshot,
+)
+from src.git.github import GitHubAccess, GitHubClient
+from src.git.github_contracts import GitHubAccessError
 from src.models import TaskStatus
 from src.reviews.service import PlaybookPin, ReviewError, ReviewHooks, ReviewService
 
@@ -66,6 +74,78 @@ def playbook_outcome_text(outcome: dict) -> str:
 
 class ReviewCommandsMixin:
     """``review_*`` handlers, while :mod:`src.reviews.service` owns state."""
+
+    async def _cmd_approve_pull_request(self, args: dict) -> dict:
+        """Approve a pinned PR using the host's human gh login, never the App."""
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.LOCAL or not operator_viewer_allowed():
+            return _error("unauthorized", "Only the local operator may approve pull requests")
+        task_id = args.get("task_id")
+        sha = args.get("head_sha")
+        if (not isinstance(task_id, str) or not isinstance(sha, str)
+                or re.fullmatch(r"[a-fA-F0-9]{40}", sha) is None):
+            return _error("invalid", "A task and 40-character head SHA are required")
+        links = [row for row in await list_known_pull_requests(self.db)
+                 if row["task_id"] == task_id]
+        if len(links) != 1:
+            return _error("not_found", "Task has no unique active-project pull request")
+        row = links[0]
+        if not row["repository_url"]:
+            return _error("invalid", "Task has no bound GitHub repository")
+        snapshot, _ = await read_pull_request_snapshot(self.db)
+        if not any(item.get("task_id") == task_id and item.get("url") == row["pr_url"]
+                   and item.get("head_sha") == sha for item in snapshot):
+            return _error("stale_head", "PR is absent from the current snapshot or head moved")
+
+        # The daemon may use a GitHub App for all other operations.  Remove
+        # ambient token overrides so this separate client reads gh's saved
+        # login on the operator machine, and therefore submits as a User.
+        environment = {key: value for key, value in os.environ.items() if key not in {
+            "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
+            "GH_CONFIG_DIR",
+        }}
+        access = GitHubAccess.from_config(None, env=environment)
+        try:
+            identity_result = await access.runner.run(
+                ["api", "user"], hostname="github.com", max_stdout_bytes=65536,
+            )
+            operator = json.loads(identity_result.stdout)
+            if (not isinstance(operator, dict) or operator.get("type") != "User"
+                    or not isinstance(operator.get("login"), str)
+                    or not operator["login"]):
+                return _error("credentials", "The saved gh login is not a human GitHub user")
+            binding = await access.bind_repository(row["repository_url"])
+            number = GitHubAccess.validate_pr_url(binding, row["pr_url"])
+            client = GitHubClient(binding, access=access)
+            pull = await client.pull_request(row["pr_url"])
+            head = pull.get("head")
+            if pull.get("state") != "open" or not isinstance(head, dict) or head.get("sha") != sha:
+                return _error("stale_head", "PR head moved or the PR closed")
+            review = await client.request_json(
+                "POST", f"repos/{binding.full_name}/pulls/{number}/reviews",
+                json_body={"event": "APPROVE", "commit_id": sha},
+                expected_statuses={200, 201},
+            )
+            if (review.get("state") != "APPROVED" or review.get("commit_id") != sha
+                    or not isinstance(review.get("user"), dict)
+                    or review["user"].get("type") != "User"
+                    or str(review["user"].get("login", "")).lower()
+                    != operator["login"].lower()):
+                return _error("unexpected_response", "GitHub did not confirm a human head-pinned approval")
+        except (ValueError, TypeError):
+            return _error("credentials", "Could not read the saved gh user identity")
+        except GitHubAccessError as exc:
+            return _error(exc.category, str(exc))
+
+        flush = None
+        if row["integration_mode"] == "train":
+            try:
+                flush = await self.execute("integration_flush", {"project_id": row["project_id"]})
+            except Exception:
+                logger.exception("Could not request train flush after PR approval")
+                flush = {"success": False, "error": "Integration flush failed"}
+        return {"success": True, "task_id": task_id, "url": row["pr_url"],
+                "head_sha": sha, "review_id": review.get("id"), "integration_flush": flush}
 
     def _review_service(self) -> ReviewService:
         return ReviewService(

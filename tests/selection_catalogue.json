@@ -1297,7 +1297,7 @@
       ]
     }
   },
-  "digest": "sha256:4c922faaa6348c42282452e2ee8dde72c7946527aa9ea20d13441876a9b86a9e",
+  "digest": "sha256:385824091984a704f32a146ca7f5934131d8d9342f590854f81e9f4550e6e94d",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2404,14 +2404,19 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api",
         "src.api.auth",
+        "src.api.dependencies",
+        "src.api.middleware",
         "src.api.pull_requests",
+        "src.commands.review_commands",
         "src.database",
         "src.database.queries.pull_request_queries",
-        "src.database.tables"
+        "src.database.tables",
+        "src.git.github_contracts"
       ],
       "markers": [],
-      "summary": "The dashboard PR list uses GitHub state, not task status."
+      "summary": "The Reviews inbox reads a durable snapshot and pins human approvals."
     },
     "tests/test_api_scope.py": {
       "areas": [
@@ -11529,7 +11534,8 @@
         "src.database",
         "src.models",
         "src.playbooks.definition",
-        "src.playbooks.routing"
+        "src.playbooks.routing",
+        "src.playbooks.runtime"
       ],
       "markers": [
         "parametrize"
@@ -12801,8 +12807,17 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.authorization",
+        "src.commands.handler",
+        "src.commands.principal",
         "src.commands.task_commands",
-        "src.models"
+        "src.config",
+        "src.database",
+        "src.models",
+        "src.orchestrator",
+        "src.profiles.capabilities",
+        "src.routing.filing",
+        "src.vault"
       ],
       "markers": [
         "asyncio"

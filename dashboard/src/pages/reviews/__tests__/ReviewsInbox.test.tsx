@@ -8,9 +8,11 @@ const reviewsApi = vi.hoisted(() => ({
   reviews: [] as Array<Record<string, unknown>>,
   filters: [] as Array<Record<string, string | undefined>>,
   pullRequests: [] as Array<Record<string, unknown>>,
+  canApprove: false,
 }));
 
 const withdrawApi = vi.hoisted(() => ({ mutateAsync: vi.fn(), isPending: false }));
+const approveApi = vi.hoisted(() => ({ mutateAsync: vi.fn(), isPending: false, error: null }));
 
 vi.mock("../../../api/reviews", () => ({
   useReviews: (filters: Record<string, string | undefined>) => {
@@ -22,8 +24,10 @@ vi.mock("../../../api/reviews", () => ({
 
 vi.mock("../../../api/pullRequests", () => ({
   usePendingPullRequests: () => ({
-    data: { pull_requests: reviewsApi.pullRequests }, isLoading: false, error: null,
+    data: { pull_requests: reviewsApi.pullRequests, can_approve: reviewsApi.canApprove },
+    isLoading: false, error: null,
   }),
+  useApprovePullRequest: () => approveApi,
 }));
 
 function Location() {
@@ -49,6 +53,9 @@ beforeEach(() => {
   withdrawApi.mutateAsync.mockResolvedValue({ success: true, flagged_task_ids: [] });
   reviewsApi.filters = [];
   reviewsApi.pullRequests = [];
+  reviewsApi.canApprove = false;
+  approveApi.mutateAsync.mockReset();
+  approveApi.mutateAsync.mockResolvedValue({ success: true });
   reviewsApi.reviews = [
     {
       id: "review-waiting",
@@ -120,17 +127,36 @@ describe("ReviewsInbox", () => {
       .toHaveAttribute("rel", "noopener noreferrer");
   });
 
-  it("shows an empty state and a visible unknown-state link", () => {
+  it("shows an empty state and a pending PR link", () => {
     const { rerender } = renderInbox();
     expect(screen.getByText("No pending pull requests.")).toBeInTheDocument();
     reviewsApi.pullRequests = [{
       title: "Fallback title", url: "https://github.com/acme/repo/pull/4",
       repository: "acme/repo", project_id: "agent-queue", project_name: "Agent Queue",
-      task_id: "failed-lookup", state: "unknown", opened_at: null,
+      task_id: "failed-lookup", state: "open", opened_at: null,
     }];
     rerender(<MemoryRouter><ReviewsInbox /></MemoryRouter>);
-    expect(screen.getByText("state unknown")).toBeInTheDocument();
+    expect(screen.getAllByText("pending")).toHaveLength(2);
     expect(screen.getByRole("link", { name: "Fallback title" })).toHaveAttribute("target", "_blank");
+  });
+
+  it("shows Approve only to operator viewers and pins the displayed head", async () => {
+    reviewsApi.pullRequests = [{
+      title: "Improve queue", url: "https://github.com/acme/repo/pull/12",
+      repository: "acme/repo", project_id: "agent-queue", project_name: "Agent Queue",
+      task_id: "steady-lantern", state: "open", opened_at: null,
+      head_sha: "a".repeat(40), review_decision: "pending", ci_status: "success",
+      train_state: "awaiting review",
+    }];
+    const { rerender } = renderInbox();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
+    reviewsApi.canApprove = true;
+    rerender(inbox());
+    expect(screen.getByText("awaiting review")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(approveApi.mutateAsync).toHaveBeenCalledWith({
+      taskId: "steady-lantern", headSha: "a".repeat(40),
+    }));
   });
 
   it("defaults to waiting reviews for the user and links delegated rows", () => {

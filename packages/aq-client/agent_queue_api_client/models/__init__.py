@@ -39,6 +39,12 @@ from .api_perf_streams import ApiPerfStreams
 from .append_note_request import AppendNoteRequest
 from .append_note_response import AppendNoteResponse
 from .append_note_response_422 import AppendNoteResponse422
+from .approve_pending_pull_request_request import ApprovePendingPullRequestRequest
+from .approve_pull_request_api_reviews_pull_requests_task_id_approve_post_response_approve_pull_request_api_reviews_pull_requests_task_id_approve_post import (
+    ApprovePullRequestApiReviewsPullRequestsTaskIdApprovePostResponseApprovePullRequestApiReviewsPullRequestsTaskIdApprovePost,
+)
+from .approve_pull_request_request import ApprovePullRequestRequest
+from .approve_pull_request_response_422 import ApprovePullRequestResponse422
 from .archive_settings_request import ArchiveSettingsRequest
 from .archive_settings_response import ArchiveSettingsResponse
 from .archive_settings_response_422 import ArchiveSettingsResponse422
@@ -760,7 +766,8 @@ from .pending_event_dto_reason import PendingEventDTOReason
 from .pending_event_replay_dto import PendingEventReplayDTO
 from .pending_event_replay_dto_policy import PendingEventReplayDTOPolicy
 from .pending_pull_request import PendingPullRequest
-from .pending_pull_request_state import PendingPullRequestState
+from .pending_pull_request_ci_status import PendingPullRequestCiStatus
+from .pending_pull_request_review_decision import PendingPullRequestReviewDecision
 from .pending_pull_requests_response import PendingPullRequestsResponse
 from .perf_metrics import PerfMetrics
 from .perf_sampler_cost import PerfSamplerCost
@@ -1055,6 +1062,8 @@ from .provider_usage_reading import ProviderUsageReading
 from .provider_usage_response import ProviderUsageResponse
 from .provider_usage_response_series import ProviderUsageResponseSeries
 from .provider_usage_snapshot import ProviderUsageSnapshot
+from .pull_request_approve_response import PullRequestApproveResponse
+from .pull_request_approve_response_integration_flush_type_0 import PullRequestApproveResponseIntegrationFlushType0
 from .push_branch_request import PushBranchRequest
 from .push_branch_response import PushBranchResponse
 from .push_branch_response_422 import PushBranchResponse422
@@ -1604,6 +1613,10 @@ __all__ = (
     "AppendNoteRequest",
     "AppendNoteResponse",
     "AppendNoteResponse422",
+    "ApprovePendingPullRequestRequest",
+    "ApprovePullRequestApiReviewsPullRequestsTaskIdApprovePostResponseApprovePullRequestApiReviewsPullRequestsTaskIdApprovePost",
+    "ApprovePullRequestRequest",
+    "ApprovePullRequestResponse422",
     "ArchiveSettingsRequest",
     "ArchiveSettingsResponse",
     "ArchiveSettingsResponse422",
@@ -2317,8 +2330,9 @@ __all__ = (
     "PendingEventReplayDTO",
     "PendingEventReplayDTOPolicy",
     "PendingPullRequest",
+    "PendingPullRequestCiStatus",
+    "PendingPullRequestReviewDecision",
     "PendingPullRequestsResponse",
-    "PendingPullRequestState",
     "PerfMetrics",
     "PerfSamplerCost",
     "PhaseCreateRequest",
@@ -2608,6 +2622,8 @@ __all__ = (
     "ProviderUsageResponse",
     "ProviderUsageResponseSeries",
     "ProviderUsageSnapshot",
+    "PullRequestApproveResponse",
+    "PullRequestApproveResponseIntegrationFlushType0",
     "PushBranchRequest",
     "PushBranchResponse",
     "PushBranchResponse422",

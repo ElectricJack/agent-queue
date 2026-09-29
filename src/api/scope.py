@@ -185,7 +185,9 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
     }
 )
 LOCAL_TEST_SELECTION_CONTROLS = frozenset({"test_selection_promote", "test_selection_revoke"})
-LOCAL_REVIEW_CONTROLS = frozenset({"review_delegate", "review_import_edits"})
+LOCAL_REVIEW_CONTROLS = frozenset({
+    "review_delegate", "review_import_edits", "approve_pull_request",
+})
 #: ``edit_project`` fields that bind or change a project's integration
 #: configuration.  An elevated supervisor session reaches the handler, which
 #: admits only a live named supervisor of the project (``integration_operator``),

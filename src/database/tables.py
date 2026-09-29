@@ -141,6 +141,17 @@ dashboard_state_documents = Table(
     ),
 )
 
+# One atomic, durable Reviews-tab projection.  A failed GitHub refresh leaves
+# the last successful snapshot and its age visible across daemon restarts.
+pull_request_inbox_snapshot = Table(
+    "pull_request_inbox_snapshot",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("payload", JSONB, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("id = 1", name="ck_pull_request_inbox_snapshot_singleton"),
+)
+
 repos = Table(
     "repos",
     metadata,
