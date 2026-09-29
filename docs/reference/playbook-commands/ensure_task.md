@@ -85,9 +85,9 @@ pattern:
 - [`src/prompts/default_playbooks/default-pipeline.md`](../../../src/prompts/default_playbooks/default-pipeline.md),
   rule `spec-ingest-on-approve`: one ingest task per approved spec file, keyed
   `spec-ingest:{event.spec_path}`, pinned to the `spec-ingest` profile with an
-  explicit `standard-high` class. The explicit class matters because
-  `ensure_task` suppresses `task.created` — a task with only a pinned profile
-  would wait forever for a routing decision nothing requests.
+  `standard-high` class hint. As a role task, it keeps `route_source='role'`
+  and uses the `spec-ingest` profile's `default_class` for execution. It needs
+  no routing decision when `ensure_task` suppresses `task.created`.
 - [`src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md`](../../../src/prompts/project_playbooks/agent-queue/ci-main-sentinel.md),
   rule `keep-main-green` step 2: the repair task for a red default branch, keyed
   `ci-baseline:<signature>:<n>` by
@@ -137,8 +137,7 @@ to retry it.
      writes, no events.
    - **The creation.** Otherwise it builds a `create_task` payload with
      `_suppress_created_event: True` (control-plane bookkeeping must not
-     re-trigger the pipeline against itself and attach a routing gate only the
-     triage agent could resolve), forwards `parent_id` / `root` / `reason` /
+     re-trigger the pipeline against itself), forwards `parent_id` / `root` / `reason` /
      `discovered_from` by *presence* rather than truthiness so an explicit
      `parent_id: null` still means "file at the root", forwards
      `parent_key` / `parent_title` the same way, and delegates to
@@ -190,8 +189,9 @@ transition.
 
 `retry_safe: yes` means the engine may retry the step; the key makes the retry
 converge. To diagnose, `aq task show <id>` prints the row (its `dedup_key`
-included) and `aq task explain --task-id <id>` says why an ensured task is not running —
-usually an unresolved routing gate because no class was pinned.
+included) and `aq task explain --task-id <id>` says why an ensured task is not running.
+For a non-role task, check whether it has been routed; a role task already has
+its route when it is created.
 
 ## Example step
 
