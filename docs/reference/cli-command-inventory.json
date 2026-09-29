@@ -3917,7 +3917,6 @@
           "--credential-mode",
           "--route",
           "--intelligence-class",
-          "--harness",
           "--check",
           "--check-version",
           "--github-repository-id",
@@ -9066,7 +9065,6 @@
         "optional": [
           "--note",
           "--responder-class",
-          "--responder-profile",
           "--json",
           "--brief",
           "--api-url"
@@ -9128,10 +9126,11 @@
       "acceptance_evidence": [],
       "parameters": {
         "required": [
-          "--review-id",
-          "--to"
+          "--review-id"
         ],
         "optional": [
+          "--count",
+          "--class",
           "--revision",
           "--with-comments",
           "--focus",
@@ -13349,9 +13348,7 @@
           "--priority",
           "--type",
           "--integration-mode",
-          "--profile",
           "--intelligence-class",
-          "--agent-type",
           "--graph",
           "--from-spec",
           "--dry-run",
@@ -13362,8 +13359,6 @@
           "--reason",
           "--deliverable",
           "--requires-kind",
-          "--pin",
-          "--provider-intent",
           "--json",
           "--brief",
           "--api-url"
@@ -13546,9 +13541,6 @@
           "--status",
           "--max-retries",
           "--verification-type",
-          "--profile-id",
-          "--provider-intent",
-          "--pin",
           "--intelligence-class",
           "--integration-mode",
           "--skip-verification",
@@ -13565,7 +13557,6 @@
         "structured": [],
         "nullable": [
           "--task-type",
-          "--profile-id",
           "--intelligence-class",
           "--integration-mode",
           "--affinity-agent-id",
@@ -13603,9 +13594,6 @@
         "optional": [
           "--description",
           "--priority",
-          "--profile-id",
-          "--provider-intent",
-          "--pin",
           "--intelligence-class",
           "--parent-key",
           "--parent-title",

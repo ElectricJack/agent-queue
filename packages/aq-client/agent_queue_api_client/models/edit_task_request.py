@@ -24,13 +24,8 @@ class EditTaskRequest:
         status (None | str | Unset): New status — admin override, bypasses state machine (optional)
         max_retries (int | None | Unset): Max retry attempts (optional)
         verification_type (None | str | Unset): How to verify task output (optional)
-        profile_id (None | str | Unset): Agent profile ID (optional, set to null to clear)
-        provider_intent (None | str | Unset): Whether anyone meant the provider profile_id names (provider-failover D8).
-            Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the
-            same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a
-            profile_id; pinning is refused for worker tokens.
-        pin (bool | None | Unset): Shorthand for provider_intent=pinned.
-        intelligence_class (None | str | Unset): Intelligence class id; change only while unassigned. Null clears it.
+        intelligence_class (None | str | Unset): Intelligence-class hint for the router; change only while unassigned.
+            Null clears it. On a queued task, editing the class hint or task_type sends the task back to its router.
         integration_mode (None | str | Unset): Integration-policy override ('direct' | 'pull_request'). Null clears the
             override so the task inherits the project/system policy (optional)
         skip_verification (bool | None | Unset): If true, skip git verification on task completion (optional)
@@ -54,9 +49,6 @@ class EditTaskRequest:
     status: None | str | Unset = UNSET
     max_retries: int | None | Unset = UNSET
     verification_type: None | str | Unset = UNSET
-    profile_id: None | str | Unset = UNSET
-    provider_intent: None | str | Unset = UNSET
-    pin: bool | None | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
     integration_mode: None | str | Unset = UNSET
     skip_verification: bool | None | Unset = UNSET
@@ -118,24 +110,6 @@ class EditTaskRequest:
             verification_type = UNSET
         else:
             verification_type = self.verification_type
-
-        profile_id: None | str | Unset
-        if isinstance(self.profile_id, Unset):
-            profile_id = UNSET
-        else:
-            profile_id = self.profile_id
-
-        provider_intent: None | str | Unset
-        if isinstance(self.provider_intent, Unset):
-            provider_intent = UNSET
-        else:
-            provider_intent = self.provider_intent
-
-        pin: bool | None | Unset
-        if isinstance(self.pin, Unset):
-            pin = UNSET
-        else:
-            pin = self.pin
 
         intelligence_class: None | str | Unset
         if isinstance(self.intelligence_class, Unset):
@@ -214,12 +188,6 @@ class EditTaskRequest:
             field_dict["max_retries"] = max_retries
         if verification_type is not UNSET:
             field_dict["verification_type"] = verification_type
-        if profile_id is not UNSET:
-            field_dict["profile_id"] = profile_id
-        if provider_intent is not UNSET:
-            field_dict["provider_intent"] = provider_intent
-        if pin is not UNSET:
-            field_dict["pin"] = pin
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
         if integration_mode is not UNSET:
@@ -318,33 +286,6 @@ class EditTaskRequest:
 
         verification_type = _parse_verification_type(d.pop("verification_type", UNSET))
 
-        def _parse_profile_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
-
-        def _parse_provider_intent(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        provider_intent = _parse_provider_intent(d.pop("provider_intent", UNSET))
-
-        def _parse_pin(data: object) -> bool | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(bool | None | Unset, data)
-
-        pin = _parse_pin(d.pop("pin", UNSET))
-
         def _parse_intelligence_class(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -436,9 +377,6 @@ class EditTaskRequest:
             status=status,
             max_retries=max_retries,
             verification_type=verification_type,
-            profile_id=profile_id,
-            provider_intent=provider_intent,
-            pin=pin,
             intelligence_class=intelligence_class,
             integration_mode=integration_mode,
             skip_verification=skip_verification,

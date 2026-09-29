@@ -2764,6 +2764,10 @@ async def test_single_source_repair_is_a_child_without_a_reverse_cycle(setup):
     assert repair.parent_task_id == "source"
     assert ("source", "parent-child") in await db.get_typed_dependencies(identity)
     assert (identity, "blocks") not in await db.get_typed_dependencies("source")
+    # The routing policy names the origin (``origins.development_repair``),
+    # not the title; the repair is filed unrouted (mandatory-routing §5.3).
+    assert repair.created_by_kind == "development_repair"
+    assert (repair.profile_id, repair.route_source) == (None, "unrouted")
 
 
 @pytest.mark.parametrize("source_depth,target_branch", [(2, "main"), (3, "main"), (3, "release")])

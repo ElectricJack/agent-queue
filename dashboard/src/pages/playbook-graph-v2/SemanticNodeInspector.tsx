@@ -226,7 +226,7 @@ export default function SemanticNodeInspector({
         <Block name={node.step_kind === "agent_task" ? "Delegated agent" : "AI"}>
           <Pairs
             pairs={[
-              ["profile", <span className="font-mono">{node.ai.profile_id}</span>],
+              ["profile", <span className="font-mono">{node.ai.profile_id ?? "Chosen by router"}</span>],
               ...(node.ai.intelligence_class
                 ? ([["intelligence class", node.ai.intelligence_class]] as [string, React.ReactNode][])
                 : []),
@@ -264,7 +264,7 @@ export default function SemanticNodeInspector({
               <h6 className="text-[10px] uppercase tracking-wide text-gray-500">Delegation policy</h6>
               <Pairs
                 pairs={[
-                  ["child profile", <span className="font-mono">{node.ai.delegation.child_profile_id}</span>],
+                  ["child profile", <span className="font-mono">{node.ai.delegation.child_profile_id ?? "Chosen by router"}</span>],
                   ["wait for completion", node.ai.delegation.wait_for_completion ? "yes" : "no"],
                   ["cancel child", node.ai.delegation.cancel_child ? "yes" : "no"],
                   ...(node.ai.delegation.narrowed_from
@@ -273,7 +273,9 @@ export default function SemanticNodeInspector({
                 ]}
               />
               <p className="mt-1 text-[10px] text-gray-500">
-                The child principal is parent ∩ child profile ∩ this narrowing.
+                {node.ai.delegation.child_profile_id
+                  ? "The child principal is parent ∩ child profile ∩ this narrowing."
+                  : "Every eligible worker must fit the parent permissions and this narrowing."}
               </p>
               {node.ai.delegation.capability_narrowing ? (
                 <Namespaces capabilities={node.ai.delegation.capability_narrowing} nullable />

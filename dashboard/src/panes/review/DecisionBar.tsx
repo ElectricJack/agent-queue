@@ -1,5 +1,5 @@
 import { useRef, useState, type RefObject } from "react";
-import { useIntelligenceClasses, useProfiles } from "../../api/hooks";
+import { useIntelligenceClasses } from "../../api/hooks";
 
 export type ReviewDecision = "approve" | "request_changes" | "reject";
 
@@ -17,27 +17,24 @@ export function DecisionBar({
   responseRoute,
 }: {
   disabledReason: string | null;
-  onDecide: (decision: ReviewDecision, note: string, responderClass: string, responderProfile: string) => Promise<void>;
+  onDecide: (decision: ReviewDecision, note: string, responderClass: string) => Promise<void>;
   pending?: boolean;
   approveButtonRef?: RefObject<HTMLButtonElement | null>;
   responseRoute: ResponseRoute;
 }) {
   const [note, setNote] = useState("");
   const [responderClass, setResponderClass] = useState("");
-  const [responderProfile, setResponderProfile] = useState("");
   const [showRevisionOptions, setShowRevisionOptions] = useState(false);
   const { data: classData } = useIntelligenceClasses();
-  const { data: profiles } = useProfiles();
   const [error, setError] = useState<string | null>(null);
   const localApproveRef = useRef<HTMLButtonElement>(null);
   const approveRef = approveButtonRef ?? localApproveRef;
   const disabled = Boolean(disabledReason) || pending;
-  const routeSummary = showRevisionOptions && responderProfile
-    ? `Request changes → new revision task on ${responderClass} (explicit); Approve → sent to the supervisor.`
-    : showRevisionOptions && responderClass
-      ? responseRoute.class_summaries[responderClass]
-        ?? `No eligible revision profile is available for ${responderClass}. Approve → sent to the supervisor.`
-      : responseRoute.summary;
+  // The revision task is routed by the project's router: the class is a hint.
+  const routeSummary = showRevisionOptions && responderClass
+    ? responseRoute.class_summaries[responderClass]
+      ?? `Request changes → new revision task, routed by the project's router (class hint ${responderClass}); Approve → sent to the supervisor.`
+    : responseRoute.summary;
 
   const decide = async (decision: ReviewDecision) => {
     if (disabled) return;
@@ -46,7 +43,6 @@ export function DecisionBar({
       await onDecide(
         decision, note.trim(),
         decision !== "approve" ? responderClass : "",
-        decision !== "approve" ? responderProfile : "",
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Could not record the decision.");
@@ -103,29 +99,14 @@ export function DecisionBar({
               Revision intelligence class
               <select
                 value={responderClass}
-                onChange={(event) => { setResponderClass(event.target.value); setResponderProfile(""); }}
+                onChange={(event) => setResponderClass(event.target.value)}
                 disabled={disabled}
                 className="ml-2 rounded border border-gray-700 bg-gray-900 px-2 py-1 text-gray-100"
               >
-                <option value="">Project default</option>
+                <option value="">No class hint</option>
                 {(classData?.classes ?? []).map((row) => <option key={row.id} value={row.id}>{row.id}</option>)}
               </select>
             </label>
-            {responderClass && (
-              <label className="text-xs text-gray-400">
-                Revision profile
-                <select
-                  value={responderProfile}
-                  onChange={(event) => setResponderProfile(event.target.value)}
-                  disabled={disabled}
-                  className="ml-2 rounded border border-gray-700 bg-gray-900 px-2 py-1 text-gray-100"
-                >
-                  <option value="">Choose by class</option>
-                  {(profiles ?? []).filter((profile) => profile.default_class === responderClass)
-                    .map((profile) => <option key={profile.id} value={profile.id}>{profile.id}</option>)}
-                </select>
-              </label>
-            )}
           </div>
           <button
             type="button"

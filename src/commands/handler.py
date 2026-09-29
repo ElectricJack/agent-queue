@@ -101,6 +101,7 @@ from src.commands.github_issue_commands import GitHubIssueCommandsMixin
 # -- dv2 phase 6 mixins ---------------------------------------------------
 from src.commands.proposal_commands import TaskProposalCommandsMixin
 from src.commands.spec_commands import SpecCommandsMixin
+from src.routing.filing import FILING_COMMANDS, routing_choice_refusal, without_inert_choices
 
 logger = logging.getLogger(__name__)
 
@@ -1024,6 +1025,19 @@ class CommandHandler(
                     _emit_error = result["error"]
                     await self._record_capability_denial(name, principal, decision)
                     return result
+
+                # Filing carries hints, never routes (mandatory-routing spec
+                # §5.1): a profile, provider, model or pin is refused here,
+                # ahead of every handler, so the answer is the same for every
+                # principal and nothing is written.
+                if name in FILING_COMMANDS:
+                    refusal = routing_choice_refusal(name, args, principal)
+                    if refusal is not None:
+                        logger.info("cmd %s refused: %s", name, refusal["refused"])
+                        _emit_ok = False
+                        _emit_error = refusal["error"]
+                        return refusal
+                    args = without_inert_choices(args)
 
                 handler = getattr(self, f"_cmd_{name}", None)
                 if handler:

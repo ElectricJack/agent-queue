@@ -12,7 +12,7 @@ Review the branch for correctness.
 ```aq-graph
 version: 1
 defaults:
-  profile: "{reviewer}"
+  labels: ["reviewer:{reviewer}"]
   intelligence_class: fast-low
 nodes:
   - key: review

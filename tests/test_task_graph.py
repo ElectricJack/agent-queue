@@ -122,7 +122,8 @@ class TestParseGraph:
     def test_defaults_fill_unset_node_fields(self):
         graph = _load_graph("valid.json")
         schema = graph.nodes[0]
-        assert schema.profile == "coding"  # from defaults
+        assert schema.intelligence_class == "standard-high"  # from defaults
+        assert graph.nodes[2].intelligence_class == "deep-high"  # node wins over defaults
         assert graph.nodes[1].labels == ["overhaul-b"]  # from defaults
         assert schema.labels == ["db"]  # node wins over defaults
 
@@ -931,17 +932,17 @@ class TestSubstituteVars:
         _used, unknown = substitute_vars(graph)
         assert unknown & {"a", "b"}
 
-    def test_parent_profile_is_expanded(self):
+    def test_parent_labels_are_expanded(self):
         graph = parse_graph(
             {
                 "version": 1,
                 "vars": {"p": "coding"},
-                "parent": {"title": "P", "profile": "{p}"},
+                "parent": {"title": "P", "labels": ["{p}"]},
                 "nodes": [{"key": "n", "title": "N"}],
             }
         )
         used, unknown = substitute_vars(graph)
-        assert graph.parent.profile == "coding"
+        assert graph.parent.labels == ["coding"]
         assert unknown == set()
         assert "p" in used
 
@@ -1027,19 +1028,19 @@ class TestVarSubstitutionThroughValidation:
         assert [f.rule for f in findings] == []
         assert graph.nodes[0].title == "boom"
 
-    async def test_var_in_parent_profile_is_accepted(self, vault):
-        """`unused_var 'p'` + `unknown_profile '{p}'` on a correct document."""
+    async def test_var_in_parent_labels_is_accepted(self, vault):
+        """No bogus `unused_var 'p'` for a var only the parent block uses."""
         graph = parse_graph(
             {
                 "version": 1,
                 "vars": {"p": "coding"},
-                "parent": {"title": "P", "profile": "{p}"},
+                "parent": {"title": "P", "labels": ["{p}"]},
                 "nodes": [{"key": "n", "title": "N", "acceptance": ["x"]}],
             }
         )
         findings = await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
         assert [f.rule for f in findings] == []
-        assert graph.parent.profile == "coding"
+        assert graph.parent.labels == ["coding"]
 
 
 # ---------------------------------------------------------------------------
@@ -1161,49 +1162,63 @@ class TestNeedsOnAncestors:
 # ---------------------------------------------------------------------------
 
 
-class TestProfileScoping:
-    """Project-scoped profiles were retired — the form itself is now an error."""
+class TestRouteKeysAreRefused:
+    """A graph carries hints, never a route (mandatory-routing spec §5.1).
 
-    async def test_scoped_profile_reference_is_rejected(self, vault):
+    A node, the document's ``defaults`` or its ``parent:`` block naming a
+    profile, a pin, a provider or a model is refused at parse time with
+    ``routing_choice_forbidden``, whatever the value — a retired scoped
+    ``project:<pid>:<name>`` reference included.
+    """
+
+    @pytest.mark.parametrize(
+        "document, detail",
+        [
+            (
+                {"nodes": [{"key": "a", "title": "A", "profile": "project:p2:coding"}]},
+                "'profile'",
+            ),
+            ({"nodes": [{"key": "a", "title": "A", "profile": "coding"}]}, "'profile'"),
+            ({"nodes": [{"key": "a", "title": "A", "pin": True}]}, "'pin'"),
+            ({"nodes": [{"key": "a", "title": "A", "provider": "anthropic"}]}, "'provider'"),
+            ({"nodes": [{"key": "a", "title": "A", "model": "claude-opus"}]}, "'model'"),
+            ({"nodes": [{"key": "a", "title": "A", "harness": "codex"}]}, "'harness'"),
+            (
+                {"defaults": {"profile": "coding"}, "nodes": [{"key": "a", "title": "A"}]},
+                "'defaults.profile'",
+            ),
+            (
+                {"defaults": {"pin": True}, "nodes": [{"key": "a", "title": "A"}]},
+                "'defaults.pin'",
+            ),
+            (
+                {
+                    "parent": {"title": "P", "profile": "project:p2:coding"},
+                    "nodes": [{"key": "a", "title": "A"}],
+                },
+                "'parent.profile'",
+            ),
+        ],
+    )
+    def test_a_route_key_is_refused(self, document, detail):
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph({"version": 1, **document})
+        [error] = exc.value.errors
+        assert error.rule == "routing_choice_forbidden"
+        assert detail in error.detail
+
+    def test_a_null_or_false_route_key_chooses_nothing(self):
+        """``profile: null`` / ``pin: false`` (an older ``to_dict`` shape) parse."""
         graph = parse_graph(
             {
                 "version": 1,
-                "nodes": [
-                    {"key": "a", "title": "A", "acceptance": ["x"], "profile": "project:p2:coding"}
-                ],
+                "parent": {"title": "P", "profile": None},
+                "nodes": [{"key": "a", "title": "A", "profile": None, "pin": False}],
             }
         )
-        db = _FakeDB(profiles={"coding", "project:p2:coding"})
-        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
-        errors, _ = split_findings(findings)
-        assert {f.rule for f in errors} == {"retired_project_profile"}
-        assert graph.nodes[0].profile == "project:p2:coding"  # never rewritten
-
-    async def test_scoped_parent_profile_is_rejected(self, vault):
-        graph = parse_graph(
-            {
-                "version": 1,
-                "parent": {"title": "P", "profile": "project:p2:coding"},
-                "nodes": [{"key": "a", "title": "A", "acceptance": ["x"]}],
-            }
-        )
-        db = _FakeDB(profiles={"project:p2:coding"})
-        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
-        assert {f.rule for f in split_findings(findings)[0]} == {"retired_project_profile"}
-
-    async def test_a_scoped_reference_to_this_project_is_rejected_too(self, vault):
-        """Even the graph's own project: the override it names no longer exists."""
-        graph = parse_graph(
-            {
-                "version": 1,
-                "nodes": [
-                    {"key": "a", "title": "A", "acceptance": ["x"], "profile": "project:p1:special"}
-                ],
-            }
-        )
-        db = _FakeDB(profiles={"project:p1:special"})
-        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
-        assert {f.rule for f in split_findings(findings)[0]} == {"retired_project_profile"}
+        assert graph.node_keys() == ["a"]
+        assert "profile" not in graph.nodes[0].to_dict()
+        assert "profile" not in graph.parent.to_dict()
 
 
 # ---------------------------------------------------------------------------
@@ -1316,7 +1331,6 @@ GOLDEN_CASES = [
     "duplicate_key.json",
     "cycle.json",
     "non_blocking_loop.json",
-    "unknown_profile.json",
     "bad_dep_type.json",
     "unresolved_need.json",
     "cross_project.json",
@@ -1350,21 +1364,20 @@ async def test_validation_matches_golden(case, vault):
 
 
 class TestValidatorDetails:
-    async def test_a_bare_reference_no_longer_falls_back_to_an_override(self, vault):
-        """Only the global profile counts; a leftover override row is not one."""
-        graph = parse_graph(
-            {"version": 1, "nodes": [{"key": "a", "title": "A", "profile": "special"}]}
-        )
-        db = _FakeDB(profiles={"project:p1:special"})
-        findings = await validate_graph(graph, project_id="p1", db=db, vault_root=vault)
-        assert {f.rule for f in findings if f.is_error} == {"unknown_profile"}
-
-    async def test_system_profile_reference_is_left_alone(self, vault):
-        graph = parse_graph(
-            {"version": 1, "nodes": [{"key": "a", "title": "A", "profile": "coding"}]}
-        )
-        await validate_graph(graph, project_id="p1", db=_FakeDB(), vault_root=vault)
-        assert graph.nodes[0].profile == "coding"
+    def test_the_former_unknown_profile_fixture_is_refused_at_parse(self):
+        """No profile reaches the validator: its ``unknown_profile`` rule is gone."""
+        with pytest.raises(GraphParseError) as exc:
+            parse_graph(
+                {
+                    "version": 1,
+                    "nodes": [
+                        {"key": "a", "title": "A", "acceptance": ["done"], "profile": "nonexistent"}
+                    ],
+                }
+            )
+        assert [(e.rule, e.node) for e in exc.value.errors] == [
+            ("routing_choice_forbidden", "a")
+        ]
 
     async def test_existing_task_in_same_project_resolves(self, vault):
         graph = parse_graph(
@@ -1461,9 +1474,8 @@ async def db(tmp_path):
     database = Database(lease_dsn("graph.db"))
     await database.initialize()
     await database.create_project(Project(id="p1", name="p1"))
-    # tasks.profile_id is a real FK — a graph referencing a profile that
-    # isn't in agent_profiles would fail at insert, which is exactly what
-    # the validator's unknown_profile rule exists to catch first.
+    # A graph names no profile (mandatory routing); the rows only give the
+    # project a realistic catalogue.
     for profile_id in ("coding", "planner", "reviewer"):
         await database.create_profile(AgentProfile(id=profile_id, name=profile_id))
     yield database

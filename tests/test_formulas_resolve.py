@@ -87,7 +87,7 @@ def test_merge_nodes_by_key_child_wins_new_appended(reg):
     assert review["acceptance"] == ["findings written"]  # inherited (child did not set)
     assert doc["parent"]["title"] == "Review and fix {branch}"
     assert doc["defaults"] == {
-        "profile": "{reviewer}",
+        "labels": ["reviewer:{reviewer}"],
         "intelligence_class": "fast-low",
     }
 
@@ -152,18 +152,19 @@ def test_merge_defaults_child_null_does_not_clobber_inherited(reg, tmp_path):
     r, vault = reg
     (vault / "formulas" / "root-defaults.md").write_text(
         "---\nname: root-defaults\n---\n"
-        "```aq-graph\nversion: 1\ndefaults:\n  profile: reviewer\n"
+        "```aq-graph\nversion: 1\ndefaults:\n  intelligence_class: fast-low\n"
         "nodes:\n  - key: x\n    title: x\n```\n"
     )
     (vault / "formulas" / "child-defaults.md").write_text(
         "---\nname: child-defaults\nextends: root-defaults\n---\n"
-        "```aq-graph\nversion: 1\ndefaults:\n  profile:\n"
+        "```aq-graph\nversion: 1\ndefaults:\n  intelligence_class:\n"
         "nodes:\n  - key: y\n    title: y\n```\n"
     )
     load_from_vault(r, str(vault))
     chain = resolve_chain(r, "child-defaults", project_id=None)
     doc = merge_documents(chain)
-    assert doc["defaults"] == {"profile": "reviewer"}  # child's bare `profile:` did not clobber it
+    # The child's bare `intelligence_class:` did not clobber the inherited one.
+    assert doc["defaults"] == {"intelligence_class": "fast-low"}
 
 
 def test_validate_vars():
@@ -310,7 +311,7 @@ def test_project_override_extends_same_named_system_formula(reg):
     # Inherited from the system parent, which the override never restated.
     assert review["acceptance"] == ["findings written"]
     # `defaults` came from the system formula too.
-    assert doc["defaults"]["profile"] == "{reviewer}"
+    assert doc["defaults"]["labels"] == ["reviewer:{reviewer}"]
 
 
 def test_extends_scope_and_name_split(reg):

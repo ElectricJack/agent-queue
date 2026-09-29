@@ -189,10 +189,16 @@ class CreateTaskResponse(BaseModel):
     integration_mode: str | None = None
     task_type: str | None = None
     profile_id: str | None = None
-    # Which rule chose the route: explicit, class_match, project_default or
-    # inherited.  Absent when no profile was chosen (routing gate owns it).
+    # Why the task names a profile: ``role`` (a stage profile a role creator
+    # named).  Absent for an unrouted task: creation never resolves a route,
+    # the project's router does, and every other profile is refused
+    # (mandatory-routing spec §1, §5.1).
     profile_source: str | None = None
     intelligence_class: str | None = None
+    # Who wrote the route (``unrouted`` until the router writes one) and the
+    # filer's intelligence-class hint (mandatory-routing spec §3-§4).
+    route_source: str | None = None
+    class_hint: str | None = None
     # pinned | preferred | class_only (provider-failover D9).
     provider_intent: str | None = None
     preferred_workspace_id: str | None = None

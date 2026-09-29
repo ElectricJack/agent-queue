@@ -20,8 +20,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../../api/hooks", () => ({
   useProjects: () => ({ data: mocks.projects, isLoading: false, error: null }),
   useCreateTask: () => ({ mutate: mocks.create, isPending: false, error: mocks.error }),
-  // The create form's optional route picker (with *Pin to this provider*).
-  useProfiles: () => ({ data: [] }),
   // CreateTaskModal requires an intelligence class, so the toolbar's create
   // form does not render without this hook.
   useIntelligenceClasses: () => ({

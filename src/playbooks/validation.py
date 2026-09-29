@@ -1745,6 +1745,8 @@ def _profiles_and_capabilities(context: _Context) -> None:
     for step_id, step in sorted(definition.steps.items()):
         if not isinstance(step, (LlmStep, AgentTaskStep)):
             continue
+        if isinstance(step, AgentTaskStep) and step.profile_id is None:
+            continue  # The complete worker candidate set is bounded at execution.
         policy = context.profiles.policy(step.profile_id)
         if policy is None:
             context.emit(
@@ -1812,11 +1814,16 @@ def _profiles_and_capabilities(context: _Context) -> None:
             step = definition.steps[step_id]
             upstream = sorted(must.get(step_id, frozenset()))
             child = policies.get(step.profile_id)
-            if not upstream:
+            if not upstream or step.profile_id is None:
                 context.emit(
                     "delegation_runtime_checked",
-                    f"no tool-using AI step precedes {step_id!r} on every path, so the "
-                    f"delegation narrowing is enforced at run time by check_delegation",
+                    (
+                        "the router chooses the child profile; every enabled worker candidate "
+                        "must fit the parent and step capability ceiling at run time"
+                        if step.profile_id is None else
+                        f"no tool-using AI step precedes {step_id!r} on every path, so the "
+                        "delegation narrowing is enforced at run time by check_delegation"
+                    ),
                     rule_id=rule.id,
                     step_id=step_id,
                     field="/profile_id",
@@ -1918,8 +1925,12 @@ def _inventory_names(definition: PlaybookDefinition) -> list[tuple[str, str | No
         if isinstance(step, CommandStep):
             names.append((step.command, step.rule, step_id))
             names.extend((key, step.rule, step_id) for key in step.inputs)
-        if isinstance(step, (LlmStep, AgentTaskStep)):
+        if isinstance(step, (LlmStep, AgentTaskStep)) and step.profile_id is not None:
             names.append((step.profile_id, step.rule, step_id))
+        if isinstance(step, AgentTaskStep):
+            for hint in (step.intelligence_class, step.task_type):
+                if hint is not None:
+                    names.append((hint, step.rule, step_id))
         if isinstance(step, AgentTaskStep) and step.capability_narrowing is not None:
             # §5.3 applied to the third intersection term: a per-step narrowing
             # is an authored restriction, so every capability it names has to

@@ -2839,8 +2839,11 @@ class Orchestrator(
 
         Error handling: the entire cycle is wrapped in a try/except so
         that a failure in one step (e.g., a DB query error) doesn't crash
-        the daemon — it logs the error and retries on the next cycle.
+        the daemon. Pool and session reconciliation still run after an
+        earlier failure, so one broken step cannot stall the worker fleet.
         """
+        pools_attempted = False
+        sessions_attempted = False
         try:
             handler = getattr(self, "_command_handler", None)
             if getattr(type(handler), "_cmd_job_reconcile", None):
@@ -2907,12 +2910,21 @@ class Orchestrator(
 
             # 4. Monitoring: detect DEFINED tasks stuck beyond threshold.
             #    Runs after promotion so we don't false-alarm on tasks that
-            #    were just promoted in step 3.
-            await self._check_stuck_defined_tasks()
+            #    were just promoted in step 3.  Steps 4 and 4b only observe,
+            #    so each has its own try/except: a failing alert query once
+            #    skipped scheduling, pool starts and session teardown on every
+            #    cycle for 53 minutes (fair-grove-86).
+            try:
+                await self._check_stuck_defined_tasks()
+            except Exception:
+                logger.exception("Stuck DEFINED task check failed")
 
             # 4b. Periodic report of all FAILED/BLOCKED tasks so operators
             #     have an at-a-glance view of tasks needing intervention.
-            await self._check_failed_blocked_tasks()
+            try:
+                await self._check_failed_blocked_tasks()
+            except Exception:
+                logger.exception("FAILED/BLOCKED task report failed")
 
             # ── Phase 2: Scheduling & launch ────────────────────────────────
 
@@ -2951,6 +2963,7 @@ class Orchestrator(
             # 6b. Reconcile worker pools (swarm-work-model §11): size each
             #     (project, profile) pool against ready work and start/drain
             #     sessions to converge.  No-op unless swarm.enabled.
+            pools_attempted = True
             await self._reconcile_pools()
 
             # ── Phase 3: Housekeeping ───────────────────────────────────────
@@ -3080,11 +3093,25 @@ class Orchestrator(
             # called up there, not here.)
             # See docs/analysis/execution-plan.md §1.1.
             await self._reap_worktree_slots()
+            sessions_attempted = True
             await self._reconcile_sessions()
             await self._deliver_messages()
             await self._revoke_expired_tokens()
         except Exception:
             logger.error("Scheduler cycle error", exc_info=True)
+            # A persistent failure in an earlier step must not strand pool
+            # starts or leave retired sessions running. Keep the healthy-path
+            # order above and run only steps the cycle never reached.
+            if not pools_attempted:
+                try:
+                    await self._reconcile_pools()
+                except Exception:
+                    logger.error("Pool reconciliation error", exc_info=True)
+            if not sessions_attempted:
+                try:
+                    await self._reconcile_sessions()
+                except Exception:
+                    logger.error("Session reconciliation error", exc_info=True)
 
     async def _maintain_conversations(self, *, now: float) -> None:
         """Hourly maintenance; an outbox or database outage cannot stop scheduling."""

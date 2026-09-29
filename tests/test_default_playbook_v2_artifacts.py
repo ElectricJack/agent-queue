@@ -464,14 +464,79 @@ def test_daemon_shipped_bundle_is_the_reviewed_fixture(playbook_id: str) -> None
         )
 
 
-def test_assignment_router_is_an_authored_pipeline_over_route_commands() -> None:
-    """Spec 2026-09-06 §5: read options, decide only when not explicit, write the route."""
+def _routing_policy_block(source: str) -> str:
+    """The fenced ``yaml`` block under ``## Routing policy``, read independently.
+
+    A regex over the raw Markdown rather than the rebuild script's helper, so
+    the assertion below compares the compiled literal with a second reading of
+    the source, not with the code that produced it.
+    """
+    match = re.search(
+        r"^## Routing policy\n(?:(?!^## ).)*?^```yaml\n(.*?)^```$",
+        source,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match, "the routing source has no ```yaml block under '## Routing policy'"
+    return match.group(1)
+
+
+ROUTING_BUNDLES = (
+    FIXTURE_ROOT / "default-assignment-routing",
+    DAEMON_REVIEWED_BUNDLES / "default-assignment-routing",
+)
+
+
+@pytest.mark.parametrize("bundle", ROUTING_BUNDLES, ids=("fixture", "shipped"))
+def test_every_compiled_policy_literal_is_the_source_block(bundle: Path) -> None:
+    """Mandatory routing §6.3: the reviewed prose and the executed policy cannot drift.
+
+    Every ``task_route_plan`` step carries the ``## Routing policy`` block's
+    text, verbatim, as its ``policy`` literal, and the artifact passes V2
+    validation against the live registries.
+    """
+    from src.playbooks.definition import CommandStep
+    from src.routing.policy import parse_policy
+    from tests.test_routing_planner import SHIPPED_POLICY
+
+    definition = load_definition_json((bundle / "artifact.json").read_text(encoding="utf-8"))
+    block = _routing_policy_block((bundle / "source.md").read_text(encoding="utf-8"))
+    live = _routing_policy_block(
+        (REPO_ROOT / SHIPPED_SOURCES["default-assignment-routing"]).read_text(encoding="utf-8")
+    )
+    assert block == live
+    plans = {
+        step_id: step
+        for step_id, step in definition.steps.items()
+        if isinstance(step, CommandStep) and step.command == "task_route_plan"
+    }
+    assert set(plans) == {
+        "route-task--plan_first", "route-task--plan_classified", "route-task--plan_unclassified",
+    }
+    for step_id, step in plans.items():
+        policy = _inputs(step)["policy"]
+        assert policy == {"type": "literal", "value": block}, step_id
+    # The block is a valid policy, and the one the planner's own tests exercise.
+    assert parse_policy(block)[1] == parse_policy(SHIPPED_POLICY)[1]
+
+    diagnostics = validate_definition(
+        definition,
+        inventory=None,
+        contracts=RegistryContractLookup(),
+        profiles=shipped_profile_lookup(),
+        events=RegisteredEventLookup(),
+    )
+    blocking = [d for d in diagnostics if d.severity in {"error", "question"}]
+    assert not blocking, [(d.code, d.rule_id, d.step_id, d.message) for d in blocking]
+
+
+def test_assignment_router_plans_classifies_and_applies() -> None:
+    """Mandatory routing §6.7: plan, classify only when asked, apply the plan."""
     definition = _artifact("default-assignment-routing")
     assert definition.purpose == "routine"
     (rule,) = definition.rules
     assert rule.id == "route-task"
     assert rule.trigger.event_type == "task.route_needed"
-    assert rule.entry_step == "route-task--read_options"
+    assert rule.entry_step == "route-task--plan_first"
     assert rule.guard.model_dump(mode="json") == {
         "type": "bool",
         "op": "and",
@@ -483,95 +548,107 @@ def test_assignment_router_is_an_authored_pipeline_over_route_commands() -> None
                 "right": {"type": "literal", "value": ["DEFINED", "READY", "BLOCKED"]},
             },
             {
-                "type": "bool",
-                "op": "or",
-                "operands": [
-                    {
-                        "type": "bool",
-                        "op": "not",
-                        "operands": [
-                            {
-                                "type": "exists",
-                                "value": {
-                                    "type": "event_ref",
-                                    "path": "task.intelligence_class",
-                                },
-                                "mode": "truthy",
-                            }
-                        ],
-                    },
-                    {
-                        "type": "bool",
-                        "op": "not",
-                        "operands": [
-                            {
-                                "type": "exists",
-                                "value": {
-                                    "type": "event_ref",
-                                    "path": "task.profile_id",
-                                },
-                                "mode": "truthy",
-                            }
-                        ],
-                    },
-                ],
+                "type": "comparison",
+                "op": "in",
+                "left": {"type": "event_ref", "path": "task.route_source"},
+                "right": {"type": "literal", "value": ["unrouted", "legacy"]},
+            },
+            {
+                "type": "comparison",
+                "op": "eq",
+                "left": {"type": "event_ref", "path": "router"},
+                "right": {"type": "literal", "value": "default-assignment-routing"},
             },
         ],
     }
+    # The manifest grants the two router commands and nothing else.
+    assert set(definition.compiled_against.commands) == {"task_route_plan", "task_route_apply"}
+    review, _ = _read_review("default-assignment-routing")
+    assert review["capabilities_granted"]["aq_commands"] == ["task_route_apply", "task_route_plan"]
 
-    read = definition.steps["route-task--read_options"]
-    assert read.command == "task_route_options"
-    assert _inputs(read) == {"task_id": {"type": "event_ref", "path": "task_id"}}
-    assert read.save_result_as == "routing"
-    assert read.transitions == {
-        "already_routed": "route-task--done",
-        # provider-failover D13a: every option is on an unavailable provider.
+    task_id = {"type": "event_ref", "path": "task_id"}
+    first = definition.steps["route-task--plan_first"]
+    assert _inputs(first)["task_id"] == task_id
+    assert set(_inputs(first)) == {"task_id", "policy"}
+    assert first.save_result_as == "plan_a"
+    assert first.transitions == {
+        "planned": "route-task--apply_a",
+        "needs_classification": "route-task--classify",
+        # Every candidate is on an unlaunchable provider: wait, don't fail.
         "held": "route-task--done",
-        "explicit": "route-task--apply_explicit",
-        "undecided": "route-task--choose",
-        "no_options": "route-task--failed",
+        "already_routed": "route-task--done",
+        "no_candidates": "route-task--failed",
         "rejected": "route-task--failed",
         "runtime_error": "route-task--failed",
     }
 
-    choose = definition.steps["route-task--choose"]
-    assert choose.type == "llm"
-    assert choose.profile_id == "playbook-compiler"
-    assert set(_inputs(choose)) == {"title", "description", "priority", "task_type", "options"}
-    assert all(v["type"] == "binding_ref" and v["binding"] == "routing" for v in _inputs(choose).values())
-    assert choose.save_result_as == "decision"
-    assert choose.output_schema["required"] == [
-        "intelligence_class", "provider", "profile_id", "reason",
+    classify = definition.steps["route-task--classify"]
+    assert classify.type == "llm"
+    assert classify.profile_id == "playbook-compiler"
+    # §6.5: the classifier never sees a profile, a provider or a load.
+    assert set(_inputs(classify)) == {
+        "title", "description", "task_type", "class_hint",
+        "questions", "allowed_kinds", "allowed_classes",
+    }
+    assert all(
+        v == {"type": "binding_ref", "binding": "plan_a", "path": k}
+        for k, v in _inputs(classify).items()
+    )
+    assert classify.save_result_as == "classification"
+    assert classify.output_schema["required"] == [
+        "task_type", "intelligence_class", "narrow", "test_verified",
+        "independent_verifier", "reason",
     ]
-    assert choose.output_schema["additionalProperties"] is False
-    assert choose.transitions == {
-        "completed": "route-task--apply_decision",
-        "runtime_error": "route-task--failed",
+    assert classify.output_schema["additionalProperties"] is False
+    assert not classify.tool_use.enabled
+    assert classify.transitions == {
+        "completed": "route-task--plan_classified",
+        # A failed classification still routes, on the policy defaults.
+        "runtime_error": "route-task--plan_unclassified",
     }
+    prompt = classify.prompt.value
+    assert prompt.startswith("## Classifying a task")
+    # It classifies; no rung is named for it to pick.
+    assert re.search(r"-(claude|codex|opencode|gemini)\b", prompt) is None
+    assert "profile_id" not in prompt
 
-    explicit = definition.steps["route-task--apply_explicit"]
-    assert explicit.command == "task_route"
-    assert _inputs(explicit)["profile_id"] == {
-        "type": "binding_ref", "binding": "routing", "path": "explicit_profile_id",
+    classified = definition.steps["route-task--plan_classified"]
+    assert _inputs(classified)["classification"] == {
+        "type": "binding_ref", "binding": "classification",
     }
-    assert _inputs(explicit)["intelligence_class"] == {
-        "type": "binding_ref", "binding": "routing", "path": "intelligence_class",
+    assert classified.save_result_as == "plan_b"
+    unclassified = definition.steps["route-task--plan_unclassified"]
+    assert _inputs(unclassified)["classification"] == {
+        "type": "literal", "value": {"failed": True},
     }
-    decided = definition.steps["route-task--apply_decision"]
-    assert decided.command == "task_route"
-    assert {k: v["binding"] for k, v in _inputs(decided).items() if v["type"] == "binding_ref"} == {
-        "profile_id": "decision", "intelligence_class": "decision", "reason": "decision",
-    }
-    for step in (explicit, decided):
-        # Routing's own placement is ``class_only`` (provider-failover D9).
-        assert _inputs(step)["provider_intent"] == {"type": "literal", "value": "class_only"}
+    assert unclassified.save_result_as == "plan_c"
+    for step, apply_step in ((classified, "apply_b"), (unclassified, "apply_c")):
+        assert step.transitions == {
+            "planned": f"route-task--{apply_step}",
+            "held": "route-task--done",
+            # Another run routed the task while this one classified it.
+            "already_routed": "route-task--done",
+            "needs_classification": "route-task--failed",
+            "no_candidates": "route-task--failed",
+            "rejected": "route-task--failed",
+            "runtime_error": "route-task--failed",
+        }
+
+    for apply_step, binding in (("apply_a", "plan_a"), ("apply_b", "plan_b"), ("apply_c", "plan_c")):
+        step = definition.steps[f"route-task--{apply_step}"]
+        assert step.command == "task_route_apply"
+        assert _inputs(step) == {
+            "task_id": task_id, "plan": {"type": "binding_ref", "binding": binding},
+        }
         assert step.transitions == {
             "routed": "route-task--done",
+            "stale": "route-task--done",
             "rejected": "route-task--failed",
             "runtime_error": "route-task--failed",
         }
     assert definition.steps["route-task--done"].outcome == "completed"
     assert definition.steps["route-task--failed"].outcome == "failed"
+
 
 def test_review_dedup_key_matches_doctor() -> None:
     """The doctor's review key still matches the retired review recording."""

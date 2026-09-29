@@ -37,6 +37,7 @@ import logging
 from typing import Any
 
 from src.database.queries.hierarchy_queries import HierarchyError
+from src.routing.filing import graph_route_refusal
 from src.task_graph import (
     GraphParseError,
     create_graph,
@@ -307,6 +308,11 @@ class FormulaCommandsMixin:
         if phases_refusal is not None:
             return phases_refusal
 
+        # A formula node carries hints, never a route (mandatory-routing
+        # spec §5.1): the same refusal ``create_task_graph`` gives.
+        refused = graph_route_refusal("formula_cook", errors)
+        if refused is not None:
+            return refused
         if errors:
             return {
                 "success": False,

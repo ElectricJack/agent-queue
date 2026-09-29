@@ -30,11 +30,6 @@ BLOCKING_DEP_TYPES: frozenset[str] = frozenset(
 #: description are not mistaken for variable references.
 _VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_.\-]*)\}")
 
-#: A project-scoped profile id, ``project:<pid>:<agent-type>`` (see
-#: ``src/profiles/``).  The scope is captured so a graph can be stopped from
-#: borrowing another project's override.
-_SCOPED_PROFILE_RE = re.compile(r"^project:([^:]+):(.+)$")
-
 #: Markdown ATX heading, e.g. ``## 3. Schema``.
 _HEADING_RE = re.compile(r"^(?P<hashes>#{1,6})[ \t]+(?P<text>.+?)[ \t]*#*[ \t]*$", re.MULTILINE)
 
@@ -45,12 +40,6 @@ def _normalise_heading(text: str) -> str:
 
 def _error(rule: str, detail: str, node: str | None = None, severity: str = "error") -> GraphError:
     return GraphError(rule=rule, detail=detail, node=node, severity=severity)
-
-
-def _profile_scope(profile_id: str) -> str | None:
-    """Project id a profile reference is scoped to, or ``None`` if unqualified."""
-    match = _SCOPED_PROFILE_RE.match(profile_id or "")
-    return match.group(1) if match else None
 
 
 # ---------------------------------------------------------------------------
@@ -109,10 +98,6 @@ def substitute_vars(graph: TaskGraph) -> tuple[set[str], set[str]]:
         graph.parent.title = expand(graph.parent.title) or ""
         graph.parent.description = expand(graph.parent.description) or ""
         graph.parent.labels = [expand(v) or "" for v in graph.parent.labels]
-        # parent.profile feeds the same unknown_profile check as node.profile;
-        # leaving it unexpanded rejected a correct document with a bogus
-        # `unknown_profile '{p}'` *and* a bogus `unused_var 'p'`.
-        graph.parent.profile = expand(graph.parent.profile)
 
     for phase in graph.phases:
         # The key is graph-local plumbing, like ``node.key``, and is left
@@ -125,7 +110,6 @@ def substitute_vars(graph: TaskGraph) -> tuple[set[str], set[str]]:
         node.description = expand(node.description) or ""
         node.acceptance = [expand(v) or "" for v in node.acceptance]
         node.labels = [expand(v) or "" for v in node.labels]
-        node.profile = expand(node.profile)
         node.intelligence_class = expand(node.intelligence_class)
         node.task_type = expand(node.task_type)
         for ctx in node.context:
@@ -161,7 +145,6 @@ def _surviving_var_names(graph: TaskGraph) -> set[str]:
     if graph.parent is not None:
         scan(graph.parent.title)
         scan(graph.parent.description)
-        scan(graph.parent.profile)
         for label in graph.parent.labels:
             scan(label)
 
@@ -172,7 +155,6 @@ def _surviving_var_names(graph: TaskGraph) -> set[str]:
     for node in graph.nodes:
         scan(node.title)
         scan(node.description)
-        scan(node.profile)
         scan(node.intelligence_class)
         scan(node.task_type)
         for value in list(node.acceptance) + list(node.labels):
@@ -744,165 +726,6 @@ async def _check_ancestor_needs(
     return errors
 
 
-async def _check_profiles(graph: TaskGraph, project_id: str, db: Any) -> list[GraphError]:
-    """Every referenced profile must exist.
-
-    Profiles are global — a durable worker is shared between projects — so a
-    reference is just the agent-type name.  A retired ``project:<pid>:<name>``
-    reference is reported rather than resolved: the override it named no
-    longer exists, and silently falling back to the system profile would hide
-    a graph that still encodes the old scoping.
-    """
-    if db is None:
-        return []
-    errors: list[GraphError] = []
-    cache: dict[str, Any | None] = {}
-
-    async def resolve(profile_id: str) -> Any | None:
-        """Resolve to the profile that actually exists, or ``None``."""
-        if profile_id not in cache:
-            cache[profile_id] = await db.get_profile(profile_id)
-        return cache[profile_id]
-
-    def report(profile_id: str, node_key: str | None) -> None:
-        errors.append(
-            _error(
-                "unknown_profile",
-                f"profile '{profile_id}' is not defined for project '{project_id}'",
-                node_key,
-            )
-        )
-
-    def report_retired(profile_id: str, scope: str, node_key: str | None) -> None:
-        errors.append(
-            _error(
-                "retired_project_profile",
-                f"profile '{profile_id}' uses the retired project-scoped form "
-                f"(scope '{scope}') — project-scoped profiles were removed; "
-                "reference the agent-type by name",
-                node_key,
-            )
-        )
-
-    async def check(profile_id: str, node_key: str | None) -> str | None:
-        scope = _profile_scope(profile_id)
-        if scope is not None:
-            report_retired(profile_id, scope, node_key)
-            return None
-        resolved = await resolve(profile_id)
-        if resolved is None:
-            report(profile_id, node_key)
-            return None
-        from src.profiles.task_execution import task_execution_profile_error
-
-        if error := task_execution_profile_error(resolved):
-            errors.append(_error("supervisor_profile", error, node_key))
-            return None
-        return resolved.id
-
-    if graph.parent and graph.parent.profile:
-        resolved = await check(graph.parent.profile, None)
-        if resolved is not None:
-            graph.parent.profile = resolved
-
-    for node in graph.nodes:
-        if not node.profile:
-            continue
-        resolved = await check(node.profile, node.key)
-        if resolved is not None:
-            node.profile = resolved
-
-    return errors
-
-
-async def _check_subtasks_reportable(
-    graph: TaskGraph, project_id: str, db: Any
-) -> list[GraphError]:
-    """Warn when a node's checklist is one its worker could not tick off.
-
-    ``ensure_default_profiles`` is write-if-absent, so a vault upgraded from
-    before the subtask grants existed has profiles without
-    ``task_subtask_update``.  Such a worker still *sees* the checklist in
-    prime — it just is not told to report progress — so the checklist is
-    still worth writing and this is a **warning**, not an error.  Saying so
-    at ``--dry-run`` time is what lets a planner fix the grants first.
-
-    Runs after :func:`_check_profiles`, which rewrites an explicit
-    ``node.profile`` to the id that actually resolved.  Nodes whose class
-    needed a different worker route have also been resolved before validation
-    by ``_cmd_create_task_graph``.  For the remaining profileless nodes, use
-    the project's default route (or the same deterministic fallback the agent
-    reconciler will establish).  An absent or unusable route is itself a
-    warning; silently skipping the capability check leaves a planner unable
-    to tell whether the eventual worker can report its checklist.
-    """
-    if db is None:
-        return []
-    from src.prime.sections import SUBTASK_UPDATE_COMMAND, profile_allows_command
-
-    findings: list[GraphError] = []
-
-    async def implicit_profile_id() -> str | None:
-        """Return the route for a NULL task profile without pinning the node."""
-        get_project = getattr(db, "get_project", None)
-        get_profile = getattr(db, "get_profile", None)
-        if not callable(get_project) or not callable(get_profile):
-            return None
-        project = await get_project(project_id)
-        profile_id = getattr(project, "default_profile_id", None) if project is not None else None
-        if not profile_id:
-            list_profiles = getattr(db, "list_profiles", None)
-            if not callable(list_profiles):
-                return None
-            from src.profiles.default_selection import select_default_profile_id
-
-            profile_id = select_default_profile_id(await list_profiles())
-        if not profile_id:
-            return None
-        profile = await get_profile(profile_id)
-        if profile is None or not getattr(profile, "enabled", True):
-            return None
-        from src.profiles.task_execution import task_execution_profile_error
-
-        return None if task_execution_profile_error(profile) else profile.id
-
-    implicit_profile = await implicit_profile_id()
-    allowed: dict[str, bool] = {}
-    for node in graph.nodes:
-        if not node.subtasks:
-            continue
-        profile_id = node.profile or implicit_profile
-        if profile_id is None:
-            findings.append(
-                _error(
-                    "subtasks_routing_unresolved",
-                    f"node '{node.key}' has a checklist but no execution profile can be "
-                    "resolved — configure an enabled project default worker profile before "
-                    "creating work with subtasks",
-                    node.key,
-                    severity="warning",
-                )
-            )
-            continue
-        if profile_id not in allowed:
-            allowed[profile_id] = await profile_allows_command(
-                db, profile_id, SUBTASK_UPDATE_COMMAND
-            )
-        if allowed[profile_id]:
-            continue
-        findings.append(
-            _error(
-                "subtasks_unreportable",
-                f"profile '{profile_id}' cannot run '{SUBTASK_UPDATE_COMMAND}', so the "
-                "worker will see this checklist but not be told to tick it off — "
-                f"run `aq agent profile-reseed --profile-id {profile_id} --grants-only`",
-                node.key,
-                severity="warning",
-            )
-        )
-    return findings
-
-
 def _check_spec_refs(
     graph: TaskGraph,
     *,
@@ -1014,31 +837,9 @@ async def validate_graph(
     findings.extend(
         await _check_ancestor_needs(graph, parent_id=parent_id, filed_by=filed_by, db=db)
     )
-    findings.extend(_check_pins(graph))
-    findings.extend(await _check_profiles(graph, project_id, db))
-    findings.extend(await _check_subtasks_reportable(graph, project_id, db))
     findings.extend(_check_spec_refs(graph, vault_root=vault_root))
 
     return findings
-
-
-def _check_pins(graph: TaskGraph) -> list[GraphError]:
-    """``pin: true`` needs a profile somebody named (provider-failover D9).
-
-    A pin is a statement about the provider a profile names; with no
-    profile, or with one routing resolved from the class, there is nothing a
-    human chose to pin.
-    """
-    return [
-        _error(
-            "pin_without_profile",
-            "'pin: true' pins the node's profile to its provider, so the node needs a "
-            "'profile' (on the node, in defaults, or via profile_id)",
-            node.key,
-        )
-        for node in graph.nodes
-        if node.pin and (not node.profile or node.profile_source == "class_match")
-    ]
 
 
 def split_findings(findings: list[GraphError]) -> tuple[list[GraphError], list[GraphError]]:

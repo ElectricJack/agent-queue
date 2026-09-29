@@ -405,7 +405,7 @@ class CapabilityNarrowingDTO(V2Model):
 class DelegationPolicyDTO(V2Model):
     """AgentTaskStep only."""
 
-    child_profile_id: str
+    child_profile_id: str | None = None  # unresolved until routing for hint-only steps
     wait_for_completion: bool = True
     cancel_child: bool = False
     narrowed_from: str | None = None  # parent principal provenance, human-readable
@@ -420,7 +420,7 @@ class AiNodeDetailDTO(V2Model):
     show the profile, resolved capability namespaces, capability fingerprint,
     budgets, and delegation policy")."""
 
-    profile_id: str
+    profile_id: str | None = None
     intelligence_class: str | None = None
     provider: str | None = None
     model: str | None = None

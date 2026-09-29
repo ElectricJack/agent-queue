@@ -32,6 +32,7 @@ from sqlalchemy import (
     text,
     true,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 
 metadata = MetaData()
 
@@ -221,9 +222,12 @@ tasks = Table(
     # Mandatory routing (spec 2026-09-28 §3 I1, §4): who wrote the route in
     # ``profile_id`` (``src.routing.sources``), the filer's intelligence-class
     # hint, and the router's explainable record of the route it chose.
+    # ``route`` is JSONB, never plain JSON: ``json`` has no equality operator,
+    # so any DISTINCT, UNION or GROUP BY over a whole ``tasks`` row fails
+    # (outage 2026-09-28; revision a00000000040, tests/test_migration_json_columns.py).
     Column("route_source", Text, nullable=False, server_default="unrouted"),
     Column("class_hint", Text, nullable=True),
-    Column("route", JSON(none_as_null=True), nullable=True),
+    Column("route", JSONB(none_as_null=True), nullable=True),
     CheckConstraint(
         "provider_intent IN ('pinned','preferred','class_only')",
         name="ck_tasks_provider_intent",
@@ -782,12 +786,16 @@ doc_review_comments = Table(
 
 # The reviewer task is a soft reference so archiving it never erases the
 # dispatch history or the review's activity. A forced repeat gets a new row.
+# A dispatch files its reviewer unrouted with a class hint; the router picks
+# the profile (mandatory-routing spec §5.3), so ``profile_id`` is set only on
+# rows written before that (revision a00000000041).
 doc_review_dispatches = Table(
     "doc_review_dispatches",
     metadata,
     Column("id", Text, primary_key=True),
     Column("review_id", Text, nullable=False),
-    Column("profile_id", Text, nullable=False),
+    Column("profile_id", Text, nullable=True),
+    Column("intelligence_class", Text, nullable=True),
     Column("revision", Integer, nullable=False),
     Column("with_comments", Boolean, nullable=False),
     Column("focus", Text, nullable=True),

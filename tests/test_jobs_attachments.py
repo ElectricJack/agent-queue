@@ -234,3 +234,12 @@ def test_node_presets_use_server_resolved_executables(tmp_path, monkeypatch):
     ]
     with pytest.raises(JobError, match="jobs.preset_denied"):
         validate_args(accepted["npm_ci"], ["--unsafe"], tmp_path, 1)
+
+
+def test_test_preset_folds_xdist_only_when_available(tmp_path):
+    preset = presets(tmp_path)["test"]
+    assert validate_args(preset, ["tests"], tmp_path, 3)[-2:] == ["-n", "3"]
+    assert validate_args(preset, ["tests"], tmp_path, 3, xdist=False)[-1:] == ["tests"]
+    assert "-n" not in validate_args(
+        preset, ["tests", "-p", "no:xdist"], tmp_path, 3
+    )

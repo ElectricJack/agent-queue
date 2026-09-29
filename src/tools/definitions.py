@@ -1218,36 +1218,16 @@ _ALL_TOOL_DEFINITIONS = [
                         "code or system design, art is art-heavy design"
                     ),
                 },
-                "profile_id": {
-                    "type": "string",
-                    "description": "Eligible worker profile ID to configure the task (optional; supervisor is not executable)",
-                },
-                "provider_intent": {
-                    "type": "string",
-                    "enum": ["pinned", "preferred", "class_only"],
-                    "description": (
-                        "Whether anyone meant the provider profile_id names "
-                        "(provider-failover D8). Default: preferred when you pass "
-                        "profile_id, else class_only. A preferred or class_only task "
-                        "fails over to the same class on another provider when its "
-                        "provider is unavailable; a pinned one holds. pinned/preferred "
-                        "need a profile_id; pinning is refused for worker tokens."
-                    ),
-                },
-                "pin": {
-                    "type": "boolean",
-                    "description": "Shorthand for provider_intent=pinned.",
-                },
                 "intelligence_class": {
                     "type": "string",
                     "description": (
-                        "Execution intelligence class id, e.g. deep-high or standard-high. "
-                        "Use list_intelligence_classes for current IDs. Without profile_id, "
-                        "a class the implicit route (project default, supervisor fallback, "
-                        "caller profile) does not run selects an enabled worker whose "
-                        "default_class matches — pool first, then that route's provider, then "
-                        "Claude — before the task is written; with no match the create fails. "
-                        "The response's profile_source names the rule that picked the profile."
+                        "Intelligence-class hint for the router, e.g. deep-high or "
+                        "standard-high. Use list_intelligence_classes for current IDs. The "
+                        "task is stored unrouted with this class as its class_hint; the "
+                        "project's routing playbook picks the profile, provider and final "
+                        "class within its policy. A task never names its profile, "
+                        "provider, model or pin: those are refused "
+                        "(routing.choice_forbidden). An unknown class is refused."
                     ),
                 },
                 "preferred_workspace_id": {
@@ -1279,7 +1259,9 @@ _ALL_TOOL_DEFINITIONS = [
                         "--test); command -> a command line (met by a matching recorded "
                         "--command/--test; '<placeholder>' matches any arguments) or a single "
                         "identifier found in the repo; flag/registration -> an identifier found in "
-                        "the repo."
+                        "the repo; review -> spec, plan, other or any (met by a document review the "
+                        "task submitted with review_submit). Research and design tasks carry an "
+                        "implicit {id: review, kind: review, target: any} item."
                     ),
                     "items": {
                         "type": "object",
@@ -1287,7 +1269,7 @@ _ALL_TOOL_DEFINITIONS = [
                             "id": {"type": "string"},
                             "kind": {
                                 "type": "string",
-                                "enum": ["file", "test", "command", "flag", "registration"],
+                                "enum": ["file", "test", "command", "flag", "registration", "review"],
                             },
                             "target": {"type": "string"},
                         },
@@ -1487,37 +1469,13 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Priority (lower = higher priority, default 100)",
                     "default": 100,
                 },
-                "profile_id": {
-                    "type": "string",
-                    "description": (
-                        "Pre-route the task to an eligible worker profile on create (supervisor is control-plane only). "
-                        "Tasks created via ensure_task skip triage, so the "
-                        "ensuring pipeline pins the executing profile directly."
-                    ),
-                },
-                "provider_intent": {
-                    "type": "string",
-                    "enum": ["pinned", "preferred", "class_only"],
-                    "description": (
-                        "Whether anyone meant the provider profile_id names "
-                        "(provider-failover D8). Default: preferred when you pass "
-                        "profile_id, else class_only. A preferred or class_only task "
-                        "fails over to the same class on another provider when its "
-                        "provider is unavailable; a pinned one holds. pinned/preferred "
-                        "need a profile_id; pinning is refused for worker tokens."
-                    ),
-                },
-                "pin": {
-                    "type": "boolean",
-                    "description": "Shorthand for provider_intent=pinned.",
-                },
                 "intelligence_class": {
                     "type": "string",
                     "description": (
-                        "Vault intelligence class for the task on create. A "
-                        "pinned profile is not a route on its own: without an "
-                        "explicit class the task waits for the assignment "
-                        "playbook to choose one. Both apply only when this "
+                        "Intelligence-class hint for the task on create: the task "
+                        "is stored unrouted and the project's router picks its "
+                        "profile and class. A profile, provider, model or pin is "
+                        "refused (routing.choice_forbidden). Applies only when this "
                         "call creates the task."
                     ),
                 },
@@ -2131,12 +2089,13 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "edit_task",
         "description": (
             "Edit a task's properties: project_id, title, description, priority, task_type, "
-            "status, max_retries, verification_type, profile_id, integration_mode, "
+            "status, max_retries, verification_type, integration_mode, "
             "skip_verification, intelligence_class, affinity_agent_id, affinity_reason, "
             "workspace_mode, needs_attention, or clear_needs_attention. Use this "
             "to move a task to a different project, rename tasks, change priority, override status "
-            "(admin), assign a profile, adjust retry/verification settings, or set coordination "
-            "parameters."
+            "(admin), change the routing hints, adjust retry/verification settings, or set "
+            "coordination parameters. A task's route (profile, provider, model, pin) is the "
+            "router's and is refused here (routing.choice_forbidden)."
         ),
         "input_schema": {
             "type": "object",
@@ -2177,29 +2136,13 @@ _ALL_TOOL_DEFINITIONS = [
                     "enum": ["auto_test", "qa_agent", "human"],
                     "description": "How to verify task output (optional)",
                 },
-                "profile_id": {
-                    "type": ["string", "null"],
-                    "description": "Agent profile ID (optional, set to null to clear)",
-                },
-                "provider_intent": {
-                    "type": "string",
-                    "enum": ["pinned", "preferred", "class_only"],
-                    "description": (
-                        "Whether anyone meant the provider profile_id names "
-                        "(provider-failover D8). Default: preferred when you pass "
-                        "profile_id, else class_only. A preferred or class_only task "
-                        "fails over to the same class on another provider when its "
-                        "provider is unavailable; a pinned one holds. pinned/preferred "
-                        "need a profile_id; pinning is refused for worker tokens."
-                    ),
-                },
-                "pin": {
-                    "type": "boolean",
-                    "description": "Shorthand for provider_intent=pinned.",
-                },
                 "intelligence_class": {
                     "type": ["string", "null"],
-                    "description": "Intelligence class id; change only while unassigned. Null clears it.",
+                    "description": (
+                        "Intelligence-class hint for the router; change only while "
+                        "unassigned. Null clears it. On a queued task, editing the "
+                        "class hint or task_type sends the task back to its router."
+                    ),
                 },
                 "integration_mode": {
                     "type": ["string", "null"],
@@ -5435,19 +5378,20 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Create a whole task graph in one transaction from a graph "
             "document or a vault spec's fenced aq-graph block.  Validates "
-            "vars, keys, dependency types, profiles, cycles, and spec "
-            "references first; dry_run returns the report without writing."
+            "vars, keys, dependency types, classes, cycles, and spec "
+            "references first; dry_run returns the report without writing. "
+            "Nodes carry hints (intelligence_class, task_type), never a route: "
+            "a profile or pin in a node, defaults or parent is refused "
+            "(routing.choice_forbidden)."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "profile_id": {
-                    "type": "string",
-                    "description": "Default profile for graph nodes without an explicit profile.",
-                },
                 "intelligence_class": {
                     "type": "string",
-                    "description": "Default intelligence class for graph nodes without an explicit class.",
+                    "description": (
+                        "Default intelligence-class hint for graph nodes without their own."
+                    ),
                 },
                 "project_id": {"type": "string", "description": "Owning project"},
                 "graph": {
@@ -5486,6 +5430,14 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": (
                         "Why this graph is being filed. Required for a non-elevated "
                         "session; recorded on every discovered-from provenance edge."
+                    ),
+                },
+                "after_review": {
+                    "type": "string",
+                    "description": (
+                        "Attach every node of the graph to the named document review's "
+                        "gate until the review is approved. An unknown or withdrawn "
+                        "review refuses the whole graph; an approved one gates nothing."
                     ),
                 },
             },
@@ -6274,7 +6226,8 @@ _ALL_TOOL_DEFINITIONS = [
                                     "--test); command -> a command line (met by a matching recorded "
                                     "--command/--test; '<placeholder>' matches any arguments) or a single "
                                     "identifier found in the repo; flag/registration -> an identifier found in "
-                                    "the repo."
+                                    "the repo; review -> spec, plan, other or any (met by a document review the "
+                                    "task submitted with review_submit)."
                                 ),
                                 "items": {
                                     "type": "object",
@@ -6288,6 +6241,7 @@ _ALL_TOOL_DEFINITIONS = [
                                                 "command",
                                                 "flag",
                                                 "registration",
+                                                "review",
                                             ],
                                         },
                                         "target": {"type": "string"},
@@ -6295,13 +6249,12 @@ _ALL_TOOL_DEFINITIONS = [
                                     "required": ["id", "kind", "target"],
                                 },
                             },
-                            "profile_id": {
-                                "type": "string",
-                                "description": "Explicit worker profile pin; omit to use normal routing admission.",
-                            },
                             "intelligence_class": {
                                 "type": "string",
-                                "description": "Explicit intelligence class; validated against the pinned profile when present.",
+                                "description": (
+                                    "Intelligence-class hint for the router. A profile "
+                                    "is refused (routing.choice_forbidden)."
+                                ),
                             },
                         },
                         "required": ["tempId", "title", "description"],
@@ -6811,8 +6764,7 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "revision": {"type": "integer", "minimum": 1},
                     "decision": {"type": "string", "enum": ["approve", "request_changes", "reject"]},
                     "note": {"type": "string"},
-                    "responder_class": {"type": "string", "description": "Who revises after request_changes or reject: intelligence class for the new revision task."},
-                    "responder_profile": {"type": "string", "description": "Optional worker profile for that revision class."},
+                    "responder_class": {"type": "string", "description": "After request_changes or reject: intelligence-class hint for the new revision task, which the project's router routes. A responder profile is not accepted."},
                 },
                 "required": ["review_id", "revision", "decision"],
                 "additionalProperties": False,
@@ -6836,18 +6788,30 @@ _ALL_TOOL_DEFINITIONS.extend(
         },
         {
             "name": "review_dispatch",
-            "description": "Send an open review revision to selected profiles for adversarial review without moving its decision gate.",
+            "description": (
+                "Send an open review revision to adversarial reviewers without moving its "
+                "decision gate. Files count reviewer tasks with an intelligence-class hint; "
+                "the project's router picks each reviewer's profile, excluding the provider "
+                "the author revision ran on. A dispatch never names a profile."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "review_id": {"type": "string"},
-                    "to": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                    "count": {
+                        "type": "integer", "minimum": 1, "maximum": 10,
+                        "description": "Number of reviewer tasks (default 1).",
+                    },
+                    "intelligence_class": {
+                        "type": "string",
+                        "description": "Class hint for the reviewers (default deep-high).",
+                    },
                     "revision": {"type": "integer", "minimum": 1},
                     "with_comments": {"type": "boolean"},
                     "focus": {"type": "string", "maxLength": 4000},
                     "force": {"type": "boolean"},
                 },
-                "required": ["review_id", "to"],
+                "required": ["review_id"],
                 "additionalProperties": False,
             },
         },

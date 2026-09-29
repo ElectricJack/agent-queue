@@ -140,9 +140,10 @@ How it decides:
   changes exactly when they do. `--check-version` overrides it.
 - **The route.** The project's own reviewed pair (`<project>-parent-integration`,
   `<project>-root-train`) when it ships, else the shared pair.
-- **Classes and profiles.** `standard-high` for primary, verifier and debug
-  work, on the derived `<class>-<harness>` rung (`--intelligence-class`,
-  `--harness`; codex by default, matching agent-queue).
+- **Classes.** `standard-high` for primary, verifier and debug work
+  (`--intelligence-class`). It is a class hint only: those tasks are filed
+  unrouted and the project's router assigns their profiles, so the policy
+  names no profile.
 
 Before binding, confirm the names against a real push run on the default
 branch or a branch that triggers CI:
@@ -153,7 +154,8 @@ gh api repos/OWNER/REPO/commits/SHA/check-runs --jq '.check_runs[] | [.name, .ap
 
 Run from agent-queue itself, the planner reproduces
 [agent-queue-train-policy.json](agent-queue-train-policy.json) byte for byte
-(in either credential mode, `--check-version tests-yml-v3`).
+in either credential mode, with no `--check-version`: its check-set version is
+the derived `ci-4c6e0c2a989c`.
 
 ## 3. App credential mode
 

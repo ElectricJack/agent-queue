@@ -128,7 +128,7 @@ A task's `profile_id` says both "run this class" and "run on this provider". The
 
 | Intent | Meaning during an outage | How a task gets it |
 |---|---|---|
-| `pinned` | Holds until its provider is back; never moved automatically. | `aq task create --profile P --pin`, `aq task route --profile-id P --pin`, `aq task edit --profile-id P --pin` (or `--provider-intent pinned`), an `aq-graph` node with `pin: true`, a playbook `agent_task` step with `pin_provider: true`, the dashboard route picker's *Pin to this provider* checkbox (off by default). |
+| `pinned` | Holds until its provider is back; never moved automatically. | `aq task create --profile P --pin`, `aq task route --profile-id P --pin`, `aq task edit --profile-id P --pin` (or `--provider-intent pinned`), an `aq-graph` node with `pin: true`, the dashboard route picker's *Pin to this provider* checkbox (off by default). |
 | `preferred` | Fails over to the same class elsewhere. | An explicit profile: `aq task create --profile P`, `aq task route --profile-id P`, `aq task edit --profile-id P`, an `aq-graph` node's `profile:`. |
 | `class_only` | Fails over; its placement does not narrow routing. | A profile chosen by class match or by routing (the `default-assignment-routing` playbook passes `class_only`), a worker-filed task inheriting its filer's profile, or no profile at all. The project default is never written to the task, so it is always `class_only`. |
 

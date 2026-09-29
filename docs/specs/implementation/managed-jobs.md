@@ -12,10 +12,14 @@ identity: `jobs.id`, `AQ_JOB_ID`, and `<data_dir>/runs/<uuid>/`.
 exclusive frontier drains existing shared work. The detached `src.jobs.runner`
 supervisor uses the existing versioned box locks, inherited by its command's
 children, and never accepts interpolated shell text. Finite test/lint/build/e2e
-presets construct executable argv on the server. A configured disposable
-`resources.jobs.test_database_url` is required for test/e2e presets; the worker
+presets construct executable argv on the server. Test jobs select their interpreter
+from the pinned workspace using the same project rules as `aq test`; they use
+xdist only when that interpreter has it. A configured disposable
+`resources.jobs.test_database_url` is required for agent-queue tests and e2e; the worker
 DB refusal guards remain present and no daemon/session/provider credentials
 are inherited. This is separation on one OS account, not a sandbox.
+Publisher snapshots are standalone clones, so a foreign project whose snapshot
+has no virtual environment needs a `resources.test_interpreters` pin.
 
 Submission snapshots its validated contract, environment caps and deadlines.
 Reusing the same owner/idempotency key and request returns the original row;

@@ -240,6 +240,7 @@ def stub_policies() -> dict[str, Any]:
         "wide": _policy(aq_commands=frozenset({"demo_command", "other_command"})),
         "hollow": _policy(),
         "reviewer": _policy(aq_commands=frozenset({"demo_command"})),
+        "final-reviewer": _policy(aq_commands=frozenset({"demo_command", "other_command"})),
     }
 
 
@@ -491,7 +492,7 @@ def _agent_task_twin() -> dict[str, Any]:
         "type": "agent_task",
         "rule": "r1",
         "title": "Delegate",
-        "profile_id": "worker",
+        "profile_id": "reviewer",
         "objective": {"type": "literal", "value": "do the thing"},
         "transitions": {"completed": "end", "failed": "oops", "runtime_error": "oops"},
         "source": source(8),
@@ -847,7 +848,7 @@ def _invalid_artifacts() -> dict[str, dict[str, Any]]:
             ),
         ),
         "capability_not_subset": _mutate(
-            _agent_task_twin(), lambda a: a["steps"]["delegate"].update(profile_id="wide")
+            _agent_task_twin(), lambda a: a["steps"]["delegate"].update(profile_id="final-reviewer")
         ),
         "narrowing_not_subset": _mutate(
             _agent_task_twin(),

@@ -216,8 +216,8 @@ async def test_commit_is_atomic_and_idempotent(handler):
     assert len(await handler._db.list_tasks(project_id="p1")) == 2
 
 
-async def test_commit_preserves_explicit_task_route(handler):
-    """A batch route is task intent, not metadata to discard at commit time."""
+async def test_propose_refuses_a_task_route(handler):
+    """A batch carries hints, never a route (mandatory task routing §5.1)."""
     await handler.execute("create_project", {"id": "p1", "name": "p1"})
     await handler._db.create_profile(
         AgentProfile(id="worker", name="Worker", harness="claude")
@@ -238,14 +238,48 @@ async def test_commit_preserves_explicit_task_route(handler):
             "edges": [],
         },
     )
+
+    assert proposal["success"] is False
+    assert proposal["code"] == "routing.choice_forbidden"
+    assert proposal["refused"] == ["tasks[0].profile_id"]
+    assert "proposal_id" not in proposal
+    assert await handler._db.list_tasks(project_id="p1") == []
+
+
+async def test_commit_keeps_a_task_class_as_its_hint(handler):
+    """A batch class is the filer's hint: the committed task is unrouted."""
+    from src.vault import ensure_default_intelligence_classes
+
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
+    await handler.execute("create_project", {"id": "p1", "name": "p1"})
+    proposal = await handler.execute(
+        "task_batch_propose",
+        {
+            "project_id": "p1",
+            "source": "spec:route",
+            "tasks": [
+                {
+                    "tempId": "a",
+                    "title": "A",
+                    "description": "",
+                    "intelligence_class": "standard-high",
+                }
+            ],
+            "edges": [],
+        },
+    )
     await _approve(handler, proposal["proposal_id"])
 
     committed = await handler.execute(
         "task_batch_commit", {"proposal_id": proposal["proposal_id"]}
     )
 
-    assert committed["success"] is True
-    assert (await handler._db.get_task(committed["task_ids"][0])).profile_id == "worker"
+    assert committed["success"] is True, committed
+    task = await handler._db.get_task(committed["task_ids"][0])
+    assert (task.profile_id, task.intelligence_class, task.class_hint, task.route_source) == (
+        None, None, "standard-high", "unrouted",
+    )
 
 
 async def test_commit_rejects_legacy_supervisor_project_default(handler):

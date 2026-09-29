@@ -57,10 +57,12 @@ async def db(tmp_path, reuse_database):
     yield database
 
 
-async def _enable_project(db, *, on_failed_child: str = "block") -> dict:
+async def _enable_project(
+    db, *, on_failed_child: str = "block", boundary: IntegrationBoundaryPolicy | None = None
+) -> dict:
     artifact = _artifact()
     policy = HierarchicalIntegrationPolicy(
-        parent=_boundary(),
+        parent=boundary or _boundary(),
         root=_boundary(),
         branchless_parent="verifier",
         on_failed_child=on_failed_child,
@@ -118,8 +120,14 @@ async def _seed_parent_identity(db, *, generation: int = 0) -> None:
         )
 
 
-async def _parent_tree(db, *, children: int = 2, on_failed_child: str = "block"):
-    await _enable_project(db, on_failed_child=on_failed_child)
+async def _parent_tree(
+    db,
+    *,
+    children: int = 2,
+    on_failed_child: str = "block",
+    boundary: IntegrationBoundaryPolicy | None = None,
+):
+    await _enable_project(db, on_failed_child=on_failed_child, boundary=boundary)
     await db.create_task(
         Task(
             id="parent",
@@ -207,24 +215,28 @@ def _artifact() -> ArtifactSnapshot:
     )
 
 
-def _boundary() -> IntegrationBoundaryPolicy:
-    return IntegrationBoundaryPolicy(
-        required_checks=RequiredCheckSet(
+def _boundary(**overrides) -> IntegrationBoundaryPolicy:
+    # The deprecated ``*_profile_id`` fields model a policy stored before
+    # mandatory routing: it must still validate and every code path ignore them.
+    values = {
+        "required_checks": RequiredCheckSet(
             version="parent-v1", names=("unit",), producer_id="forge-observer"
         ),
-        repair=RepairPolicy(debug_intelligence_class="deep-high"),
-        route=PlaybookRoute(
+        "repair": RepairPolicy(debug_intelligence_class="deep-high"),
+        "route": PlaybookRoute(
             playbook_id="hierarchical-delivery",
             scope="project",
             scope_identifier="p",
             activation_id="activation-audit-only",
             artifact=_artifact(),
         ),
-        primary_intelligence_class="medium",
-        primary_profile_id="integrator",
-        verifier_intelligence_class="high",
-        verifier_profile_id="verifier",
-    )
+        "primary_intelligence_class": "medium",
+        "primary_profile_id": "integrator",
+        "verifier_intelligence_class": "high",
+        "verifier_profile_id": "verifier",
+    }
+    values.update(overrides)
+    return IntegrationBoundaryPolicy(**values)
 
 
 def test_hierarchical_policy_freezes_full_parent_and_root_inputs():
@@ -1234,8 +1246,7 @@ async def test_parent_prime_summary_uses_receipt_readiness_projection(db):
     assert "Required aggregate checks: `unit`" in summary
 
 
-async def test_branchless_parent_creates_exact_routed_verifier_delegate_before_handoff(db):
-    await db.create_profile(AgentProfile(id="verifier", name="Verifier", harness="claude"))
+async def test_branchless_parent_creates_unrouted_verifier_delegate_before_handoff(db):
     hierarchy, checkpointed, children = await _parent_tree(db, children=1)
     await _code_receipt(db, children[0], "a" * 40, "d" * 40)
     async with db.immediate() as conn:
@@ -1251,8 +1262,13 @@ async def test_branchless_parent_creates_exact_routed_verifier_delegate_before_h
     assert delegate.status is TaskStatus.PAUSED
     assert delegate.repo_id == "repo"
     assert delegate.branch_name == "aq/parent"
-    assert delegate.profile_id == "verifier"
-    assert delegate.intelligence_class == "high"
+    # The frozen snapshot still names ``verifier_profile_id``; it is ignored:
+    # the verifier is filed with the class hint and the router routes it.
+    assert operation["policy_snapshot"]["parent"]["verifier_profile_id"] == "verifier"
+    assert delegate.profile_id is None
+    assert delegate.intelligence_class is None
+    assert delegate.class_hint == "high"
+    assert delegate.route_source == "unrouted"
 
     async with db._engine.connect() as conn:
         ready_event = (
@@ -1309,6 +1325,40 @@ async def test_branchless_parent_creates_exact_routed_verifier_delegate_before_h
 
 
 @pytest.mark.parametrize(
+    ("overrides", "blocked"),
+    [
+        # A stored pre-routing policy with a profile but no class blocks:
+        # the profile is ignored, so nothing names the verifier's class.
+        ({"verifier_intelligence_class": None}, True),
+        # The class alone is a complete route request now.
+        ({"verifier_profile_id": None}, False),
+    ],
+)
+async def test_branchless_parent_verifier_needs_only_the_class_hint(db, overrides, blocked):
+    hierarchy, checkpointed, children = await _parent_tree(
+        db, children=1, boundary=_boundary(**overrides)
+    )
+    await _code_receipt(db, children[0], "a" * 40, "d" * 40)
+    async with db.immediate() as conn:
+        await db._apply_transition(
+            conn, "parent", TaskStatus.PAUSED, _manual_pause_control=True
+        )
+        projection = await hierarchy.parent_completion.mark_ready_on(conn, "parent")
+
+    operation = await db.get_integration_operation(checkpointed["operation_id"])
+    if blocked:
+        assert projection["outcome"] == "configuration_blocked"
+        assert projection["reason"] == "verifier_routing_missing"
+        assert operation["verifier_task_id"] is None
+        return
+    assert projection["state"] == "integration_ready"
+    delegate = await db.get_task(operation["verifier_task_id"])
+    assert (delegate.profile_id, delegate.intelligence_class) == (None, None)
+    assert delegate.class_hint == "high"
+    assert delegate.route_source == "unrouted"
+
+
+@pytest.mark.parametrize(
     "invalid", [None, "operation", "role", "attached", "branch", "binding", "target"]
 )
 async def test_woken_verifier_delegate_passes_the_pool_claim_origin_gate(db, invalid):
@@ -1343,6 +1393,14 @@ async def test_woken_verifier_delegate_passes_the_pool_claim_origin_gate(db, inv
     verifier = await ownership.transfer(collector, delegate_id, "verifier")
     assert (await hierarchy.wake_verifier("parent", verifier))["outcome"] == "woken"
     assert (await db.get_task(delegate_id)).status is TaskStatus.READY
+    # The verifier is filed unrouted; stand in for the router writing its
+    # route so the pool selection below exercises only the origin gate.
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(tasks.c.id == delegate_id)
+            .values(profile_id="verifier", intelligence_class="high", route_source="router")
+        )
 
     verifier_owner = update(integration_branch_owners).where(
         integration_branch_owners.c.owner_id == delegate_id

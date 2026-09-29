@@ -136,11 +136,17 @@ somehow declares none.
 - **Read before writing.** Read the task, its spec references, and the
   files you will touch before you edit. Cite files and line ranges in
   your close-summary.
-- **Specs and plans go to review, not the repo.** Write the document in your
+- **Documents go to review, not the repo.** A spec, a plan, a design proposal
+  or a research report is for a human decision. Write the document in your
   checkout but do not commit it. Submit it with
   `aq review submit --task-id <your task> --file <draft.md> --kind spec|plan|other --title "<title>"`,
   put the review id in your close summary, and close the task — do not wait
-  for the decision; work that depends on it waits on the review. If your task
+  for the decision; work that depends on it waits on the review. Submit it
+  even when the task also asks for a committed copy: a document that is only
+  on a branch never reaches the Reviews tab. A research or design task carries
+  a `review` deliverable whether or not one is listed, and its passing close
+  is refused until the task has submitted a review; a task that produced no
+  document says so with `--deliverable-unmet 'review: <reason>'`. If your task
   is reopened with review feedback, read it with
   `aq review show --review-id <id> --comments`, revise, and resubmit with
   `--review-id <id> --changes "<what changed>" [--resolves <comment-id> ...]`.

@@ -20,7 +20,7 @@ from click.testing import CliRunner
 from src.cli.exceptions import ScopeDeniedError
 from src.integration import train_onboarding as onboarding
 from src.integration.ci import IntegrationTrustManifest, is_numeric_producer_id
-from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.models import HierarchicalIntegrationPolicy, deprecated_route_fields
 from src.playbooks.required import reviewed_bundle_source
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -150,7 +150,6 @@ def test_agent_queue_workflows_reproduce_the_reviewed_policy(mode):
         parent_route=parent,
         root_route=root,
         credential_mode=mode,
-        check_version="tests-yml-v3",
     )
 
     assert classification.shape == "github_ci"
@@ -158,6 +157,21 @@ def test_agent_queue_workflows_reproduce_the_reviewed_policy(mode):
     assert root.playbook_id == "agent-queue-root-train"
     expected = json.loads((ROOT / "docs/config/agent-queue-train-policy.json").read_text())
     assert plan.policy == expected
+    # Onboarding writes class hints only; the reviewed policy names no profile.
+    policy = HierarchicalIntegrationPolicy.model_validate(plan.policy)
+    assert deprecated_route_fields(policy) == []
+    assert "profile_id" not in json.dumps(plan.policy)
+
+
+def test_onboard_train_no_longer_takes_a_harness():
+    """The class is a hint for the router; there is no rung to pick a harness for."""
+    from src.cli.app import cli
+
+    result = CliRunner().invoke(
+        cli, ["integration", "onboard-train", "agent-queue", "--harness", "codex"]
+    )
+    assert result.exit_code == 2, result.output
+    assert "No such option '--harness'" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -325,9 +339,18 @@ def test_policy_producer_is_the_numeric_id_in_every_credential_mode(mode):
         parent_route=parent,
         root_route=root,
         intelligence_class="standard-high",
-        profile_id="standard-high-codex",
     )
     validated = HierarchicalIntegrationPolicy.model_validate(policy)
+    # Class hints only: the router assigns repair and verifier profiles, and a
+    # bind naming the deprecated profile fields is refused.
+    assert deprecated_route_fields(validated) == []
+    for boundary in ("parent", "root"):
+        assert "primary_profile_id" not in policy[boundary]
+        assert "verifier_profile_id" not in policy[boundary]
+        assert "debug_profile_id" not in policy[boundary]["repair"]
+        assert policy[boundary]["primary_intelligence_class"] == "standard-high"
+        assert policy[boundary]["verifier_intelligence_class"] == "standard-high"
+        assert policy[boundary]["repair"]["debug_intelligence_class"] == "standard-high"
     # One producer, so a project moves between credential modes without a rebind.
     assert validated.parent.required_checks.producer_id == "15368"
     assert validated.root.required_checks.producer_id == "15368"
@@ -346,7 +369,6 @@ def test_empty_check_set_is_refused():
             parent_route=parent,
             root_route=root,
             intelligence_class="c",
-            profile_id="p",
         )
 
 
@@ -809,8 +831,6 @@ def test_cli_writes_the_reviewed_agent_queue_policy_byte_for_byte(tmp_path, mode
                 "agent-queue",
                 "--credential-mode",
                 mode,
-                "--check-version",
-                "tests-yml-v3",
                 "--github-repository-id",
                 "1160639300",
                 "--no-check-prs",
@@ -852,7 +872,7 @@ def test_cli_writes_the_trust_manifest_the_daemon_command_renders(tmp_path):
             cli,
             [
                 "--json", "integration", "onboard-train", "agent-queue",
-                "--credential-mode", "app", "--check-version", "tests-yml-v3",
+                "--credential-mode", "app",
                 "--github-repository-id", "1160639300", "--no-check-prs",
                 "--write-trust-manifest", str(manifest_path),
             ],

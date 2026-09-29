@@ -700,6 +700,7 @@
         "tests/test_migration_integration_controls.py",
         "tests/test_migration_integration_promotion.py",
         "tests/test_migration_integration_service.py",
+        "tests/test_migration_json_columns.py",
         "tests/test_migration_metadata.py",
         "tests/test_migration_parent_collection.py",
         "tests/test_migration_playbook_blocked_lifecycle.py",
@@ -714,6 +715,7 @@
         "tests/test_migration_string_defaults.py",
         "tests/test_migration_subagent_events.py",
         "tests/test_migration_supervisor_conversations.py",
+        "tests/test_migration_task_route_jsonb.py",
         "tests/test_migration_task_route_source.py",
         "tests/test_migration_test_selections.py",
         "tests/test_migration_token_cache_columns.py",
@@ -1107,6 +1109,7 @@
         "tests/test_pool_agent_routing.py",
         "tests/test_routing_admission_v2.py",
         "tests/test_routing_gate_guard.py",
+        "tests/test_routing_mandatory.py",
         "tests/test_routing_planner.py",
         "tests/test_routing_router.py",
         "tests/test_task_class_routing.py",
@@ -1292,7 +1295,7 @@
       ]
     }
   },
-  "digest": "sha256:175411ace48a790b9b8147b8c26afd3f14478fcb3c091bfaea3aa2e9b7e5be9c",
+  "digest": "sha256:4755539750a9260aa2af44882712e2a51e764fe9ebaf9710dbaaf881134a6ed6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2503,7 +2506,6 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
-        "src.orchestrator.provider_distribution",
         "src.orchestrator.route_needed",
         "src.sessions.harness_parser",
         "src.sessions.harness_registry"
@@ -2960,7 +2962,8 @@
         "src.cli.exceptions",
         "src.cli.formatter_registry",
         "src.cli.formatters",
-        "src.cli.styles"
+        "src.cli.styles",
+        "src.routing.filing"
       ],
       "markers": [
         "asyncio",
@@ -3419,7 +3422,9 @@
         "src.cli.exceptions",
         "src.cli.test_runner",
         "src.config",
+        "src.resources",
         "src.resources.box_lock",
+        "src.resources.project_tests",
         "src.resources.semaphore",
         "src.resources.slot_report",
         "src.test_selection.report"
@@ -4408,19 +4413,26 @@
       "imports": [
         "src.commands.contracts",
         "src.commands.contracts.builtin",
+        "src.commands.handler",
         "src.commands.principal",
+        "src.config",
+        "src.database",
         "src.intelligence_classes",
         "src.models",
+        "src.orchestrator",
         "src.playbooks.definition",
         "src.playbooks.engine",
         "src.playbooks.executors",
         "src.playbooks.executors.base",
         "src.playbooks.executors.llm",
         "src.profiles.capabilities",
+        "src.routing.sources",
         "src.sessions.harness_parser"
       ],
-      "markers": [],
-      "summary": "The shipped routing policy runs as an ordinary pipeline over the route commands."
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The shipped router runs as an ordinary pipeline over the router commands."
     },
     "tests/test_default_pipeline_intake.py": {
       "areas": [
@@ -4454,7 +4466,8 @@
         "src.playbooks.profiles",
         "src.playbooks.required",
         "src.playbooks.validation",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.routing.policy"
       ],
       "markers": [
         "parametrize"
@@ -4502,7 +4515,8 @@
       "default_arm": true,
       "imports": [
         "src.commands.task_commands",
-        "src.deliverables"
+        "src.deliverables",
+        "src.models"
       ],
       "markers": [
         "parametrize"
@@ -5160,7 +5174,8 @@
         "src.config",
         "src.jobs.adapters",
         "src.jobs.policy",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.routing.planner"
       ],
       "markers": [
         "parametrize"
@@ -5247,6 +5262,7 @@
       "default_arm": true,
       "imports": [
         "src.commands.handler",
+        "src.commands.principal",
         "src.config",
         "src.database",
         "src.database.tables",
@@ -7771,6 +7787,7 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.git.manager",
         "src.jobs.policy",
         "src.jobs.result",
         "src.jobs.service",
@@ -7778,7 +7795,8 @@
         "src.models"
       ],
       "markers": [
-        "migration"
+        "migration",
+        "parametrize"
       ],
       "summary": "Idempotency races, atomic outbox and non-expiring workspace pins."
     },
@@ -8700,6 +8718,17 @@
       ],
       "summary": "Integration service schema: catch-up state and the retired delivery journal."
     },
+    "tests/test_migration_json_columns.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables"
+      ],
+      "markers": [],
+      "summary": "No new column may be typed plain ``json``; declare ``JSONB``."
+    },
     "tests/test_migration_metadata.py": {
       "areas": [
         "migrations"
@@ -8873,7 +8902,7 @@
       ],
       "summary": "The supervisor-conversation revision upgrades idempotently on PostgreSQL."
     },
-    "tests/test_migration_task_route_source.py": {
+    "tests/test_migration_task_route_jsonb.py": {
       "areas": [
         "migrations"
       ],
@@ -8885,7 +8914,22 @@
         "migration",
         "parametrize"
       ],
-      "summary": "Revision a00000000039 (mandatory-routing §11 revision 1) on owned disposable PostgreSQL."
+      "summary": "Revision a00000000040: ``tasks.route`` json -> jsonb, on owned disposable PostgreSQL."
+    },
+    "tests/test_migration_task_route_source.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine",
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "Task route schema revisions on owned disposable PostgreSQL databases."
     },
     "tests/test_migration_test_selections.py": {
       "areas": [
@@ -9386,6 +9430,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.models.playbook_v2",
         "src.commands.contracts",
         "src.docs_urls",
         "src.playbooks.artifact_ref",
@@ -9549,7 +9594,8 @@
       "imports": [
         "src.playbooks",
         "src.playbooks.definition",
-        "src.playbooks.expressions"
+        "src.playbooks.expressions",
+        "src.routing.sources"
       ],
       "markers": [
         "parametrize"
@@ -10712,9 +10758,7 @@
         "src.task_graph.formulas",
         "src.vault"
       ],
-      "markers": [
-        "parametrize"
-      ],
+      "markers": [],
       "summary": "Provider intent: who meant the provider a task's profile names (provider-failover D8-D10)."
     },
     "tests/test_provider_reroute.py": {
@@ -11498,6 +11542,43 @@
         "asyncio"
       ],
       "summary": "A routing gate is only for tasks that still need a profile."
+    },
+    "tests/test_routing_mandatory.py": {
+      "areas": [
+        "task-routing"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.api",
+        "src.api.codegen",
+        "src.api.dependencies",
+        "src.cli.tasks",
+        "src.commands.authorization",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.models",
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.database.queries",
+        "src.database.queries.proposal_queries",
+        "src.database.tables",
+        "src.mcp_registration",
+        "src.models",
+        "src.orchestrator",
+        "src.playbooks.executors",
+        "src.playbooks.executors.llm",
+        "src.profiles.capabilities",
+        "src.routing.filing",
+        "src.task_graph",
+        "src.tools.definitions",
+        "src.vault"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Mandatory task routing ratchet (spec 2026-09-28-mandatory-task-routing §9.3)."
     },
     "tests/test_routing_planner.py": {
       "areas": [
@@ -12661,7 +12742,8 @@
         "src.commands.proposal_commands",
         "src.database.queries.proposal_queries",
         "src.database.tables",
-        "src.models"
+        "src.models",
+        "src.vault"
       ],
       "markers": [
         "parametrize"
@@ -12689,6 +12771,7 @@
       "default_arm": true,
       "imports": [
         "src.commands.handler",
+        "src.commands.principal",
         "src.commands.task_commands",
         "src.config",
         "src.database",
@@ -12699,7 +12782,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "An explicit intelligence class picks its own lane at creation time."
+      "summary": "Creation stores hints, never a resolved route (mandatory-routing spec §1, §5.3)."
     },
     "tests/test_task_close_summary_enforcement.py": {
       "areas": [
@@ -13033,6 +13116,9 @@
         "src.api.models.task",
         "src.cli.app",
         "src.cli.tasks",
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
+        "src.commands.contracts.registry",
         "src.commands.handler",
         "src.config",
         "src.database",
@@ -13045,7 +13131,7 @@
       "markers": [
         "parametrize"
       ],
-      "summary": "Explicit routing survives every task-creation boundary before scheduling."
+      "summary": "Routing survives every task-creation boundary before scheduling."
     },
     "tests/test_task_session_attempts.py": {
       "areas": [

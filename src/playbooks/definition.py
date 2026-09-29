@@ -263,9 +263,19 @@ class CapabilityNarrowing(V2Base):
     plugin_tools: list[QualifiedName] | None = None
 
 
+# Routing choices cannot be smuggled through the create_task inputs either.
+AGENT_TASK_ROUTE_INPUTS: Final[frozenset[str]] = frozenset(
+    {"profile_id", "profile", "provider", "model", "harness", "agent_type",
+     "pin", "pin_provider", "provider_intent", "route", "route_source"}
+)
+
+
 class AgentTaskStep(StepBase):
     type: Literal["agent_task"] = "agent_task"
-    profile_id: QualifiedName
+    #: Only control-plane roles bypass routing (mandatory-routing §5.1).
+    profile_id: Literal["triage", "spec-ingest", "reviewer", "final-reviewer"] | None = None
+    intelligence_class: QualifiedName | None = None  # hint, never a worker route
+    task_type: QualifiedName | None = None  # kind hint for the router
     objective: Value  # rendered to a string
     inputs: dict[str, Value] = Field(default_factory=dict)
     wait_for_completion: bool = True
@@ -275,12 +285,13 @@ class AgentTaskStep(StepBase):
     timeout_seconds: int | None = Field(default=None, ge=1)
     retry: RetryPolicy | None = None
     save_result_as: Identifier | None = None
-    #: ``True`` pins the child to ``profile_id``'s provider (provider-failover
-    #: D9): it holds instead of failing over while that provider is
-    #: unavailable.  Absent (``None``, never serialised) the child is
-    #: ``preferred`` -- a named profile is a preference -- and fails over.
-    pin_provider: bool | None = None
     transitions: dict[str, Identifier]
+
+    @model_validator(mode="after")
+    def _hint_only_inputs(self) -> AgentTaskStep:
+        if forbidden := AGENT_TASK_ROUTE_INPUTS.intersection(self.inputs):
+            raise ValueError(f"agent_task inputs cannot choose a route: {sorted(forbidden)}")
+        return self
 
 
 class DecisionCase(V2Base):

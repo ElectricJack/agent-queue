@@ -45,7 +45,6 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.models import (
-    AgentProfile,
     Project,
     RepoConfig,
     RepoSourceType,
@@ -376,12 +375,18 @@ async def test_proposal_commit_uses_one_atomic_hierarchy_transaction(
     assert len(await _origins(db)) == 3
 
 
-async def test_hierarchical_proposal_preserves_explicit_task_route(
+async def test_hierarchical_proposal_keeps_a_task_class_as_its_hint(
     db, hierarchy, internal_plugins_handler
 ):
+    """A batch carries hints, never a route (mandatory task routing §5.1): the
+    hierarchical commit files the spec's class as the task's class hint and
+    leaves the route to the router."""
+    from src.vault import ensure_default_intelligence_classes
+
     handler = await internal_plugins_handler(db=db)
     handler.orchestrator.hierarchy_integration = hierarchy
-    await db.create_profile(AgentProfile(id="worker", name="Worker", harness="claude"))
+    ensure_default_intelligence_classes(handler.config.data_dir)
+    handler.orchestrator.intelligence_classes.reload(handler.config.data_dir)
     proposal = await handler.execute(
         "task_batch_propose",
         {
@@ -392,7 +397,7 @@ async def test_hierarchical_proposal_preserves_explicit_task_route(
                     "tempId": "root",
                     "title": "root",
                     "description": "",
-                    "profile_id": "worker",
+                    "intelligence_class": "standard-high",
                 }
             ],
             "edges": [],
@@ -404,8 +409,11 @@ async def test_hierarchical_proposal_preserves_explicit_task_route(
         "task_batch_commit", {"proposal_id": proposal["proposal_id"]}
     )
 
-    assert committed["success"] is True
-    assert (await db.get_task(committed["task_ids"][0])).profile_id == "worker"
+    assert committed["success"] is True, committed
+    task = await db.get_task(committed["task_ids"][0])
+    assert (task.profile_id, task.intelligence_class, task.class_hint, task.route_source) == (
+        None, None, "standard-high", "unrouted",
+    )
 
 
 async def test_bulk_hierarchy_children_apply_routing_admission(db, hierarchy):
@@ -1715,7 +1723,7 @@ async def test_cli_audit_epic_graph_files_through_the_command_in_one_transaction
     assert parent.priority == document["parent"]["priority"]
     assert set(document["parent"]["labels"]) <= set(await db.get_task_labels(parent_id))
     async with db._engine.connect() as conn:
-        rows = (await conn.execute(select(tasks.c.id, tasks.c.parent_task_id, tasks.c.intelligence_class, tasks.c.task_type))).mappings().all()
+        rows = (await conn.execute(select(tasks.c.id, tasks.c.parent_task_id, tasks.c.intelligence_class, tasks.c.class_hint, tasks.c.task_type))).mappings().all()
         # ``set_parent`` records the containment as a ``parent-child`` edge;
         # the graph's own ``needs`` are everything else.
         edges = (
@@ -1739,7 +1747,9 @@ async def test_cli_audit_epic_graph_files_through_the_command_in_one_transaction
     assert set(edges) == expected_edges and len(edges) == edge_count
     for node in document["nodes"]:
         row = children[by_key[node["key"]]]
-        assert row["intelligence_class"] == node.get(
+        # A node class is the router's hint (mandatory-routing spec §5.1).
+        assert row["intelligence_class"] is None
+        assert row["class_hint"] == node.get(
             "intelligence_class", document["defaults"]["intelligence_class"]
         )
         assert row["task_type"] == node.get("task_type")
@@ -1941,3 +1951,31 @@ async def test_cli_task_create_graph_files_the_audit_epic_through_the_real_api(
 #: is fed to live graph validation, so it has to name a class that still
 #: ships or every test below fails ``invalid_intelligence_class``.
 EPIC_GRAPH = Path(__file__).parent / "fixtures" / "task_graphs" / "cli_audit_2026_09_08_epic.json"
+
+
+# -- child filing names work, never a route (mandatory-routing spec §5.3) -----
+
+
+@pytest.mark.parametrize(
+    "field", ["profile_id", "route_source", "route", "provider_intent", "assigned_agent_id"]
+)
+def test_build_child_refuses_route_and_state_fields(field):
+    with pytest.raises(HierarchyError) as refused:
+        HierarchyIntegration._build_child(
+            {"project_id": "p"}, "repo", "t.1", {"title": "Child", field: "x"},
+        )
+    assert refused.value.code == "invalid"
+    assert field in refused.value.detail
+
+
+def test_build_child_files_the_class_as_a_hint_and_keeps_work_fields():
+    child = HierarchyIntegration._build_child(
+        {"project_id": "p"}, "repo", "t.1",
+        {"title": " Child ", "description": "d", "priority": 7, "task_type": "bugfix",
+         "intelligence_class": "deep-high", "reason": "split"},
+    )
+    assert (child.title, child.description, child.priority) == ("Child", "d", 7)
+    assert (child.profile_id, child.intelligence_class) == (None, None)
+    assert child.class_hint == "deep-high"
+    assert child.route_source == "unrouted" and child.route is None
+    assert (child.project_id, child.repo_id, child.branch_name) == ("p", "repo", "aq/t.1")

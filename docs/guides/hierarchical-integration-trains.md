@@ -236,13 +236,15 @@ the exact active artifacts and every referenced route before configuration:
 aq playbook artifacts --playbook-id PARENT_PLAYBOOK_ID
 aq playbook artifacts --playbook-id ROOT_PLAYBOOK_ID
 aq system list-intelligence-classes
-aq agent get-profile --profile-id standard-high-claude
-aq agent get-profile --profile-id deep-high-claude
 ```
 
 The policy is one JSON object. This example is structurally valid; replace its
-sample hashes, identities, project ID, activation identities, classes, profiles,
-and checks with the exact imported and installed values. Parent and root routes
+sample hashes, identities, project ID, activation identities, classes and
+checks with the exact imported and installed values. The classes are hints:
+repair and verifier tasks are filed unrouted with them and the project's
+router assigns their profiles. The deprecated `primary_profile_id`,
+`verifier_profile_id` and `repair.debug_profile_id` fields are ignored in
+stored policies and refused in a new one. Parent and root routes
 are explicit; nothing is inferred at enable time. A project-specific override
 may instead name a project-scoped artifact for that exact project. Other
 project identities and agent/supervisor scopes are rejected. System activation
@@ -253,21 +255,17 @@ does not enable integration for projects that have no policy or remain disabled.
   "version": 1,
   "parent": {
     "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "15368"},
-    "repair": {"primary_seconds": 1800, "primary_attempts": 3, "debug_seconds": 3600, "debug_attempts": 3, "debug_intelligence_class": "deep-high", "debug_profile_id": "deep-high-claude"},
+    "repair": {"primary_seconds": 1800, "primary_attempts": 3, "debug_seconds": 3600, "debug_attempts": 3, "debug_intelligence_class": "deep-high"},
     "route": {"playbook_id": "PARENT_PLAYBOOK_ID", "scope": "system", "scope_identifier": "", "activation_id": null, "artifact": {"playbook_id": "PARENT_PLAYBOOK_ID", "artifact_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "schema_generation": 2, "contract_fingerprint": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "source_digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "compiler_build": "playbook-v2-compiler/1", "compiled_at": "2026-09-06T00:00:00Z", "version": 1}},
     "primary_intelligence_class": "standard-high",
-    "primary_profile_id": "standard-high-claude",
-    "verifier_intelligence_class": "standard-high",
-    "verifier_profile_id": "standard-high-claude"
+    "verifier_intelligence_class": "standard-high"
   },
   "root": {
     "required_checks": {"version": "checks-v1", "names": ["Tests (default)"], "producer_id": "15368"},
-    "repair": {"primary_seconds": 1800, "primary_attempts": 3, "debug_seconds": 3600, "debug_attempts": 3, "debug_intelligence_class": "deep-high", "debug_profile_id": "deep-high-claude"},
+    "repair": {"primary_seconds": 1800, "primary_attempts": 3, "debug_seconds": 3600, "debug_attempts": 3, "debug_intelligence_class": "deep-high"},
     "route": {"playbook_id": "ROOT_PLAYBOOK_ID", "scope": "system", "scope_identifier": "", "activation_id": null, "artifact": {"playbook_id": "ROOT_PLAYBOOK_ID", "artifact_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "schema_generation": 2, "contract_fingerprint": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "source_digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "compiler_build": "playbook-v2-compiler/1", "compiled_at": "2026-09-06T00:00:00Z", "version": 1}},
     "primary_intelligence_class": "standard-high",
-    "primary_profile_id": "standard-high-claude",
-    "verifier_intelligence_class": "standard-high",
-    "verifier_profile_id": "standard-high-claude"
+    "verifier_intelligence_class": "standard-high"
   },
   "branchless_parent": "verifier",
   "on_failed_child": "block",

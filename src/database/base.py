@@ -462,6 +462,7 @@ class DatabaseBackend(Protocol):
         kind: str | None = None,
         task_id: str | None = None,
     ) -> list[dict]: ...
+    async def list_reviews_submitted_by_task(self, task_id: str) -> list[dict]: ...
     async def transition_review(
         self,
         review_id: str,

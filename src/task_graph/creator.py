@@ -40,11 +40,11 @@ from src.database.tables import (
     task_context,
     task_criteria,
     task_dependencies,
+    task_gates,
     task_labels,
     tasks,
 )
 from src.models import DepType, TaskStatus
-from src.routing.sources import stamped_route_source
 from src.task_graph.models import GraphNode, TaskGraph
 from src.task_names import (
     MAX_NAMING_DEPTH,
@@ -375,7 +375,6 @@ async def build_plan(
             "retry_count": 0,
             "max_retries": 3,
             "is_plan_subtask": 0,
-            "profile_id": parent.profile if parent else None,
             "attachments": "[]",
             "skip_verification": 0,
             "is_blocked": 0,
@@ -466,9 +465,11 @@ async def build_plan(
                 "max_retries": 3,
                 "is_plan_subtask": 0,
                 "task_type": node.task_type,
-                "profile_id": node.profile,
-                "intelligence_class": node.intelligence_class,
-                "provider_intent": node.provider_intent,
+                # The node's class is the filer's hint; the task is written
+                # unrouted and the router writes the route (mandatory-routing
+                # spec §5.1).
+                "class_hint": node.intelligence_class,
+                "provider_intent": "class_only",
                 "attachments": "[]",
                 "deliverables": json.dumps(node.deliverables),
                 "skip_verification": 0,
@@ -546,15 +547,11 @@ async def _insert_task(conn, row: dict) -> None:
     """Insert one task row.
 
     Factored out — and module-level — so the single-transaction guarantee can
-    be tested by patching this to fail partway through (§12).  A row naming a
-    profile without a route source gets the transitional stamp that
-    ``_insert_task_row`` applies (mandatory-routing spec §9.2).
+    be tested by patching this to fail partway through (§12).  A graph row
+    names no profile, so it takes the column default ``route_source =
+    'unrouted'`` (mandatory-routing spec §5.1).
     """
-    values = _strip_private(row)
-    values["route_source"] = stamped_route_source(
-        values.get("profile_id"), values.get("route_source")
-    )
-    await conn.execute(insert(tasks).values(**values))
+    await conn.execute(insert(tasks).values(**_strip_private(row)))
 
 
 def _rewrite_ids(plan: GraphPlan, real: dict[str, str]) -> None:
@@ -791,6 +788,7 @@ async def write_plan(
     routing_manager=None,
     hierarchy_service=None,
     filing: GraphFilingContext | None = None,
+    review_gate_id: str | None = None,
 ) -> None:
     """Persist a :class:`GraphPlan` in exactly one transaction.
 
@@ -824,6 +822,10 @@ async def write_plan(
     hierarchy, held-task and quota fence is the first operation in this
     transaction; newly created nodes receive trusted creator fields, durable
     request correlation, and a ``discovered-from`` edge before commit.
+
+    ``review_gate_id`` attaches every node (not the container or its phases,
+    which are never claimed) to that document review's open gate before
+    ``recompute_blocked``, so no node is claimable before its gate exists.
     """
     async with db._engine.begin() as conn:
         if filing is not None:
@@ -1057,6 +1059,11 @@ async def write_plan(
             label_stmt = ins(task_labels).values(task_id=plan.parent_id, label=provenance.label)
             label_stmt = label_stmt.on_conflict_do_nothing(index_elements=["task_id", "label"])
             await conn.execute(label_stmt)
+        if review_gate_id is not None and plan.node_rows:
+            await conn.execute(
+                insert(task_gates),
+                [{"task_id": task_id, "gate_id": review_gate_id} for task_id in plan.task_ids],
+            )
         # The phases are in the projection too, or the inter-phase gate is
         # never computed and phase 2 is claimable the moment it is released.
         # So is a worker's gated root container, which withholds its nodes.
@@ -1137,6 +1144,7 @@ async def create_graph(
     provenance: FormulaProvenance | None = None,
     filing: GraphFilingContext | None = None,
     container_parent_id: str | None = None,
+    review_gate_id: str | None = None,
 ) -> dict:
     """Create the graph, or report what creating it would do.
 
@@ -1147,7 +1155,8 @@ async def create_graph(
     given, is written inside ``write_plan``'s transaction (spec §13) and
     surfaced in the report — never persisted or reported on a dry run.
     *container_parent_id* files the graph's new container under that
-    existing task instead of at the project root.
+    existing task instead of at the project root.  *review_gate_id* gates
+    every node on that document review (``write_plan``).
     """
     db = handler.db
     if graph.phases:
@@ -1192,6 +1201,7 @@ async def create_graph(
         routing_manager=getattr(getattr(handler, "orchestrator", None), "playbook_manager", None),
         hierarchy_service=hierarchy_service,
         filing=filing,
+        review_gate_id=review_gate_id,
     )
     for task_id in plan.routing_task_ids:
         await handler._emit_admitted_routing_gates(task_id)

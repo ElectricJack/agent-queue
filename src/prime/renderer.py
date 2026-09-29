@@ -29,6 +29,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from src.deliverables import resolve_task_deliverables
+
 from . import sections as _sections
 from .models import PrimeDocument
 from .overrides import apply_override, load_override
@@ -122,6 +124,7 @@ class PrimeRenderer:
             ),
             _sections.build_task_section(
                 task,
+                deliverables=await resolve_task_deliverables(self.db, task),
                 review_deliverables=await _sections.build_review_deliverable_summary(self.db, task),
                 integration_delivery=await _sections.build_integration_delivery_summary(
                     self.db, task

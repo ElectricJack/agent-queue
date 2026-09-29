@@ -378,24 +378,30 @@ class DependencyQueryMixin:
             return [self._row_to_task(r) for r in result.mappings().fetchall()]
 
     async def get_stuck_defined_tasks(self, threshold_seconds: int) -> list[Task]:
-        """Return DEFINED tasks blocked by a BLOCKED or FAILED dependency."""
+        """Return DEFINED tasks blocked by a BLOCKED or FAILED dependency.
+
+        A semi-join avoids comparing whole task rows in ``SELECT DISTINCT``.
+        That query failed when ``tasks.route`` was a PostgreSQL ``json`` column.
+        """
         async with self._engine.begin() as conn:
             dep_tasks = tasks.alias("dep")
-            result = await conn.execute(
-                select(tasks)
-                .distinct()
+            blocked_upstream = (
+                select(task_dependencies.c.task_id)
                 .select_from(
-                    tasks.join(task_dependencies, task_dependencies.c.task_id == tasks.c.id).join(
+                    task_dependencies.join(
                         dep_tasks, dep_tasks.c.id == task_dependencies.c.depends_on_task_id
                     )
                 )
                 .where(
-                    and_(
-                        tasks.c.status == TaskStatus.DEFINED.value,
-                        _dep_type_filter(None),
-                        dep_tasks.c.status.in_([TaskStatus.BLOCKED.value, TaskStatus.FAILED.value]),
-                    )
+                    task_dependencies.c.task_id == tasks.c.id,
+                    _dep_type_filter(None),
+                    dep_tasks.c.status.in_([TaskStatus.BLOCKED.value, TaskStatus.FAILED.value]),
                 )
+                .exists()
+            )
+            result = await conn.execute(
+                select(tasks)
+                .where(tasks.c.status == TaskStatus.DEFINED.value, blocked_upstream)
                 .order_by(tasks.c.created_at.asc())
             )
             return [self._row_to_task(r) for r in result.mappings().fetchall()]

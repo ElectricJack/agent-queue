@@ -1,15 +1,17 @@
 ---
 name: aq-reviews
-description: Document reviews in aq — submitting a spec or plan, answering requested changes on a revision task, acting as a dispatched adversarial reviewer, and the opt-in recipe for adversarial review across model families (author on one family, reviewer on another, at most three rounds, [blocking]/[nit] findings, fixed/rebutted/deferred dispositions). Use when you submit or revise a review, hold an "Adversarial review:" or "Revise … (review …)" task, or run a cross-family review loop as the operator or a delegated supervisor.
+description: Document reviews in aq — submitting a spec, plan, design proposal or research report, answering requested changes on a revision task, acting as a dispatched adversarial reviewer, and the opt-in recipe for adversarial review across model families (author on one family, reviewer on another, at most three rounds, [blocking]/[nit] findings, fixed/rebutted/deferred dispositions). Use when you submit or revise a review, hold an "Adversarial review:" or "Revise … (review …)" task, or run a cross-family review loop as the operator or a delegated supervisor.
 allowed-tools:
   - Bash
 ---
 
 # aq reviews
 
-A spec or plan is a **review**, not a commit. The daemon stores every
+A spec, a plan, a design proposal or a research report is a **review**, not
+a commit. The daemon stores every
 revision, mirrors the current one to the vault, and gates the work filed with
-`--after-review <id>` until the decider approves. The decider is Jack, or the
+`--after-review <id>` (a single task, or every node of a `--graph` /
+`--from-spec` graph) until the decider approves. The decider is Jack, or the
 supervisor when he delegated that review. The operator's guide is
 `docs/guides/reviews.md` in the agent-queue repository; this skill is the
 seat-by-seat version.
@@ -18,7 +20,7 @@ seat-by-seat version.
 
 | You hold | You are | Read |
 |---|---|---|
-| A task that asks you to write a spec or plan | author | § Author |
+| A task that asks you to write a spec, plan, proposal or report; any research or design task | author | § Author |
 | *Revise \<title> (review \<id>)* | reviser | § Reviser |
 | *Adversarial review: \<title>* | dispatched reviewer | § Dispatched reviewer |
 | The local operator, or the supervisor with the review delegated | decider | § Running the cross-family loop |
@@ -35,15 +37,24 @@ aq review show --review-id <id> --diff-from 1        # block diff against an ear
 ## Author
 
 1. Write the document in your checkout. Do not commit it.
-2. Submit it:
+2. Submit it (`--kind spec`, `plan`, or `other` for a proposal or report):
 
    ```bash
    aq review submit --task-id <task> --file <draft> --kind spec --title "<title>"
    ```
 
+   Submit even when the task also asks for a committed copy: a document that
+   is only on a branch never reaches the Reviews tab.
 3. Close the task with the review id, the vault path and the revision's
    content hash (`revision.content_sha256` from `aq review show --review-id
    <id> --json`). Do not wait for the decision; closing approves nothing.
+
+The close gate checks this. A task with a `review` deliverable — and every
+research or design task, which carries one (`review`) even when none is
+listed — is refused a passing close (`deliverables.unmet`) until it has
+submitted a review. When the task honestly produced no document, waive it
+visibly: `--deliverable-unmet 'review: <reason>'`. A dispatched reviewer is
+exempt; its answer is its comments.
 
 A rejection never reopens your task. The daemon files a separate revision
 task, which may land on another worker.
@@ -165,10 +176,11 @@ On the shipped ladder Fable is `deep-high`'s `anthropic` slice
 (`astra-high-codex`). An install whose `deep-high` OpenAI slice is
 `gpt-6-astra` has Astra on `deep-high-codex`; the commands below assume that.
 
-**Family diversity is observed, not configured.** Dispatch has no `--pin`
-(the reviewer task is `preferred`); a revision task is `preferred` with
-`--responder-profile`, `class_only` without; an author task's `--pin` does not
-carry over to later tasks. Failover inside a class crosses families: an
+**Family diversity is observed, not configured.** Dispatch names no profile:
+each reviewer excludes the provider the author revision ran on and the router
+picks among the other families; a revision task is unrouted with the
+`--responder-class` hint; an author task's `--pin` does not carry over to
+later tasks. Failover inside a class crosses families: an
 Anthropic outage can move `deep-high-claude` work to `deep-high-codex`. So for
 every writing and reviewing task, check what actually ran:
 
@@ -204,7 +216,7 @@ record it so, and never claim coverage you did not observe.
    later rounds keep the default `--with-comments`.
 
    ```bash
-   aq review dispatch --review-id <id> --revision <n> --to deep-high-codex --no-comments --focus "Verify claims against code; label each finding [blocking] or [nit]"
+   aq review dispatch --review-id <id> --revision <n> --class deep-high --no-comments --focus "Verify claims against code; label each finding [blocking] or [nit]"
    ```
 
 4. Wait for the reviewer task to end (`aq task show <task-id>`). A failed or
@@ -219,7 +231,7 @@ record it so, and never claim coverage you did not observe.
    the responder class and profile:
 
    ```bash
-   aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high --responder-profile deep-high-claude
+   aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high
    ```
 
    After the revision task resubmits, check its attribution and record every
@@ -258,8 +270,9 @@ that pretends otherwise; contracting the verbs is a separate feature.
 | `not_your_task` | Resubmitting without holding the revision task, or acting on another project's review. |
 | `not_dispatched` / `wrong_revision` | Commenting without holding the dispatch task, or on another revision. |
 | `anchor_required` | A dispatched reviewer's comment had neither `--quote` nor `--heading-path`. |
-| `duplicate_dispatch` | That profile already has this revision. |
+| `duplicate_dispatch` | This revision was already dispatched; `--force` dispatches more. |
+| `routing.choice_forbidden` | `--to <profile>` on dispatch or a responder profile on a decision; the router routes both. |
 | `operator_only` | Dispatch from a session that is neither the local operator nor elevated. |
-| `invalid_responder` / `invalid_responder_class` / `invalid_responder_profile` | `--responder-profile` without `--responder-class`, responder options on an approval, or a class or worker that does not exist. |
+| `invalid_responder` / `invalid_responder_class` | Responder options on an approval, or a class that does not exist. |
 | `stale_revision` / `not_in_review` | The review moved or is not awaiting a decision; re-read it. |
 | `vault_diverged` | The vault file was edited outside the review. |

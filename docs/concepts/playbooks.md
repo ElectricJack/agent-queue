@@ -66,6 +66,24 @@ The V2 step vocabulary is deliberately closed:
 
 Live, dry-run, and shadow modes use the same graph and validator. Dry-run and shadow executors report command/AI/delegation/wait behavior without performing live side effects. The executor registry is [explicit](../../src/playbooks/executors/__init__.py), so a newly introduced step cannot silently run in an unsafe mode.
 
+An `agent_task` normally omits `profile_id`. Its optional `intelligence_class`
+and `task_type` are hints: creation stores the class as `class_hint`, leaves
+the child unrouted, and lets the project's router choose its worker. A named
+profile must be a control-plane role (`triage`, `spec-ingest`, `reviewer`, or
+`final-reviewer`), created by a service or playbook principal. `pin_provider`
+and routing choices hidden in `inputs` are rejected.
+
+Hint-only delegation uses conservative admission: before creating a child,
+the executor checks every enabled worker candidate against the parent's
+capabilities intersected with `capability_narrowing`. One broader candidate,
+an unreadable profile store, or no candidates refuses the step. Class hints,
+current capacity and provider availability do not exclude candidates from
+this check, since the router may clamp a hint or use a recovered provider.
+This allows routing without persisting a new per-task capability policy;
+operator edits to profiles remain trusted configuration changes, as for
+named-role delegation. Cancellation re-reads the child's eventual profile
+and intersects it with the caller's current authority and step narrowing.
+
 ## Playbook commands
 
 A `command` step is the only way a playbook changes durable state, and the set of commands it may call is closed. [`CONTRACTS`](../../src/commands/contracts/registry.py) registers each one with a typed argument model, a typed result, named outcomes, the capability a caller's policy must grant, and machine-readable effect clauses. Three surfaces read that single registry, so none of them can drift from it or from each other.

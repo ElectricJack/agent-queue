@@ -52,6 +52,13 @@ DEFAULT_SYSTEM_PLAYBOOK_IDS = ("supervisor-failure-triage", "default-pipeline")
 # The legacy bundle remains importable for audit, but it cannot stay enabled:
 # it subscribes to the same ``task.failed`` event as the reviewed successor.
 RETIRED_DEFAULT_SYSTEM_PLAYBOOK_IDS = ("blocked-task-escalation",)
+# The AQ command a required playbook's active artifact must grant, or its
+# system activation is re-pointed at the shipped artifact even while healthy.
+# Mandatory routing (spec 2026-09-28 §6.7): only ``task_route_apply`` writes a
+# router route, so an older router -- the shipped ``task_route`` artifact, or a
+# vault compile that diverged from it -- would stay ready and route nothing a
+# worker may claim.  An operator's own router that grants it is left alone.
+REQUIRED_GRANTS = {"default-assignment-routing": "task_route_apply"}
 _ACTOR = "service:required-playbook-reconciler"
 
 
@@ -312,9 +319,11 @@ class RequiredPlaybookReconciler:
         An *enabled* activation that no longer validates is different: it
         serves nothing, and no restart could ever make it serve again, so it is
         re-pointed at the freshly imported shipped artifact, which the import
-        has just validated against the live registries.  An unhealthy or
-        disabled required activation still leaves a machine-readable readiness
-        diagnostic.
+        has just validated against the live registries.  So is an enabled,
+        ready one whose artifact lacks the command :data:`REQUIRED_GRANTS`
+        names: a router that cannot call ``task_route_apply`` serves events
+        and routes nothing.  An unhealthy or disabled required activation
+        still leaves a machine-readable readiness diagnostic.
         """
         async with self._lock:
             required: dict[str, dict[str, Any]] = {}
@@ -378,9 +387,10 @@ class RequiredPlaybookReconciler:
         """Import the shipped bundle and point the system activation at it if needed.
 
         Returns ``(activation, import_error, repointed_from)``.  The activation
-        is written only when it is missing, or when it is enabled but not ready
-        and the shipped artifact is a different hash; otherwise the durable row
-        is left exactly as it is.
+        is written only when it is missing, or when it is enabled, the shipped
+        artifact is a different hash, and it is either not ready or its
+        artifact lacks the command :data:`REQUIRED_GRANTS` names for it;
+        otherwise the durable row is left exactly as it is.
         """
         imported = await self._handler._cmd_playbook_v2_import(
             {"path": f"reviewed-playbooks/{playbook_id}"}
@@ -393,19 +403,23 @@ class RequiredPlaybookReconciler:
         shipped_sha = imported["artifact_sha256"]
         repointed_from = None
         if activation is not None:
-            if (
-                not activation.enabled
-                or activation.health.value == "ready"
-                or activation.active_artifact_sha256 == shipped_sha
-            ):
+            if not activation.enabled or activation.active_artifact_sha256 == shipped_sha:
                 return activation, None, None
+            why = activation.health.value
+            if why == "ready":
+                missing = await self._missing_grant(
+                    playbook_id, activation.active_artifact_sha256
+                )
+                if missing is None:
+                    return activation, None, None
+                why = f"ready, but its artifact does not grant {missing}"
             repointed_from = activation.active_artifact_sha256
             logger.warning(
                 "Re-pointing the %s system activation from %s (%s) to the shipped reviewed "
                 "artifact %s",
                 playbook_id,
                 repointed_from,
-                activation.health.value,
+                why,
                 shipped_sha,
             )
         await self._db.set_playbook_activation(
@@ -420,6 +434,33 @@ class RequiredPlaybookReconciler:
         )
         records, _contracts, _profiles = await self._handler._v2_health_records()
         return _system_activation(records, playbook_id), None, repointed_from
+
+    async def _missing_grant(self, playbook_id: str, artifact_sha256: str) -> str | None:
+        """The :data:`REQUIRED_GRANTS` command *playbook_id*'s artifact lacks, if any.
+
+        The grant is read from the immutable artifact itself
+        (:func:`~src.playbooks.definition.granted_aq_commands`), exactly as
+        ``task_route_apply`` reads it off the live invocation.  An artifact
+        that cannot be loaded grants nothing: the runtime could not run it
+        either.
+        """
+        required = REQUIRED_GRANTS.get(playbook_id)
+        if required is None:
+            return None
+        from src.playbooks.definition import granted_aq_commands
+
+        _ref, definition, error = await self._handler._v2_load_artifact(
+            artifact_sha256, playbook_id
+        )
+        if error is not None:
+            logger.warning(
+                "Could not read the active %s artifact %s to check its grants: %s",
+                playbook_id,
+                artifact_sha256,
+                error,
+            )
+            return required
+        return None if required in granted_aq_commands(definition) else required
 
     async def _activate_defaults(self) -> dict[str, dict[str, Any]]:
         """Activate each shipped default playbook the first time it is seen.

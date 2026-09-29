@@ -2525,3 +2525,40 @@ class TaskQueryMixin:
                 ).values(**vals)
             )
         return result.rowcount == 1
+
+    async def reset_task_route(
+        self, task_id: str, *, class_hint: str | None | object = _UNSET
+    ) -> bool:
+        """Send a task back to its router while no worker holds it.
+
+        Clears the route — ``profile_id``, ``intelligence_class`` and the
+        ``route`` record — and stores ``route_source='unrouted'`` and
+        ``provider_intent='class_only'``, so the next cascade emits
+        ``task.route_needed`` (mandatory-routing spec §5.1).  *class_hint*
+        replaces the filer's hint when given; ``None`` clears it.  Guarded
+        like :meth:`update_task_routing`: a task that is claimed, running or
+        in a live session is left alone and ``False`` is returned.
+        """
+        vals: dict = {
+            "profile_id": None,
+            "intelligence_class": None,
+            "route": None,
+            "route_source": UNROUTED,
+            "provider_intent": "class_only",
+        }
+        if class_hint is not _UNSET:
+            vals["class_hint"] = class_hint
+        active_session = select(sessions.c.id).where(
+            sessions.c.task_id == tasks.c.id,
+            sessions.c.state.in_(("starting", "running", "draining")),
+        ).exists()
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                update(tasks).where(
+                    tasks.c.id == task_id,
+                    tasks.c.status != TaskStatus.IN_PROGRESS.value,
+                    tasks.c.assigned_agent_id.is_(None),
+                    ~active_session,
+                ).values(**vals)
+            )
+        return result.rowcount == 1

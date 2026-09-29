@@ -39,6 +39,7 @@ from src.api.models.system import (
 from src.api.models.task import HierarchyRefusalResponse
 from src.api.scope import check_request_scope
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
+from src.routing.filing import FILING_COMMANDS, REFUSED_ROUTING_ARGS, ROUTING_CHOICE_FORBIDDEN
 from src.cli.auto_commands import _strip_category_prefix
 from src.tools import (
     CATEGORIES,
@@ -322,11 +323,26 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
             # operator request into a no-op.
             for field in {"min", "max"} & body.model_fields_set:
                 args[field] = getattr(body, field)
-        if cmd_name == "edit_task":
-            # Explicit null clears routing; omitted option defaults must not.
-            for field in {"profile_id", "intelligence_class"} & body.model_fields_set:
-                if getattr(body, field) is None:
-                    args[field] = None
+        if (
+            cmd_name == "edit_task"
+            and "intelligence_class" in body.model_fields_set
+            and getattr(body, "intelligence_class", None) is None
+        ):
+            # Explicit null clears the class hint; omitted option defaults must not.
+            args["intelligence_class"] = None
+        if cmd_name in FILING_COMMANDS and request is not None:
+            # The request model no longer declares the routing arguments, so
+            # validation silently drops them.  Forward what the caller sent
+            # so ``CommandHandler.execute`` refuses it (routing.choice_forbidden)
+            # instead of filing a task that quietly ignored the choice.
+            try:
+                raw_body = await request.json()
+            except ValueError:
+                raw_body = None
+            if isinstance(raw_body, dict):
+                for field in REFUSED_ROUTING_ARGS:
+                    if field in raw_body and field not in args:
+                        args[field] = raw_body[field]
         for _key in SERVER_OWNED_ARG_KEYS:
             args.pop(_key, None)
 
@@ -367,6 +383,10 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
         if status is not None:
             return JSONResponse(result, status_code=status)
         if "error" in result:
+            if result.get("code") == ROUTING_CHOICE_FORBIDDEN:
+                # The refusal names what was refused and the hints to pass
+                # instead; the generic envelope below would drop both.
+                return JSONResponse(result, status_code=422)
             if result.get("error_code") == "capability_denied":
                 return JSONResponse(
                     {"error": result["error"], "error_code": "capability_denied"},

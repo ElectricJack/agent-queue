@@ -39,6 +39,9 @@ AUDIT_TEXT = (
     "name: Main attestation\n"
     "env:\n  APP_ID: ${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}\n"
 )
+#: The reviewed policy's root check-set version: what
+#: ``AQ_INTEGRATION_REQUIRED_CHECK_VERSION`` must hold.
+CHECK_VERSION = json.loads(POLICY_PATH.read_text())["root"]["required_checks"]["version"]
 
 
 def _policy(**producers: str) -> dict:
@@ -82,7 +85,7 @@ class FakeGitHub:
         }
         self.variables = {
             app_mode.APP_ID_VARIABLE: str(APP_ID),
-            app_mode.CHECK_VERSION_VARIABLE: "tests-yml-v3",
+            app_mode.CHECK_VERSION_VARIABLE: CHECK_VERSION,
         }
         # The §8.1 ruleset app-verify renders, applied: GitHub's effective rules.
         self.rules = [
@@ -182,21 +185,12 @@ def _db(policy: dict) -> SimpleNamespace:
         default_branch="main",
         url="https://github.com/ElectricJack/agent-queue.git",
     )
-    parsed = HierarchicalIntegrationPolicy.model_validate(_policy())
-    profiles = {
-        profile
-        for boundary in (parsed.parent, parsed.root)
-        for profile in (
-            boundary.primary_profile_id,
-            boundary.repair.debug_profile_id,
-            boundary.verifier_profile_id,
-        )
-    }
+    # No list_profiles: preflight gates on the class hints only; the router
+    # assigns repair and verifier profiles.
     return SimpleNamespace(
         get_project=AsyncMock(return_value=_project(policy)),
         get_repo=AsyncMock(side_effect=lambda rid: repository if rid == "agent-queue2" else None),
         get_session=AsyncMock(return_value=None),
-        list_profiles=AsyncMock(return_value=[SimpleNamespace(id=value) for value in profiles]),
     )
 
 
@@ -534,7 +528,7 @@ async def test_expected_carries_the_manifest_the_variables_and_the_ruleset(prote
     assert expected["manifest_text"] == trust_manifest.canonical_text(_manifest())
     assert expected["variables"] == {
         "AQ_INTEGRATION_ATTESTATION_APP_ID": "5075923",
-        "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "tests-yml-v3",
+        "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": CHECK_VERSION,
     }
     # Spec §8.1, pinned to this App, with no bypass.
     assert expected["ruleset"] == {
@@ -881,7 +875,7 @@ def test_app_setup_apply_sets_only_the_differing_variables_and_reverifies(protec
     # The App id was already right, so gh never touched it.
     assert runs == [[
         "gh", "variable", "set", "AQ_INTEGRATION_REQUIRED_CHECK_VERSION",
-        "--repo", "ElectricJack/agent-queue", "--body", "tests-yml-v3",
+        "--repo", "ElectricJack/agent-queue", "--body", CHECK_VERSION,
     ]]
     # Verified, applied, then verified again through the App.
     assert [command for command, _args in calls] == ["integration_app_verify"] * 2
@@ -900,7 +894,7 @@ def test_app_setup_apply_sets_both_when_both_are_unset(protected):
 
     assert outcome.exit_code == 0, outcome.output
     assert [argv[3] for argv in runs] == list(app_mode.HOSTED_VARIABLES)
-    assert [argv[7] for argv in runs] == ["5075923", "tests-yml-v3"]
+    assert [argv[7] for argv in runs] == ["5075923", CHECK_VERSION]
 
 
 def test_app_setup_apply_touches_nothing_when_the_variables_are_correct(protected):
@@ -949,7 +943,7 @@ def test_app_setup_without_apply_prints_commands_manifest_and_ruleset_steps():
     ) in output
     assert (
         "gh variable set AQ_INTEGRATION_REQUIRED_CHECK_VERSION --repo "
-        "ElectricJack/agent-queue --body tests-yml-v3"
+        f"ElectricJack/agent-queue --body {CHECK_VERSION}"
     ) in output
     assert (
         f"aq integration trust-manifest agent-queue --policy {POLICY_PATH} "

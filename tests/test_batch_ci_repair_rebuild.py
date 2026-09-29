@@ -124,7 +124,6 @@ async def test_conflicting_main_rebuild_uses_current_stage_and_requires_fresh_ci
     now = {"value": 100.0}
     repair = RepairService(
         db,
-        route_validator=lambda _intelligence_class, _profile_id: True,
         clock=lambda: now["value"],
     )
     app = _AppClient(origin)

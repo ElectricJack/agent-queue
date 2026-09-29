@@ -23,6 +23,7 @@ from sqlalchemy import and_, select, update
 from src.database.queries import proposal_queries
 from src.database.tables import TASK_DEP_TYPES, task_metadata, task_proposals, tasks
 from src.models import DepType, Task, TaskStatus
+from src.routing.filing import choice_forbidden, refused_spec_keys
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,9 @@ class TaskProposalCommandsMixin:
         shape_err = self._validate_shape(tasks_in, edges_in)
         if shape_err:
             return {"success": False, "error": shape_err}
+        refused = refused_spec_keys(tasks_in)
+        if refused:
+            return choice_forbidden("task_batch_propose", refused)
 
         ref_err = await self._validate_existing_refs(project_id, tasks_in, edges_in)
         if ref_err:
@@ -178,6 +182,9 @@ class TaskProposalCommandsMixin:
         shape_err = self._validate_shape(tasks_in, edges_in)
         if shape_err:
             return {"success": False, "error": shape_err}
+        refused = refused_spec_keys(tasks_in)
+        if refused:
+            return choice_forbidden("task_batch_update", refused)
         ref_err = await self._validate_existing_refs(
             row["project_id"], tasks_in, edges_in
         )
@@ -377,20 +384,16 @@ class TaskProposalCommandsMixin:
                 }
             if error := self._task_execution_profile_error(default_profile):
                 return {"success": False, "error": f"project default is invalid: {error}"}
-        # Batch tasks take the same route fields as direct and graph-created
-        # work.  Validate explicit intent before claiming the proposal so an
-        # invalid profile/class is an actionable admission refusal, not a
-        # partially materialised graph.
+        # Batch tasks carry hints like direct and graph-created work: a
+        # stored spec naming a route (written before the refusal existed) is
+        # refused, and a class is validated as a hint — both before the
+        # proposal is claimed, so the refusal is actionable rather than a
+        # partially materialised graph (mandatory-routing spec §5.1).
+        refused = refused_spec_keys(tasks_in)
+        if refused:
+            return choice_forbidden("task_batch_commit", refused)
         for spec in tasks_in:
-            profile = None
-            profile_id = spec.get("profile_id")
-            if profile_id:
-                profile = await self.db.get_profile(profile_id)
-                if profile is None:
-                    return {"success": False, "error": f"Profile '{profile_id}' not found"}
-                if error := self._task_execution_profile_error(profile):
-                    return {"success": False, "error": error}
-            if error := self._validate_routing_class(spec.get("intelligence_class"), profile):
+            if error := self._validate_routing_class(spec.get("intelligence_class")):
                 return {"success": False, "error": error}
         if project is not None and project.hierarchical_integration_mode in {
             "hierarchy",
@@ -648,8 +651,8 @@ class TaskProposalCommandsMixin:
             description=spec.get("description", ""),
             priority=spec.get("priority", 100),
             deliverables=spec.get("deliverables", []),
-            profile_id=spec.get("profile_id"),
-            intelligence_class=spec.get("intelligence_class"),
+            # The class is the filer's hint; the router writes the route.
+            class_hint=spec.get("intelligence_class"),
             status=TaskStatus.DEFINED,
         )
 
@@ -669,7 +672,6 @@ async def _create_one_task(
             "description": spec.get("description", ""),
             "priority": spec.get("priority", 100),
             "deliverables": spec.get("deliverables", []),
-            "profile_id": spec.get("profile_id"),
             "intelligence_class": spec.get("intelligence_class"),
             "metadata": {"proposal_source": source},
         },

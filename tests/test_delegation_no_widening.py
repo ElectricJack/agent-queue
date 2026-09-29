@@ -13,6 +13,15 @@ HTTP and MCP callers too. These tests drive the real ``CommandHandler``
 (and the real ``/api/execute`` surface) against a real SQLite database with
 real ``sessions`` rows — no stubbed caller identity — because a stub would
 re-prove the check in the one place it already worked.
+
+Mandatory task routing (spec 2026-09-28 §5.1, §5.2) narrowed what reaches the
+check: no filer names a worker profile any more, so a session naming a
+profile is refused with ``routing.choice_forbidden`` before delegation is
+considered.  The only profile a filing may name is a *role* profile
+(``triage``, ``spec-ingest``, ``reviewer``, ``final-reviewer``) named by a
+``PLAYBOOK`` or ``SERVICE`` principal, and that delegation is still bounded
+by the caller's capabilities — which is what the recursive tests below prove,
+with role profiles standing in for the delegated children.
 """
 
 from __future__ import annotations
@@ -122,6 +131,47 @@ def _scope(session_id: str) -> dict:
     }
 
 
+#: Role profiles (spec §4, D3) carrying the capability shapes above: the only
+#: profiles a filing may still name, and only from a playbook or a service.
+ROLE_BROAD = AgentProfile(
+    id="triage", name="Triage", harness_tools=list(BROAD.harness_tools or []),
+    aq_commands=list(BROAD.aq_commands or []), plugin_tools=list(BROAD.plugin_tools or []),
+)
+ROLE_NARROW = AgentProfile(
+    id="spec-ingest", name="Spec ingest", harness_tools=list(NARROW.harness_tools or []),
+    aq_commands=list(NARROW.aq_commands or []), plugin_tools=list(NARROW.plugin_tools or []),
+)
+ROLE_NARROWER = AgentProfile(
+    id="final-reviewer", name="Final reviewer",
+    harness_tools=list(NARROWER.harness_tools or []),
+    aq_commands=list(NARROWER.aq_commands or []), plugin_tools=list(NARROWER.plugin_tools or []),
+)
+
+
+def _playbook(profile_id: str | None):
+    """An enforced playbook principal running under *profile_id*."""
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind
+    from src.profiles.capabilities import CapabilityPolicy
+
+    return ExecutionPrincipal(
+        kind=PrincipalKind.PLAYBOOK,
+        policy=CapabilityPolicy.from_namespaces(aq_commands=["create_task"]),
+        project_id="p",
+        profile_id=profile_id,
+    )
+
+
+async def _delegate(handler, caller: str | None, role: str) -> dict:
+    """A playbook running as *caller* files a task on the *role* profile."""
+    from src.commands.principal import principal_context
+
+    with principal_context(_playbook(caller)):
+        return await handler.execute(
+            "create_task",
+            {"project_id": "p", "title": "child", "description": "d", "profile_id": role},
+        )
+
+
 async def _create(handler, session_id: str, **args):
     payload = {
         "project_id": "p",
@@ -138,36 +188,45 @@ async def _create(handler, session_id: str, **args):
 async def handler(command_handler_factory):
     h = await command_handler_factory()
     h.config.security.capability_enforcement = "enforce"
-    await _seed(h)
+    await _seed(h, (BROAD, NARROW, NARROWER, ROLE_BROAD, ROLE_NARROW, ROLE_NARROWER))
     return h
 
 
 class TestRecursiveChain:
+    """A role delegation from a playbook still cannot widen, recursively."""
+
     async def test_broad_may_delegate_to_narrow(self, handler):
-        sid = await _session_for(handler, "broad")
-        result = await _create(handler, sid, profile_id="narrow")
+        result = await _delegate(handler, "broad", "spec-ingest")
         assert "error" not in result, result
+        task = await handler.db.get_task(result["task_id"])
+        assert (task.profile_id, task.route_source) == ("spec-ingest", "role")
 
     async def test_narrow_may_not_delegate_to_broad(self, handler):
-        sid = await _session_for(handler, "narrow")
-        result = await _create(handler, sid, profile_id="broad")
+        result = await _delegate(handler, "narrow", "triage")
         assert "Capability escalation rejected" in result["error"]
 
     async def test_narrow_may_delegate_to_narrower(self, handler):
-        sid = await _session_for(handler, "narrow")
-        result = await _create(handler, sid, profile_id="narrower")
+        result = await _delegate(handler, "narrow", "final-reviewer")
         assert "error" not in result, result
 
     async def test_narrower_may_not_delegate_to_narrow(self, handler):
         """The third level: narrowing composes, it does not reset."""
-        sid = await _session_for(handler, "narrower")
-        result = await _create(handler, sid, profile_id="narrow")
+        result = await _delegate(handler, "narrower", "spec-ingest")
         assert "Capability escalation rejected" in result["error"]
 
-    async def test_a_profile_may_delegate_to_itself(self, handler):
-        sid = await _session_for(handler, "narrow")
-        result = await _create(handler, sid, profile_id="narrow")
+    async def test_a_profile_may_delegate_to_its_equal(self, handler):
+        result = await _delegate(handler, "narrow", "spec-ingest")
         assert "error" not in result, result
+
+    async def test_a_session_may_not_delegate_at_all(self, handler):
+        """A worker names no profile, not even a narrower one (spec §5.2)."""
+        sid = await _session_for(handler, "broad")
+        before = len(await handler.db.list_tasks())
+
+        for profile_id in ("narrow", "spec-ingest"):
+            result = await _create(handler, sid, profile_id=profile_id)
+            assert result.get("code") == "routing.choice_forbidden", result
+        assert len(await handler.db.list_tasks()) == before
 
 
 class TestPerNamespace:
@@ -175,16 +234,15 @@ class TestPerNamespace:
         """Equal in two namespaces, one entry wider in the third."""
         await handler.db.create_profile(
             AgentProfile(
-                id="plus-plugin",
+                id="reviewer",
                 name="Plus",
                 harness_tools=list(NARROW.harness_tools or []),
                 aq_commands=list(NARROW.aq_commands or []),
                 plugin_tools=[*(NARROW.plugin_tools or []), "write_file"],
             )
         )
-        sid = await _session_for(handler, "narrow")
 
-        result = await _create(handler, sid, profile_id="plus-plugin")
+        result = await _delegate(handler, "narrow", "reviewer")
 
         assert "Capability escalation rejected" in result["error"]
         assert "plugin_tool" in result["error"]
@@ -192,16 +250,15 @@ class TestPerNamespace:
     async def test_one_extra_harness_tool_is_an_escalation(self, handler):
         await handler.db.create_profile(
             AgentProfile(
-                id="plus-harness",
+                id="reviewer",
                 name="Plus",
                 harness_tools=[*(NARROW.harness_tools or []), "Write"],
                 aq_commands=list(NARROW.aq_commands or []),
                 plugin_tools=list(NARROW.plugin_tools or []),
             )
         )
-        sid = await _session_for(handler, "narrow")
 
-        result = await _create(handler, sid, profile_id="plus-harness")
+        result = await _delegate(handler, "narrow", "reviewer")
 
         assert "harness tool" in result["error"]
 
@@ -230,19 +287,9 @@ class TestDefaultInheritance:
         assert (await handler.db.get_task(result["task_id"])).profile_id is None
 
     async def test_worker_filing_with_a_class_is_routed_not_class_matched(self, handler):
-        """An explicit class does not re-pin a filing onto a class lane at create.
-
-        Class-lane resolution picks a lane for the *implicit* route; a worker
-        filing has none, so the class travels with the unpinned task to the
-        assignment playbook.
-        """
+        """A class is a hint: the filing is stored unrouted and the router
+        routes it (mandatory-routing spec §5.3)."""
         handler._validate_routing_class = lambda *_args, **_kwargs: None
-        lane = await handler.db.get_profile("narrower")
-
-        async def resolve(_class_id, _implicit):
-            return lane, None
-
-        handler._resolve_class_route = resolve
         sid = await _session_for(handler, "narrow")
 
         result = await _create(handler, sid, intelligence_class="c")
@@ -251,21 +298,26 @@ class TestDefaultInheritance:
         assert "profile_source" not in result
         task = await handler.db.get_task(result["task_id"])
         assert task.profile_id is None
-        assert task.intelligence_class == "c"
+        assert (task.intelligence_class, task.class_hint) == (None, "c")
+        assert task.route_source == "unrouted"
         assert await handler.db.get_task_meta(task.id, "filed_by_profile_id") == "narrow"
 
-    async def test_an_explicit_profile_from_a_worker_is_still_a_pin(self, handler):
+    async def test_an_explicit_profile_from_a_worker_is_refused(self, handler):
+        """A worker's profile was a preference; now it is a routing choice,
+        which only the router makes (spec §5.2)."""
         sid = await _session_for(handler, "narrow")
+        before = len(await handler.db.list_tasks())
 
         result = await _create(handler, sid, profile_id="narrower")
 
-        assert "error" not in result, result
-        task = await handler.db.get_task(result["task_id"])
-        assert task.profile_id == "narrower"
-        assert await handler.db.get_task_meta(task.id, "filed_by_profile_id") is None
+        assert result.get("code") == "routing.choice_forbidden", result
+        assert result["refused"] == ["profile_id"]
+        assert len(await handler.db.list_tasks()) == before
 
-    async def test_a_sandboxed_playbook_still_default_inherits(self, handler):
-        """Only worker filings changed: a playbook delegating work keeps its sandbox."""
+    async def test_a_sandboxed_playbook_no_longer_inherits(self, handler):
+        """No filer inherits its own profile (mandatory-routing spec §2): a
+        playbook's unprofiled filing is unrouted, and the router offers only
+        worker candidates, so the child still cannot exceed a worker route."""
         handler.set_caller_profile("narrow")
         try:
             result = await handler.execute(
@@ -275,7 +327,8 @@ class TestDefaultInheritance:
             handler.set_caller_profile(None)
 
         assert "error" not in result, result
-        assert (await handler.db.get_task(result["task_id"])).profile_id == "narrow"
+        task = await handler.db.get_task(result["task_id"])
+        assert (task.profile_id, task.route_source) == (None, "unrouted")
 
 
 class TestWorkerFiledRouteBound:
@@ -375,8 +428,12 @@ class TestFailClosed:
         handler._invalidate_principal_cache()
         before = len(await handler.db.list_tasks())
 
+        # The session itself names no profile at all (spec §5.2) ...
         result = await _create(handler, sid, profile_id="narrower")
+        assert result.get("code") == "routing.choice_forbidden", result
 
+        # ... and a playbook whose profile is gone cannot hand out a role.
+        result = await _delegate(handler, "narrow", "final-reviewer")
         assert "refusing to create task" in result["error"]
         assert len(await handler.db.list_tasks()) == before
 
@@ -421,34 +478,49 @@ class TestFailClosed:
         before = len(await handler.db.list_tasks())
 
         result = await _create(handler, sid, profile_id="narrower")
+        assert result.get("code") == "routing.choice_forbidden", result
 
+        # A playbook principal with no profile has no parent policy either.
+        result = await _delegate(handler, None, "final-reviewer")
         assert result["error"] == "delegation refused: caller has no resolved profile"
         assert len(await handler.db.list_tasks()) == before
 
     async def test_unknown_profile_id_is_refused(self, handler):
         sid = await _session_for(handler, "narrow")
         result = await _create(handler, sid, profile_id="nope")
-        assert result["error"] == "Profile 'nope' not found"
+        assert result.get("code") == "routing.choice_forbidden", result
+        # A role id with no profile row is refused as unknown.
+        result = await _delegate(handler, "broad", "reviewer")
+        assert result["error"] == "Profile 'reviewer' not found"
 
 
 class TestPlaybookShim:
     async def test_set_caller_profile_still_rejects(self, handler):
-        """``src/playbooks/runner.py`` is untouched: its shim still gates."""
+        """``src/playbooks/runner.py`` is untouched: its shim still gates.
+
+        Through ``execute`` the operator principal names no profile at all;
+        an in-process caller reaching the handler directly may name a role,
+        still bounded by the shim's caller profile.
+        """
         handler.set_caller_profile("narrow")
         try:
-            result = await handler.execute(
+            refused = await handler.execute(
                 "create_task",
                 {"project_id": "p", "title": "c", "description": "d", "profile_id": "broad"},
             )
+            result = await handler._cmd_create_task(
+                {"project_id": "p", "title": "c", "description": "d", "profile_id": "triage"},
+            )
         finally:
             handler.set_caller_profile(None)
+        assert refused.get("code") == "routing.choice_forbidden", refused
         assert "Capability escalation rejected" in result["error"]
 
 
 class TestHttpPath:
     """The exact path task_commands.py documented as unreachable."""
 
-    async def test_escalation_over_api_execute_is_refused_and_writes_nothing(
+    async def test_a_profile_over_api_execute_is_refused_and_writes_nothing(
         self, command_handler_factory, tmp_path
     ):
         ch = await command_handler_factory()
@@ -492,7 +564,8 @@ class TestHttpPath:
             deps._command_handler = None
             deps._token_store = None
 
-        assert "Capability escalation rejected" in response.json()["error"]
+        # A session names no profile (spec §5.2): refused before delegation.
+        assert response.json()["details"]["code"] == "routing.choice_forbidden"
         assert len(await ch.db.list_tasks()) == before
 
     async def test_client_supplied_profile_id_key_cannot_spoof_the_caller(self, handler):
@@ -502,5 +575,10 @@ class TestHttpPath:
         result = await _create(
             handler, sid, profile_id="broad", _profile_id="broad", _policy={"aq_commands": ["*"]}
         )
+        assert result.get("code") == "routing.choice_forbidden", result
 
-        assert "Capability escalation rejected" in result["error"]
+        # Without a profile the spoofed keys grant the child nothing either.
+        result = await _create(handler, sid, _profile_id="broad", _policy={"aq_commands": ["*"]})
+        assert "error" not in result, result
+        task = await handler.db.get_task(result["task_id"])
+        assert (task.profile_id, task.route_source) == (None, "unrouted")

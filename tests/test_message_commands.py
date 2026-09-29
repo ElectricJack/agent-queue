@@ -192,6 +192,60 @@ class TestSend:
         assert "not found" in result["error"]
 
 
+_GLOBAL_SUPERVISOR_SCOPE = {
+    "kind": "session", "session_id": "global-admin", "project_id": None, "elevated": True,
+}
+
+
+class TestSendRecipientProject:
+    """A task, or a session addressed by id, supplies an omitted project.
+
+    Its readers — a durable message wait and ``message_status`` — only see
+    rows of the recipient's project (the 2026-09-28 smart-ember miss).
+    """
+
+    @pytest.mark.parametrize("to_kind", ["task", "session"])
+    async def test_global_supervisor_without_project_uses_the_recipients(self, setup, to_kind):
+        handler, db, _bus = setup
+        worker = await _create_live_worker(db, project_id="p1", suffix="a")
+        to_id = worker.task_id if to_kind == "task" else worker.id
+        args = _send_args(to_kind=to_kind, to_id=to_id, body="APPROVED")
+        args.pop("project_id")
+        result = await handler.execute("message_send", {**args, "_scope": _GLOBAL_SUPERVISOR_SCOPE})
+        assert result["message"]["project_id"] == "p1", result
+
+    async def test_recipient_project_beats_the_ambient_active_project(self, setup):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other"))
+        worker = await _create_live_worker(db, project_id="p2", suffix="b")
+        handler._active_project_id = "p1"
+        args = _send_args(to_kind="task", to_id=worker.task_id)
+        args.pop("project_id")
+        result = await handler._cmd_message_send(args)
+        assert result["message"]["project_id"] == "p2"
+
+    async def test_explicit_project_is_kept(self, setup):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other"))
+        worker = await _create_live_worker(db, project_id="p2", suffix="c")
+        result = await handler._cmd_message_send(
+            _send_args(project_id="p1", to_kind="task", to_id=worker.task_id)
+        )
+        assert result["message"]["project_id"] == "p1"
+
+    @pytest.mark.parametrize(
+        ("to_kind", "to_id"), [("task", "task-ghost"), ("session", "supervisor-p1")]
+    )
+    async def test_unresolved_recipient_keeps_the_projectless_system_default(
+        self, setup, to_kind, to_id
+    ):
+        handler, _db, _bus = setup
+        args = _send_args(to_kind=to_kind, to_id=to_id)
+        args.pop("project_id")
+        result = await handler.execute("message_send", {**args, "_scope": _GLOBAL_SUPERVISOR_SCOPE})
+        assert result["message"]["project_id"] is None, result
+
+
 class TestSupervisorAgentMessage:
     async def test_task_target_resolves_live_session_and_mirrors_comment(self, setup):
         """A supervisor targets the current worker, never a stale session name."""

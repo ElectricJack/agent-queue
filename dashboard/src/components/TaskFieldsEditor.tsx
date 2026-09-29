@@ -1,9 +1,7 @@
 import { useRef, useState } from "react";
 import { ExclamationTriangleIcon, PencilIcon } from "@heroicons/react/24/outline";
-import { useEditTask, useIntelligenceClasses, useProfiles } from "../api/hooks";
+import { useEditTask, useIntelligenceClasses } from "../api/hooks";
 import { groupIntelligenceClasses } from "./intelligence-classes/mapping";
-import { dedupeProfileOptions } from "../pages/project/Config";
-import { PROVIDER_INTENTS, intentHint, intentLabel } from "../pages/metrics/providerAvailabilityFormat";
 import { ProviderIntentChip } from "./TaskProviderRouting";
 
 /**
@@ -12,15 +10,16 @@ import { ProviderIntentChip } from "./TaskProviderRouting";
  * One "Edit" toggles every field at once; Save sends only the fields whose
  * value differs from the snapshot taken when editing started, so a task
  * refreshed under the editor never overwrites untouched fields with stale
- * values.  Routing fields (profile, intelligence class, provider intent) are
- * locked while the task is running or claimed because the daemon refuses
- * them then.
+ * values.
  *
- * Provider intent (provider-failover D8/D9) follows the daemon's own rule for
- * a route change: naming a profile makes it *preferred*, so choosing a new
- * profile resets *Pin to this provider* to unchecked, and a pin has to be
- * asked for again.  Clearing the profile leaves nothing to have meant, so
- * the intent becomes *class only*.
+ * A task's route — its profile, provider and provider intent — is written by
+ * the project's router, never edited here: the daemon refuses a profile, pin
+ * or intent on ``edit_task`` with ``routing.choice_forbidden`` (mandatory task
+ * routing).  The route is shown read-only.  What stays editable are the two
+ * hints the router reads: the intelligence class (stored as the task's
+ * ``class_hint``) and the task type.  Changing either on a queued task sends
+ * it back to its router, and the class hint is locked while the task is
+ * running or claimed because the daemon refuses it then.
  */
 
 export const STATUS_OPTIONS = [
@@ -50,6 +49,10 @@ export interface EditableTask {
   profile_id?: string | null;
   provider_intent?: string | null;
   intelligence_class?: string | null;
+  /** The filer's class hint; the router's chosen class is ``intelligence_class``. */
+  class_hint?: string | null;
+  /** Who wrote the route: ``unrouted`` until the router does. */
+  route_source?: string | null;
   max_retries?: number | null;
   retry_count?: number | null;
   integration_mode?: string | null;
@@ -64,9 +67,7 @@ export interface FormState {
   status: string;
   priority: string;
   task_type: string;
-  profile_id: string;
-  /** ``pinned`` | ``preferred`` | ``class_only`` (D8). */
-  provider_intent: string;
+  /** The class hint (sent as ``intelligence_class``). */
   intelligence_class: string;
   max_retries: string;
   integration_mode: string;
@@ -79,9 +80,7 @@ function taskToForm(t: EditableTask | null | undefined): FormState {
     status: t?.status ?? "",
     priority: t?.priority != null ? String(t.priority) : "",
     task_type: t?.task_type ?? "",
-    profile_id: t?.profile_id ?? "",
-    provider_intent: t?.profile_id ? (t?.provider_intent || "class_only") : "class_only",
-    intelligence_class: t?.intelligence_class ?? "",
+    intelligence_class: t?.class_hint ?? t?.intelligence_class ?? "",
     max_retries: t?.max_retries != null ? String(t.max_retries) : "",
     integration_mode: t?.integration_mode ?? "",
     skip_verification: !!t?.skip_verification,
@@ -106,46 +105,10 @@ export function integrationModeDisplay(task: {
 }
 
 /**
- * The intent a profile choice starts with: the daemon stores *preferred* for
- * a profile the caller names (D9), so the pin checkbox starts unchecked for a
- * new route; returning to the original profile restores the original intent.
+ * Build the edit_task body from a form diff; exported so tests can pin the
+ * contract.  It never carries ``profile_id``, ``pin`` or ``provider_intent``:
+ * the route is the router's.
  */
-function intentForProfile(profileId: string, baseline: FormState): string {
-  if (!profileId) return "class_only";
-  if (profileId === baseline.profile_id) return baseline.provider_intent;
-  return "preferred";
-}
-
-/** What unticking *Pin to this provider* leaves behind. */
-function intentWithoutPin(form: FormState, baseline: FormState): string {
-  if (!form.profile_id) return "class_only";
-  if (form.profile_id === baseline.profile_id && baseline.provider_intent !== "pinned") {
-    return baseline.provider_intent;
-  }
-  return "preferred";
-}
-
-/**
- * The intent fields of an edit_task body.
- *
- * Only what the daemon would not do by itself is sent: a new profile is
- * already *preferred* server-side, and a cleared profile is already *class
- * only*.  A pin is always sent as ``pin: true`` — the route picker's
- * checkbox and the intent select mean the same thing by it.
- */
-function intentDiff(form: FormState, baseline: FormState): Record<string, unknown> {
-  if (!form.profile_id) return {};
-  const profileChanged = form.profile_id !== baseline.profile_id;
-  const unchanged = profileChanged
-    ? form.provider_intent === "preferred"
-    : form.provider_intent === baseline.provider_intent;
-  if (unchanged) return {};
-  return form.provider_intent === "pinned"
-    ? { pin: true }
-    : { provider_intent: form.provider_intent };
-}
-
-/** Build the edit_task body from a form diff; exported so tests can pin the contract. */
 export function diffTaskForm(
   task: EditableTask,
   form: FormState,
@@ -158,8 +121,6 @@ export function diffTaskForm(
   const priorityNum = parseOptionalInt(form.priority);
   if (priorityNum !== parseOptionalInt(baseline.priority)) body.priority = priorityNum;
   if (form.task_type !== baseline.task_type) body.task_type = form.task_type || null;
-  if (form.profile_id !== baseline.profile_id) body.profile_id = form.profile_id || null;
-  Object.assign(body, intentDiff(form, baseline));
   if (form.intelligence_class !== baseline.intelligence_class)
     body.intelligence_class = form.intelligence_class || null;
   const retriesNum = parseOptionalInt(form.max_retries);
@@ -182,7 +143,6 @@ export default function TaskFieldsEditor({
   /** Extra read-only rows rendered inside the grid (branch, timestamps, parent…). */
   children?: React.ReactNode;
 }) {
-  const { data: profiles } = useProfiles();
   const classes = useIntelligenceClasses();
   const editTask = useEditTask();
   const [editing, setEditing] = useState(false);
@@ -190,10 +150,15 @@ export default function TaskFieldsEditor({
   const baseline = useRef<FormState>(taskToForm(task));
   const [fatal, setFatal] = useState<string | null>(null);
 
-  const profileOptions = dedupeProfileOptions(profiles ?? []);
   const classRows = classes.data?.classes ?? [];
   const classGroups = groupIntelligenceClasses(classRows);
-  const currentClass = task.intelligence_class ?? "";
+  // The editable value is the hint; the display also names the class the
+  // router chose when it differs from the hint.
+  const currentClass = task.class_hint ?? task.intelligence_class ?? "";
+  const routedClass = task.intelligence_class ?? "";
+  const classDisplay = routedClass && currentClass && routedClass !== currentClass
+    ? `${routedClass} (hint ${currentClass})`
+    : currentClass || "—";
   const classKnown = !currentClass || classRows.some((row) => row.id === currentClass);
   const routingLocked = task.status === "IN_PROGRESS" || !!task.assigned_agent;
   const routingHint = routingLocked
@@ -283,7 +248,7 @@ export default function TaskFieldsEditor({
           editing={editing}
           disabled={routingLocked}
           value={form.intelligence_class}
-          displayValue={currentClass || "—"}
+          displayValue={classDisplay}
           options={[
             "",
             ...(classKnown ? [] : [currentClass]),
@@ -291,69 +256,19 @@ export default function TaskFieldsEditor({
           ]}
           optionLabel={(v) => (v === "" ? "— none —" : v)}
           onChange={(v) => setForm({ ...form, intelligence_class: v })}
-          hint={routingHint ?? (classes.isError ? "Could not load intelligence classes." : undefined)}
-        />
-        <EditableSelect
-          label="Profile"
-          editing={editing}
-          disabled={routingLocked}
-          value={form.profile_id}
-          displayValue={task.profile_id ?? "default"}
-          options={["", ...profileOptions.map((p) => p.id)]}
-          optionLabel={(v) =>
-            v === "" ? "— inherit / none —" : profileOptions.find((p) => p.id === v)?.name ?? v
-          }
-          onChange={(v) =>
-            setForm({ ...form, profile_id: v, provider_intent: intentForProfile(v, baseline.current) })
-          }
-          hint={routingHint}
-          extra={
-            <label className="mt-1 flex items-center gap-2 text-xs text-gray-300">
-              <input
-                type="checkbox"
-                checked={form.provider_intent === "pinned"}
-                disabled={routingLocked || !form.profile_id}
-                onChange={(e) =>
-                  setForm({
-                    ...form,
-                    provider_intent: e.target.checked
-                      ? "pinned"
-                      : intentWithoutPin(form, baseline.current),
-                  })
-                }
-                className="h-3.5 w-3.5 cursor-pointer rounded border-gray-700 bg-gray-900 accent-indigo-500 disabled:cursor-not-allowed"
-              />
-              <span title="A pinned task holds while its provider is unavailable instead of failing over.">
-                Pin to this provider
-              </span>
-            </label>
+          hint={
+            routingHint
+            ?? (classes.isError
+              ? "Could not load intelligence classes."
+              : "A hint to the project's router; changing it on a queued task routes the task again.")
           }
         />
+        <ReadField label="Profile" value={task.profile_id ?? "— awaiting the router —"} />
         <div>
           <span className="text-gray-500">Provider intent</span>
-          {editing ? (
-            <>
-              <select
-                aria-label="Provider intent"
-                value={form.provider_intent}
-                disabled={routingLocked}
-                onChange={(e) => setForm({ ...form, provider_intent: e.target.value })}
-                className="mt-0.5 w-full rounded-md border border-gray-700 bg-gray-950 px-2 py-1 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none disabled:opacity-50"
-              >
-                {PROVIDER_INTENTS.map((intent) => (
-                  // Pinned and preferred name a provider, so they need a profile.
-                  <option key={intent} value={intent} disabled={intent !== "class_only" && !form.profile_id}>
-                    {intentLabel(intent)}
-                  </option>
-                ))}
-              </select>
-              <p className="mt-1 text-xs text-gray-500">{routingHint ?? intentHint(form.provider_intent)}</p>
-            </>
-          ) : (
-            <p className="mt-0.5">
-              <ProviderIntentChip intent={task.provider_intent} />
-            </p>
-          )}
+          <p className="mt-0.5">
+            <ProviderIntentChip intent={task.provider_intent} />
+          </p>
         </div>
         <EditableSelect
           label="Task type"
@@ -465,7 +380,7 @@ function EditableInput({
 }
 
 function EditableSelect({
-  label, editing, disabled = false, value, displayValue, options, optionLabel, onChange, hint, extra,
+  label, editing, disabled = false, value, displayValue, options, optionLabel, onChange, hint,
 }: {
   label: string;
   editing: boolean;
@@ -476,8 +391,6 @@ function EditableSelect({
   optionLabel?: (v: string) => string;
   onChange: (v: string) => void;
   hint?: string;
-  /** Rendered under the select while editing (the route picker's pin checkbox). */
-  extra?: React.ReactNode;
 }) {
   return (
     <div>
@@ -497,7 +410,6 @@ function EditableSelect({
               </option>
             ))}
           </select>
-          {extra}
           {hint && <p className="mt-1 text-xs text-gray-500">{hint}</p>}
         </>
       ) : (

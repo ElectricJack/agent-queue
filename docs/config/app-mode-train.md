@@ -99,12 +99,15 @@ publisher, which pushes with the App's bypass on ruleset 24002443.
    ```
 
    ```text
-   wrote .github/agent-queue-integration.json (sha256 b175798d0ac43fa92e03fd0ee93b652242d4d8eb318c3c4bc3f232a2a23cb6c3) for ElectricJack/agent-queue (1160639300), App 5075923, argument policy
+   wrote .github/agent-queue-integration.json (sha256 1b0177af3d2fff5899720d336b6e31b497a9756347f337508f3be8fd99b48cee) for ElectricJack/agent-queue (1160639300), App 5075923, argument policy
    committed copy matches: .github/agent-queue-integration.json on main (<default-branch sha>)
    ```
 
-   For agent-queue this step is done: the operator committed the file as
-   `64fa07ad6`, byte-identical to the builder's output.
+   For agent-queue this step is done. The operator first committed the file as
+   `64fa07ad6`. Task `steady-falcon` regenerated it when the policy took the
+   planner's derived check-set version `ci-4c6e0c2a989c` (the same fifteen
+   names as the earlier `tests-yml-v3` label), byte-identical to the builder's
+   output.
    `tests/test_integration_trust_manifest.py` pins it to the reviewed policy,
    so a check-set change that does not regenerate it fails CI. `--check` is the
    read-only confirmation. It exits 1 on a missing file or an identity
@@ -138,7 +141,7 @@ gap accepted by the operator. The 2026-09-28 run is
      ok   producer
      ok   manifest
      fail variables       hosted_workflow_variables_unavailable
-          expected: {"AQ_INTEGRATION_ATTESTATION_APP_ID": "5075923", "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "tests-yml-v3"}
+          expected: {"AQ_INTEGRATION_ATTESTATION_APP_ID": "5075923", "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "ci-4c6e0c2a989c"}
           observed: {"unavailable": {"AQ_INTEGRATION_ATTESTATION_APP_ID": "absent", "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "absent"}, "values": {"AQ_INTEGRATION_ATTESTATION_APP_ID": null, "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": null}}
           fix: aq integration app-setup agent-queue --policy docs/config/agent-queue-train-policy.json --repository-id agent-queue2 --apply (runbook §9.3 step 3)
      ok   protection      app_bypass

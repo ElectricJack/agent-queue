@@ -772,6 +772,8 @@ class TestProfileCommands:
         projects = await handler.orchestrator.db.list_projects()
         pid = projects[0].id
 
+        # Filing carries hints, never routes (mandatory-routing spec §5.1):
+        # naming a worker profile is refused and nothing is written.
         result = await handler.execute(
             "create_task",
             {
@@ -780,13 +782,16 @@ class TestProfileCommands:
                 "profile_id": "test-reviewer",
             },
         )
-        assert result.get("profile_id") == "test-reviewer"
+        assert result.get("code") == "routing.choice_forbidden"
+        assert result["refused"] == ["profile_id"]
+        assert await handler.orchestrator.db.list_tasks(project_id=pid) == []
 
     async def test_create_task_with_invalid_profile_fails(self, handler):
         await handler.execute("create_project", {"name": "test"})
         projects = await handler.orchestrator.db.list_projects()
         pid = projects[0].id
 
+        # Any profile is refused before the handler looks it up.
         result = await handler.execute(
             "create_task",
             {
@@ -796,7 +801,7 @@ class TestProfileCommands:
             },
         )
         assert "error" in result
-        assert "not found" in result["error"]
+        assert result.get("code") == "routing.choice_forbidden"
 
     async def test_edit_task_profile_id(self, handler):
         await handler.execute(
@@ -819,6 +824,7 @@ class TestProfileCommands:
         )
         task_id = result["created"]
 
+        # A route is the router's: edit_task refuses a profile.
         result = await handler.execute(
             "edit_task",
             {
@@ -826,8 +832,10 @@ class TestProfileCommands:
                 "profile_id": "test-reviewer",
             },
         )
-        assert result.get("updated") == task_id
-        assert "profile_id" in result["fields"]
+        assert result.get("code") == "routing.choice_forbidden"
+        assert result["refused"] == ["profile_id"]
+        task = await handler.orchestrator.db.get_task(task_id)
+        assert task.profile_id is None
 
     async def test_edit_task_clear_profile_id(self, handler):
         await handler.execute(
@@ -841,16 +849,20 @@ class TestProfileCommands:
         projects = await handler.orchestrator.db.list_projects()
         pid = projects[0].id
 
-        result = await handler.execute(
-            "create_task",
-            {
-                "project_id": pid,
-                "title": "Test",
-                "profile_id": "test-reviewer",
-            },
+        task_id = "routed"
+        await handler.orchestrator.db.create_task(
+            Task(
+                id=task_id,
+                project_id=pid,
+                title="Test",
+                description="Test",
+                status=TaskStatus.READY,
+                profile_id="test-reviewer",
+            )
         )
-        task_id = result["created"]
 
+        # A null profile chooses nothing, so it is not a way to clear the
+        # route: the edit has nothing to write.
         result = await handler.execute(
             "edit_task",
             {
@@ -858,10 +870,22 @@ class TestProfileCommands:
                 "profile_id": None,
             },
         )
+        assert "No fields to update" in result["error"]
+        assert (await handler.orchestrator.db.get_task(task_id)).profile_id == "test-reviewer"
+
+        # A hint edit on a queued task sends it back to its router.
+        result = await handler.execute(
+            "edit_task",
+            {
+                "task_id": task_id,
+                "task_type": "bugfix",
+            },
+        )
         assert result.get("updated") == task_id
 
         task = await handler.orchestrator.db.get_task(task_id)
         assert task.profile_id is None
+        assert task.route_source == "unrouted"
 
     async def test_edit_project_default_profile(self, handler):
         await handler.execute(
@@ -915,15 +939,17 @@ class TestProfileCommands:
         projects = await handler.orchestrator.db.list_projects()
         pid = projects[0].id
 
-        result = await handler.execute(
-            "create_task",
-            {
-                "project_id": pid,
-                "title": "Test",
-                "profile_id": "test-reviewer",
-            },
+        # Routes are written by the router, never at filing; seed one.
+        task_id = "routed"
+        await handler.orchestrator.db.create_task(
+            Task(
+                id=task_id,
+                project_id=pid,
+                title="Test",
+                description="Test",
+                profile_id="test-reviewer",
+            )
         )
-        task_id = result["created"]
 
         result = await handler.execute("get_task", {"task_id": task_id})
         assert result["profile_id"] == "test-reviewer"

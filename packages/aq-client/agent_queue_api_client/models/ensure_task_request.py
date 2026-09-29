@@ -21,17 +21,9 @@ class EnsureTaskRequest:
         title (str): Task title (used on create)
         description (str | Unset): Task description (used on create) Default: ''.
         priority (int | Unset): Priority (lower = higher priority, default 100) Default: 100.
-        profile_id (None | str | Unset): Pre-route the task to an eligible worker profile on create (supervisor is
-            control-plane only). Tasks created via ensure_task skip triage, so the ensuring pipeline pins the executing
-            profile directly.
-        provider_intent (None | str | Unset): Whether anyone meant the provider profile_id names (provider-failover D8).
-            Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the
-            same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a
-            profile_id; pinning is refused for worker tokens.
-        pin (bool | None | Unset): Shorthand for provider_intent=pinned.
-        intelligence_class (None | str | Unset): Vault intelligence class for the task on create. A pinned profile is
-            not a route on its own: without an explicit class the task waits for the assignment playbook to choose one. Both
-            apply only when this call creates the task.
+        intelligence_class (None | str | Unset): Intelligence-class hint for the task on create: the task is stored
+            unrouted and the project's router picks its profile and class. A profile, provider, model or pin is refused
+            (routing.choice_forbidden). Applies only when this call creates the task.
         parent_key (None | str | Unset): File the task under the standing container keyed by this name, creating it if
             none is open (e.g. 'maintenance'). Applies only when this call creates the task; a dedup replay returns the
             existing task untouched.
@@ -44,9 +36,6 @@ class EnsureTaskRequest:
     title: str
     description: str | Unset = ""
     priority: int | Unset = 100
-    profile_id: None | str | Unset = UNSET
-    provider_intent: None | str | Unset = UNSET
-    pin: bool | None | Unset = UNSET
     intelligence_class: None | str | Unset = UNSET
     parent_key: None | str | Unset = UNSET
     parent_title: None | str | Unset = UNSET
@@ -62,24 +51,6 @@ class EnsureTaskRequest:
         description = self.description
 
         priority = self.priority
-
-        profile_id: None | str | Unset
-        if isinstance(self.profile_id, Unset):
-            profile_id = UNSET
-        else:
-            profile_id = self.profile_id
-
-        provider_intent: None | str | Unset
-        if isinstance(self.provider_intent, Unset):
-            provider_intent = UNSET
-        else:
-            provider_intent = self.provider_intent
-
-        pin: bool | None | Unset
-        if isinstance(self.pin, Unset):
-            pin = UNSET
-        else:
-            pin = self.pin
 
         intelligence_class: None | str | Unset
         if isinstance(self.intelligence_class, Unset):
@@ -112,12 +83,6 @@ class EnsureTaskRequest:
             field_dict["description"] = description
         if priority is not UNSET:
             field_dict["priority"] = priority
-        if profile_id is not UNSET:
-            field_dict["profile_id"] = profile_id
-        if provider_intent is not UNSET:
-            field_dict["provider_intent"] = provider_intent
-        if pin is not UNSET:
-            field_dict["pin"] = pin
         if intelligence_class is not UNSET:
             field_dict["intelligence_class"] = intelligence_class
         if parent_key is not UNSET:
@@ -139,33 +104,6 @@ class EnsureTaskRequest:
         description = d.pop("description", UNSET)
 
         priority = d.pop("priority", UNSET)
-
-        def _parse_profile_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        profile_id = _parse_profile_id(d.pop("profile_id", UNSET))
-
-        def _parse_provider_intent(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        provider_intent = _parse_provider_intent(d.pop("provider_intent", UNSET))
-
-        def _parse_pin(data: object) -> bool | None | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(bool | None | Unset, data)
-
-        pin = _parse_pin(d.pop("pin", UNSET))
 
         def _parse_intelligence_class(data: object) -> None | str | Unset:
             if data is None:
@@ -200,9 +138,6 @@ class EnsureTaskRequest:
             title=title,
             description=description,
             priority=priority,
-            profile_id=profile_id,
-            provider_intent=provider_intent,
-            pin=pin,
             intelligence_class=intelligence_class,
             parent_key=parent_key,
             parent_title=parent_title,
