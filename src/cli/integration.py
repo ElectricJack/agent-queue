@@ -804,15 +804,27 @@ def _github_app_id(config: dict[str, Any]) -> int | None:
 
 def _gh_json(*args: str) -> str | None:
     """One best-effort ``gh`` read; ``None`` when gh is absent or refuses."""
-    import subprocess
+    from urllib.parse import urlsplit
+
+    from src.git.github_cli import ExistingLoginCredentials, GhRunner
+    from src.git.github_contracts import GitHubAccessError
+
+    if args[:2] == ("pr", "view"):
+        parsed = urlsplit(args[2])
+        parts = parsed.path.strip("/").split("/")
+        if parsed.netloc != "github.com" or len(parts) != 4 or parts[2] != "pull":
+            return None
+        args = ("api", f"repos/{parts[0]}/{parts[1]}/pulls/{parts[3]}", "--jq", ".state")
+
+    async def _read() -> str | None:
+        runner = GhRunner(ExistingLoginCredentials(), timeout=20)
+        result = await runner.run(args, hostname="github.com", check=False)
+        return result.stdout.decode("utf-8").strip() if result.returncode == 0 else None
 
     try:
-        result = subprocess.run(
-            ["gh", *args], capture_output=True, text=True, timeout=20, check=False
-        )
-    except (OSError, subprocess.TimeoutExpired):
+        return _run(_read())
+    except (GitHubAccessError, OSError, UnicodeDecodeError):
         return None
-    return result.stdout.strip() if result.returncode == 0 else None
 
 
 def _render_onboarding(data: dict[str, Any]) -> None:

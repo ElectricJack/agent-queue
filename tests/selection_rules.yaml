@@ -103,6 +103,7 @@ ownership:                      # path globs -> areas whose modules join M
   - { paths: ["scripts/build_release_artifact.py"], areas: ["packaging", "dashboard-server", "install"] }
   - { paths: ["scripts/check-merge-conflicts.sh"], areas: ["git-manager"] }
   - { paths: ["scripts/migrate_task_records.py"], areas: ["database"] }
+  - { paths: ["scripts/migrate-legacy-playbook-worker-routes.py"], areas: ["playbook-authoring", "task-routing"] }
   - { paths: ["scripts/reap_test_databases.py"], areas: ["test-substrate"] }
   - { paths: ["scripts/seed_layout_perf.py"], areas: ["graph-layout"] }
   - { paths: ["scripts/dashboard-perf/*.py"], areas: ["metrics"] }

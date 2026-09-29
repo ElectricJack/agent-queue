@@ -317,6 +317,11 @@ def build_config_schema() -> dict[str, Any]:
     render the correct badge without a second lookup.
     """
     schema = _dataclass_to_schema(AppConfig)
+    # These factories expand the current user's home directory.  A committed
+    # schema must describe the same fields on every machine, so do not bake
+    # the generator's home path into its default values.
+    for name in ("data_dir", "workspace_dir"):
+        schema["properties"][name].pop("default", None)
     classification = classify_sections()
     reload_by_section: dict[str, str] = {}
     for s in classification["hot_reloadable"]:

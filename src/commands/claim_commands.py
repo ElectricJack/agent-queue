@@ -470,8 +470,9 @@ class ClaimCommandsMixin:
     async def _attempt_claim(self, session, want_id, cap, project, *, routing=None, repaired=False):
         # A moved admission retries from new git/graph inputs, with a bounded
         # request budget so a continuously moving target cannot monopolize it.
-        for _ in range(3):
-            project = await self.db.get_project(session.project_id)
+        for attempt in range(3):
+            if attempt:
+                project = await self.db.get_project(session.project_id)
             outcome = await self._attempt_claim_once(
                 session, want_id, cap, project, routing=routing, repaired=repaired
             )
