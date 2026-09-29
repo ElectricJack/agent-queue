@@ -177,9 +177,8 @@ _TASK_SCHEMAS: dict[str, EventSchema] = {
     # An audited emergency override (mandatory-routing §7, §10, D2): the
     # local operator or the supervisor pinned the task to a profile, and why.
     "task.route_overridden": {
-        "required": ["task_id", "project_id", "profile_id", "by", "reason"],
+        "required": ["task_id", "project_id", "title", "profile_id", "by", "reason"],
         "optional": [
-            "title",
             "intelligence_class",
             "provider",
             "previous_profile_id",
