@@ -117,6 +117,10 @@ task. An answer only satisfies it when it lands on the thread: answer with
 `aq agent message <task-id> BODY --reply-to <message-id>`. Guidance sent
 without `--reply-to` has no thread; it still wakes an idle worker through the
 ordinary message nudge, but the wait stays active until its deadline.
+`aq message send --to task:<id> --thread-id <thread>` also answers on the
+thread. A wait matches only messages in its own project; a send that omits
+`--project` takes the project of its `task:<id>` or `session:<id>` recipient,
+so the global supervisor's answer reaches the worker.
 
 The same cursor rule applies to collaboration threads. A message wait whose
 `--ref` is a `collab-*` thread id resolves on the first later collaboration

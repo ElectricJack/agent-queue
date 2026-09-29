@@ -422,6 +422,42 @@ async def test_global_admin_can_send_without_project_and_read_system_chat(tmp_pa
         await db.close()
 
 
+async def test_global_admin_send_to_a_task_lands_in_the_tasks_project(tmp_path):
+    """``aq message send --to task:<id>`` from the global supervisor, no ``--project``.
+
+    Stored projectless, the 2026-09-28 approval never satisfied the worker's
+    thread wait and its ``aq message status`` answered "Message not found".
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from src.models import Task
+
+    db, store, _ch, app = await _seed_messages_app(tmp_path)
+    try:
+        await db.create_task(Task(id="t-b", project_id="proj-b", title="B", description=""))
+        token = await store.mint(
+            session_id="global-admin", task_id=None, project_id=None, elevated=True
+        )
+        transport = ASGITransport(app=app, client=("127.0.0.1", 12345))
+        async with AsyncClient(
+            transport=transport, base_url="http://test",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as client:
+            sent = await client.post("/api/messages/send", json={
+                "to_kind": "task", "to_id": "t-b", "thread_id": "approval:t-b",
+                "from_id": "cli", "body": "APPROVED",
+            })
+        assert sent.status_code == 200, sent.text
+        stored = await db.get_message(sent.json()["message_id"])
+        assert stored.project_id == "proj-b"
+    finally:
+        _deps._orchestrator = None
+        _deps._command_handler = None
+        _deps._token_store = None
+        _deps._require_session_token = False
+        await db.close()
+
+
 @pytest.mark.parametrize("inject", [False, True])
 async def test_scoped_inbox_cannot_read_system_replies_to_user(handler, inject):
     message = await handler.db.create_message(

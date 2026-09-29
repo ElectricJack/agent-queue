@@ -103,12 +103,16 @@ prefer a keyed command when one exists.
      messages substrate is paused.
    - `to_kind` must be in `MESSAGE_TO_KINDS` and `from_kind` in
      `MESSAGE_FROM_KINDS`; `to_id` and `from_id` must be non-empty.
-   - **Scope.** A global elevated session with no project, an explicit
-     `system_only`, or the `supervisor-global` address makes the message
-     system-scoped (`project_id: None`) after
-     `_system_message_scope_error` approves. Otherwise a `project_id` is
-     required — from the argument or the handler's active project — and the
-     project must exist.
+   - **Scope.** When the caller names no project, a task recipient — or a
+     session addressed by its id — supplies its own project
+     (`_recipient_project_id`). Its readers are fenced to that project: a
+     durable message wait matches only same-project rows, and
+     `message_status` answers "not found" for the rest. Failing that, a global
+     elevated session with no project, an explicit `system_only`, or the
+     `supervisor-global` address makes the message system-scoped
+     (`project_id: None`) after `_system_message_scope_error` approves.
+     Otherwise a `project_id` is required — from the argument, the recipient
+     or the handler's active project — and the project must exist.
    - `body` must be non-empty; `priority` must be a real `int` (a `bool` is
      rejected explicitly); a `reply_to_id` must name an existing message.
    - `pane_open` (not a contract argument, but part of the same handler) is

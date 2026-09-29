@@ -140,6 +140,16 @@ class MessageCommandsMixin:
         # "user" (and any future to_kind) — daemon-delivered, never agent-read.
         return error
 
+    async def _recipient_project_id(self, to_kind: str, to_id: str) -> str | None:
+        """The project a task recipient, or a session addressed by id, belongs to."""
+        if to_kind == "task":
+            task = await self.db.get_task(to_id)
+            return task.project_id if task else None
+        if to_kind == "session":
+            session = await self.db.get_session(to_id)
+            return session.project_id if session else None
+        return None
+
     async def _emit_message_event(self, event_type: str, payload: dict) -> None:
         """Emit a ``message.*`` event without letting it fail the command."""
         try:
@@ -180,17 +190,27 @@ class MessageCommandsMixin:
         if not from_id:
             return {"error": "from_id is required"}
 
+        # A task, or a session addressed by id, belongs to one project, and its
+        # readers are fenced to that project: a durable message wait matches
+        # only same-project rows and ``message_status`` hides the rest.  When
+        # the caller names no project the recipient supplies it, so the global
+        # supervisor's reply lands where the waiting worker can see it.
+        requested_project_id = args.get("project_id") or (
+            None
+            if args.get("system_only")
+            else await self._recipient_project_id(to_kind, to_id)
+        )
         scope = self._current_scope or {}
         global_sender = (
             scope.get("kind") == "session"
             and scope.get("elevated")
             and scope.get("project_id") is None
-            and not args.get("project_id")
+            and not requested_project_id
         )
         system_only = global_sender or bool(args.get("system_only")) or (
             to_kind == "session" and to_id == "supervisor-global"
         ) or (
-            not args.get("project_id")
+            not requested_project_id
             and from_kind == "session"
             and from_id == "supervisor-global"
         )
@@ -200,7 +220,7 @@ class MessageCommandsMixin:
                 return scope_error
             project_id = None
         else:
-            project_id = args.get("project_id") or self._active_project_id
+            project_id = requested_project_id or self._active_project_id
             if not project_id:
                 return {"error": "project_id is required (no active project set)"}
             project = await self.db.get_project(project_id)
