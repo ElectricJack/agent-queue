@@ -65,6 +65,17 @@ class ReviewShowResponse(BaseModel):
     diff: list[dict[str, Any]] | None = None
     dispatches: list[dict[str, Any]] = []
     response_route: ReviewResponseRoute
+    attachments: list[dict[str, Any]] = []
+
+
+class ReviewAttachmentAddResponse(BaseModel):
+    success: bool = True
+    attachment: dict[str, Any]
+
+
+class ReviewAttachmentListResponse(BaseModel):
+    success: bool = True
+    attachments: list[dict[str, Any]] = []
 
 
 class ReviewListResponse(BaseModel):
@@ -136,6 +147,8 @@ class GitHubIssueRejectionResponse(BaseModel):
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "review_attachment_add": ReviewAttachmentAddResponse,
+    "review_attachment_list": ReviewAttachmentListResponse,
     "review_submit": ReviewSubmitResponse,
     "review_show": ReviewShowResponse,
     "review_list": ReviewListResponse,

@@ -61,6 +61,9 @@ for, so two decisions racing on different revisions cannot both succeed.
 |---|---|---|
 | `aq review list` | yes | Everything that exists, newest first. |
 | `aq review show --review-id <id> [--revision N] [--comments]` | yes | Print the current (or a given) revision, and with `--comments` the whole comment thread with each comment's quote, heading path, revision, and resolved state. |
+| `aq review attach --review-id <id> --revision N --file <image> --caption "…" --view-id <id> --candidate-id <id>` | yes | Append a verified screenshot to the current open revision. |
+| `aq review attachments --review-id <id> --revision N` | yes | List one revision's image metadata and download URLs. |
+| `aq review download-attachment --review-id <id> --revision N --attachment-id <id> --output <path>` | yes | Download an image after the same packet access check as the API. |
 | `aq review decide --review-id <id> --revision N --decision approve --note "…"` | yes | Approve. Resolves the gate, releases dependent tasks, rewrites the vault file. |
 | `aq review decide --review-id <id> --revision N --decision request_changes --note "…" [--responder-class <class>]` | yes | Reject the revision and file a new revision task with the note as feedback. The revision task is routed by the project's router; `--responder-class` is its class hint. A responder profile is refused (`routing.choice_forbidden`). |
 | `aq review comment --review-id <id> --revision N --body "…" [--quote "…"] [--heading-path "…"]` | yes | Add one anchored comment without deciding. The author sees it in the thread the next time they `aq review show --comments`. |
@@ -72,6 +75,29 @@ for, so two decisions racing on different revisions cannot both succeed.
 For workers and the supervisor, plus the `aq task create … --after-review
 <id>` and `aq task edit … --after-review <id>` the daemon uses to gate work,
 see [§ The worker's side](#the-workers-side).
+
+## Screenshot evidence
+
+Submit the review text first, then attach screenshots to its current revision
+before a decision or reviewer dispatch. The Reviews pane has the same upload
+form beside the document and shows the images for the selected revision. Each
+image records a SHA-256 hash, MIME type, byte count, caption, view ID and
+candidate ID. Upload accepts PNG, JPEG, GIF and WebP, verifies the claimed
+format, and enforces a 10 MiB cap. There is no replace or delete operation.
+A dispatched packet is frozen; a new revision gets its own images and cannot
+change an earlier revision's set.
+
+Images live under the daemon's `data_dir/review-attachments`, with database
+rows keyed to the review revision. Removing an author task or its worktree
+does not remove review evidence. `review_show` and the Reviews pane list only
+the selected revision's images. The API command endpoints
+`review_attachment_add` and `review_attachment_list` use the same command
+scope as the CLI; binary downloads use
+`GET /api/reviews/{review_id}/revisions/{revision}/attachments/{attachment_id}`.
+The download checks the stored hash before serving bytes. A dispatched
+reviewer can read only the review and revision named by its live task's
+dispatch record; author and revision workers can upload to their own current
+packet.
 
 ## Who may decide
 

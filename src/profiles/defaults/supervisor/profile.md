@@ -181,6 +181,8 @@ its outbox; transport failures never need a new author turn.
     "report_brief",
     "report_submit",
     "review_comment",
+    "review_attachment_add",
+    "review_attachment_list",
     "review_dispatch",
     "review_decide",
     "review_delegate",

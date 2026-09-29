@@ -950,6 +950,11 @@ class CommandHandler(
                 if name == "update_config"
                 else {"envelope": "<redacted-conversation-envelope>", "source": args.get("source")}
                 if name == "supervisor_inbox_post"
+                else {
+                    **args,
+                    "data_base64": f"<image bytes: {len(args.get('data_base64', ''))} base64 chars>",
+                }
+                if name == "review_attachment_add"
                 else args
             )
             if mutating:
@@ -1006,9 +1011,23 @@ class CommandHandler(
                         principal.policy.fingerprint(),
                     )
                 elif not decision.allowed and not (
-                    name == "review_comment"
-                    and isinstance(args.get("review_id"), str)
-                    and await self._held_review_dispatch(args["review_id"]) is not None
+                    (
+                        name == "review_comment"
+                        and isinstance(args.get("review_id"), str)
+                        and await self._held_review_dispatch(args["review_id"]) is not None
+                    ) or (
+                        name in {"review_attachment_add", "review_attachment_list"}
+                        and isinstance(args.get("review_id"), str)
+                        and isinstance(args.get("revision"), int)
+                        and (
+                            attachment_review := await self.db.get_review(args["review_id"])
+                        ) is not None
+                        and await self._review_attachment_access(
+                            attachment_review,
+                            args["revision"],
+                            write=name == "review_attachment_add",
+                        ) is None
+                    )
                 ):
                     logger.warning(
                         "capability_denied cmd=%s principal=%s session=%s profile=%s "

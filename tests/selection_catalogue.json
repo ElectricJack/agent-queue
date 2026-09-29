@@ -1297,7 +1297,7 @@
       ]
     }
   },
-  "digest": "sha256:4c922faaa6348c42282452e2ee8dde72c7946527aa9ea20d13441876a9b86a9e",
+  "digest": "sha256:225150b09166de79e3bc3766f78bc37e30678daf6206b724d9535f93ac0c624f",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -12801,8 +12801,17 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.authorization",
+        "src.commands.handler",
+        "src.commands.principal",
         "src.commands.task_commands",
-        "src.models"
+        "src.config",
+        "src.database",
+        "src.models",
+        "src.orchestrator",
+        "src.profiles.capabilities",
+        "src.routing.filing",
+        "src.vault"
       ],
       "markers": [
         "asyncio"

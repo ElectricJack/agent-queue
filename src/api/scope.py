@@ -114,6 +114,8 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # ledger and its live held task by ReviewCommandsMixin.
         "review_submit",
         "review_show",
+        "review_attachment_add",
+        "review_attachment_list",
         "review_list",
         "review_withdraw",
         "review_comment",

@@ -22,6 +22,7 @@ import importlib
 import json
 import logging
 import os
+from urllib.parse import quote
 import pkgutil
 from typing import Any
 
@@ -320,6 +321,27 @@ class CLIClient:
                 details=data.get("details"),
             )
         return data.get("result", {})
+
+    async def download_review_attachment(
+        self, review_id: str, revision: int, attachment_id: str,
+    ) -> bytes:
+        """Download revision-pinned evidence through the authenticated API."""
+        assert self._http is not None, "CLIClient not connected"
+        path = (
+            f"/api/reviews/{quote(review_id, safe='')}/revisions/{revision}"
+            f"/attachments/{quote(attachment_id, safe='')}"
+        )
+        try:
+            response = await self._http.get(path)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise DaemonNotRunningError(self._base_url, cause=exc) from exc
+        except httpx.RequestError as exc:
+            raise CommandResponseError("review_attachment_download") from exc
+        if response.status_code in (401, 403):
+            raise ScopeDeniedError("review_attachment_download", _relay_error(response))
+        if response.status_code != 200:
+            raise CommandError("review_attachment_download", _relay_error(response))
+        return response.content
 
     async def send_message(self, args: dict[str, Any]) -> dict:
         """POST a general message through the explicit message API route."""

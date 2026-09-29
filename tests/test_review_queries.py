@@ -634,7 +634,10 @@ class TestMigration:
                 # Rewind to a00000000013: no review tables, no delegation
                 # column, and a gate-type CHECK without 'review'.
                 await conn.execute(
-                    text("DROP TABLE doc_review_comments, doc_review_revisions, doc_reviews")
+                    text(
+                        "DROP TABLE doc_review_attachments, doc_review_comments, "
+                        "doc_review_revisions, doc_reviews"
+                    )
                 )
                 await conn.execute(text("ALTER TABLE projects DROP COLUMN review_delegate_to"))
                 await conn.execute(text("ALTER TABLE gates DROP CONSTRAINT ck_gates_type"))

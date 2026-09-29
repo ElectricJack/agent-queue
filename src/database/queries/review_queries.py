@@ -18,7 +18,8 @@ import random
 from sqlalchemy import and_, exists, func, insert, or_, select, update
 
 from src.database.tables import (
-    doc_review_comments, doc_review_dispatches, doc_review_revisions, doc_reviews, task_gates,
+    doc_review_attachments, doc_review_comments, doc_review_dispatches,
+    doc_review_revisions, doc_reviews, task_gates,
 )
 from src.task_names import ADJECTIVES, NOUNS
 
@@ -210,6 +211,29 @@ class ReviewQueriesMixin:
         return result.rowcount == 1
 
     # -- revisions ---------------------------------------------------------
+
+    async def insert_review_attachment(self, attachment: dict, *, conn) -> None:
+        await conn.execute(insert(doc_review_attachments).values(**attachment))
+
+    async def list_review_attachments(self, review_id: str, revision: int) -> list[dict]:
+        stmt = (
+            select(doc_review_attachments)
+            .where(doc_review_attachments.c.review_id == review_id)
+            .where(doc_review_attachments.c.revision == revision)
+            .order_by(doc_review_attachments.c.created_at, doc_review_attachments.c.id)
+        )
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(stmt)).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def get_review_attachment(self, attachment_id: str) -> dict | None:
+        async with self._engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    select(doc_review_attachments).where(doc_review_attachments.c.id == attachment_id)
+                )
+            ).mappings().first()
+        return dict(row) if row else None
 
     async def insert_review_revision(self, *, revision: dict, conn) -> None:
         await conn.execute(insert(doc_review_revisions).values(**revision))
