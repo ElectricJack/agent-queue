@@ -1160,10 +1160,6 @@ def _review_role_body(pid: str, scenario: str, leaf_title: str) -> dict:
             prefix + "provenance": command("add_dependency", {
                 "task_id": bound("task_id"), "depends_on": event("task_id"),
                 "dep_type": literal("discovered-from"),
-            }, prefix + "blocks"),
-            prefix + "blocks": command("add_dependency", {
-                "task_id": bound("task_id"), "depends_on": event("task_id"),
-                "dep_type": literal("blocks"),
             }, prefix + "done"),
             prefix + "done": {"type": "terminal", "rule": rule, "title": "Done",
                               "source": source, "outcome": "completed"},
@@ -1174,7 +1170,7 @@ def _review_role_body(pid: str, scenario: str, leaf_title: str) -> dict:
 
 
 def _install_review_role_playbook(pid: str, scenario: str, leaf_title: str) -> str:
-    """Activate a disposable playbook before graph filing emits task.created."""
+    """Compile a reviewer playbook for one explicit run after graph filing."""
     from types import SimpleNamespace
 
     import yaml
@@ -1194,7 +1190,7 @@ def _install_review_role_playbook(pid: str, scenario: str, leaf_title: str) -> s
         f"scope: project:{pid}\ntriggers:\n  - task.created\n---\n\n"
         f"# App train {scenario} reviewer\n\n"
         f"File one `reviewer` role task for the leaf titled `{leaf_title}`, "
-        "then link its provenance and completion dependency to the leaf.\n"
+        "then link its provenance to the leaf.\n"
     )
     source = PlaybookSource.load(source_path, vault_root=VAULT)
     check(isinstance(source, PlaybookSource), f"invalid review playbook source: {source}")
@@ -1227,12 +1223,11 @@ def _install_review_role_playbook(pid: str, scenario: str, leaf_title: str) -> s
     }
     (bundle / "manifest.md").write_text("---\n" + yaml.safe_dump(manifest)
                                         + "---\n\nApp train reviewer role task.\n")
-    operator("playbook", "import", "--path", str(bundle), "--activate")
-    return playbook_id
+    return str(bundle)
 
 
-def _file_review_role(scenario: str, epic_id: str, leaf_id: str) -> str:
-    """Wait for the daemon's playbook dispatch to file the reviewer role."""
+def _file_review_role(scenario: str, epic_id: str, leaf_id: str, bundle: str) -> str:
+    """Run one playbook after graph filing to file the reviewer role."""
     def reviewer_child() -> str | None:
         response = operator("task", "children", "--task-id", epic_id)
         children = response.get("children", []) if isinstance(response, dict) else response
@@ -1242,14 +1237,23 @@ def _file_review_role(scenario: str, epic_id: str, leaf_id: str) -> str:
 
     def ensure_edges(review_id: str) -> None:
         deps = operator("task", "deps", "--task-id", review_id)
-        for kind, field in (("discovered-from", "provenance"), ("blocks", "depends_on")):
-            if not any(edge.get("id") == leaf_id and edge.get("dep_type") == kind
-                       for edge in deps.get(field, [])):
-                operator("task", "add-dependency", "--task-id", review_id,
-                         "--depends-on", leaf_id, "--dep-type", kind)
+        if not any(edge.get("id") == leaf_id and edge.get("dep_type") == "discovered-from"
+                   for edge in deps.get("provenance", [])):
+            operator("task", "add-dependency", "--task-id", review_id,
+                     "--depends-on", leaf_id, "--dep-type", "discovered-from")
 
-    created = wait_for(reviewer_child, what=f"{scenario} reviewer role task",
-                       timeout=60, interval=1)
+    created = reviewer_child()
+    if created is None:
+        playbook_id = f"app-train-review-{scenario.lower()}"
+        operator("playbook", "import", "--path", bundle, "--activate")
+        run = operator("playbook", "run", "--playbook-id", playbook_id,
+                       "--event", json.dumps({"type": "task.created", "task_id": leaf_id,
+                                              "project_id": project_id(),
+                                              "parent_task_id": epic_id}))
+        check(run.get("status") == "completed" and not run.get("failed_steps"),
+              f"review role playbook failed: {run}")
+        created = wait_for(reviewer_child, what=f"{scenario} reviewer role task",
+                           timeout=60, interval=1)
     check(created is not None, f"playbook created no reviewer child of {epic_id}")
     ensure_edges(created)
     return created
@@ -1263,7 +1267,7 @@ def create_epic(args) -> None:
     state = load_state()
     pid = project_id()
     sc = scenario_state(state, args.scenario)
-    if sc.get("review_id"):
+    if sc.get("epic_recorded") or sc.get("leaf_head"):
         print(f"{args.scenario} epic already filed: {sc['epic_id']}")
         return
     changes: dict[str, str | None] = {}
@@ -1286,31 +1290,39 @@ def create_epic(args) -> None:
         "nodes": [{"key": "leaf", "title": f"{args.scenario}: {args.title}",
                    "description": f"Change the fixture: {sorted(changes)}"}],
     }
-    _install_review_role_playbook(pid, args.scenario,
-                                  f"{args.scenario}: {sc.get('title', args.title)}")
-    if not sc.get("epic_id"):
-        path = HOME / f"epic-{args.scenario.lower()}.yaml"
-        path.write_text(yaml.safe_dump(graph, sort_keys=False))
-        code, text = operator_text("task", "create", "--project", pid, "--graph", str(path),
-                                   "--dry-run")
-        print(text[-1500:])
-        check(code == 0, f"graph dry run failed: {text[-800:]}")
-        created = operator("task", "create", "--project", pid, "--graph", str(path))
-        save_payload(f"{args.scenario.lower()}-epic-created", created)
-        ids = _graph_ids(created)
-        sc.update(epic_id=ids["parent"], leaf_id=ids["leaf"], title=args.title,
-                  changes=changes)
+    if not sc.get("review_id"):
+        review_bundle = _install_review_role_playbook(
+            pid, args.scenario, f"{args.scenario}: {sc.get('title', args.title)}")
+        if not sc.get("epic_id"):
+            path = HOME / f"epic-{args.scenario.lower()}.yaml"
+            path.write_text(yaml.safe_dump(graph, sort_keys=False))
+            code, text = operator_text("task", "create", "--project", pid, "--graph", str(path),
+                                       "--dry-run")
+            print(text[-1500:])
+            check(code == 0, f"graph dry run failed: {text[-800:]}")
+            created = operator("task", "create", "--project", pid, "--graph", str(path))
+            save_payload(f"{args.scenario.lower()}-epic-created", created)
+            ids = _graph_ids(created)
+            sc.update(epic_id=ids["parent"], leaf_id=ids["leaf"], title=args.title,
+                      changes=changes)
+            save_state(state)
+        review_id = _file_review_role(args.scenario, sc["epic_id"], sc["leaf_id"],
+                                      review_bundle)
+        sc["review_id"] = review_id
         save_state(state)
-    review_id = _file_review_role(args.scenario, sc["epic_id"], sc["leaf_id"])
-    sc["review_id"] = review_id
-    save_state(state)
     # Task ids are per database: an earlier scratch database may have left
     # the same branch name on the fixture (the 09-24 report's collision).
+    # Branch materialization may already have created this graph's branches
+    # at the current main SHA, so only a divergent remote head is a collision.
+    base_sha = fixture_main_sha()
     collisions = [f"aq/{sc[key]}" for key in ("leaf_id", "review_id")
-                  if _fixture_branch_exists(f"aq/{sc[key]}")]
-    check(not collisions, f"the fixture already has {collisions}: file the epic again")
+                  if _fixture_branch_collides(f"aq/{sc[key]}", base_sha)]
+    check(not collisions, f"the fixture has divergent branch heads at {collisions}: "
+                          "delete this scratch epic with --branches keep before filing again")
     record(args.scenario, "epic", {"epic": sc["epic_id"], "leaf": sc["leaf_id"],
                                    "review": sc["review_id"], "changes": sorted(changes)})
+    sc["epic_recorded"] = True
+    save_state(state)
 
 
 def _graph_ids(created: Any) -> dict[str, str]:
@@ -1325,9 +1337,11 @@ def _graph_ids(created: Any) -> dict[str, str]:
     return ids
 
 
-def _fixture_branch_exists(branch: str) -> bool:
+def _fixture_branch_collides(branch: str, base_sha: str) -> bool:
     found = gh_api(f"repos/{REPOSITORY}/git/ref/heads/{branch}", check_ok=False)
-    return isinstance(found, dict) and "_status" not in found
+    if not isinstance(found, dict) or "_status" in found:
+        return False
+    return (found.get("object") or {}).get("sha") != base_sha
 
 
 def _pool_instance(pid: str, profile_id: str) -> dict | None:
@@ -1394,6 +1408,10 @@ def worker_aq(claimed: dict, *args: str, cwd: Path | None = None, check_ok: bool
     if check_ok and (proc.returncode != 0 or (isinstance(payload, dict) and payload.get("error"))):
         raise Failure(f"worker aq {' '.join(args)} exited {proc.returncode}: "
                       f"{json.dumps(payload, default=str)[:1500]} {proc.stderr[-600:]}")
+    if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+        error = payload["error"]
+        details = error.get("details")
+        return {**(details if isinstance(details, dict) else {}), "_error": error}
     return payload.get("data", payload) if isinstance(payload, dict) else payload
 
 
@@ -1479,12 +1497,33 @@ def play_verifier(args) -> None:
     require_approval()
     claimed = claim_as(WORKER_PROFILE, timeout=args.timeout)
     workspace = _workspace_path(claimed)
-    closed = worker_aq(claimed, "task", "close", "--outcome", "pass", "--work-outcome", "no-op",
-                       "--summary", "Parent verified from its recorded evidence.",
-                       "--claim-epoch", str(claimed["claim_epoch"]), cwd=workspace,
-                       check_ok=False)
+    closed = wait_for(
+        lambda: _verifier_close(args.scenario, claimed, workspace),
+        what=f"parent verifier {claimed['task_id']} to close",
+        timeout=args.timeout,
+        interval=10,
+    )
     worker_aq(claimed, "session", "drain-ack", cwd=workspace, check_ok=False)
     record(args.scenario, "verifier", {"task": claimed["task_id"], "close": _brief(closed)})
+
+
+def _verifier_close(scenario: str, claimed: dict, workspace: Path) -> dict | None:
+    result = worker_aq(
+        claimed, "task", "close", "--outcome", "pass", "--work-outcome", "no-op",
+        "--summary", "Parent verified from its recorded evidence.",
+        "--claim-epoch", str(claimed["claim_epoch"]), cwd=workspace, check_ok=False,
+    )
+    if (isinstance(result, dict) and result.get("status") == "COMPLETED"
+            and result.get("pipeline_ok") is True):
+        return result
+    issues = result.get("issues") if isinstance(result, dict) else None
+    if (isinstance(result, dict) and result.get("result") == "verification_failed"
+            and not result.get("escalated") and isinstance(issues, list) and issues
+            and all("stale_verification" in issue for issue in issues)):
+        record(scenario, "verifier_close_retry", {"task": claimed["task_id"],
+                                                  "issues": issues})
+        return None
+    raise Failure(f"parent verifier close failed: {json.dumps(result, default=str)[:1500]}")
 
 
 def epic_pull_request(sc: dict) -> dict | None:
@@ -1626,7 +1665,9 @@ def assert_promotion(args) -> None:
         "required_check_set_version": json.loads(payload_text).get("required_check_set_version"),
         "checks": [c.get("name") for c in json.loads(payload_text).get("checks", [])],
     })
-    ruleset = gh_api(f"repos/{REPOSITORY}/rulesets/{load_state()['ruleset_id']}")
+    ruleset_id = load_state().get("ruleset_id") or train_ruleset_id()
+    check(ruleset_id is not None, f"fixture has no {RULESET_NAME!r} ruleset")
+    ruleset = gh_api(f"repos/{REPOSITORY}/rulesets/{ruleset_id}")
     save_payload(f"{args.scenario.lower()}-ruleset-at-promotion", ruleset)
     record(args.scenario, "ruleset_at_promotion", {"bypass_actors": ruleset.get("bypass_actors"),
                                                     "updated_at": ruleset.get("updated_at")})
