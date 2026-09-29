@@ -455,6 +455,28 @@ def integration_redrive_root(
     _execute(ctx, "integration_redrive_root", args)
 
 
+@integration.command("materialize-root")
+@click.argument("task_id")
+@click.option("--apply", is_flag=True, help="Record the proven root identity.")
+@click.option("--head", "expected_head_sha", help="Exact head reported by the dry run.")
+@click.option("--reason", help="Audit reason required when applying.")
+@click.pass_context
+@_handle_errors
+def integration_materialize_root(
+    ctx: click.Context, task_id: str, apply: bool,
+    expected_head_sha: str | None, reason: str | None,
+) -> None:
+    """Prove a completed legacy train root's PR head and record its missing identity."""
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_materialize_root", args)
+
+
 @integration.command("redrive-child")
 @click.argument("task_id")
 @click.option(

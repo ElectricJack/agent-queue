@@ -174,6 +174,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_release_stale_owners",
         "integration_clear_stale_request",
         "integration_redrive_root",
+        "integration_materialize_root",
         "integration_redrive_child",
         "integration_rebind_reused_identity",
         "integration_adopt_legacy_deliveries",

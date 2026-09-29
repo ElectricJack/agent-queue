@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-132 commands are registered.
+133 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -98,6 +98,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_enable`](integration_enable.md) | Integration Enable | Authenticated hierarchical integration operational control. |
 | [`integration_file_children`](integration_file_children.md) | File isolated child tasks | Reserve child origins and advance the parent integration generation atomically. |
 | [`integration_flush`](integration_flush.md) | Integration Flush | Authenticated hierarchical integration operational control. |
+| [`integration_materialize_root`](integration_materialize_root.md) | Integration Materialize Root | Authenticated hierarchical integration operational control. |
 | [`integration_migrate_provenance`](integration_migrate_provenance.md) | Integration Migrate Provenance | Inventory exact legacy completions; optionally retain verified Git provenance. |
 | [`integration_mutate_hierarchy`](integration_mutate_hierarchy.md) | Mutate integration hierarchy | Apply a guarded hierarchy change and invalidate affected parent generations. |
 | [`integration_parent_verify`](integration_parent_verify.md) | Integration Parent Verify | Record one parent verification against its exact checkpoint head and evidence. |

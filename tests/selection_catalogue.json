@@ -1297,7 +1297,7 @@
       ]
     }
   },
-  "digest": "sha256:4c922faaa6348c42282452e2ee8dde72c7946527aa9ea20d13441876a9b86a9e",
+  "digest": "sha256:8452613bbb7dd79a7c73a918e8d217cec7ea3ac9ffaea88136786eb40147d0b0",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5343,10 +5343,12 @@
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.doctor.stall_checks",
         "src.git.manager",
         "src.integration.github_review_poll",
         "src.integration.promotion",
         "src.integration.review_evidence",
+        "src.integration.root_materialization",
         "src.integration.scheduler",
         "src.integration.settling",
         "src.models"
@@ -11529,7 +11531,8 @@
         "src.database",
         "src.models",
         "src.playbooks.definition",
-        "src.playbooks.routing"
+        "src.playbooks.routing",
+        "src.playbooks.runtime"
       ],
       "markers": [
         "parametrize"
@@ -12801,8 +12804,17 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.authorization",
+        "src.commands.handler",
+        "src.commands.principal",
         "src.commands.task_commands",
-        "src.models"
+        "src.config",
+        "src.database",
+        "src.models",
+        "src.orchestrator",
+        "src.profiles.capabilities",
+        "src.routing.filing",
+        "src.vault"
       ],
       "markers": [
         "asyncio"

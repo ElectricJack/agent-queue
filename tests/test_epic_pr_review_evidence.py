@@ -21,10 +21,12 @@ from src.database.tables import (
     task_integration_checkpoints,
     tasks,
 )
+from src.doctor.stall_checks import _unmaterialized_pr_findings
 from src.git.manager import GitManager
 from src.integration.github_review_poll import GitHubReviewPoller
 from src.integration.promotion import PromotionService
 from src.integration.review_evidence import ReviewEvidenceProducer
+from src.integration.root_materialization import RootMaterialization
 from src.integration.scheduler import TrainService
 from src.integration.settling import settled
 from src.models import Project, RepoConfig, RepoSourceType
@@ -276,6 +278,126 @@ async def test_live_review_poller_refuses_moved_pr_or_stale_review(case, moved):
     )
     await GitHubReviewPoller(case["db"], case["producer"], _ReviewGit(client)).tick(1000.0)
     assert await _rows(case["db"]) == []
+
+
+async def test_legacy_leaf_root_materializes_exact_pr_source(case, tmp_path, monkeypatch):
+    async with case["db"].immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="legacy", project_id="p", repo_id="repo", title="Legacy root",
+            description="", status="COMPLETED",
+            branch_name="aq/epic/retire-the-publisher",
+            pr_url="https://github.com/o/r/pull/7", created_at=1.0, updated_at=1.0,
+        ))
+    git = GitManager()
+    findings = await _unmaterialized_pr_findings(
+        SimpleNamespace(db=case["db"]), {"p"}
+    )
+    assert [item["task_id"] for item in findings] == ["legacy"]
+
+    async def binding(_url):
+        return SimpleNamespace(repository_id=7, full_name="o/r")
+
+    monkeypatch.setattr(git, "bind_github_repository", binding)
+    monkeypatch.setattr(git, "_github_client", lambda _binding: _ReviewClient(case["first"], []))
+    promotion = PromotionService(case["db"], data_dir=tmp_path / "legacy-data", git_manager=git)
+    repair = RootMaterialization(case["db"], promotion)
+    dry = await repair.run("legacy")
+    assert dry["outcome"] == "would_materialize"
+    assert (dry["base_sha"], dry["head_sha"]) == (case["base"], case["first"])
+    assert (await repair.run("legacy", dry_run=False, expected_head_sha=case["second"],
+                             reason="legacy PR", operator_id="operator"))["outcome"] == "changed"
+    applied = await repair.run("legacy", dry_run=False, expected_head_sha=case["first"],
+                               reason="legacy PR", operator_id="operator")
+    assert applied["outcome"] == "materialized"
+    assert (await repair.run("legacy"))["outcome"] == "not_eligible"
+    async with case["db"]._engine.connect() as conn:
+        checkpoint = (await conn.execute(select(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "legacy"
+        ))).mappings().one()
+        origin = (await conn.execute(select(task_branch_origins).where(
+            task_branch_origins.c.task_id == "legacy"
+        ))).mappings().one()
+        source = await case["producer"]._pull_request_source_on(conn, "legacy")
+        eligible = await case["db"].eligible_root_page_on(
+            conn, project_id="p", repository_id="repo", after=None, limit=20,
+        )
+    assert checkpoint["checkpoint_sha"] == case["first"]
+    assert origin["base_sha"] == case["base"]
+    assert origin["materialized"] is True
+    assert source["head"] == case["first"]
+    assert any(row["task_id"] == "legacy" for row in eligible)
+    assert await _unmaterialized_pr_findings(SimpleNamespace(db=case["db"]), {"p"}) == []
+    evidence = await case["producer"].snapshot_from_pull_request(
+        "legacy", verdict="approved", reviewer_login="jkern", reviewed_sha=case["first"]
+    )
+    async with case["db"].immediate() as conn:
+        members = await TrainService(case["db"])._eligible_members(
+            conn, project_id="p", repository_id="repo", project_mode="pull_request"
+        )
+    assert [member["task_id"] for member in members] == ["legacy"]
+    assert members[0]["review"] == evidence
+
+
+async def test_materialization_refuses_pr_head_that_differs_from_git(case, tmp_path, monkeypatch):
+    async with case["db"].immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="legacy", project_id="p", repo_id="repo", title="Legacy root",
+            description="", status="COMPLETED",
+            branch_name="aq/epic/retire-the-publisher",
+            pr_url="https://github.com/o/r/pull/7", created_at=1.0, updated_at=1.0,
+        ))
+    git = GitManager()
+
+    async def binding(_url):
+        return SimpleNamespace(repository_id=7, full_name="o/r")
+
+    monkeypatch.setattr(git, "bind_github_repository", binding)
+    monkeypatch.setattr(git, "_github_client", lambda _binding: _ReviewClient(case["first"], [], moved=True))
+    repair = RootMaterialization(
+        case["db"], PromotionService(case["db"], data_dir=tmp_path, git_manager=git)
+    )
+    result = await repair.run("legacy")
+    assert result["outcome"] == "changed"
+    async with case["db"]._engine.connect() as conn:
+        assert (await conn.execute(select(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "legacy"
+        ))).first() is None
+
+
+async def test_legacy_parent_root_cannot_forge_leaf_checkpoint(case, tmp_path):
+    async with case["db"].immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="legacy-parent", project_id="p", repo_id="repo", title="Legacy parent",
+            description="", status="COMPLETED",
+            branch_name="aq/epic/retire-the-publisher",
+            pr_url="https://github.com/o/r/pull/7", created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(insert(tasks).values(
+            id="legacy-child", project_id="p", repo_id="repo", title="Legacy child",
+            description="", status="COMPLETED", parent_task_id="legacy-parent",
+            created_at=1.0, updated_at=1.0,
+        ))
+    repair = RootMaterialization(
+        case["db"], PromotionService(case["db"], data_dir=tmp_path, git_manager=GitManager())
+    )
+    result = await repair.run("legacy-parent")
+    assert result["outcome"] == "not_eligible"
+    assert "verification evidence" in result["reason"]
+
+
+async def test_poller_warns_when_completed_pr_has_no_source(case, caplog):
+    async with case["db"].immediate() as conn:
+        await conn.execute(insert(tasks).values(
+            id="legacy", project_id="p", repo_id="repo", title="Legacy root",
+            description="", status="COMPLETED",
+            branch_name="aq/epic/retire-the-publisher",
+            pr_url="https://github.com/o/r/pull/7", created_at=1.0, updated_at=1.0,
+        ))
+    poller = GitHubReviewPoller(
+        case["db"], case["producer"], _ReviewGit(_ReviewClient(case["first"], []))
+    )
+    await poller.tick(1000.0)
+    assert "Completed train root legacy has PR" in caplog.text
 
 
 async def test_new_github_review_id_can_supersede_an_earlier_rejection(case):
