@@ -51,7 +51,12 @@ from src.playbooks.definition import (
     source_digest,
 )
 from src.playbooks.pipeline_lowering import shadow_compile
-from src.playbooks.proposal import DuplicateSemanticKey, load_semantic_body_json, propose
+from src.playbooks.proposal import (
+    DuplicateSemanticKey,
+    load_legacy_baseline_json,
+    load_semantic_body_json,
+    propose,
+)
 from src.playbooks.validation import (
     Diagnostic,
     RegisteredEventLookup,
@@ -551,7 +556,13 @@ class PlaybookV2CommandsMixin:
                 return _command_error(error, field="baseline_artifact_path")
             assert baseline_path is not None
             try:
-                baseline = load_definition_json(baseline_path.read_text(encoding="utf-8"))
+                baseline_text = baseline_path.read_text(encoding="utf-8")
+                try:
+                    baseline = load_definition_json(baseline_text)
+                except (ValueError, ValidationError):
+                    # Compiler-only migration of old worker-pinned artifacts.
+                    # Runtime and import reads keep their strict parser.
+                    baseline = load_legacy_baseline_json(baseline_text)
             except (OSError, ValueError, ValidationError, DuplicateJsonKey, json.JSONDecodeError) as exc:
                 return _command_error(
                     f"invalid baseline V2 artifact: {exc}", field="baseline_artifact_path"
@@ -1574,7 +1585,19 @@ class PlaybookV2CommandsMixin:
         if current_sha:
             base_ref, base, error = await self._v2_load_artifact(current_sha, playbook_id)
             if error:
-                return {"error": error}
+                from src.playbooks.activation import ActivationHealth
+
+                if current is None or current.health is not ActivationHealth.INVALID:
+                    return {"error": error}
+                logger.warning(
+                    "Replacing invalid active playbook %s artifact %s: %s",
+                    playbook_id, current_sha, error,
+                )
+                # The old definition cannot be parsed for a semantic diff.
+                # The operator explicitly requested activation of a validated
+                # hash, so compare it as a new baseline and retain the old SHA
+                # in previous_artifact_sha256 for the audit trail.
+                base_ref = base = None
         from src.playbooks.artifact_diff import diff_artifacts
 
         diff = diff_artifacts(
