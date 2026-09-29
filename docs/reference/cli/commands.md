@@ -702,7 +702,6 @@ group is large.
 | `aq system render-prompt` | `render_prompt` | gen | Render a prompt template with variable substitution. |
 | `aq system scan-stub-staleness` | `scan_stub_staleness` | gen | Scan vault reference stubs to detect staleness. |
 | `aq system session-input` | `session_input` | gen | Type directly into a live terminal. |
-| `aq system task-route-options` | `task_route_options` | gen | Report whether the task is routed, whether its class is explicit, and which class, provider and profile combinations could execute it. |
 | `aq system token-audit` | `token_audit` | gen | Comprehensive token usage audit over a time range. |
 | `aq system update-config` | `update_config` | gen | Replace one top-level section in the YAML config and trigger a hot reload for hot-reloadable sections. |
 | `aq system vault-rebuild-index` | `vault_rebuild_index` | gen | Rebuild vault hub files with optional LLM-generated summaries. |
@@ -769,7 +768,8 @@ proposal flow a spec ingest produces.
 | `aq task reparent` | `reparent_task` | gen | Move a task under another container (parent_id) or to the root (root=true). |
 | `aq task restart` | `restart_task` | hand | Restart a failed or stopped task. |
 | `aq task resume` | `resume_task` | gen | Resume a paused task, respecting its existing gates and approval state. |
-| `aq task route` | `task_route` | gen | Route a task: assign its agent profile, optional intelligence class, and optional workspace, then resolve any open 'routing' gates on the task. |
+| `aq task route` | `task_route` | gen | Send a task back to its project's router with optional new hints (intelligence class, kind); never picks a profile. |
+| `aq task route-override` | `task_route_override` | gen | Emergency override: pin one queued task to a worker profile, with a mandatory reason. Local operator and supervisor only. |
 | `aq task search` | `list_tasks` | hand | Search tasks by title or description. |
 | `aq task select` | `—` | hand | Interactively select a task and show its details. |
 | `aq task set` | `task_set` | hand | Work-state writes: findings, branch, PR URL, work dir, notes, labels, metadata. |

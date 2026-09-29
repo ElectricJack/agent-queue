@@ -1,4 +1,9 @@
-"""Triage tokens can route their project's queue without operator authority."""
+"""Triage tokens can read their project's routing queue without operator authority.
+
+Triage no longer routes: the project's router does (mandatory task routing), and
+``task_route`` only sends a task back to it -- for a worker token, only a task
+that session filed.
+"""
 
 from __future__ import annotations
 
@@ -26,6 +31,7 @@ from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, 
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +65,8 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         await db.create_agent(Agent(id=worker, name=worker, profile_id=role))
         await db.create_task(Task(
             id=f"{worker}-job", project_id="p", title=worker, description="Assigned work",
-            status=TaskStatus.IN_PROGRESS, profile_id=role, assigned_agent_id=worker,
+            status=TaskStatus.IN_PROGRESS, profile_id=role,
+            route_source=route_source_for(role), assigned_agent_id=worker,
         ))
         await db.update_agent(
             worker, state=AgentState.BUSY, current_task_id=f"{worker}-job",
@@ -88,11 +95,13 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         await db.create_agent(Agent(id=agent_id, name=agent_id, profile_id=profile_id))
     await db.create_task(Task(
         id="review-job", project_id="p", title="review", description="Review target",
-        status=TaskStatus.IN_PROGRESS, profile_id="reviewer", assigned_agent_id="reviewer",
+        status=TaskStatus.IN_PROGRESS, profile_id="reviewer",
+        route_source="role", assigned_agent_id="reviewer",
     ))
     await db.create_task(Task(
         id="final-review-job", project_id="p", title="final review", description="Final review",
-        status=TaskStatus.IN_PROGRESS, profile_id="final-reviewer", branch_name="feature/target",
+        status=TaskStatus.IN_PROGRESS, profile_id="final-reviewer",
+        route_source="role", branch_name="feature/target",
         assigned_agent_id="final-reviewer",
     ))
     for agent_id, task_id in (("reviewer", "review-job"), ("final-reviewer", "final-review-job")):
@@ -159,12 +168,25 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         yield SimpleNamespace(
             db=db, store=store, tokens=tokens, post=post, result=result,
             gate=gate, foreign_gate=foreign_gate, human_gate=human_gate,
+            transport=request.param,
         )
     await db.close()
 
 
+def _denied(api, response) -> str:
+    """The refusal *response* carries: a 403 from the scope gate or a command error."""
+    payload = response.json()
+    if response.status_code == 403:
+        return payload["error"]
+    if api.transport == "execute":
+        assert response.status_code == 200 and payload["ok"] is False, response.text
+    else:
+        assert response.status_code == 422, response.text
+    return payload["error"]
+
+
 @pytest.mark.parametrize("lifecycle", ["task", "pool"])
-async def test_authenticated_triage_routes_waiting_task(api, lifecycle, monkeypatch):
+async def test_triage_does_not_route_the_router_does(api, lifecycle, monkeypatch):
     if lifecycle == "pool":
         await api.db.update_session("s-triager", lifecycle="pool")
         api.tokens["triager"] = await api.store.mint(
@@ -172,14 +194,35 @@ async def test_authenticated_triage_routes_waiting_task(api, lifecycle, monkeypa
         )
     # Exercise persistent tokens after a fresh daemon-side store, too.
     monkeypatch.setattr(deps, "_token_store", SessionTokenStore(api.db))
-    result = api.result(await api.post("task_route", {
-        "task_id": "target", "profile_id": "coder", "intelligence_class": "deep-high",
+    error = _denied(api, await api.post("task_route", {
+        "task_id": "target", "intelligence_class": "deep-high",
     }))
-    assert result["resolved_gate_ids"] == [api.gate]
+    assert "a worker may re-route only a task it filed itself" in error
+    error = _denied(api, await api.post("task_route", {
+        "task_id": "target", "profile_id": "coder",
+    }))
+    assert "does not accept routing choices" in error
     task = await api.db.get_task("target")
-    assert (task.profile_id, task.intelligence_class) == ("coder", "deep-high")
-    assert (await api.db.get_gate(api.gate))["status"] == "resolved"
+    assert (task.profile_id, task.class_hint, task.route_source) == (None, None, "unrouted")
+    assert (await api.db.get_gate(api.gate))["status"] == "open"
     assert not (await deps._token_store.validate(api.tokens["triager"])).elevated
+
+
+async def test_a_worker_re_routes_a_task_it_filed(api):
+    await api.db.update_task("target", created_by_kind="session", created_by_id="s-worker")
+    result = api.result(await api.post("task_route", {
+        "task_id": "target", "intelligence_class": "deep-high",
+    }, worker="worker"))
+    assert result["route_source"] == "unrouted"
+    assert (await api.db.get_task("target")).class_hint == "deep-high"
+    # Not the triager's filing, and never a task in another project.
+    await api.db.update_task("foreign", created_by_kind="session", created_by_id="s-worker")
+    assert "only a task it filed" in _denied(
+        api, await api.post("task_route", {"task_id": "target"})
+    )
+    assert "only a task it filed" in _denied(
+        api, await api.post("task_route", {"task_id": "foreign"}, worker="worker")
+    )
 
 
 async def test_triage_lists_only_its_project_tasks(api):
@@ -242,7 +285,6 @@ async def test_triage_reads_intelligence_classes(api):
 @pytest.mark.parametrize("command,args", [
     ("get_task", {"task_id": "foreign"}),
     ("task_show", {"task_id": "foreign"}),
-    ("task_route", {"task_id": "foreign", "profile_id": "coder"}),
     ("list_tasks", {"project_id": "other"}),
 ])
 async def test_triage_cannot_cross_project_boundary(api, command, args):
@@ -257,13 +299,6 @@ async def test_triage_cannot_cross_project_boundary(api, command, args):
 async def test_triage_cannot_read_foreign_or_nonrouting_gate(api, which):
     response = await api.post("gate_show", {"gate_id": getattr(api, which)})
     assert response.status_code == 403, response.text
-
-
-async def test_triage_cannot_route_without_open_routing_gate(api):
-    await api.db.resolve_gate(api.gate, resolved_by="test", resolution="Already routed")
-    response = await api.post("task_route", {"task_id": "target", "profile_id": "coder"})
-    assert response.status_code == 403, response.text
-    assert (await api.db.get_task("target")).profile_id is None
 
 
 @pytest.mark.parametrize("command,args", [
@@ -284,7 +319,7 @@ async def test_triage_does_not_gain_operator_commands(api, command, args):
 
 
 @pytest.mark.parametrize("command,args", [
-    ("task_route", {"task_id": "target", "profile_id": "coder"}),
+    ("task_route", {"task_id": "target", "intelligence_class": "deep-high"}),
     ("list_tasks", {}),
 ])
 async def test_worker_cannot_impersonate_triage_through_request_fields(api, command, args):
@@ -294,8 +329,8 @@ async def test_worker_cannot_impersonate_triage_through_request_fields(api, comm
         "role": "triage",
         "_scope": {"kind": "local", "elevated": True, "session_id": "s-triager"},
     }, worker="worker")
-    assert response.status_code == 403, response.text
-    assert (await api.db.get_task("target")).profile_id is None
+    _denied(api, response)
+    assert (await api.db.get_task("target")).class_hint is None
 
 
 @pytest.mark.parametrize("change", ["stopped", "sleeping", "wrong-profile", "wrong-agent", "closed-task"])
@@ -308,9 +343,10 @@ async def test_stale_or_unassigned_session_cannot_keep_triage_privileges(api, ch
         await api.db.update_task("triager-job", assigned_agent_id="worker")
     else:
         await api.db.update_task("triager-job", status=TaskStatus.COMPLETED)
-    response = await api.post("task_route", {"task_id": "target", "profile_id": "coder"})
+    response = await api.post("task_show", {"task_id": "target"})
     assert response.status_code == 403, response.text
-    assert (await api.db.get_task("target")).profile_id is None
+    response = await api.post("gate_show", {"gate_id": api.gate})
+    assert response.status_code == 403, response.text
 
 
 async def test_triage_ordinary_mutations_stay_pinned_to_its_own_task(api):
@@ -349,12 +385,7 @@ async def test_triage_typed_and_execute_routes_have_identical_scoped_error_shape
         assert response.status_code == 403, (command, response.text)
         assert response.json()["error"] == expected_error, command
 
-    # Routing without an open routing gate — the fixture's gate is resolved
-    # first so the denial comes from the gate check, again identically.
-    await api.db.resolve_gate(api.gate, resolved_by="test", resolution="done")
-    response = await api.post("task_route", {"task_id": "target", "profile_id": "coder"})
+    # A gate listing outside the routing queue is refused the same way.
+    response = await api.post("gate_list", {"gate_type": "human"})
     assert response.status_code == 403, response.text
-    assert response.json()["error"] == (
-        "out of scope: triage may only route tasks with an open routing gate"
-    )
-    assert (await api.db.get_task("target")).profile_id is None
+    assert response.json()["error"] == "out of scope: triage may only read open routing gates"

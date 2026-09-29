@@ -107,8 +107,8 @@ class PoolCapacity:
     ``live`` is ``idle + busy + starting`` -- what :func:`size_pools` counts
     against ``max_active`` and the global cap; draining and unresponsive
     sessions are not supply there and are not here.  ``ready`` is the
-    sizer's demand, so it includes a project's unrouted READY work when this
-    profile is that project's default.
+    sizer's demand: claimable READY work routed to this profile (never
+    unrouted work, mandatory routing §9.1).
     """
 
     profile_id: str
@@ -335,9 +335,38 @@ def _target_rungs(
     source_id: str,
     project_id: str,
     providers: Sequence[str],
+    route_candidates: Sequence[tuple[str, str]] = (),
 ) -> list[Rung]:
-    """S5's eligible targets in preference order, before headroom."""
+    """S5's eligible targets in preference order, before headroom.
+
+    A task the router routed spills only to its own candidates, in the
+    router's order (mandatory routing §6.8), so a spill never breaks a lane:
+    an integration repair never reaches OpenCode, art design never leaves
+    Codex.  Each target carries the candidate's class.  A task without
+    candidates (a legacy route) keeps the same-class search.
+    """
     out: list[Rung] = []
+    if route_candidates:
+        allowed = set(providers)
+        for profile_id, candidate_class in route_candidates:
+            rung = ctx.rungs.get(profile_id)
+            if (
+                rung is None
+                or profile_id == source_id
+                or not rung.enabled
+                or rung.lifecycle != "pool"
+                or rung.provider not in allowed
+                or ctx.state(rung.provider) != AVAILABLE
+                or (candidate_class and rung.class_id != candidate_class)
+            ):
+                continue
+            pool = view.pools.get(profile_id)
+            if pool is None or not pool.enabled or pool.lifecycle != "pool":
+                continue
+            if project_id in pool.quarantined:
+                continue
+            out.append(rung)
+        return out
     for provider in providers:
         if ctx.state(provider) != AVAILABLE:  # never degraded, whatever failover allows
             continue
@@ -499,6 +528,7 @@ def plan_capacity_spill(
         for option in _target_rungs(
             ctx, view, class_id=class_id, source_id=source_id,
             project_id=project_id, providers=order,
+            route_candidates=cand.route_candidates,
         ):
             if headroom.available(view.pools[option.profile_id], project_id) > 0:
                 target = option
@@ -515,10 +545,11 @@ def plan_capacity_spill(
                 where = f"on {preferred} (the project's preferred provider)" if preferred else (
                     "on an available provider"
                 )
+                what = "route candidate pool" if cand.route_candidates else f"{class_id} pool"
                 _hold(
                     decision,
                     "spill_no_target",
-                    f"no other {class_id} pool {where} has room in {project_id}",
+                    f"no other {what} {where} has room in {project_id}",
                 )
             continue
         if moves >= max_moves:
@@ -539,5 +570,7 @@ def plan_capacity_spill(
         decision.kind = None
         decision.to_profile_id = target.profile_id
         decision.to_provider = target.provider
+        if target.class_id and target.class_id != class_id:
+            decision.to_class = target.class_id
         decision.detail = f"{source_id} had no free capacity for {int(age // 60)} min: {why}"
     return decisions

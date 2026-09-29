@@ -144,38 +144,6 @@ def parent_key_format_refusal(parent_key: str) -> dict | None:
     }
 
 
-def provider_intent_refusal(value) -> dict | None:
-    """Refuse a ``provider_intent`` outside the three values, or ``None``."""
-    from src.providers.intent import intent_error
-
-    error = intent_error(value)
-    if error is None:
-        return None
-    return {"success": False, "code": "provider_intent.invalid", "error": error}
-
-
-def pin_not_permitted_refusal(scope: dict | None, field: str) -> dict | None:
-    """Refuse a pin from a task-scoped worker token (provider-failover D9).
-
-    ``pinned`` is a human's statement.  It is accepted from human principals,
-    elevated supervisor sessions, vault formulas and reviewed playbooks --
-    every caller except a non-elevated session, which is what a pool or task
-    worker's token is.  *field* names the argument that asked for the pin.
-    """
-    scope = scope or {}
-    if scope.get("kind") != "session" or scope.get("elevated"):
-        return None
-    return {
-        "success": False,
-        "code": "provider_intent.pin_not_permitted",
-        "error": (
-            f"'{field}' pins the task to its provider, which only a human, a supervisor, "
-            "a vault formula or a reviewed playbook may do; a worker token may name a "
-            "profile (a preference) but not pin it"
-        ),
-    }
-
-
 def _role_creator() -> bool:
     """Whether the caller may create a role task (mandatory-routing spec §4, D3).
 
@@ -427,10 +395,14 @@ _PARENT_SCOPE_ERROR = (
     "parent must be the held task, one of its descendants, or the held task's own parent"
 )
 
-#: ``task_metadata`` key naming the worker profile that filed a task without
-#: an explicit ``profile_id``.  Such a task is routed by the assignment
-#: playbook rather than pinned to its filer, and ``task_route`` reads this
-#: marker to keep it on an ordinary worker rung.
+#: How far back ``aq task explain`` looks for the router's run for a task.
+#: The cascade re-asks the router every two minutes while a task is unrouted,
+#: so an older run is not the router's current answer.
+_ROUTER_RUN_LOOKBACK_SECONDS = 6 * 3600.0
+
+#: ``task_metadata`` key naming the worker profile that filed a task: audit
+#: of who filed it.  The router routes it like any other filing, only ever to
+#: a worker candidate (mandatory-routing spec §5.2).
 FILED_BY_PROFILE_META_KEY = "filed_by_profile_id"
 
 
@@ -1831,7 +1803,7 @@ class TaskCommandsMixin:
                 )
             if filed_by_profile_id is not None:
                 # Same transaction as the row: the router may see the task
-                # the moment it commits, and ``task_route`` reads this bound.
+                # the moment it commits.
                 await self.db._upsert_meta(
                     task.id, FILED_BY_PROFILE_META_KEY, filed_by_profile_id, conn=conn
                 )
@@ -1874,39 +1846,6 @@ class TaskCommandsMixin:
         from src.profiles.task_execution import task_execution_profile_error
 
         return task_execution_profile_error(profile)
-
-    async def _worker_filed_route_error(self, task, profile) -> str | None:
-        """Keep a worker's unpinned filing on an ordinary worker rung.
-
-        A worker that names no profile is routed by the assignment playbook
-        instead of inheriting its own route, so the filer no longer bounds the
-        child by pinning it.  The chooser only sees ordinary worker rows, but
-        its answer is model output shaped by the task text a worker wrote;
-        this is the bound that holds regardless.  A strict ``child ⊆ filer``
-        check cannot be it: worker rungs of different harnesses carry
-        disjoint command lists, so it would make whole providers unreachable
-        from each other and leave a reviewer's filings with no route at all.
-
-        Only automatic and worker callers are bound.  The operator, daemon
-        services and an elevated supervisor may still route anywhere a task
-        may run.
-        """
-        from src.commands.principal import current_principal
-        from src.commands.routing_commands import _worker_profile
-
-        if _worker_profile(profile):
-            return None
-        principal = current_principal()
-        if principal is None or not principal.enforced or principal.elevated:
-            return None
-        filed_by = await self.db.get_task_meta(task.id, FILED_BY_PROFILE_META_KEY)
-        if filed_by is None:
-            return None
-        return (
-            f"task '{task.id}' was filed by a worker ({filed_by or 'unknown profile'}) "
-            f"without a profile and may only be routed to an ordinary worker profile; "
-            f"'{profile.id}' is not one"
-        )
 
     # ----- the keyed standing parent (graph-visibility A2) -----------------
     #
@@ -5209,8 +5148,14 @@ class TaskCommandsMixin:
                 reasons.append(Reason(code="held", detail=f"label '{lbl}' withholds task", ref=lbl))
 
         # Evaluate the claim query itself: graph blockedness and capacity
-        # snapshots do not include hierarchy receipt/origin fences.
-        reasons.extend(await self.db.claim_frontier_exclusions(str(task_id)))
+        # snapshots do not include hierarchy receipt/origin fences, and the
+        # route filter depends on the project's router readiness (§9.1).
+        from src.routing.readiness import orchestrator_router_ready
+
+        reasons.extend(await self.db.claim_frontier_exclusions(
+            str(task_id),
+            router_ready=await orchestrator_router_ready(self.orchestrator, task.project_id),
+        ))
 
         from src.integration.admission import observe_admission
         admission = await observe_admission(
@@ -5313,9 +5258,9 @@ class TaskCommandsMixin:
                 )
 
         # 4. Assignment route state.  The task row is the route: the
-        # ``default-assignment-routing`` playbook writes ``intelligence_class``
-        # and ``profile_id`` through ``task_route``; until it has, the cascade
-        # keeps emitting ``task.route_needed``.
+        # project's bound router writes it through ``task_route_apply`` (or
+        # an operator overrides it); until then the cascade keeps emitting
+        # ``task.route_needed`` and this names what the router answered.
         assignment_route, route_reason = await self._assignment_route_state(task)
         if route_reason is not None:
             reasons.append(route_reason)
@@ -5407,99 +5352,140 @@ class TaskCommandsMixin:
         }
 
     async def _assignment_route_state(self, task):
-        """Route audit detail plus one actionable reason, from the task row alone."""
-        from src.explain import Reason
+        """The task's route and, when it waits on routing, the one reason why.
 
-        if error := self._task_execution_profile_error(task.profile_id):
+        Returns ``(assignment_route, reason)``.  ``assignment_route`` is the
+        route a task carries -- its source, profile, class, intent, and the
+        router's lane, rule and reason (mandatory routing §10) -- and ``None``
+        when it has none.  ``reason`` is set only for queued, unassigned
+        work: ``preferred_provider_unavailable`` when the project prefers a
+        provider with no worker for the task's class (the planner's
+        ``no_candidates`` reason, answered live), else, for work still owed a
+        route (``unrouted``, or ``legacy`` in a project whose router is
+        ready), one of the six codes of :mod:`src.routing.explain`.  A
+        container is never routed (work-graph §13a), so it has no reason.
+        """
+        import time
+
+        from src.explain import Reason
+        from src.routing import explain as route_explain
+        from src.routing.readiness import orchestrator_router_ready
+        from src.routing.sources import LEGACY, UNROUTED
+
+        if task.profile_id and (error := self._task_execution_profile_error(task.profile_id)):
             return None, Reason(
                 code="supervisor_profile",
-                detail=(error + "; reroute the legacy task to an eligible worker profile"),
+                detail=error + "; route the task again with `aq task route`",
                 ref=task.profile_id,
             )
 
-        if task.profile_id is None:
-            project = await self.db.get_project(task.project_id)
-            if project is not None and (
-                error := self._task_execution_profile_error(project.default_profile_id)
-            ):
-                return None, Reason(
-                    code="supervisor_profile",
-                    detail=(error + "; set an eligible project worker default before rerunning"),
-                    ref=project.default_profile_id,
-                )
-
-        explicit = (task.intelligence_class or "").strip()
-        reason_text = None
-        try:
-            async with self.db._engine.connect() as conn:
-                from sqlalchemy import select
-
-                from src.database.tables import task_metadata
-
-                row = (await conn.execute(
-                    select(task_metadata.c.value).where(
-                        task_metadata.c.task_id == task.id,
-                        task_metadata.c.key == "route_reason",
-                    )
-                )).fetchone()
-            if row is not None:
-                import json
-
-                reason_text = json.loads(row[0])
-        except Exception:  # pragma: no cover - diagnostics only
-            reason_text = None
+        source = (getattr(task, "route_source", None) or UNROUTED).strip()
+        route = task.route if isinstance(getattr(task, "route", None), dict) else {}
         detail = None
-        if explicit:
+        if task.profile_id and (task.intelligence_class or "").strip():
             detail = {
-                "source": "explicit",
-                "intelligence_class": explicit,
-                "provider": None,
-                "reason": reason_text,
-                "playbook_id": None,
+                "source": source,
+                "intelligence_class": task.intelligence_class.strip(),
+                "provider": route.get("provider"),
+                "reason": route.get("reason"),
+                "playbook_id": route.get("playbook_id"),
                 "playbook_version": None,
-                "playbook_run_id": None,
+                "playbook_run_id": route.get("run_id"),
                 "freshness": "fresh",
+                "profile_id": task.profile_id,
+                "provider_intent": getattr(task, "provider_intent", None),
+                "lane": route.get("lane"),
+                "rule": route.get("rule"),
+                "override": route.get("override")
+                if isinstance(route.get("override"), dict) else None,
             }
         if task.assigned_agent_id is not None or task.status not in (
             TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.DEFINED
         ):
             return detail, None
+        if await self.db.task_is_container(task.id):
+            return detail, None
         from src.providers.intent import narrows_catalog
 
-        if not narrows_catalog(task):
-            project = await self.db.get_project(task.project_id)
-            preferred_provider = getattr(project, "preferred_provider", None)
-            if preferred_provider:
-                routing = await self._cmd_task_route_options({"task_id": task.id})
-                if routing.get("outcome") in {"held", "no_options"}:
-                    return detail, Reason(
-                        code="preferred_provider_unavailable",
-                        detail=(
-                            f"project prefers provider '{preferred_provider}', which has no "
-                            "enabled, launchable worker option for "
-                            + (f"intelligence class '{explicit}'" if explicit else "any class")
-                            + "; waiting for that provider or a change to the project preference"
-                        ),
-                        ref=preferred_provider,
-                    )
-        if not explicit:
-            return None, Reason(
-                code="awaiting_intelligence_route",
-                detail=(
-                    "task has no intelligence class yet; the assignment routing playbook "
-                    "answers task.route_needed and writes one (check `aq playbook runs`)"
-                ),
-                ref=task.id,
+        project = await self.db.get_project(task.project_id)
+        preferred_provider = getattr(project, "preferred_provider", None)
+        if preferred_provider and not narrows_catalog(task):
+            wanted = (
+                (task.intelligence_class or "").strip()
+                or (getattr(task, "class_hint", None) or "").strip()
+                or None
             )
-        return detail, Reason(
-            code="route_waiting_for_compatible_agent",
-            detail=(
-                f"route selects intelligence class '{explicit}'"
-                + (f" on profile '{task.profile_id}'" if task.profile_id else "")
-                + "; waiting for existing scheduling constraints"
-            ),
-            ref=task.profile_id or task.id,
-        )
+            if not await self._preferred_provider_serves(
+                task.project_id, preferred_provider, wanted
+            ):
+                return detail, Reason(
+                    code="preferred_provider_unavailable",
+                    detail=(
+                        f"project prefers provider '{preferred_provider}', which has no "
+                        "enabled, launchable worker option for "
+                        + (f"intelligence class '{wanted}'" if wanted else "any class")
+                        + "; waiting for that provider or a change to the project preference"
+                    ),
+                    ref=preferred_provider,
+                )
+        if source not in (UNROUTED, LEGACY):
+            return detail, Reason(
+                code="route_waiting_for_compatible_agent",
+                detail=(
+                    f"routed ({source}) to profile '{task.profile_id}' at intelligence "
+                    f"class '{task.intelligence_class}'; waiting for existing scheduling "
+                    "constraints"
+                ),
+                ref=task.profile_id or task.id,
+            )
+        router = (getattr(project, "assignment_playbook_id", None) or "").strip()
+        ready = await orchestrator_router_ready(self.orchestrator, task.project_id)
+        if source == LEGACY and not ready:
+            # Legacy work stays claimable until the router is ready (§9.1).
+            return detail, Reason(
+                code="route_waiting_for_compatible_agent",
+                detail=(
+                    f"legacy route to profile '{task.profile_id}' at intelligence class "
+                    f"'{task.intelligence_class}', claimable until the project's router is "
+                    "ready; waiting for existing scheduling constraints"
+                ),
+                ref=task.profile_id or task.id,
+            )
+        if not ready:
+            # The same binding verdict ``aq doctor --check routing.bypassed``
+            # gives (spec §10): no router, or a missing or non-routing
+            # playbook, is unbound; a router without an enabled activation
+            # that grants task_route_apply is not ready.
+            from src.routing.readiness import (
+                BINDING_MISSING,
+                BINDING_NOT_ROUTER,
+                BINDING_UNBOUND,
+                artifact_grants,
+                binding_state,
+            )
+
+            state, why = binding_state(
+                task.project_id, router, await self.db.list_playbook_activations(),
+                artifact_grants(self.orchestrator, self.config),
+            )
+            default = str(getattr(getattr(self.config, "routing", None), "default_router", ""))
+            if state in (BINDING_UNBOUND, BINDING_MISSING, BINDING_NOT_ROUTER) and (
+                router != default or state == BINDING_UNBOUND
+            ):
+                return detail, Reason(**route_explain.unbound_reason(task.project_id, why))
+            return detail, Reason(**route_explain.not_ready_reason(task.project_id, router, why))
+        now = time.time()
+        try:
+            run = await self.db.latest_router_run_for_task(
+                router, task.id, since=now - _ROUTER_RUN_LOOKBACK_SECONDS
+            )
+        except Exception:  # diagnostics only: no run is "awaiting"
+            logger.debug("explain: router run lookup failed for %s", task.id, exc_info=True)
+            run = None
+        emitted = getattr(self.orchestrator, "__dict__", {}).get("_route_needed_emitted") or {}
+        return detail, Reason(**route_explain.router_reason(
+            task.id, router=router, run=run, emitted_at=emitted.get(task.id), now=now,
+        ))
 
     async def _pool_wait_reason(self, task):
         """``awaiting_pool_session`` for a task routed to a ``lifecycle: pool`` profile.
@@ -5533,12 +5519,9 @@ class TaskCommandsMixin:
             return None
         if not pool_ids:
             return None
+        # The task's own route: an unrouted task waits on its router, not on
+        # a pool (mandatory routing §8: no project default).
         profile_id = task.profile_id
-        if not profile_id:
-            project = await self.db.get_project(task.project_id)
-            if project is None:
-                return None
-            profile_id = await orchestrator._effective_default_profile_id(project)
         if profile_id not in pool_ids:
             return None
 
@@ -5641,11 +5624,10 @@ class TaskCommandsMixin:
         out of the frontier.
 
         Args:
-            profile_id: Restrict the frontier to tasks this profile would be
-                offered.  Uses the same widening as the §10 work query
-                (``select_ready_for_profile``): when *profile_id* is the
-                project's ``default_profile_id``, unassigned tasks
-                (``profile_id IS NULL``) count as its work too.
+            profile_id: Restrict the frontier to tasks routed to this
+                profile.  There is no project-default widening: an unrouted
+                task is no profile's work until its router routes it
+                (mandatory routing §8).
             brief: Project each ready task to
                 ``id,title,status,priority,is_blocked,profile_id`` instead of
                 the default ``task_id,title,priority`` shape.
@@ -5673,14 +5655,7 @@ class TaskCommandsMixin:
         frontier = [task for task in frontier if task.id in admission.allowed]
 
         if profile_id:
-            project = await self.db.get_project(str(project_id))
-            default_profile_id = getattr(project, "default_profile_id", None) if project else None
-            frontier = [
-                t
-                for t in frontier
-                if t.profile_id == profile_id
-                or (t.profile_id is None and default_profile_id == profile_id)
-            ]
+            frontier = [t for t in frontier if t.profile_id == profile_id]
 
         if brief:
             ready = [
@@ -5834,10 +5809,10 @@ class TaskCommandsMixin:
             "priority": args.get("priority", 100),
             "dedup_key": dedup_key,
             # Control-plane bookkeeping: suppress task.created emission so the
-            # default pipeline is not re-triggered against this task itself
-            # (would attach a routing gate to a task only the triage agent
-            # can resolve — self-deadlock).  Routing of tasks created via
-            # ensure_task is the ensuring pipeline's responsibility.
+            # default pipeline is not re-triggered against this task itself.
+            # Routing needs no event from here: the orchestrator emits
+            # ``task.route_needed`` for any unrouted task, and a role task
+            # arrives with its stage route.
             "_suppress_created_event": True,
         }
         # Do not recreate placement from truthy values: playbook and API
@@ -5951,168 +5926,6 @@ class TaskCommandsMixin:
             )
         except Exception:
             logger.warning("could not record provider_intent_audit for %s", task_id, exc_info=True)
-
-    def _profile_provider_key(self, profile, project_id: str | None = None) -> str:
-        """The availability provider key *profile*'s harness draws on (D0)."""
-        from src.providers.availability import provider_key
-
-        harness_id = str(getattr(profile, "harness", "") or "").strip()
-        if not harness_id:
-            return ""
-        registry = getattr(getattr(self, "orchestrator", None), "harness_registry", None)
-        harness = None
-        if registry is not None:
-            try:
-                harness = registry.get(harness_id, project_id)
-            except Exception:  # noqa: BLE001 - an unreadable registry falls back to the bare id
-                harness = None
-        return provider_key(harness) if harness is not None else harness_id
-
-    async def _cmd_task_route(self, args: dict) -> dict:
-        """Route a task: assign profile + intelligence class (+ workspace).
-
-        Compatibility command and the only manual resolver for ``routing``
-        gates. Writes ``profile_id``, an explicit ``intelligence_class``, and optional
-        ``preferred_workspace_id`` onto the task, then resolves every open
-        ``routing`` gate attached to the task via the orchestrator helper
-        (so ``gate.resolved`` + blocked-flip bus events fire the same way
-        the sweep path emits them).
-
-        Args:
-            task_id: Target task id (required).
-            profile_id: AgentProfile id (required).
-            intelligence_class: Vault class id. May be omitted only when the
-                task already has an explicit class. Profile defaults never
-                establish assignment eligibility. Routing a running or
-                claimed task is refused.
-            workspace_id: Optional workspace id.  When supplied, must belong
-                to the task's project (deadlock-safe & scope-safe).
-
-        Returns:
-            ``{"success": True, "task_id", "resolved_gate_ids": [str]}`` or
-            ``{"success": False, "error": str}`` on validation failure
-            (unknown task/profile/class/workspace, wrong project, or a
-            class with no mapping for the profile's harness provider).
-        """
-        task_id = args.get("task_id")
-        profile_id = args.get("profile_id")
-        if not task_id or not profile_id:
-            return {"success": False, "error": "task_id and profile_id are required"}
-        task = await self.db.get_task(str(task_id))
-        if task is None:
-            return {"success": False, "error": f"task '{task_id}' not found"}
-        profile = await self.db.get_profile(str(profile_id))
-        if profile is None:
-            return {"success": False, "error": f"profile '{profile_id}' not found"}
-        if error := self._task_execution_profile_error(profile):
-            return {"success": False, "error": error}
-        if error := await self._worker_filed_route_error(task, profile):
-            return {"success": False, "error": error}
-
-        cls_id = args.get("intelligence_class") or task.intelligence_class or None
-        if not cls_id:
-            return {
-                "success": False,
-                "error": (
-                    "intelligence_class is required when the task has no explicit class"
-                ),
-            }
-        class_error = self._validate_routing_class(cls_id, profile)
-        if class_error:
-            return {"success": False, "error": class_error}
-
-        workspace_id = args.get("workspace_id")
-        if workspace_id:
-            ws = await self.db.get_workspace(str(workspace_id))
-            if ws is None:
-                return {
-                    "success": False,
-                    "error": f"workspace '{workspace_id}' not found",
-                }
-            if ws.project_id != task.project_id:
-                return {
-                    "success": False,
-                    "error": (
-                        f"workspace '{workspace_id}' belongs to project "
-                        f"'{ws.project_id}', not '{task.project_id}'"
-                    ),
-                }
-
-        # Provider intent (provider-failover D9).  A caller naming the profile
-        # means it as a preference unless it says otherwise; the routing
-        # playbook passes ``class_only`` explicitly.  ``task_route`` never
-        # downgrades: a row already pinned/preferred keeps its intent when the
-        # routed profile is on the same provider.
-        from src.providers.intent import (
-            CLASS_ONLY,
-            PINNED,
-            PREFERRED,
-            effective_intent,
-            resolve_intent,
-        )
-
-        requested_intent = args.get("provider_intent")
-        pin_requested = bool(args.get("pin"))
-        refusal = provider_intent_refusal(requested_intent)
-        if refusal is not None:
-            return refusal
-        if pin_requested or requested_intent == PINNED:
-            refusal = pin_not_permitted_refusal(
-                self._current_scope, "pin" if pin_requested else "provider_intent"
-            )
-            if refusal is not None:
-                return refusal
-        provider_intent = resolve_intent(
-            requested_intent, pin=pin_requested, profile_supplied=True, profile_id=str(profile_id)
-        )
-        current_intent = effective_intent(task)
-        rank = {CLASS_ONLY: 0, PREFERRED: 1, PINNED: 2}
-        if rank[provider_intent] < rank[current_intent]:
-            current_profile = await self.db.get_profile(task.profile_id)
-            if current_profile is not None and self._profile_provider_key(
-                current_profile, task.project_id
-            ) == self._profile_provider_key(profile, task.project_id):
-                provider_intent = current_intent
-
-        updated = await self.db.update_task_routing(
-            str(task_id),
-            profile_id=str(profile_id),
-            intelligence_class=cls_id,
-            preferred_workspace_id=str(workspace_id) if workspace_id else None,
-            provider_intent=provider_intent,
-        )
-        if not updated:
-            return {
-                "success": False,
-                "error": "Task is running or claimed; stop the task before changing its routing.",
-            }
-        if provider_intent != task.provider_intent or provider_intent != CLASS_ONLY:
-            await self._record_provider_intent_audit(
-                str(task_id), provider_intent, previous=task.provider_intent
-            )
-
-        reason = args.get("reason")
-        if reason:
-            async with self.db.immediate() as conn:
-                await self.db._upsert_meta(
-                    str(task_id), "route_reason", str(reason)[:400], conn=conn
-                )
-
-        resolved: list[str] = []
-        for gate in await self.db.get_gates_for_task(str(task_id)):
-            if gate["gate_type"] == "routing" and gate["status"] == "open":
-                await self.orchestrator._resolve_gate_and_emit(
-                    gate["id"],
-                    resolved_by="task_route",
-                    resolution=f"routed to {profile_id}",
-                )
-                resolved.append(gate["id"])
-        return {
-            "success": True,
-            "task_id": str(task_id),
-            "provider_intent": provider_intent,
-            "resolved_gate_ids": resolved,
-        }
 
 
 def _harness_provider(harness: str | None) -> str:

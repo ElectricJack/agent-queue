@@ -77,7 +77,7 @@ curl -s http://127.0.0.1:8081/api/project/create \
 ```
 
 ```text
-{"created":"demo","name":"demo","default_profile_id":null}
+{"created":"demo","name":"demo","assignment_playbook_id":"default-assignment-routing"}
 ```
 
 ```bash
@@ -95,7 +95,11 @@ curl -s http://127.0.0.1:8081/api/task/create \
   "integration_mode": null,
   "task_type": null,
   "profile_id": null,
+  "profile_source": null,
   "intelligence_class": null,
+  "route_source": "unrouted",
+  "class_hint": null,
+  "provider_intent": null,
   "preferred_workspace_id": null,
   "attachments": null,
   "skip_verification": false,
@@ -105,9 +109,14 @@ curl -s http://127.0.0.1:8081/api/task/create \
   "gate_id": null,
   "status": "READY",
   "reason": null,
+  "parent_id": null,
   "depends_on": []
 }
 ```
+
+The task is born `unrouted`: filing carries hints (`intelligence_class`,
+`task_type`), never a profile, and the project's router writes the route on
+the next cascade. Until it does, no worker can claim the task.
 
 ```bash
 curl -s http://127.0.0.1:8081/api/task/show \

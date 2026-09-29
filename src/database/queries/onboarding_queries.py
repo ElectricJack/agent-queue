@@ -88,7 +88,6 @@ class OnboardingQueryMixin:
                     discord_channel_id=project.discord_channel_id,
                     repo_url=project.repo_url,
                     repo_default_branch=project.repo_default_branch,
-                    default_profile_id=project.default_profile_id,
                     # Never unbound (routing spec §8): the command layer passes
                     # ``routing.default_router``; a caller that passes nothing
                     # gets that key's default.

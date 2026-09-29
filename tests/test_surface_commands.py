@@ -497,7 +497,7 @@ class TestPrime:
             project_id="pp",
             title="T",
             description="d",
-            profile_id="claude-agent",
+            profile_id="claude-agent", route_source="legacy",
         )
         await db.create_task(t)
 
@@ -541,7 +541,7 @@ class TestPrime:
             project_id="ps",
             title="T",
             description="d",
-            profile_id="claude-agent",
+            profile_id="claude-agent", route_source="legacy",
         )
         await db.create_task(t)
 
@@ -603,7 +603,7 @@ class TestPrime:
             project_id="pm",
             title="T",
             description="d",
-            profile_id="claude-agent",
+            profile_id="claude-agent", route_source="legacy",
         )
         await db.create_task(t)
 

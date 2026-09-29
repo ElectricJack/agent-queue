@@ -33,6 +33,7 @@ from src.sessions.harness_parser import Harness
 from src.sessions.harness_registry import HarnessRegistry
 from src.sessions.provider import SessionDiedDuringStartup
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 T0 = 1_789_958_640.0
 HOUR = 3600.0
@@ -70,14 +71,18 @@ class Probe:
         return self.answers.get(provider, "authenticated")
 
 
+#: Each project's worker, which its queued tasks are routed to.
+PROJECT_PROFILES = {"alpha": "std-codex", "beta": "std-codex", "gamma": "std-claude"}
+
+
 @pytest.fixture
 async def db():
     database = Database(lease_dsn("provider-escalation.db"))
     await database.initialize()
     await database.create_profile(AgentProfile(id="std-codex", name="c", harness="codex"))
     await database.create_profile(AgentProfile(id="std-claude", name="c", harness="claude"))
-    for pid, profile in (("alpha", "std-codex"), ("beta", "std-codex"), ("gamma", "std-claude")):
-        await database.create_project(Project(id=pid, name=pid, default_profile_id=profile))
+    for pid in PROJECT_PROFILES:
+        await database.create_project(Project(id=pid, name=pid))
     yield database
     await database.close()
 
@@ -116,6 +121,9 @@ class Env:
         return service
 
     async def queue(self, task_id: str, project_id: str, profile_id: str | None = None) -> None:
+        # Routed to the project's worker: an unrouted task is held by no
+        # provider (mandatory routing §8, no project default).
+        profile_id = profile_id or PROJECT_PROFILES[project_id]
         await self.db.create_task(
             Task(
                 id=task_id,
@@ -123,7 +131,7 @@ class Env:
                 title=task_id,
                 description="",
                 status=TaskStatus.READY,
-                profile_id=profile_id,
+                profile_id=profile_id, route_source=route_source_for(profile_id),
             )
         )
 

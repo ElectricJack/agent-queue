@@ -21,7 +21,7 @@ const project = {
   name: "Demo",
   repo_url: "git@github.com:org/demo.git",
   repo_default_branch: "main",
-  default_profile_id: "",
+  assignment_playbook_id: "default-assignment-routing",
   max_concurrent_agents: 2,
   credit_weight: 1,
   budget_limit: null,
@@ -36,9 +36,6 @@ describe("ProjectSubject", () => {
       isLoading: false,
       error: null,
     } as unknown as ReturnType<typeof hooks.useProject>);
-    vi.spyOn(hooks, "useProfiles").mockReturnValue({
-      data: [],
-    } as unknown as ReturnType<typeof hooks.useProfiles>);
   });
 
   it("renders repo_url read-only and enables Save once edited", async () => {
@@ -106,7 +103,6 @@ describe("ProjectSubject", () => {
         project_id: "demo",
         name: "Demo v2",
         repo_default_branch: "main",
-        default_profile_id: null,
         max_concurrent_agents: 2,
         credit_weight: 1,
         budget_limit: null,

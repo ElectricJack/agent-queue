@@ -146,9 +146,12 @@ an absent optional service or retired surface from being reported as either a
 false pass or a product regression.
 
 Tier 1 keeps assignment deterministic without an LLM: its generated execution
-profiles carry fixed `default_class` values, and the runner and formula fixtures
-write those intelligence classes explicitly onto tasks. This mirrors a completed
-assignment-routing decision and makes pool claims exercise the live session's
+profiles carry fixed `default_class` values, and the runner files each task
+with hints only, then writes the route the project's router would write — a
+`router` route whose candidates are every enabled profile of the class —
+straight onto the row (`route_task` in `scripts/e2e/smoke.py`). S3, S16 and S19
+use the operator's audited `aq task route-override` instead. This mirrors a
+completed routing decision and makes pool claims exercise the live session's
 class and model constraints.
 
 ### What the pieces are
@@ -246,15 +249,16 @@ are observable: the session row goes terminal, `pools.orphan_agents` stays
 clean — that check *does* read agent rows and would flag one left behind —
 and a replacement session appears.
 
-**S3 — worker-filed work.** A worker holding a task files another. It lands
-with a DEFINED creation result, pinned to the session's project, and carries
-no profile: the filer's profile bounds an explicit `--profile` but is never the
-child's route, so the filing is routed like any unrouted task. Its `discovered-from` edge and
-open `routing` gate keep `is_blocked` true; with this fixture's non-authoritative
-blocked-state projection, its status may promote to READY before the next read.
-`aq task route` — the only resolver for a routing gate, and what a triage agent
-would call — then writes the explicit intelligence class and resolves the gate;
-`aq task explain` stops reporting the task as gate-blocked.
+**S3 — worker-filed work.** A worker holding a task files another, as a root
+filing. It lands with a DEFINED creation result, pinned to the session's
+project, and carries no profile and no class: filing takes hints only and the
+filer's own route never carries over, so the filing is `unrouted` like any new
+task. Its `discovered-from` edge and open `routing` gate keep `is_blocked` true;
+with this fixture's non-authoritative blocked-state projection, its status may
+promote to READY before the next read. `aq task route-override` — standing in
+for the router, which Tier 1 runs without an LLM, and the only other writer
+that resolves a routing gate — then writes the profile and class and resolves
+the gate; `aq task explain` stops reporting the task as gate-blocked.
 *Regression it catches: filings escaping their project, arriving unrouted-but-
 runnable, or losing their provenance.*
 
@@ -341,8 +345,9 @@ adoption. S17 uses the same supported validation command in its development poli
 
 **S16 — provider failover.** The end-to-end check of
 [provider failover](../specs/provider-failover.md) (D23), against the fake
-provider kit below. It queues three `preferred`, one `pinned`, one
-`solo-high` and two `class_only` tasks on `prova`, then logs `prova` out.
+provider kit below. It queues six router-routed (`class_only`) tasks on
+`prova` — five at `std-high`, one at `solo-high` — and one pinned there with
+`aq task route-override`, then logs `prova` out.
 It asserts that `prova` turns `unauthenticated` within two launches and that
 nothing launches against it afterwards (counted from the provider's own
 `startup_dialog` evidence, because a startup death leaves no session row);
@@ -550,13 +555,17 @@ Separately — and for *both* tiers, since it costs nothing when no dialog
 appears — the generated config sets `sessions.dialog_budget_seconds: 45`.
 Only Tier 2 can ever hit it; see below.
 
-Then create the demand by hand and watch:
+Then create the demand by hand and watch. Filing takes hints only, never a
+profile: give each task a kind and the `worker` pool's class, `fast-high`, and
+the project's router routes it (both hints given, so no classification call).
+`aq task show <id>` names the route, and `aq task explain` says why a task is
+still unrouted:
 
 ```bash
 export AQ_API_URL=http://127.0.0.1:8099
-aq task create -p e2e -t "Fix the failing test in tests/test_math.py" -P worker
-aq task create -p e2e -t "Add a docstring to e2e_pkg.add" -P worker
-aq task create -p e2e -t "Note the package layout in README.md" -P worker
+aq task create -p e2e -t "Fix the failing test in tests/test_math.py" --type bugfix --intelligence-class fast-high
+aq task create -p e2e -t "Add a docstring to e2e_pkg.add" --type docs --intelligence-class fast-high
+aq task create -p e2e -t "Note the package layout in README.md" --type docs --intelligence-class fast-high
 
 aq pool status
 aq session list --lifecycle pool

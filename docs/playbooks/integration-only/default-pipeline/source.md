@@ -35,9 +35,12 @@ Trigger: `spec.approved`. No guard.
    The `description` instructs the agent to read
    the spec, list the project's existing tasks, emit `task_batch_propose` with
    the derived task graph, and iterate on validation errors. The dedup key is
-   what makes this exactly one ingest task per approved spec file. The explicit
-   class is the route: `ensure_task` suppresses `task.created`, so a task with
-   only a pinned profile would wait for a routing decision nothing requests.
+   what makes this exactly one ingest task per approved spec file. The
+   `spec-ingest` profile makes this a role task: `ensure_task` creates it with
+   `route_source` `role` and the role profile's `default_class` as its execution
+   class. The supplied `standard-high` is recorded as a class hint, not the
+   route. A role task needs no routing decision even though `ensure_task`
+   suppresses `task.created`.
    `created` and `reused` end the rule `completed`.
 
 ## Rule: proposal-ready-gate

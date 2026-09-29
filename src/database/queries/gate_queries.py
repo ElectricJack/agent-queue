@@ -145,9 +145,10 @@ class GateQueriesMixin:
         (clear-orbit).  Returns ``(None, False, set())`` when every waiter is
         routed, else what :meth:`_create_gate_on` returns.
 
-        The waiter rows are locked first, which serializes this with
-        ``task_route``'s guarded UPDATE and with competing gate creation, so a
-        late caller cannot gate a task routed a moment earlier.
+        The waiter rows are locked first, which serializes this with the
+        guarded UPDATE of a route write (``task_route_apply``,
+        ``task_route_override``) and with competing gate creation, so a late
+        caller cannot gate a task routed a moment earlier.
         """
         requested = sorted(set(waiter_task_ids))
         rows = (await conn.execute(

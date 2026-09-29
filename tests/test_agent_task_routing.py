@@ -63,7 +63,7 @@ def workers():
 def requested_task(**changes):
     return replace(Task(
         id="task", project_id="p", title="Use Codex Sol", description="",
-        status=TaskStatus.READY, profile_id="worker-deep-codex",
+        status=TaskStatus.READY, profile_id="worker-deep-codex", route_source="legacy",
         intelligence_class="deep-high", created_at=1,
     ), **changes)
 
@@ -527,37 +527,11 @@ def test_suppressed_worker_is_not_scheduled_and_not_called_incompatible():
     assert all(reason["code"] != "no_compatible_agent" for reason in reasons)
 
 
-def test_classified_codex_project_default_binds_provider_without_task_profile():
-    state = routing_state(requested_task(profile_id=None))
-    state.projects[0].default_profile_id = "worker-deep-codex"
-    actions = Scheduler.schedule(state)
-    assert [action.agent_id for action in actions] == ["sol"]
-
-
-def test_classified_codex_project_default_waits_when_only_claude_is_available():
-    state = routing_state(requested_task(profile_id=None), [workers()[1]])
-    state.projects[0].default_profile_id = "worker-deep-codex"
-    assert Scheduler.schedule(state) == []
-
-
-def test_unclassified_harness_only_project_default_keeps_legacy_global_routing():
+def test_an_unclassified_unprofiled_task_keeps_legacy_global_routing():
     profiles = routing_profiles()
     profiles["legacy"] = AgentProfile(id="legacy", name="Legacy", harness="claude")
     state = routing_state(requested_task(profile_id=None, intelligence_class=None), profiles=profiles)
-    state.projects[0].default_profile_id = "legacy"
     assert [action.agent_id for action in Scheduler.schedule(state)] == ["triage"]
-
-
-def test_project_default_fixed_model_is_binding_without_a_class():
-    profiles = routing_profiles()
-    profiles["fixed-sol"] = AgentProfile(
-        id="fixed-sol", name="Fixed Sol", harness="codex", model="gpt-5.6-sol",
-    )
-    state = routing_state(
-        requested_task(profile_id=None, intelligence_class=None), profiles=profiles,
-    )
-    state.projects[0].default_profile_id = "fixed-sol"
-    assert [action.agent_id for action in Scheduler.schedule(state)] == ["sol"]
 
 
 def test_inherited_model_does_not_restore_another_providers_fallback():

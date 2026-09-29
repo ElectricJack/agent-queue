@@ -55,7 +55,7 @@ async def task(db):
         project_id="proj-1",
         title="Fix the bug",
         description="Do the thing, carefully.",
-        profile_id="coder",
+        profile_id="coder", route_source="legacy",
     )
     await db.create_task(t)
     return t
@@ -73,12 +73,10 @@ def _write(path, content: str) -> None:
 
 
 class TestGoldenAssembly:
-    async def test_project_default_profile_supplies_role_sections(self, db, config):
-        """A dispatched task may inherit its profile without storing it on the task row."""
+    async def test_an_unrouted_task_takes_no_role_sections(self, db, config):
+        """An unrouted task takes no role from any profile (mandatory routing §8)."""
         await db.create_profile(AgentProfile(id="coder", name="Coder"))
-        await db.create_project(
-            Project(id="default-profile-project", name="Default Profile", default_profile_id="coder")
-        )
+        await db.create_project(Project(id="default-profile-project", name="Default Profile"))
         await db.create_task(
             Task(
                 id="default-profile-task",
@@ -105,8 +103,8 @@ class TestGoldenAssembly:
         doc = await PrimeRenderer(db, config).render_for_task("default-profile-task")
         by_key = {section.key: section.body for section in doc.sections}
 
-        assert by_key["role"] == "You are the default coder."
-        assert by_key["project_role"] == "Use the project conventions."
+        assert "You are the default coder." not in by_key.get("role", "")
+        assert "Use the project conventions." not in by_key.get("project_role", "")
 
     async def test_role_and_project_role_sections_from_vault_files(self, db, config, task):
         _write(

@@ -38,6 +38,7 @@ from src.orchestrator import Orchestrator
 from src.sessions import SessionProviderRegistry
 from src.sessions.reconciler import SessionReconciler
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 PROJECT_ID = "proj"
 NOW = time.time()
@@ -102,6 +103,7 @@ async def handler(db, config):
 
 async def mktask(db, tid, status=TaskStatus.READY, **kw):
     kw.setdefault("intelligence_class", "standard-medium")
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     await db.create_task(
         Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid, status=status, **kw)
     )
@@ -220,8 +222,7 @@ class TestClaim:
         await pool_session(db, tmp_path)
         async with db.immediate() as conn:
             candidate = await db.select_ready_for_profile(
-                conn, project_id=PROJECT_ID, profile_id="worker",
-                default_profile_id="worker", agent_id="agent-1",
+                conn, project_id=PROJECT_ID, profile_id="worker", agent_id="agent-1",
             )
             assert candidate == "epic"
             await db.mark_container("epic", conn=conn)
@@ -242,8 +243,7 @@ class TestClaim:
         async def candidate():
             async with db.immediate() as other:
                 return await db.select_ready_for_profile(
-                    other, project_id=PROJECT_ID, profile_id="worker",
-                    default_profile_id="worker", agent_id="agent-1",
+                    other, project_id=PROJECT_ID, profile_id="worker", agent_id="agent-1",
                 )
 
         async with db.immediate() as conn:
@@ -1464,7 +1464,8 @@ class TestContainerClaims:
         # one anyway, so the claims below prove the container flag alone keeps
         # it off the frontier.
         assert await db.update_task_routing(
-            epic, profile_id="worker", intelligence_class=None, preferred_workspace_id=None
+            epic, profile_id="worker",
+            route_source="legacy", intelligence_class=None, preferred_workspace_id=None
         )
         async with db._engine.connect() as conn:
             assert await db.is_container(epic, conn=conn)

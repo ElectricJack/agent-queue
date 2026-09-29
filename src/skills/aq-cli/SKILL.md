@@ -139,9 +139,12 @@ aq agent list-profiles                    # the profiles that exist here
 aq system list-intelligence-classes       # the classes that exist here
 ```
 
-Worker profile IDs are installation-specific. For ordinary queued work, prefer
-an enabled `lifecycle: pool` profile from `aq agent list-profiles`; do not
-infer a route from an ID prefix or an example in documentation. Shipped
+Nobody files queued work on a profile: the project's router picks every
+task's profile, provider and model, and a filing that names one is refused
+(`routing.choice_forbidden`). A filer gives the kind (`--type`) and, when it
+matters, an intelligence-class hint (`--intelligence-class`); see the aq-tasks
+skill. Worker profile IDs are installation-specific, so never infer one from
+an ID prefix or an example in documentation. Shipped
 intelligence classes are `fast-{low,high}`, `standard-high`, `deep-{low,high}`
 and `astra-{low,high}` — Astra is OpenAI-only, and nothing from the deep tier
 upward runs on Gemini. Anything you see in an example is not a guarantee that

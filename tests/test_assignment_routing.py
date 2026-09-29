@@ -2,9 +2,9 @@
 
 Spec: docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md.
 The orchestrator reads ``tasks.intelligence_class`` and emits
-``task.route_needed`` for anything missing a class or a profile; the
+``task.route_needed`` for work its router still owes a route; the
 ``default-assignment-routing`` playbook does the deciding through
-``task_route_options`` and ``task_route``.
+``task_route_plan`` and ``task_route_apply`` (tests/test_routing_router.py).
 """
 from __future__ import annotations
 
@@ -13,14 +13,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src.assignment_routing import EffectiveAssignmentRoute, explicit_route, explicit_routes
-from src.commands.routing_commands import build_route_options, profile_for_class
-from src.config import DatabaseConfig, AppConfig, DiscordConfig
+from src.config import AppConfig, DatabaseConfig, DiscordConfig
 from src.database import Database
 from src.intelligence_classes import IntelligenceClass
-from src.models import Agent, AgentProfile, AgentState, Project, ProjectStatus, Task, TaskStatus
+from src.models import Agent, AgentProfile, Project, ProjectStatus, Task, TaskStatus
 from src.orchestrator import Orchestrator
 from src.orchestrator.route_needed import ROUTE_NEEDED_INTERVAL_SECONDS
 from src.sessions.harness_parser import Harness
+from tests.assignment_routing_helpers import route_source_for
 from tests.db_fixtures import lease_dsn
 
 CLASSES = {
@@ -59,7 +59,7 @@ def test_explicit_route_is_the_task_class_or_nothing() -> None:
     assert set(routes) == {"t2"}
 
 
-# -- the option catalog and the deterministic profile pick --------------------
+# -- a real handler -----------------------------------------------------------
 
 
 def _profiles():
@@ -77,63 +77,6 @@ def _profiles():
     ]
 
 
-def _registry():
-    from src.sessions.harness_registry import HarnessRegistry
-
-    registry = HarnessRegistry()
-    for harness in ("claude", "codex"):
-        registry.upsert(Harness(id=harness, name=harness, command=harness, model_flag="--model"))
-    return registry
-
-
-def test_build_route_options_is_one_row_per_class_provider_profile() -> None:
-    agents = [Agent(id="a1", name="a", profile_id="worker-generic", state=AgentState.IDLE)]
-    rows = build_route_options("p", _profiles(), agents, _registry(), CLASSES)
-    keyed = {(r["intelligence_class"], r["provider"], r["profile_id"]): r for r in rows}
-    assert ("deep-low", "anthropic", "deep-low-claude") in keyed
-    assert ("deep-low", "openai", "deep-low-codex") in keyed
-    assert ("standard-medium", "anthropic", "standard-medium-claude") in keyed
-    # a generic task-lifecycle profile offers every class its provider maps
-    assert ("fast-low", "anthropic", "worker-generic") in keyed
-    assert keyed[("fast-low", "anthropic", "worker-generic")]["idle_count"] == 1
-    # control profiles, retired ids and class-less pools offer nothing
-    assert not [r for r in rows if r["profile_id"] in {"reviewer", "project:old:thing", "pool-no-class"}]
-    assert keyed[("deep-low", "anthropic", "deep-low-claude")]["configured_capacity"] == 2
-    assert rows == sorted(rows, key=lambda r: (r["intelligence_class"], r["provider"], r["profile_id"]))
-
-
-def test_profile_for_class_prefers_pin_then_pool_on_default_provider_then_id() -> None:
-    rows = build_route_options("p", _profiles(), [], _registry(), CLASSES)
-    assert profile_for_class(rows, "deep-low", prefer_provider="anthropic") == "deep-low-claude"
-    assert profile_for_class(rows, "deep-low", prefer_provider="openai") == "deep-low-codex"
-    assert profile_for_class(rows, "deep-low") == "deep-low-claude"
-    assert profile_for_class(rows, "deep-low", pinned_profile_id="deep-low-codex") == "deep-low-codex"
-    # a pin that cannot serve the class is ignored
-    assert profile_for_class(rows, "deep-low", pinned_profile_id="standard-medium-claude",
-                             prefer_provider="anthropic") == "deep-low-claude"
-    # pools beat generic task profiles; only the generic one runs fast-low
-    assert profile_for_class(rows, "fast-low") == "worker-generic"
-    assert profile_for_class(rows, "nope") is None
-
-
-def test_profile_for_class_skips_disabled_pools_but_preserves_a_compatible_pin() -> None:
-    profiles = _profiles()
-    disabled = next(profile for profile in profiles if profile.id == "deep-low-claude")
-    disabled.enabled = False
-    rows = build_route_options("p", profiles, [], _registry(), CLASSES)
-
-    # An automatic choice moves to the enabled provider without changing the
-    # requested intelligence class.  An operator's compatible pin is still
-    # authoritative so it can receive a disabled-pool diagnostic.
-    assert profile_for_class(rows, "deep-low", prefer_provider="anthropic") == "deep-low-codex"
-    assert profile_for_class(
-        rows, "deep-low", pinned_profile_id="deep-low-claude", prefer_provider="anthropic",
-    ) == "deep-low-claude"
-
-
-# -- task_route_options + task_route through a real handler ------------------
-
-
 @pytest.fixture
 async def orch(tmp_path):
     db = Database(lease_dsn("routing.db"))
@@ -142,9 +85,7 @@ async def orch(tmp_path):
         if ":" in profile.id:
             continue
         await db.create_profile(profile)
-    await db.create_project(
-        Project(id="p", name="Project", default_profile_id="standard-medium-claude")
-    )
+    await db.create_project(Project(id="p", name="Project"))
     cfg = AppConfig(
         discord=DiscordConfig(bot_token="test", guild_id="1"),
         workspace_dir=str(tmp_path / "work"), data_dir=str(tmp_path / "data"),
@@ -175,6 +116,7 @@ def handler(orch):
 
 
 async def _create(db, task_id: str, **kw) -> Task:
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     await db.create_task(Task(
         id=task_id, project_id="p", title=task_id, description="d",
         status=TaskStatus.READY, **kw,
@@ -182,145 +124,18 @@ async def _create(db, task_id: str, **kw) -> Task:
     return await db.get_task(task_id)
 
 
-async def test_route_options_undecided_when_no_class(handler, orch):
+async def test_an_override_writes_class_profile_and_reason(handler, orch):
     await _create(orch.db, "t")
-    res = await handler._cmd_task_route_options({"task_id": "t"})
-    assert res["success"] and res["outcome"] == "undecided"
-    assert res["intelligence_class"] is None and res["explicit_profile_id"] is None
-    assert res["default_profile_id"] == "standard-medium-claude"
-    assert {r["profile_id"] for r in res["options"]} >= {"deep-low-claude", "standard-medium-claude"}
-
-
-async def test_route_options_explicit_names_the_serving_profile(handler, orch):
-    await _create(orch.db, "t", intelligence_class="deep-low")
-    res = await handler._cmd_task_route_options({"task_id": "t"})
-    assert res["outcome"] == "explicit"
-    assert res["explicit_profile_id"] == "deep-low-claude"
-
-
-async def test_route_options_excludes_disabled_pools_for_auto_routes_but_keeps_pins(handler, orch):
-    await orch.db.update_profile("deep-low-claude", enabled=False)
-    await _create(orch.db, "automatic", intelligence_class="deep-low")
-    automatic = await handler._cmd_task_route_options({"task_id": "automatic"})
-    assert automatic["outcome"] == "explicit"
-    assert automatic["explicit_profile_id"] == "deep-low-codex"
-    assert {row["profile_id"] for row in automatic["options"]} == {
-        "standard-medium-claude", "deep-low-codex", "worker-generic",
-    }
-    assert [row["profile_id"] for row in automatic["disabled_options"]] == ["deep-low-claude"]
-
-    # A named profile is a preference (provider-failover D8): it keeps its
-    # route even while its pool is disabled.
-    await _create(
-        orch.db, "pinned", intelligence_class="deep-low", profile_id="deep-low-claude",
-        provider_intent="preferred",
-    )
-    pinned = await handler._cmd_task_route_options({"task_id": "pinned"})
-    assert pinned["outcome"] == "already_routed"
-    assert pinned["explicit_profile_id"] == "deep-low-claude"
-
-    await _create(
-        orch.db, "profile-pin", profile_id="deep-low-claude", provider_intent="preferred",
-    )
-    profile_pin = await handler._cmd_task_route_options({"task_id": "profile-pin"})
-    assert profile_pin["outcome"] == "no_options"
-    assert profile_pin["options"] == []
-    assert [row["profile_id"] for row in profile_pin["disabled_options"]] == ["deep-low-claude"]
-
-    # A class_only placement is routing's own output and constrains nothing:
-    # its disabled pool is simply not offered.
-    await _create(
-        orch.db, "placed", intelligence_class="deep-low", profile_id="deep-low-claude",
-    )
-    placed = await handler._cmd_task_route_options({"task_id": "placed"})
-    assert placed["outcome"] == "explicit"
-    assert placed["explicit_profile_id"] == "deep-low-codex"
-
-
-async def test_route_options_reports_no_automatic_route_when_all_compatible_profiles_are_disabled(
-    handler, orch,
-):
-    await orch.db.update_profile("deep-low-claude", enabled=False)
-    await orch.db.update_profile("deep-low-codex", enabled=False)
-    await orch.db.update_profile("worker-generic", enabled=False)
-    await _create(orch.db, "all-disabled", intelligence_class="deep-low")
-
-    result = await handler._cmd_task_route_options({"task_id": "all-disabled"})
-    assert result["outcome"] == "no_options"
-    assert not [row for row in result["options"] if row["intelligence_class"] == "deep-low"]
-    assert {row["profile_id"] for row in result["disabled_options"]} == {
-        "deep-low-claude", "deep-low-codex", "worker-generic",
-    }
-
-
-async def test_route_options_already_routed_and_no_options(handler, orch):
-    await _create(orch.db, "done", intelligence_class="deep-low", profile_id="deep-low-codex")
-    res = await handler._cmd_task_route_options({"task_id": "done"})
-    assert res["outcome"] == "already_routed" and res["explicit_profile_id"] == "deep-low-codex"
-
-    await _create(orch.db, "orphan", intelligence_class="spark-ultra")
-    res = await handler._cmd_task_route_options({"task_id": "orphan"})
-    assert res["outcome"] == "no_options"
-
-    res = await handler._cmd_task_route_options({"task_id": "missing"})
-    assert res["success"] is False
-
-
-@pytest.mark.parametrize("profile_id", [None, "deep-low-claude"])
-async def test_project_preferred_provider_narrows_automatic_routes(handler, orch, profile_id):
-    await orch.db.update_project("p", preferred_provider="codex")
-    await _create(orch.db, "preferred", intelligence_class="deep-low", profile_id=profile_id)
-    result = await handler._cmd_task_route_options({"task_id": "preferred"})
-    assert result["outcome"] == "explicit"
-    assert result["explicit_profile_id"] == "deep-low-codex"
-    assert {row["profile_id"] for row in result["options"]} == {"deep-low-codex"}
-    assert (await orch.db.get_task("preferred")).profile_id == profile_id  # read only
-
-    await _create(orch.db, "undecided")
-    undecided = await handler._cmd_task_route_options({"task_id": "undecided"})
-    assert undecided["outcome"] == "undecided"
-    assert {row["profile_id"] for row in undecided["options"]} == {"deep-low-codex"}
-
-
-@pytest.mark.parametrize("intent", ["preferred", "pinned"])
-async def test_project_preference_preserves_explicit_task_routes(handler, orch, intent):
-    await orch.db.update_project("p", preferred_provider="codex")
-    await _create(orch.db, "explicit", intelligence_class="deep-low",
-                  profile_id="deep-low-claude", provider_intent=intent)
-    result = await handler._cmd_task_route_options({"task_id": "explicit"})
-    assert result["outcome"] == "already_routed"
-    assert result["explicit_profile_id"] == "deep-low-claude"
-    assert {row["profile_id"] for row in result["options"]} == {"deep-low-claude"}
-
-
-@pytest.mark.parametrize("cause", ["disabled", "unavailable", "no_mapping"])
-async def test_project_preference_never_offers_another_provider(handler, orch, cause):
-    await orch.db.update_project("p", preferred_provider="codex")
-    if cause == "disabled":
-        await orch.db.update_profile("deep-low-codex", enabled=False)
-    elif cause == "unavailable":
-        await orch.provider_availability.set_state("codex", "disabled", by="human:test")
-    await _create(orch.db, "held", intelligence_class=(
-        "fast-low" if cause == "no_mapping" else "deep-low"
-    ), profile_id="deep-low-claude")
-    result = await handler._cmd_task_route_options({"task_id": "held"})
-    assert result["outcome"] == ("held" if cause == "unavailable" else "no_options")
-    assert result["explicit_profile_id"] is None
-    assert all(row["profile_id"] == "deep-low-codex" for row in result["options"])
-
-
-async def test_task_route_writes_class_profile_and_reason(handler, orch):
-    await _create(orch.db, "t")
-    res = await handler._cmd_task_route({
+    res = await handler._cmd_task_route_override({
         "task_id": "t", "profile_id": "deep-low-claude",
-        "intelligence_class": "deep-low", "reason": "hard problem",
+        "intelligence_class": "deep-low", "reason": "hard problem, pinned by hand",
     })
     assert res["success"], res
     task = await orch.db.get_task("t")
     assert (task.intelligence_class, task.profile_id) == ("deep-low", "deep-low-claude")
     explained = await handler._cmd_explain_task({"task_id": "t"})
-    assert explained["assignment_route"]["reason"] == "hard problem"
-    assert explained["assignment_route"]["source"] == "explicit"
+    assert "hard problem, pinned by hand" in explained["assignment_route"]["reason"]
+    assert explained["assignment_route"]["source"] == "override"
     # the pool that runs the class now sees the demand
     assert await orch.db.count_ready_by_profile("p") == {"deep-low-claude": 1}
 
@@ -379,7 +194,8 @@ async def test_route_needed_is_emitted_once_per_interval_for_unrouted_work(orch)
 
     # once routed, the task drops out and its throttle entry is forgotten
     await orch.db.update_task_routing(
-        "no-class", profile_id="deep-low-claude", intelligence_class="deep-low",
+        "no-class", profile_id="deep-low-claude",
+        route_source="legacy", intelligence_class="deep-low",
         preferred_workspace_id=None,
     )
     orch._route_needed_emitted["class-only"] -= ROUTE_NEEDED_INTERVAL_SECONDS + 1

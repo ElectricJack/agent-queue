@@ -789,8 +789,8 @@ class DatabaseBackend(Protocol):
         *,
         project_id: str,
         profile_id: str,
-        default_profile_id: str | None,
         agent_id: str,
+        router_ready: bool = False,
         task_id: str | None = None,
     ) -> str | None: ...
     async def take_task(self, conn, task_id: str, *, agent_id: str, now: float) -> Task | None: ...
@@ -858,7 +858,9 @@ class DatabaseBackend(Protocol):
     async def reserve_filing(
         self, conn, task_id: str, *, max_filings: int, count: int = 1
     ) -> bool: ...
-    async def count_ready_by_profile(self, project_id: str) -> dict[str | None, int]: ...
+    async def count_ready_by_profile(
+        self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None
+    ) -> dict[str | None, int]: ...
 
     # --- Router (mandatory-routing spec §6.4-§6.6) ---
 

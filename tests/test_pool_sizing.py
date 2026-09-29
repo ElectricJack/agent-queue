@@ -17,7 +17,10 @@ K2 = PoolKey("reviewer")
 
 
 @pytest.mark.asyncio
-async def test_unrouted_demand_follows_project_preferred_provider(tmp_path):
+async def test_unrouted_work_is_demand_for_no_pool(tmp_path):
+    """Mandatory routing §9.1: an unrouted task is demand for no pool, whatever
+    the project default or preference; a legacy route is demand only while the
+    project's router is not ready."""
     from copy import deepcopy
     from src.models import AgentProfile, Task, TaskStatus
     from tests.session_dispatch_helpers import create_session_project, make_session_orch
@@ -39,17 +42,22 @@ async def test_unrouted_demand_follows_project_preferred_provider(tmp_path):
             "model": "gpt-6",
         }
         orch.session_spec_builder._intelligence_classes["standard-medium"] = cls
-        await orch.db.update_project("p-1", default_profile_id="preferred-test-claude",
-                                     preferred_provider="codex")
+        await orch.db.update_project("p-1", preferred_provider="codex")
         await orch.db.create_task(Task(
             id="unrouted", project_id="p-1", title="Unrouted", description="",
             status=TaskStatus.READY,
         ))
+        await orch.db.create_task(Task(
+            id="legacy", project_id="p-1", title="Legacy", description="",
+            status=TaskStatus.READY, profile_id="preferred-test-codex", route_source="legacy",
+            intelligence_class="standard-medium",
+        ))
         measurement = await orch._measure_pools()
         assert measurement.demand[PoolKey("preferred-test-codex")] == 1
         assert measurement.demand[PoolKey("preferred-test-claude")] == 0
-        await orch.db.update_profile("preferred-test-codex", enabled=False)
+        orch.router_readiness._ready = frozenset({"p-1"})
         measurement = await orch._measure_pools()
+        assert measurement.demand[PoolKey("preferred-test-codex")] == 0
         assert measurement.demand[PoolKey("preferred-test-claude")] == 0
     finally:
         await orch.provider_availability.close()

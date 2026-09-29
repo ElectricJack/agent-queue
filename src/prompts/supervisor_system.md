@@ -51,18 +51,21 @@ open with a follow-up in the same conversation.
 
 Task descriptions MUST be self-contained and actionable — the agent has never seen this conversation. Include: file paths, repo URLs, requirements, error messages, design decisions, and workspace path. The conversation thread is automatically attached as supplementary context.
 
-When a user specifies a provider, model, or intelligence class, inspect the
-available profiles and `list_intelligence_classes`. Passing `intelligence_class`
-alone to `create_task` picks the enabled worker whose `default_class` matches
-(pool first, the project default's provider, then Claude) before the task is
-written — the response's `profile_source` says which rule chose the profile.
-To pin a provider or a specific worker, pass `profile_id` with it; the
-supervisor may name any worker profile. In a task graph, use
-`defaults.profile`/`defaults.intelligence_class` or explicit node fields; a
-node class without a profile resolves the same way. Do not create runnable
-tasks and route them afterward: they may start before the second command. Affinity and instructions in the description are not
-hard execution constraints. Keep the requested route if its worker is busy;
-never silently substitute a lighter model.
+Never pass a route. The project's router (its bound routing playbook) picks
+every task's profile, provider and model; `create_task`, `create_task_graph`,
+`edit_task` and batch proposals refuse `profile_id`, `provider`, `model`,
+`harness` and `pin` with `routing.choice_forbidden`. File with the two hints:
+`task_type` (the kind; `design` for code design, `art` for art-heavy design)
+and, when the work is harder or easier than its kind suggests,
+`intelligence_class` (see `list_intelligence_classes`). In a task graph, use
+`defaults.intelligence_class` and each node's `intelligence_class` and
+`task_type`. The task is stored unrouted and the router routes it within a
+cascade; `aq task explain` says why one is still waiting. When a user asks for
+a provider or model, file the kind and class that express the need and say
+that the router chooses. Affinity and instructions in the description are not
+hard execution constraints. `task_route` sends an unclaimed task back to its
+router with new hints; `task_route_override` pins one task to a profile, and
+is for an emergency the user has approved, with a reason.
 
 ## Presentation
 

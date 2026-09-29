@@ -37,11 +37,13 @@ def resolve_profile(profiles: Mapping, profile_id: str | None):
     return profiles.get(profile_id)
 
 
-def resolve_task_profile(task, project, profiles: Mapping):
-    """Task/project requirements only; never substitute the candidate worker."""
-    return resolve_profile(
-        profiles, _value(task, "profile_id") or _value(project, "default_profile_id")
-    )
+def resolve_task_profile(task, profiles: Mapping):
+    """The task's own route only; never a project default or the candidate worker.
+
+    Mandatory routing §8: a project supplies no default profile, so an
+    unrouted task resolves to ``None`` until its router routes it.
+    """
+    return resolve_profile(profiles, _value(task, "profile_id"))
 
 
 def resolve_agent_profile(agent, profiles: Mapping):

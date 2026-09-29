@@ -498,9 +498,9 @@ class TestSubtasksNameNoRoute:
         assert await db.list_tasks(project_id="p1") == []
 
     @pytest.mark.parametrize("dry_run", [True, False])
-    async def test_a_project_default_is_not_consulted(self, setup, dry_run):
+    async def test_no_profile_is_consulted_for_an_unrouted_node(self, setup, dry_run):
+        """A node is filed unrouted, so no profile's grants are checked (§8)."""
         handler, db, _vault = setup
-        await db.update_project("p1", default_profile_id="coding")
         await db.update_profile("coding", aq_commands=["task_close"])
         result = await handler._cmd_create_task_graph(
             {"project_id": "p1", "graph": _subtask_graph(), "dry_run": dry_run}

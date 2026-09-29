@@ -66,12 +66,10 @@ def sync_detailed(
     body: CreateProfileRequest,
 ) -> Response[CreateProfileResponse | CreateProfileResponse422]:
     """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
-    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
-    defaults (default_profile_id).
+    classes, and system prompt additions. A project's router assigns worker profiles to tasks.
 
      Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
-    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
-    defaults (default_profile_id).
+    classes, and system prompt additions. A project's router assigns worker profiles to tasks.
 
     Args:
         body (CreateProfileRequest):
@@ -101,12 +99,10 @@ def sync(
     body: CreateProfileRequest,
 ) -> CreateProfileResponse | CreateProfileResponse422 | None:
     """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
-    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
-    defaults (default_profile_id).
+    classes, and system prompt additions. A project's router assigns worker profiles to tasks.
 
      Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
-    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
-    defaults (default_profile_id).
+    classes, and system prompt additions. A project's router assigns worker profiles to tasks.
 
     Args:
         body (CreateProfileRequest):
@@ -131,12 +127,10 @@ async def asyncio_detailed(
     body: CreateProfileRequest,
 ) -> Response[CreateProfileResponse | CreateProfileResponse422]:
     """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
-    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
-    defaults (default_profile_id).
+    classes, and system prompt additions. A project's router assigns worker profiles to tasks.
 
      Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
-    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
-    defaults (default_profile_id).
+    classes, and system prompt additions. A project's router assigns worker profiles to tasks.
 
     Args:
         body (CreateProfileRequest):
@@ -164,12 +158,10 @@ async def asyncio(
     body: CreateProfileRequest,
 ) -> CreateProfileResponse | CreateProfileResponse422 | None:
     """Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
-    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
-    defaults (default_profile_id).
+    classes, and system prompt additions. A project's router assigns worker profiles to tasks.
 
      Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence
-    classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project
-    defaults (default_profile_id).
+    classes, and system prompt additions. A project's router assigns worker profiles to tasks.
 
     Args:
         body (CreateProfileRequest):

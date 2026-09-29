@@ -803,6 +803,18 @@ _CANONICAL_PAYLOADS.update(
             "run_id": "run-1",
             "adjusted_at_apply": False,
         },
+        "task.route_overridden": {
+            "task_id": "t-1",
+            "project_id": "proj-1",
+            "title": "Implement feature X",
+            "profile_id": "standard-high-claude",
+            "intelligence_class": "standard-high",
+            "provider": "anthropic",
+            "by": "human:local-operator",
+            "reason": "codex keeps failing this build; pin it while we look",
+            "previous_profile_id": "standard-high-codex",
+            "previous_route_source": "router",
+        },
     }
 )
 

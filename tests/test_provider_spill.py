@@ -601,3 +601,48 @@ def test_spill_round_trips_through_load_config(tmp_path):
     }))
     spill = load_config(str(path)).provider_failover.spill
     assert (spill.enabled, spill.after_seconds, spill.max_per_sweep) == (False, 900, 2)
+
+
+# -- mandatory routing §6.8: a routed task spills only to its candidates -----------------
+
+
+def test_a_routed_task_spills_only_to_its_own_candidates():
+    """The router recorded opencode then codex: claude has room, but it is no candidate."""
+    view = _view(
+        _saturated_opencode(),
+        _roomy_claude(),
+        _pool("std-high-codex", max_active=4, p=_proj(busy=1)),
+    )
+    routed = (("std-high-opencode", "std-high"), ("std-high-codex", "std-high"))
+    [d] = _plan([_cand("t1", route_candidates=routed)], view)
+    assert (d.action, d.to_profile_id) == ("move", "std-high-codex")
+
+    only_itself = (("std-high-opencode", "std-high"),)
+    [held] = _plan([_cand("t2", route_candidates=only_itself)], view)
+    assert (held.action, held.kind) == ("hold", "spill_no_target")
+    assert "route candidate" in held.detail
+
+
+def test_a_spill_to_a_candidate_writes_the_candidates_class():
+    view = _view(
+        _saturated_opencode(),
+        _pool("deep-high-claude", max_active=4, p=_proj(busy=1)),
+    )
+    routed = (("std-high-opencode", "std-high"), ("deep-high-claude", "deep-high"))
+    [d] = _plan([_cand("t1", intelligence_class="std-high", route_candidates=routed)], view)
+    assert (d.action, d.to_profile_id, d.to_class) == ("move", "deep-high-claude", "deep-high")
+
+
+def test_spill_keeps_the_preferred_provider_filter_inside_the_candidates():
+    view = _view(
+        _saturated_opencode(),
+        _roomy_claude(),
+        _pool("std-high-codex", max_active=4, p=_proj(busy=1)),
+    )
+    routed = (
+        ("std-high-opencode", "std-high"),
+        ("std-high-codex", "std-high"),
+        ("std-high-claude", "std-high"),
+    )
+    [d] = _plan([_cand("t1", route_candidates=routed)], view, preferred={"p": "claude"})
+    assert (d.action, d.to_profile_id) == ("move", "std-high-claude")

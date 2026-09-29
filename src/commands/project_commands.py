@@ -86,45 +86,6 @@ class ProjectCommandsMixin:
             return {"error": "'name' is required to create a project"}
         project_id = name.lower().replace(" ", "-")
 
-        # Stamp a default profile up front.  Without one, any task created
-        # without an explicit profile_id (playbook- and supervisor-created
-        # tasks, plan splits) goes READY and never gets an agent — the
-        # AgentReconciler refuses to build agents for an unresolvable
-        # profile_id.  An explicit arg wins; otherwise pick the system
-        # default.  None here is fine (no profiles synced yet) — the
-        # reconciler backfills it later.
-        default_profile_id = args.get("default_profile_id")
-        from src.profiles.catalog import active_catalog_profile_ids, shipped_profile_catalog
-
-        eligible_profile_ids = active_catalog_profile_ids(self.config.data_dir)
-        catalog_ids = {profile.id for profile in shipped_profile_catalog()}
-        if (
-            default_profile_id
-            and eligible_profile_ids is not None
-            and default_profile_id in catalog_ids - eligible_profile_ids
-        ):
-            return {
-                "error": (
-                    f"default profile '{default_profile_id}' is unavailable on this host; "
-                    "set up its provider and rerun aq install, or choose an active profile"
-                )
-            }
-        if default_profile_id:
-            profile = await self.db.get_profile(default_profile_id)
-            if profile is None:
-                return {"error": f"Profile '{default_profile_id}' not found"}
-            from src.profiles.task_execution import task_execution_profile_error
-
-            if error := task_execution_profile_error(profile):
-                return {"error": f"project default is invalid: {error}"}
-        if not default_profile_id:
-            from src.profiles.default_selection import select_default_profile_id
-
-            default_profile_id = select_default_profile_id(
-                await self.db.list_profiles(),
-                eligible_profile_ids=eligible_profile_ids,
-            )
-
         project = Project(
             id=project_id,
             name=name,
@@ -132,8 +93,8 @@ class ProjectCommandsMixin:
             max_concurrent_agents=args.get("max_concurrent_agents", 2),
             repo_url=args.get("repo_url", ""),
             repo_default_branch=args.get("default_branch", "main"),
-            default_profile_id=default_profile_id,
-            # Every project is bound to a router (mandatory-routing spec §8).
+            # Every project is bound to a router and has no default profile
+            # (mandatory-routing spec §8): the router routes every task.
             assignment_playbook_id=self.config.routing.default_router,
         )
         await self.db.create_project(project)
@@ -160,7 +121,7 @@ class ProjectCommandsMixin:
         return {
             "created": project_id,
             "name": project.name,
-            "default_profile_id": default_profile_id,
+            "assignment_playbook_id": project.assignment_playbook_id,
         }
 
     async def _cmd_pause_project(self, args: dict) -> dict:
@@ -407,30 +368,11 @@ class ProjectCommandsMixin:
             updates["max_concurrent_agents"] = args["max_concurrent_agents"]
         if "budget_limit" in args:
             updates["budget_limit"] = args["budget_limit"]
-        if "default_profile_id" in args:
-            dpid = args["default_profile_id"]
-            if dpid is not None:
-                profile = await self.db.get_profile(dpid)
-                if not profile:
-                    return {"error": f"Profile '{dpid}' not found"}
-                from src.profiles.task_execution import task_execution_profile_error
-
-                if error := task_execution_profile_error(profile):
-                    return {"error": f"project default is invalid: {error}"}
-            updates["default_profile_id"] = dpid  # None clears it
         if "assignment_playbook_id" in args:
-            playbook_id = args["assignment_playbook_id"]
-            if playbook_id is not None:
-                from src.playbooks.services import DatabaseActivationSource
-
-                ref = await DatabaseActivationSource(self.db).artifact_for(
-                    playbook_id, scope_identifier=project.id
-                )
-                if ref is None:
-                    return {"error": f"Assignment playbook '{playbook_id}' has no ready V2 activation"}
-                # Any ready pipeline may serve as a project's assignment
-                # playbook; a routing policy is ordinary authored policy.
-            updates["assignment_playbook_id"] = playbook_id
+            refusal = await self._router_binding_refusal(project, args["assignment_playbook_id"])
+            if refusal is not None:
+                return refusal
+            updates["assignment_playbook_id"] = str(args["assignment_playbook_id"]).strip()
         if "repo_default_branch" in args:
             updates["repo_default_branch"] = args["repo_default_branch"]
         if "review_delegate_to" in args:
@@ -440,12 +382,58 @@ class ProjectCommandsMixin:
                 "error": (
                     "No fields to update. Provide name, credit_weight, "
                     "max_concurrent_agents, budget_limit, "
-                    "default_profile_id, assignment_playbook_id, repo_default_branch, or "
+                    "assignment_playbook_id, repo_default_branch, or "
                     "review_delegate_to."
                 )
             }
         await self.db.update_project(pid, **updates)
+        if "assignment_playbook_id" in updates:
+            from src.routing.readiness import RouterReadiness
+
+            readiness = getattr(self.orchestrator, "router_readiness", None)
+            if isinstance(readiness, RouterReadiness):
+                # The claim frontier reads the cached ready set; re-read it
+                # now rather than on the next cycle.
+                await readiness.refresh()
         return {"updated": pid, "fields": list(updates.keys())}
+
+    async def _router_binding_refusal(self, project, playbook_id) -> dict | None:
+        """Why *project* may not be bound to *playbook_id* (routing spec §8), or ``None``.
+
+        Re-binding is the local operator's alone.  The playbook must be a
+        router -- an activated artifact of it grants ``task_route_apply`` --
+        with an enabled system activation or one scoped to this project.  A
+        project is never unbound: the column is NOT NULL.
+        """
+        from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
+        from src.routing.readiness import BINDING_READY, artifact_grants, binding_state
+
+        principal = current_principal() or TRUSTED_LOCAL
+        if principal.kind is not PrincipalKind.LOCAL:
+            return {
+                "success": False,
+                "error_code": "local_operator_only",
+                "error": "binding a project to a router requires the local operator",
+            }
+        bound = str(playbook_id or "").strip()
+        if not bound:
+            return {
+                "success": False,
+                "error_code": "router_required",
+                "error": (
+                    "a project is always bound to a router; name a routing playbook "
+                    f"(the default is '{self.config.routing.default_router}')"
+                ),
+            }
+        state, detail = binding_state(
+            project.id,
+            bound,
+            await self.db.list_playbook_activations(),
+            artifact_grants(self.orchestrator, self.config),
+        )
+        if state != BINDING_READY:
+            return {"success": False, "error_code": f"router_{state}", "error": detail}
+        return None
 
     async def _cmd_set_default_branch(self, args: dict) -> dict:
         """Set (or change) a project's default branch.
@@ -559,8 +547,6 @@ class ProjectCommandsMixin:
         }
         if project.budget_limit is not None:
             info["budget_limit"] = project.budget_limit
-        if project.default_profile_id:
-            info["default_profile_id"] = project.default_profile_id
         if project.assignment_playbook_id:
             info["assignment_playbook_id"] = project.assignment_playbook_id
         return info

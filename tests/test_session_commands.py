@@ -1433,7 +1433,7 @@ class TestEndToEndOnFakeProvider:
         # Task before workspace: the workspace lock carries an FK to it.
         await db.create_task(
             Task(id="t1", project_id="p1", title="Do the thing", description="d",
-                 profile_id="claude-opus")
+                 profile_id="claude-opus", route_source="legacy")
         )
         if ready:
             await db.transition_task("t1", TaskStatus.READY)
@@ -2053,7 +2053,8 @@ class TestEndToEndOnFakeProvider:
             id="worker-deep-codex", name="Codex Sol", harness="codex",
             model="gpt-5.6-sol", default_class="deep-high",
         ))
-        await db.update_task("t1", profile_id="worker-deep-codex", intelligence_class="deep-high")
+        await db.update_task("t1", profile_id="worker-deep-codex",
+        route_source="legacy", intelligence_class="deep-high")
         # The action was decided before this worker's settings changed.
         await db.update_agent("a1", harness=harness, model=model, intelligence_class=class_id)
 
@@ -2077,7 +2078,8 @@ class TestEndToEndOnFakeProvider:
             id="worker-deep-codex", name="Codex Sol", harness="codex",
             model="gpt-5.6-sol", default_class="deep-high",
         ))
-        await db.update_task("t1", profile_id="worker-deep-codex", intelligence_class="deep-high")
+        await db.update_task("t1", profile_id="worker-deep-codex",
+        route_source="legacy", intelligence_class="deep-high")
         profile = await db.get_profile("worker-deep-codex")
         task = await db.get_task("t1")
         await db.update_agent("a1", harness="codex", model="gpt-5.6-luna", intelligence_class="fast-low")
@@ -2103,7 +2105,8 @@ class TestEndToEndOnFakeProvider:
         await db.create_profile(AgentProfile(
             id="codex-worker", name="Codex worker", harness="codex", default_class="deep-high",
         ))
-        await db.update_task("t1", profile_id="worker-deep", intelligence_class="deep-high")
+        await db.update_task("t1", profile_id="worker-deep",
+        route_source="legacy", intelligence_class="deep-high")
         await db.update_agent("a1", profile_id="codex-worker")
         real_orch.session_spec_builder._intelligence_classes = {
             "deep-high": IntelligenceClass("deep-high", "Deep", "", {

@@ -2379,8 +2379,8 @@
         "tags": [
           "agent"
         ],
-        "summary": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project defaults (default_profile_id).",
-        "description": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence classes, and system prompt additions. Assign profiles to tasks (profile_id) or set as project defaults (default_profile_id).",
+        "summary": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence classes, and system prompt additions. A project's router assigns worker profiles to tasks.",
+        "description": "Create a new agent profile. Profiles configure agents with specific tools, MCP servers, intelligence classes, and system prompt additions. A project's router assigns worker profiles to tasks.",
         "operationId": "create_profile",
         "requestBody": {
           "content": {
@@ -9758,8 +9758,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, default_profile_id, assignment_playbook_id, repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, set a default agent profile, or change the default git branch.",
-        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, default_profile_id, assignment_playbook_id, repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, set a default agent profile, or change the default git branch.",
+        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, assignment_playbook_id (LOCAL-only router binding), repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
+        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, assignment_playbook_id (LOCAL-only router binding), repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
         "operationId": "edit_project",
         "requestBody": {
           "content": {
@@ -16695,8 +16695,8 @@
         "tags": [
           "task"
         ],
-        "summary": "Route a task: assign its agent profile, optional intelligence class, and optional workspace, then resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates \u2014 generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.",
-        "description": "Route a task: assign its agent profile, optional intelligence class, and optional workspace, then resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates \u2014 generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.",
+        "summary": "Send a task back to its project's router, which picks the route again. Never picks a profile: optionally set new hints (an intelligence class and a kind), then clear the task's profile, class and route record so the next cascade asks the router. Also clears an emergency override. Refused on a claimed, running or finished task (stop it first) and on a role task. Allowed to the local operator, the supervisor, and a worker for a task it filed.",
+        "description": "Send a task back to its project's router, which picks the route again. Never picks a profile: optionally set new hints (an intelligence class and a kind), then clear the task's profile, class and route record so the next cascade asks the router. Also clears an emergency override. Refused on a claimed, running or finished task (stop it first) and on a role task. Allowed to the local operator, the supervisor, and a worker for a task it filed.",
         "operationId": "task_route",
         "requestBody": {
           "content": {
@@ -16715,6 +16715,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TaskRouteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/route-override": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Emergency override: pin one queued task to a worker profile the router did not choose. Local operator and supervisor only; refused to workers, playbooks and every other token. Requires a reason (10-400 characters). The task is pinned to the profile's provider (failover holds it rather than moving it); the override is evented (task.route_overridden) and commented on the task. Refuses control, stage and role profiles, profiles that are not worker candidates, and a class the profile cannot run. `aq task route` clears it.",
+        "description": "Emergency override: pin one queued task to a worker profile the router did not choose. Local operator and supervisor only; refused to workers, playbooks and every other token. Requires a reason (10-400 characters). The task is pinned to the profile's provider (failover holds it rather than moving it); the override is evented (task.route_overridden) and commented on the task. Refuses control, stage and role profiles, profiles that are not worker candidates, and a class the profile cannot run. `aq task route` clears it.",
+        "operationId": "task_route_override",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TaskRouteOverrideRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TaskRouteOverrideResponse"
                 }
               }
             }
@@ -19415,6 +19462,62 @@
           "freshness": {
             "type": "string",
             "title": "Freshness"
+          },
+          "profile_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "provider_intent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Intent"
+          },
+          "lane": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lane"
+          },
+          "rule": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rule"
+          },
+          "override": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override"
           }
         },
         "type": "object",
@@ -19423,7 +19526,8 @@
           "intelligence_class",
           "freshness"
         ],
-        "title": "AssignmentRouteDetail"
+        "title": "AssignmentRouteDetail",
+        "description": "A routed task's route, as ``aq task explain`` prints it (mandatory routing \u00a710)."
       },
       "Body_upload_attachment_api_tasks__task_id__attachments_post": {
         "properties": {
@@ -23064,18 +23168,6 @@
             "title": "Default Branch",
             "description": "Default branch name (default: main)",
             "default": "main"
-          },
-          "default_profile_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Default Profile Id",
-            "description": "Eligible worker profile used for tasks in this project that don't specify their own profile_id.  When omitted, a system default is chosen automatically by src/profiles/default_selection.py (PREFERRED_DEFAULT_PROFILE_IDS, then any remaining general-purpose profile alphabetically).  Run `aq agent list-profiles` for the ids this install has."
           }
         },
         "type": "object",
@@ -23094,7 +23186,7 @@
             "type": "string",
             "title": "Name"
           },
-          "default_profile_id": {
+          "assignment_playbook_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -23103,7 +23195,7 @@
                 "type": "null"
               }
             ],
-            "title": "Default Profile Id"
+            "title": "Assignment Playbook Id"
           }
         },
         "type": "object",
@@ -25927,18 +26019,6 @@
             "title": "Budget Limit",
             "description": "Token budget limit (optional, null to clear)"
           },
-          "default_profile_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Default Profile Id",
-            "description": "Default agent profile ID for tasks in this project (optional, null to clear)"
-          },
           "assignment_playbook_id": {
             "anyOf": [
               {
@@ -25949,7 +26029,7 @@
               }
             ],
             "title": "Assignment Playbook Id",
-            "description": "Project-scoped assignment-routing playbook ID (optional, null to use the system default)"
+            "description": "LOCAL-only: the routing playbook that routes this project's tasks (its router binding). It must be active and grant task_route_apply; a project is never unbound."
           },
           "repo_default_branch": {
             "anyOf": [
@@ -30389,17 +30469,6 @@
               }
             ],
             "title": "Budget Limit"
-          },
-          "default_profile_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Default Profile Id"
           },
           "assignment_playbook_id": {
             "anyOf": [
@@ -44214,7 +44283,7 @@
               }
             ],
             "title": "Profile Id",
-            "description": "Restrict the frontier to tasks this profile would be offered. Uses the same widening as the work query: when this is the project's default profile, unassigned tasks count as its work too."
+            "description": "Restrict the frontier to tasks routed to this profile. An unrouted task is no profile's work until the project's router routes it."
           },
           "brief": {
             "anyOf": [
@@ -45484,7 +45553,7 @@
         },
         "type": "object",
         "title": "ProviderAllocationPlacement",
-        "description": "The queued ``class_only`` READY tasks a ``prefer`` moved to the provider.\n\n``moved`` / ``held`` / ``skipped`` are ``provider_reroute`` decisions;\n``batch_ids`` undo with ``provider_reroute_undo``."
+        "description": "The queued ``class_only`` router routes a ``prefer`` returned to the router.\n\n``moved`` lists each task reset to ``unrouted`` (``kind:\nreturned_to_router``) so the router re-plans it with the preferred\nprovider (mandatory routing \u00a76.8); ``skipped`` the routes left alone.\n``held`` and ``batch_ids`` stay empty: nothing is a ``task_reroutes`` move."
       },
       "ProviderAllocationPreference": {
         "properties": {
@@ -46174,7 +46243,7 @@
             ],
             "title": "Preferred Provider"
           },
-          "default_profile_id": {
+          "assignment_playbook_id": {
             "anyOf": [
               {
                 "type": "string"
@@ -46183,7 +46252,7 @@
                 "type": "null"
               }
             ],
-            "title": "Default Profile Id"
+            "title": "Assignment Playbook Id"
           },
           "max_concurrent_agents": {
             "anyOf": [
@@ -58308,17 +58377,40 @@
         "title": "TaskReroute",
         "description": "The newest ``task_reroutes`` row for a task (provider-failover D17).\n\n``undoable`` is true while the task carries an un-undone re-route and no\nworker holds it -- what ``aq provider reroute-undo --task-id`` would accept."
       },
-      "TaskRouteRequest": {
+      "TaskRouteClearedRoute": {
         "properties": {
-          "task_id": {
-            "type": "string",
-            "title": "Task Id",
-            "description": "Task ID to route"
+          "route_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Route Source"
           },
           "profile_id": {
-            "type": "string",
-            "title": "Profile Id",
-            "description": "Eligible worker profile ID that should execute the task (never supervisor)"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Id"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class"
           },
           "provider_intent": {
             "anyOf": [
@@ -58329,20 +58421,29 @@
                 "type": "null"
               }
             ],
-            "title": "Provider Intent",
-            "description": "Whether anyone meant the provider profile_id names (provider-failover D8). Default: preferred when you pass profile_id, else class_only. A preferred or class_only task fails over to the same class on another provider when its provider is unavailable; a pinned one holds. pinned/preferred need a profile_id; pinning is refused for worker tokens."
+            "title": "Provider Intent"
+          }
+        },
+        "type": "object",
+        "title": "TaskRouteClearedRoute",
+        "description": "The route ``task_route`` cleared (mandatory routing \u00a77)."
+      },
+      "TaskRouteOverrideRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Queued task ID to override"
           },
-          "pin": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pin",
-            "description": "Shorthand for provider_intent=pinned."
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id",
+            "description": "Worker profile that must run the task"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "description": "Why the router's choice is overridden (10-400 characters); recorded on the route, the event and a task comment"
           },
           "intelligence_class": {
             "anyOf": [
@@ -58354,9 +58455,37 @@
               }
             ],
             "title": "Intelligence Class",
-            "description": "Intelligence class id (e.g. 'fast-low', 'standard-high', 'astra-high') from vault/intelligence-classes/. Requires a matching worker at launch. Omit to preserve the task's existing class or profile default."
+            "description": "Class to run at. Default: the profile's fixed class, else the task's class hint. Must be one the profile can run."
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "profile_id",
+          "reason"
+        ],
+        "title": "TaskRouteOverrideRequest"
+      },
+      "TaskRouteOverrideResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
           },
-          "workspace_id": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "profile_id": {
+            "type": "string",
+            "title": "Profile Id"
+          },
+          "intelligence_class": {
+            "type": "string",
+            "title": "Intelligence Class"
+          },
+          "provider": {
             "anyOf": [
               {
                 "type": "string"
@@ -58365,14 +58494,88 @@
                 "type": "null"
               }
             ],
-            "title": "Workspace Id",
-            "description": "Workspace to prefer for execution (optional)"
+            "title": "Provider"
+          },
+          "provider_intent": {
+            "type": "string",
+            "title": "Provider Intent",
+            "default": "pinned"
+          },
+          "route_source": {
+            "type": "string",
+            "title": "Route Source",
+            "default": "override"
+          },
+          "by": {
+            "type": "string",
+            "title": "By"
+          },
+          "resolved_gate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Resolved Gate Ids",
+            "default": []
           }
         },
         "type": "object",
         "required": [
           "task_id",
-          "profile_id"
+          "profile_id",
+          "intelligence_class",
+          "by"
+        ],
+        "title": "TaskRouteOverrideResponse",
+        "description": "An audited emergency override (mandatory routing \u00a77, D2)."
+      },
+      "TaskRouteRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": "Task ID to re-route"
+          },
+          "intelligence_class": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intelligence Class",
+            "description": "New intelligence-class hint for the router (e.g. 'fast-high', 'standard-high', 'deep-high'); the router honours it within its policy's bounds for the kind. Omit to keep the task's hint; an empty value clears it."
+          },
+          "task_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Type",
+            "description": "New kind for the router (e.g. 'feature', 'bugfix', 'design', 'docs'). Omit to keep the task's kind; an empty value clears it."
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason",
+            "description": "Why the task is re-routed; posted as a task comment."
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id"
         ],
         "title": "TaskRouteRequest"
       },
@@ -58387,20 +58590,50 @@
             "type": "string",
             "title": "Task Id"
           },
-          "resolved_gate_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Resolved Gate Ids",
-            "default": []
+          "route_source": {
+            "type": "string",
+            "title": "Route Source",
+            "default": "unrouted"
+          },
+          "class_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Class Hint"
+          },
+          "task_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Type"
+          },
+          "cleared": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskRouteClearedRoute"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
         "required": [
           "task_id"
         ],
-        "title": "TaskRouteResponse"
+        "title": "TaskRouteResponse",
+        "description": "``task_route`` re-runs the router: the task is ``unrouted`` again, with its hints."
       },
       "TaskSessionAttempt": {
         "properties": {

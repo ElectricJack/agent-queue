@@ -275,6 +275,14 @@ class Orchestrator(
             harness_registry_getter=lambda: getattr(self, "harness_registry", None),
         )
         self._route_needed_emitted: dict[str, float] = {}
+        # Which projects' routers are ready (mandatory routing §9.1): once a
+        # project's is, only router, override and role routes are claimable
+        # there.  Refreshed at the top of every cycle's emission step.
+        from src.routing.readiness import RouterReadiness
+
+        self.router_readiness = RouterReadiness(
+            db_getter=lambda: self.db, artifact_loader=self._load_playbook_artifact
+        )
         # Populated before Playbooks V2 subscribes.  The health endpoint uses
         # this durable-policy verdict rather than mistaking an empty trigger
         # list for a healthy routing subsystem.
@@ -475,8 +483,8 @@ class Orchestrator(
         # The re-route engine (provider-failover D11 policy half, D12-D17):
         # driven by the ``provider_reroute`` command, which the
         # ``provider-failover`` playbook calls.  It also answers why a held
-        # task is held (D18) and what an unavailable project default resolves
-        # to (D13), so the availability service holds a reference to it.
+        # task is held (D18), so the availability service holds a reference
+        # to it.
         from src.providers.reroute import ProviderRerouteService
 
         self.provider_reroute = ProviderRerouteService(
@@ -484,7 +492,7 @@ class Orchestrator(
             availability=self.provider_availability,
             config_getter=lambda: self.config,
             harness_registry=self.harness_registry,
-            # The same registry routing reads (``task_route_options``); in
+            # The same registry the router reads (``task_route_plan``); in
             # production it is ``self.intelligence_classes`` by reference.
             classes_getter=lambda: getattr(
                 self.session_spec_builder, "_intelligence_classes", None
@@ -494,6 +502,7 @@ class Orchestrator(
             # measurement per automatic sweep, with the sizer's global cap.
             pool_measure=self._measure_pools,
             pool_global_cap=self._pool_global_cap,
+            ready_projects=self.router_readiness.ready_projects,
         )
         self.provider_availability.reroute = self.provider_reroute
         # AQ_DAEMON_EPOCH: identifies this daemon *run*.  Provenance for
@@ -868,13 +877,24 @@ class Orchestrator(
                     )
                 )
 
-    async def _resolve_profile(self, task: Task) -> AgentProfile | None:
-        """Resolve the agent profile for a task.
+    def _load_playbook_artifact(self, artifact_sha256: str) -> Any:
+        """Load one immutable Playbook V2 artifact from the compiled store."""
+        from src.playbooks.artifact_store import ArtifactStore
 
-        Resolution order: explicit task profile, project default, assigned
-        worker default, then the persisted system fallback. Task/project profiles
-        specialize capabilities without changing the worker's saved definition.
-        The system fallback still supplies unassigned work when no worker exists.
+        store = ArtifactStore(
+            self.config.compiled_root,
+            max_artifact_bytes=self.config.playbooks.v2_max_artifact_bytes,
+        )
+        return store.load(artifact_sha256)
+
+    async def _resolve_profile(self, task: Task) -> AgentProfile | None:
+        """Resolve the agent profile for a task: its own route.
+
+        There is no project default (mandatory routing §8): the push
+        scheduler only launches a task whose route the router, an override
+        or a role wrote (§9.1), so a routed task names its profile.  A task
+        with no profile that a worker already holds keeps that worker's
+        profile; anything else resolves to ``None``.
 
         Profiles are global. Workers are shared between projects, so a
         profile id resolves to exactly one definition — project-scoped
@@ -885,129 +905,13 @@ class Orchestrator(
         allowed tools allowlist, MCP server configuration, and a system prompt
         suffix that sets the agent's "role" for the task.
         """
-        project = await self.db.get_project(task.project_id)
-        if not task.profile_id and project and getattr(project, "preferred_provider", None):
-            profile_id = await self._effective_default_profile_id(project)
-            return await self.db.get_profile(profile_id) if profile_id else None
-        profile_id = task.profile_id or (
-            await self._availability_aware_default(project.default_profile_id, project.id)
-            if project
-            else None
-        )
-        if not profile_id and task.assigned_agent_id:
+        if task.profile_id:
+            return await self.db.get_profile(task.profile_id)
+        if task.assigned_agent_id:
             agent = await self.db.get_agent(task.assigned_agent_id)
             if agent:
-                worker_default = await self.db.get_profile(agent.profile_id)
-                if worker_default:
-                    return worker_default
-        if not profile_id and project:
-            profile_id = await self._backfill_default_profile_id(project)
-        if not profile_id:
-            return None
-
-        return await self.db.get_profile(profile_id)
-
-    async def _backfill_default_profile_id(
-        self, project: Any, *, system_profiles: list[AgentProfile] | None = None
-    ) -> str | None:
-        """Pick and persist a system-default profile for *project*.
-
-        Rung 3 of :meth:`_resolve_profile`. Mirrors
-        ``AgentReconciler._backfill_project_default`` — same selector, same
-        persistence — so a task and the agent row created for it land on the
-        same profile regardless of which side got there first.
-
-        Returns ``None`` when no profile is eligible (an empty or unsynced
-        ``agent_profiles`` table), which leaves the caller on the pre-existing
-        "adapter built-in defaults" path.
-        """
-        from src.profiles.catalog import active_catalog_profile_ids
-        from src.profiles.default_selection import select_default_profile_id
-
-        profiles = system_profiles if system_profiles is not None else await self.db.list_profiles()
-        chosen = select_default_profile_id(
-            profiles, eligible_profile_ids=active_catalog_profile_ids(self.config.data_dir)
-        )
-        if not chosen:
-            return None
-        try:
-            await self.db.update_project(project.id, default_profile_id=chosen)
-        except Exception:
-            # Never fail a dispatch over a bookkeeping write. The selector is
-            # deterministic, so returning the id anyway still matches whatever
-            # the reconciler picks; the write simply retries on a later pass.
-            logger.exception(
-                "Failed to persist default_profile_id=%s for project=%s",
-                chosen,
-                project.id,
-            )
-            return chosen
-        project.default_profile_id = chosen
-        logger.info(
-            "Task dispatch: project=%s had no default_profile_id; backfilled to system default %s",
-            project.id,
-            chosen,
-        )
-        return chosen
-
-    async def _effective_default_profile_id(
-        self, project: Any, *, system_profiles: list[AgentProfile] | None = None
-    ) -> str | None:
-        """Project's effective default profile id — rungs 2-3 of ``_resolve_profile``.
-
-        Rung 2 (``project.default_profile_id``) then rung 3
-        (:meth:`_backfill_default_profile_id`, persisted so it survives
-        restarts and agrees with whatever a task dispatch or
-        ``AgentReconciler`` pass computes independently).  Callers that need
-        a project's default once per tick — the push-scheduler pool
-        exclusion and pool demand measurement, both of which must treat an
-        unrouted READY task the same way ``_resolve_profile`` eventually
-        would — call this instead of reading ``project.default_profile_id``
-        raw, which skips rung 3 and can disagree with what a real dispatch
-        resolves.
-        """
-        raw = project.default_profile_id or await self._backfill_default_profile_id(
-            project, system_profiles=system_profiles
-        )
-        return await self._availability_aware_default(
-            raw, getattr(project, "id", None), system_profiles=system_profiles,
-            preferred_provider=getattr(project, "preferred_provider", None),
-        )
-
-    async def _availability_aware_default(
-        self,
-        default_profile_id: str | None,
-        project_id: str | None = None,
-        *,
-        system_profiles: list[AgentProfile] | None = None,
-        preferred_provider: str | None = None,
-    ) -> str | None:
-        """Equivalent default for project preference or unavailable provider (D13).
-
-        Derived per call and never persisted -- ``projects.default_profile_id``
-        is not rewritten, so recovery needs no undo.  Reads the profiles only
-        while a preference is set or some provider is actually suppressed.
-        """
-        if not default_profile_id:
-            return default_profile_id
-        availability = getattr(self, "provider_availability", None)
-        reroute = getattr(self, "provider_reroute", None)
-        if availability is None or reroute is None or (
-            not preferred_provider and not availability.suppressed_providers()
-        ):
-            return default_profile_id
-        try:
-            available = (
-                system_profiles if system_profiles is not None else await self.db.list_profiles()
-            )
-            profiles = {profile.id: profile for profile in available}
-        except Exception:
-            logger.debug("availability-aware default: profiles unreadable", exc_info=True)
-            return None if preferred_provider else default_profile_id
-        return reroute.resolve_default_profile_id(
-            default_profile_id, profiles, project_id=project_id,
-            preferred_provider=preferred_provider,
-        )
+                return await self.db.get_profile(agent.profile_id)
+        return None
 
     async def skip_task(self, task_id: str) -> tuple[str | None, list[Task]]:
         """Skip a BLOCKED or FAILED task to unblock its dependency chain.
@@ -2886,9 +2790,15 @@ class Orchestrator(
             except Exception:
                 logger.error("Branch materialization reconciliation failed", exc_info=True)
 
-            # 3b. Tell the playbook layer about work that still lacks a class
-            # or a profile.  The orchestrator decides nothing here; the
-            # ``default-assignment-routing`` playbook answers the event.
+            # 3b. Tell the playbook layer about work that still lacks a route
+            # (an unrouted task, or a legacy one where the router is ready).
+            # The orchestrator decides nothing here; the project's bound
+            # router answers the event.  Readiness is computed once, here,
+            # for emission, the claim frontier and the push scheduler.
+            try:
+                await self.router_readiness.refresh()
+            except Exception:
+                logger.exception("router readiness refresh error")
             try:
                 await self._emit_route_needed_events()
             except Exception:
@@ -3724,7 +3634,18 @@ class Orchestrator(
         )
         if withheld:
             task_snapshot = [t for t in task_snapshot if t.id not in withheld]
-        assignment_routes = await self.assignment_routing.routes_for(task_snapshot)
+        # Only routed work is launchable (mandatory routing §9.1, I3): a
+        # queued task whose route the router, an override or a role did not
+        # write -- unrouted, or legacy once its project's router is ready --
+        # has no route here, so neither the reconciler nor the scheduler
+        # plans for it.  In-flight legacy work keeps its route and finishes.
+        from src.assignment_routing import claimable_routes
+
+        assignment_routes = claimable_routes(
+            await self.assignment_routing.routes_for(task_snapshot),
+            task_snapshot,
+            await self.router_readiness.ready_projects(),
+        )
         from dataclasses import replace as _replace
 
         tasks = [
@@ -3837,26 +3758,10 @@ class Orchestrator(
             p.id: await self._pool_profile_ids(p.id, system_profiles=all_profiles) for p in projects
         }
         if any(pool_ids_by_project.values()):
-            # ``project.default_profile_id`` alone is rung 2 of
-            # ``_resolve_profile``; rung 3 (persisted backfill) is what
-            # decides where an unrouted READY task actually lands once
-            # dispatched, so using rung 2 only here could push-launch a task
-            # under a pool profile (or hide it from pool demand) that a real
-            # dispatch would resolve differently.  Computed once per project
-            # per tick, and skipped for projects with no pool profile at all
-            # — an install with no pools never touches ``default_profile_id``
-            # bookkeeping it wouldn't otherwise touch.
-            default_profile_by_project: dict[str, str | None] = {}
-            for p in projects:
-                if pool_ids_by_project.get(p.id):
-                    default_profile_by_project[p.id] = await self._effective_default_profile_id(p)
-                else:
-                    default_profile_by_project[p.id] = p.default_profile_id
             tasks = [
                 t
                 for t in tasks
-                if (t.profile_id or default_profile_by_project.get(t.project_id))
-                not in pool_ids_by_project.get(t.project_id, set())
+                if t.profile_id not in pool_ids_by_project.get(t.project_id, set())
             ]
 
         # Load active project constraints (exclusive, pause_scheduling,

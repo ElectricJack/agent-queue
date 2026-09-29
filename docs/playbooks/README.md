@@ -13,7 +13,7 @@ activate path these files sit at the end of.
 | Bundle | Recorded change |
 |---|---|
 | [`integration-only/default-pipeline/`](integration-only/default-pipeline/manifest.md) | Operator-requested removal of automatic task and branch reviews, 2026-09-09. Retains the three spec/proposal rules — spec ingest, the proposal human gate, and batch commit on that gate resolving — unchanged. |
-| [`standard-high-default/default-assignment-routing/`](standard-high-default/default-assignment-routing/manifest.md) | Operator policy: most development work uses `standard-high`, and `deep-high` requires a justified exceptional difficulty. Only the class-selection prompt changes. |
+| [`standard-high-default/default-assignment-routing/`](standard-high-default/default-assignment-routing/manifest.md) | **Superseded, kept as a record.** Operator policy: most development work uses `standard-high`, and `deep-high` requires a justified exceptional difficulty. Only the class-selection prompt changes. Mandatory task routing (2026-09-28) replaced the router it amends: it calls `task_route_options`, which no longer exists, and does not grant `task_route_apply`, so it cannot route. The shipped router's policy block now carries the same rule (`kinds` default to `standard-high`; `deep-high` only by hint or for design). |
 
 ## What each file is
 

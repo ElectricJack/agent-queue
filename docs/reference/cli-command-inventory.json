@@ -7407,7 +7407,6 @@
           "--max-concurrent-agents",
           "--repo-url",
           "--default-branch",
-          "--default-profile-id",
           "--json",
           "--brief",
           "--api-url"
@@ -12607,39 +12606,6 @@
       }
     },
     {
-      "path": "aq system task-route-options",
-      "registration": "generated",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": "task_route_options",
-      "callback": "src.cli.auto_commands.callback",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "dispatch",
-      "evidence": [
-        "click-registration",
-        "json-schema",
-        "mock-dispatch",
-        "core-handler"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "--task-id"
-        ],
-        "optional": [
-          "--json",
-          "--brief",
-          "--api-url"
-        ],
-        "structured": [],
-        "nullable": []
-      }
-    },
-    {
       "path": "aq system task-route-plan",
       "registration": "generated",
       "owner_kind": "core",
@@ -14520,14 +14486,48 @@
       ],
       "parameters": {
         "required": [
-          "--task-id",
-          "--profile-id"
+          "--task-id"
         ],
         "optional": [
-          "--provider-intent",
-          "--pin",
           "--intelligence-class",
-          "--workspace-id",
+          "--task-type",
+          "--reason",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task route-override",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "task_route_override",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id",
+          "--profile-id",
+          "--reason"
+        ],
+        "optional": [
+          "--intelligence-class",
           "--json",
           "--brief",
           "--api-url"

@@ -183,7 +183,7 @@ async def add_blocked_attempt(env, suffix: str = "one") -> tuple[str, dict]:
             title=f"Blocked work {suffix}",
             description="Preserve this work and its evidence.",
             status=TaskStatus.BLOCKED,
-            profile_id="worker",
+            profile_id="worker", route_source="legacy",
             intelligence_class="deep-high",
             branch_name=f"aq/{task_id}",
             created_at=BASE,
@@ -516,7 +516,7 @@ async def test_transport_outage_and_rate_guard_leave_scheduling_and_event_bus_li
             project_id="p",
             title="Scheduler still runs",
             description="",
-            profile_id="worker",
+            profile_id="worker", route_source="legacy",
         )
     )
 

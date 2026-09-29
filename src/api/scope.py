@@ -101,6 +101,10 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         # worker-filed tasks provenance-linked to it, moved to a parent the
         # filing path itself would have accepted.
         "reparent_task",
+        # A worker may send a task it filed back to the router with new hints
+        # (mandatory routing §7): ``_cmd_task_route`` admits a plain session
+        # only for a task that session filed.
+        "task_route",
         "integration_status",
         # The command derives the candidate/member/fence from this session's
         # live repair assignment and separately fences pool calls by claim
@@ -125,11 +129,12 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
 )
 
 #: Commands whose ``task_id`` names a task *other than* the held one, so the
-#: held-task pin below must not apply to it.  ``reparent_task`` moves a
-#: worker filing, which by construction is never the task the token holds;
-#: ``_cmd_reparent_task`` authorises the moved task against the held task.
+#: held-task pin below must not apply to it.  ``reparent_task`` moves and
+#: ``task_route`` re-routes a worker filing, which by construction is never
+#: the task the token holds; ``_cmd_reparent_task`` authorises the moved task
+#: against the held task and ``_cmd_task_route`` against its filing session.
 #: ``project_id`` and ``session_id`` stay pinned.
-_TASK_ID_UNPINNED: frozenset[str] = frozenset({"reparent_task"})
+_TASK_ID_UNPINNED: frozenset[str] = frozenset({"reparent_task", "task_route"})
 
 #: The seven project-onboarding commands (design 2026-09-03 §5), gated to
 #: the loopback CLI and the global admin (§7).  Listed literally because this
@@ -433,12 +438,14 @@ async def _check_worker_git_scope(
     return None
 
 
-# A triage task needs to inspect and route its project's queue. These are
-# capabilities of a saved, actively assigned triage session, never elevation
-# inferred from client arguments or the worker's model/name.
+# A triage task needs to inspect its project's queue. These are capabilities
+# of a saved, actively assigned triage session, never elevation inferred from
+# client arguments or the worker's model/name.  Triage no longer routes: the
+# project's router does (mandatory routing §2), and ``task_route`` only sends
+# a task back to it.
 _TRIAGE_COMMANDS = frozenset({
     "list_tasks", "get_task", "task_show", "gate_list", "gate_show",
-    "list_profiles", "list_intelligence_classes", "task_route",
+    "list_profiles", "list_intelligence_classes",
 })
 
 _PLAYBOOK_COMPILER_COMMANDS = frozenset(
@@ -831,20 +838,11 @@ async def check_request_scope(
     if args.get("session_id") not in (None, scope.session_id):
         return "out of scope: session_id mismatch"
 
-    if command in {"get_task", "task_show", "task_route"}:
+    if command in {"get_task", "task_show"}:
         task_id = args.get("task_id")
         task = await db.get_task(str(task_id)) if task_id else None
         if task is None or task.project_id != project_id:
             return "out of scope: task must belong to this triage project's queue"
-        if command == "task_route":
-            gates = await db.get_gates_for_task(task.id)
-            if not any(
-                gate["project_id"] == project_id
-                and gate["gate_type"] == "routing"
-                and gate["status"] == "open"
-                for gate in gates
-            ):
-                return "out of scope: triage may only route tasks with an open routing gate"
     elif command == "gate_show":
         gate_id = args.get("gate_id")
         gate = await db.get_gate(str(gate_id)) if gate_id else None

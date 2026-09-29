@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import time
 
-from sqlalchemy import case, delete, insert, null, or_, select, update
+from sqlalchemy import case, delete, func, insert, literal_column, null, or_, select, update
+from sqlalchemy.dialects.postgresql import JSONB
 
-from src.database.tables import agent_profiles, agents, projects, tasks
+from src.database.tables import agent_profiles, agents, tasks
 from src.models import AgentProfile, TaskStatus
 
 
@@ -207,7 +208,7 @@ class ProfileQueryMixin:
             return "created"
 
     async def delete_profile(self, profile_id: str) -> None:
-        """Delete a profile and clear foreign-key references.
+        """Delete a profile and clear the task references to it.
 
         A task that loses its profile loses its provider intent with it
         (provider-failover D17): ``pinned``/``preferred`` named a provider
@@ -215,25 +216,43 @@ class ProfileQueryMixin:
         ``rerouted_from`` naming the deleted profile is cleared, because
         there is nothing left to undo back to.  One statement, so no reader
         sees a pinned row with no profile.
+
+        The same statement sends every such task back to its router
+        (mandatory-routing spec §9.2): ``route_source`` becomes ``unrouted``,
+        as ``ck_tasks_route_source_profile`` requires of a row with no
+        profile, and the lost route is kept in ``route.legacy``.  A queued
+        task is then routed again; a finished one keeps its audit trail.
         """
         named = tasks.c.profile_id == profile_id
+
+        def key(name: str):
+            return literal_column(f"'{name}'")
+
+        lost_route = func.jsonb_build_object(
+            key("profile_id"), tasks.c.profile_id,
+            key("intelligence_class"), tasks.c.intelligence_class,
+            key("provider_intent"), tasks.c.provider_intent,
+            type_=JSONB,
+        )
+        kept_route = func.coalesce(
+            tasks.c.route, literal_column("'{}'::jsonb", type_=JSONB)
+        ).op("||", return_type=JSONB)(
+            func.jsonb_build_object(key("legacy"), lost_route, type_=JSONB)
+        )
         async with self._engine.begin() as conn:
             await conn.execute(
                 update(tasks)
                 .where(or_(named, tasks.c.rerouted_from == profile_id))
                 .values(
                     profile_id=case((named, null()), else_=tasks.c.profile_id),
+                    route_source=case((named, "unrouted"), else_=tasks.c.route_source),
+                    route=case((named, kept_route), else_=tasks.c.route),
                     provider_intent=case((named, "class_only"), else_=tasks.c.provider_intent),
                     rerouted_from=case(
                         (tasks.c.rerouted_from == profile_id, null()),
                         else_=tasks.c.rerouted_from,
                     ),
                 )
-            )
-            await conn.execute(
-                update(projects)
-                .where(projects.c.default_profile_id == profile_id)
-                .values(default_profile_id=None)
             )
             await conn.execute(delete(agent_profiles).where(agent_profiles.c.id == profile_id))
 

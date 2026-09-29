@@ -46,8 +46,8 @@ This command declares no effect clause, so the playbook graph falls back to its 
 ## Purpose
 
 List the configured projects — id, display name, status, credit weight,
-concurrency cap and primary workspace path, plus the repo URL and assignment
-playbook when they are set. It is the read behind `aq project list`, and for a
+concurrency cap and primary workspace path, plus the repo URL when it is set and
+the router binding (`assignment_playbook_id`). It is the read behind `aq project list`, and for a
 playbook it is the way to turn "every active project" into a concrete list to
 loop over.
 
@@ -88,8 +88,9 @@ event to read a project off.
      `db.get_project_workspace_path(p.id)` — one extra query per project, which
      is why this is a fleet-sized read and not a hot path.
    - Emits `{id, name, status, credit_weight, max_concurrent_agents, workspace}`
-     for every project, and adds `repo_url` and `assignment_playbook_id` only
-     when they are set.
+     for every project, adds `repo_url` when it is set, and adds
+     `assignment_playbook_id`, the routing playbook the project is bound to —
+     present on every project, since the column is `NOT NULL`.
 3. `_outcome_of` (`builtin.py:476`) maps the dict to `listed`.
 
 ## Side effects and persistence
@@ -98,8 +99,9 @@ None. `side effect: read`, no effect clauses, `idempotency: natural`,
 `retry_safe: yes`. Nothing is written, nothing is emitted, and the result is a
 snapshot of `projects` plus the workspace join at the moment of the call.
 
-Note what is *not* in the payload: the project's default profile, its
-integration mode, and its hierarchical integration mode. A policy that needs
+Note what is *not* in the payload: the project's integration mode and its
+hierarchical integration mode. (A project has no default profile: its router
+routes every task.) A policy that needs
 those must read them elsewhere — `aq project get --project-id <id>` on the CLI, or the
 `project_get` command.
 

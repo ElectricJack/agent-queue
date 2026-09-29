@@ -1,74 +1,17 @@
-"""Pick a sensible fallback agent profile for a project.
+"""Profile-id sets for the stage profiles that never serve as an ordinary worker.
 
-Background — the "no resolvable profile_id" stall
--------------------------------------------------
-:class:`~src.orchestrator.agent_reconciler.AgentReconciler` only creates
-agent rows for profile ids it can resolve from a READY task:
-``task.profile_id or project.default_profile_id``.  Tasks created by
-playbooks, the supervisor, or plan-splitting almost never carry an
-explicit ``profile_id``, and ``create_project`` historically left
-``default_profile_id`` NULL.  The result was a deadlock that the system
-could not heal on its own: READY tasks, zero idle agents, and a
-once-per-project WARN reading ``project=X has READY tasks but no
-resolvable profile_id``.
-
-This module supplies the missing third rung of the cascade — a
-deterministic system-wide default — so a project always has *some*
-profile to build agents from.  It is used in two places:
-
-* ``create_project`` — stamps a default onto new projects up front.
-* ``AgentReconciler`` — backfills existing projects whose
-  ``default_profile_id`` is NULL, healing already-stuck projects
-  without a migration.
-
-Selection order (see ``docs/superpowers/specs/2026-05-07-agent-\
-reconciliation-design.md`` §2, "Auto-picking a project default profile"):
-
-1. an enabled pool profile with ``default_class: standard-high``
-2. ``standard-high-codex``
-3. ``standard-high-claude``
-4. ``claude-opus``
-5. ``claude-sonnet``
-6. the retired worker ladder's ids (legacy compatibility)
-7. any remaining general-purpose profile, alphabetically by id
-8. any remaining non-supervisor profile, alphabetically by id
-
-The ``standard-high-<harness>`` ids are the derived rungs of the ordinary
-implementation class (:mod:`src.profiles.catalog`).  ``worker-claude`` and
-``worker-codex`` are deliberately absent: they are *templates*, never synced
-to ``agent_profiles``, so nothing can be routed to one.
-
-Steps 7 and 8 differ only in whether special-purpose profiles (reviewer,
-planner, triage, …) are eligible: they are a poor default because they
-are written for one pipeline stage, but they beat returning ``None`` and
-stalling the queue.
+This module used to pick a fallback profile for a project
+(``select_default_profile_id``), which ``create_project``, onboarding and the
+agent reconciler stamped onto ``projects.default_profile_id``.  Mandatory task
+routing (spec 2026-09-28 §8) retired project defaults: every project is bound
+to a router instead, and the column is dropped.  The sets below stay, because
+:func:`src.profiles.catalog._stage_profile_ids` builds the stage-profile set
+from them.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from typing import Any
-
-#: Tried first, in this exact order, when picking a project default.
-#: The literal ids exist so a new or defaultless project is executable
-#: without an LLM/triage round trip; an explicit project or task pin still
-#: wins at routing time.  The ids of the retired ``worker-<tier>-<level>-``
-#: ``<provider>`` ladder are kept as trailing entries so a vault seeded
-#: before it was retired still resolves to a mid-cost worker rather than
-#: falling through to alphabetical order, which used to pick the most
-#: expensive rung.
-PREFERRED_DEFAULT_PROFILE_IDS: tuple[str, ...] = (
-    # The ordinary factory route is the standard-high pool.
-    "standard-high-codex",
-    "standard-high-claude",
-    "claude-opus",
-    "claude-sonnet",
-    "worker-standard-medium-claude",
-    "worker-standard",
-)
-
-#: Profiles written for one specific pipeline stage.  Usable as a
-#: last-resort default (better than stalling) but never preferred.
+#: Profiles written for one specific pipeline stage: never a worker route.
 SPECIAL_PURPOSE_PROFILE_IDS: frozenset[str] = frozenset(
     {
         "final-reviewer",
@@ -80,100 +23,6 @@ SPECIAL_PURPOSE_PROFILE_IDS: frozenset[str] = frozenset(
     }
 )
 
-#: Never a valid project default — the supervisor is a daemon-wide
-#: singleton that lives outside the agents table.
+#: The supervisor is a daemon-wide singleton that lives outside the agents
+#: table, and is never a task route.
 EXCLUDED_PROFILE_IDS: frozenset[str] = frozenset({"supervisor"})
-
-
-def _is_project_scoped(profile_id: str) -> bool:
-    """True for a retired ``project:{pid}:{profile_id}`` override row.
-
-    Project-scoped profiles were removed; a row left behind by an older
-    release (until the startup migration drops it) is never a valid default.
-    """
-    return profile_id.startswith("project:")
-
-
-def select_default_profile_id(
-    profile_ids: Iterable[str | Any], *, eligible_profile_ids: Iterable[str] | None = None
-) -> str | None:
-    """Return the best fallback profile id, or ``None`` if there are none.
-
-    ``profile_ids`` is any iterable of registered profile ids (e.g. the
-    keys of ``{p.id: p for p in await db.list_profiles()}``).  Selection
-    is deterministic: the same profile set always yields the same answer,
-    so the reconciler does not flap between profiles across ticks.
-    """
-    values = tuple(profile_ids)
-    supplied = {
-        profile_id
-        for value in values
-        for profile_id in (_profile_id(value),)
-        if profile_id and _profile_enabled(value)
-    }
-    candidates = {
-        pid
-        for pid in supplied
-        if pid and pid not in EXCLUDED_PROFILE_IDS and not _is_project_scoped(pid)
-    }
-    if eligible_profile_ids is not None:
-        from src.profiles.catalog import shipped_profile_catalog
-
-        eligible = set(eligible_profile_ids)
-        catalog_ids = {profile.id for profile in shipped_profile_catalog()}
-        candidates.difference_update(catalog_ids - eligible)
-        # A catalog refresh has authoritative evidence that this host has no
-        # usable worker.  Do not turn a planner/reviewer into a pretend coding
-        # default merely because it is the only non-catalog profile left.
-        if not eligible and supplied.intersection(catalog_ids):
-            return None
-    if not candidates:
-        return None
-
-    # The installed pool rungs are operator-owned and have no stable naming
-    # convention.  Prefer the ordinary lane before historical literal ids:
-    # that keeps omitted task profiles on the durable pull workers rather
-    # than reintroducing a task-lifecycle worker merely because its id sorts
-    # first.  Strings preserve the old compatibility path below because they
-    # carry no lifecycle/default-class metadata.
-    pool_standard = sorted(
-        profile_id
-        for value in values
-        for profile_id in (_profile_id(value),)
-        if profile_id in candidates
-        and _profile_lifecycle(value) == "pool"
-        and _profile_default_class(value) == "standard-high"
-        and _profile_harness(value)
-    )
-    if pool_standard:
-        return pool_standard[0]
-
-    for preferred in PREFERRED_DEFAULT_PROFILE_IDS:
-        if preferred in candidates:
-            return preferred
-
-    general = sorted(candidates - SPECIAL_PURPOSE_PROFILE_IDS)
-    if general:
-        return general[0]
-
-    return sorted(candidates)[0]
-
-
-def _profile_id(value: str | Any) -> str:
-    return value if isinstance(value, str) else str(getattr(value, "id", "") or "")
-
-
-def _profile_enabled(value: str | Any) -> bool:
-    return isinstance(value, str) or bool(getattr(value, "enabled", True))
-
-
-def _profile_lifecycle(value: str | Any) -> str:
-    return "" if isinstance(value, str) else str(getattr(value, "lifecycle", "") or "")
-
-
-def _profile_default_class(value: str | Any) -> str:
-    return "" if isinstance(value, str) else str(getattr(value, "default_class", "") or "")
-
-
-def _profile_harness(value: str | Any) -> str:
-    return "" if isinstance(value, str) else str(getattr(value, "harness", "") or "")

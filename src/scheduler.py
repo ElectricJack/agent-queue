@@ -195,8 +195,7 @@ def idle_workers(state: SchedulerState, *, include_suppressed: bool = False) -> 
 def routing_mismatch(task: Task, agent: Agent, state: SchedulerState) -> str | None:
     """Use the same execution compatibility rule as pre-launch admission."""
     profiles = state.profiles or {}
-    project = next((p for p in state.projects if p.id == task.project_id), None)
-    profile = resolve_task_profile(task, project, profiles)
+    profile = resolve_task_profile(task, profiles)
     if state.profiles is not None and task.profile_id and profile is None:
         return f"required profile '{task.profile_id}' is not available"
     required_provider = None

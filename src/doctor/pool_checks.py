@@ -1255,7 +1255,6 @@ async def _check_session_awaiting_input(ctx: DoctorContext) -> CheckResult:
         )
 
     counts_by_project: dict[str, dict[str | None, int]] = {}
-    projects: dict[str, object] = {}
     rows: list[dict] = []
     for finding in findings:
         session = finding.session
@@ -1264,12 +1263,8 @@ async def _check_session_awaiting_input(ctx: DoctorContext) -> CheckResult:
             counts_by_project[project_id] = (
                 await ctx.db.count_ready_by_profile(project_id) if project_id else {}
             )
-            projects[project_id] = await ctx.db.get_project(project_id) if project_id else None
         counts = counts_by_project[project_id]
         ready = counts.get(session.profile_id, 0)
-        project = projects[project_id]
-        if project is not None and project.default_profile_id == session.profile_id:
-            ready += counts.get(None, 0)
         rows.append(
             {
                 "session_id": session.id,

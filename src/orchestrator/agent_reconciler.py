@@ -60,10 +60,6 @@ class ReconcileReport:
     created: list[tuple[str, str]] = field(default_factory=list)  # [(project_id, profile_id)]
     reassigned: list[tuple[str, str, str]] = field(default_factory=list)  # [(agent_id, old, new)]
     skipped: list[tuple[str, str]] = field(default_factory=list)  # [(project_id, reason)]
-    # Projects whose NULL default_profile_id was backfilled this pass.
-    defaults_backfilled: list[tuple[str, str]] = field(  # [(project_id, profile_id)]
-        default_factory=list
-    )
 
 
 class AgentReconciler:
@@ -78,7 +74,6 @@ class AgentReconciler:
         bus=None,
     ):
         self._db = db
-        self._warned_projects: dict[str, str] = {}
         # Rollout gate (worktree-execution §5).  While False the workspace
         # gate below counts inventory exactly as it does today.
         self._worktrees_enabled = worktrees_enabled
@@ -172,7 +167,7 @@ class AgentReconciler:
             # execution identity. An idle triage worker cannot suppress supply
             # for an explicitly routed Codex/deep task.
             def supplied(task):
-                profile = resolve_task_profile(task, project, profiles)
+                profile = resolve_task_profile(task, profiles)
                 if task.profile_id and profile is None:
                     return False
                 return any(
@@ -186,21 +181,13 @@ class AgentReconciler:
                 )
 
             uncovered = [task for task in ready if not supplied(task)]
-            if not uncovered:
-                # Keep a missing project default missing when existing workers
-                # can supply their own defaults.
-                continue
-            default_pid = project.default_profile_id
-            if not default_pid and any(not task.profile_id for task in uncovered):
-                default_pid = await self._backfill_project_default(project, profiles, report)
+            # A routed task names its profile (mandatory routing §8: no
+            # project default); the orchestrator hands over routed work only.
             needed = {
-                (task.profile_id or default_pid, task.intelligence_class or ""): task
-                for task in uncovered if task.profile_id or default_pid
+                (task.profile_id, task.intelligence_class or ""): task
+                for task in uncovered if task.profile_id
             }
             if not needed:
-                reason = "no resolvable profile_id (no usable agent profiles are registered)"
-                self._warn_once(project.id, reason)
-                report.skipped.append((project.id, reason))
                 continue
             busy = sum(
                 1
@@ -270,52 +257,6 @@ class AgentReconciler:
                 remaining -= 1
         return report
 
-    async def _backfill_project_default(
-        self, project, profiles: dict, report: ReconcileReport
-    ) -> str | None:
-        """Pick and persist a ``default_profile_id`` for *project*.
-
-        Called only when the project has READY tasks that carry no
-        explicit ``profile_id`` and the project has no default of its
-        own.  Persisting (rather than resolving on the fly each tick)
-        matters for two reasons: the choice stays stable across daemon
-        restarts, and ``Orchestrator._resolve_profile`` reads the same
-        column — so the profile the task actually executes under matches
-        the one its agent row was created for.
-
-        Returns the chosen profile id, or ``None`` when no profile is
-        eligible (empty/unsynced ``agent_profiles`` table).
-        """
-        from src.profiles.default_selection import select_default_profile_id
-
-        from src.profiles.catalog import active_catalog_profile_ids
-
-        eligible = active_catalog_profile_ids(self._data_dir) if self._data_dir else None
-        chosen = select_default_profile_id(profiles.values(), eligible_profile_ids=eligible)
-        if not chosen:
-            return None
-        try:
-            await self._db.update_project(project.id, default_profile_id=chosen)
-        except Exception:
-            # A failed write must not take down the tick; we simply retry
-            # next pass.  Returning the id anyway would desync the DB
-            # from the agent rows we are about to create.
-            logger.exception(
-                "reconciler: failed to backfill default_profile_id=%s for project=%s",
-                chosen,
-                project.id,
-            )
-            return None
-        project.default_profile_id = chosen
-        report.defaults_backfilled.append((project.id, chosen))
-        logger.info(
-            "reconciler: project=%s had READY tasks with no resolvable profile_id; "
-            "backfilled default_profile_id=%s",
-            project.id,
-            chosen,
-        )
-        return chosen
-
     def _runtime_requires_workspace(self, profile) -> bool:
         """Always True: no Runtime class decides workspace needs any more.
 
@@ -325,9 +266,3 @@ class AgentReconciler:
         the in-process Supervisor was the one exception.
         """
         return True
-
-    def _warn_once(self, project_id: str, reason: str) -> None:
-        if self._warned_projects.get(project_id) == reason:
-            return
-        self._warned_projects[project_id] = reason
-        logger.warning("reconciler: project=%s has READY tasks but %s", project_id, reason)

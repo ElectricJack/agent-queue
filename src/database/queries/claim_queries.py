@@ -12,8 +12,22 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Collection
 
-from sqlalchemy import Float, and_, case, cast, delete, exists, false, func, literal, select, update
+from sqlalchemy import (
+    Float,
+    and_,
+    case,
+    cast,
+    delete,
+    exists,
+    false,
+    func,
+    literal,
+    or_,
+    select,
+    update,
+)
 
 from src.database.queries.blocked_state import apply_label_filters, blocked_predicate
 from src.database.queries.hierarchy_queries import (
@@ -40,6 +54,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.models import AgentState, SessionRecord, Task, TaskEvent, TaskStatus, Workspace
+from src.routing.sources import CLAIMABLE_SOURCES, LEGACY, claimable_sources
 
 
 _frontier_child = tasks.alias("frontier_child")
@@ -78,7 +93,36 @@ def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
     }
 
 
-def _frontier_where(project_id: str, hierarchy_mode: ProjectIntegrationMode | None = None):
+def route_claimable(router_ready: bool):
+    """Spec I3 for one project: a profile, and a source the project accepts.
+
+    ``router``, ``override`` and ``role`` routes are claimable; a ``legacy``
+    one only while the project's router is not ready (mandatory routing
+    §9.1); an ``unrouted`` task never is.
+    """
+    return and_(
+        tasks.c.profile_id.is_not(None),
+        tasks.c.route_source.in_(claimable_sources(router_ready)),
+    )
+
+
+def route_claimable_in(ready_project_ids: Collection[str]):
+    """Spec I3 across projects: :func:`route_claimable` per row's project."""
+    legacy = tasks.c.route_source == LEGACY
+    if ready_project_ids:
+        legacy = and_(legacy, tasks.c.project_id.notin_(sorted(ready_project_ids)))
+    return and_(
+        tasks.c.profile_id.is_not(None),
+        or_(tasks.c.route_source.in_(CLAIMABLE_SOURCES), legacy),
+    )
+
+
+def _frontier_where(
+    project_id: str,
+    hierarchy_mode: ProjectIntegrationMode | None = None,
+    *,
+    router_ready: bool | None = None,
+):
     """The frontier predicate, for one project.
 
     *hierarchy_mode* is this project's already-read
@@ -86,12 +130,19 @@ def _frontier_where(project_id: str, hierarchy_mode: ProjectIntegrationMode | No
     Supplying it folds the two hierarchy predicates' ``projects`` lookups
     into constants instead of re-asking the same one-row question once per
     candidate row; ``None`` keeps the self-contained correlated form.
+
+    *router_ready* adds :func:`route_claimable` for a project whose router
+    is (not) ready; ``None`` leaves routing out, for the structural reads
+    (development admission's candidates, diagnostics) that are not a claim.
     """
-    return and_(
+    predicates = [
         tasks.c.project_id == project_id,
         tasks.c.status == TaskStatus.READY.value,
         *_frontier_predicates(hierarchy_mode).values(),
-    )
+    ]
+    if router_ready is not None:
+        predicates.append(route_claimable(router_ready))
+    return and_(*predicates)
 
 
 #: Transition context, session end reason and audit suffix of a claim taken
@@ -190,6 +241,10 @@ FRONTIER_PREDICATE_DETAILS = {
     "workspace_requirement": "workspace requirements must be project-repo or vault",
     "claim_prepare_backoff": "claim_prepare_backoff_until must not be in the future",
     "hold_label": "no hold:* label may be present",
+    "route_not_claimable": (
+        "route_source must be router, override or role with a profile (legacy too while "
+        "the project's router is not ready); the project's router routes it"
+    ),
 }
 
 
@@ -201,9 +256,17 @@ class ClaimQueryMixin:
     (HierarchyQueryMixin) all come from the composed adapter.
     """
 
-    async def claim_frontier_exclusions(self, task_id: str) -> list[dict]:
-        """Evaluate the real claim filters for one READY task, without scheduler guesses."""
+    async def claim_frontier_exclusions(
+        self, task_id: str, *, router_ready: bool | None = None
+    ) -> list[dict]:
+        """Evaluate the real claim filters for one READY task, without scheduler guesses.
+
+        *router_ready* adds the route filter (:func:`route_claimable`) for a
+        project whose router is (not) ready.
+        """
         predicates = claim_frontier_predicates()
+        if router_ready is not None:
+            predicates["route_not_claimable"] = route_claimable(router_ready)
         async with self._engine.connect() as conn:
             row = (await conn.execute(
                 select(*(predicate.label(name) for name, predicate in predicates.items()))
@@ -311,8 +374,8 @@ class ClaimQueryMixin:
         *,
         project_id,
         profile_id,
-        default_profile_id,
         agent_id,
+        router_ready=False,
         task_id=None,
         enforce_routing=False,
         intelligence_class=None,
@@ -373,17 +436,21 @@ class ClaimQueryMixin:
 
         A targeted claim (*task_id* given) skips the probe: with a single
         candidate row, preferring it over itself is a no-op.
+
+        Only routed work is claimable (mandatory routing §9.1): the task's
+        own ``profile_id`` must be this pool's, and its ``route_source`` one
+        the project accepts -- ``router``, ``override`` or ``role``, plus
+        ``legacy`` while *router_ready* is false.  There is no project
+        default widening an unrouted task onto any pool.
         """
         profile_ok = tasks.c.profile_id == profile_id
-        if default_profile_id == profile_id and not enforce_routing:
-            profile_ok = (tasks.c.profile_id == profile_id) | tasks.c.profile_id.is_(None)
         preparation_predicates = _claim_preparation_predicates()
 
         def candidate(*, pinned: bool):
             stmt = (
                 select(tasks.c.id)
                 .where(
-                    _frontier_where(project_id, hierarchy_mode),
+                    _frontier_where(project_id, hierarchy_mode, router_ready=bool(router_ready)),
                     profile_ok,
                     *preparation_predicates.values(),
                 )
@@ -1459,12 +1526,17 @@ class ClaimQueryMixin:
         return res.rowcount == 1
 
     async def count_ready_by_profile(
-        self, project_id: str, *, allowed_task_ids=None
+        self, project_id: str, *, allowed_task_ids=None, router_ready: bool | None = None
     ) -> dict[str | None, int]:
-        """Count structural work, restricted to verified development admission when supplied."""
+        """Count structural work, restricted to verified development admission when supplied.
+
+        *router_ready* counts only claimable work (:func:`route_claimable`),
+        which is what pool demand is (mandatory routing §9.1); ``None``
+        counts every READY frontier row, unrouted ones under ``None``.
+        """
         stmt = (
             select(tasks.c.profile_id, func.count())
-            .where(_frontier_where(project_id))
+            .where(_frontier_where(project_id, router_ready=router_ready))
             .group_by(tasks.c.profile_id)
         )
         if allowed_task_ids is not None:

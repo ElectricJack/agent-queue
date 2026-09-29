@@ -1,12 +1,13 @@
 """The effective assignment route: the task row itself.
 
-Routing policy lives in the ``default-assignment-routing`` playbook (spec:
-``docs/superpowers/specs/2026-09-06-assignment-routing-as-playbook.md``).
-The orchestrator only needs one fact per task — which intelligence class it
-must run under — and that fact is ``tasks.intelligence_class``, written by
-``task_route`` at the end of a playbook run or by an operator.  There is no
-separate decision record to keep fresh: a task without a class has no route,
-and the cascade emits ``task.route_needed`` until the playbook gives it one.
+Routing policy lives in the project's bound router, the
+``default-assignment-routing`` playbook by default (mandatory-routing spec
+2026-09-28).  The orchestrator only needs one fact per task — which
+intelligence class it must run under — and that fact is
+``tasks.intelligence_class``, written with the route by ``task_route_apply``.
+There is no separate decision record to keep fresh: a task without a
+claimable route has none here (:func:`claimable_routes`), and the cascade
+emits ``task.route_needed`` until the router gives it one.
 """
 
 from __future__ import annotations
@@ -75,6 +76,37 @@ def profile_vendor(profile: Any, harness_registry: Any = None, project_id: str =
         return ""
     harness = _harness(harness_id, project_id, harness_registry)
     return str(getattr(harness, "provider", "") or "") or _infer_provider_from_harness(harness)
+
+
+def claimable_routes(
+    routes: Mapping[str, EffectiveAssignmentRoute],
+    tasks: Sequence[Task],
+    ready_projects: frozenset[str] | set[str],
+) -> dict[str, EffectiveAssignmentRoute]:
+    """*routes* less every queued task whose route is not claimable (routing §9.1, I3).
+
+    A DEFINED, READY or BLOCKED task keeps its route only when the router, an
+    override or a role wrote it -- or a legacy route while its project's
+    router is not ready (*ready_projects*).  In-flight work keeps its route,
+    legacy included, and finishes where it is (§11).  The push scheduler and
+    the reconciler read the result, so neither plans for unrouted work.
+    """
+    from src.models import TaskStatus
+    from src.routing.sources import route_is_claimable
+
+    queued = {TaskStatus.DEFINED, TaskStatus.READY, TaskStatus.BLOCKED}
+    by_id = {task.id: task for task in tasks}
+    kept: dict[str, EffectiveAssignmentRoute] = {}
+    for task_id, route in routes.items():
+        task = by_id.get(task_id)
+        if task is not None and task.status in queued and not route_is_claimable(
+            task.profile_id,
+            getattr(task, "route_source", None),
+            router_ready=task.project_id in ready_projects,
+        ):
+            continue
+        kept[task_id] = route
+    return kept
 
 
 class ExplicitRouting:

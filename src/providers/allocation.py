@@ -448,7 +448,8 @@ async def build_allocation_snapshot(orchestrator: Any, *, now: float | None = No
             "status": getattr(project.status, "value", project.status),
             # ``projects.preferred_provider`` lands with plan Task 1.
             "preferred_provider": getattr(project, "preferred_provider", None),
-            "default_profile_id": project.default_profile_id,
+            # The router binding (mandatory routing §8); there is no default profile.
+            "assignment_playbook_id": project.assignment_playbook_id,
             "max_concurrent_agents": project.max_concurrent_agents,
         }
         for project in sorted(await db.list_projects(), key=lambda p: p.id)

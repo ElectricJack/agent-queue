@@ -519,6 +519,9 @@ class ProviderCommandsMixin:
         ``to_profile`` or ``force`` is an operator's explicit move: ``force``
         may move a pinned task, target a degraded provider or (with
         ``to_profile``) change the class, and is recorded ``operator_forced``.
+        A task the router routed moves only among its recorded candidates,
+        forced or not: ``to_profile`` outside them holds, because that move
+        is an override (mandatory routing §6.8, §7).
 
         Args:
             provider: Limit the sweep to one provider key (vendor alias accepted).

@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
+import re
 from typing import Any, Final, Mapping
 
 from pydantic import ValidationError
@@ -23,6 +24,7 @@ from src.playbooks.definition import (
     Step,
     artifact_sha256,
     contract_fingerprint,
+    _load_no_duplicates,
     scope_from_v1,
     source_digest,
     step_profile_ids,
@@ -86,6 +88,80 @@ def load_semantic_body_json(text: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("semantic body must be a JSON object")
     return value
+
+
+_LEGACY_WORKER_RUNG = re.compile(
+    r"^(fast|standard|deep)-(off|low|medium|high)-(claude|codex|gemini)$"
+)
+
+
+def migrate_legacy_agent_task_routes(
+    body: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[Diagnostic]]:
+    """Convert old worker pins in a proposal to class hints before strict parsing.
+
+    Stored artifacts remain immutable and strictly parsed. Only the explicit
+    compiler path may migrate a legacy semantic body, so the resulting artifact
+    receives a new hash and must go through review, import and activation.
+    """
+    migrated = dict(body)
+    steps = body.get("steps")
+    if not isinstance(steps, Mapping):
+        return migrated, []
+    migrated_steps = dict(steps)
+    migrated["steps"] = migrated_steps
+    diagnostics: list[Diagnostic] = []
+    for step_id, raw_step in steps.items():
+        if not isinstance(raw_step, Mapping) or raw_step.get("type") != "agent_task":
+            continue
+        profile_id = raw_step.get("profile_id")
+        match = _LEGACY_WORKER_RUNG.fullmatch(profile_id) if isinstance(profile_id, str) else None
+        if match is None:
+            continue
+        class_hint = f"{match[1]}-{match[2]}"
+        existing = raw_step.get("intelligence_class")
+        inputs = raw_step.get("inputs", {})
+        input_hint = inputs.get("intelligence_class") if isinstance(inputs, Mapping) else None
+        if existing not in (None, class_hint) or input_hint not in (
+            None, {"type": "literal", "value": class_hint}
+        ):
+            diagnostics.append(Diagnostic(
+                "error", "legacy_worker_route_conflict",
+                f"agent_task {step_id!r} has a class hint that conflicts with {profile_id!r}",
+                field=f"/steps/{step_id}",
+            ))
+            continue
+        clean = dict(raw_step)
+        clean.pop("profile_id")
+        clean["intelligence_class"] = class_hint
+        if input_hint is not None:
+            clean["inputs"] = {key: value for key, value in inputs.items()
+                               if key != "intelligence_class"}
+        migrated_steps[step_id] = clean
+        diagnostics.append(Diagnostic(
+            "warning", "legacy_worker_route_migrated",
+            f"agent_task {step_id!r}: {profile_id!r} became class hint {class_hint!r}",
+            field=f"/steps/{step_id}",
+        ))
+    return migrated, diagnostics
+
+
+def load_legacy_baseline_json(text: str) -> PlaybookDefinition:
+    """Read an old worker-pinned artifact for a proposal diff, never for execution.
+
+    The current artifact loader stays strict. This compiler-only seam lets an
+    operator name the old artifact as a baseline, preserving monotonic version
+    numbers while the new proposal receives a fresh immutable hash.
+    """
+    raw = _load_no_duplicates(text)
+    if not isinstance(raw, Mapping):
+        raise ValueError("baseline artifact must be an object")
+    migrated, diagnostics = migrate_legacy_agent_task_routes(raw)
+    if not any(d.code == "legacy_worker_route_migrated" for d in diagnostics):
+        raise ValueError("baseline contains no migratable legacy worker profile")
+    if any(d.severity == "error" for d in diagnostics):
+        raise ValueError("baseline has conflicting worker route hints")
+    return PlaybookDefinition.model_validate(migrated)
 
 
 @dataclass(frozen=True)
@@ -237,6 +313,8 @@ def propose(
     diagnostics: list[Diagnostic] = []
     clean, source_diagnostics = _sanitize_source_refs(dict(body), source)
     diagnostics.extend(source_diagnostics)
+    clean, route_diagnostics = migrate_legacy_agent_task_routes(clean)
+    diagnostics.extend(route_diagnostics)
     for key in sorted(AUTHORITATIVE_FIELDS & clean.keys()):
         clean.pop(key)
         diagnostics.append(

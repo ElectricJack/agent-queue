@@ -51,9 +51,16 @@ projects = Table(
     Column("discord_control_channel_id", Text, nullable=True),
     Column("repo_url", Text, nullable=True, server_default=""),
     Column("repo_default_branch", Text, nullable=True, server_default="main"),
-    Column("default_profile_id", Text, ForeignKey("agent_profiles.id"), nullable=True),
     Column("preferred_provider", Text, nullable=True),
-    Column("assignment_playbook_id", Text, nullable=True),
+    # The router binding (mandatory-routing spec §8, revision a00000000043):
+    # every project names the routing playbook that routes its tasks.  There
+    # is no project default profile; ``default_profile_id`` was dropped.
+    Column(
+        "assignment_playbook_id",
+        Text,
+        nullable=False,
+        server_default="default-assignment-routing",
+    ),
     # Project-level integration policy: 'direct' | 'pull_request' | NULL
     # (NULL = inherit config ``integration.default_mode``).
     Column("integration_mode", Text, nullable=True),
@@ -235,6 +242,12 @@ tasks = Table(
     CheckConstraint(
         "route_source IN ('unrouted','router','override','role','legacy')",
         name="ck_tasks_route_source",
+    ),
+    # Mandatory routing I1: a profile always names who wrote it, and a row
+    # without one is ``unrouted`` (revision a00000000042).
+    CheckConstraint(
+        "(profile_id IS NULL) = (route_source = 'unrouted')",
+        name="ck_tasks_route_source_profile",
     ),
     Index("idx_tasks_project_dedup", "project_id", "dedup_key"),
     Column("created_at", Float, nullable=False),

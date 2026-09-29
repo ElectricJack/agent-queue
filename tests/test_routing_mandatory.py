@@ -17,12 +17,19 @@ Like ``tests/test_v1_removal.py``, this module holds the line the spec draws:
 3. **The ``create_task``, ``ensure_task`` and ``edit_task`` contract
    fingerprints are unchanged**: their argument models keep the legacy
    fields, refused at runtime, so no reviewed bundle goes stale.
+4. **No stale readers** (Task 8): no module under ``src/`` reads
+   ``default_profile_id``, ``task_route_options`` no longer exists, and a
+   project takes no default profile on any surface (spec §8, §9.3).
+5. **Shipped prose files with hints** (Task 9): no skill, shipped profile,
+   prompt or current document tells a caller to file or route a task with a
+   profile, a pin or a responder profile (spec §12).
 """
 
 from __future__ import annotations
 
 import ast
 import json
+import re
 import textwrap
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -291,6 +298,10 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
     ("src/database/queries/routing_queries.py", "RoutingQueryMixin.write_router_route"): (
         "task_route_apply: the bound router's single route write (spec §6.6)"
     ),
+    # -- the audited emergency override (spec §7, D2) -------------------------
+    ("src/database/queries/routing_queries.py", "RoutingQueryMixin.write_override_route"): (
+        "task_route_override: the local operator's or supervisor's pinned override"
+    ),
     # -- failover, spill and reroute-undo -------------------------------------
     ("src/database/queries/task_reroute_queries.py", "TaskRerouteQueryMixin.apply_task_reroute"): (
         "provider failover, capacity spill and preferred-work moves (spec §6.8, Task 6)"
@@ -314,14 +325,15 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
         "nulls the profile a deleted profile leaves behind (spec §9.2)"
     ),
     ("src/database/queries/task_queries.py", "TaskQueryMixin.reset_task_route"): (
-        "sends a queued task back to its router: clears the route (edit_task hint edits)"
+        "sends a queued task back to its router: clears the route (aq task route, "
+        "edit_task hint edits)"
     ),
     # -- the persistence layer -------------------------------------------------
     ("src/database/queries/task_queries.py", "TaskQueryMixin._insert_task_row"): (
         "db.create_task persists the Task it is given; every Task(...) is scanned"
     ),
     ("src/database/queries/task_queries.py", "TaskQueryMixin.update_task"): (
-        "stamps the transitional route_source of a profile write (spec §9.2); "
+        "stores the source a profile write declares, and refuses none (spec §9.2); "
         "update_task(profile_id=...) callers are scanned"
     ),
     ("src/database/queries/task_queries.py", "TaskQueryMixin.update_task_routing"): (
@@ -339,10 +351,6 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
     ),
     ("src/orchestrator/pools.py", "PoolsMixin._launch_pool_session_inner"): (
         "a throwaway Task describing a pool worker's requirement"
-    ),
-    # -- reworked by later tasks of the spec -----------------------------------
-    ("src/commands/task_commands.py", "TaskCommandsMixin._cmd_task_route"): (
-        "the manual route command; Task 7 makes it re-run the router instead"
     ),
 }
 
@@ -600,6 +608,7 @@ def _surface_args(surface: str) -> dict:
         "task_batch_propose": {"project_id": "p", "source": "s", "tasks": [spec], "edges": []},
         "task_batch_update": {"proposal_id": "none", "payload": {"tasks": [spec], "edges": []}},
         "task_batch_commit": {"proposal_id": "none"},
+        "task_route": {"task_id": "queued"},
     }[surface]
 
 
@@ -620,6 +629,8 @@ def _assert_refused(result: dict, refused: str) -> None:
     assert result.get("code") == ROUTING_CHOICE_FORBIDDEN, result
     assert refused in result["refused"], result
     assert "intelligence_class" in result["error"], result
+    # The one lever that names a profile (spec §5.1, §7).
+    assert "aq task route-override" in result["error"], result
 
 
 @pytest.mark.parametrize("principal", PRINCIPALS)
@@ -634,6 +645,7 @@ def _assert_refused(result: dict, refused: str) -> None:
         "task_batch_propose",
         "task_batch_update",
         "task_batch_commit",
+        "task_route",
     ],
 )
 async def test_every_surface_refuses_every_routing_argument(env, surface, principal) -> None:
@@ -813,7 +825,8 @@ async def test_a_hint_edit_sends_a_queued_task_back_to_its_router(env) -> None:
     handler, db = env
     await db.create_task(Task(
         id="legacy", project_id="p", title="Legacy", description="d",
-        status=TaskStatus.READY, profile_id="coder", intelligence_class="standard-high",
+        status=TaskStatus.READY, profile_id="coder",
+        route_source="legacy", intelligence_class="standard-high",
     ))
     assert (await db.get_task("legacy")).route_source == "legacy"
     result = await handler.execute("edit_task", {"task_id": "legacy", "intelligence_class": "deep-high"})
@@ -835,7 +848,8 @@ async def test_a_hint_edit_keeps_a_role_route(env) -> None:
     handler, db = env
     await db.create_task(Task(
         id="role", project_id="p", title="Triage", description="d",
-        status=TaskStatus.READY, profile_id="triage", intelligence_class="standard-high",
+        status=TaskStatus.READY, profile_id="triage",
+        route_source="role", intelligence_class="standard-high",
     ))
     result = await handler.execute("edit_task", {"task_id": "role", "intelligence_class": "deep-high"})
     assert "error" not in result, result
@@ -850,7 +864,8 @@ async def test_a_claimed_task_keeps_its_route(env) -> None:
     await db.create_agent(Agent(id="agent", name="Worker", profile_id="coder"))
     await db.create_task(Task(
         id="held", project_id="p", title="Held", description="d",
-        status=TaskStatus.ASSIGNED, profile_id="coder", intelligence_class="standard-high",
+        status=TaskStatus.ASSIGNED, profile_id="coder",
+        route_source="legacy", intelligence_class="standard-high",
         assigned_agent_id="agent",
     ))
     refused = await handler.execute("edit_task", {"task_id": "held", "intelligence_class": "deep-high"})
@@ -981,7 +996,7 @@ def test_filing_contract_fingerprints_are_unchanged(command: str) -> None:
     assert "rejected" in {spec.name for spec in contract.execution.outcomes}
 
 
-@pytest.mark.parametrize("command", ["create_task", "ensure_task", "edit_task"])
+@pytest.mark.parametrize("command", ["create_task", "ensure_task", "edit_task", "task_route"])
 def test_the_tool_definitions_drop_the_routing_arguments(command: str) -> None:
     """The LLM-facing schema, the CLI and the typed route no longer offer them."""
     from src.routing.filing import REFUSED_ROUTING_ARGS
@@ -997,6 +1012,284 @@ def test_aq_task_create_has_no_routing_flags() -> None:
     flags = {opt for param in task_create.params for opt in getattr(param, "opts", [])}
     assert not flags & {"-P", "--profile", "--pin", "--provider-intent", "--agent-type"}
     assert "--intelligence-class" in flags
+
+
+# ---------------------------------------------------------------------------
+# 4. No stale readers: projects are bound, nothing reads a project default
+# ---------------------------------------------------------------------------
+
+#: The dropped column (spec §8, revision a00000000043) and the deleted read
+#: command.  Each may appear in ``src/`` only as the name of a refused
+#: argument, never as something code reads.
+RETIRED_NAMES = frozenset({"default_profile_id", "task_route_options"})
+#: ``(path, enclosing function or class)`` where a retired name may appear as
+#: a string: the refused-argument list names it so a caller learns it is gone.
+RETIRED_NAME_SITES = frozenset({("src/routing/filing.py", "<module>")})
+
+
+def _retired_uses(source: str, path: str) -> list[tuple[str, str, int, str]]:
+    """Every attribute, keyword, name or exact string naming a retired name."""
+    tree = ast.parse(source)
+    found: list[tuple[str, str, int, str]] = []
+
+    def visit(node: ast.AST, scope: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = scope
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                inner = child.name
+            name = None
+            if isinstance(child, ast.Attribute):
+                name = child.attr
+            elif isinstance(child, ast.keyword):
+                name = child.arg
+            elif isinstance(child, ast.Name):
+                name = child.id
+            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                name = child.value
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = child.name.removeprefix("_cmd_")
+            if name in RETIRED_NAMES:
+                found.append((path, scope, getattr(child, "lineno", 0), name))
+            visit(child, inner)
+
+    visit(tree, "<module>")
+    return found
+
+
+def test_no_module_under_src_reads_a_retired_name() -> None:
+    """Spec §9.3 / §14.10: no reader of the dropped column or the deleted command."""
+    found = []
+    for file in sorted(SRC.rglob("*.py")):
+        rel = "src/" + file.relative_to(SRC).as_posix()
+        found.extend(_retired_uses(file.read_text(encoding="utf-8"), rel))
+    stray = [use for use in found if (use[0], use[1]) not in RETIRED_NAME_SITES]
+    assert not stray, f"reads of a retired routing name: {stray}"
+    # The allowlist only shrinks: every entry still names the refused argument.
+    live = {(use[0], use[1]) for use in found}
+    assert RETIRED_NAME_SITES <= live, RETIRED_NAME_SITES - live
+
+
+@pytest.mark.parametrize(
+    "label, source",
+    [
+        ("attribute", "def f(p):\n    return p.default_profile_id\n"),
+        ("column", "def f(t):\n    return t.c.default_profile_id\n"),
+        ("key", "def f(row):\n    return row.get('default_profile_id')\n"),
+        ("keyword", "def f(P):\n    return P(default_profile_id='x')\n"),
+        ("command", (
+            "class M:\n    async def _cmd_task_route_options(self, args):\n"
+            "        return {}\n"
+        )),
+    ],
+)
+def test_the_scan_finds_a_seeded_retired_read(label: str, source: str) -> None:
+    assert _retired_uses(source, "src/seeded.py"), label
+
+
+def test_the_retired_read_command_is_gone() -> None:
+    from src.commands.contracts import CONTRACTS
+    from src.commands.handler import CommandHandler
+    from src.tools.definitions import _ALL_TOOL_DEFINITIONS
+
+    assert CONTRACTS.get("task_route_options") is None
+    assert not hasattr(CommandHandler, "_cmd_task_route_options")
+    assert "task_route_options" not in {tool["name"] for tool in _ALL_TOOL_DEFINITIONS}
+
+
+def test_the_projects_table_has_no_default_and_a_required_binding() -> None:
+    from src.database.tables import projects
+    from src.models import Project
+
+    assert "default_profile_id" not in projects.c
+    assert projects.c.assignment_playbook_id.nullable is False
+    assert "default_profile_id" not in Project.__dataclass_fields__
+
+
+@pytest.mark.parametrize("command", ["create_project", "edit_project"])
+def test_the_project_tools_offer_no_default_profile(command: str) -> None:
+    from src.routing.filing import REFUSED_ROUTING_ARGS
+    from src.tools.definitions import _ALL_TOOL_DEFINITIONS
+
+    schema = next(t["input_schema"] for t in _ALL_TOOL_DEFINITIONS if t["name"] == command)
+    assert not set(REFUSED_ROUTING_ARGS) & set(schema["properties"])
+
+
+@pytest.mark.parametrize("principal", ["operator", "service"])
+async def test_a_project_command_refuses_a_default_profile(env, principal) -> None:
+    """Spec §5.1: ``create_project`` and ``edit_project`` refuse a project default."""
+    from src.routing.filing import ROUTING_CHOICE_FORBIDDEN
+
+    handler, db = env
+    before = await db.list_projects()
+    for command, args in (
+        ("create_project", {"name": "fresh"}),
+        ("edit_project", {"project_id": "p", "name": "Renamed"}),
+    ):
+        for argument, value in REFUSED_VALUES.items():
+            result = await _execute_as(handler, principal, command, {**args, argument: value})
+            assert result.get("success") is False, (command, argument, result)
+            assert result.get("code") == ROUTING_CHOICE_FORBIDDEN, result
+            assert result["refused"] == [argument], result
+            assert "router" in result["error"], result
+    assert await db.list_projects() == before
+
+
+async def test_a_created_project_is_bound_and_has_no_default(env) -> None:
+    handler, db = env
+    result = await handler.execute("create_project", {"name": "fresh"})
+    assert result["assignment_playbook_id"] == handler.config.routing.default_router
+    assert "default_profile_id" not in result
+    project = await db.get_project("fresh")
+    assert project.assignment_playbook_id == handler.config.routing.default_router
+
+
+async def test_the_typed_api_route_refuses_a_project_default(env, monkeypatch) -> None:
+    import httpx
+    from fastapi import FastAPI
+
+    from src.api import dependencies as deps
+    from src.api.codegen import build_category_routers
+    from src.routing.filing import ROUTING_CHOICE_FORBIDDEN
+
+    handler, db = env
+    monkeypatch.setattr(deps, "_command_handler", handler)
+    monkeypatch.setattr(deps, "_orchestrator", handler.orchestrator)
+    monkeypatch.setattr(deps, "_require_session_token", False)
+    app = FastAPI()
+    for router in build_category_routers():
+        app.include_router(router)
+    before = await db.list_projects()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for path, body in (
+            ("/api/project/create", {"name": "fresh", "default_profile_id": "coder"}),
+            ("/api/project/edit", {"project_id": "p", "default_profile_id": "coder"}),
+        ):
+            response = await client.post(path, json=body)
+            assert response.status_code == 422, (path, response.text)
+            assert response.json()["code"] == ROUTING_CHOICE_FORBIDDEN, response.text
+    assert await db.list_projects() == before
+
+
+# ---------------------------------------------------------------------------
+# 5. Shipped prose files with hints (spec §12)
+# ---------------------------------------------------------------------------
+
+#: Prose AQ ships, or presents as current documentation.  Design specs,
+#: plans, reports and reviewed bundles are history and keep what they record.
+PROSE_GLOBS: tuple[str, ...] = (
+    "AGENTS.md",
+    "README.md",
+    "profile.md",
+    "src/skills/**/*.md",
+    "src/profiles/defaults/**/*.md",
+    "src/prompts/*.md",
+    "src/prompts/default_playbooks/*.md",
+    "src/prompts/integration_playbooks/*.md",
+    "src/prompts/project_playbooks/**/*.md",
+    "src/prime/templates/*.md",
+    "docs/concepts/**/*.md",
+    "docs/config/**/*.md",
+    "docs/contributing/**/*.md",
+    "docs/guides/**/*.md",
+    "docs/reference/**/*.md",
+    "docs/tutorials/**/*.md",
+)
+
+#: A command that files or routes a task, and the flags that would choose its
+#: route.  ``aq task route-override`` is the audited exception (spec §7).
+ROUTE_CHOOSING_FLAGS: dict[str, tuple[str, ...]] = {
+    "aq task create": ("--profile", "-P", "--pin", "--provider-intent", "--agent-type"),
+    "aq task route": ("--profile-id", "--pin", "--provider-intent"),
+    "aq task edit": ("--profile-id", "--pin", "--provider-intent"),
+    "aq review dispatch": ("--to",),
+    "aq review decide": ("--responder-profile",),
+}
+
+#: Where a command's arguments end once the prose is flattened: a closing
+#: backtick, a table cell, a shell comment, or the next ``aq`` command.
+_COMMAND_END = re.compile(r"`|\||\s#\s|\baq\s")
+
+
+def route_choosing_commands(text: str) -> list[str]:
+    """Every command in *text* that files or routes a task with a route.
+
+    Line continuations and wrapping are flattened first, so a command split
+    across lines of a code block or a paragraph is read whole.
+    """
+    flat = re.sub(r"\s+", " ", text.replace("\\\n", " "))
+    found: list[str] = []
+    for command, flags in ROUTE_CHOOSING_FLAGS.items():
+        for match in re.finditer(rf"\b{re.escape(command)}(?![\w-])", flat):
+            rest = flat[match.end():]
+            end = _COMMAND_END.search(rest)
+            arguments = rest[: end.start()] if end else rest
+            found.extend(
+                f"{command} {flag}"
+                for flag in flags
+                if re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", arguments)
+            )
+    found.extend(
+        match.group(0) for match in re.finditer(r"\baq project set \S+ default-profile\b", flat)
+    )
+    return found
+
+
+def _prose_files() -> list[Path]:
+    files: set[Path] = set()
+    for pattern in PROSE_GLOBS:
+        files.update(REPO.glob(pattern))
+    return sorted(path for path in files if path.is_file())
+
+
+SEEDED_ROUTE_CHOICES = {
+    "create --profile": "aq task create --project p --title t --profile standard-high-claude",
+    "create -P across lines": 'aq task create -p e2e -t "x" \\\n  -P worker',
+    "create --pin in prose": "file it with `aq task create --title t\n  --pin`",
+    "route --profile-id": "aq task route --task-id t --profile-id standard-high-codex",
+    "edit --pin": "aq task edit --task-id t --pin",
+    "dispatch --to": "aq review dispatch --review-id r --to deep-high-codex",
+    "decide --responder-profile": (
+        "aq review decide --review-id r --revision 1 --decision reject --responder-profile p"
+    ),
+    "project default": "aq project set demo default-profile standard-high-claude",
+}
+
+NOT_ROUTE_CHOICES = {
+    "override": 'aq task route-override --task-id t --profile-id p --reason "outage"',
+    "hints": "aq task create --project p --title t --type bugfix --intelligence-class deep-high",
+    "route hints": "aq task route --task-id t --intelligence-class deep-high --task-type design",
+    "pool scale": "aq pool scale --profile-id standard-high-claude --max 3",
+    "reseed": "aq agent profile-reseed --profile-id worker-claude --grants-only",
+    "refusal prose": "`aq task create` refuses `--profile` and `--pin`",
+    "shell comment": "aq task create --title t  # a --profile is refused",
+    "table cell": "| `aq task create` | --profile is refused |",
+}
+
+
+@pytest.mark.parametrize("label", sorted(SEEDED_ROUTE_CHOICES))
+def test_the_prose_scan_finds_a_seeded_route_choice(label: str) -> None:
+    assert route_choosing_commands(SEEDED_ROUTE_CHOICES[label]), label
+
+
+@pytest.mark.parametrize("label", sorted(NOT_ROUTE_CHOICES))
+def test_the_prose_scan_ignores_what_chooses_no_route(label: str) -> None:
+    assert route_choosing_commands(NOT_ROUTE_CHOICES[label]) == [], label
+
+
+def test_shipped_prose_files_with_hints_never_a_route() -> None:
+    """Spec §12, Task 9 acceptance: no shipped doc, skill or profile tells a
+    caller to pass ``--profile``, ``--pin`` or ``--profile-id`` to file or
+    route a task."""
+    files = _prose_files()
+    assert any(path.match("src/skills/*/SKILL.md") for path in files)
+    offenders = {
+        str(path.relative_to(REPO)): hits
+        for path in files
+        if (hits := route_choosing_commands(path.read_text(encoding="utf-8")))
+    }
+    assert offenders == {}, offenders
 
 
 if __name__ == "__main__":  # pragma: no cover - a developer's listing aid

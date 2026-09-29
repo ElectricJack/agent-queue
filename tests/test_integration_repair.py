@@ -740,7 +740,7 @@ async def _seed_repeated_parent_conflict(db, *, deadline_at: float = 300.0):
             status=TaskStatus.COMPLETED,
             repo_id="repo",
             branch_name="aq/parent",
-            profile_id="debugger",
+            profile_id="debugger", route_source="legacy",
             intelligence_class="debug-high",
             created_by_kind="integration_repair",
             created_by_id="operation",
@@ -2533,7 +2533,7 @@ async def test_primary_dispatch_reuses_only_exact_live_attached_verifier(
             status=TaskStatus.IN_PROGRESS,
             repo_id="repo",
             branch_name="aq/parent",
-            profile_id="repairer",
+            profile_id="repairer", route_source="legacy",
         )
     )
     await db.create_session(

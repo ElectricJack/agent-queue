@@ -113,11 +113,11 @@ The tuner sets `playbooks.enabled: true`. Playbooks are how AQ routes a task to
 a worker (`default-assignment-routing`), escalates a blocked task
 (`blocked-task-escalation`) and probes provider usage
 (`provider-usage-probe`); a fresh daemon activates those shared system
-playbooks on its first start. With playbooks off, a task created without an
-explicit profile and intelligence class is never routed, and Settings →
-Playbooks is empty. The code default is `false` only because it predates the
-Playbook V2 runtime. Set `playbooks.enabled: false` to run with no playbooks,
-in which case every task must name its profile and class.
+playbooks on its first start. The routing playbook is the only writer of a
+task's route (mandatory task routing), so with playbooks off no new task is
+ever routed or run, and Settings → Playbooks is empty. The code default is
+`false` only because it predates the Playbook V2 runtime.
+`playbooks.enabled: false` suits a daemon that runs no workers at all.
 
 ## Pull-based worker pools
 

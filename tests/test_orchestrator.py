@@ -27,7 +27,7 @@ from src.intelligence_classes import IntelligenceClass
 from src.sessions.harness_parser import Harness
 from src.scheduler import AssignAction, SchedulerState
 from src.git.manager import GitManager, RemoteRefResult, RemoteRefState
-from tests.assignment_routing_helpers import install_already_routed
+from tests.assignment_routing_helpers import install_already_routed, route_source_for
 from tests.db_fixtures import lease_dsn
 
 
@@ -808,7 +808,7 @@ async def _create_session_project(orch, *, project_id: str = "p-1") -> None:
             default_class="standard-medium",
         )
     )
-    await orch.db.create_project(Project(id=project_id, name="alpha", default_profile_id="claude"))
+    await orch.db.create_project(Project(id=project_id, name="alpha"))
     path = os.path.join(orch.config.workspace_dir, project_id)
     os.makedirs(path, exist_ok=True)
     await orch.db.create_workspace(
@@ -1045,6 +1045,7 @@ class TestOrchestratorLifecycle:
                 title="Test",
                 description="Do it",
                 status=TaskStatus.DEFINED,
+                profile_id="claude", route_source="legacy",
             )
         )
 
@@ -1068,6 +1069,7 @@ class TestOrchestratorLifecycle:
                 title="First",
                 description="Do first",
                 status=TaskStatus.DEFINED,
+                profile_id="claude", route_source="legacy",
             )
         )
         await orch.db.create_task(
@@ -1077,6 +1079,7 @@ class TestOrchestratorLifecycle:
                 title="Second",
                 description="Do second",
                 status=TaskStatus.DEFINED,
+                profile_id="claude", route_source="legacy",
             )
         )
         await orch.db.add_dependency("t-2", depends_on="t-1")
@@ -1208,7 +1211,12 @@ class TestContainerRelease:
     recovery preserves — so settlement can close it.
     """
 
-    async def _container_with_child(self, orch, *, container_status, child_status):
+    async def _container_with_child(
+        self, orch, *, container_status, child_status, profile_id=None
+    ):
+        # *profile_id* routes both rows (a legacy route, claimable while the
+        # project's router is not ready): only routed work is dispatched.
+        route = {"profile_id": profile_id, "route_source": route_source_for(profile_id)}
         await orch.db.create_task(
             Task(
                 id="c-1",
@@ -1216,6 +1224,7 @@ class TestContainerRelease:
                 title="Medium findings",
                 description="settle when the children finish",
                 status=container_status,
+                **route,
             )
         )
         await orch.db.create_task(
@@ -1225,6 +1234,7 @@ class TestContainerRelease:
                 title="Fix one finding",
                 description="a real deliverable",
                 status=child_status,
+                **route,
             )
         )
         # ``set_parent`` (any path) is what writes the container flag.
@@ -1282,7 +1292,8 @@ class TestContainerRelease:
         # Already READY when it became a container: the shape ``set_parent``
         # produces when children are attached after promotion.
         await self._container_with_child(
-            orch, container_status=TaskStatus.READY, child_status=TaskStatus.READY
+            orch, container_status=TaskStatus.READY, child_status=TaskStatus.READY,
+            profile_id="claude",
         )
 
         seen: list[list[str]] = []
@@ -1349,18 +1360,18 @@ class TestAgentReconcilerWiring:
     See docs/superpowers/specs/2026-05-07-agent-reconciliation-design.md §7.
     """
 
-    async def test_ready_task_dispatches_with_only_workspace_and_default_profile(
+    async def test_ready_task_dispatches_with_only_workspace_and_a_route(
         self, session_orch
     ):
-        """The original quick-ember bug: project with workspace +
-        default_profile_id + READY task should dispatch within one cycle —
-        no manual agent creation. Tests the full reconciler → scheduler →
-        executor chain, now terminating in a session launch rather than in
-        the removed runtime adapter.
+        """The original quick-ember bug: project with workspace + a routed
+        READY task should dispatch within one cycle — no manual agent
+        creation. Tests the full reconciler → scheduler → executor chain, now
+        terminating in a session launch rather than in the removed runtime
+        adapter.  The route names the profile: a project default no longer
+        routes anything (mandatory routing §8).
         """
         orch = session_orch
         await _create_session_project(orch)
-        # READY task with no profile_id (falls back to project default).
         await orch.db.create_task(
             Task(
                 id="regression-task",
@@ -1368,6 +1379,7 @@ class TestAgentReconcilerWiring:
                 title="Test reconciler dispatch",
                 description="Should auto-dispatch via the reconciler.",
                 status=TaskStatus.READY,
+                profile_id="claude", route_source="legacy",
             )
         )
 
@@ -3125,7 +3137,7 @@ class TestTerminalBlockedIsNotRecovered:
             status=TaskStatus.IN_PROGRESS,
             parent_task_id="t-epic",
             assigned_agent_id="a-hard",
-            profile_id="claude",
+            profile_id="claude", route_source="legacy",
         )
         await orch.db.create_task(child)
         await orch.db.add_dependency("t-epic.1", "t-epic", DepType.PARENT_CHILD.value)

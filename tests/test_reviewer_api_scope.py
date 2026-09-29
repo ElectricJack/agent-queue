@@ -33,6 +33,7 @@ from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, 
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 #: The identity ``pr_merge`` resolves for the final reviewer's PR.  ``gh``
 #: never runs in this test, so the OIDs only have to be well-formed.
@@ -86,7 +87,8 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     for tid, pid in (("reviewed", "p"), ("unrelated", "p"), ("foreign", "other")):
         await db.create_task(Task(
             id=tid, project_id=pid, title=tid, description="Worker output",
-            status=TaskStatus.DEFINED, profile_id="coder", branch_name=f"feature/{tid}",
+            status=TaskStatus.DEFINED, profile_id="coder",
+            route_source="legacy", branch_name=f"feature/{tid}",
             pr_url=(PR_URL if tid == "reviewed" else None),
         ))
         await db.transition_task(tid, TaskStatus.COMPLETED, context="test")
@@ -98,7 +100,8 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         await db.create_agent(Agent(id=worker, name=worker, profile_id=role))
         await db.create_task(Task(
             id=f"{worker}-job", project_id="p", title=worker, description=description,
-            status=TaskStatus.IN_PROGRESS, profile_id=role, assigned_agent_id=worker,
+            status=TaskStatus.IN_PROGRESS, profile_id=role,
+            route_source=route_source_for(role), assigned_agent_id=worker,
         ))
         await db.update_agent(worker, state=AgentState.BUSY, current_task_id=f"{worker}-job")
         await db.create_session(SessionRecord(
@@ -117,7 +120,7 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     await db.create_task(Task(
         id="final-reviewer-agent-job", project_id="p", title="final review",
         description="Final review for branch feature/reviewed.", status=TaskStatus.IN_PROGRESS,
-        profile_id="final-reviewer", assigned_agent_id="final-reviewer-agent",
+        profile_id="final-reviewer", route_source="role", assigned_agent_id="final-reviewer-agent",
         branch_name="feature/reviewed", pr_url=PR_URL,
     ))
     await db.update_agent(
@@ -369,7 +372,7 @@ async def test_stale_or_changed_assignment_loses_reviewer_capabilities(api, chan
     elif change == "wrong-session-profile":
         await api.db.update_session("s-reviewer-agent", profile_id="coder")
     elif change == "wrong-task-profile":
-        await api.db.update_task("reviewer-agent-job", profile_id="coder")
+        await api.db.update_task("reviewer-agent-job", profile_id="coder", route_source="legacy")
     elif change == "wrong-agent":
         await api.db.update_task("reviewer-agent-job", assigned_agent_id="worker-agent")
     elif change == "closed-review":

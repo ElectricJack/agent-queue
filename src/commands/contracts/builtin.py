@@ -403,47 +403,6 @@ class TaskBatchCommitValue(CommandValue):
     task_ids: list[str]
 
 
-class TaskRouteArgs(CommandArgs):
-    task_id: str
-    profile_id: str
-    intelligence_class: str | None = None
-    workspace_id: str | None = None
-    reason: str | None = None
-    # Provider intent (provider-failover D9).  The routing playbook passes
-    # ``class_only``; a caller that omits it means the profile as a
-    # preference.  ``task_route`` never downgrades an intent on the same
-    # provider.
-    provider_intent: str | None = None
-    pin: bool | None = None
-
-
-class TaskRouteOptionsArgs(CommandArgs):
-    task_id: str
-
-
-class TaskRouteOptionsValue(CommandValue):
-    task_id: str
-    project_id: str
-    title: str
-    description: str
-    priority: int
-    task_type: str
-    intelligence_class: str | None = None
-    profile_id: str | None = None
-    default_profile_id: str | None = None
-    explicit_profile_id: str | None = None
-    options: list[dict[str, Any]]
-    # Rows on an unavailable provider (provider-failover D11 mechanism 3):
-    # reported, never offered for automatic selection.
-    unavailable_options: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class TaskRouteValue(CommandValue):
-    task_id: str
-    resolved_gate_ids: list[str]
-    provider_intent: str | None = None
-
-
 class TaskRoutePlanArgs(CommandArgs):
     task_id: str
     #: The routing playbook's policy block, verbatim (mandatory-routing §6.3).
@@ -849,9 +808,6 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "github_issue_rejection":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in {"closed", "ignored"} else "rejected"
-    if name == "task_route_options":
-        outcome = str(raw.get("outcome") or "")
-        return outcome if outcome in _ROUTE_OPTION_OUTCOMES else "rejected"
     if name == "task_route_plan":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _ROUTE_PLAN_OUTCOMES else "rejected"
@@ -886,7 +842,6 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
         "memory_save": "saved",
         "memory_search": "searched",
         "get_downstream_tasks": "listed",
-        "task_route": "routed",
         "stop_task": "stopped",
         "message_send": "queued",
         "provider_allocation_status": "read",
@@ -946,12 +901,6 @@ def _adapter(name: str, value_type: type[CommandValue]):
     return invoke
 
 
-#: ``held`` (provider-failover D13a): the task has options in principle, but
-#: every one is on an unavailable provider.  The routing playbook ends the
-#: rule quietly on it instead of failing a run every two minutes per task.
-_ROUTE_OPTION_OUTCOMES = frozenset(
-    {"already_routed", "explicit", "undecided", "no_options", "held"}
-)
 #: ``task_route_plan`` (mandatory-routing §6.2): a route, a question for the
 #: classifier, every candidate on an unlaunchable provider, nothing the policy
 #: allows, or a route the router leaves alone.
@@ -1547,30 +1496,6 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         subject_labels={},
     ),
-    "task_route_options": CommandPresentation(
-        title="Read a task's routing options",
-        summary=(
-            "Report whether the task is routed, whether its class is explicit, and which "
-            "class, provider and profile combinations could execute it."
-        ),
-        arg_labels={"task_id": "Task"},
-        outcome_labels={
-            "already_routed": "Already routed",
-            "explicit": "Explicit class",
-            "undecided": "Needs a decision",
-            "no_options": "Nothing can run it",
-            "held": "Held: every option's provider is unavailable",
-            "rejected": "Rejected",
-        },
-        result_labels={
-            "intelligence_class": "Intelligence class",
-            "profile_id": "Agent profile",
-            "explicit_profile_id": "Profile serving the class",
-            "options": "Routing options",
-            "unavailable_options": "Options on an unavailable provider",
-        },
-        subject_labels={},
-    ),
     "task_route_plan": CommandPresentation(
         title="Plan a task's route",
         summary=(
@@ -1633,23 +1558,6 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
             "adjusted_at_apply": "Changed at apply",
             "resolved_gate_ids": "Resolved gates",
         },
-        subject_labels={
-            "task_routing": "the task's routing",
-            "routing_gate": "the task's routing gate",
-        },
-    ),
-    "task_route": CommandPresentation(
-        title="Route a task to a profile",
-        summary="Assign the agent profile that will run the task, and clear its routing gate.",
-        arg_labels={
-            "task_id": "Task",
-            "profile_id": "Agent profile",
-            "intelligence_class": "Intelligence class",
-            "workspace_id": "Workspace",
-            "reason": "Reason",
-        },
-        outcome_labels={"routed": "Routed", "rejected": "Rejected"},
-        result_labels={"resolved_gate_ids": "Resolved gates"},
         subject_labels={
             "task_routing": "the task's routing",
             "routing_gate": "the task's routing gate",
@@ -1861,11 +1769,6 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             False,
         ),
         (
-            "task_route_options", TaskRouteOptionsArgs, TaskRouteOptionsValue,
-            _outcomes("already_routed", "explicit", "undecided", "no_options", "held"),
-            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
-        ),
-        (
             "task_route_plan",
             TaskRoutePlanArgs,
             TaskRoutePlanValue,
@@ -1883,19 +1786,6 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             TaskRouteApplyValue,
             _outcomes("routed", "stale"),
             SideEffectClass.UPDATE,
-            (
-                UpdateClause(subject=EffectSubject.TASK_ROUTING),
-                ResolveClause(subject=EffectSubject.ROUTING_GATE, target_arg="task_id"),
-            ),
-            IdempotencySpec(mode="natural"),
-            True,
-        ),
-        (
-            "task_route",
-            TaskRouteArgs,
-            TaskRouteValue,
-            _outcomes("routed"),
-            SideEffectClass.COMPOSITE,
             (
                 UpdateClause(subject=EffectSubject.TASK_ROUTING),
                 ResolveClause(subject=EffectSubject.ROUTING_GATE, target_arg="task_id"),

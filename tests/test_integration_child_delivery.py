@@ -236,7 +236,8 @@ async def _open_reviewer(db) -> None:
         await conn.execute(
             insert(tasks).values(
                 id="review-1", project_id="p", title="Review epic.1", description="",
-                status="READY", profile_id="reviewer", created_at=4.0, updated_at=4.0,
+                status="READY", profile_id="reviewer", route_source="role",
+                created_at=4.0, updated_at=4.0,
             )
         )
         await conn.execute(

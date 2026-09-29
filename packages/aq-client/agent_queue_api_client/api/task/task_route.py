@@ -65,13 +65,17 @@ def sync_detailed(
     client: AuthenticatedClient | Client,
     body: TaskRouteRequest,
 ) -> Response[TaskRouteResponse | TaskRouteResponse422]:
-    """Route a task: assign its agent profile, optional intelligence class, and optional workspace, then
-    resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates —
-    generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.
+    """Send a task back to its project's router, which picks the route again. Never picks a profile:
+    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
+    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
+    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
+    operator, the supervisor, and a worker for a task it filed.
 
-     Route a task: assign its agent profile, optional intelligence class, and optional workspace, then
-    resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates —
-    generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.
+     Send a task back to its project's router, which picks the route again. Never picks a profile:
+    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
+    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
+    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
+    operator, the supervisor, and a worker for a task it filed.
 
     Args:
         body (TaskRouteRequest):
@@ -100,13 +104,17 @@ def sync(
     client: AuthenticatedClient | Client,
     body: TaskRouteRequest,
 ) -> TaskRouteResponse | TaskRouteResponse422 | None:
-    """Route a task: assign its agent profile, optional intelligence class, and optional workspace, then
-    resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates —
-    generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.
+    """Send a task back to its project's router, which picks the route again. Never picks a profile:
+    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
+    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
+    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
+    operator, the supervisor, and a worker for a task it filed.
 
-     Route a task: assign its agent profile, optional intelligence class, and optional workspace, then
-    resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates —
-    generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.
+     Send a task back to its project's router, which picks the route again. Never picks a profile:
+    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
+    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
+    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
+    operator, the supervisor, and a worker for a task it filed.
 
     Args:
         body (TaskRouteRequest):
@@ -130,13 +138,17 @@ async def asyncio_detailed(
     client: AuthenticatedClient | Client,
     body: TaskRouteRequest,
 ) -> Response[TaskRouteResponse | TaskRouteResponse422]:
-    """Route a task: assign its agent profile, optional intelligence class, and optional workspace, then
-    resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates —
-    generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.
+    """Send a task back to its project's router, which picks the route again. Never picks a profile:
+    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
+    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
+    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
+    operator, the supervisor, and a worker for a task it filed.
 
-     Route a task: assign its agent profile, optional intelligence class, and optional workspace, then
-    resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates —
-    generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.
+     Send a task back to its project's router, which picks the route again. Never picks a profile:
+    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
+    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
+    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
+    operator, the supervisor, and a worker for a task it filed.
 
     Args:
         body (TaskRouteRequest):
@@ -163,13 +175,17 @@ async def asyncio(
     client: AuthenticatedClient | Client,
     body: TaskRouteRequest,
 ) -> TaskRouteResponse | TaskRouteResponse422 | None:
-    """Route a task: assign its agent profile, optional intelligence class, and optional workspace, then
-    resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates —
-    generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.
+    """Send a task back to its project's router, which picks the route again. Never picks a profile:
+    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
+    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
+    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
+    operator, the supervisor, and a worker for a task it filed.
 
-     Route a task: assign its agent profile, optional intelligence class, and optional workspace, then
-    resolve any open 'routing' gates on the task. This is the ONLY way to resolve routing gates —
-    generic gate_resolve refuses them. Used by the triage agent to release work into the scheduler.
+     Send a task back to its project's router, which picks the route again. Never picks a profile:
+    optionally set new hints (an intelligence class and a kind), then clear the task's profile, class
+    and route record so the next cascade asks the router. Also clears an emergency override. Refused on
+    a claimed, running or finished task (stop it first) and on a role task. Allowed to the local
+    operator, the supervisor, and a worker for a task it filed.
 
     Args:
         body (TaskRouteRequest):

@@ -140,7 +140,7 @@ Built-ins are registered in three modules:
 
 | Module | Covers |
 |---|---|
-| [`builtin.py`](../../../src/commands/contracts/builtin.py) | The pipeline commands: task reads and writes, `ensure_task`, gates, dependencies, `message_send`, memory, `git_diff`, `render_prompt`, `stop_task`, `task_route`, `delivery_*`, `task_batch_commit`. |
+| [`builtin.py`](../../../src/commands/contracts/builtin.py) | The pipeline commands: task reads and writes, `ensure_task`, gates, dependencies, `message_send`, memory, `git_diff`, `render_prompt`, `stop_task`, `task_route_plan`, `task_route_apply`, `delivery_*`, `task_batch_commit`. |
 | [`integration.py`](../../../src/commands/contracts/integration.py) | Every hierarchical-integration primitive — the largest group by far, and the reason most contracts are `composite`. |
 | [`escalation.py`](../../../src/commands/contracts/escalation.py) | The durable human-escalation boundary. |
 

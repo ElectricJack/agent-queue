@@ -1,10 +1,11 @@
 """Route source, class hint, route record, router binding and the design/art kinds.
 
 Revision 1 of the mandatory-task-routing spec (2026-09-28 §11, Task 1): every
-profile write records who made it, a writer that declares no source is
-stamped ``role`` or ``legacy`` by the query layer (§9.2), every new project is
-bound to a router (§8), and ``design`` / ``art`` are task kinds everywhere a
-kind is accepted.
+profile write records who made it, every new project is bound to a router
+(§8), and ``design`` / ``art`` are task kinds everywhere a kind is accepted.
+Revision 2 (Task 6) ends the transitional stamping: a profile write that
+declares no source is refused, and ``ck_tasks_route_source_profile`` holds
+``(profile_id IS NULL) = (route_source = 'unrouted')`` at the database.
 """
 
 from __future__ import annotations
@@ -37,7 +38,8 @@ from src.routing.sources import (
     ROUTE_SOURCES,
     ROUTER,
     UNROUTED,
-    stamped_route_source,
+    UndeclaredRouteSource,
+    declared_route_source,
 )
 from src.task_graph.parser import parse_graph
 from src.task_graph.validator import _check_task_types
@@ -86,38 +88,49 @@ def test_the_value_set_matches_the_check_constraint():
     [
         (None, None, UNROUTED),
         (None, ROUTER, UNROUTED),
-        ("worker", None, LEGACY),
-        ("worker", UNROUTED, LEGACY),
-        ("triage", None, ROLE),
-        ("final-reviewer", UNROUTED, ROLE),
         ("worker", ROUTER, ROUTER),
         ("worker", "override", "override"),
+        ("worker", LEGACY, LEGACY),
+        ("triage", ROLE, ROLE),
     ],
 )
-def test_stamped_route_source(profile_id, declared, stored):
-    assert stamped_route_source(profile_id, declared) == stored
+def test_declared_route_source(profile_id, declared, stored):
+    assert declared_route_source(profile_id, declared) == stored
 
 
-# -- the query layer stamps a profile written with no source -------------------
+@pytest.mark.parametrize(
+    ("profile_id", "declared"),
+    [("worker", None), ("worker", UNROUTED), ("triage", None), ("final-reviewer", UNROUTED)],
+)
+def test_a_profile_without_a_declared_source_is_refused(profile_id, declared):
+    with pytest.raises(UndeclaredRouteSource, match=profile_id):
+        declared_route_source(profile_id, declared)
 
 
-async def test_create_task_stamps_legacy_role_or_unrouted(db):
+# -- the query layer stores the declared source, and refuses none --------------
+
+
+async def test_create_task_stores_the_declared_source(db):
     created = {
         "none": _task("none", intelligence_class="standard-high"),
-        "worker": _task("worker-task", "worker"),
-        "triage": _task("triage-task", "triage"),
-        "reviewer": _task("reviewer-task", "reviewer"),
+        "legacy": _task("legacy-task", "worker", route_source=LEGACY),
+        "role": _task("triage-task", "triage", route_source=ROLE),
         "router": _task("router-task", "worker", route_source=ROUTER),
     }
     for task in created.values():
         await db.create_task(task)
 
-    expected = {"none": UNROUTED, "worker": LEGACY, "triage": ROLE,
-                "reviewer": ROLE, "router": ROUTER}
+    expected = {"none": UNROUTED, "legacy": LEGACY, "role": ROLE, "router": ROUTER}
     for key, task in created.items():
         assert task.route_source == expected[key], key  # the caller's model follows
         assert await _source(db, task.id) == expected[key], key
         assert (await db.get_task(task.id)).route_source == expected[key], key
+
+
+async def test_create_task_refuses_a_profile_with_no_source(db):
+    with pytest.raises(UndeclaredRouteSource):
+        await db.create_task(_task("sourceless", "worker"))
+    assert await db.get_task("sourceless") is None
 
 
 async def test_class_hint_and_route_round_trip_and_default_to_null(db):
@@ -138,15 +151,18 @@ async def test_class_hint_and_route_round_trip_and_default_to_null(db):
         ) == 1
 
 
-async def test_update_task_routing_stamps_every_write(db):
+async def test_update_task_routing_writes_the_declared_source(db):
     await db.create_task(_task("t"))
 
+    with pytest.raises(UndeclaredRouteSource):
+        await db.update_task_routing(
+            "t", profile_id="worker", intelligence_class="standard-high",
+            preferred_workspace_id=None,
+        )
+    assert await _source(db, "t") == UNROUTED
     assert await db.update_task_routing(
-        "t", profile_id="worker", intelligence_class="standard-high", preferred_workspace_id=None
-    )
-    assert await _source(db, "t") == LEGACY
-    assert await db.update_task_routing(
-        "t", profile_id="triage", intelligence_class=None, preferred_workspace_id=None
+        "t", profile_id="triage", intelligence_class=None, preferred_workspace_id=None,
+        route_source=ROLE,
     )
     assert await _source(db, "t") == ROLE
     assert await db.update_task_routing(
@@ -160,18 +176,20 @@ async def test_update_task_routing_stamps_every_write(db):
     assert await _source(db, "t") == UNROUTED
 
 
-async def test_update_task_with_a_profile_stamps_it(db):
+async def test_update_task_with_a_profile_needs_a_source(db):
     await db.create_task(_task("t"))
-    await db.update_task("t", profile_id="worker")
-    assert await _source(db, "t") == LEGACY
+    with pytest.raises(UndeclaredRouteSource):
+        await db.update_task("t", profile_id="worker")
     await db.update_task("t", profile_id="worker", route_source=ROUTER)
     assert await _source(db, "t") == ROUTER
     await db.update_task("t", priority=5)  # no profile write, no source change
     assert await _source(db, "t") == ROUTER
+    await db.update_task("t", profile_id=None)
+    assert await _source(db, "t") == UNROUTED
 
 
 async def test_reroute_and_undo_keep_the_source(db):
-    await db.create_task(_task("legacy", "worker"))
+    await db.create_task(_task("legacy", "worker", route_source=LEGACY))
     await db.create_task(_task("routed", "worker", route_source=ROUTER))
     record = {"project_id": "p", "reason_code": "provider_unavailable"}
 
@@ -187,18 +205,86 @@ async def test_reroute_and_undo_keep_the_source(db):
     assert (task.profile_id, task.route_source) == ("worker", ROUTER)
 
 
-async def test_reroute_stamps_a_row_written_without_a_source(db):
-    # A writer that bypassed the query layer left a profile marked unrouted.
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"profile_id": "worker"},  # a profile left unrouted
+        {"route_source": ROUTER},  # a source with no profile
+    ],
+)
+async def test_the_database_refuses_a_route_without_both_halves(db, values):
+    """``ck_tasks_route_source_profile`` catches a raw write the query layer never sees."""
     await db.create_task(_task("raw"))
-    async with db._engine.begin() as conn:
-        await conn.execute(sa.update(tasks).where(tasks.c.id == "raw").values(profile_id="worker"))
+    with pytest.raises(sa.exc.IntegrityError, match="ck_tasks_route_source_profile"):
+        async with db._engine.begin() as conn:
+            await conn.execute(sa.update(tasks).where(tasks.c.id == "raw").values(**values))
     assert await _source(db, "raw") == UNROUTED
 
-    assert await db.apply_task_reroute(
-        "raw", expected_profile_id="worker", to_profile_id="other-worker",
-        record={"project_id": "p", "reason_code": "capacity_spill"},
+
+def test_the_profile_rule_is_declared_on_the_table():
+    [check] = [
+        c for c in tasks.constraints
+        if isinstance(c, sa.CheckConstraint) and c.name == "ck_tasks_route_source_profile"
+    ]
+    assert str(check.sqltext) == "(profile_id IS NULL) = (route_source = 'unrouted')"
+
+
+async def test_delete_profile_sends_its_tasks_back_to_the_router(db):
+    """Spec §9.2: the lost route moves to ``route.legacy``; the check holds."""
+    constraints = {"constraints": {"exclude_providers": ["codex"]}}
+    await db.create_task(_task(
+        "queued", "worker", route_source=ROUTER, intelligence_class="standard-high",
+        provider_intent="pinned", route=constraints,
+    ))
+    await db.create_task(_task("kept", "other-worker", route_source=LEGACY))
+    await db.create_task(_task("unrouted"))
+
+    await db.delete_profile("worker")
+
+    queued = await db.get_task("queued")
+    assert (queued.profile_id, queued.route_source, queued.provider_intent) == (
+        None, UNROUTED, "class_only",
     )
-    assert await _source(db, "raw") == LEGACY
+    assert queued.route == {
+        **constraints,
+        "legacy": {
+            "profile_id": "worker",
+            "intelligence_class": "standard-high",
+            "provider_intent": "pinned",
+        },
+    }
+    kept = await db.get_task("kept")
+    assert (kept.profile_id, kept.route_source, kept.route) == ("other-worker", LEGACY, None)
+    assert (await db.get_task("unrouted")).route is None
+
+
+async def test_reset_task_route_keeps_constraints_and_legacy(db):
+    route = {
+        "candidates": [{"profile_id": "worker"}],
+        "constraints": {"exclude_providers": ["claude"]},
+        "legacy": {"profile_id": "old"},
+    }
+    await db.create_task(_task("t", "worker", route_source=ROUTER, route=route))
+    await db.create_task(_task("bare", "worker", route_source=ROUTER, route={"rule": "x"}))
+
+    assert await db.reset_task_route("t")
+    assert await db.reset_task_route("bare")
+
+    task = await db.get_task("t")
+    assert (task.profile_id, task.route_source) == (None, UNROUTED)
+    assert task.route == {
+        "constraints": {"exclude_providers": ["claude"]},
+        "legacy": {"profile_id": "old"},
+    }
+    assert (await db.get_task("bare")).route is None
+
+
+async def test_reset_task_route_can_require_a_source_and_a_queued_status(db):
+    await db.create_task(_task("legacy", "worker", route_source=LEGACY))
+    await db.create_task(_task("routed", "worker", route_source=ROUTER))
+    assert not await db.reset_task_route("legacy", route_source=ROUTER)
+    assert await db.reset_task_route("routed", route_source=ROUTER, queued_only=True)
+    assert await _source(db, "legacy") == LEGACY
 
 
 async def test_the_database_refuses_an_unknown_source(db):

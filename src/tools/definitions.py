@@ -334,6 +334,9 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "ensure_task": "task",
     "get_downstream_tasks": "task",
     "task_route": "task",
+    # mandatory routing §7: the audited emergency override — local operator
+    # and supervisor only (``_cmd_task_route_override``).
+    "task_route_override": "task",
     # review policy — dv2 phase 2
     "pr_merge": "git",
     # manual delivery of a passed branch (agile-ridge) — `aq task deliver`
@@ -728,18 +731,6 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Default branch name (default: main)",
                     "default": "main",
                 },
-                "default_profile_id": {
-                    "type": "string",
-                    "description": (
-                        "Eligible worker profile used for tasks in this project that "
-                        "don't specify their own profile_id.  When omitted, a "
-                        "system default is chosen automatically by "
-                        "src/profiles/default_selection.py "
-                        "(PREFERRED_DEFAULT_PROFILE_IDS, then any remaining "
-                        "general-purpose profile alphabetically).  Run "
-                        "`aq agent list-profiles` for the ids this install has."
-                    ),
-                },
             },
             "required": ["name"],
         },
@@ -839,10 +830,11 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "edit_project",
         "description": (
             "Edit a project's properties: name, credit_weight, max_concurrent_agents, "
-            "budget_limit, default_profile_id, assignment_playbook_id, "
+            "budget_limit, assignment_playbook_id (LOCAL-only router binding), "
             "repo_default_branch, or LOCAL-only hierarchical integration configuration. "
             "Use this to rename projects, adjust scheduling weight, set token budgets, "
-            "set a default agent profile, or change the default git branch."
+            "or change the default git branch. A project has no default profile: its "
+            "router routes every task."
         ),
         "input_schema": {
             "type": "object",
@@ -861,15 +853,12 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": ["integer", "null"],
                     "description": "Token budget limit (optional, null to clear)",
                 },
-                "default_profile_id": {
-                    "type": ["string", "null"],
-                    "description": "Default agent profile ID for tasks in this project (optional, null to clear)",
-                },
                 "assignment_playbook_id": {
-                    "type": ["string", "null"],
+                    "type": "string",
                     "description": (
-                        "Project-scoped assignment-routing playbook ID "
-                        "(optional, null to use the system default)"
+                        "LOCAL-only: the routing playbook that routes this project's "
+                        "tasks (its router binding). It must be active and grant "
+                        "task_route_apply; a project is never unbound."
                     ),
                 },
                 "repo_default_branch": {
@@ -1518,50 +1507,78 @@ _ALL_TOOL_DEFINITIONS = [
     {
         "name": "task_route",
         "description": (
-            "Route a task: assign its agent profile, optional intelligence "
-            "class, and optional workspace, then resolve any open 'routing' "
-            "gates on the task. This is the ONLY way to resolve routing gates "
-            "— generic gate_resolve refuses them. Used by the triage agent to "
-            "release work into the scheduler."
+            "Send a task back to its project's router, which picks the route again. "
+            "Never picks a profile: optionally set new hints (an intelligence class "
+            "and a kind), then clear the task's profile, class and route record so "
+            "the next cascade asks the router. Also clears an emergency override. "
+            "Refused on a claimed, running or finished task (stop it first) and on "
+            "a role task. Allowed to the local operator, the supervisor, and a "
+            "worker for a task it filed."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "task_id": {"type": "string", "description": "Task ID to route"},
-                "profile_id": {
+                "task_id": {"type": "string", "description": "Task ID to re-route"},
+                "intelligence_class": {
                     "type": "string",
-                    "description": "Eligible worker profile ID that should execute the task (never supervisor)",
-                },
-                "provider_intent": {
-                    "type": "string",
-                    "enum": ["pinned", "preferred", "class_only"],
                     "description": (
-                        "Whether anyone meant the provider profile_id names "
-                        "(provider-failover D8). Default: preferred when you pass "
-                        "profile_id, else class_only. A preferred or class_only task "
-                        "fails over to the same class on another provider when its "
-                        "provider is unavailable; a pinned one holds. pinned/preferred "
-                        "need a profile_id; pinning is refused for worker tokens."
+                        "New intelligence-class hint for the router (e.g. 'fast-high', "
+                        "'standard-high', 'deep-high'); the router honours it within its "
+                        "policy's bounds for the kind. Omit to keep the task's hint; an "
+                        "empty value clears it."
                     ),
                 },
-                "pin": {
-                    "type": "boolean",
-                    "description": "Shorthand for provider_intent=pinned.",
+                "task_type": {
+                    "type": "string",
+                    "description": (
+                        "New kind for the router (e.g. 'feature', 'bugfix', 'design', "
+                        "'docs'). Omit to keep the task's kind; an empty value clears it."
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Why the task is re-routed; posted as a task comment.",
+                },
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "task_route_override",
+        "description": (
+            "Emergency override: pin one queued task to a worker profile the router "
+            "did not choose. Local operator and supervisor only; refused to workers, "
+            "playbooks and every other token. Requires a reason (10-400 characters). "
+            "The task is pinned to the profile's provider (failover holds it rather "
+            "than moving it); the override is evented (task.route_overridden) and "
+            "commented on the task. Refuses control, stage and "
+            "role profiles, profiles that are not worker candidates, and a class the "
+            "profile cannot run. `aq task route` clears it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string", "description": "Queued task ID to override"},
+                "profile_id": {
+                    "type": "string",
+                    "description": "Worker profile that must run the task",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "Why the router's choice is overridden (10-400 characters); "
+                        "recorded on the route, the event and a task comment"
+                    ),
                 },
                 "intelligence_class": {
                     "type": "string",
                     "description": (
-                        "Intelligence class id (e.g. 'fast-low', 'standard-high', 'astra-high') "
-                        "from vault/intelligence-classes/. Requires a matching worker at "
-                        "launch. Omit to preserve the task's existing class or profile default."
+                        "Class to run at. Default: the profile's fixed class, else the "
+                        "task's class hint. Must be one the profile can run."
                     ),
                 },
-                "workspace_id": {
-                    "type": "string",
-                    "description": "Workspace to prefer for execution (optional)",
-                },
             },
-            "required": ["task_id", "profile_id"],
+            "required": ["task_id", "profile_id", "reason"],
         },
     },
     {
@@ -2938,8 +2955,8 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "create_profile",
         "description": (
             "Create a new agent profile. Profiles configure agents with specific tools, "
-            "MCP servers, intelligence classes, and system prompt additions. Assign profiles "
-            "to tasks (profile_id) or set as project defaults (default_profile_id)."
+            "MCP servers, intelligence classes, and system prompt additions. A project's "
+            "router assigns worker profiles to tasks."
         ),
         "input_schema": {
             "type": "object",
@@ -4564,10 +4581,9 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {
                     "type": "string",
                     "description": (
-                        "Restrict the frontier to tasks this profile would be "
-                        "offered. Uses the same widening as the work query: when "
-                        "this is the project's default profile, unassigned tasks "
-                        "count as its work too."
+                        "Restrict the frontier to tasks routed to this profile. "
+                        "An unrouted task is no profile's work until the "
+                        "project's router routes it."
                     ),
                 },
                 "brief": {

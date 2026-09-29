@@ -107,6 +107,17 @@ profile unless the operator, a daemon service or an elevated supervisor
 routes it. A strict `child ⊆ filer` bound cannot be applied there, because
 worker rungs on different harnesses carry disjoint command lists.
 
+> **Superseded by mandatory task routing (2026-09-28,
+> `projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md`):** rule 1 is gone. No
+> filer inherits its own profile and there is no project default: a task created without a
+> profile is stored `unrouted` and its project's router (the bound routing playbook, through
+> `task_route_apply`) writes its profile, choosing only among worker candidates. `profile_id`
+> is refused on every filing surface with `routing.choice_forbidden`, except a role profile
+> (`triage`, `spec-ingest`, `reviewer`, `final-reviewer`) named by a `SERVICE` or `PLAYBOOK`
+> principal, and rule 2 still bounds that role profile by the caller's capabilities. The
+> `filed_by_profile_id` marker is kept as provenance only; `aq task route` takes no profile
+> and re-runs the router.
+
 System-prompt subsetting is not enforced — there's no mechanical notion
 of "subset of prose". The parent profile's author owns the prompt they
 delegate; the runtime guards the tool/server bound.

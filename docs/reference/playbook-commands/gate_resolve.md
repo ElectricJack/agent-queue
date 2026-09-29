@@ -54,8 +54,9 @@ result. This is the generic resolver — the one an operator's `aq task gate-res
 and a policy playbook both use — for every gate type except `routing`.
 
 `routing` gates are refused on purpose. A routing gate means "this task has no
-executable route", and only [`task_route`](task_route.md) both writes the
-profile/class/workspace fields *and* resolves the gate. Allowing the generic path
+executable route", and only a route write -- the project's router,
+[`task_route_apply`](task_route_apply.md), or the operator's audited `aq task
+route-override` -- both writes the profile and class *and* resolves the gate. Allowing the generic path
 would let a caller half-resolve a routing gate and hand the runner a task with
 nothing to run it.
 
@@ -87,8 +88,8 @@ accurate — an already-resolved gate is a no-op that reports no flips.
    - Requires `gate_id` and `resolved_by` — the audit trail has no anonymous
      resolver.
    - Reads the gate (`db.get_gate`); an unknown id is an error.
-   - Refuses `gate_type == "routing"` with *"routing gates can only be resolved
-     via task_route"* (`gate_commands.py:190-197`). The adapter turns any error
+   - Refuses `gate_type == "routing"` with *"routing gates resolve when the task
+     is routed"* (`gate_commands.py:196-212`). The adapter turns any error
      mentioning `routing` into the distinct `refused_routing_gate` outcome
      (`builtin.py:485`).
    - Delegates to `Orchestrator._resolve_gate_and_emit`
@@ -124,7 +125,7 @@ than free text.
 
 | Outcome | Cause |
 |---|---|
-| `refused_routing_gate` (failure) | The gate's type is `routing`. Call [`task_route`](task_route.md) instead; nothing was written. |
+| `refused_routing_gate` (failure) | The gate's type is `routing`. The router ([`task_route_apply`](task_route_apply.md)) or `aq task route-override` resolves it; nothing was written. |
 | `rejected` | Missing `gate_id` or `resolved_by`, or no gate with that id. |
 | `resolved` with an empty `unblocked_task_ids` | Success, and expected: the gate was already resolved, had no waiters, or every waiter is still blocked by something else. This is not a failure. |
 | `unauthorized` | The capability gate refused `gate_resolve`. |

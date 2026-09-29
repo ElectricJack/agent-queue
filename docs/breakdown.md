@@ -76,7 +76,7 @@ graph TB
 
     %% ===== EDGES =====
     Project -- owns --> Repo
-    Project -- default_profile_id --> Profile
+    Project -- assignment_playbook_id --> PBMd
     Project -- scopes --> Override
     Project -- has --> FactSheet
 

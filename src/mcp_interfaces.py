@@ -71,7 +71,7 @@ def project_to_dict(project: Any) -> dict[str, Any]:
         "budget_limit": project.budget_limit,
         "repo_url": project.repo_url,
         "repo_default_branch": project.repo_default_branch,
-        "default_profile_id": project.default_profile_id,
+        "assignment_playbook_id": project.assignment_playbook_id,
     }
 
 

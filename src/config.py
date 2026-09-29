@@ -2920,8 +2920,8 @@ class ProviderFailoverConfig:
     """
 
     mode: str = "enforce"
-    #: Failover target preference; empty means the project default's
-    #: provider first, then ``WORKER_PROVIDERS`` order.
+    #: Failover target preference; empty means ``WORKER_PROVIDERS`` order.
+    #: A router-routed task moves only among its recorded candidates.
     order: list[str] = field(default_factory=list)
     default_policy: str = "same_class"
     #: Per-class override, e.g. ``{"deep-high": "hold"}``.

@@ -123,13 +123,15 @@ def test_omitted_ids_are_injected_from_the_session_scope(command):
 
 
 def test_the_task_id_pin_is_lifted_for_exactly_the_commands_that_name_another_task():
-    """``reparent_task`` moves a worker filing, never the held task (§12).
+    """``reparent_task`` moves and ``task_route`` re-routes a worker filing,
+    never the held task (§12; mandatory routing §7).
 
     The exemption is server-owned and deliberately tiny: any name entering it
     must be a command whose ``task_id`` is by construction *not* the held task
-    and that authorises that task against the held one itself.
+    and that authorises that task itself -- against the held task, or against
+    the session that filed it.
     """
-    assert _TASK_ID_UNPINNED == {"reparent_task"}
+    assert _TASK_ID_UNPINNED == {"reparent_task", "task_route"}
     assert _TASK_ID_UNPINNED <= AGENT_COMMAND_SET
 
 

@@ -149,13 +149,13 @@ async def test_session_awaiting_input_warns_only_for_stable_unclaimed_prompt(db)
     await db.create_task(
         Task(
             id="ready", project_id=PROJECT_ID, title="ready", description="",
-            status=TaskStatus.READY, profile_id="worker",
+            status=TaskStatus.READY, profile_id="worker", route_source="legacy",
         )
     )
     await db.create_task(
         Task(
             id="claimed", project_id=PROJECT_ID, title="claimed", description="",
-            status=TaskStatus.IN_PROGRESS, profile_id="worker",
+            status=TaskStatus.IN_PROGRESS, profile_id="worker", route_source="legacy",
         )
     )
     for session_id, task_id, last_activity in (
@@ -259,7 +259,7 @@ async def test_task_lifecycle_shadow_reports_duplicate_profiles_and_active_tasks
     await db.create_task(
         Task(
             id="shadowed", project_id=PROJECT_ID, title="shadowed", description="",
-            status=TaskStatus.READY, profile_id="legacy-deep-codex",
+            status=TaskStatus.READY, profile_id="legacy-deep-codex", route_source="legacy",
         )
     )
     await db.create_task(

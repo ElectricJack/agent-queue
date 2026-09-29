@@ -12,7 +12,6 @@ from src.profiles.catalog import (
     refresh_catalog_profiles,
     shipped_profile_catalog,
 )
-from src.profiles.default_selection import select_default_profile_id
 from src.profiles.parser import parse_profile
 from src.profiles.retired_defaults import retire_default
 
@@ -234,19 +233,3 @@ def test_a_read_only_or_named_profile_does_not_block_the_rung_of_its_class(tmp_p
     created = set(refresh_catalog_profiles(tmp_path, _probes("codex"))["created"])
 
     assert {"astra-high-codex", "astra-low-codex"} <= created
-
-
-def test_default_selector_excludes_catalog_profiles_not_in_activation_record():
-    profiles = ["standard-high-claude", "standard-high-codex", "reviewer"]
-    assert select_default_profile_id(
-        profiles, eligible_profile_ids={"standard-high-codex"}
-    ) == "standard-high-codex"
-    assert select_default_profile_id(profiles, eligible_profile_ids=set()) is None
-
-
-def test_default_selector_never_chooses_a_disabled_profile():
-    class Profile:
-        id = "worker-codex"
-        enabled = False
-
-    assert select_default_profile_id([Profile(), "reviewer"]) == "reviewer"

@@ -108,13 +108,17 @@ engine will not retry the step for you.
    - Requires `project_id`, `gate_type` and `title`; a bare string
      `waiter_task_ids` is normalised to a one-item list.
    - **Routing-gate narrowing** (`gate_commands.py:48-71`). A `routing` gate
-     means "this task still needs a profile". Every waiter that already has a
-     profile is dropped; if that leaves nothing, the command returns
-     `skipped: True` with `reason: "all waiter tasks are already routed"` and
-     writes nothing. Without that check the default pipeline would ensure a
-     triage task, an agent would start, find nothing unrouted, and close — once
-     per created task — while the gate itself sat open until it expired as "all
-     waiters terminal", which reads like a task that ran unrouted.
+     means "this task is still waiting for its route". Every waiter that already
+     has a profile is dropped — which is every waiter whose `route_source` is
+     not `unrouted`, since `ck_tasks_route_source_profile` ties a NULL profile to
+     `unrouted`: a routed, overridden, role or legacy task. If that leaves
+     nothing, the command returns `skipped: True` with `reason: "all waiter
+     tasks are already routed"` and writes nothing. Without that check a policy
+     that gates every created task would gate work the router never routes (a
+     role task) or has already routed, and the gate would sit open until it
+     expired as "all waiters terminal", which reads like a task that ran
+     unrouted. No shipped playbook opens a `routing` gate; routing needs none,
+     because an unrouted task is not claimable anyway.
    - Calls `db.create_gate`
      ([`src/database/queries/gate_queries.py:54`](../../../src/database/queries/gate_queries.py)),
      passing `unrouted_only: True` for a narrowed routing gate. That helper
@@ -123,7 +127,7 @@ engine will not retry the step for you.
      `(gate_id, was_created)`; an open gate with the same key and the same
      waiter set is reused with `was_created: False`. For `unrouted_only` it
      re-reads the waiters' `profile_id` under `FOR UPDATE`, serialising against
-     [`task_route`](task_route.md)'s guarded write so a late pipeline callback
+     [`task_route_apply`](task_route_apply.md)'s guarded write so a late pipeline callback
      cannot gate an already-routed task.
    - Emits `gate.created` on the bus and an audit row **only** when a new gate
      was inserted (`_emit_gate_created`, `gate_commands.py:119`): a reused gate's
@@ -142,7 +146,9 @@ a genuinely new gate.
 
 The gate is durable: it survives a restart, and the waiters stay blocked until
 something resolves it — [`gate_resolve`](gate_resolve.md) for every type except
-`routing`, [`task_route`](task_route.md) for `routing`, or the orchestrator's
+`routing`, a route write for `routing` (the router's
+[`task_route_apply`](task_route_apply.md), or the operator's `aq task
+route-override`), or the orchestrator's
 sweeps (`_sweep_gates`,
 [`src/orchestrator/core.py:2847`](../../../src/orchestrator/core.py)) for a
 `timeout_at` that passes or a `task` gate whose awaited task completes.

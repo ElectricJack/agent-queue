@@ -2,9 +2,9 @@
 
 Covers:
 - Database CRUD for agent_profiles table
-- Profile resolution cascade (task → project → None)
+- Profile resolution (the task's own route → None; no project default)
 - CommandHandler profile commands
-- Task/project profile_id and default_profile_id
+- Task profile_id; a project's router binding
 - Config loading from YAML
 - Orchestrator profile sync at startup
 - Profile enforcement through adapter factory (v2)
@@ -34,6 +34,7 @@ from tests.session_dispatch_helpers import (
     drain_running_tasks,
     fake_provider,
 )
+from tests.assignment_routing_helpers import route_source_for
 
 
 @pytest.fixture
@@ -129,7 +130,7 @@ class TestProfileDatabaseCRUD:
                 project_id="p-1",
                 title="Test",
                 description="Test",
-                profile_id="test-reviewer",
+                profile_id="test-reviewer", route_source="legacy",
             )
         )
         task = await db.get_task("t-1")
@@ -138,23 +139,6 @@ class TestProfileDatabaseCRUD:
         await db.delete_profile("test-reviewer")
         task = await db.get_task("t-1")
         assert task.profile_id is None
-
-    async def test_delete_profile_clears_project_references(self, db, sample_profile):
-        await db.create_profile(sample_profile)
-        await db.create_project(
-            Project(
-                id="p-1",
-                name="test",
-                default_profile_id="test-reviewer",
-            )
-        )
-        project = await db.get_project("p-1")
-        assert project.default_profile_id == "test-reviewer"
-
-        await db.delete_profile("test-reviewer")
-        project = await db.get_project("p-1")
-        assert project.default_profile_id is None
-
 
 # ---------------------------------------------------------------------------
 # Task and Project profile_id fields
@@ -171,7 +155,7 @@ class TestTaskProfileId:
                 project_id="p-1",
                 title="Review code",
                 description="Review the PR",
-                profile_id="test-reviewer",
+                profile_id="test-reviewer", route_source="legacy",
             )
         )
         task = await db.get_task("t-1")
@@ -201,7 +185,7 @@ class TestTaskProfileId:
                 description="Test",
             )
         )
-        await db.update_task("t-1", profile_id="test-reviewer")
+        await db.update_task("t-1", profile_id="test-reviewer", route_source="legacy")
         task = await db.get_task("t-1")
         assert task.profile_id == "test-reviewer"
 
@@ -214,7 +198,7 @@ class TestTaskProfileId:
                 project_id="p-1",
                 title="Test",
                 description="Test",
-                profile_id="test-reviewer",
+                profile_id="test-reviewer", route_source="legacy",
             )
         )
         await db.update_task("t-1", profile_id=None)
@@ -222,30 +206,20 @@ class TestTaskProfileId:
         assert task.profile_id is None
 
 
-class TestProjectDefaultProfileId:
-    async def test_create_project_with_default_profile(self, db, sample_profile):
-        await db.create_profile(sample_profile)
-        await db.create_project(
-            Project(
-                id="p-1",
-                name="test",
-                default_profile_id="test-reviewer",
-            )
-        )
-        project = await db.get_project("p-1")
-        assert project.default_profile_id == "test-reviewer"
+class TestProjectRouterBinding:
+    """A project has no default profile, only a router binding (mandatory routing §8)."""
 
-    async def test_create_project_without_default_profile(self, db):
+    async def test_a_created_project_is_bound_and_has_no_default_profile(self, db):
         await db.create_project(Project(id="p-1", name="test"))
         project = await db.get_project("p-1")
-        assert project.default_profile_id is None
+        assert project.assignment_playbook_id == "default-assignment-routing"
+        assert not hasattr(project, "default_profile_id")
 
-    async def test_update_project_default_profile(self, db, sample_profile):
-        await db.create_profile(sample_profile)
+    async def test_update_project_rebinds_it(self, db):
         await db.create_project(Project(id="p-1", name="test"))
-        await db.update_project("p-1", default_profile_id="test-reviewer")
+        await db.update_project("p-1", assignment_playbook_id="project-router")
         project = await db.get_project("p-1")
-        assert project.default_profile_id == "test-reviewer"
+        assert project.assignment_playbook_id == "project-router"
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +228,10 @@ class TestProjectDefaultProfileId:
 
 
 class TestProfileResolution:
-    """Test the _resolve_profile cascade: task → project → None."""
+    """Test _resolve_profile: the task's own route → an assigned worker's → None.
+
+    There is no project default and no system fallback (mandatory routing §8).
+    """
 
     @pytest.fixture
     async def orch(self, tmp_path):
@@ -277,29 +254,14 @@ class TestProfileResolution:
             project_id="p-1",
             title="Test",
             description="Test",
-            profile_id="test-reviewer",
+            profile_id="test-reviewer", route_source="legacy",
         )
-        profile = await orch._resolve_profile(task)
-        assert profile is not None
-        assert profile.id == "test-reviewer"
-
-    async def test_resolve_project_default_profile(self, orch):
-        """Task without profile_id, project with default → use project's default."""
-        await orch.db.create_profile(AgentProfile(id="test-reviewer", name="Reviewer"))
-        await orch.db.create_project(
-            Project(
-                id="p-1",
-                name="test",
-                default_profile_id="test-reviewer",
-            )
-        )
-        task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
         profile = await orch._resolve_profile(task)
         assert profile is not None
         assert profile.id == "test-reviewer"
 
     async def test_resolve_no_profile(self, orch):
-        """No task profile, no project default, no profiles registered → None."""
+        """No task profile, no profiles registered → None."""
         for p in await orch.db.list_profiles():
             await orch.db.delete_profile(p.id)
         await orch.db.create_project(Project(id="p-1", name="test"))
@@ -322,62 +284,26 @@ class TestProfileResolution:
         for pid in keep:
             await orch.db.create_profile(AgentProfile(id=pid, name=pid))
 
-    async def test_resolve_falls_back_to_system_default(self, orch):
-        """No task profile and no project default → system-wide default.
-
-        The reconciler builds the agent row from the same third rung, so
-        dispatch must agree rather than running the task profile-less.
-        """
+    async def test_there_is_no_system_default_fallback(self, orch):
+        """No task profile → no profile, and nothing is persisted on the project."""
         await self._only_profiles(orch, "claude-opus")
         await orch.db.create_project(Project(id="p-1", name="test"))
         task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
 
-        profile = await orch._resolve_profile(task)
-
-        assert profile is not None
-        assert profile.id == "claude-opus"
-
-    async def test_system_default_fallback_is_persisted(self, orch):
-        """The fallback is written to the project so the choice is stable."""
-        await self._only_profiles(orch, "claude-opus")
-        await orch.db.create_project(Project(id="p-1", name="test"))
-        task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
-
-        await orch._resolve_profile(task)
-
-        project = await orch.db.get_project("p-1")
-        assert project.default_profile_id == "claude-opus"
+        assert await orch._resolve_profile(task) is None
 
     async def test_retired_project_override_never_wins(self, orch):
         """Project-scoped profiles were retired — a leftover row must not resolve."""
         await self._only_profiles(orch, "claude-opus", "project:p-1:claude-opus")
         await orch.db.create_project(Project(id="p-1", name="test"))
-        task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
+        task = Task(
+            id="t-1", project_id="p-1", title="Test", description="Test",
+            profile_id="claude-opus", route_source="legacy",
+        )
 
         profile = await orch._resolve_profile(task)
 
         assert profile.id == "claude-opus"
-
-    async def test_task_profile_overrides_project_default(self, orch):
-        """Task profile_id takes precedence over project default_profile_id."""
-        await orch.db.create_profile(AgentProfile(id="test-reviewer", name="Reviewer"))
-        await orch.db.create_profile(AgentProfile(id="developer", name="Developer"))
-        await orch.db.create_project(
-            Project(
-                id="p-1",
-                name="test",
-                default_profile_id="developer",
-            )
-        )
-        task = Task(
-            id="t-1",
-            project_id="p-1",
-            title="Test",
-            description="Test",
-            profile_id="test-reviewer",
-        )
-        profile = await orch._resolve_profile(task)
-        assert profile.id == "test-reviewer"
 
     async def test_resolve_missing_profile_returns_none(self, orch):
         """Task references a profile_id that doesn't exist → None."""
@@ -387,7 +313,7 @@ class TestProfileResolution:
             project_id="p-1",
             title="Test",
             description="Test",
-            profile_id="nonexistent",
+            profile_id="nonexistent", route_source="legacy",
         )
         profile = await orch._resolve_profile(task)
         assert profile is None
@@ -857,7 +783,7 @@ class TestProfileCommands:
                 title="Test",
                 description="Test",
                 status=TaskStatus.READY,
-                profile_id="test-reviewer",
+                profile_id="test-reviewer", route_source="legacy",
             )
         )
 
@@ -887,45 +813,21 @@ class TestProfileCommands:
         assert task.profile_id is None
         assert task.route_source == "unrouted"
 
-    async def test_edit_project_default_profile(self, handler):
-        await handler.execute(
-            "create_profile",
-            {
-                "id": "test-reviewer",
-                "name": "Reviewer",
-            },
-        )
-        await handler.execute("create_project", {"name": "test"})
-        projects = await handler.orchestrator.db.list_projects()
-        pid = projects[0].id
+    async def test_edit_project_refuses_a_default_profile(self, handler):
+        """A project has no default profile (mandatory routing §5.1, §8)."""
+        await handler.execute("create_profile", {"id": "test-reviewer", "name": "Reviewer"})
+        result = await handler.execute("create_project", {"name": "test"})
+        pid = result["created"]
+        assert result["assignment_playbook_id"] == "default-assignment-routing"
+        assert "default_profile_id" not in result
 
         result = await handler.execute(
-            "edit_project",
-            {
-                "project_id": pid,
-                "default_profile_id": "test-reviewer",
-            },
+            "edit_project", {"project_id": pid, "default_profile_id": "test-reviewer"},
         )
-        assert result.get("updated") == pid
-        assert "default_profile_id" in result["fields"]
-
-        project = await handler.orchestrator.db.get_project(pid)
-        assert project.default_profile_id == "test-reviewer"
-
-    async def test_edit_project_invalid_profile_fails(self, handler):
-        await handler.execute("create_project", {"name": "test"})
-        projects = await handler.orchestrator.db.list_projects()
-        pid = projects[0].id
-
-        result = await handler.execute(
-            "edit_project",
-            {
-                "project_id": pid,
-                "default_profile_id": "nonexistent",
-            },
-        )
-        assert "error" in result
-        assert "not found" in result["error"]
+        assert result["success"] is False
+        assert result["code"] == "routing.choice_forbidden"
+        assert result["refused"] == ["default_profile_id"]
+        assert "router" in result["error"]
 
     async def test_get_task_includes_profile_id(self, handler):
         await handler.execute(
@@ -947,7 +849,7 @@ class TestProfileCommands:
                 project_id=pid,
                 title="Test",
                 description="Test",
-                profile_id="test-reviewer",
+                profile_id="test-reviewer", route_source="legacy",
             )
         )
 
@@ -979,7 +881,7 @@ class TestProfileEnforcement:
                 title="Review",
                 description="Review code",
                 status=TaskStatus.READY,
-                profile_id=profile_id,
+                profile_id=profile_id, route_source=route_source_for(profile_id),
             )
         )
         await orch.run_one_cycle()
@@ -1004,24 +906,22 @@ class TestProfileEnforcement:
         assert task.status == TaskStatus.IN_PROGRESS
         assert await self._launched_profile(orch) == "test-reviewer"
 
-    async def test_dispatch_no_profile_uses_backfilled_project_default(self, session_orch):
-        """A task with no profile_id in a project with no default_profile_id
-        does not fall through to built-in defaults: the AgentReconciler
-        backfills a system default so the task is dispatchable, and
-        _resolve_profile then resolves to it.
+    async def test_dispatch_never_launches_an_unrouted_task(self, session_orch):
+        """A task with no profile_id waits on its router (mandatory routing §8, §9.1).
+
+        Nothing backfills a system default onto the project, and the push
+        scheduler does not launch the task on built-in defaults either.
         """
         orch = session_orch
         for existing in await orch.db.list_profiles():
             await orch.db.delete_profile(existing.id)
         await create_session_profile(orch, "developer")
-        await create_session_project(orch, default_profile_id=None)
+        await create_session_project(orch, profile_id=None)
 
         task = await self._dispatch(orch)
 
-        backfilled = (await orch.db.get_project("p-1")).default_profile_id
-        assert backfilled == "developer"
-        assert task.status == TaskStatus.IN_PROGRESS
-        assert await self._launched_profile(orch) == backfilled
+        assert task.status == TaskStatus.READY
+        assert await orch.db.get_session_for_task("t-1") is None
 
     async def test_dispatch_with_no_profile_anywhere_launches_no_session(self, session_orch):
         """With an empty agent_profiles table there is nothing to backfill.
@@ -1036,7 +936,7 @@ class TestProfileEnforcement:
         orch = session_orch
         for existing in await orch.db.list_profiles():
             await orch.db.delete_profile(existing.id)
-        await create_session_project(orch, default_profile_id=None)
+        await create_session_project(orch, profile_id=None)
         await orch.db.create_agent(Agent(id="a-1", name="claude-1", profile_id="claude"))
         await orch.db.create_task(
             Task(
@@ -1051,18 +951,19 @@ class TestProfileEnforcement:
         with pytest.raises(RuntimeError, match="no session harness"):
             await orch._execute_task(AssignAction("a-1", "t-1", "p-1"))
 
-        assert (await orch.db.get_project("p-1")).default_profile_id is None
         assert await orch.db.get_session_for_task("t-1") is None
         assert fake_provider(orch).starts == []
 
-    async def test_dispatch_project_default_profile_launched(self, session_orch):
+    async def test_dispatch_with_a_registered_profile_launches_no_unrouted_task(
+        self, session_orch
+    ):
         orch = session_orch
-        await create_session_project(orch, default_profile_id="developer")
+        await create_session_project(orch, profile_id="developer")
 
         task = await self._dispatch(orch)
 
-        assert task.status == TaskStatus.IN_PROGRESS
-        assert await self._launched_profile(orch) == "developer"
+        assert task.status == TaskStatus.READY
+        assert await orch.db.get_session_for_task("t-1") is None
 
 
 # ---------------------------------------------------------------------------

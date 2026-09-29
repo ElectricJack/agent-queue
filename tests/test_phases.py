@@ -41,7 +41,6 @@ async def orch(orchestrator_factory):
     await orchestrator.db.create_profile(
         AgentProfile(id="coder", name="Coder", lifecycle="task")
     )
-    await orchestrator.db.update_project(PROJECT_ID, default_profile_id="coder")
     yield orchestrator
     await orchestrator.db.close()
 
@@ -177,12 +176,25 @@ def scoped(handler, sid, held_id):
 
 
 async def claimable(db):
+    """What the ``coder`` pool would claim, with every READY task routed to it.
+
+    Filings are unrouted (mandatory routing §5); a legacy route stands in for
+    the router here, so the frontier's phase gating is what decides.
+    """
     async with db._engine.begin() as conn:
+        await conn.execute(
+            update(tasks)
+            .where(
+                tasks.c.project_id == PROJECT_ID,
+                tasks.c.status == TaskStatus.READY.value,
+                tasks.c.profile_id.is_(None),
+            )
+            .values(profile_id="coder", route_source="legacy")
+        )
         return await db.select_ready_for_profile(
             conn,
             project_id=PROJECT_ID,
             profile_id="coder",
-            default_profile_id="coder",
             agent_id="agent-1",
         )
 

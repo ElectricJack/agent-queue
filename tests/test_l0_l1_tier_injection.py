@@ -54,6 +54,7 @@ tests belong back here when that lands.
 from unittest.mock import AsyncMock
 
 from src.models import Task, TaskContext, TaskStatus
+from tests.assignment_routing_helpers import route_source_for
 from tests.session_dispatch_helpers import (
     create_session_profile,
     create_session_project,
@@ -127,8 +128,12 @@ def _build_prompt_from(task: TaskContext) -> str:
     return builder.build_task_prompt()
 
 
-async def _dispatch(orch, *, task_id: str = "t-1", profile_id: str | None = None) -> Task:
-    """Create a READY task, run one cycle, and wait for its launch to settle."""
+async def _dispatch(orch, *, task_id: str = "t-1", profile_id: str | None = "claude") -> Task:
+    """Create a READY task, run one cycle, and wait for its launch to settle.
+
+    The task is routed to *profile_id* (``claude``, the session project's
+    worker, by default): only routed work launches (mandatory routing §9.1).
+    """
     await orch.db.create_task(
         Task(
             id=task_id,
@@ -136,7 +141,7 @@ async def _dispatch(orch, *, task_id: str = "t-1", profile_id: str | None = None
             title="Tier injection",
             description="Do something",
             status=TaskStatus.READY,
-            profile_id=profile_id,
+            profile_id=profile_id, route_source=route_source_for(profile_id),
         )
     )
     await orch.run_one_cycle()
@@ -191,20 +196,21 @@ class TestL0RoleFromProfile:
         bodies = prime_bodies(await render_prime(orch, "t-1"))
         assert bodies["role"] == "You are a QA specialist."
 
-    async def test_l0_role_from_project_default_profile(self, session_orch):
-        """A task without its own profile_id still gets L0 from the project default."""
+    async def test_l0_role_from_the_routed_profile_not_the_project_default(self, session_orch):
+        """L0 follows the task's route; a project default routes nothing (§8)."""
         orch = session_orch
-        await create_session_project(orch, default_profile_id="coding")
+        await create_session_project(orch, profile_id="coding")
         write_vault_profile(orch.config, "coding", "## Role\nYou are a full-stack developer.\n")
 
-        await _dispatch(orch)
-        await _assert_launched(orch)
+        task = await _dispatch(orch, profile_id=None)
+        assert task.status == TaskStatus.READY  # unrouted: never launched
 
-        # Dispatch resolved the project default onto the session…
-        session = await orch.db.get_session_for_task("t-1")
+        await _dispatch(orch, task_id="t-2", profile_id="coding")
+        await _assert_launched(orch, "t-2")
+        session = await orch.db.get_session_for_task("t-2")
         assert session.profile_id == "coding"
         # …so the agent that session runs must be told who it is.
-        bodies = prime_bodies(await render_prime(orch, "t-1"))
+        bodies = prime_bodies(await render_prime(orch, "t-2"))
         assert bodies["role"] == "You are a full-stack developer."
 
 

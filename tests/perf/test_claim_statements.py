@@ -119,6 +119,9 @@ async def build_handler(any_db, tmp_path):
     orch._run_completion_pipeline = AsyncMock(return_value=(None, True))
     orch.bus.emit = AsyncMock()
     orch.register_settlement_listener()
+    # The cycle refreshes router readiness before any claim reads it
+    # (mandatory routing §9.1); measure the steady state, not the first read.
+    await orch.router_readiness.refresh()
     return CommandHandler(orch, cfg)
 
 
@@ -433,25 +436,25 @@ class TestClaimStatementBudgets:
         budget by moving work into a sub-plan is still caught.
         """
         await _seed_worker_scale(any_db)
-        # ``profile_id`` == the project default takes the widened
-        # ``profile_id = :p OR profile_id IS NULL`` branch, which is the half
-        # that cannot use a leading index column and needs the profile-free
-        # ``idx_tasks_claim_frontier``.  Assert both branches.
-        for default_profile in ("worker", "other"):
+        # The route filter differs with the project's router readiness
+        # (mandatory routing §9.1): ``route_source IN (router, override,
+        # role)``, widened by ``legacy`` while the router is not ready.
+        # Assert both forms.
+        for router_ready in (True, False):
             async with any_db._engine.begin() as conn:
                 explaining = _ExplainingConn(conn)
                 tid = await any_db.select_ready_for_profile(
                     explaining,
                     project_id=PROJECT_ID,
                     profile_id="worker",
-                    default_profile_id=default_profile,
                     agent_id="agent-1",
+                    router_ready=router_ready,
                 )
             assert tid is not None
             budget = 64
             total = sum(plan.buffers for plan in explaining.plans)
             print(
-                f"\n§10 work query (default_profile={default_profile!r}): "
+                f"\n§10 work query (router_ready={router_ready!r}): "
                 f"{len(explaining.plans)} statements, {total} shared buffers "
                 f"(budget {budget})"
             )
@@ -531,9 +534,7 @@ class TestClaimStatementBudgets:
                 )
             )
         for i in range(3):
-            await any_db.create_project(
-                Project(id=f"proj-{i}", name=f"p{i}", default_profile_id="worker-0")
-            )
+            await any_db.create_project(Project(id=f"proj-{i}", name=f"p{i}"))
 
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),
@@ -547,6 +548,7 @@ class TestClaimStatementBudgets:
         orch = Orchestrator(cfg)
         orch.db = any_db
         orch.bus.emit = AsyncMock()
+        await orch.router_readiness.refresh()  # the cycle's, as in production
 
         async with count_statements(any_db) as c:
             await orch._reconcile_pools()

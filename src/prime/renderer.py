@@ -101,11 +101,11 @@ class PrimeRenderer:
         effective_work_dir = (
             work_dir or session_work_dir or await _sections.resolve_work_dir(self.db, task)
         )
+        # The live session's profile, else the task's own route: a project
+        # supplies no default (mandatory routing §8).
         effective_profile_id = session_profile_id or task.profile_id
         project = await self.db.get_project(task.project_id)
         development = getattr(project, "hierarchical_integration_mode", None) == "development"
-        if not effective_profile_id:
-            effective_profile_id = getattr(project, "default_profile_id", None)
 
         allow_emergent_work = await _sections.profile_allows_create_task(
             self.db, effective_profile_id

@@ -39,7 +39,7 @@ from src.api.models.system import (
 from src.api.models.task import HierarchyRefusalResponse
 from src.api.scope import check_request_scope
 from src.commands.principal import SERVER_OWNED_ARG_KEYS
-from src.routing.filing import FILING_COMMANDS, REFUSED_ROUTING_ARGS, ROUTING_CHOICE_FORBIDDEN
+from src.routing.filing import GUARDED_COMMANDS, REFUSED_ROUTING_ARGS, ROUTING_CHOICE_FORBIDDEN
 from src.cli.auto_commands import _strip_category_prefix
 from src.tools import (
     CATEGORIES,
@@ -330,7 +330,7 @@ def _make_route_handler(cmd_name: str, input_model: type[BaseModel]):
         ):
             # Explicit null clears the class hint; omitted option defaults must not.
             args["intelligence_class"] = None
-        if cmd_name in FILING_COMMANDS and request is not None:
+        if cmd_name in GUARDED_COMMANDS and request is not None:
             # The request model no longer declares the routing arguments, so
             # validation silently drops them.  Forward what the caller sent
             # so ``CommandHandler.execute`` refuses it (routing.choice_forbidden)

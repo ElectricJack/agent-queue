@@ -35,7 +35,7 @@ async def env(tmp_path, request):
                 title=tid,
                 description="Original requirements",
                 status=TaskStatus.READY,
-                profile_id="worker",
+                profile_id="worker", route_source="legacy",
                 retry_count=2,
                 branch_name="preserved",
                 pr_url="https://example.invalid/pr/1",

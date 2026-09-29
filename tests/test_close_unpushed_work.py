@@ -109,7 +109,8 @@ async def _task_on_workspace(h: CommandHandler, repo: dict, task_title="Do work"
         await h.execute("create_task", {"project_id": "p", "title": task_title})
     )["created"]
     assert await h.db.update_task_routing(
-        task_id, profile_id="worker", intelligence_class=None, preferred_workspace_id=None
+        task_id, profile_id="worker",
+        route_source="legacy", intelligence_class=None, preferred_workspace_id=None
     )
     await h.db.create_workspace(
         Workspace(

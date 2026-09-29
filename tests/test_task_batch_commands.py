@@ -282,25 +282,6 @@ async def test_commit_keeps_a_task_class_as_its_hint(handler):
     )
 
 
-async def test_commit_rejects_legacy_supervisor_project_default(handler):
-    await handler.execute("create_project", {"id": "p1", "name": "p1"})
-    await handler._db.create_profile(AgentProfile(
-        id="supervisor", name="Supervisor", lifecycle="named",
-    ))
-    await handler._db.update_project("p1", default_profile_id="supervisor")
-    proposal = await handler.execute(
-        "task_batch_propose",
-        {
-            "project_id": "p1", "source": "spec:foo",
-            "tasks": [{"tempId": "a", "title": "A", "description": ""}], "edges": [],
-        },
-    )
-    await _approve(handler, proposal["proposal_id"])
-    result = await handler.execute("task_batch_commit", {"proposal_id": proposal["proposal_id"]})
-    assert "project default is invalid" in result["error"]
-    assert await handler._db.list_tasks(project_id="p1") == []
-
-
 async def test_commit_partial_failure_rolls_back(handler, monkeypatch):
     await handler.execute("create_project", {"id": "p1", "name": "p1"})
     # Pre-create an existing task so we can add an edge that references it —

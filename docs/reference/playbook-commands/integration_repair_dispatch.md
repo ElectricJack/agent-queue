@@ -83,8 +83,9 @@ Redacted in receipts and explanations: `fence`.
 
 A started repair stage is a budget and a deadline; it has no hands. This
 command gives it hands. `integration_repair_dispatch` creates the *repair
-delegate* — an ordinary paused task pinned to the integration branch and routed
-to the stage's intelligence class — and then moves the branch's writer fence
+delegate* — an ordinary paused task pinned to the integration branch, filed
+with the stage's intelligence class as its hint to the project's router — and
+then moves the branch's writer fence
 from whoever holds it to that delegate, only after the previous writer has
 provably stopped and detached.
 
@@ -140,10 +141,11 @@ names.
    `_restore_archived_delegate_on`, `src/integration/repair.py:2675`), must
    have `writer_kind == "repair_delegate"`, and must match the operation,
    target and project — otherwise `human_required`. If the stage names no
-   task, the stage's `intelligence_class`/`profile_id` route is validated
-   (`configuration_blocked` when it is not routable), a task id
-   `repair-<operation_id>-<stage>` is reserved, an id collision is
-   `human_required`, and a `PAUSED` task is created with `created_by_kind =
+   task, the stage must name an `intelligence_class` (`configuration_blocked`
+   when it names none; a stage `profile_id` is deprecated and never chooses a
+   route), a task id `repair-<operation_id>-<stage>` is reserved, an id
+   collision is `human_required`, and a `PAUSED`, `unrouted` task is created
+   with the class as its `class_hint`, `created_by_kind =
    "integration_repair"`, the integration branch as `branch_name`, and a
    description built by `_delegate_description_on`
    (`src/integration/repair.py:2732`) from the stage dossier. Linking the task
@@ -197,7 +199,7 @@ names.
 | `already_dispatched` | The delegate already held the fence; replay. | — |
 | `writer_reused` | An attached verifier is doing the work; no delegate needed. | — |
 | `busy` | A reserved external mutation exists, or the predecessor has not confirmed stopped/detached. | Retry after the mutation reconciles; see [publication pending](../../guides/integration-troubleshooting.md#publication-pending). |
-| `configuration_blocked` | The stage's intelligence class / profile does not resolve to a routable worker. | Fix the route, then re-dispatch. |
+| `configuration_blocked` | The stage names no intelligence class to hint the router with. | Set the stage's `*_intelligence_class` in the integration policy, then re-dispatch. |
 | `stale` | Unknown operation or stage, or the pinned candidate subject is no longer current. | Expected during a rebuild; the next candidate event re-drives it. |
 | `human_required` | Delegate identity mismatch, id collision, missing owner row, or an incoherent owner/task/session shape after the transfer. | `aq integration status <project>` → `ownership`, and [a branch is held by a writer that is gone](../../guides/integration-troubleshooting.md#a-branch-is-held-by-a-writer-that-is-gone). |
 

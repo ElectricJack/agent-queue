@@ -83,7 +83,7 @@ Use the symptom, not the task state alone, to choose recovery:
 | Pool has demand but no start is placed | `aq pool status` and `aq doctor --check pools.placement_starved` | Free or add a workspace, raise the relevant project/fleet limit, or resolve the reported quarantine. |
 | A launch failed repeatedly | `aq pool status` shows the quarantined project/profile and reason | Fix the harness, project checkout, or workspace cause; the short launch backoff prevents a failed launch every tick. |
 | A pool session is present but cannot claim | `aq task claim --next --wait 60` reports `not_admissible` or waits | Check swarm enablement, the profile route, task eligibility, and the command's stated backoff/retry result. |
-| Push task has no worker | Inspect routing, project status/constraints, agent capacity, and workspace availability | Restore the missing route or capacity; the push scheduler cannot bypass a paused project, budget, unavailable provider, or locked workspace. |
+| Push task has no worker | `aq task explain` (an unrouted task names `awaiting_route`, `route_held`, `route_no_candidates` or `router_not_ready`), then project status/constraints, agent capacity, and workspace availability | Fix what the router reports or restore capacity; the push scheduler cannot bypass a paused project, budget, unavailable provider, or locked workspace, and it never launches an unrouted task. |
 | Task is READY and `aq task explain` reports `provider_hold` | `aq provider status` and `aq provider held-tasks` | Its provider is out of usage, logged out, failing or disabled. The hold names why the task is not moving; see [provider availability and failover](#provider-availability-and-failover) and the [provider outage runbook](../guides/provider-outage.md). |
 
 `aq task explain --task-id <task-id>` is the task-specific read path: use the reason it returns rather than guessing why the item cannot run. For pool operation and doctor-check meanings, use the [worker-pool guide](../guides/worker-pools.md).
@@ -113,9 +113,9 @@ A queued task whose provider is unavailable keeps its status — `READY` stays `
 | Kind | Meaning |
 |---|---|
 | `awaiting_failover_capacity` | It will move; `ahead` says how many are queued before it. The trickle below is holding it back, or the next sweep moves it. |
-| `provider_pinned` | A human pinned it to this provider. |
-| `no_equivalent_rung` | No other provider has an enabled worker for its class (every `astra-*` class), it has no class to match, or its profile is a role profile rather than a worker rung. |
-| `no_available_target` | Other providers run the class, but each is unavailable or `degraded`. |
+| `provider_pinned` | It is pinned to this provider: an emergency override, or a hold lane such as art design. |
+| `no_equivalent_rung` | No other provider has an enabled worker for its class (every `astra-*` class), the router recorded no candidate on another provider, it has no class to match, or its profile is a role profile rather than a worker rung. |
+| `no_available_target` | Other providers run the class, or other route candidates exist, but each is unavailable or `degraded`. |
 | `class_policy_hold` | `provider_failover.classes` (or `default_policy`) says this class holds. |
 | `priority_policy_hold` | Its priority number is above `reroute.max_priority_value`. |
 | `reroute_limit_reached` | It was moved automatically `reroute.max_auto_per_task` times, or once within `reroute.task_cooldown_seconds`. A human decides now. |
@@ -124,15 +124,15 @@ A queued task whose provider is unavailable keeps its status — `READY` stays `
 
 ### Pin semantics
 
-A task's `profile_id` says both "run this class" and "run on this provider". The column `tasks.provider_intent` records whether anyone meant the second part ([src/providers/intent.py](../../src/providers/intent.py)):
+A task's `profile_id` says both "run this class" and "run on this provider". The column `tasks.provider_intent` records whether the second part binds ([src/providers/intent.py](../../src/providers/intent.py)). Only the project's router and the emergency override write it: no filing surface takes a profile, a pin or an intent, and asking for one is refused with `routing.choice_forbidden` ([agents and routing](agents-and-routing.md#hints-re-routing-and-the-emergency-override)).
 
 | Intent | Meaning during an outage | How a task gets it |
 |---|---|---|
-| `pinned` | Holds until its provider is back; never moved automatically. | `aq task create --profile P --pin`, `aq task route --profile-id P --pin`, `aq task edit --profile-id P --pin` (or `--provider-intent pinned`), an `aq-graph` node with `pin: true`, the dashboard route picker's *Pin to this provider* checkbox (off by default). |
-| `preferred` | Fails over to the same class elsewhere. | An explicit profile: `aq task create --profile P`, `aq task route --profile-id P`, `aq task edit --profile-id P`, an `aq-graph` node's `profile:`. |
-| `class_only` | Fails over; its placement does not narrow routing. | A profile chosen by class match or by routing (the `default-assignment-routing` playbook passes `class_only`), a worker-filed task inheriting its filer's profile, or no profile at all. The project default is never written to the task, so it is always `class_only`. |
+| `pinned` | Holds until its provider is back; never moved automatically. | A router route on a hold lane — the shipped art-design lane, which waits for Codex — or `aq task route-override --task-id T --profile-id P --reason "..."`, which only the local operator and a live supervisor session may run. |
+| `class_only` | Fails over among the candidates the router recorded. | Every other router route. |
+| `preferred` | Fails over to the same class elsewhere. | A role task's stage profile (`route_source = role`), or a route written before mandatory routing (`legacy`). No filing asks for it. |
 
-Only a human, an elevated supervisor session, a vault formula or a reviewed playbook may pin. A worker token that asks for a pin is refused with `provider_intent.pin_not_permitted`; it may still name a profile, which is a preference. `task_route` never downgrades an existing `pinned` or `preferred` intent when the routed profile is on the same provider, and clearing a task's profile clears its intent. A pin also binds the push path: a pinned task is given only to a worker on that provider. An explicit `--profile` is deliberately a preference, not a pin — it has always been the only way to pick a rung, so it carries no reliable signal that the provider itself mattered.
+A pin also binds the push path: a pinned task is given only to a worker on that provider. `aq task route` clears a pin along with the rest of the route and sends the task back to the router; `aq task show` prints the route's source, lane, rule and reason next to its intent.
 
 ### The fallback rule
 
@@ -140,12 +140,12 @@ The `provider-failover` playbook calls `provider_reroute` on every state change 
 
 1. A pinned task holds.
 2. A class whose policy is `hold` holds; the default policy is `same_class`.
-3. Otherwise the task moves to **the same intelligence class on the first available provider** in `provider_failover.order` — when that list is empty, the project default's provider first, then `claude`, then `codex`. It never moves automatically to a provider it has already left.
-4. If no such rung exists, it holds.
+3. Otherwise a task the router routed moves to **the next candidate in `tasks.route.candidates`** — the list the router recorded, in its order — whose profile still exists and whose provider is available. A move never leaves the candidates, so it never breaks a lane: an integration repair never moves to OpenCode, and a code-design task moves only between its Claude and Codex rungs. A task with no recorded candidates (a legacy route still queued) moves to **the same intelligence class on the first available provider** in `provider_failover.order` — when that list is empty, `claude`, then `codex`, then any other provider. Either way it never moves automatically to a provider it has already left.
+4. If no such target exists, it holds.
 
-The class never changes on an automatic move, and no move changes a task's intent. A class that only one provider runs holds by construction: every `astra-*` class is OpenAI-only, so an Astra task waits for Codex whatever its intent — the class protects it, not a pin. Each move is recorded on the task (a comment with the undo command, `tasks.rerouted_from`, a `task_reroutes` row), and every automatic move of one outage shares a batch id.
+The class never changes on an automatic move, except to a candidate's own class (only the narrow OpenCode lanes map one), and no move changes a task's intent or its `route_source`. A class that only one provider runs holds by construction: every `astra-*` class is OpenAI-only, so an Astra task waits for Codex whatever its intent — the class protects it, not a pin. Each move is recorded on the task (a comment with the undo command, `tasks.rerouted_from`, a `task_reroutes` row), and every automatic move of one outage shares a batch id.
 
-Two things fail over without being moved. A task with no profile of its own runs on the project default; while the default's provider is unavailable, the default resolves to its equivalent rung on an available provider — derived per decision, never written, so recovery needs no undo. And the routing catalog keeps rows on an unavailable provider but automatic selection skips them; `task_route_options` answers `held` when the only rows for a class are on unavailable providers.
+Unrouted work fails over without being moved. When the router plans a route it drops candidates whose provider cannot launch; when every candidate is down the plan answers `held`, the task waits unrouted without failing a run, and `aq task explain` reports `route_held` naming the providers. There is no project default to resolve: a task without a route waits for its router.
 
 ### Capacity protection
 
@@ -157,9 +157,9 @@ Failover raises no ceiling. A moved task is an ordinary queued task on its new r
 
 ### Return path
 
-When a provider leaves the unavailable half, **new and held work returns at once**: holds vanish because they were derived, pools size back up, routing offers the rows again and the project default resolves to itself. The probation canary paces the first launches.
+When a provider leaves the unavailable half, **new and held work returns at once**: holds vanish because they were derived, pools size back up, and the router offers that provider's candidates again, so a task it held is routed on its next `task.route_needed`. The probation canary paces the first launches.
 
-**Moved work stays moved.** A task already re-routed and still queued has a position on a healthy provider; moving it back buys nothing and is half of a ping-pong. The trickle means there is at most one pool-width of it per rung, and `rerouted_from` stays on the task as the record. Running tasks finish where they are. An operator can send work back with `aq provider reroute-undo --batch-id <id>` or `--task-id <id>`; undo is refused for a running or claimed task, and while the original provider is still unavailable unless `--force`.
+**Moved work stays moved.** A task already re-routed and still queued has a position on a healthy provider; moving it back buys nothing and is half of a ping-pong. The trickle means there is at most one pool-width of it per rung, and `rerouted_from` stays on the task as the record. Running tasks finish where they are. An operator can send work back with `aq provider reroute-undo --batch-id <id>` or `--task-id <id>`; undo is refused for a running or claimed task, while the original provider is still unavailable unless `--force`, and for a routed task whose original profile is not among its route candidates. A manual `aq provider reroute` is limited to the candidates too, even with `--force`: a move outside them is an emergency override (`aq task route-override`), not a reroute.
 
 ## Resource limits and throughput
 

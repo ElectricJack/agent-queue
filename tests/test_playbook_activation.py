@@ -1117,8 +1117,15 @@ async def test_read_path_never_reports_ready_for_a_duplicate_key_artifact(db, tm
     records = await load_activation_health(
         db, contracts=StubContracts(), profiles=StubProfiles(), enabled_only=True
     )
-    assert [record.health for record in records] == [ActivationHealth.UNAVAILABLE]
-    assert [reason.code for reason in records[0].reasons] == ["artifact_missing"]
+    assert [record.health for record in records] == [ActivationHealth.INVALID]
+    assert [reason.code for reason in records[0].reasons] == ["artifact_invalid"]
+
+    from src.doctor.models import Severity
+    from src.doctor.playbook_v2_checks import _check_activation_invalid
+
+    doctor = await _check_activation_invalid(_stale_ctx(db))
+    assert doctor.severity is Severity.WARN
+    assert doctor.data["invalid"][0]["playbook_id"] == "twin"
 
 
 # -- doctor: playbooks.activation_stale --------------------------------------

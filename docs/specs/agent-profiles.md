@@ -42,9 +42,21 @@ Agent Profiles are capability bundles that configure agents with specific tools,
 
 Tasks gain an optional `profile_id` field (nullable foreign key to `agent_profiles.id`). When set, the agent executing this task is configured with the referenced profile's capabilities.
 
+> **Superseded by mandatory task routing (2026-09-28,
+> `projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md`):** a filer never sets
+> `profile_id`. A task's profile comes only from its project's router (the bound routing
+> playbook's `task_route_apply`), an audited `aq task route-override`, or a system role
+> (`triage`, `spec-ingest`, `reviewer`, `final-reviewer`); `tasks.route_source` records which.
+> Filers pass hints (`--type`, `--intelligence-class`) instead.
+
 ### Project Extension
 
 Projects gain an optional `default_profile_id` field (nullable foreign key to `agent_profiles.id`). This serves as the fallback when a task has no explicit `profile_id`.
+
+> **Superseded by mandatory task routing (2026-09-28):** there is no project default profile.
+> `projects.default_profile_id` was dropped in revision `a00000000043`; a project instead
+> carries its router binding, `projects.assignment_playbook_id` (NOT NULL, default
+> `default-assignment-routing`, re-bound with `aq project set <project> router <playbook-id>`).
 
 ## Profile Resolution Cascade
 
@@ -55,6 +67,11 @@ When `_execute_task()` runs, it resolves the profile in this order:
 3. **System default:** Neither set → use `ClaudeAdapterConfig` defaults (current behavior)
 
 This is a pure dict lookup. No LLM calls. No scheduler changes.
+
+> **Superseded by mandatory task routing (2026-09-28):** the cascade has no project level.
+> `Orchestrator._resolve_profile` returns the task's own `profile_id` (written by the router,
+> an override or a role), else the profile of the worker already holding the task, else
+> nothing. An unrouted task is never claimed or launched, so nothing falls back to a default.
 
 ## Platform Integration
 
@@ -90,7 +107,7 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 ### Migrations
 
 - `ALTER TABLE tasks ADD COLUMN profile_id TEXT REFERENCES agent_profiles(id)`
-- `ALTER TABLE projects ADD COLUMN default_profile_id TEXT REFERENCES agent_profiles(id)`
+- `ALTER TABLE projects ADD COLUMN default_profile_id TEXT REFERENCES agent_profiles(id)` (dropped by `a00000000043`, mandatory task routing)
 - `ALTER TABLE archived_tasks ADD COLUMN profile_id TEXT`
 
 ### CRUD Methods
@@ -99,7 +116,7 @@ CREATE TABLE IF NOT EXISTS agent_profiles (
 - `get_profile(profile_id)` — fetch by ID, returns None if not found
 - `list_profiles()` — all profiles sorted by name
 - `update_profile(profile_id, **kwargs)` — partial update; JSON fields auto-serialized
-- `delete_profile(profile_id)` — cascades: clears profile_id from tasks and default_profile_id from projects before deleting
+- `delete_profile(profile_id)` — cascades: clears profile_id from tasks before deleting, in the same statement setting `route_source='unrouted'` and keeping the lost route in `route.legacy`, so a queued task is routed again (projects no longer carry a default profile)
 
 ## Source of Truth: Vault Markdown
 
@@ -306,7 +323,7 @@ Imports from YAML text or gist URL:
 - `delete_profile` — remove profile, clear references
 
 ### Resolution debug
-- `show_effective_profile` — resolve `project + agent_type` through the launch-time cascade (task profile → project default → worker default → system fallback)
+- `show_effective_profile` — resolve `project + profile_id` through the launch-time cascade (task profile → the holding worker's profile; there is no project default since mandatory task routing)
 
 ### Discovery & Validation
 - `list_available_tools` — discover tools and MCP servers for profile configuration
@@ -331,6 +348,13 @@ See [mcp-server](mcp-server.md) for full details. Commands: `list_mcp_servers`,
 - `edit_project` — accepts optional `default_profile_id` (null to clear)
 - `get_task` — returns `profile_id` in output
 
+> **Superseded by mandatory task routing (2026-09-28):** `create_task`, `ensure_task`,
+> `create_task_graph` and `edit_task` refuse `profile_id` (and `profile`, `provider`, `model`,
+> `harness`, `agent_type`, `pin`, `provider_intent`) with `routing.choice_forbidden`; only a
+> `SERVICE` or `PLAYBOOK` principal may pass a role profile. `edit_project` / `create_project`
+> refuse `default_profile_id`. `get_task` still returns `profile_id`, with `route_source`,
+> `class_hint` and the `route` record.
+
 ## Backward Compatibility
 
 - Tasks without `profile_id` → cascade to project default or system default. Identical to current behavior.
@@ -338,4 +362,8 @@ See [mcp-server](mcp-server.md) for full details. Commands: `list_mcp_servers`,
 - No YAML `agent_profiles` section → no profiles synced, everything works as before.
 - Database migrations are additive (`ALTER TABLE ADD COLUMN`).
 - Agents are unchanged — no migration needed.
+
+> **Superseded by mandatory task routing (2026-09-28):** a task without `profile_id` is
+> `unrouted` and waits for its project's router; it is not claimable until the router, an
+> override or a role gives it a profile. Projects have no `default_profile_id`.
 - Scheduler is unchanged — same algorithm, same inputs, same outputs.

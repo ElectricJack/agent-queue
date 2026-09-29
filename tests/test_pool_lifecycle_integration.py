@@ -45,6 +45,7 @@ from src.sessions.harness_parser import Harness
 from src.sessions.reconciler import SessionReconciler
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 PROJECT_ID = "proj"
 
@@ -167,6 +168,7 @@ async def ready(db, tid, *, profile_id="worker", intelligence_class="standard-me
             description=tid,
             status=TaskStatus.READY,
             profile_id=profile_id,
+            route_source=kw.pop("route_source", route_source_for(profile_id)),
             intelligence_class=intelligence_class,
             **kw,
         )
@@ -609,7 +611,8 @@ class TestReconcilerInterplay:
     ):
         await db.create_task(Task(
             id="not-waiting", project_id=PROJECT_ID, title="not waiting", description="",
-            status=status, profile_id="worker", intelligence_class="standard-medium",
+            status=status, profile_id="worker",
+            route_source="legacy", intelligence_class="standard-medium",
         ))
         # Populate the scheduler's capacity snapshot as well as the pool path.
         await orch._schedule()
@@ -628,7 +631,7 @@ class TestReconcilerInterplay:
         for project_id, task_id in ((PROJECT_ID, "busy-local"), ("other-project", "busy-other")):
             await db.create_task(Task(
                 id=task_id, project_id=project_id, title=task_id, description="busy worker",
-                profile_id="worker", status=TaskStatus.IN_PROGRESS,
+                profile_id="worker", route_source="legacy", status=TaskStatus.IN_PROGRESS,
             ))
             await db.create_session(SessionRecord(
                 id=task_id, project_id=project_id, profile_id="worker",

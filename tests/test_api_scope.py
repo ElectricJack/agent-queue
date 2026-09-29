@@ -67,6 +67,8 @@ EXPECTED_AGENT_COMMANDS = {
     "phase_list",
     "subagent_event",
     "reparent_task",
+    # Mandatory routing §7: a worker re-routes a task it filed.
+    "task_route",
     "integration_status",
     "integration_resolve_candidate_member",
     "review_submit",
@@ -294,6 +296,16 @@ class TestCheckCommandScope:
     def test_reparent_task_still_pins_project_and_session(self):
         other = {"task_id": "t1.2", "root": True, "project_id": "p2"}
         msg = check_command_scope("reparent_task", other, SESSION)
+        assert msg is not None and "project_id mismatch" in msg
+
+    def test_task_route_names_a_filing_and_still_pins_the_project(self):
+        """``_cmd_task_route`` admits a plain session only for a task it filed."""
+        args = {"task_id": "t1.2", "intelligence_class": "deep-high"}
+        assert check_command_scope("task_route", args, SESSION) is None
+        assert args["task_id"] == "t1.2"
+        assert args["project_id"] == "p1" and args["session_id"] == "s1"
+        other = {"task_id": "t1.2", "project_id": "p2"}
+        msg = check_command_scope("task_route", other, SESSION)
         assert msg is not None and "project_id mismatch" in msg
 
 

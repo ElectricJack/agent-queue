@@ -90,16 +90,26 @@
 ## Purpose
 
 Create one new task, unconditionally. `create_task` is the plain constructor: it
-validates everything a task row can carry — project, profile, intelligence class,
+validates everything a task row can carry — project, intelligence-class hint,
 task type, integration mode, workspace mode, required workspace kinds, labels,
 dependency edges, parent placement, agent affinity — writes the row, and reports
 the id it minted. It never looks for a task that already exists, so a step that
 may run twice wants [`ensure_task`](ensure_task.md) instead.
 
+It never chooses the task's route. The filer gives hints — `intelligence_class`
+(stored as `class_hint`) and `task_type` — and the task is stored `unrouted`:
+no profile, no class, `provider_intent: class_only`. The project's router writes
+the route later ([`task_route_apply`](task_route_apply.md)). A `profile_id`,
+`provider`, `model`, `harness`, `agent_type`, `pin` or `provider_intent` is
+refused with `code: routing.choice_forbidden` and nothing is written; the one
+exception is a role profile (`triage`, `spec-ingest`, `reviewer`,
+`final-reviewer`) named by a `SERVICE` or `PLAYBOOK` principal, which files a
+`route_source: role` task that runs the role's own class.
+
 The command is also the authorization boundary for *delegation*. A caller with a
-narrow capability policy cannot widen it by creating a task for a broader
-profile, and a pool worker's filings are pinned to its own project, forced to
-start `DEFINED`, and confined to the subtree of the task it holds.
+narrow capability policy cannot widen it by naming a broader role profile, and a
+pool worker's filings are pinned to its own project, forced to start `DEFINED`,
+and confined to the subtree of the task it holds.
 
 ## When a playbook uses it
 
@@ -135,7 +145,10 @@ second task.
 3. `CommandHandler.execute`
    ([`src/commands/handler.py:872`](../../../src/commands/handler.py)) normalises
    `project_id`, applies the subsystem pause gate (`handler.py:948`) and the
-   capability gate (`handler.py:962`), then dispatches `_cmd_create_task`.
+   capability gate (`handler.py:962`), refuses any routing choice with
+   `routing.choice_forbidden` (`routing_choice_refusal`,
+   [`src/routing/filing.py`](../../../src/routing/filing.py)) ahead of the
+   args-model validation, then dispatches `_cmd_create_task`.
 4. `_cmd_create_task`
    ([`src/commands/task_commands.py:1695`](../../../src/commands/task_commands.py))
    runs in this order:
@@ -151,11 +164,13 @@ second task.
      requires a designated repository; `integration_mode`, `task_type`,
      `workspace_mode`, `verification`-adjacent fields and `labels` are each
      checked against their enum.
-   - **Profile and class.** `_task_execution_profile_error`
-     (`task_commands.py:1653`) rejects a control-plane or non-executable profile;
-     `_validate_routing_class` (`task_commands.py:1624`) rejects a class the
-     profile's harness provider has no model mapping for. With no explicit
-     profile the project default is validated before it is accepted.
+   - **Hints, not a route.** `_validate_routing_class` (`task_commands.py:1624`)
+     rejects an unknown `intelligence_class`, so a typo cannot silently lose the
+     hint. Nothing is inherited from the caller or the project: a project has no
+     default profile. Only a role creator's role profile reaches this point;
+     `_task_execution_profile_error` (`task_commands.py:1653`) and the
+     capability-subset check bound it, and the role must be able to run its own
+     class (`route_source: role`).
    - **References.** `preferred_workspace_id`, each `requires_kinds` entry
      (resolved through `db.resolve_workspace_kind`), `affinity_agent_id`,
      `affinity_reason`, every `depends_on` id and `parent_id` are each read back
@@ -163,11 +178,13 @@ second task.
    - **Initial status.** A task born with blocking edges or a parent starts
      `DEFINED`, never `READY`, so the scheduler is never handed a task it must
      not run.
-   - **Routing policy.** When the caller pinned no profile and the project
-     default is unusable, a `routing_policy` closure is built from
-     `requires_routing_gate` (`src/playbooks/routing.py`) and evaluated *inside*
-     the creation transaction, so the gate decision sees the allocated ids and
-     parent edge (`task_commands.py:2270-2292`).
+   - **Routing gate policy.** For every task that is not a role task, a
+     `routing_policy` closure is built from `requires_routing_gate`
+     (`src/playbooks/routing.py`) and evaluated *inside* the creation
+     transaction, so the gate decision sees the allocated ids and parent edge
+     (`task_commands.py:2270-2292`). A gate is admitted only when an active
+     `task.created` rule would open a `routing` gate on the new task; the shipped
+     defaults have none, and the router routes the task either way.
    - **The write.** One of four paths runs: the hierarchy service
      (`file_prepared_child_on` / `file_root_on`) for an enabled project,
      `_create_worker_filed_task` (`task_commands.py:1314`) for a pool filing,
@@ -197,17 +214,20 @@ to the event log (`dependency.added`, `label.added`); the hierarchy paths write
 their own generation/edge rows inside one transaction.
 
 Everything is committed database state and survives a restart, including the
-open routing gate: a task created without an executable route stays `DEFINED`
-and blocked until [`task_route`](task_route.md) resolves the gate. Bus emission
-is best-effort and *after* the commit — a subscriber failure is logged, never
-rolled back (`task_commands.py:2490-2507`), and assignment routing reconciles
-from the database rather than from the event.
+`unrouted` route source and any open routing gate: a gated task stays `DEFINED`
+and blocked until a route write — the router's
+[`task_route_apply`](task_route_apply.md), or an operator's
+`aq task route-override` — resolves the gate. An unrouted task is never
+claimable, gate or not. Bus emission is best-effort and *after* the commit — a
+subscriber failure is logged, never rolled back (`task_commands.py:2490-2507`),
+and routing reconciles from the database rather than from the event: the
+cascade emits `task.route_needed` for every queued unrouted task.
 
 ## Failure modes and diagnostics
 
 | Outcome | Cause |
 |---|---|
-| `rejected` | Any validation refusal: unknown project / profile / class / workspace / dependency / parent, a control-plane profile, `--root` together with a `parent_id`, an invalid enum value, a class with no model mapping for the profile's harness, `delegation refused: caller has no resolved profile`, `dependency_on_ancestor` (a gating `depends_on` onto the new task's own parent chain or the filer's held task), or a `hierarchy.*` refusal such as `hierarchy.container_closed` or `hierarchy.depth`. |
+| `rejected` | `code: routing.choice_forbidden` for any routing choice (a profile other than a role creator's role profile, a provider, model, harness, agent type, pin or provider intent), naming the hints to pass instead. Any validation refusal: unknown project / role profile / class / workspace / dependency / parent, a control-plane profile, `--root` together with a `parent_id`, an invalid enum value, a role profile whose class has no model mapping for its harness, `delegation refused: caller has no resolved profile`, `dependency_on_ancestor` (a gating `depends_on` onto the new task's own parent chain or the filer's held task), or a `hierarchy.*` refusal such as `hierarchy.container_closed` or `hierarchy.depth`. |
 | `rejected` (worker filing) | `idle_session_cannot_file`, `filing_quota_exceeded` (`swarm.max_filings_per_task`), a parent outside the held task's subtree, or a project other than the session's. |
 | `unauthorized` | The capability gate refused `create_task` for this principal (`handler.py:962`); under `capability_enforcement: audit` the same case only logs `capability_denied_shadow`. |
 | `contract_violation` | The result did not match `CreateTaskValue`, or the step's `transitions` has no edge for the returned outcome and no `runtime_error` edge (`command.py:69`). |
@@ -223,7 +243,8 @@ input whose type cannot be reconciled with the contract, and
 There are no retries: `retry_safe: no` on a `create` side effect with
 `idempotency: none` means a retry would create a second task. Diagnose a
 refusal with `aq task explain --task-id <id>` for a task that was created but will not
-run, `aq task show <id>` for the row itself, and `aq playbook inspect-run <run-id>` for
+run (it names the router's answer: `awaiting_route`, `route_held`,
+`route_no_candidates`, `route_failed`, `router_not_ready` or `router_unbound`), `aq task show <id>` for the row itself, and `aq playbook inspect-run <run-id>` for
 the step receipt that records the refusal.
 
 ## Example step

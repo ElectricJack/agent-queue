@@ -25,6 +25,7 @@ from src.commands.contracts.builtin import (
 from src.commands.provider_commands import parse_duration, parse_timestamp
 from src.models import AgentProfile, Project, Task, TaskStatus
 from src.providers.availability import AUTH_PROBE, STARTUP_DIALOG
+from tests.assignment_routing_helpers import route_source_for
 
 
 @pytest.fixture
@@ -150,13 +151,12 @@ async def test_status_counts_held_tasks_for_an_unavailable_provider(handler, ser
 
 
 async def test_status_held_count_is_exactly_what_the_derived_hold_holds(handler, service) -> None:
-    """``held`` counts every queued status and follows the derived default (D13, D18).
+    """``held`` counts every queued status, exactly as the derived hold holds (D18).
 
-    It once listed only ``READY`` tasks and resolved an unrouted task through
-    the raw project default, so the dashboard's banner and the notices
-    disagreed with ``aq task explain``: a ``DEFINED`` task was held but not
-    counted, and an unrouted task whose default has a rung on an available
-    provider was counted but not held.
+    It once listed only ``READY`` tasks, so the dashboard's banner and the
+    notices disagreed with ``aq task explain``: a ``DEFINED`` task was held
+    but not counted.  An unrouted task is held by no provider -- it waits on
+    its router, whatever the project default (mandatory routing §8).
     """
     db = handler.db
     for profile_id, harness, cls in (
@@ -167,10 +167,8 @@ async def test_status_held_count_is_exactly_what_the_derived_hold_holds(handler,
         await db.create_profile(
             AgentProfile(id=profile_id, name=profile_id, harness=harness, default_class=cls)
         )
-    # An unrouted task in "rung" follows sh-codex's equivalent rung on claude;
-    # one in "astra" has nowhere to go.
-    await db.create_project(Project(id="rung", name="rung", default_profile_id="sh-codex"))
-    await db.create_project(Project(id="astra", name="astra", default_profile_id="astra-codex"))
+    await db.create_project(Project(id="rung", name="rung"))
+    await db.create_project(Project(id="astra", name="astra"))
     tasks = [
         ("ready", "rung", "sh-codex", TaskStatus.READY),
         ("defined", "rung", "sh-codex", TaskStatus.DEFINED),
@@ -178,8 +176,8 @@ async def test_status_held_count_is_exactly_what_the_derived_hold_holds(handler,
         ("paused", "rung", "sh-codex", TaskStatus.PAUSED),
         ("running", "rung", "sh-codex", TaskStatus.IN_PROGRESS),  # not queued
         ("on-claude", "rung", "sh-claude", TaskStatus.READY),  # a launchable provider
-        ("unrouted-rung", "rung", None, TaskStatus.READY),  # follows the default's rung
-        ("unrouted-astra", "astra", None, TaskStatus.DEFINED),  # held
+        ("unrouted-rung", "rung", None, TaskStatus.READY),  # waits on its router
+        ("unrouted-astra", "astra", None, TaskStatus.DEFINED),  # likewise
     ]
     for task_id, project_id, profile_id, status in tasks:
         await db.create_task(
@@ -189,7 +187,7 @@ async def test_status_held_count_is_exactly_what_the_derived_hold_holds(handler,
                 title=task_id,
                 description="",
                 status=status,
-                profile_id=profile_id,
+                profile_id=profile_id, route_source=route_source_for(profile_id),
             )
         )
     await _trip_codex_unauthenticated(service)
@@ -200,7 +198,7 @@ async def test_status_held_count_is_exactly_what_the_derived_hold_holds(handler,
         hold = await service.hold_for(await db.get_task(task_id))
         if hold is not None:
             holds[task_id] = hold
-    assert set(holds) == {"ready", "defined", "blocked", "paused", "unrouted-astra"}
+    assert set(holds) == {"ready", "defined", "blocked", "paused"}
     assert {hold["provider"] for hold in holds.values()} == {"codex"}
 
     affected = await service.affected("codex")
@@ -209,7 +207,7 @@ async def test_status_held_count_is_exactly_what_the_derived_hold_holds(handler,
         task_id: hold["profile_id"] for task_id, hold in holds.items()
     }
     result = await handler.execute("provider_status", {"provider": "codex"})
-    assert result["providers"][0]["held"] == len(holds) == 5
+    assert result["providers"][0]["held"] == len(holds) == 4
 
 
 # -- provider_history --------------------------------------------------------------

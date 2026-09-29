@@ -17,19 +17,21 @@ Some work should happen consistently without putting policy into a daemon branch
 
 ## A realistic example: route a new task
 
-AQ ships a reviewed system bundle for `default-assignment-routing`. On a new data directory, the required-playbook reconciler imports and activates that reviewed bundle if the system activation does not already exist; it never overwrites an operator's existing activation. The reviewed policy listens for `task.route_needed`, obtains valid routing options, chooses a compatible class/profile, and calls `task_route`. The orchestrator emits that event only when a task lacks the worker-facing `intelligence_class`, `profile_id`, or both. [The current shipped source](../../src/prompts/default_playbooks/default-assignment-routing.md), [reviewed bundle](../../src/prompts/reviewed_playbooks/default-assignment-routing/), and [required reconciler](../../src/playbooks/required.py) are the evidence for those claims.
+AQ ships a reviewed system bundle for `default-assignment-routing`, the router every project is bound to unless the local operator re-binds it. On a new data directory, the required-playbook reconciler imports and activates that reviewed bundle if the system activation does not already exist. It leaves an operator's existing activation alone, with one exception: a system activation whose artifact does not grant `task_route_apply` — a router from before mandatory routing — is re-pointed to the shipped artifact. The reviewed policy listens for `task.route_needed`, calls `task_route_plan` with its policy block, asks an LLM to classify the task only when the plan needs it, and calls `task_route_apply`, which refuses every caller except the project's bound router. The orchestrator emits that event only for a queued, unassigned task that still owes a route (`route_source` is `unrouted`, or `legacy` once the router is ready). [The current shipped source](../../src/prompts/default_playbooks/default-assignment-routing.md), [reviewed bundle](../../src/prompts/reviewed_playbooks/default-assignment-routing/), and [required reconciler](../../src/playbooks/required.py) are the evidence for those claims.
 
 ```mermaid
 flowchart LR
     E[task.route_needed] --> R[route-task rule]
-    R --> O[task_route_options]
-    O -->|undecided| L[LLM chooses compatible option]
-    O -->|explicit class| C[task_route]
-    L --> C
-    C --> A[task carries profile and class]
+    R --> P[task_route_plan]
+    P -->|needs_classification| L[LLM classifies kind and class]
+    L --> P2[task_route_plan with classification]
+    P -->|planned| A[task_route_apply]
+    P2 -->|planned| A
+    P -->|held| H[task waits unrouted]
+    A --> T[task carries profile and class, route_source router]
 ```
 
-The input is an event containing at least the task and project identifiers. The output is either a routed task or a failed, inspectable run. The current shipped Markdown source recommends `standard-high` for ordinary implementation and coordinated changes, reserving `deep-high` for a specifically justified exceptional problem. That is a **shipped source policy**. The required activation instead runs the immutable reviewed source/artifact recorded in its bundle; inspect that bundle and its active hash rather than assuming it changed with the Markdown source. A project can use a project-scope copy with a different policy.
+The input is an event containing at least the task and project identifiers. The output is either a routed task or a failed, inspectable run. The playbook's `## Routing policy` YAML block is the policy: kind to class and ceiling, the code-design lane (Claude first, then Codex), the art-design lane (Codex, held), the OpenCode lanes, the reserved `deep-high` Claude cell and the load balance. `task_route_plan` applies it deterministically; the LLM step only classifies a task whose kind or class the policy cannot decide, recommending `standard-high` for ordinary implementation and coordinated changes and a deep class only for design or a specifically justified exceptional problem. That is a **shipped source policy**. The required activation instead runs the immutable reviewed source/artifact recorded in its bundle; inspect that bundle and its active hash rather than assuming it changed with the Markdown source. A project can use a reviewed project-scope copy with a different policy, bound with `aq project set <project> router <playbook-id>`.
 
 The following read-only command was run while writing this page; it shows the exact validation interface without modifying a vault:
 
@@ -133,7 +135,7 @@ The default pipeline source illustrates a different use of a human gate: `propos
 
 ## Shipped policy, local policy, and compatibility
 
-**Shipped required defaults.** `default-assignment-routing` and `provider-usage-probe` are the IDs in `REQUIRED_SYSTEM_PLAYBOOK_IDS`. The reconciler creates a missing system activation, keeps a healthy or disabled one exactly as it is, and re-points an *enabled* one that no longer validates at the freshly imported shipped artifact; the shared defaults below get the same repair. Readiness (`/health`, `/ready`) is recomputed from live activation health on every read and after every activation write, not frozen at startup. An inactive required router retains `task.route_needed` events rather than dropping them. [Required policy handling](../../src/playbooks/required.py) is the source of truth.
+**Shipped required defaults.** `default-assignment-routing` and `provider-usage-probe` are the IDs in `REQUIRED_SYSTEM_PLAYBOOK_IDS`. The reconciler creates a missing system activation, keeps a healthy or disabled one exactly as it is, and re-points an *enabled* one that no longer validates at the freshly imported shipped artifact — as it does an enabled `default-assignment-routing` activation whose artifact does not grant `task_route_apply`, however healthy; the shared defaults below get the same repair. Readiness (`/health`, `/ready`) is recomputed from live activation health on every read and after every activation write, not frozen at startup. An inactive required router retains `task.route_needed` events rather than dropping them. [Required policy handling](../../src/playbooks/required.py) is the source of truth.
 
 **Shipped shared defaults.** `blocked-task-escalation` and `default-pipeline` are the IDs in `DEFAULT_SYSTEM_PLAYBOOK_IDS`. They are activated once, on the first start that finds no activation for them, and are never re-enabled after an operator disables one — so unlike the required router they are not a readiness requirement. The default pipeline describes spec approval → spec-ingest task and proposal-ready → human gate → task-batch commit. It is not the retired review/triage workflow.
 

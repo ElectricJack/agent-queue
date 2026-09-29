@@ -14,6 +14,7 @@ from src.models import AgentProfile, DepType, Project, SessionRecord, Task, Task
 from src.orchestrator import Orchestrator
 from src.tools import _ALL_TOOL_DEFINITIONS
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 PROJECT_ID = "proj"
 
@@ -47,6 +48,7 @@ async def handler(db, config):
 
 
 async def mktask(db, tid, status=TaskStatus.DEFINED, **kw):
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     await db.create_task(
         Task(id=tid, project_id=PROJECT_ID, title=tid, description=tid, status=status, **kw)
     )

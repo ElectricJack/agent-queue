@@ -35,7 +35,7 @@ async def env(tmp_path, request):
             project_id="p",
             title="Work",
             status=TaskStatus.BLOCKED,
-            profile_id="worker",
+            profile_id="worker", route_source="legacy",
             intelligence_class="deep-high",
             branch_name="aq/keep",
             description="Keep requirements",

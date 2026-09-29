@@ -37,6 +37,7 @@ from src.api.auth import SessionTokenStore
 from src.api.execute import router as execute_router
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
 from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
+from tests.assignment_routing_helpers import route_source_for
 
 pytestmark = pytest.mark.asyncio
 
@@ -96,7 +97,7 @@ async def _session_for(handler, profile_id: str, session_id: str | None = None) 
             title=held_id,
             description="held",
             status=TaskStatus.IN_PROGRESS,
-            profile_id=profile_id,
+            profile_id=profile_id, route_source=route_source_for(profile_id),
         )
     )
     await handler.db.create_session(
@@ -276,16 +277,6 @@ class TestDefaultInheritance:
         assert task.profile_id is None
         assert await handler.db.get_task_meta(task.id, "filed_by_profile_id") == "narrow"
 
-    async def test_worker_filing_does_not_take_the_project_default(self, handler):
-        """The project default is an implicit route too; a filing must be routed."""
-        await handler.db.update_project("p", default_profile_id="broad")
-        sid = await _session_for(handler, "narrow")
-
-        result = await _create(handler, sid)
-
-        assert "error" not in result, result
-        assert (await handler.db.get_task(result["task_id"])).profile_id is None
-
     async def test_worker_filing_with_a_class_is_routed_not_class_matched(self, handler):
         """A class is a hint: the filing is stored unrouted and the router
         routes it (mandatory-routing spec §5.3)."""
@@ -331,73 +322,51 @@ class TestDefaultInheritance:
         assert (task.profile_id, task.route_source) == (None, "unrouted")
 
 
-class TestWorkerFiledRouteBound:
-    """``task_route`` keeps an unpinned worker filing on an ordinary worker rung."""
+class TestWorkerFilingRouteBound:
+    """A worker filing is routed only by the router, among worker candidates.
 
-    WORKER = AgentProfile(id="worker-rung", name="Worker", harness="claude", lifecycle="pool")
+    The old per-filing bound (``_worker_filed_route_error``) went with manual
+    routes (mandatory routing §5.2): the router offers only worker candidates,
+    no playbook but the bound router writes a route, and the one manual route,
+    the override, refuses control and role profiles for every caller.
+    """
+
     CONTROL = AgentProfile(id="reviewer", name="Reviewer", harness="claude")
 
     async def _filed(self, handler) -> str:
-        for profile in (self.WORKER, self.CONTROL):
-            await handler.db.create_profile(profile)
-        handler._validate_routing_class = lambda *_args, **_kwargs: None
+        await handler.db.create_profile(self.CONTROL)
         sid = await _session_for(handler, "narrow")
         result = await _create(handler, sid)
         assert "error" not in result, result
         return result["task_id"]
 
-    async def _route(self, handler, task_id: str, profile_id: str, principal=None):
+    async def test_a_playbook_may_not_route_a_filing(self, handler):
         from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
         from src.profiles.capabilities import CapabilityPolicy
 
-        # The routing playbook's own principal: enforced, not elevated.
-        principal = principal or ExecutionPrincipal(
+        task_id = await self._filed(handler)
+        playbook = ExecutionPrincipal(
             kind=PrincipalKind.PLAYBOOK,
             policy=CapabilityPolicy.from_namespaces(aq_commands=["task_route"]),
             project_id="p",
         )
-        with principal_context(principal):
-            return await handler._cmd_task_route(
-                {"task_id": task_id, "profile_id": profile_id, "intelligence_class": "c"}
-            )
+        with principal_context(playbook):
+            result = await handler._cmd_task_route({"task_id": task_id})
 
-    async def test_the_router_may_pick_any_worker_rung(self, handler):
+        assert result["code"] == "routing.not_permitted", result
+        assert (await handler.db.get_task(task_id)).route_source == "unrouted"
+
+    async def test_no_caller_may_override_a_filing_onto_a_role_profile(self, handler):
         task_id = await self._filed(handler)
 
-        result = await self._route(handler, task_id, "worker-rung")
-
-        assert result["success"] is True, result
-        assert (await handler.db.get_task(task_id)).profile_id == "worker-rung"
-
-    async def test_the_router_may_not_put_a_filing_on_a_control_profile(self, handler):
-        task_id = await self._filed(handler)
-
-        result = await self._route(handler, task_id, "reviewer")
+        result = await handler._cmd_task_route_override({
+            "task_id": task_id, "profile_id": "reviewer", "intelligence_class": "c",
+            "reason": "the operator tries a review profile",
+        })
 
         assert result["success"] is False
-        assert "ordinary worker profile" in result["error"]
+        assert "role profile" in result["error"]
         assert (await handler.db.get_task(task_id)).profile_id is None
-
-    async def test_the_operator_may_route_it_anywhere(self, handler):
-        from src.commands.principal import TRUSTED_LOCAL
-
-        task_id = await self._filed(handler)
-
-        result = await self._route(handler, task_id, "reviewer", principal=TRUSTED_LOCAL)
-
-        assert result["success"] is True, result
-
-    async def test_work_nobody_filed_is_not_bound(self, handler):
-        for profile in (self.WORKER, self.CONTROL):
-            await handler.db.create_profile(profile)
-        handler._validate_routing_class = lambda *_args, **_kwargs: None
-        await handler.db.create_task(
-            Task(id="op", project_id="p", title="t", description="d", status=TaskStatus.READY)
-        )
-
-        result = await self._route(handler, "op", "reviewer")
-
-        assert result["success"] is True, result
 
 
 class TestFailClosed:
