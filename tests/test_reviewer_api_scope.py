@@ -87,7 +87,8 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
     for tid, pid in (("reviewed", "p"), ("unrelated", "p"), ("foreign", "other")):
         await db.create_task(Task(
             id=tid, project_id=pid, title=tid, description="Worker output",
-            status=TaskStatus.DEFINED, profile_id="coder", route_source="legacy", branch_name=f"feature/{tid}",
+            status=TaskStatus.DEFINED, profile_id="coder",
+            route_source="legacy", branch_name=f"feature/{tid}",
             pr_url=(PR_URL if tid == "reviewed" else None),
         ))
         await db.transition_task(tid, TaskStatus.COMPLETED, context="test")
@@ -99,7 +100,8 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         await db.create_agent(Agent(id=worker, name=worker, profile_id=role))
         await db.create_task(Task(
             id=f"{worker}-job", project_id="p", title=worker, description=description,
-            status=TaskStatus.IN_PROGRESS, profile_id=role, route_source=route_source_for(role), assigned_agent_id=worker,
+            status=TaskStatus.IN_PROGRESS, profile_id=role,
+            route_source=route_source_for(role), assigned_agent_id=worker,
         ))
         await db.update_agent(worker, state=AgentState.BUSY, current_task_id=f"{worker}-job")
         await db.create_session(SessionRecord(

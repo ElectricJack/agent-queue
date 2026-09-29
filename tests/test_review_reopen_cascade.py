@@ -31,7 +31,8 @@ async def _routed(h, args: dict, profile_id: str) -> str:
     """
     task_id = (await h.execute("create_task", args))["created"]
     assert await h.db.update_task_routing(
-        task_id, profile_id=profile_id, route_source=route_source_for(profile_id), intelligence_class=None, preferred_workspace_id=None
+        task_id, profile_id=profile_id, route_source=route_source_for(profile_id),
+        intelligence_class=None, preferred_workspace_id=None
     )
     return task_id
 

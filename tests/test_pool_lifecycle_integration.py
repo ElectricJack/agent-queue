@@ -611,7 +611,8 @@ class TestReconcilerInterplay:
     ):
         await db.create_task(Task(
             id="not-waiting", project_id=PROJECT_ID, title="not waiting", description="",
-            status=status, profile_id="worker", route_source="legacy", intelligence_class="standard-medium",
+            status=status, profile_id="worker",
+            route_source="legacy", intelligence_class="standard-medium",
         ))
         # Populate the scheduler's capacity snapshot as well as the pool path.
         await orch._schedule()

@@ -381,7 +381,8 @@ async def test_route_needed_is_emitted_once_per_interval_for_unrouted_work(orch)
 
     # once routed, the task drops out and its throttle entry is forgotten
     await orch.db.update_task_routing(
-        "no-class", profile_id="deep-low-claude", route_source="legacy", intelligence_class="deep-low",
+        "no-class", profile_id="deep-low-claude",
+        route_source="legacy", intelligence_class="deep-low",
         preferred_workspace_id=None,
     )
     orch._route_needed_emitted["class-only"] -= ROUTE_NEEDED_INTERVAL_SECONDS + 1

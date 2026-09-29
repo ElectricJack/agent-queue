@@ -88,7 +88,8 @@ async def _create_routed(handler, db, profile_id: str) -> str:
     created = await handler.execute("create_task", {"project_id": "p", "title": "t"})
     tid = created["created"]
     assert await db.update_task_routing(
-        tid, profile_id=profile_id, route_source=route_source_for(profile_id), intelligence_class=None, preferred_workspace_id=None
+        tid, profile_id=profile_id, route_source=route_source_for(profile_id),
+        intelligence_class=None, preferred_workspace_id=None
     )
     return tid
 

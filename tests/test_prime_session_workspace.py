@@ -17,7 +17,8 @@ async def prime_context(tmp_path):
     await db.initialize()
     await db.create_project(Project(id="p", name="Project"))
     await db.create_profile(AgentProfile(id="coder", name="Coder"))
-    task = Task(id="work", project_id="p", title="Work", description="", profile_id="coder", route_source="legacy")
+    task = Task(id="work", project_id="p", title="Work", description="", profile_id="coder",
+    route_source="legacy")
     await db.create_task(task)
     await db.create_task(Task(id="other", project_id="p", title="Other", description=""))
     cfg = AppConfig(data_dir=str(tmp_path / "data"))

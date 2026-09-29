@@ -287,7 +287,8 @@ async def test_project_preferred_provider_unavailable_is_explained(handler, db, 
     assert "fast-low" in reason["detail"]
     assert "codex" in reason["detail"]
 
-    await db.update_task("preferred-held", profile_id="worker", route_source="legacy", provider_intent="pinned")
+    await db.update_task("preferred-held", profile_id="worker",
+    route_source="legacy", provider_intent="pinned")
     assert "preferred_provider_unavailable" not in (
         await handler._cmd_explain_task({"task_id": "preferred-held"})
     )["reason_codes"]

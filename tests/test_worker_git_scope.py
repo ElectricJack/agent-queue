@@ -58,7 +58,8 @@ async def env(tmp_path, request):
     await db.create_agent(Agent(id="a1", name="a1", profile_id="coder"))
     await db.create_task(Task(
         id="t1", project_id="p", title="work", description="work",
-        status=TaskStatus.IN_PROGRESS, profile_id="coder", route_source="legacy", assigned_agent_id="a1",
+        status=TaskStatus.IN_PROGRESS, profile_id="coder",
+        route_source="legacy", assigned_agent_id="a1",
         branch_name="aq/calm-ember-48",
     ))
     await db.update_agent("a1", state=AgentState.BUSY, current_task_id="t1")

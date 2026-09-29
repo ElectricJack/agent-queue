@@ -2798,7 +2798,7 @@ class Orchestrator(
             try:
                 await self.router_readiness.refresh()
             except Exception:
-                logger.error("router readiness refresh error", exc_info=True)
+                logger.exception("router readiness refresh error")
             try:
                 await self._emit_route_needed_events()
             except Exception:

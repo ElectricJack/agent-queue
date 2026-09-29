@@ -554,7 +554,8 @@ async def test_typed_edit_omitted_routing_fields_do_not_clear(setup):
     from src.api.codegen import _make_route_handler
     handler, db = setup
     await db.create_task(Task(id="t", project_id="p", title="T", description="",
-                              profile_id="coder", route_source="legacy", intelligence_class="deep-high"))
+                              profile_id="coder",
+                              route_source="legacy", intelligence_class="deep-high"))
     model = request_model("edit_task")
     result = await _make_route_handler("edit_task", model)(model(task_id="t", title="Renamed"), ch=handler)
     assert result["updated"] == "t"

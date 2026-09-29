@@ -30,7 +30,12 @@ from src.routing.sources import (
     claimable_sources,
     route_is_claimable,
 )
-from tests.test_routing_router import ROUTER_ID, _create, _route, handler, orch  # noqa: F401
+from tests import test_routing_router as _router
+from tests.test_routing_router import ROUTER_ID, _create, _route
+
+# The router suite's orchestrator and handler fixtures, shared as-is.
+orch = _router.orch
+handler = _router.handler
 
 APPLY = frozenset({"task_route_plan", ROUTER_GRANT})
 OLD_ROUTER = frozenset({"task_route_options", "task_route"})

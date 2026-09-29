@@ -119,6 +119,9 @@ async def build_handler(any_db, tmp_path):
     orch._run_completion_pipeline = AsyncMock(return_value=(None, True))
     orch.bus.emit = AsyncMock()
     orch.register_settlement_listener()
+    # The cycle refreshes router readiness before any claim reads it
+    # (mandatory routing §9.1); measure the steady state, not the first read.
+    await orch.router_readiness.refresh()
     return CommandHandler(orch, cfg)
 
 
@@ -547,6 +550,7 @@ class TestClaimStatementBudgets:
         orch = Orchestrator(cfg)
         orch.db = any_db
         orch.bus.emit = AsyncMock()
+        await orch.router_readiness.refresh()  # the cycle's, as in production
 
         async with count_statements(any_db) as c:
             await orch._reconcile_pools()

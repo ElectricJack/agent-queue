@@ -904,7 +904,8 @@ async def test_pool_status_batches_session_task_titles_and_reuses_measurement(
         await pool_handler.db.create_task(
             Task(
                 id=task_id, project_id=project_id, title=f"Pool task {suffix}",
-                description="", status=TaskStatus.IN_PROGRESS, profile_id="worker", route_source="legacy",
+                description="", status=TaskStatus.IN_PROGRESS, profile_id="worker",
+                route_source="legacy",
             )
         )
         await pool_handler.db.create_session(

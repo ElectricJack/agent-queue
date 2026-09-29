@@ -131,7 +131,8 @@ def test_effective_intent_without_a_profile_is_class_only() -> None:
     pinned = Task(id="t", project_id="p", title="", description="",
                   profile_id="x", route_source="legacy", provider_intent=PINNED)
     assert effective_intent(pinned) == PINNED and narrows_catalog(pinned)
-    routed = Task(id="t", project_id="p", title="", description="", profile_id="x", route_source="legacy")
+    routed = Task(id="t", project_id="p", title="", description="", profile_id="x",
+    route_source="legacy")
     assert effective_intent(routed) == CLASS_ONLY and not narrows_catalog(routed)
 
 
@@ -613,9 +614,11 @@ async def test_explicit_routing_reads_the_pinned_profiles_vendor(setup) -> None:
     _handler, db = setup
     routing = ExplicitRouting(db_getter=lambda: db)
     tasks = [
-        Task(id="a", project_id="p", title="", description="", profile_id="standard-high-codex", route_source="legacy",
+        Task(id="a", project_id="p", title="", description="", profile_id="standard-high-codex",
+        route_source="legacy",
              intelligence_class="standard-high", provider_intent=PINNED),
-        Task(id="b", project_id="p", title="", description="", profile_id="standard-high-claude", route_source="legacy",
+        Task(id="b", project_id="p", title="", description="", profile_id="standard-high-claude",
+        route_source="legacy",
              intelligence_class="standard-high", provider_intent=PREFERRED),
     ]
     routes = await routing.routes_for(tasks)

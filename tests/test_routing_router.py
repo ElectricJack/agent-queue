@@ -396,7 +396,8 @@ async def test_backlog_counts_ready_and_assigned_routed_work_fleet_wide(orch):
     await _create(orch.db, "assigned", profile_id="standard-high-codex",
                   status=TaskStatus.ASSIGNED)
     await orch.db.create_task(Task(id="elsewhere", project_id="q", title="x", description="d",
-                                   status=TaskStatus.READY, profile_id="standard-high-claude", route_source="legacy"))
+                                   status=TaskStatus.READY, profile_id="standard-high-claude",
+                                   route_source="legacy"))
     await _create(orch.db, "blocked", profile_id="standard-high-claude",
                   status=TaskStatus.BLOCKED)
     await _create(orch.db, "unrouted")

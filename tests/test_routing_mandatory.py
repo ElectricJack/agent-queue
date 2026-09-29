@@ -814,7 +814,8 @@ async def test_a_hint_edit_sends_a_queued_task_back_to_its_router(env) -> None:
     handler, db = env
     await db.create_task(Task(
         id="legacy", project_id="p", title="Legacy", description="d",
-        status=TaskStatus.READY, profile_id="coder", route_source="legacy", intelligence_class="standard-high",
+        status=TaskStatus.READY, profile_id="coder",
+        route_source="legacy", intelligence_class="standard-high",
     ))
     assert (await db.get_task("legacy")).route_source == "legacy"
     result = await handler.execute("edit_task", {"task_id": "legacy", "intelligence_class": "deep-high"})
@@ -836,7 +837,8 @@ async def test_a_hint_edit_keeps_a_role_route(env) -> None:
     handler, db = env
     await db.create_task(Task(
         id="role", project_id="p", title="Triage", description="d",
-        status=TaskStatus.READY, profile_id="triage", route_source="role", intelligence_class="standard-high",
+        status=TaskStatus.READY, profile_id="triage",
+        route_source="role", intelligence_class="standard-high",
     ))
     result = await handler.execute("edit_task", {"task_id": "role", "intelligence_class": "deep-high"})
     assert "error" not in result, result
@@ -851,7 +853,8 @@ async def test_a_claimed_task_keeps_its_route(env) -> None:
     await db.create_agent(Agent(id="agent", name="Worker", profile_id="coder"))
     await db.create_task(Task(
         id="held", project_id="p", title="Held", description="d",
-        status=TaskStatus.ASSIGNED, profile_id="coder", route_source="legacy", intelligence_class="standard-high",
+        status=TaskStatus.ASSIGNED, profile_id="coder",
+        route_source="legacy", intelligence_class="standard-high",
         assigned_agent_id="agent",
     ))
     refused = await handler.execute("edit_task", {"task_id": "held", "intelligence_class": "deep-high"})

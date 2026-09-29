@@ -1464,7 +1464,8 @@ class TestContainerClaims:
         # one anyway, so the claims below prove the container flag alone keeps
         # it off the frontier.
         assert await db.update_task_routing(
-            epic, profile_id="worker", route_source="legacy", intelligence_class=None, preferred_workspace_id=None
+            epic, profile_id="worker",
+            route_source="legacy", intelligence_class=None, preferred_workspace_id=None
         )
         async with db._engine.connect() as conn:
             assert await db.is_container(epic, conn=conn)

@@ -1444,7 +1444,8 @@ async def route(db, task_id):
             AgentProfile(id="standard-high-claude", name="standard-high-claude", harness="claude")
         )
     assert await db.update_task_routing(
-        task_id, profile_id="standard-high-claude", route_source="legacy", intelligence_class="standard-high",
+        task_id, profile_id="standard-high-claude",
+        route_source="legacy", intelligence_class="standard-high",
         preferred_workspace_id=None,
     )
 

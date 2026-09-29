@@ -54,6 +54,7 @@ tests belong back here when that lands.
 from unittest.mock import AsyncMock
 
 from src.models import Task, TaskContext, TaskStatus
+from tests.assignment_routing_helpers import route_source_for
 from tests.session_dispatch_helpers import (
     create_session_profile,
     create_session_project,
@@ -63,7 +64,6 @@ from tests.session_dispatch_helpers import (
     render_prime,
     write_vault_profile,
 )
-from tests.assignment_routing_helpers import route_source_for
 
 # -- Realistic L0/L1 content for token budget tests ----------------------
 
