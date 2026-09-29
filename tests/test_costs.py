@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from src.commands.ops_commands import OpsCommandsMixin, _parse_since
+from src.benchmark.report import build_report
+from src.benchmark.opencode import observations_from_export
 from src.config import AppConfig, ModelPricing, PricingConfig
 from src.database import Database
 from src.models import Agent, AgentState, Project
@@ -160,6 +162,127 @@ class TestPricingMatch:
         assert PricingConfig().match("anything") is None
 
 
+def test_benchmark_report_retains_failed_pair_and_unknown_charges():
+    manifest = {
+        "version": 1, "project_id": "p-1", "policy_sha256": "sha256:frozen",
+        "rate_card_version": "v1",
+        "arms": {"opus": {"class": "deep-high", "harness": "claude",
+                          "requested_model": "claude-opus-5-5",
+                          "observed_models": ["claude-opus-5-5*"]}},
+        "pairs": [
+            {"specimen": "rock", "arm": "opus", "attempt": "1", "task_ids": ["t-1"]},
+            {"specimen": "rock", "arm": "opus", "attempt": "2", "task_ids": ["t-2"]},
+        ],
+    }
+    route = {"benchmark_arm": "opus", "benchmark_class": "deep-high",
+             "benchmark_harness": "claude", "requested_model": "claude-opus-5-5",
+             "observed_models": ["claude-opus-5-5*"], "policy_sha256": "sha256:frozen"}
+    evidence = {
+        "tasks": {"t-1": {"status": "COMPLETED", "route": route},
+                  "t-2": {"status": "FAILED", "route": route}},
+        "attempts": [{"id": "a-1", "task_id": "t-1", "profile_id": "p",
+                      "intelligence_class": "deep-high", "harness": "claude",
+                      "started_at": 1.0, "ended_at": 2.0, "outcome": "pass"}],
+        "ledger": [{"id": "l-1", "task_id": "t-1", "attempt_id": "a-1",
+                    "call_id": "c-1", "session_id": "s-1", "timestamp": 1.5,
+                    "model": "claude-opus-5-5-20260928", "model_source": "assistant_response",
+                    "tokens_used": 100,
+                    "input_tokens": 25, "output_tokens": 25,
+                    "cache_read_tokens": 50, "cache_write_tokens": 0}],
+    }
+    report = build_report(manifest, evidence, PricingConfig(models=[ModelPricing(
+        model="claude-opus-5-5*", input_per_mtok=1, output_per_mtok=2,
+    )]))
+    assert report["attempts_total"] == 2
+    assert report["attempts_failed"] == 1
+    assert report["pairs"][1]["status"] == "failed"
+    assert report["pairs"][0]["ledger"][0]["unpriced_cache_read_tokens"] == 50
+    assert report["pairs"][0]["cost_complete"] is False
+
+
+def test_opencode_export_keeps_underlying_provider_and_model():
+    raw = b'{"messages":[{"info":{"id":"msg-1","role":"assistant","modelID":"gpt-6-sol","providerID":"openai"}}]}'
+    observations = observations_from_export(raw, task_id="t-1", attempt_id="a-1")
+    assert observations[0]["provider_id"] == "openai"
+    assert observations[0]["model_id"] == "gpt-6-sol"
+    assert observations[0]["source_sha256"].startswith("sha256:")
+
+
+def test_benchmark_report_distinguishes_all_requested_models_from_execution():
+    arm_models = {
+        "opus55": ("deep-high", "claude", "claude-opus-5-5"),
+        "fable": ("deep-high", "claude", "claude-fable-5"),
+        "astra": ("astra-high", "codex", "gpt-6-astra"),
+        "sol": ("standard-high", "codex", "gpt-6-sol"),
+    }
+    manifest = {"version": 1, "project_id": "p", "policy_sha256": "sha256:one",
+                "rate_card_version": "test", "arms": {}, "pairs": []}
+    evidence = {"tasks": {}, "attempts": [], "ledger": []}
+    for arm, (class_id, harness, model) in arm_models.items():
+        task_id = f"t-{arm}"
+        attempt_id = f"a-{arm}"
+        manifest["arms"][arm] = {"class": class_id, "harness": harness,
+                                  "requested_model": model, "observed_models": [model]}
+        manifest["pairs"].append({"specimen": "rock", "arm": arm,
+                                   "attempt": "1", "task_ids": [task_id]})
+        evidence["tasks"][task_id] = {"status": "COMPLETED", "route": {
+            "benchmark_arm": arm, "benchmark_class": class_id,
+            "benchmark_harness": harness, "requested_model": model,
+            "observed_models": [model], "policy_sha256": "sha256:one",
+        }}
+        evidence["attempts"].append({"id": attempt_id, "task_id": task_id,
+                                     "profile_id": f"{class_id}-{harness}",
+                                     "intelligence_class": class_id, "harness": harness,
+                                     "model": model,
+                                     "started_at": 1.0, "ended_at": 2.0, "outcome": "pass"})
+        evidence["ledger"].append({"id": f"l-{arm}", "task_id": task_id,
+                                   "attempt_id": attempt_id, "call_id": f"c-{arm}",
+                                   "session_id": f"s-{arm}", "timestamp": 1.5,
+                                   "model": "gpt-6-sol" if arm == "fable" else model,
+                                   "model_source": "provider_result", "tokens_used": 1,
+                                   "input_tokens": 1})
+    rows = build_report(manifest, evidence, PricingConfig()).get("pairs")
+    by_arm = {row["arm"]: row for row in rows}
+    assert by_arm["fable"]["route_check"] == "contaminated"
+    assert all(by_arm[arm]["route_check"] == "matched" for arm in ("opus55", "astra", "sol"))
+    assert by_arm["fable"]["tasks"][0]["requested_model"] == "claude-fable-5"
+    assert by_arm["fable"]["ledger"][0]["model_observed"] == "gpt-6-sol"
+
+
+async def test_benchmark_stage_record_is_idempotent_and_exported(db):
+    from src.models import Task, TaskStatus
+
+    await db.create_project(Project(id="p-1", name="one"))
+    await db.create_task(Task(id="t-1", project_id="p-1", title="t", description="d",
+                              status=TaskStatus.IN_PROGRESS))
+    handler = _Handler(db, _config())
+    args = {"task_id": "t-1", "span_id": "bake-1", "stage": "bake",
+            "started_monotonic_ns": 1_000_000_000, "ended_monotonic_ns": 2_500_000_000}
+    first = await handler._cmd_benchmark_stage_record(args)
+    second = await handler._cmd_benchmark_stage_record(args)
+    assert first["inserted"] is True and first["duration_ms"] == 1500
+    assert second["inserted"] is False
+    evidence = await db.get_benchmark_evidence("p-1", ["t-1"])
+    assert evidence["stage_spans"][0]["duration_ms"] == 1500
+    assert "error" in await handler._cmd_benchmark_stage_record({
+        **args, "ended_monotonic_ns": 3_000_000_000,
+    })
+
+
+async def test_benchmark_label_cannot_relabel_routed_task(db):
+    from src.models import AgentProfile, Task, TaskStatus
+    from src.routing.sources import ROUTER
+
+    await db.create_project(Project(id="p-1", name="one"))
+    await db.create_profile(AgentProfile(id="standard-high-codex", name="benchmark worker",
+                                         lifecycle="pool", harness="codex"))
+    await db.create_task(Task(id="t-1", project_id="p-1", title="t", description="d",
+                              status=TaskStatus.READY, profile_id="standard-high-codex",
+                              route_source=ROUTER))
+    with pytest.raises(ValueError, match="frozen"):
+        await db.add_task_label("t-1", "benchmark:astra")
+
+
 class TestParseSince:
     @pytest.mark.parametrize("raw,seconds", [("7d", 7 * 86400), ("12h", 12 * 3600),
                                              ("30m", 1800), ("2w", 2 * 604800)])
@@ -197,6 +320,27 @@ def _config(entries=()):
 
 
 class TestGetCostsCommand:
+    async def test_cache_rates_and_missing_cache_rates_remain_explicit(self, db):
+        await _seed(db)
+        await db.record_token_usage(
+            "p-1", "a-1", "t-1", 1000, model="m-1",
+            input_tokens=100, output_tokens=100,
+            cache_read_tokens=700, cache_write_tokens=100,
+        )
+        handler = _Handler(db, _config([ModelPricing(
+            model="m-1", input_per_mtok=2, output_per_mtok=4,
+            cache_read_per_mtok=0.5,
+        )]))
+        row = (await handler._cmd_get_costs({}))["rows"][0]
+        assert row["cost_usd"] == pytest.approx(0.00095)
+        assert row["unpriced_cache_write_tokens"] == 100
+        assert row["unpriced_tokens"] == 100
+        assert row["cost_complete"] is False
+        handler.config.pricing.models[0].cache_write_per_mtok = 3
+        row = (await handler._cmd_get_costs({}))["rows"][0]
+        assert row["cost_usd"] == pytest.approx(0.00125)
+        assert row["cost_complete"] is True
+
     async def test_prices_only_fully_attributed_rows(self, seeded):
         handler = _Handler(
             seeded,
@@ -411,6 +555,26 @@ class TestLedgerSurvivesLifecycle:
         assert await db.get_project_token_usage("p-1") == 300
         audit = await db.get_token_audit(days=7)
         assert audit["total"] == 300
+
+    async def test_benchmark_route_and_call_attribution_survive_archive(self, db):
+        from src.models import Task, TaskStatus
+
+        await db.create_project(Project(id="p-1", name="one"))
+        route = {"benchmark_arm": "opus", "benchmark_class": "deep-high",
+                 "benchmark_harness": "claude", "requested_model": "claude-opus-5-5",
+                 "observed_models": ["claude-opus-5-5*"], "policy_sha256": "sha256:frozen"}
+        await db.create_task(Task(id="t-1", project_id="p-1", title="t",
+                                  description="d", status=TaskStatus.COMPLETED,
+                                  route=route))
+        await db.record_token_usage(
+            "p-1", "a-1", "t-1", 100, model="claude-opus-5-5",
+            input_tokens=100, session_id="s-1", attempt_id="a-1", call_id="c-1",
+        )
+        assert await db.archive_task("t-1") is True
+        evidence = await db.get_benchmark_evidence("p-1", ["t-1"])
+        assert evidence["tasks"]["t-1"]["route"] == route
+        assert evidence["ledger"][0]["attempt_id"] == "a-1"
+        assert evidence["ledger"][0]["call_id"] == "c-1"
 
     async def test_archived_task_still_named_in_top_tasks(self, db):
         """The audit outer-joins ``tasks`` then backfills from the archive."""

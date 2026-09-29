@@ -48,6 +48,8 @@ from .archive_task_response import ArchiveTaskResponse
 from .artifact_ref_dto import ArtifactRefDTO
 from .assignment_route_detail import AssignmentRouteDetail
 from .assignment_route_detail_override_type_0 import AssignmentRouteDetailOverrideType0
+from .benchmark_stage_record_request import BenchmarkStageRecordRequest
+from .benchmark_stage_record_response_422 import BenchmarkStageRecordResponse422
 from .body_upload_attachment_api_tasks_task_id_attachments_post import BodyUploadAttachmentApiTasksTaskIdAttachmentsPost
 from .browse_entry import BrowseEntry
 from .browse_project_root_request import BrowseProjectRootRequest
@@ -1613,6 +1615,8 @@ __all__ = (
     "ArtifactRefDTO",
     "AssignmentRouteDetail",
     "AssignmentRouteDetailOverrideType0",
+    "BenchmarkStageRecordRequest",
+    "BenchmarkStageRecordResponse422",
     "BodyUploadAttachmentApiTasksTaskIdAttachmentsPost",
     "BrowseEntry",
     "BrowseProjectRootRequest",

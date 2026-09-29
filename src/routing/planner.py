@@ -120,6 +120,8 @@ class TaskFacts:
     #: The task needs a workspace kind other than ``project-repo``/``vault``,
     #: which keeps it away from pools (``_claim_preparation_predicates``).
     needs_task_lifecycle: bool = False
+    #: ``benchmark:<arm>`` task labels; multiple selectors are an error.
+    benchmark_arms: tuple[str, ...] = ()
 
 
 # -- outputs -------------------------------------------------------------------
@@ -400,11 +402,12 @@ def _reserved_away(policy: RoutingPolicy, candidate: Candidate) -> bool:
 
 
 def _filter(
-    candidates: list[Candidate], task: TaskFacts, policy: RoutingPolicy
+    candidates: list[Candidate], task: TaskFacts, policy: RoutingPolicy,
+    *, respect_reserved: bool = True,
 ) -> tuple[list[Candidate], str | None]:
     """Step 2's removals, returning the survivors and why the list emptied."""
     stages = (
-        ("reserved", lambda c: not _reserved_away(policy, c)),
+        ("reserved", lambda c: not respect_reserved or not _reserved_away(policy, c)),
         ("excluded_providers", lambda c: c.provider not in task.exclude_providers),
         (
             "preferred_provider_unavailable",
@@ -614,6 +617,61 @@ def plan_route(
     classification: Any = None,
 ) -> PlanResult:
     """``task_route_plan`` for a task the router still owes a route."""
+    if task.benchmark_arms:
+        # A benchmark arm must never inherit the ordinary class fallbacks:
+        # they would turn an unavailable model into another arm's result.
+        if len(task.benchmark_arms) != 1:
+            return PlanResult("no_candidates", {
+                "task_id": task.task_id, "reason": "benchmark_selector_ambiguous",
+            })
+        name = task.benchmark_arms[0]
+        arm = policy.benchmark_arms.get(name)
+        if arm is None:
+            return PlanResult("no_candidates", {
+                "task_id": task.task_id, "reason": "benchmark_arm_not_allowlisted",
+                "benchmark_arm": name,
+            })
+        candidates = [
+            _candidate(profile, arm.class_, tier=PREFERRED, lane=None, hold=True)
+            for profile in _cells(snapshot, arm.class_, frozenset({arm.harness}))
+        ]
+        candidates, reason = _filter(candidates, task, policy, respect_reserved=False)
+        if not candidates:
+            return PlanResult("no_candidates", {
+                "task_id": task.task_id, "reason": reason or "no_worker_candidates",
+                "benchmark_arm": name,
+            })
+        if not any(launchable(c, snapshot) for c in candidates):
+            return PlanResult("held", {
+                "task_id": task.task_id, "benchmark_arm": name,
+                "candidates": [c.as_dict() for c in candidates],
+                "providers": sorted({c.provider for c in candidates}),
+            })
+        selection = reselect(candidates, snapshot, policy.balance)
+        assert selection is not None
+        return PlanResult("planned", {
+            "task_id": task.task_id,
+            "intelligence_class": selection.chosen.intelligence_class,
+            "profile_id": selection.chosen.profile_id,
+            "provider": selection.chosen.provider,
+            "provider_intent": "pinned",
+            "task_type": task.task_type or policy.default_kind,
+            "lane": None,
+            "rule": f"benchmark_arms.{name}",
+            "benchmark_arm": name,
+            "benchmark_class": arm.class_,
+            "benchmark_harness": arm.harness,
+            "requested_model": arm.requested_model,
+            "observed_models": list(arm.observed_models),
+            "candidates": [
+                {**c.as_dict(), "launchable": launchable(c, snapshot)} for c in candidates
+            ],
+            "scores": [s.as_dict() for s in selection.scores],
+            "reason": f"allowlisted benchmark arm {name}: {arm.class_}/{arm.harness}",
+            "policy_sha256": policy_sha256,
+            "classification": None,
+            "balance": policy.balance.model_dump(mode="json"),
+        })
     classified, failed, error = read_classification(classification, policy)
     known = classification is not None
     flags = (classified.flags if classified else frozenset()) if known else None

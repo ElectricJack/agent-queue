@@ -26,6 +26,8 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
+from src.routing.sources import LEGACY
+
 from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
     apply_label_filters,
@@ -2240,6 +2242,14 @@ class TaskQueryMixin:
     async def add_task_label(self, task_id: str, label: str, *, conn=None) -> None:
         """Attach a label to a task. No-op if already present."""
         async def _write(connection) -> None:
+            if label.startswith("benchmark:"):
+                row = (await connection.execute(select(
+                    tasks.c.route_source, tasks.c.status
+                ).where(tasks.c.id == task_id).with_for_update())).first()
+                if row is None or row.route_source not in {UNROUTED, LEGACY} or row.status not in {
+                    "DEFINED", "READY", "PAUSED", "BLOCKED"
+                }:
+                    raise ValueError("benchmark arm label is frozen once a task is routed or running")
             existing = await connection.execute(
                 select(task_labels.c.label).where(
                     and_(task_labels.c.task_id == task_id, task_labels.c.label == label)
@@ -2263,6 +2273,14 @@ class TaskQueryMixin:
         the frontier.
         """
         async with self._engine.begin() as conn:
+            if label.startswith("benchmark:"):
+                row = (await conn.execute(select(
+                    tasks.c.route_source, tasks.c.status
+                ).where(tasks.c.id == task_id).with_for_update())).first()
+                if row is None or row.route_source not in {UNROUTED, LEGACY} or row.status not in {
+                    "DEFINED", "READY", "PAUSED", "BLOCKED"
+                }:
+                    raise ValueError("benchmark arm label is frozen once a task is routed or running")
             await conn.execute(
                 delete(task_labels).where(
                     and_(task_labels.c.task_id == task_id, task_labels.c.label == label)

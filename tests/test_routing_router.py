@@ -177,6 +177,37 @@ async def test_plan_holds_when_every_candidate_provider_is_out(handler, orch):
     assert held["providers"] == ["claude", "codex"]
 
 
+async def test_benchmark_arm_holds_if_requested_model_mapping_differs(handler, orch):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    await orch.db.add_task_label("t", "benchmark:astra")
+    policy = SHIPPED_POLICY + """\
+benchmark_arms:
+  astra:
+    class: standard-high
+    harness: codex
+    requested_model: another-model
+    observed_models: [another-model]
+"""
+    held = await handler.execute("task_route_plan", {"task_id": "t", "policy": policy})
+    assert held["outcome"] == "held"
+    assert held["reason"] == "requested_model_unavailable"
+    assert held["mapped_model"] == "gpt-standard-high"
+
+    policy = policy.replace("another-model", "gpt-standard-high")
+    planned = await handler.execute("task_route_plan", {"task_id": "t", "policy": policy})
+    assert planned["outcome"] == "planned", planned
+    orch.intelligence_classes.replace({
+        **CLASSES,
+        "standard-high": IntelligenceClass("standard-high", "", "", {
+            "codex": {"model": "mapping-changed"},
+        }),
+    })
+    with _as_playbook():
+        stale = await handler.execute("task_route_apply", {"task_id": "t", "plan": planned})
+    assert stale["outcome"] == "stale"
+    assert "mapping changed" in stale["reason"]
+
+
 async def test_plan_honours_exclude_providers_from_the_route_constraints(handler, orch):
     await _create(orch.db, "t", task_type=TaskType.RESEARCH,
                   route={"constraints": {"exclude_providers": ["codex"]}})

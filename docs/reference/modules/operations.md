@@ -4,6 +4,9 @@ This catalog maps every production module owned by the operations documentation 
 
 | Module | Purpose | Component | Notes |
 |---|---|---|---|
+| [src/benchmark/__init__.py](../../../src/benchmark/__init__.py) | Exposes the benchmark evidence package. | [Benchmark export guide](../../guides/benchmark-routing-export.md) | Read-only reporting surface. |
+| [src/benchmark/opencode.py](../../../src/benchmark/opencode.py) | Extracts OpenCode provider and model evidence from explicit session exports. | [Benchmark export guide](../../guides/benchmark-routing-export.md) | Focused coverage: `tests/test_costs.py`. |
+| [src/benchmark/report.py](../../../src/benchmark/report.py) | Builds frozen paired reports with route, attempt, stage and cost coverage. | [Benchmark export guide](../../guides/benchmark-routing-export.md) | Focused coverage: `tests/test_costs.py`. |
 | [src/doctor/__init__.py](../../../src/doctor/__init__.py) | Builds the complete default doctor registry. | [Operations guide](../../guides/operations.md) | Covered by `tests/test_doctor.py`. |
 | [src/doctor/builtin.py](../../../src/doctor/builtin.py) | Defines generic configuration, database, vault, harness, log, event, MCP, pause and task checks. | [Operations guide](../../guides/operations.md) | Focused coverage: `tests/test_doctor.py`. |
 | [src/doctor/capability_checks.py](../../../src/doctor/capability_checks.py) | Reports capability enforcement and legacy/wildcard profile drift. | [Operations guide](../../guides/operations.md) | Focused coverage: `tests/test_capability_operator_surfaces.py`. |

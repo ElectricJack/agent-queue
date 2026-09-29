@@ -17,6 +17,7 @@ AGENT_COMMAND_SET: frozenset[str] = frozenset(
         "task_show",
         "task_set",
         "task_comment",
+        "benchmark_stage_record",
         "task_comments",
         # Durable, non-schedulable checklist rows inside one task (graph-
         # visibility C2). Fenced exactly like task comments: reads by

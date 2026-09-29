@@ -7,8 +7,12 @@ import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import func, insert, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import agents, archived_tasks, projects, tasks, token_ledger
+from src.database.tables import (
+    agents, archived_tasks, benchmark_stage_spans, projects, sessions, task_session_attempts, tasks,
+    token_ledger,
+)
 
 
 class TokenQueryMixin:
@@ -22,10 +26,14 @@ class TokenQueryMixin:
         tokens: int,
         *,
         model: str | None = None,
+        model_source: str | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         cache_read_tokens: int | None = None,
         cache_write_tokens: int | None = None,
+        session_id: str | None = None,
+        attempt_id: str | None = None,
+        call_id: str | None = None,
     ) -> None:
         """Append a token usage record.
 
@@ -50,13 +58,96 @@ class TokenQueryMixin:
                     task_id=task_id,
                     tokens_used=tokens,
                     model=model,
+                    model_source=model_source,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     cache_read_tokens=cache_read_tokens,
                     cache_write_tokens=cache_write_tokens,
+                    session_id=session_id,
+                    attempt_id=attempt_id,
+                    call_id=call_id,
                     timestamp=time.time(),
                 )
             )
+
+    async def get_benchmark_evidence(self, project_id: str, task_ids: list[str]) -> dict:
+        """Read an explicit frozen task set, including archived tasks and failed attempts."""
+        if not task_ids or len(task_ids) > 500 or len(set(task_ids)) != len(task_ids):
+            raise ValueError("task_ids must be 1-500 distinct IDs")
+        async with self._engine.begin() as conn:
+            active = (await conn.execute(select(tasks.c.id, tasks.c.status, tasks.c.route).where(
+                tasks.c.id.in_(task_ids), tasks.c.project_id == project_id
+            ))).mappings().all()
+            archived = (await conn.execute(select(
+                archived_tasks.c.id, archived_tasks.c.status, archived_tasks.c.route
+            ).where(
+                archived_tasks.c.id.in_(task_ids), archived_tasks.c.project_id == project_id
+            ))).mappings().all()
+            found = {row["id"]: dict(row) for row in [*active, *archived]}
+            missing = sorted(set(task_ids) - set(found))
+            if missing:
+                raise ValueError(f"tasks missing from project {project_id}: {missing}")
+            attempts = (await conn.execute(select(task_session_attempts).where(
+                task_session_attempts.c.project_id == project_id,
+                task_session_attempts.c.task_id.in_(task_ids),
+            ).order_by(task_session_attempts.c.started_at, task_session_attempts.c.id))).mappings().all()
+            ledger = (await conn.execute(select(token_ledger).where(
+                token_ledger.c.project_id == project_id,
+                token_ledger.c.task_id.in_(task_ids),
+            ).order_by(token_ledger.c.timestamp, token_ledger.c.id))).mappings().all()
+            spans = (await conn.execute(select(benchmark_stage_spans).where(
+                benchmark_stage_spans.c.project_id == project_id,
+                benchmark_stage_spans.c.task_id.in_(task_ids),
+            ).order_by(benchmark_stage_spans.c.recorded_at, benchmark_stage_spans.c.id))).mappings().all()
+        return {
+            "tasks": found,
+            "attempts": [dict(row) for row in attempts],
+            "ledger": [dict(row) for row in ledger],
+            "stage_spans": [dict(row) for row in spans],
+        }
+
+    async def record_benchmark_stage(
+        self, *, span_id: str, project_id: str, task_id: str,
+        session_attempt_id: str | None, stage: str,
+        started_monotonic_ns: int, ended_monotonic_ns: int,
+        owner_session_id: str | None = None, claim_epoch: int | None = None,
+    ) -> bool:
+        """Append one monotonic stage measurement, idempotent by span ID."""
+        values = {
+            "id": span_id, "project_id": project_id, "task_id": task_id,
+            "session_attempt_id": session_attempt_id, "stage": stage,
+            "started_monotonic_ns": started_monotonic_ns,
+            "ended_monotonic_ns": ended_monotonic_ns,
+            "duration_ms": (ended_monotonic_ns - started_monotonic_ns) / 1_000_000,
+            "recorded_at": time.time(),
+        }
+        async with self._engine.begin() as conn:
+            if owner_session_id is not None:
+                owner = select(tasks.c.id).select_from(
+                    tasks.join(sessions, sessions.c.task_id == tasks.c.id)
+                ).where(
+                    tasks.c.id == task_id,
+                    tasks.c.project_id == project_id,
+                    sessions.c.id == owner_session_id,
+                    sessions.c.project_id == project_id,
+                    sessions.c.agent_id == tasks.c.assigned_agent_id,
+                    sessions.c.state.in_(("starting", "running", "draining")),
+                ).with_for_update(of=tasks)
+                if claim_epoch is not None:
+                    owner = owner.where(tasks.c.claim_epoch == claim_epoch)
+                if (await conn.execute(owner)).scalar_one_or_none() is None:
+                    raise ValueError("this session no longer owns the task or claim")
+            result = await conn.execute(pg_insert(benchmark_stage_spans).values(
+                **values
+            ).on_conflict_do_nothing(index_elements=["id"]))
+            if result.rowcount:
+                return True
+            old = (await conn.execute(select(benchmark_stage_spans).where(
+                benchmark_stage_spans.c.id == span_id
+            ))).mappings().one()
+            if any(old[key] != value for key, value in values.items() if key != "recorded_at"):
+                raise ValueError("span_id already names a different stage measurement")
+            return False
 
     async def get_cost_rollup(
         self,
@@ -93,6 +184,8 @@ class TokenQueryMixin:
             token_ledger.c.model,
             token_ledger.c.input_tokens,
             token_ledger.c.output_tokens,
+            token_ledger.c.cache_read_tokens,
+            token_ledger.c.cache_write_tokens,
             token_ledger.c.timestamp,
             agents.c.profile_id.label("profile_id"),
         ).select_from(
@@ -122,12 +215,16 @@ class TokenQueryMixin:
                     "model": r.model,
                     "input_tokens": 0,
                     "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cache_write_tokens": 0,
                     "tokens_used": 0,
                     "entries": 0,
                 },
             )
             bucket["input_tokens"] += r.input_tokens or 0
             bucket["output_tokens"] += r.output_tokens or 0
+            bucket["cache_read_tokens"] += r.cache_read_tokens or 0
+            bucket["cache_write_tokens"] += r.cache_write_tokens or 0
             bucket["tokens_used"] += r.tokens_used or 0
             bucket["entries"] += 1
 

@@ -933,6 +933,7 @@ token_ledger = Table(
     # before the split existed (and runtimes that don't report it)
     # aggregate into "unpriced_tokens" in the cost rollup.
     Column("model", Text, nullable=True),
+    Column("model_source", Text, nullable=True),
     Column("input_tokens", Integer, nullable=True),
     Column("output_tokens", Integer, nullable=True),
     # Cache tokens, kept apart from the priced input/output split.  A cached
@@ -943,10 +944,32 @@ token_ledger = Table(
     # a six-figure "unattributed" number that the metrics tab cannot explain.
     Column("cache_read_tokens", Integer, nullable=True),
     Column("cache_write_tokens", Integer, nullable=True),
+    # Stable attribution is captured at ingest, never reconstructed by a
+    # timestamp join after retries, overlapping sessions or task archival.
+    Column("session_id", Text, nullable=True),
+    Column("attempt_id", Text, nullable=True),
+    Column("call_id", Text, nullable=True),
     Column("timestamp", Float, nullable=False),
     # The metrics sampler reads a trailing window off this append-only,
     # unbounded table every few seconds to compute tokens/minute.
     Index("idx_token_ledger_timestamp", "timestamp"),
+    Index("idx_token_ledger_task_attempt", "task_id", "attempt_id"),
+    Index("uq_token_ledger_call", "session_id", "call_id", unique=True),
+)
+
+benchmark_stage_spans = Table(
+    "benchmark_stage_spans",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("session_attempt_id", Text, nullable=True),
+    Column("stage", Text, nullable=False),
+    Column("started_monotonic_ns", BigInteger, nullable=False),
+    Column("ended_monotonic_ns", BigInteger, nullable=False),
+    Column("duration_ms", Float, nullable=False),
+    Column("recorded_at", Float, nullable=False),
+    Index("idx_benchmark_stage_task", "task_id", "session_attempt_id"),
 )
 
 events = Table(
@@ -1979,6 +2002,9 @@ archived_tasks = Table(
     # Mirrors tasks.provider_intent / tasks.rerouted_from (provider-failover D8, D17).
     Column("provider_intent", Text, nullable=False, server_default="class_only"),
     Column("rerouted_from", Text, nullable=True),
+    # Preserve the bound benchmark arm, requested model and policy digest
+    # after active task rows are removed.
+    Column("route", JSONB(none_as_null=True), nullable=True),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),
     Column("archived_at", Float, nullable=False),

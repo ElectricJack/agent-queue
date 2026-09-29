@@ -101,6 +101,38 @@ async def test_upgrade_head_applies_the_baseline_on_postgres():
         await conn.close()
 
 
+async def test_benchmark_attribution_upgrade_from_revision_43():
+    """Revision 44 adds ledger provenance and stage spans to an older schema."""
+    dsn = await create_scratch_database("benchmark44")
+    before = _alembic_pg(dsn, "upgrade", "a00000000043")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        await conn.execute("DROP TABLE benchmark_stage_spans")
+        await conn.execute("ALTER TABLE archived_tasks DROP COLUMN route")
+        for name in ("session_id", "attempt_id", "call_id", "model_source"):
+            await conn.execute(f"ALTER TABLE token_ledger DROP COLUMN {name}")
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        columns = {row["column_name"] for row in await conn.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='token_ledger'"
+        )}
+        assert {"session_id", "attempt_id", "call_id", "model_source"} <= columns
+        assert await conn.fetchval("SELECT to_regclass('benchmark_stage_spans')")
+        assert await conn.fetchval(
+            "SELECT COUNT(*) FROM information_schema.columns "
+            "WHERE table_name='archived_tasks' AND column_name='route'"
+        ) == 1
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000044"
+    finally:
+        await conn.close()
+
+
 @pytest.mark.parametrize("tier_already_present", [False, True])
 async def test_service_tier_upgrade_preserves_revision_24(tier_already_present):
     """Keep review rejection at 24; apply 25 with or without the tier column.

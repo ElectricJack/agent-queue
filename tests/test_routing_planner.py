@@ -135,6 +135,31 @@ def _planned(task, snapshot, classification=None) -> dict:
     return result.value
 
 
+def test_benchmark_selector_pins_allowlisted_class_and_harness() -> None:
+    policy, digest = parse_policy(SHIPPED_POLICY + """
+benchmark_arms:
+  opus55:
+    class: deep-high
+    harness: claude
+    requested_model: claude-opus-5-5
+    observed_models: [claude-opus-5-5*]
+""")
+    task = _task(task_type="feature", benchmark_arms=("opus55",))
+    result = plan_route(task, policy, _snapshot(), policy_sha256=digest)
+    assert result.outcome == "planned"
+    assert result.value["benchmark_arm"] == "opus55"
+    assert result.value["profile_id"] == "deep-high-claude"
+    assert result.value["provider_intent"] == "pinned"
+    assert result.value["requested_model"] == "claude-opus-5-5"
+    held = plan_route(task, policy, _snapshot(out=("claude",)), policy_sha256=digest)
+    assert held.outcome == "held"
+    assert held.value["benchmark_arm"] == "opus55"
+    assert plan_route(_task(benchmark_arms=("unknown",)), policy, _snapshot(),
+                      policy_sha256=digest).outcome == "no_candidates"
+    assert plan_route(_task(benchmark_arms=("opus55", "unknown")), policy, _snapshot(),
+                      policy_sha256=digest).outcome == "no_candidates"
+
+
 # -- the policy document ---------------------------------------------------------
 
 
