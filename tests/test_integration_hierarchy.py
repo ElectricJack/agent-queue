@@ -45,6 +45,7 @@ from src.integration.models import (
     RequiredCheckSet,
 )
 from src.models import (
+    AgentProfile,
     Project,
     RepoConfig,
     RepoSourceType,
@@ -1382,6 +1383,7 @@ def test_hoisted_frontier_never_names_the_projects_table(mode_value):
 async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
     db, hierarchy, unrelated_reworks
 ):
+    await db.create_profile(AgentProfile(id="worker", name="worker"))
     await _create(db, "parent")
     filed = await hierarchy.file_children("parent", [{"title": "first"}, {"title": "second"}], 0)
     first, second = [row["task_id"] for row in filed["children"]]
@@ -1394,7 +1396,7 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
             status="COMPLETED", updated_at=time.time()
         ))
         await conn.execute(update(tasks).where(tasks.c.id == second).values(
-            status="READY", is_blocked=False
+            status="READY", is_blocked=False, profile_id="worker", route_source="router",
         ))
     assert not await db.is_hierarchy_task_runnable(second)
     assert await db.count_ready_by_profile("p") == {}
@@ -1430,15 +1432,15 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
             created_at=delivered_at,
         ))
     assert await db.is_hierarchy_task_runnable(second)
-    assert await db.count_ready_by_profile("p") == {None: 1}
+    assert await db.count_ready_by_profile("p") == {"worker": 1}
     assert second in await _frontier_ids(db)
     assert second in await _hoisted_ids(db)
     from src.database.queries.hierarchy_queries import ProjectIntegrationMode
 
     async with db.immediate() as conn:
         assert await db.select_ready_for_profile(
-            conn, project_id="p", profile_id="worker", default_profile_id="worker",
-            agent_id="worker", task_id=second,
+            conn, project_id="p", profile_id="worker",
+            agent_id="worker", task_id=second, router_ready=True,
             hierarchy_mode=ProjectIntegrationMode.of(await db.get_project("p")),
         ) == second
     assert await db.hierarchy_prerequisite_delivery_head(second) == NEXT
@@ -1455,7 +1457,7 @@ async def test_sibling_prerequisite_needs_current_delivery_receipt_before_claim(
             completed_at=delivered_at + 2,
         ))
     assert await db.is_hierarchy_task_runnable(second)
-    assert await db.count_ready_by_profile("p") == {None: 1}
+    assert await db.count_ready_by_profile("p") == {"worker": 1}
     assert await db.hierarchy_prerequisite_delivery_head(second) == NEXT
 
     # A reopened prerequisite invalidates the former receipt even when its

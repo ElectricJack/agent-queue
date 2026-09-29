@@ -1100,7 +1100,7 @@
       ]
     },
     "task-routing": {
-      "description": "Task routing: routing gates, task_route, class/profile requirements surviving creation and assignment, admission from active V2 artifacts, cross-project routing, the shipped assignment-routing policy, and the router's policy, planner and task_route_plan/task_route_apply.",
+      "description": "Task routing: routing gates, task_route, class/profile requirements, V2 admission, cross-project routing, the shipped assignment-routing policy, the router's policy, planner, task_route_plan/task_route_apply, and router readiness with only routed work claimable.",
       "modules": [
         "tests/test_agent_task_routing.py",
         "tests/test_assignment_routing.py",
@@ -1108,6 +1108,7 @@
         "tests/test_default_assignment_routing_playbook.py",
         "tests/test_pool_agent_routing.py",
         "tests/test_routing_admission_v2.py",
+        "tests/test_routing_enforcement.py",
         "tests/test_routing_gate_guard.py",
         "tests/test_routing_mandatory.py",
         "tests/test_routing_planner.py",
@@ -1295,7 +1296,7 @@
       ]
     }
   },
-  "digest": "sha256:4755539750a9260aa2af44882712e2a51e764fe9ebaf9710dbaaf881134a6ed6",
+  "digest": "sha256:0c69f13373693e7c631557081041ddf8f4d676eccede4bb4ee647bf3c00207b8",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5586,6 +5587,7 @@
         "src.orchestrator",
         "src.orchestrator.pools",
         "src.playbooks.artifact_ref",
+        "src.routing.readiness",
         "src.scheduler",
         "src.sessions.harness_parser"
       ],
@@ -10780,6 +10782,7 @@
         "src.llm.providers.errors",
         "src.models",
         "src.orchestrator.pools",
+        "src.profiles.catalog",
         "src.providers.availability",
         "src.providers.availability_service",
         "src.providers.intent",
@@ -10787,9 +10790,7 @@
         "src.scheduler",
         "src.sessions.harness_parser"
       ],
-      "markers": [
-        "parametrize"
-      ],
+      "markers": [],
       "summary": "The re-route engine (provider-failover D11-D17)."
     },
     "tests/test_provider_spill.py": {
@@ -11529,6 +11530,22 @@
         "parametrize"
       ],
       "summary": "Package 7 T-9/T-10: task admission reads active V2 artifacts."
+    },
+    "tests/test_routing_enforcement.py": {
+      "areas": [
+        "task-routing"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.assignment_routing",
+        "src.models",
+        "src.routing.readiness",
+        "src.routing.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Only router routes are claimable (mandatory-routing spec §6.1, §9.1, §11; Task 6)."
     },
     "tests/test_routing_gate_guard.py": {
       "areas": [

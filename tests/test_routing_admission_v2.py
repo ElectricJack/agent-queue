@@ -464,7 +464,7 @@ async def test_cancelled_refresh_finishes_publishing_committed_activation():
         (
             "profiled task",
             lambda: _manager(_routing_artifact())[0],
-            _task(profile_id="coder"),
+            _task(profile_id="coder", route_source="legacy"),
             None,
             False,
             True,
@@ -520,7 +520,7 @@ async def test_cancelled_refresh_finishes_publishing_committed_activation():
         (
             "graph routed node",
             lambda: _manager(_routing_artifact())[0],
-            _task(id="parent.2", profile_id="coder"),
+            _task(id="parent.2", profile_id="coder", route_source="legacy"),
             {"parent_task_id": "parent"},
             False,
             True,

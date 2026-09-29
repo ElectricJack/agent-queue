@@ -391,7 +391,7 @@ async def test_prime_worker_push_and_pr_use_held_branch_and_shared_credential(
         await db.create_agent(Agent(id="a1", name="a1", profile_id="coder"))
         await db.create_task(Task(
             id="t1", project_id="p", title="Private delivery", description="Deliver fixture",
-            status=TaskStatus.IN_PROGRESS, profile_id="coder", assigned_agent_id="a1",
+            status=TaskStatus.IN_PROGRESS, profile_id="coder", route_source="legacy", assigned_agent_id="a1",
             branch_name="aq/task",
         ))
         await db.update_agent("a1", state=AgentState.BUSY, current_task_id="t1")

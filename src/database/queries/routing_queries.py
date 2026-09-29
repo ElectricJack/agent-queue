@@ -137,6 +137,34 @@ class RoutingQueryMixin:
                 raise RoutingBusyError("the routing lock is busy")
             await asyncio.sleep(0.02 + random.random() * 0.08)
 
+    async def list_queued_router_routes(self, project_id: str) -> list[dict[str, Any]]:
+        """Queued, unassigned tasks in *project_id* whose route the router wrote.
+
+        What ``aq pool provider apply`` returns to the router when a project
+        prefers a provider (spec §6.8): only the routing columns are read.
+        """
+        statement = (
+            select(
+                tasks.c.id,
+                tasks.c.project_id,
+                tasks.c.profile_id,
+                tasks.c.status,
+                tasks.c.provider_intent,
+                tasks.c.route_source,
+            )
+            .where(
+                tasks.c.project_id == project_id,
+                tasks.c.route_source == ROUTER,
+                tasks.c.status.in_(ROUTABLE_STATUSES),
+                tasks.c.assigned_agent_id.is_(None),
+                ~_active_session(),
+            )
+            .order_by(tasks.c.priority, tasks.c.created_at, tasks.c.id)
+        )
+        async with self._engine.connect() as connection:
+            rows = (await connection.execute(statement)).mappings().fetchall()
+        return [dict(row) for row in rows]
+
     async def get_task_on(self, conn, task_id: str) -> Task | None:
         """Read one task row on *conn* (inside the caller's transaction)."""
         row = (

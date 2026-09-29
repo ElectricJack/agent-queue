@@ -599,23 +599,24 @@ class ProviderAllocationCommandsMixin:
     async def _place_preferred_work(
         self, orchestrator, project_id: str, provider: str, actor: str
     ) -> dict[str, Any]:
-        """Move the project's queued ``class_only`` READY work to *provider* (Decision A3).
+        """Send the project's queued ``class_only`` router routes back to the router (A3).
 
-        Each task goes to its class's equivalent rung on the preferred
-        provider through the operator re-route path
-        (``ProviderRerouteService.sweep`` with ``task_ids`` and
-        ``to_profile``), so every move is a recorded ``task_reroutes`` row
-        that ``aq provider reroute-undo --batch`` reverses, within the
-        per-task limits.  ``pinned`` and ``preferred`` tasks, tasks already on
-        the provider, unrouted tasks (the routing boundary derives theirs)
-        and anything claimed or running are untouched.  A class with no
-        launchable rung on the provider holds (``preferred_provider_unavailable``):
-        the task never spills to a third provider.
+        Mandatory routing §6.8: the preference is a router input (§6.4 step
+        2, D4), so re-placing queued work no longer moves it to an equivalent
+        rung here.  Each queued, unclaimed task whose ``router`` route is on
+        another provider is reset to ``unrouted`` (``reset_task_route``); the
+        router re-plans it with ``preferred_provider`` applied, and its lane
+        and constraints survive.  ``pinned`` and ``preferred`` routes,
+        overrides, roles, legacy routes, tasks already on the provider and
+        anything claimed or running are untouched; a ``pinned`` router route
+        (a hold lane, e.g. art on Codex) is ``skipped``.  ``moved`` lists the
+        tasks returned to the router (``kind: returned_to_router``); nothing
+        is a ``task_reroutes`` move, so there is no batch to undo.
         """
         from types import SimpleNamespace
 
         from src.providers.intent import CLASS_ONLY, effective_intent
-        from src.providers.reroute import equivalent_rung
+        from src.routing.sources import ROUTER
 
         placement: dict[str, Any] = {
             "applied": False, "moved": [], "held": [], "skipped": [], "batch_ids": [],
@@ -627,65 +628,47 @@ class ProviderAllocationCommandsMixin:
             return placement
         try:
             ctx = await service.context()
-            sources = sorted(pid for pid, rung in ctx.rungs.items() if rung.provider != provider)
-            rows = await self.db.list_reroute_candidates(sources) if sources else []
+            rows = await self.db.list_queued_router_routes(project_id)
         except Exception as exc:
             logger.warning("provider allocation: queued work unreadable", exc_info=True)
             placement["errors"].append(f"queued work unreadable: {type(exc).__name__}: {exc}")
             return placement
-        allow_degraded = bool(
-            getattr(getattr(ctx.config, "reroute", None), "allow_degraded_target", False)
-        )
-        groups: dict[str, list[str]] = {}
         for row in rows:
-            if row.get("project_id") != project_id or row.get("status") != "READY":
-                continue
+            if ctx.profile_providers.get(row["profile_id"]) == provider:
+                continue  # already where the project wants it
+            entry = {
+                "task_id": row["id"],
+                "project_id": project_id,
+                "from_profile_id": row["profile_id"],
+            }
             intent = effective_intent(
                 SimpleNamespace(provider_intent=row.get("provider_intent"),
                                 profile_id=row.get("profile_id"))
             )
             if intent != CLASS_ONLY:
+                placement["skipped"].append({
+                    **entry, "kind": "provider_intent",
+                    "detail": f"a {intent} route stays on its provider",
+                })
                 continue
-            rung = ctx.rungs.get(row["profile_id"])
-            class_id = str(row.get("intelligence_class") or "").strip() or (
-                rung.class_id if rung else ""
-            )
-            target = None
-            if class_id:
-                target, _exists = equivalent_rung(
-                    ctx, class_id, provider, allow_degraded=allow_degraded
-                )
-            if target is None:
-                placement["held"].append(
-                    {
-                        "task_id": row["id"],
-                        "project_id": project_id,
-                        "from_profile_id": row["profile_id"],
-                        "kind": "preferred_provider_unavailable",
-                        "detail": f"provider {provider} has no launchable "
-                        f"{class_id or 'matching'} rung",
-                    }
-                )
-                continue
-            groups.setdefault(target.profile_id, []).append(row["id"])
-        applied = True
-        batches: set[str] = set()
-        for to_profile in sorted(groups):
             try:
-                result = await service.sweep(
-                    task_ids=groups[to_profile], to_profile=to_profile, actor=actor
+                reset = await self.db.reset_task_route(
+                    row["id"], route_source=ROUTER, queued_only=True
                 )
             except Exception as exc:
-                logger.warning("provider allocation: re-placing onto %s failed", to_profile,
+                logger.warning("provider allocation: resetting %s failed", row["id"],
                                exc_info=True)
-                placement["errors"].append(f"{to_profile}: {type(exc).__name__}: {exc}")
-                applied = False
+                placement["errors"].append(f"{row['id']}: {type(exc).__name__}: {exc}")
                 continue
-            applied = applied and bool(result.get("applied"))
-            placement["moved"].extend(result.get("moved") or [])
-            placement["held"].extend(result.get("held") or [])
-            placement["skipped"].extend(result.get("skipped") or [])
-            batches.update(result.get("batch_ids") or [])
-        placement["applied"] = applied
-        placement["batch_ids"] = sorted(batches)
+            if not reset:
+                placement["skipped"].append({
+                    **entry, "kind": "claimed_or_changed",
+                    "detail": "a worker took the task (or its route changed) first",
+                })
+                continue
+            placement["moved"].append({
+                **entry, "kind": "returned_to_router",
+                "detail": f"the router re-plans it with preferred provider {provider}",
+            })
+        placement["applied"] = not placement["errors"]
         return placement

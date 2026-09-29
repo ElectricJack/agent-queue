@@ -54,6 +54,7 @@ from src.providers.intent import (
 from src.task_graph.formulas import FormulaRegistry, load_from_vault
 from src.vault import ensure_default_intelligence_classes
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WORKER_CAPS = {"harness_tools": ["Bash", "Edit"], "aq_commands": [], "plugin_tools": []}
@@ -128,9 +129,9 @@ def test_effective_intent_without_a_profile_is_class_only() -> None:
     assert effective_intent(Task(id="t", project_id="p", title="", description="",
                                  provider_intent=PINNED)) == CLASS_ONLY
     pinned = Task(id="t", project_id="p", title="", description="",
-                  profile_id="x", provider_intent=PINNED)
+                  profile_id="x", route_source="legacy", provider_intent=PINNED)
     assert effective_intent(pinned) == PINNED and narrows_catalog(pinned)
-    routed = Task(id="t", project_id="p", title="", description="", profile_id="x")
+    routed = Task(id="t", project_id="p", title="", description="", profile_id="x", route_source="legacy")
     assert effective_intent(routed) == CLASS_ONLY and not narrows_catalog(routed)
 
 
@@ -273,6 +274,7 @@ async def test_worker_filing_with_explicit_profile_is_refused(setup) -> None:
 
 
 async def _plain_task(db, task_id="t1", **fields) -> Task:
+    fields.setdefault("route_source", route_source_for(fields.get("profile_id")))
     task = Task(id=task_id, project_id="p", title="t", description="x",
                 status=TaskStatus.READY, intelligence_class="standard-high", **fields)
     await db.create_task(task)
@@ -363,7 +365,7 @@ async def test_task_route_never_downgrades_on_the_same_provider(setup) -> None:
                                    "provider_intent": CLASS_ONLY})
     assert (await db.get_task("t1")).provider_intent == PREFERRED
     # pinned stays pinned against a weaker intent on the same provider...
-    await db.update_task_routing("t1", profile_id="standard-high-claude",
+    await db.update_task_routing("t1", profile_id="standard-high-claude", route_source="legacy",
                                  intelligence_class=None, preferred_workspace_id=None,
                                  provider_intent=PINNED)
     result = await handler._cmd_task_route({"task_id": "t1", "profile_id": "standard-high-claude",
@@ -611,9 +613,9 @@ async def test_explicit_routing_reads_the_pinned_profiles_vendor(setup) -> None:
     _handler, db = setup
     routing = ExplicitRouting(db_getter=lambda: db)
     tasks = [
-        Task(id="a", project_id="p", title="", description="", profile_id="standard-high-codex",
+        Task(id="a", project_id="p", title="", description="", profile_id="standard-high-codex", route_source="legacy",
              intelligence_class="standard-high", provider_intent=PINNED),
-        Task(id="b", project_id="p", title="", description="", profile_id="standard-high-claude",
+        Task(id="b", project_id="p", title="", description="", profile_id="standard-high-claude", route_source="legacy",
              intelligence_class="standard-high", provider_intent=PREFERRED),
     ]
     routes = await routing.routes_for(tasks)

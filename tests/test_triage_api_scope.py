@@ -26,6 +26,7 @@ from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, 
 from src.orchestrator import Orchestrator
 from src.vault import ensure_default_intelligence_classes
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +60,7 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         await db.create_agent(Agent(id=worker, name=worker, profile_id=role))
         await db.create_task(Task(
             id=f"{worker}-job", project_id="p", title=worker, description="Assigned work",
-            status=TaskStatus.IN_PROGRESS, profile_id=role, assigned_agent_id=worker,
+            status=TaskStatus.IN_PROGRESS, profile_id=role, route_source=route_source_for(role), assigned_agent_id=worker,
         ))
         await db.update_agent(
             worker, state=AgentState.BUSY, current_task_id=f"{worker}-job",
@@ -88,11 +89,11 @@ async def api(tmp_path, monkeypatch, request, generated_routers):
         await db.create_agent(Agent(id=agent_id, name=agent_id, profile_id=profile_id))
     await db.create_task(Task(
         id="review-job", project_id="p", title="review", description="Review target",
-        status=TaskStatus.IN_PROGRESS, profile_id="reviewer", assigned_agent_id="reviewer",
+        status=TaskStatus.IN_PROGRESS, profile_id="reviewer", route_source="role", assigned_agent_id="reviewer",
     ))
     await db.create_task(Task(
         id="final-review-job", project_id="p", title="final review", description="Final review",
-        status=TaskStatus.IN_PROGRESS, profile_id="final-reviewer", branch_name="feature/target",
+        status=TaskStatus.IN_PROGRESS, profile_id="final-reviewer", route_source="role", branch_name="feature/target",
         assigned_agent_id="final-reviewer",
     ))
     for agent_id, task_id in (("reviewer", "review-job"), ("final-reviewer", "final-review-job")):

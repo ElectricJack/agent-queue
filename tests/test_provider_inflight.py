@@ -41,6 +41,7 @@ from src.providers.availability import DEGRADED, DISABLED, EXHAUSTED
 from src.providers.intent import PREFERRED
 from src.sessions.harness_parser import Harness
 from src.sessions.provider import SessionDiedDuringStartup, SessionSpec
+from tests.assignment_routing_helpers import route_source_for
 
 CLASSES = {
     "standard-high": IntelligenceClass(
@@ -332,7 +333,7 @@ async def _task(orch, task_id, *, profile="standard-high-codex", priority=100):
             description="d",
             status=TaskStatus.READY,
             priority=priority,
-            profile_id=profile,
+            profile_id=profile, route_source=route_source_for(profile),
             intelligence_class="standard-high",
             provider_intent=PREFERRED,
         )

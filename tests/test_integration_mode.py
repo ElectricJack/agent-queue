@@ -34,6 +34,7 @@ from src.orchestrator.context import ContextMixin
 from src.orchestrator import Orchestrator
 from src.git.github_contracts import GitHubRepositoryBinding
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 
 class _NullRuntimeFactory:
@@ -110,6 +111,7 @@ async def orch(tmp_path):
 def _pr_task(task_id: str = "t-pr", **kw) -> Task:
     kw.setdefault("branch_name", "feature-1")
     kw.setdefault("status", TaskStatus.IN_PROGRESS)
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     return Task(
         id=task_id,
         project_id="p-1",
@@ -123,6 +125,7 @@ def _pr_task(task_id: str = "t-pr", **kw) -> Task:
 def _direct_task(task_id: str = "t-direct", **kw) -> Task:
     kw.setdefault("branch_name", "feature-1")
     kw.setdefault("status", TaskStatus.IN_PROGRESS)
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     return Task(
         id=task_id,
         project_id="p-1",

@@ -92,7 +92,7 @@ async def push_orch(tmp_path):
                 title=f"fix {i}",
                 description="d",
                 status=TaskStatus.READY,
-                profile_id="std-codex",
+                profile_id="std-codex", route_source="legacy",
                 intelligence_class="standard-medium",
             )
         )
@@ -294,7 +294,7 @@ async def pool_db(tmp_path):
         await database.create_task(
             Task(
                 id=f"t{i}", project_id=POOL_PROJECT, title="t", description="d",
-                status=TaskStatus.READY, profile_id="worker",
+                status=TaskStatus.READY, profile_id="worker", route_source="legacy",
             )
         )
     yield database

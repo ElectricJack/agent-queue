@@ -1117,8 +1117,7 @@ class ProviderAvailabilityService:
         planned = None
         if self.reroute is not None and task.profile_id:
             # The planner over the provider's queue: the kind (and ``ahead``)
-            # the next sweep would give this task.  An unrouted task follows
-            # the derived project default instead (D13), so it has no plan.
+            # the next sweep would give this task.
             try:
                 planned = await self.reroute.hold_kind(task)
             except Exception:  # an explanation must never break explain
@@ -1156,26 +1155,18 @@ class ProviderAvailabilityService:
         The one resolution the derived hold (:meth:`hold_for`) and the held
         count (:meth:`affected` -- ``aq provider status``, the state-change
         notice, the escalation) share, so the two cannot disagree: the
-        task's own profile or, for an unrouted task, the project default --
-        followed to its equivalent rung while the default's provider is down
-        (D13), so such a task is held only when there is none.  ``None`` for
-        a task that is running or assigned, or that resolves to no known
-        profile.  Synchronous and I/O-free: *project* and *profiles* are
-        snapshots the caller already has.
+        task's own profile.  An unrouted task launches on nothing until its
+        router routes it (mandatory routing §8: no project default), so it
+        is never held by a provider.  ``None`` for a task that is running or
+        assigned, or that names no known profile.  Synchronous and I/O-free:
+        *project* and *profiles* are snapshots the caller already has.
         """
+        del project  # the route is the task's own; kept for the callers' shape
         if getattr(task, "status", None) not in QUEUED_STATUSES:
             return None
         if getattr(task, "assigned_agent_id", None):
             return None
-        profile_id = task.profile_id or getattr(project, "default_profile_id", None)
-        if not profile_id:
-            return None
-        if not task.profile_id and self.reroute is not None:
-            profile_id = self.reroute.resolve_default_profile_id(
-                profile_id, profiles, project_id=task.project_id,
-                preferred_provider=getattr(project, "preferred_provider", None),
-            )
-        profile = profiles.get(profile_id)
+        profile = profiles.get(task.profile_id) if task.profile_id else None
         if profile is None:
             return None
         return profile, self.provider_for_profile(profile, project_id=task.project_id)

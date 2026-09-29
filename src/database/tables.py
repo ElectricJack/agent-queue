@@ -236,6 +236,12 @@ tasks = Table(
         "route_source IN ('unrouted','router','override','role','legacy')",
         name="ck_tasks_route_source",
     ),
+    # Mandatory routing I1: a profile always names who wrote it, and a row
+    # without one is ``unrouted`` (revision a00000000042).
+    CheckConstraint(
+        "(profile_id IS NULL) = (route_source = 'unrouted')",
+        name="ck_tasks_route_source_profile",
+    ),
     Index("idx_tasks_project_dedup", "project_id", "dedup_key"),
     Column("created_at", Float, nullable=False),
     Column("updated_at", Float, nullable=False),

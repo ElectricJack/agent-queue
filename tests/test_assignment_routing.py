@@ -22,6 +22,7 @@ from src.orchestrator import Orchestrator
 from src.orchestrator.route_needed import ROUTE_NEEDED_INTERVAL_SECONDS
 from src.sessions.harness_parser import Harness
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 CLASSES = {
     "standard-medium": IntelligenceClass("standard-medium", "Standard", "", {
@@ -175,6 +176,7 @@ def handler(orch):
 
 
 async def _create(db, task_id: str, **kw) -> Task:
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     await db.create_task(Task(
         id=task_id, project_id="p", title=task_id, description="d",
         status=TaskStatus.READY, **kw,
@@ -379,7 +381,7 @@ async def test_route_needed_is_emitted_once_per_interval_for_unrouted_work(orch)
 
     # once routed, the task drops out and its throttle entry is forgotten
     await orch.db.update_task_routing(
-        "no-class", profile_id="deep-low-claude", intelligence_class="deep-low",
+        "no-class", profile_id="deep-low-claude", route_source="legacy", intelligence_class="deep-low",
         preferred_workspace_id=None,
     )
     orch._route_needed_emitted["class-only"] -= ROUTE_NEEDED_INTERVAL_SECONDS + 1

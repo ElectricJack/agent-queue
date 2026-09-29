@@ -21,6 +21,7 @@ from src.models import (
 )
 from src.orchestrator.agent_reconciler import AgentReconciler
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 
 @pytest.fixture
@@ -68,7 +69,7 @@ async def _seed_ready_task(db, *, task_id, project_id, profile_id=None, priority
         id=task_id, project_id=project_id,
         title=task_id, description=task_id,
         status=TaskStatus.READY, priority=priority,
-        profile_id=profile_id,
+        profile_id=profile_id, route_source=route_source_for(profile_id),
         created_at=_time.time(), updated_at=_time.time(),
     ))
 
@@ -86,7 +87,7 @@ async def test_no_op_when_no_projects(db):
 
 async def test_creates_one_agent_for_one_ready_task(db):
     await _seed_project_with_profile(db, project_id="p", profile_id="claude-opus")
-    await _seed_ready_task(db, task_id="t-1", project_id="p")
+    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="claude-opus")
 
     report = await AgentReconciler(db).reconcile()
 
@@ -112,35 +113,13 @@ async def _seed_bare_project(db, *, project_id="p", max_agents=1):
     ))
 
 
-async def test_skips_when_no_profiles_registered_at_all(db, caplog):
-    """No default, no task profile, and an empty agent_profiles table →
-    nothing to fall back to, so skip and warn once per project."""
-    import logging
+async def test_an_unrouted_task_creates_no_agent_and_no_project_default(db):
+    """Mandatory routing §8: a READY task with no profile waits on its router.
 
-    caplog.set_level(logging.WARNING)
-    await _seed_bare_project(db)
-    await _seed_ready_task(db, task_id="t", project_id="p")
-
-    rec = AgentReconciler(db)
-    report = await rec.reconcile()
-    agents = await db.list_agents()
-    assert len(agents) == 0
-    assert len(report.skipped) == 1
-    assert report.skipped[0][0] == "p"
-    assert "no resolvable profile_id" in report.skipped[0][1]
-    assert any("no resolvable profile_id" in r.message for r in caplog.records)
-
-    # Dedup: second reconcile pass on the same instance should not re-log.
-    caplog.clear()
-    await rec.reconcile()
-    assert not any("no resolvable profile_id" in r.message for r in caplog.records)
-
-
-async def test_backfills_project_default_and_creates_agent(db):
-    """The regression this guards: a project with READY tasks, no
-    default_profile_id, and tasks carrying no profile_id used to stall
-    forever.  Now the system default is picked, persisted, and an agent
-    is built from it."""
+    The reconciler used to pick and persist a system default for such a
+    project; there is no project default any more, so it creates nothing,
+    stamps nothing and does not warn.
+    """
     await _seed_bare_project(db)
     for pid in ("claude-sonnet", "claude-opus", "reviewer"):
         await db.create_profile(AgentProfile(id=pid, name=pid, runtime="claude_sdk"))
@@ -148,32 +127,9 @@ async def test_backfills_project_default_and_creates_agent(db):
 
     report = await AgentReconciler(db).reconcile()
 
-    assert report.defaults_backfilled == [("p", "claude-opus")]
-    assert report.skipped == []
-    # Persisted, so Orchestrator._resolve_profile agrees with the agent row.
-    project = await db.get_project("p")
-    assert project.default_profile_id == "claude-opus"
-    agents = await db.list_agents()
-    assert len(agents) == 1
-    assert agents[0].profile_id == "claude-opus"
-
-
-async def test_backfill_is_idempotent_across_ticks(db):
-    """A second pass must not re-pick or re-log — the persisted default
-    short-circuits the fallback."""
-    await _seed_bare_project(db)
-    await db.create_profile(AgentProfile(
-        id="claude-opus", name="claude-opus", runtime="claude_sdk",
-    ))
-    await _seed_ready_task(db, task_id="t", project_id="p")
-
-    rec = AgentReconciler(db)
-    await rec.reconcile()
-    second = await rec.reconcile()
-
-    assert second.defaults_backfilled == []
-    assert second.created == []
-    assert len(await db.list_agents()) == 1
+    assert (report.created, report.skipped) == ([], [])
+    assert (await db.get_project("p")).default_profile_id is None
+    assert await db.list_agents() == []
 
 
 async def test_backfill_skipped_when_all_tasks_carry_explicit_profile(db):
@@ -185,9 +141,8 @@ async def test_backfill_skipped_when_all_tasks_carry_explicit_profile(db):
     ))
     await _seed_ready_task(db, task_id="t", project_id="p", profile_id="claude-opus")
 
-    report = await AgentReconciler(db).reconcile()
+    await AgentReconciler(db).reconcile()
 
-    assert report.defaults_backfilled == []
     assert (await db.get_project("p")).default_profile_id is None
     assert [a.profile_id for a in await db.list_agents()] == ["claude-opus"]
 
@@ -270,7 +225,7 @@ async def test_workspace_required_no_workspace_no_create(db):
         db, project_id="p", profile_id="claude-opus",
         runtime="claude_sdk", workspace_count=0,
     )
-    await _seed_ready_task(db, task_id="t-1", project_id="p")
+    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="claude-opus")
 
     report = await AgentReconciler(db).reconcile()
 
@@ -290,7 +245,7 @@ async def test_supervisor_demand_does_not_create_duplicate_global_worker(db):
         db, project_id="p", profile_id="supervisor",
         workspace_count=0,
     )
-    await _seed_ready_task(db, task_id="t-1", project_id="p")
+    await _seed_ready_task(db, task_id="t-1", project_id="p", profile_id="supervisor")
 
     await AgentReconciler(db).reconcile()
 

@@ -171,7 +171,7 @@ async def test_conflicting_main_rebuild_uses_current_stage_and_requires_fresh_ci
             status=TaskStatus.COMPLETED,
             repo_id="repo",
             branch_name=adopted.branch,
-            profile_id="repairer",
+            profile_id="repairer", route_source="legacy",
             intelligence_class="primary-medium",
             created_by_kind="integration_repair",
             created_by_id="repair-batch-batch",

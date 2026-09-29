@@ -32,6 +32,7 @@ from src.models import Agent, AgentProfile, AgentState, SessionRecord, Task, Tas
 from src.providers.allocation import aggregate_ceiling
 from src.providers.intent import CLASS_ONLY, PINNED, PREFERRED
 from src.sessions.harness_parser import Harness
+from tests.assignment_routing_helpers import route_source_for
 
 ALPHA = "alpha"
 BRAVO = "bravo"
@@ -129,7 +130,7 @@ async def _fleet(orch) -> None:
                 title=f"title of {task_id}",
                 description="d",
                 status=status,
-                profile_id=profile_id,
+                profile_id=profile_id, route_source=route_source_for(profile_id),
                 provider_intent=intent,
                 assigned_agent_id=agent_id,
             )
@@ -1605,21 +1606,29 @@ async def test_a_lifecycle_change_is_restored_with_every_pool_key(orch, stops, m
 # -- the project preference -------------------------------------------------------
 
 
-async def test_preference_replaces_only_queued_class_only_work(orch, stops):
+async def test_preference_returns_queued_class_only_router_routes_to_the_router(orch, stops):
+    """Mandatory routing §6.8: the preference is a router input, so re-placing
+    queued work resets it to ``unrouted`` instead of moving it to a rung."""
     orch.session_spec_builder._intelligence_classes = dict(STANDARD_HIGH)
-    for task_id, project_id, status, intent in (
-        ("task-alpha-free", ALPHA, TaskStatus.READY, CLASS_ONLY),
-        ("task-alpha-free-busy", ALPHA, TaskStatus.IN_PROGRESS, CLASS_ONLY),
+    constraints = {"constraints": {"exclude_providers": ["gemini"]}}
+    for task_id, project_id, status, intent, source in (
+        ("task-alpha-free", ALPHA, TaskStatus.READY, CLASS_ONLY, "router"),
+        ("task-alpha-defined", ALPHA, TaskStatus.DEFINED, CLASS_ONLY, "router"),
+        ("task-alpha-free-busy", ALPHA, TaskStatus.IN_PROGRESS, CLASS_ONLY, "router"),
+        ("task-alpha-legacy", ALPHA, TaskStatus.READY, CLASS_ONLY, "legacy"),
+        ("task-alpha-override", ALPHA, TaskStatus.READY, CLASS_ONLY, "override"),
     ):
         await orch.db.create_task(
             Task(id=task_id, project_id=project_id, title=task_id, description="d",
-                 status=status, profile_id="standard-high-claude",
-                 intelligence_class="standard-high", provider_intent=intent)
+                 status=status, profile_id="standard-high-claude", route_source=source,
+                 intelligence_class="standard-high", provider_intent=intent,
+                 route=constraints)
         )
     before = {
         task_id: (await orch.db.get_task(task_id)).profile_id
         for task_id in ("task-alpha-pin", "task-alpha-pref", "task-alpha-free-busy",
-                        "task-bravo-free", "task-alpha-busy")
+                        "task-bravo-free", "task-alpha-busy", "task-alpha-legacy",
+                        "task-alpha-override")
     }
     preview = await _preview(orch, provider="codex",
                              receive_new_work={"project_id": ALPHA, "mode": "prefer"})
@@ -1628,10 +1637,18 @@ async def test_preference_replaces_only_queued_class_only_work(orch, stops):
     assert (await orch.db.get_project(ALPHA)).preferred_provider == "codex"
     assert (await orch.db.get_project(BRAVO)).preferred_provider is None
     placement = applied["preference"]["placement"]
-    assert [row["task_id"] for row in placement["moved"]] == ["task-alpha-free"]
-    assert placement["batch_ids"]
-    assert (await orch.db.get_task("task-alpha-free")).profile_id == "standard-high-codex"
-    # Pins, preferred intent, other projects and running work stay where they were.
+    assert sorted(row["task_id"] for row in placement["moved"]) == [
+        "task-alpha-defined", "task-alpha-free",
+    ]
+    assert {row["kind"] for row in placement["moved"]} == {"returned_to_router"}
+    assert placement["batch_ids"] == [] and placement["held"] == []
+    for task_id in ("task-alpha-free", "task-alpha-defined"):
+        task = await orch.db.get_task(task_id)
+        assert (task.profile_id, task.route_source, task.intelligence_class) == (
+            None, "unrouted", None,
+        )
+        assert task.route == constraints  # the router re-plans under them
+    # Pins, preferred intent, other sources and projects, running work stay put.
     for task_id, profile_id in before.items():
         assert (await orch.db.get_task(task_id)).profile_id == profile_id, task_id
     # No profile and no session changed.
@@ -1645,27 +1662,28 @@ async def test_preference_replaces_only_queued_class_only_work(orch, stops):
     assert "placement" not in applied["preference"]
 
 
-async def test_preference_holds_a_class_the_provider_cannot_serve(orch, stops):
-    # No ``openai`` slice: codex has no launchable standard-high rung.
-    orch.session_spec_builder._intelligence_classes = {
-        "standard-high": IntelligenceClass(
-            "standard-high", "Standard high", "", {"anthropic": {"model": "claude-opus-5"}}
-        ),
-    }
-    await orch.db.create_task(
-        Task(id="task-alpha-free", project_id=ALPHA, title="t", description="d",
-             status=TaskStatus.READY, profile_id="standard-high-claude",
-             intelligence_class="standard-high", provider_intent=CLASS_ONLY)
-    )
+async def test_preference_leaves_pins_and_routes_already_on_the_provider(orch, stops):
+    orch.session_spec_builder._intelligence_classes = dict(STANDARD_HIGH)
+    for task_id, profile_id, intent in (
+        ("task-alpha-on-codex", "standard-high-codex", CLASS_ONLY),
+        ("task-alpha-lane", "standard-high-claude", PINNED),
+    ):
+        await orch.db.create_task(
+            Task(id=task_id, project_id=ALPHA, title="t", description="d",
+                 status=TaskStatus.READY, profile_id=profile_id, route_source="router",
+                 intelligence_class="standard-high", provider_intent=intent)
+        )
     preview = await _preview(orch, provider="codex",
                              receive_new_work={"project_id": ALPHA, "mode": "prefer"})
     applied = await _apply(orch, preview["preview_token"])
     assert applied["success"] is True, applied
-    held = applied["preference"]["placement"]["held"]
-    assert [(row["task_id"], row["kind"]) for row in held] == [
-        ("task-alpha-free", "preferred_provider_unavailable")
+    placement = applied["preference"]["placement"]
+    assert placement["moved"] == []
+    assert [(row["task_id"], row["kind"]) for row in placement["skipped"]] == [
+        ("task-alpha-lane", "provider_intent")
     ]
-    assert (await orch.db.get_task("task-alpha-free")).profile_id == "standard-high-claude"
+    assert (await orch.db.get_task("task-alpha-on-codex")).profile_id == "standard-high-codex"
+    assert (await orch.db.get_task("task-alpha-lane")).profile_id == "standard-high-claude"
 
 
 async def test_a_failed_move_leaves_the_preference_and_reports_partial(orch, stops,
@@ -1673,19 +1691,19 @@ async def test_a_failed_move_leaves_the_preference_and_reports_partial(orch, sto
     orch.session_spec_builder._intelligence_classes = dict(STANDARD_HIGH)
     await orch.db.create_task(
         Task(id="task-alpha-free", project_id=ALPHA, title="t", description="d",
-             status=TaskStatus.READY, profile_id="standard-high-claude",
+             status=TaskStatus.READY, profile_id="standard-high-claude", route_source="router",
              intelligence_class="standard-high", provider_intent=CLASS_ONLY)
     )
 
-    async def broken(**kwargs):
-        raise RuntimeError("reroute lock poisoned")
+    async def broken(*args, **kwargs):
+        raise RuntimeError("routing write poisoned")
 
-    monkeypatch.setattr(orch.provider_reroute, "sweep", broken)
+    monkeypatch.setattr(orch.db, "reset_task_route", broken)
     preview = await _preview(orch, provider="codex",
                              receive_new_work={"project_id": ALPHA, "mode": "prefer"})
     result = await _apply(orch, preview["preview_token"])
     assert result["success"] is False and result["status"] == "partial"
-    assert "reroute lock poisoned" in result["error"]
+    assert "routing write poisoned" in result["error"]
     assert result["preference"]["applied"] is True
     assert (await orch.db.get_project(ALPHA)).preferred_provider == "codex"
     assert (await orch.db.get_task("task-alpha-free")).profile_id == "standard-high-claude"

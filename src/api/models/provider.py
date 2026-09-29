@@ -745,10 +745,12 @@ class ProviderAllocationSessionAction(BaseModel):
 
 
 class ProviderAllocationPlacement(BaseModel):
-    """The queued ``class_only`` READY tasks a ``prefer`` moved to the provider.
+    """The queued ``class_only`` router routes a ``prefer`` returned to the router.
 
-    ``moved`` / ``held`` / ``skipped`` are ``provider_reroute`` decisions;
-    ``batch_ids`` undo with ``provider_reroute_undo``.
+    ``moved`` lists each task reset to ``unrouted`` (``kind:
+    returned_to_router``) so the router re-plans it with the preferred
+    provider (mandatory routing §6.8); ``skipped`` the routes left alone.
+    ``held`` and ``batch_ids`` stay empty: nothing is a ``task_reroutes`` move.
     """
 
     applied: bool = False

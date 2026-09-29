@@ -39,6 +39,7 @@ from src.providers.reroute import (
     provider_order,
 )
 from src.sessions.harness_parser import Harness
+from tests.assignment_routing_helpers import route_source_for
 
 # -- the pure planner -------------------------------------------------------------
 
@@ -50,7 +51,6 @@ def _ctx(
     backlog=None,
     stats=None,
     config=None,
-    default_providers=None,
     now=10_000.0,
 ) -> PlanContext:
     rungs = rungs or {
@@ -69,7 +69,6 @@ def _ctx(
         generations={"codex": 3, "claude": 1},
         backlog=backlog or {},
         stats=stats or {},
-        default_providers=default_providers or {},
         session_providers=frozenset({r.provider for r in rungs.values()}),
         config=config or ProviderFailoverConfig(),
         now=now,
@@ -281,11 +280,89 @@ def test_an_explicit_move_off_a_healthy_provider_needs_to_profile():
     assert d.action == "move"
 
 
-def test_provider_order_config_and_project_default():
-    ctx = _ctx(default_providers={"p": "claude"})
-    assert provider_order(ctx, "p")[0] == "claude"
+def test_provider_order_config_and_no_project_default():
+    """No project default comes first (mandatory routing §6.8)."""
+    from src.profiles.catalog import WORKER_PROVIDERS
+
+    shipped = [harness for harness, _title, _vendor in WORKER_PROVIDERS]
+    assert provider_order(_ctx(), "p")[: len(shipped)] == shipped
     cfg = ProviderFailoverConfig(order=["codex", "claude"])
     assert provider_order(_ctx(config=cfg), "p")[:2] == ["codex", "claude"]
+
+
+# -- mandatory routing §6.8: moves stay inside the router's candidates ---------------
+
+
+def test_a_routed_task_fails_over_to_its_next_candidate_in_the_routers_order():
+    rungs = {
+        "std-high-codex": Rung("std-high-codex", "codex", "std-high", "codex", "pool", True, 2),
+        "std-high-claude": Rung("std-high-claude", "claude", "std-high", "claude", "pool", True, 2),
+        "std-high-gemini": Rung("std-high-gemini", "gemini", "std-high", "gemini", "pool", True, 2),
+    }
+    ctx = _ctx(rungs=rungs, states={"codex": UNAUTHENTICATED, "claude": AVAILABLE,
+                                    "gemini": AVAILABLE})
+    routed = (("std-high-codex", "std-high"), ("std-high-gemini", "std-high"),
+              ("std-high-claude", "std-high"))
+    [d] = plan_sweep([_cand("t1", route_candidates=routed)], ctx)
+    assert (d.action, d.to_profile_id, d.to_class) == ("move", "std-high-gemini", None)
+
+
+def test_a_routed_task_never_leaves_its_candidates_even_with_a_rung_elsewhere():
+    """An equivalent rung on claude exists, but the router recorded only codex."""
+    [d] = plan_sweep([_cand("t1", route_candidates=(("std-high-codex", "std-high"),))], _ctx())
+    assert (d.action, d.kind) == ("hold", "no_equivalent_rung")
+    assert d.to_profile_id is None
+
+
+def test_a_candidate_move_writes_the_candidates_class_and_skips_disabled_profiles():
+    ctx = _ctx()
+    ctx = PlanContext(
+        **{**ctx.__dict__, "disabled_profiles": frozenset({"std-high-claude"}),
+           "profile_providers": {**ctx.profile_providers, "generic-claude": "claude"},
+           "profile_lifecycles": {"generic-claude": "task"},
+           "profile_harnesses": {"generic-claude": "claude"}},
+    )
+    routed = (("std-high-codex", "std-high"), ("std-high-claude", "std-high"),
+              ("generic-claude", "deep-high"))
+    [d] = plan_sweep([_cand("t1", route_candidates=routed)], ctx)
+    assert (d.action, d.to_profile_id, d.to_class) == ("move", "generic-claude", "deep-high")
+
+
+def test_a_candidate_on_an_unavailable_provider_holds_no_available_target():
+    ctx = _ctx(states={"codex": UNAUTHENTICATED, "claude": DEGRADED})
+    routed = (("std-high-codex", "std-high"), ("std-high-claude", "std-high"))
+    [d] = plan_sweep([_cand("t1", route_candidates=routed)], ctx)
+    assert (d.action, d.kind) == ("hold", "no_available_target")
+
+
+def test_an_operator_move_outside_the_candidates_is_refused_even_forced():
+    routed = (("std-high-codex", "std-high"),)
+    for force in (False, True):
+        [d] = plan_sweep(
+            [_cand("t1", route_candidates=routed)], _ctx(), explicit=True,
+            to_profile="std-high-claude", force=force,
+        )
+        assert (d.action, d.kind) == ("hold", "no_available_target"), force
+        assert "override" in d.detail
+    inside = (("std-high-codex", "std-high"), ("std-high-claude", "std-high"))
+    [d] = plan_sweep(
+        [_cand("t1", route_candidates=inside)], _ctx(), explicit=True,
+        to_profile="std-high-claude",
+    )
+    assert (d.action, d.to_profile_id) == ("move", "std-high-claude")
+
+
+def test_route_candidates_are_read_from_the_route_record():
+    from src.providers.reroute import route_candidates_of
+
+    record = {"candidates": [
+        {"profile_id": "a", "intelligence_class": "x", "tier": "preferred"},
+        {"profile_id": "b", "intelligence_class": "y"},
+        {"profile_id": "a", "intelligence_class": "x"},
+        {"intelligence_class": "z"},
+    ]}
+    assert route_candidates_of(record) == (("a", "x"), ("b", "y"))
+    assert route_candidates_of(None) == () == route_candidates_of({"rule": "k"})
 
 
 def test_batch_id_is_one_outage():
@@ -383,7 +460,7 @@ async def _task(orch, task_id, profile, *, intent=PREFERRED, cls="standard-high"
             description="d",
             status=status,
             priority=priority,
-            profile_id=profile,
+            profile_id=profile, route_source=route_source_for(profile),
             intelligence_class=cls,
             provider_intent=intent,
         )
@@ -525,6 +602,39 @@ async def test_acceptance_codex_unavailable(orch):
     assert rows[1]["undone_at"] is not None
 
 
+async def test_failover_and_undo_stay_inside_a_routed_tasks_candidates(orch):
+    """Spec §6.8 through the service: the sweep reads ``tasks.route.candidates``
+    and undo returns a task only to a candidate."""
+    candidates = [
+        {"profile_id": "standard-high-codex", "intelligence_class": "standard-high"},
+        {"profile_id": "standard-high-claude", "intelligence_class": "standard-high"},
+    ]
+    for task_id, route in (
+        ("routed", {"candidates": candidates}),
+        ("lane", {"candidates": candidates[:1]}),
+    ):
+        await orch.db.create_task(Task(
+            id=task_id, project_id="p-1", title=task_id, description="d",
+            status=TaskStatus.READY, profile_id="standard-high-codex", route_source="router",
+            intelligence_class="standard-high", provider_intent=PREFERRED, route=route,
+        ))
+    await _codex_down(orch)
+    handler = _handler(orch)
+    result = await handler.execute("provider_reroute", {})
+    assert [d["task_id"] for d in result["moved"]] == ["routed"]
+    assert {d["task_id"]: d["kind"] for d in result["held"]} == {"lane": "no_equivalent_rung"}
+    moved = await orch.db.get_task("routed")
+    assert (moved.profile_id, moved.route_source) == ("standard-high-claude", "router")
+
+    # The candidates shrink under it: undo may no longer return it to codex.
+    await orch.db.update_task("routed", route={"candidates": candidates[1:]})
+    await orch.provider_availability.set_state("codex", "auto", by="human:test")
+    refused = await handler.execute("provider_reroute_undo", {"task_id": ["routed"],
+                                                              "force": True})
+    assert refused["success"] is False and "route candidates" in refused["error"]
+    assert (await orch.db.get_task("routed")).profile_id == "standard-high-claude"
+
+
 async def test_undo_refuses_a_running_task(orch):
     await _task(orch, "t", "standard-high-codex")
     await _codex_down(orch)
@@ -614,55 +724,27 @@ async def test_route_options_exclude_the_unavailable_provider(orch):
     assert result["outcome"] == "held"
 
 
-async def test_project_default_is_derived_never_persisted(orch):
-    await orch.db.update_project("p-1", default_profile_id="standard-high-codex")
-    project = await orch.db.get_project("p-1")
-    assert await orch._effective_default_profile_id(project) == "standard-high-codex"
-    await _codex_down(orch)
-    assert await orch._effective_default_profile_id(project) == "standard-high-claude"
-    assert (await orch.db.get_project("p-1")).default_profile_id == "standard-high-codex"
-    await orch.provider_availability.set_state("codex", "auto", by="human:test")
-    assert await orch._effective_default_profile_id(project) == "standard-high-codex"
-
-
-async def test_project_preference_redirects_default_without_persisting_or_spilling(orch):
+async def test_an_unrouted_task_takes_no_project_default(orch):
+    """Mandatory routing §8: no project default -- raw, preferred or followed
+    to an equivalent rung while its provider is down -- routes a task."""
     await orch.db.update_project("p-1", default_profile_id="standard-high-claude",
                                  preferred_provider="codex")
     project = await orch.db.get_project("p-1")
-    assert await orch._effective_default_profile_id(project) == "standard-high-codex"
     await _task(orch, "default", None, intent=CLASS_ONLY)
-    assert await _handler(orch)._claim_effective_default(
-        project, project.default_profile_id,
-    ) == "standard-high-codex"
     task = await orch.db.get_task("default")
-    assert (await orch._resolve_profile(task)).id == "standard-high-codex"
-    from src.models import Agent
-
-    agent = Agent(id="codex-worker", name="Codex", profile_id="standard-high-codex")
-    assert await orch._check_agent_routing(task, agent) is None
     profiles = {p.id: p for p in await orch.db.list_profiles()}
-    assert orch.provider_availability.queued_route(
-        task, project=project, profiles=profiles,
-    )[1] == "codex"
-    await _codex_down(orch)
-    assert await orch._effective_default_profile_id(project) is None
-    assert await _handler(orch)._claim_effective_default(project, project.default_profile_id) is None
-    assert await orch._resolve_profile(task) is None
-    assert await orch._check_agent_routing(task, agent) == "preferred_provider_unavailable"
-    assert orch.provider_availability.queued_route(task, project=project, profiles=profiles) is None
+    for _ in range(2):
+        assert await orch._resolve_profile(task) is None
+        assert orch.provider_availability.queued_route(
+            task, project=project, profiles=profiles,
+        ) is None
+        assert await orch.provider_availability.hold_for(task) is None
+        await _codex_down(orch)
+    for gone in ("_effective_default_profile_id", "_availability_aware_default",
+                 "_backfill_default_profile_id"):
+        assert not hasattr(orch, gone), gone
+    assert not hasattr(orch.provider_reroute, "resolve_default_profile_id")
     assert (await orch.db.get_project("p-1")).default_profile_id == "standard-high-claude"
-
-
-@pytest.mark.parametrize("cause", ["disabled", "missing_class", "unknown_class"])
-async def test_project_preference_default_needs_an_enabled_equivalent_rung(orch, cause):
-    await orch.db.update_project("p-1", default_profile_id=(
-        "astra-high-codex" if cause == "missing_class" else "standard-high-codex"
-    ), preferred_provider="claude")
-    if cause == "disabled":
-        await orch.db.update_profile("standard-high-claude", enabled=False)
-    elif cause == "unknown_class":
-        orch.session_spec_builder._intelligence_classes.pop("standard-high")
-    assert await orch._effective_default_profile_id(await orch.db.get_project("p-1")) is None
 
 
 async def test_recovery_leaves_moved_tasks_and_releases_holds(orch):

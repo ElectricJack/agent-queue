@@ -45484,7 +45484,7 @@
         },
         "type": "object",
         "title": "ProviderAllocationPlacement",
-        "description": "The queued ``class_only`` READY tasks a ``prefer`` moved to the provider.\n\n``moved`` / ``held`` / ``skipped`` are ``provider_reroute`` decisions;\n``batch_ids`` undo with ``provider_reroute_undo``."
+        "description": "The queued ``class_only`` router routes a ``prefer`` returned to the router.\n\n``moved`` lists each task reset to ``unrouted`` (``kind:\nreturned_to_router``) so the router re-plans it with the preferred\nprovider (mandatory routing \u00a76.8); ``skipped`` the routes left alone.\n``held`` and ``batch_ids`` stay empty: nothing is a ``task_reroutes`` move."
       },
       "ProviderAllocationPreference": {
         "properties": {

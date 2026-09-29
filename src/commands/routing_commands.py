@@ -31,7 +31,7 @@ from src.routing.planner import (
     reselect,
 )
 from src.routing.policy import Balance, PolicyError, parse_policy
-from src.routing.sources import UNROUTED
+from src.routing.sources import LEGACY, UNROUTED
 from src.sessions.spec import _infer_provider_from_harness
 
 logger = logging.getLogger(__name__)
@@ -284,13 +284,9 @@ class RoutingCommandsMixin:
             option for option in automatic_catalog
             if option.get("enabled", True) and not option.get("launchable", True)
         ]
+        # Superseded diagnostics (mandatory routing Task 8 deletes this
+        # command): the raw column, no longer resolved by the orchestrator.
         default_profile_id = project.default_profile_id
-        resolver = getattr(orchestrator, "_effective_default_profile_id", None)
-        if resolver is not None:
-            try:
-                default_profile_id = await resolver(project)
-            except Exception:  # pragma: no cover - diagnostics only
-                default_profile_id = project.default_profile_id
         by_id = {p.id: p for p in profiles}
         default_provider = (
             profile_provider(by_id[default_profile_id], getattr(orchestrator, "harness_registry", None), task.project_id)
@@ -654,6 +650,14 @@ class RoutingCommandsMixin:
                     route["constraints"] = constraints
                 if isinstance(prior, dict) and prior.get("legacy") is not None:
                     route["legacy"] = prior["legacy"]
+                if getattr(fresh, "route_source", None) == LEGACY and fresh.profile_id:
+                    # Cutover (spec §11): a queued legacy route -- a hand pin
+                    # included -- is replaced, and kept here for audit.
+                    route["legacy"] = {
+                        "profile_id": fresh.profile_id,
+                        "intelligence_class": fresh.intelligence_class,
+                        "provider_intent": fresh.provider_intent,
+                    }
                 written = await self.db.write_router_route(
                     conn, task.id,
                     profile_id=chosen.profile_id,

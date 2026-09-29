@@ -14,16 +14,15 @@ Nothing here decides anything.  The policy is :mod:`src.providers.reroute`.
 from __future__ import annotations
 
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import and_, case, func, insert, select, update
 
 from src.database.queries.blocked_state import apply_label_filters
-from src.database.queries.claim_queries import _frontier_predicates
+from src.database.queries.claim_queries import _frontier_predicates, route_claimable_in
 from src.database.tables import messages, sessions, task_reroutes, tasks
 from src.models import TaskStatus
-from src.routing.sources import UNROUTED, stamped_route_source
 
 #: Statuses a task can be re-routed (or undone) from: queued, never running.
 REROUTABLE_STATUSES = (
@@ -38,20 +37,6 @@ SPILL_REASON = "capacity_spill"
 UNDO_REASON = "operator_undo"
 
 _UNSET = object()
-
-
-def _kept_route_source(to_profile_id: str):
-    """A move keeps the task's route source; a row that never had one is stamped.
-
-    Failover, spill and undo move a task among profiles without changing who
-    routed it.  A row still ``unrouted`` while it names a profile was written
-    by a path that declared no source, and gets the transitional stamp for
-    the profile it moves to (mandatory-routing spec §9.2).
-    """
-    return case(
-        (tasks.c.route_source == UNROUTED, stamped_route_source(to_profile_id)),
-        else_=tasks.c.route_source,
-    )
 
 
 def _unheld():
@@ -110,8 +95,9 @@ class TaskRerouteQueryMixin:
         """
         now = time.time()
         values: dict[str, Any] = {
+            # A move never changes who routed the task (spec §6.8): the row's
+            # ``route_source`` is left as it is.
             "profile_id": to_profile_id,
-            "route_source": _kept_route_source(to_profile_id),
             "rerouted_from": case(
                 (tasks.c.rerouted_from == to_profile_id, None),
                 else_=func.coalesce(tasks.c.rerouted_from, expected_profile_id),
@@ -167,7 +153,6 @@ class TaskRerouteQueryMixin:
                 return None
             values: dict[str, Any] = {
                 "profile_id": row.rerouted_from,
-                "route_source": _kept_route_source(row.rerouted_from),
                 "rerouted_from": None,
                 "updated_at": now,
             }
@@ -400,15 +385,18 @@ class TaskRerouteQueryMixin:
         profile_ids: Sequence[str],
         *,
         updated_before: float | None = None,
+        ready_project_ids: Collection[str] = (),
     ) -> list[dict]:
         """READY tasks on *profile_ids* capacity spill may move (D24 S3), in claim order.
 
         Exactly the claim frontier: the acceptance predicates
-        ``_frontier_where`` applies per project and the ``hold:`` label
-        filter, so spill weighs the tasks a pool worker could claim and
-        ``count_ready_by_profile`` counts as pool demand -- never a blocked,
-        assigned or held one.  *updated_before* keeps only tasks that have
-        waited (``tasks.updated_at``) since at least then.
+        ``_frontier_where`` applies per project, the route filter for each
+        project's router readiness (*ready_project_ids*, mandatory routing
+        §9.1) and the ``hold:`` label filter, so spill weighs the tasks a
+        pool worker could claim and ``count_ready_by_profile`` counts as
+        pool demand -- never a blocked, assigned, held or unclaimable one.
+        *updated_before* keeps only tasks that have waited
+        (``tasks.updated_at``) since at least then.
         """
         ids = sorted(set(profile_ids))
         if not ids:
@@ -425,11 +413,13 @@ class TaskRerouteQueryMixin:
                 tasks.c.title,
                 tasks.c.intelligence_class,
                 tasks.c.provider_intent,
+                tasks.c.route,
             )
             .where(
                 tasks.c.status == TaskStatus.READY.value,
                 tasks.c.profile_id.in_(ids),
                 *_frontier_predicates().values(),
+                route_claimable_in(ready_project_ids),
             )
             .order_by(tasks.c.priority.asc(), tasks.c.created_at.asc(), tasks.c.id.asc())
         )

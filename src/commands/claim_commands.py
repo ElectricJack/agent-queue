@@ -467,25 +467,6 @@ class ClaimCommandsMixin:
             None,
         )
 
-    async def _claim_effective_default(self, project, default_profile):
-        """Default widening follows project preference and availability (D13)."""
-        if not default_profile:
-            return default_profile
-        resolver = getattr(self.orchestrator, "_availability_aware_default", None)
-        if resolver is None:
-            return default_profile
-        try:
-            resolved = await resolver(
-                default_profile, getattr(project, "id", None),
-                preferred_provider=getattr(project, "preferred_provider", None),
-            )
-        except Exception:  # never let a derived default break a claim
-            logger.debug("claim: availability-aware default failed", exc_info=True)
-            return None if getattr(project, "preferred_provider", None) else default_profile
-        if resolved is None and getattr(project, "preferred_provider", None):
-            return None
-        return resolved if isinstance(resolved, str) and resolved else default_profile
-
     async def _attempt_claim(self, session, want_id, cap, project, *, routing=None, repaired=False):
         # A moved admission retries from new git/graph inputs, with a bounded
         # request budget so a continuously moving target cannot monopolize it.
@@ -514,11 +495,13 @@ class ClaimCommandsMixin:
         ``async with`` block closes.
         """
         now = time.time()
-        default_profile = getattr(project, "default_profile_id", None)
-        # While the default's provider is unavailable the widening follows
-        # the default's equivalent rung (provider-failover D13): derived per
-        # call, never persisted.  Read before the transaction opens.
-        default_profile = await self._claim_effective_default(project, default_profile)
+        # Only routed work is claimable (mandatory routing §9.1): whether the
+        # project's router is ready decides if a legacy route still counts.
+        # The orchestrator refreshes the ready set once per cycle; read it
+        # before the transaction opens.
+        from src.routing.readiness import orchestrator_router_ready
+
+        router_ready = await orchestrator_router_ready(self.orchestrator, session.project_id)
         # The frontier query asks the project row two constant questions
         # (hierarchy/train mode, and against which repository).  Reduce the
         # row the outer loop already read, rather than making the statement
@@ -612,8 +595,8 @@ class ClaimCommandsMixin:
                     conn,
                     project_id=session.project_id,
                     profile_id=session.profile_id,
-                    default_profile_id=default_profile,
                     agent_id=row.agent_id,
+                    router_ready=router_ready,
                     hierarchy_mode=hierarchy_mode,
                     task_id=want_id,
                     enforce_routing=routing is not None,

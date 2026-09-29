@@ -172,7 +172,7 @@ async def _hold(db, tmp_path, *, lifecycle: str, task_id: str = "task/unsafe") -
     ))
     await db.create_agent(Agent(id="a1", name="a1", profile_id="coder"))
     await db.transition_task(task_id, TaskStatus.IN_PROGRESS, context="test")
-    await db.update_task(task_id, assigned_agent_id="a1", profile_id="coder")
+    await db.update_task(task_id, assigned_agent_id="a1", profile_id="coder", route_source="legacy")
     await db.update_agent("a1", state=AgentState.BUSY, current_task_id=task_id)
     task = await db.get_task(task_id)
     await db.create_session(SessionRecord(

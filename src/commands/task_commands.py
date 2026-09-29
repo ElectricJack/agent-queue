@@ -5209,8 +5209,14 @@ class TaskCommandsMixin:
                 reasons.append(Reason(code="held", detail=f"label '{lbl}' withholds task", ref=lbl))
 
         # Evaluate the claim query itself: graph blockedness and capacity
-        # snapshots do not include hierarchy receipt/origin fences.
-        reasons.extend(await self.db.claim_frontier_exclusions(str(task_id)))
+        # snapshots do not include hierarchy receipt/origin fences, and the
+        # route filter depends on the project's router readiness (§9.1).
+        from src.routing.readiness import orchestrator_router_ready
+
+        reasons.extend(await self.db.claim_frontier_exclusions(
+            str(task_id),
+            router_ready=await orchestrator_router_ready(self.orchestrator, task.project_id),
+        ))
 
         from src.integration.admission import observe_admission
         admission = await observe_admission(
@@ -5417,16 +5423,6 @@ class TaskCommandsMixin:
                 ref=task.profile_id,
             )
 
-        if task.profile_id is None:
-            project = await self.db.get_project(task.project_id)
-            if project is not None and (
-                error := self._task_execution_profile_error(project.default_profile_id)
-            ):
-                return None, Reason(
-                    code="supervisor_profile",
-                    detail=(error + "; set an eligible project worker default before rerunning"),
-                    ref=project.default_profile_id,
-                )
 
         explicit = (task.intelligence_class or "").strip()
         reason_text = None
@@ -5533,12 +5529,9 @@ class TaskCommandsMixin:
             return None
         if not pool_ids:
             return None
+        # The task's own route: an unrouted task waits on its router, not on
+        # a pool (mandatory routing §8: no project default).
         profile_id = task.profile_id
-        if not profile_id:
-            project = await self.db.get_project(task.project_id)
-            if project is None:
-                return None
-            profile_id = await orchestrator._effective_default_profile_id(project)
         if profile_id not in pool_ids:
             return None
 
@@ -5641,11 +5634,10 @@ class TaskCommandsMixin:
         out of the frontier.
 
         Args:
-            profile_id: Restrict the frontier to tasks this profile would be
-                offered.  Uses the same widening as the §10 work query
-                (``select_ready_for_profile``): when *profile_id* is the
-                project's ``default_profile_id``, unassigned tasks
-                (``profile_id IS NULL``) count as its work too.
+            profile_id: Restrict the frontier to tasks routed to this
+                profile.  There is no project-default widening: an unrouted
+                task is no profile's work until its router routes it
+                (mandatory routing §8).
             brief: Project each ready task to
                 ``id,title,status,priority,is_blocked,profile_id`` instead of
                 the default ``task_id,title,priority`` shape.
@@ -5673,14 +5665,7 @@ class TaskCommandsMixin:
         frontier = [task for task in frontier if task.id in admission.allowed]
 
         if profile_id:
-            project = await self.db.get_project(str(project_id))
-            default_profile_id = getattr(project, "default_profile_id", None) if project else None
-            frontier = [
-                t
-                for t in frontier
-                if t.profile_id == profile_id
-                or (t.profile_id is None and default_profile_id == profile_id)
-            ]
+            frontier = [t for t in frontier if t.profile_id == profile_id]
 
         if brief:
             ready = [
@@ -5968,12 +5953,41 @@ class TaskCommandsMixin:
                 harness = None
         return provider_key(harness) if harness is not None else harness_id
 
+    @staticmethod
+    def _manual_route_source(profile) -> str:
+        """The ``route_source`` a manual ``task_route`` writes (spec §9.2, §7).
+
+        A stage profile is a ``role``.  The local operator, a daemon service
+        and the elevated supervisor -- the callers the spec's emergency
+        override admits -- write an ``override``, which stays claimable once
+        the project's router is ready.  Every other caller (a worker, the
+        triage session, a playbook) writes ``legacy``: claimable only while
+        the router is not ready, and re-routed by the router once it is.  A
+        playbook command step runs as a daemon service, so a live playbook
+        invocation is checked first: the superseded router's routes are
+        ``legacy`` however it is dispatched.  Task 7 splits this command into
+        a router re-run and an audited ``task_route_override``.
+        """
+        from src.commands.principal import current_principal
+        from src.playbooks.invocation import current_invocation
+        from src.routing.sources import LEGACY, OVERRIDE, ROLE, ROLE_PROFILE_IDS
+
+        if profile.id in ROLE_PROFILE_IDS:
+            return ROLE
+        if current_invocation() is not None:
+            return LEGACY
+        principal = current_principal()
+        if principal is None or not principal.enforced or principal.elevated:
+            return OVERRIDE
+        return LEGACY
+
     async def _cmd_task_route(self, args: dict) -> dict:
         """Route a task: assign profile + intelligence class (+ workspace).
 
         Compatibility command and the only manual resolver for ``routing``
         gates. Writes ``profile_id``, an explicit ``intelligence_class``, and optional
-        ``preferred_workspace_id`` onto the task, then resolves every open
+        ``preferred_workspace_id`` onto the task, with the ``route_source``
+        :meth:`_manual_route_source` names for the caller, then resolves every open
         ``routing`` gate attached to the task via the orchestrator helper
         (so ``gate.resolved`` + blocked-flip bus events fire the same way
         the sweep path emits them).
@@ -6080,6 +6094,7 @@ class TaskCommandsMixin:
             intelligence_class=cls_id,
             preferred_workspace_id=str(workspace_id) if workspace_id else None,
             provider_intent=provider_intent,
+            route_source=self._manual_route_source(profile),
         )
         if not updated:
             return {

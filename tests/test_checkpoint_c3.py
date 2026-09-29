@@ -264,12 +264,12 @@ async def _seed_project_and_tasks(o: Orchestrator, base_repo: Path,
                                     profile_id="stub-profile"))
     await o.db.create_task(
         Task(id="tA", project_id="p1", title="task A",
-             description="d", profile_id="stub-profile",
+             description="d", profile_id="stub-profile", route_source="legacy",
              integration_mode="direct")
     )
     await o.db.create_task(
         Task(id="tB", project_id="p1", title="task B",
-             description="d", profile_id="stub-profile",
+             description="d", profile_id="stub-profile", route_source="legacy",
              integration_mode="direct")
     )
     await o.db.transition_task("tA", TaskStatus.READY)

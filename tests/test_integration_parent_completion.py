@@ -871,7 +871,8 @@ async def test_record_noop_command_binds_review_close_and_exact_child_head(db):
     )
     async with db.immediate() as conn:
         await conn.execute(
-            update(tasks).where(tasks.c.id == reviewer_id).values(profile_id="reviewer")
+            update(tasks).where(tasks.c.id == reviewer_id)
+            .values(profile_id="reviewer", route_source="role")
         )
         await conn.execute(
             update(task_integration_checkpoints)
@@ -1436,7 +1437,6 @@ async def test_woken_verifier_delegate_passes_the_pool_claim_origin_gate(db, inv
                 conn,
                 project_id="p",
                 profile_id="verifier",
-                default_profile_id=None,
                 agent_id="pool-agent",
                 hierarchy_mode=mode,
             )

@@ -258,7 +258,7 @@ async def _seed_codex_task(db) -> None:
     await db.create_project(Project(id="p1", name="p1"))
     await db.create_task(
         Task(id="t1", project_id="p1", title="t", description="d", status=TaskStatus.READY,
-             profile_id="standard-high-codex", intelligence_class="standard-high")
+             profile_id="standard-high-codex", route_source="legacy", intelligence_class="standard-high")
     )
 
 

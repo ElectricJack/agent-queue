@@ -30,6 +30,7 @@ from src.routing.sources import LEGACY, ROUTER, UNROUTED
 from src.sessions.harness_parser import Harness
 from tests.db_fixtures import lease_dsn
 from tests.test_routing_planner import SHIPPED_POLICY
+from tests.assignment_routing_helpers import route_source_for
 
 ROUTER_ID = "default-assignment-routing"
 CLASSES = {
@@ -93,6 +94,7 @@ def handler(orch):
 
 async def _create(db, task_id: str, **kw) -> Task:
     kw.setdefault("status", TaskStatus.READY)
+    kw.setdefault("route_source", route_source_for(kw.get("profile_id")))
     await db.create_task(Task(id=task_id, project_id="p", title=task_id, description="d", **kw))
     return await db.get_task(task_id)
 
@@ -300,7 +302,14 @@ async def test_apply_reroutes_a_legacy_route(handler, orch):
     assert (await orch.db.get_task("t")).route_source == LEGACY
     applied = await _route(handler, "t")
     assert applied["outcome"] == "routed"
-    assert (await orch.db.get_task("t")).route_source == ROUTER
+    routed = await orch.db.get_task("t")
+    assert routed.route_source == ROUTER
+    # The cutover keeps the replaced route for audit (spec §11, "Pins").
+    assert routed.route["legacy"] == {
+        "profile_id": "standard-high-claude",
+        "intelligence_class": "standard-high",
+        "provider_intent": "class_only",
+    }
 
 
 async def test_apply_is_stale_for_a_claimed_assigned_or_routed_task(handler, orch):
@@ -387,7 +396,7 @@ async def test_backlog_counts_ready_and_assigned_routed_work_fleet_wide(orch):
     await _create(orch.db, "assigned", profile_id="standard-high-codex",
                   status=TaskStatus.ASSIGNED)
     await orch.db.create_task(Task(id="elsewhere", project_id="q", title="x", description="d",
-                                   status=TaskStatus.READY, profile_id="standard-high-claude"))
+                                   status=TaskStatus.READY, profile_id="standard-high-claude", route_source="legacy"))
     await _create(orch.db, "blocked", profile_id="standard-high-claude",
                   status=TaskStatus.BLOCKED)
     await _create(orch.db, "unrouted")

@@ -260,6 +260,9 @@ class PoolsMixin:
             if ":" not in p.id and getattr(p, "lifecycle", "task") == "pool"
         }
         measurement.pool_sessions = await self.db.list_sessions(lifecycle="pool")
+        from src.routing.readiness import orchestrator_ready_projects
+
+        ready_projects = await orchestrator_ready_projects(self)
         sessions_by_project: dict[str, list[SessionRecord]] = {}
         for session in measurement.pool_sessions:
             if session.project_id is not None:
@@ -281,12 +284,13 @@ class PoolsMixin:
                     await structural_candidates(self.db, project.id)
                 )
                 allowed = batch.allowed
+            # Demand is claimable work only (mandatory routing §9.1): an
+            # unrouted task is demand for no pool, and neither is a legacy
+            # one once the project's router is ready.
             ready_by_profile = await self.db.count_ready_by_profile(
-                project.id, allowed_task_ids=allowed
-            )
-            unrouted_ready = ready_by_profile.get(None, 0)
-            default_profile_id = await self._effective_default_profile_id(
-                project, system_profiles=system_profiles
+                project.id,
+                allowed_task_ids=allowed,
+                router_ready=project.id in ready_projects,
             )
             workspace_capacity = await self.db.count_available_workspaces(
                 project.id,
@@ -323,8 +327,6 @@ class PoolsMixin:
                 key = PoolKey(profile_id)
                 measurement.profiles[key] = profile
                 ready = ready_by_profile.get(profile_id, 0)
-                if default_profile_id == profile_id:
-                    ready += unrouted_ready
                 measurement.demand[key] = measurement.demand.get(key, 0) + ready
 
                 local = PoolProjectSupply()

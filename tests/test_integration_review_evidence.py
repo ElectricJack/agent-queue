@@ -118,7 +118,7 @@ async def review_case(tmp_path, reuse_database):
         Task(
             id="review",
             project_id="p",
-            profile_id="reviewer",
+            profile_id="reviewer", route_source="role",
             assigned_agent_id="agent",
             title="review",
             description="",
@@ -750,7 +750,7 @@ async def test_approval_snapshot_is_stale_after_another_reviewer_rejects(review_
         Task(
             id="review-2",
             project_id="p",
-            profile_id="reviewer",
+            profile_id="reviewer", route_source="role",
             assigned_agent_id="agent-2",
             title="review 2",
             description="",

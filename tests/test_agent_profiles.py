@@ -34,6 +34,7 @@ from tests.session_dispatch_helpers import (
     drain_running_tasks,
     fake_provider,
 )
+from tests.assignment_routing_helpers import route_source_for
 
 
 @pytest.fixture
@@ -129,7 +130,7 @@ class TestProfileDatabaseCRUD:
                 project_id="p-1",
                 title="Test",
                 description="Test",
-                profile_id="test-reviewer",
+                profile_id="test-reviewer", route_source="legacy",
             )
         )
         task = await db.get_task("t-1")
@@ -171,7 +172,7 @@ class TestTaskProfileId:
                 project_id="p-1",
                 title="Review code",
                 description="Review the PR",
-                profile_id="test-reviewer",
+                profile_id="test-reviewer", route_source="legacy",
             )
         )
         task = await db.get_task("t-1")
@@ -201,7 +202,7 @@ class TestTaskProfileId:
                 description="Test",
             )
         )
-        await db.update_task("t-1", profile_id="test-reviewer")
+        await db.update_task("t-1", profile_id="test-reviewer", route_source="legacy")
         task = await db.get_task("t-1")
         assert task.profile_id == "test-reviewer"
 
@@ -214,7 +215,7 @@ class TestTaskProfileId:
                 project_id="p-1",
                 title="Test",
                 description="Test",
-                profile_id="test-reviewer",
+                profile_id="test-reviewer", route_source="legacy",
             )
         )
         await db.update_task("t-1", profile_id=None)
@@ -254,7 +255,10 @@ class TestProjectDefaultProfileId:
 
 
 class TestProfileResolution:
-    """Test the _resolve_profile cascade: task → project → None."""
+    """Test _resolve_profile: the task's own route → an assigned worker's → None.
+
+    There is no project default and no system fallback (mandatory routing §8).
+    """
 
     @pytest.fixture
     async def orch(self, tmp_path):
@@ -277,14 +281,14 @@ class TestProfileResolution:
             project_id="p-1",
             title="Test",
             description="Test",
-            profile_id="test-reviewer",
+            profile_id="test-reviewer", route_source="legacy",
         )
         profile = await orch._resolve_profile(task)
         assert profile is not None
         assert profile.id == "test-reviewer"
 
-    async def test_resolve_project_default_profile(self, orch):
-        """Task without profile_id, project with default → use project's default."""
+    async def test_a_project_default_is_not_a_route(self, orch):
+        """Task without profile_id, project with a default → still no profile."""
         await orch.db.create_profile(AgentProfile(id="test-reviewer", name="Reviewer"))
         await orch.db.create_project(
             Project(
@@ -294,9 +298,7 @@ class TestProfileResolution:
             )
         )
         task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
-        profile = await orch._resolve_profile(task)
-        assert profile is not None
-        assert profile.id == "test-reviewer"
+        assert await orch._resolve_profile(task) is None
 
     async def test_resolve_no_profile(self, orch):
         """No task profile, no project default, no profiles registered → None."""
@@ -322,37 +324,23 @@ class TestProfileResolution:
         for pid in keep:
             await orch.db.create_profile(AgentProfile(id=pid, name=pid))
 
-    async def test_resolve_falls_back_to_system_default(self, orch):
-        """No task profile and no project default → system-wide default.
-
-        The reconciler builds the agent row from the same third rung, so
-        dispatch must agree rather than running the task profile-less.
-        """
+    async def test_there_is_no_system_default_fallback(self, orch):
+        """No task profile → no profile, and nothing is persisted on the project."""
         await self._only_profiles(orch, "claude-opus")
         await orch.db.create_project(Project(id="p-1", name="test"))
         task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
 
-        profile = await orch._resolve_profile(task)
-
-        assert profile is not None
-        assert profile.id == "claude-opus"
-
-    async def test_system_default_fallback_is_persisted(self, orch):
-        """The fallback is written to the project so the choice is stable."""
-        await self._only_profiles(orch, "claude-opus")
-        await orch.db.create_project(Project(id="p-1", name="test"))
-        task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
-
-        await orch._resolve_profile(task)
-
-        project = await orch.db.get_project("p-1")
-        assert project.default_profile_id == "claude-opus"
+        assert await orch._resolve_profile(task) is None
+        assert (await orch.db.get_project("p-1")).default_profile_id is None
 
     async def test_retired_project_override_never_wins(self, orch):
         """Project-scoped profiles were retired — a leftover row must not resolve."""
         await self._only_profiles(orch, "claude-opus", "project:p-1:claude-opus")
         await orch.db.create_project(Project(id="p-1", name="test"))
-        task = Task(id="t-1", project_id="p-1", title="Test", description="Test")
+        task = Task(
+            id="t-1", project_id="p-1", title="Test", description="Test",
+            profile_id="claude-opus", route_source="legacy",
+        )
 
         profile = await orch._resolve_profile(task)
 
@@ -374,7 +362,7 @@ class TestProfileResolution:
             project_id="p-1",
             title="Test",
             description="Test",
-            profile_id="test-reviewer",
+            profile_id="test-reviewer", route_source="legacy",
         )
         profile = await orch._resolve_profile(task)
         assert profile.id == "test-reviewer"
@@ -387,7 +375,7 @@ class TestProfileResolution:
             project_id="p-1",
             title="Test",
             description="Test",
-            profile_id="nonexistent",
+            profile_id="nonexistent", route_source="legacy",
         )
         profile = await orch._resolve_profile(task)
         assert profile is None
@@ -857,7 +845,7 @@ class TestProfileCommands:
                 title="Test",
                 description="Test",
                 status=TaskStatus.READY,
-                profile_id="test-reviewer",
+                profile_id="test-reviewer", route_source="legacy",
             )
         )
 
@@ -947,7 +935,7 @@ class TestProfileCommands:
                 project_id=pid,
                 title="Test",
                 description="Test",
-                profile_id="test-reviewer",
+                profile_id="test-reviewer", route_source="legacy",
             )
         )
 
@@ -979,7 +967,7 @@ class TestProfileEnforcement:
                 title="Review",
                 description="Review code",
                 status=TaskStatus.READY,
-                profile_id=profile_id,
+                profile_id=profile_id, route_source=route_source_for(profile_id),
             )
         )
         await orch.run_one_cycle()
@@ -1004,11 +992,11 @@ class TestProfileEnforcement:
         assert task.status == TaskStatus.IN_PROGRESS
         assert await self._launched_profile(orch) == "test-reviewer"
 
-    async def test_dispatch_no_profile_uses_backfilled_project_default(self, session_orch):
-        """A task with no profile_id in a project with no default_profile_id
-        does not fall through to built-in defaults: the AgentReconciler
-        backfills a system default so the task is dispatchable, and
-        _resolve_profile then resolves to it.
+    async def test_dispatch_never_launches_an_unrouted_task(self, session_orch):
+        """A task with no profile_id waits on its router (mandatory routing §8, §9.1).
+
+        Nothing backfills a system default onto the project, and the push
+        scheduler does not launch the task on built-in defaults either.
         """
         orch = session_orch
         for existing in await orch.db.list_profiles():
@@ -1018,10 +1006,9 @@ class TestProfileEnforcement:
 
         task = await self._dispatch(orch)
 
-        backfilled = (await orch.db.get_project("p-1")).default_profile_id
-        assert backfilled == "developer"
-        assert task.status == TaskStatus.IN_PROGRESS
-        assert await self._launched_profile(orch) == backfilled
+        assert (await orch.db.get_project("p-1")).default_profile_id is None
+        assert task.status == TaskStatus.READY
+        assert await orch.db.get_session_for_task("t-1") is None
 
     async def test_dispatch_with_no_profile_anywhere_launches_no_session(self, session_orch):
         """With an empty agent_profiles table there is nothing to backfill.
@@ -1055,14 +1042,14 @@ class TestProfileEnforcement:
         assert await orch.db.get_session_for_task("t-1") is None
         assert fake_provider(orch).starts == []
 
-    async def test_dispatch_project_default_profile_launched(self, session_orch):
+    async def test_dispatch_project_default_profile_is_not_launched(self, session_orch):
         orch = session_orch
         await create_session_project(orch, default_profile_id="developer")
 
         task = await self._dispatch(orch)
 
-        assert task.status == TaskStatus.IN_PROGRESS
-        assert await self._launched_profile(orch) == "developer"
+        assert task.status == TaskStatus.READY
+        assert await orch.db.get_session_for_task("t-1") is None
 
 
 # ---------------------------------------------------------------------------

@@ -279,7 +279,7 @@ class TestLaunchPathRefuses:
         )
         task = Task(
             id="t1", project_id="p1", title="review", description="",
-            profile_id="reviewer", created_at=_now(), updated_at=_now(),
+            profile_id="reviewer", route_source="role", created_at=_now(), updated_at=_now(),
         )
         await db.create_task(task)
         await db.update_task(

@@ -31,6 +31,7 @@ from src.models import (
 from src.orchestrator import Orchestrator
 from src.sessions.harness_parser import Harness
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 PROJECT_ID = "proj"
 
@@ -141,7 +142,7 @@ async def ready(db, tid, *, profile_id="worker", intelligence_class=None):
             title=tid,
             description=tid,
             status=TaskStatus.READY,
-            profile_id=profile_id,
+            profile_id=profile_id, route_source=route_source_for(profile_id),
             intelligence_class=intelligence_class,
         )
     )
@@ -358,7 +359,7 @@ class TestReconcilePools:
             await ready(db, f"backlog-{i}")
         await db.create_task(Task(
             id="other-task", project_id="other", title="other", description="",
-            status=TaskStatus.READY, profile_id="worker",
+            status=TaskStatus.READY, profile_id="worker", route_source="legacy",
         ))
         acquire = db.acquire_one_unlocked
 
@@ -969,7 +970,7 @@ async def test_slow_launch_does_not_block_other_project_or_oversubscribe(orch, d
         workspace_path=str(tmp_path / "second"), source_type=RepoSourceType.LINK,
         kind_id="project-repo"))
     await db.create_task(Task(id="fast-task", project_id="second", title="Fast",
-        description="", status=TaskStatus.READY, profile_id="worker"))
+        description="", status=TaskStatus.READY, profile_id="worker", route_source="legacy"))
     provider = orch.session_providers.create("fake", orch.config)
     original = provider.start
     entered, release, fast_started = asyncio.Event(), asyncio.Event(), asyncio.Event()

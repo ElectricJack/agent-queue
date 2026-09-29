@@ -242,15 +242,15 @@ async def test_claim_frontier_skips_legacy_supervisor_route_without_hiding_worke
     await db.create_profile(AgentProfile(id="supervisor", name="Supervisor", lifecycle="named"))
     await db.create_task(Task(
         id="legacy-supervisor", project_id="p", title="Legacy", description="",
-        profile_id="supervisor", priority=1, status=TaskStatus.READY,
+        profile_id="supervisor", route_source="legacy", priority=1, status=TaskStatus.READY,
     ))
     await db.create_task(Task(
         id="normal-worker", project_id="p", title="Normal", description="",
-        profile_id="coder", priority=2, status=TaskStatus.READY,
+        profile_id="coder", route_source="legacy", priority=2, status=TaskStatus.READY,
     ))
     async with db._engine.begin() as conn:
         selected = await db.select_ready_for_profile(
-            conn, project_id="p", profile_id="coder", default_profile_id="coder", agent_id="a",
+            conn, project_id="p", profile_id="coder", agent_id="a",
         )
     assert selected == "normal-worker"
 
@@ -411,7 +411,7 @@ async def test_routing_update_rechecks_claim_after_command_read(setup):
 async def test_edit_class_validates_and_persists_as_a_hint(setup):
     handler, db = setup
     await db.create_task(Task(id="t", project_id="p", title="T", description="",
-                              status=TaskStatus.READY, profile_id="coder",
+                              status=TaskStatus.READY, profile_id="coder", route_source="legacy",
                               intelligence_class="standard-medium"))
     result = await handler._cmd_edit_task({"task_id": "t", "intelligence_class": "deep-high"})
     assert "error" not in result
@@ -440,7 +440,7 @@ async def test_edit_route_reset_checks_claim_at_write_time(setup):
     handler, db = setup
     await db.create_agent(Agent(id="held", name="Held", profile_id="coder"))
     await db.create_task(Task(id="t", project_id="p", title="T", description="",
-                              status=TaskStatus.READY, profile_id="coder"))
+                              status=TaskStatus.READY, profile_id="coder", route_source="legacy"))
     reset = db.reset_task_route
 
     async def claim_first(*args, **kwargs):
@@ -554,7 +554,7 @@ async def test_typed_edit_omitted_routing_fields_do_not_clear(setup):
     from src.api.codegen import _make_route_handler
     handler, db = setup
     await db.create_task(Task(id="t", project_id="p", title="T", description="",
-                              profile_id="coder", intelligence_class="deep-high"))
+                              profile_id="coder", route_source="legacy", intelligence_class="deep-high"))
     model = request_model("edit_task")
     result = await _make_route_handler("edit_task", model)(model(task_id="t", title="Renamed"), ch=handler)
     assert result["updated"] == "t"

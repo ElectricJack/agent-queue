@@ -37,6 +37,7 @@ from src.api.auth import SessionTokenStore
 from src.api.execute import router as execute_router
 from src.api.middleware import RequestContextMiddleware, TokenAuthMiddleware
 from src.models import AgentProfile, Project, SessionRecord, Task, TaskStatus
+from tests.assignment_routing_helpers import route_source_for
 
 pytestmark = pytest.mark.asyncio
 
@@ -96,7 +97,7 @@ async def _session_for(handler, profile_id: str, session_id: str | None = None) 
             title=held_id,
             description="held",
             status=TaskStatus.IN_PROGRESS,
-            profile_id=profile_id,
+            profile_id=profile_id, route_source=route_source_for(profile_id),
         )
     )
     await handler.db.create_session(

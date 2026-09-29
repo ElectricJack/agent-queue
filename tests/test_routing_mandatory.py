@@ -321,7 +321,7 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
         "db.create_task persists the Task it is given; every Task(...) is scanned"
     ),
     ("src/database/queries/task_queries.py", "TaskQueryMixin.update_task"): (
-        "stamps the transitional route_source of a profile write (spec §9.2); "
+        "stores the source a profile write declares, and refuses none (spec §9.2); "
         "update_task(profile_id=...) callers are scanned"
     ),
     ("src/database/queries/task_queries.py", "TaskQueryMixin.update_task_routing"): (
@@ -342,7 +342,8 @@ ROUTE_WRITERS: dict[tuple[str, str], str] = {
     ),
     # -- reworked by later tasks of the spec -----------------------------------
     ("src/commands/task_commands.py", "TaskCommandsMixin._cmd_task_route"): (
-        "the manual route command; Task 7 makes it re-run the router instead"
+        "the manual route command: an override for the operator or elevated supervisor, "
+        "legacy for anyone else; Task 7 makes it re-run the router instead"
     ),
 }
 
@@ -813,7 +814,7 @@ async def test_a_hint_edit_sends_a_queued_task_back_to_its_router(env) -> None:
     handler, db = env
     await db.create_task(Task(
         id="legacy", project_id="p", title="Legacy", description="d",
-        status=TaskStatus.READY, profile_id="coder", intelligence_class="standard-high",
+        status=TaskStatus.READY, profile_id="coder", route_source="legacy", intelligence_class="standard-high",
     ))
     assert (await db.get_task("legacy")).route_source == "legacy"
     result = await handler.execute("edit_task", {"task_id": "legacy", "intelligence_class": "deep-high"})
@@ -835,7 +836,7 @@ async def test_a_hint_edit_keeps_a_role_route(env) -> None:
     handler, db = env
     await db.create_task(Task(
         id="role", project_id="p", title="Triage", description="d",
-        status=TaskStatus.READY, profile_id="triage", intelligence_class="standard-high",
+        status=TaskStatus.READY, profile_id="triage", route_source="role", intelligence_class="standard-high",
     ))
     result = await handler.execute("edit_task", {"task_id": "role", "intelligence_class": "deep-high"})
     assert "error" not in result, result
@@ -850,7 +851,7 @@ async def test_a_claimed_task_keeps_its_route(env) -> None:
     await db.create_agent(Agent(id="agent", name="Worker", profile_id="coder"))
     await db.create_task(Task(
         id="held", project_id="p", title="Held", description="d",
-        status=TaskStatus.ASSIGNED, profile_id="coder", intelligence_class="standard-high",
+        status=TaskStatus.ASSIGNED, profile_id="coder", route_source="legacy", intelligence_class="standard-high",
         assigned_agent_id="agent",
     ))
     refused = await handler.execute("edit_task", {"task_id": "held", "intelligence_class": "deep-high"})

@@ -100,7 +100,7 @@ async def held_pool_session(
     # ``tasks.assigned_agent_id`` and ``agents.current_task_id`` form a
     # cycle -- insert both with the cross-reference unset, then backfill.
     await db.create_task(Task(id=task_id, project_id=PROJECT_ID, title=task_id, description=task_id,
-                              status=TaskStatus.IN_PROGRESS, claim_epoch=1, profile_id="worker"))
+                              status=TaskStatus.IN_PROGRESS, claim_epoch=1, profile_id="worker", route_source="legacy"))
     await db.create_agent(Agent(id=agent_id, name=agent_id, profile_id="worker",
                                 state=AgentState.BUSY))
     await db.update_task(task_id, assigned_agent_id=agent_id)

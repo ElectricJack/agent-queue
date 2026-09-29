@@ -13,6 +13,7 @@ from src.orchestrator import Orchestrator
 from src.orchestrator.agent_reconciler import AgentReconciler
 from src.sessions.harness_parser import Harness
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 
 @pytest.fixture
@@ -50,7 +51,7 @@ async def demand(db, profile="worker"):
             title="Work",
             description="Work",
             status=TaskStatus.READY,
-            profile_id=profile,
+            profile_id=profile, route_source=route_source_for(profile),
         )
     )
 

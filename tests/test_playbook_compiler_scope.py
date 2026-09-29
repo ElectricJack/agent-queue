@@ -11,6 +11,7 @@ from src.api.scope import check_request_scope
 from src.database import Database
 from src.models import Agent, AgentProfile, AgentState, Project, SessionRecord, Task, TaskStatus
 from tests.db_fixtures import lease_dsn
+from tests.assignment_routing_helpers import route_source_for
 
 pytestmark = pytest.mark.asyncio
 
@@ -37,7 +38,7 @@ async def compiler(tmp_path):
                 title=task_id,
                 description="Compile one playbook",
                 status=TaskStatus.IN_PROGRESS,
-                profile_id=profile_id,
+                profile_id=profile_id, route_source=route_source_for(profile_id),
                 assigned_agent_id=agent_id,
             )
         )
@@ -106,7 +107,7 @@ async def test_stale_or_changed_assignment_loses_compiler_capabilities(compiler,
     elif change == "blocked-task":
         await compiler.update_task("compiler-task", status=TaskStatus.BLOCKED)
     elif change == "wrong-task-profile":
-        await compiler.update_task("compiler-task", profile_id="worker")
+        await compiler.update_task("compiler-task", profile_id="worker", route_source="legacy")
     else:
         await compiler.update_agent("compiler", state=AgentState.IDLE, current_task_id=None)
     assert (

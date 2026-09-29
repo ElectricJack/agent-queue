@@ -866,7 +866,7 @@ async def test_pool_status_exposes_task_lifecycle_sessions_outside_the_pool(pool
     await pool_handler.db.create_task(
         Task(
             id="outside-task", project_id=PROJECT_ID, title="Outside", description="",
-            status=TaskStatus.IN_PROGRESS, profile_id="legacy-deep",
+            status=TaskStatus.IN_PROGRESS, profile_id="legacy-deep", route_source="legacy",
         )
     )
     await pool_handler.db.create_session(
@@ -904,7 +904,7 @@ async def test_pool_status_batches_session_task_titles_and_reuses_measurement(
         await pool_handler.db.create_task(
             Task(
                 id=task_id, project_id=project_id, title=f"Pool task {suffix}",
-                description="", status=TaskStatus.IN_PROGRESS, profile_id="worker",
+                description="", status=TaskStatus.IN_PROGRESS, profile_id="worker", route_source="legacy",
             )
         )
         await pool_handler.db.create_session(

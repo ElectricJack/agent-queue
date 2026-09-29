@@ -10,8 +10,21 @@ import uuid
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
 
-from sqlalchemy import Text, and_, any_, bindparam, delete, func, insert, literal, null, select, update
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import (
+    Text,
+    and_,
+    any_,
+    bindparam,
+    delete,
+    func,
+    insert,
+    literal,
+    literal_column,
+    null,
+    select,
+    update,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from src.database.queries.blocked_state import (
     PROJECTION_INPUT_COLUMNS,
@@ -54,7 +67,7 @@ from src.models import (
     VerificationType,
     WorkspaceMode,
 )
-from src.routing.sources import UNROUTED, stamped_route_source
+from src.routing.sources import UNROUTED, declared_route_source
 from src.state_machine import is_valid_status_transition
 from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES, SubtasksOpenError
 
@@ -277,8 +290,9 @@ class TaskQueryMixin:
         )).scalar_one_or_none()
         if archived_project is not None and archived_project != task.project_id:
             raise ValueError("Cannot recreate an archived task in another project")
-        # Keep the caller's model in step with the row it wrote.
-        task.route_source = stamped_route_source(task.profile_id, task.route_source)
+        # Keep the caller's model in step with the row it wrote.  A profile
+        # names its source (ck_tasks_route_source_profile, spec §9.2).
+        task.route_source = declared_route_source(task.profile_id, task.route_source)
         now = time.time()
         await conn.execute(
             insert(tasks).values(
@@ -594,7 +608,7 @@ class TaskQueryMixin:
         """
         values = self._coerce_task_values(kwargs)
         if "profile_id" in values:
-            values["route_source"] = stamped_route_source(
+            values["route_source"] = declared_route_source(
                 values["profile_id"], values.get("route_source")
             )
         async with self._engine.begin() as conn:
@@ -2495,13 +2509,13 @@ class TaskQueryMixin:
         left alone otherwise; ``rerouted_from`` likewise, where ``None``
         clears the marker.  Every routing write rides the same guard.
 
-        ``route_source`` is always written: the declared source, else the
-        transitional ``role``/``legacy`` stamp for *profile_id*, and
-        ``unrouted`` when *profile_id* is ``None`` (mandatory-routing §9.2).
+        ``route_source`` is always written: ``unrouted`` when *profile_id* is
+        ``None``, else the declared source, which a profile write must name
+        (mandatory-routing §9.2; :func:`declared_route_source` raises).
         """
         vals: dict = {
             "profile_id": profile_id,
-            "route_source": stamped_route_source(profile_id, route_source),
+            "route_source": declared_route_source(profile_id, route_source),
         }
         if intelligence_class is not None or clear_intelligence_class:
             vals["intelligence_class"] = intelligence_class
@@ -2527,22 +2541,43 @@ class TaskQueryMixin:
         return result.rowcount == 1
 
     async def reset_task_route(
-        self, task_id: str, *, class_hint: str | None | object = _UNSET
+        self,
+        task_id: str,
+        *,
+        class_hint: str | None | object = _UNSET,
+        route_source: str | None = None,
+        queued_only: bool = False,
     ) -> bool:
         """Send a task back to its router while no worker holds it.
 
         Clears the route — ``profile_id``, ``intelligence_class`` and the
         ``route`` record — and stores ``route_source='unrouted'`` and
         ``provider_intent='class_only'``, so the next cascade emits
-        ``task.route_needed`` (mandatory-routing spec §5.1).  *class_hint*
-        replaces the filer's hint when given; ``None`` clears it.  Guarded
-        like :meth:`update_task_routing`: a task that is claimed, running or
-        in a live session is left alone and ``False`` is returned.
+        ``task.route_needed`` (mandatory-routing spec §5.1).  The record's
+        ``constraints`` (review dispatch's ``exclude_providers``) and its
+        ``legacy`` audit survive: they are the task's, not the route's, and
+        the router re-plans under them.  *class_hint* replaces the filer's
+        hint when given; ``None`` clears it.  *route_source* resets only a
+        task whose current route has that source, and *queued_only* only a
+        DEFINED, READY or BLOCKED one.  Guarded like
+        :meth:`update_task_routing`: a task that is claimed, running or in a
+        live session is left alone and ``False`` is returned.
         """
+        def key(name: str):
+            return literal_column(f"'{name}'")
+
+        kept = func.jsonb_strip_nulls(
+            func.jsonb_build_object(
+                key("constraints"), tasks.c.route.op("->")(key("constraints")),
+                key("legacy"), tasks.c.route.op("->")(key("legacy")),
+                type_=JSONB,
+            ),
+            type_=JSONB,
+        )
         vals: dict = {
             "profile_id": None,
             "intelligence_class": None,
-            "route": None,
+            "route": func.nullif(kept, literal_column("'{}'::jsonb"), type_=JSONB),
             "route_source": UNROUTED,
             "provider_intent": "class_only",
         }
@@ -2552,13 +2587,18 @@ class TaskQueryMixin:
             sessions.c.task_id == tasks.c.id,
             sessions.c.state.in_(("starting", "running", "draining")),
         ).exists()
+        conditions = [
+            tasks.c.id == task_id,
+            tasks.c.status != TaskStatus.IN_PROGRESS.value,
+            tasks.c.assigned_agent_id.is_(None),
+            ~active_session,
+        ]
+        if route_source is not None:
+            conditions.append(tasks.c.route_source == route_source)
+        if queued_only:
+            conditions.append(tasks.c.status.in_((
+                TaskStatus.DEFINED.value, TaskStatus.READY.value, TaskStatus.BLOCKED.value,
+            )))
         async with self._engine.begin() as conn:
-            result = await conn.execute(
-                update(tasks).where(
-                    tasks.c.id == task_id,
-                    tasks.c.status != TaskStatus.IN_PROGRESS.value,
-                    tasks.c.assigned_agent_id.is_(None),
-                    ~active_session,
-                ).values(**vals)
-            )
+            result = await conn.execute(update(tasks).where(*conditions).values(**vals))
         return result.rowcount == 1
