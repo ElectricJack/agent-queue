@@ -17,6 +17,7 @@ S4 into "close refused: No open PR found" (task solid-forge-63):
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -25,6 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from src.config import load_config
 from src.jobs.adapters import finite_command
@@ -37,10 +39,10 @@ from tests.test_routing_planner import POLICY as ROUTING_POLICY
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SMOKE = REPO_ROOT / "scripts" / "e2e" / "smoke.py"
-APP_TRAIN = REPO_ROOT / "scripts" / "e2e" / "app_train.py"
 E2E_ENV = REPO_ROOT / "scripts" / "e2e-env.sh"
 CLEANUP = REPO_ROOT / "scripts" / "e2e-clean.sh"
 DBSETUP = REPO_ROOT / "scripts" / "e2e" / "dbsetup.py"
+APP_TRAIN = REPO_ROOT / "scripts" / "e2e" / "app_train.py"
 
 
 def _load_smoke():
@@ -56,6 +58,136 @@ def _load_smoke():
     finally:
         sys.modules.pop(spec.name, None)
     return module
+
+
+def test_app_train_files_hint_only_graph_then_runs_review_playbook(monkeypatch, tmp_path):
+    app = _load_app_train(monkeypatch, tmp_path)
+    app.write_profiles(None)
+    state = {"project_id": "fixture-project"}
+    calls = []
+
+    def fake_operator_text(*args, **_kwargs):
+        assert args[:4] == ("task", "create", "--project", "fixture-project")
+        graph = yaml.safe_load((tmp_path / "epic-s4.yaml").read_text())
+        assert graph["defaults"] == {"intelligence_class": app.TRAIN_CLASS,
+                                     "task_type": "feature"}
+        assert [node["key"] for node in graph["nodes"]] == ["leaf"]
+        assert "profile" not in graph["nodes"][0]
+        return 0, "valid"
+
+    def fake_operator(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("task", "create"):
+            return {"parent_id": "epic-1", "nodes": [{"key": "leaf", "task_id": "epic-1.1"}]}
+        if args[:2] == ("task", "route"):
+            assert args == ("task", "route", "--task-id", "epic-1.1",
+                            "--profile-id", app.WORKER_PROFILE,
+                            "--intelligence-class", app.TRAIN_CLASS)
+            return {"success": True}
+        if args[:2] == ("playbook", "import"):
+            assert any(call[:2] == ("task", "route") for call in calls)
+            return {"success": True, "activated": True}
+        if args[:2] == ("playbook", "run"):
+            assert any(call[:2] == ("playbook", "import") for call in calls)
+            return {"status": "completed", "failed_steps": []}
+        if args[:2] == ("task", "children"):
+            children = [{"id": "epic-1.1", "profile_id": "train-worker"}]
+            if any(call[:2] == ("playbook", "run") for call in calls):
+                children.append({"id": "epic-1.2", "profile_id": "reviewer"})
+            return children
+        if args[:2] == ("task", "deps"):
+            return {"provenance": [{"id": "epic-1.1", "dep_type": "discovered-from"}]}
+        raise AssertionError(args)
+
+    monkeypatch.setattr(app, "require_approval", lambda: "approved")
+    monkeypatch.setattr(app, "load_state", lambda: state)
+    monkeypatch.setattr(app, "save_state", lambda _state: None)
+    monkeypatch.setattr(app, "operator_text", fake_operator_text)
+    monkeypatch.setattr(app, "operator", fake_operator)
+    monkeypatch.setattr(app, "save_payload", lambda *_args: None)
+    monkeypatch.setattr(app, "fixture_main_sha", lambda: "fixture-main-sha")
+    monkeypatch.setattr(app, "gh_api", lambda *_args, **_kwargs: {
+        "object": {"sha": "fixture-main-sha"}})
+    monkeypatch.setattr(app, "record", lambda *_args, **_kwargs: None)
+
+    app.create_epic(SimpleNamespace(scenario="S4", title="fixture change", write=["x.txt=x"],
+                                    copy=None, delete=None))
+
+    assert state["scenarios"]["S4"]["review_id"] == "epic-1.2"
+    assert state["scenarios"]["S4"]["leaf_routed"] is True
+    assert state["scenarios"]["S4"]["epic_recorded"] is True
+    artifact_path = tmp_path / "vault" / "reviewed-playbooks" / "app-train-review-s4" / "artifact.json"
+    artifact = json.loads(artifact_path.read_text())
+    steps = artifact["steps"]
+    assert steps["file-review--ensure"]["inputs"]["profile_id"]["value"] == "reviewer"
+    assert steps["file-review--ensure"]["inputs"]["parent_id"]["path"] == "parent_task_id"
+    assert steps["file-review--provenance"]["inputs"]["dep_type"]["value"] == "discovered-from"
+    assert "file-review--blocks" not in steps
+    assert any(call[:2] == ("playbook", "import") for call in calls)
+    assert any(call[:2] == ("playbook", "run") for call in calls)
+
+    state["scenarios"]["S4"].pop("review_id")
+    state["scenarios"]["S4"].pop("epic_recorded")
+    first_runs = sum(call[:2] == ("playbook", "run") for call in calls)
+    first_routes = sum(call[:2] == ("task", "route") for call in calls)
+    app.create_epic(SimpleNamespace(scenario="S4", title="fixture change", write=["x.txt=x"],
+                                    copy=None, delete=None))
+    assert sum(call[:2] == ("playbook", "run") for call in calls) == first_runs
+    assert sum(call[:2] == ("task", "route") for call in calls) == first_routes
+    assert state["scenarios"]["S4"]["review_id"] == "epic-1.2"
+
+
+def test_app_train_refuses_a_divergent_old_fixture_branch(monkeypatch, tmp_path):
+    app = _load_app_train(monkeypatch, tmp_path)
+    monkeypatch.setattr(app, "gh_api", lambda *_args, **_kwargs: {
+        "object": {"sha": "old-work-sha"}})
+    assert app._fixture_branch_collides("aq/old-leaf", "fixture-main-sha")
+
+
+def test_app_train_verifier_retries_fixable_close_before_draining(monkeypatch, tmp_path):
+    app = _load_app_train(monkeypatch, tmp_path)
+    results = iter([
+        {"status": "IN_PROGRESS", "result": "verification_failed", "escalated": False,
+         "issues": ["Parent integration completion was refused: stale_verification."]},
+        {"status": "COMPLETED", "pipeline_ok": True},
+    ])
+    recorded = []
+    monkeypatch.setattr(app, "worker_aq", lambda *_args, **_kwargs: next(results))
+    monkeypatch.setattr(app, "record", lambda *args: recorded.append(args))
+    claimed = {"task_id": "verify-1", "claim_epoch": 1}
+
+    assert app._verifier_close("S4", claimed, tmp_path) is None
+    assert recorded == [("S4", "verifier_close_retry", {
+        "task": "verify-1", "issues": [
+            "Parent integration completion was refused: stale_verification."]})]
+    assert app._verifier_close("S4", claimed, tmp_path) == {
+        "status": "COMPLETED", "pipeline_ok": True}
+
+
+def test_app_train_verifier_rejects_unexpected_close_refusal(monkeypatch, tmp_path):
+    app = _load_app_train(monkeypatch, tmp_path)
+    monkeypatch.setattr(app, "worker_aq", lambda *_args, **_kwargs: {
+        "result": "verification_failed", "issues": ["Checkout is dirty."],
+    })
+
+    with pytest.raises(app.Failure, match="Checkout is dirty"):
+        app._verifier_close("S4", {"task_id": "verify-1", "claim_epoch": 1}, tmp_path)
+
+
+def test_app_train_worker_aq_preserves_close_refusal_details(monkeypatch, tmp_path):
+    app = _load_app_train(monkeypatch, tmp_path)
+    payload = {"schema_version": 1, "data": None, "error": {
+        "code": "command_error", "message": "close refused", "details": {
+            "result": "verification_failed", "issues": ["Check evidence is pending."]}}}
+    monkeypatch.setattr(app.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(
+        returncode=1, stdout=json.dumps(payload), stderr=""))
+
+    result = app.worker_aq({"token": "scratch", "session_id": "scratch", "claim_epoch": 1},
+                           "task", "close", cwd=tmp_path, check_ok=False)
+
+    assert result["result"] == "verification_failed"
+    assert result["issues"] == ["Check evidence is pending."]
+    assert result["_error"]["code"] == "command_error"
 
 
 def test_development_validation_preset_checks_the_committed_readme(tmp_path):
