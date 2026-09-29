@@ -98,7 +98,20 @@ async def refresh_routing_activation_snapshot(
             except Exception:  # noqa: BLE001 - empty is the fail-closed state
                 logger.exception("could not refresh the routing activation snapshot")
                 rows = []
-            install_routing_activation_snapshot(manager, rows, artifact_store=artifact_store)
+            loaded = []
+            for row in rows:
+                if row.get("health") != "ready" or not row.get("active_artifact_sha256"):
+                    continue
+                try:
+                    artifact_store.load(row["active_artifact_sha256"])
+                except Exception:  # noqa: BLE001 - bad artifact cannot enter admission
+                    logger.exception(
+                        "Quarantining routing snapshot playbook %s artifact %s",
+                        row.get("playbook_id"), row["active_artifact_sha256"],
+                    )
+                    continue
+                loaded.append(row)
+            install_routing_activation_snapshot(manager, loaded, artifact_store=artifact_store)
 
     refresh = asyncio.create_task(publish())
     try:

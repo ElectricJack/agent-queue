@@ -68,6 +68,31 @@ async def test_activate_records_activated_by():
     assert handler.db.set_playbook_activation.await_args.kwargs["activated_by"] == "local"
 
 
+async def test_activate_can_replace_an_invalid_current_artifact():
+    definition, ref, _activation = _backend_fixture()
+    broken_sha = "sha256:" + "f" * 64
+    broken = ActivationHealthRecord(
+        "activation-1", definition.id, "system", "", True, broken_sha,
+        ActivationHealth.INVALID, (),
+    )
+    handler = _Handler(definition, ref, [[broken], [_record(ref)]])
+
+    async def load(sha, playbook_id=None):
+        if sha == broken_sha:
+            return None, None, "invalid definition"
+        return ref, definition, None
+
+    handler._v2_load_artifact = load
+
+    result = await handler._cmd_playbook_activate({
+        "playbook_id": definition.id, "artifact_sha256": ref.artifact_sha256,
+    })
+
+    assert result["blocked"] is False
+    assert result["previous_artifact_sha256"] == broken_sha
+    handler.db.set_playbook_activation.assert_awaited_once()
+
+
 
 
 async def test_project_activation_refuses_a_different_project_principal():

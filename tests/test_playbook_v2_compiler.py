@@ -12,13 +12,26 @@ from src.playbooks.pipeline_lowering import (
     lower_pipeline,
     shadow_compile,
 )
-from src.playbooks.proposal import DuplicateSemanticKey, load_semantic_body_json, propose
+from src.playbooks.proposal import (
+    DuplicateSemanticKey,
+    load_legacy_baseline_json,
+    load_semantic_body_json,
+    migrate_legacy_agent_task_routes,
+    propose,
+)
 from src.playbooks.validation import (
     NullProfileLookup,
     RegisteredEventLookup,
     RegistryContractLookup,
 )
-from tests.playbook_v2_helpers import FIXTURE_DIR, StubContracts, StubEvents, StubProfiles, twin
+from tests.playbook_v2_helpers import (
+    FIXTURE_DIR,
+    StubContracts,
+    StubEvents,
+    StubProfiles,
+    _agent_task_twin,
+    twin,
+)
 
 LOWERING = FIXTURE_DIR / "lowering"
 
@@ -139,6 +152,61 @@ def test_proposal_is_review_only_and_has_no_activation_side_effect(tmp_path):
     assert proposal.artifact_sha256 is not None
     assert proposal.contract_fingerprint is not None
     assert not hasattr(proposal, "activate")
+
+
+def test_proposal_migrates_legacy_agent_task_worker_profile_to_class_hint(tmp_path):
+    artifact = _agent_task_twin()
+    step = artifact["steps"]["delegate"]
+    step["profile_id"] = "fast-low-claude"
+    step["inputs"] = {"intelligence_class": {"type": "literal", "value": "fast-low"}}
+
+    proposal = propose(
+        _source(tmp_path),
+        {"rules": artifact["rules"], "steps": artifact["steps"]},
+        contracts=StubContracts(), profiles=StubProfiles(), events=StubEvents(),
+        version=2, enforce_inventory=False,
+    )
+
+    assert proposal.artifact is not None, [d.message for d in proposal.diagnostics]
+    delegated = proposal.artifact.steps["delegate"]
+    assert delegated.profile_id is None
+    assert delegated.intelligence_class == "fast-low"
+    assert "intelligence_class" not in delegated.inputs
+    assert "fast-low-claude" not in proposal.artifact.compiled_against.profiles
+    assert any(d.code == "legacy_worker_route_migrated" for d in proposal.diagnostics)
+
+
+def test_legacy_route_migration_refuses_conflicting_class_hints():
+    body = {"steps": {"check": {
+        "type": "agent_task", "profile_id": "fast-low-claude",
+        "intelligence_class": "deep-high",
+    }}}
+
+    migrated, diagnostics = migrate_legacy_agent_task_routes(body)
+
+    assert migrated["steps"]["check"]["profile_id"] == "fast-low-claude"
+    assert [d.code for d in diagnostics] == ["legacy_worker_route_conflict"]
+
+
+def test_legacy_baseline_is_read_only_and_keeps_version_for_recompile(tmp_path):
+    raw = _agent_task_twin()
+    raw["steps"]["delegate"]["profile_id"] = "fast-low-claude"
+    raw["steps"]["delegate"]["inputs"] = {
+        "intelligence_class": {"type": "literal", "value": "fast-low"}
+    }
+    original = json.dumps(raw)
+
+    baseline = load_legacy_baseline_json(original)
+    proposal = propose(
+        _source(tmp_path), {"rules": raw["rules"], "steps": raw["steps"]},
+        baseline=baseline, contracts=StubContracts(), profiles=StubProfiles(),
+        events=StubEvents(), version=baseline.version + 1, enforce_inventory=False,
+    )
+
+    assert baseline.version == raw["version"]
+    assert proposal.artifact is not None
+    assert proposal.artifact.version == raw["version"] + 1
+    assert json.loads(original)["steps"]["delegate"]["profile_id"] == "fast-low-claude"
 
 
 def test_lowering_uses_binding_outside_loop_and_loop_ref_inside_loop():
