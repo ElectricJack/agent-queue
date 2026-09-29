@@ -360,14 +360,18 @@ def _route_reason(result: dict) -> dict:
 
 
 async def test_explain_names_an_unbound_and_a_not_ready_router(handler, orch):
+    """The same binding verdict as ``aq doctor --check routing.bypassed``."""
     await _create(orch.db, "t")
+    # Bound to the default router, which has no activation here: not ready.
     reason = _route_reason(await _explain(handler, "t"))
     assert (reason["code"], reason["ref"]) == ("router_not_ready", ROUTER_ID)
-    assert "task_route_apply" in reason["detail"]
+    assert "has no system activation" in reason["detail"]
 
-    await orch.db.update_project("p", assignment_playbook_id=None)
+    # Bound to a playbook with no activation at all: nothing routes it.
+    await orch.db.update_project("p", assignment_playbook_id="gone-router")
     reason = _route_reason(await _explain(handler, "t"))
     assert (reason["code"], reason["ref"]) == ("router_unbound", "p")
+    assert "gone-router" in reason["detail"]
 
 
 async def test_explain_names_awaiting_route_with_the_last_emission(handler, orch):

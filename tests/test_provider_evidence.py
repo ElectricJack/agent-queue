@@ -243,7 +243,7 @@ async def test_state_changes_are_announced_and_evidence_is_not_news(env):
 
 
 async def test_notification_is_idempotent_per_generation(env):
-    await env.db.create_project(Project(id="p1", name="p1", default_profile_id="std-codex"))
+    await env.db.create_project(Project(id="p1", name="p1"))
     env.probe.answer = "not_authenticated"
     await env.service.record_startup_death(login_death(), harness="codex", project_id="p1")
     await env.service.wait_for_probes()

@@ -1,13 +1,12 @@
 import { useEffect } from "react";
 import { CheckIcon, ArrowUturnLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useNavigate } from "react-router-dom";
-import { useProfiles, useProject, useEditProject } from "../../../api/hooks";
+import { useProject, useEditProject } from "../../../api/hooks";
 import {
   type FormState,
   parseOptionalInt,
   parseOptionalFloat,
   projectToForm,
-  dedupeProfileOptions,
 } from "../../../pages/project/Config";
 import { Section, Field } from "../../../components/profile/FormSection";
 import { useDirtyForm } from "../useDirtyForm";
@@ -20,7 +19,6 @@ type Args = Extract<ContextualSettingsArgs, { subject: "project" }>;
 export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>) {
   const navigate = useNavigate();
   const { data: project, isLoading, error } = useProject(args.subjectId);
-  const { data: profiles } = useProfiles();
   const editProject = useEditProject();
   const { value: form, setValue: setForm, dirty, resetBaseline } = useDirtyForm<FormState>(
     projectToForm(project ?? {}),
@@ -39,7 +37,6 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
       project_id: project.id,
       name: form.name.trim() || null,
       repo_default_branch: form.repo_default_branch.trim() || null,
-      default_profile_id: form.default_profile_id.trim() || null,
       max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
       credit_weight: parseOptionalFloat(form.credit_weight),
       budget_limit: parseOptionalFloat(form.budget_limit),
@@ -71,7 +68,6 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
   if (error) return <p className="text-sm text-red-400">{(error as Error).message}</p>;
   if (!project) return <p className="text-sm text-gray-500">Project not found.</p>;
 
-  const profileOptions = dedupeProfileOptions(profiles ?? []);
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
@@ -101,20 +97,10 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
       </Section>
 
       <Section title="Scheduling">
-        <Field label="Default profile">
-          <select
-            aria-label="Default profile"
-            value={form.default_profile_id}
-            onChange={(e) => set("default_profile_id", e.target.value)}
-            className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-1.5 text-gray-200 focus:border-indigo-500 focus:outline-none"
-          >
-            <option value="">— inherit / none —</option>
-            {profileOptions.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name} ({p.id})
-              </option>
-            ))}
-          </select>
+        <Field label="Router">
+          <span className="font-mono text-xs text-gray-400">
+            {project.assignment_playbook_id ?? "—"}
+          </span>
         </Field>
         <Field label="Max concurrent agents">
           <input

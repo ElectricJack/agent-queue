@@ -30,7 +30,7 @@ async def db(tmp_path):
     db = Database(lease_dsn("delete.db"))
     await db.initialize()
     await db.create_profile(AgentProfile(id="worker", name="Worker", harness="claude"))
-    await db.create_project(Project(id="p", name="P", default_profile_id="worker"))
+    await db.create_project(Project(id="p", name="P"))
     await db.create_agent(Agent(id="a", name="Keep history", profile_id="worker", model="saved"))
     yield db
     await db.close()

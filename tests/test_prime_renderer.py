@@ -73,12 +73,10 @@ def _write(path, content: str) -> None:
 
 
 class TestGoldenAssembly:
-    async def test_project_default_profile_supplies_no_role_sections(self, db, config):
-        """An unrouted task takes no role from a project default (mandatory routing §8)."""
+    async def test_an_unrouted_task_takes_no_role_sections(self, db, config):
+        """An unrouted task takes no role from any profile (mandatory routing §8)."""
         await db.create_profile(AgentProfile(id="coder", name="Coder"))
-        await db.create_project(
-            Project(id="default-profile-project", name="Default Profile", default_profile_id="coder")
-        )
+        await db.create_project(Project(id="default-profile-project", name="Default Profile"))
         await db.create_task(
             Task(
                 id="default-profile-task",

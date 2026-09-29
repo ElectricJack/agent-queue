@@ -731,18 +731,6 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Default branch name (default: main)",
                     "default": "main",
                 },
-                "default_profile_id": {
-                    "type": "string",
-                    "description": (
-                        "Eligible worker profile used for tasks in this project that "
-                        "don't specify their own profile_id.  When omitted, a "
-                        "system default is chosen automatically by "
-                        "src/profiles/default_selection.py "
-                        "(PREFERRED_DEFAULT_PROFILE_IDS, then any remaining "
-                        "general-purpose profile alphabetically).  Run "
-                        "`aq agent list-profiles` for the ids this install has."
-                    ),
-                },
             },
             "required": ["name"],
         },
@@ -842,10 +830,11 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "edit_project",
         "description": (
             "Edit a project's properties: name, credit_weight, max_concurrent_agents, "
-            "budget_limit, default_profile_id, assignment_playbook_id, "
+            "budget_limit, assignment_playbook_id (LOCAL-only router binding), "
             "repo_default_branch, or LOCAL-only hierarchical integration configuration. "
             "Use this to rename projects, adjust scheduling weight, set token budgets, "
-            "set a default agent profile, or change the default git branch."
+            "or change the default git branch. A project has no default profile: its "
+            "router routes every task."
         ),
         "input_schema": {
             "type": "object",
@@ -864,15 +853,12 @@ _ALL_TOOL_DEFINITIONS = [
                     "type": ["integer", "null"],
                     "description": "Token budget limit (optional, null to clear)",
                 },
-                "default_profile_id": {
-                    "type": ["string", "null"],
-                    "description": "Default agent profile ID for tasks in this project (optional, null to clear)",
-                },
                 "assignment_playbook_id": {
-                    "type": ["string", "null"],
+                    "type": "string",
                     "description": (
-                        "Project-scoped assignment-routing playbook ID "
-                        "(optional, null to use the system default)"
+                        "LOCAL-only: the routing playbook that routes this project's "
+                        "tasks (its router binding). It must be active and grant "
+                        "task_route_apply; a project is never unbound."
                     ),
                 },
                 "repo_default_branch": {
@@ -2969,8 +2955,8 @@ _ALL_TOOL_DEFINITIONS = [
         "name": "create_profile",
         "description": (
             "Create a new agent profile. Profiles configure agents with specific tools, "
-            "MCP servers, intelligence classes, and system prompt additions. Assign profiles "
-            "to tasks (profile_id) or set as project defaults (default_profile_id)."
+            "MCP servers, intelligence classes, and system prompt additions. A project's "
+            "router assigns worker profiles to tasks."
         ),
         "input_schema": {
             "type": "object",

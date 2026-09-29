@@ -17,6 +17,9 @@ Like ``tests/test_v1_removal.py``, this module holds the line the spec draws:
 3. **The ``create_task``, ``ensure_task`` and ``edit_task`` contract
    fingerprints are unchanged**: their argument models keep the legacy
    fields, refused at runtime, so no reviewed bundle goes stale.
+4. **No stale readers** (Task 8): no module under ``src/`` reads
+   ``default_profile_id``, ``task_route_options`` no longer exists, and a
+   project takes no default profile on any surface (spec §8, §9.3).
 """
 
 from __future__ import annotations
@@ -1005,6 +1008,164 @@ def test_aq_task_create_has_no_routing_flags() -> None:
     flags = {opt for param in task_create.params for opt in getattr(param, "opts", [])}
     assert not flags & {"-P", "--profile", "--pin", "--provider-intent", "--agent-type"}
     assert "--intelligence-class" in flags
+
+
+# ---------------------------------------------------------------------------
+# 4. No stale readers: projects are bound, nothing reads a project default
+# ---------------------------------------------------------------------------
+
+#: The dropped column (spec §8, revision a00000000043) and the deleted read
+#: command.  Each may appear in ``src/`` only as the name of a refused
+#: argument, never as something code reads.
+RETIRED_NAMES = frozenset({"default_profile_id", "task_route_options"})
+#: ``(path, enclosing function or class)`` where a retired name may appear as
+#: a string: the refused-argument list names it so a caller learns it is gone.
+RETIRED_NAME_SITES = frozenset({("src/routing/filing.py", "<module>")})
+
+
+def _retired_uses(source: str, path: str) -> list[tuple[str, str, int, str]]:
+    """Every attribute, keyword, name or exact string naming a retired name."""
+    tree = ast.parse(source)
+    found: list[tuple[str, str, int, str]] = []
+
+    def visit(node: ast.AST, scope: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            inner = scope
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                inner = child.name
+            name = None
+            if isinstance(child, ast.Attribute):
+                name = child.attr
+            elif isinstance(child, ast.keyword):
+                name = child.arg
+            elif isinstance(child, ast.Name):
+                name = child.id
+            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                name = child.value
+            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = child.name.removeprefix("_cmd_")
+            if name in RETIRED_NAMES:
+                found.append((path, scope, getattr(child, "lineno", 0), name))
+            visit(child, inner)
+
+    visit(tree, "<module>")
+    return found
+
+
+def test_no_module_under_src_reads_a_retired_name() -> None:
+    """Spec §9.3 / §14.10: no reader of the dropped column or the deleted command."""
+    found = []
+    for file in sorted(SRC.rglob("*.py")):
+        rel = "src/" + file.relative_to(SRC).as_posix()
+        found.extend(_retired_uses(file.read_text(encoding="utf-8"), rel))
+    stray = [use for use in found if (use[0], use[1]) not in RETIRED_NAME_SITES]
+    assert not stray, f"reads of a retired routing name: {stray}"
+    # The allowlist only shrinks: every entry still names the refused argument.
+    live = {(use[0], use[1]) for use in found}
+    assert RETIRED_NAME_SITES <= live, RETIRED_NAME_SITES - live
+
+
+@pytest.mark.parametrize(
+    "label, source",
+    [
+        ("attribute", "def f(p):\n    return p.default_profile_id\n"),
+        ("column", "def f(t):\n    return t.c.default_profile_id\n"),
+        ("key", "def f(row):\n    return row.get('default_profile_id')\n"),
+        ("keyword", "def f(P):\n    return P(default_profile_id='x')\n"),
+        ("command", (
+            "class M:\n    async def _cmd_task_route_options(self, args):\n"
+            "        return {}\n"
+        )),
+    ],
+)
+def test_the_scan_finds_a_seeded_retired_read(label: str, source: str) -> None:
+    assert _retired_uses(source, "src/seeded.py"), label
+
+
+def test_the_retired_read_command_is_gone() -> None:
+    from src.commands.contracts import CONTRACTS
+    from src.commands.handler import CommandHandler
+    from src.tools.definitions import _ALL_TOOL_DEFINITIONS
+
+    assert CONTRACTS.get("task_route_options") is None
+    assert not hasattr(CommandHandler, "_cmd_task_route_options")
+    assert "task_route_options" not in {tool["name"] for tool in _ALL_TOOL_DEFINITIONS}
+
+
+def test_the_projects_table_has_no_default_and_a_required_binding() -> None:
+    from src.database.tables import projects
+    from src.models import Project
+
+    assert "default_profile_id" not in projects.c
+    assert projects.c.assignment_playbook_id.nullable is False
+    assert "default_profile_id" not in Project.__dataclass_fields__
+
+
+@pytest.mark.parametrize("command", ["create_project", "edit_project"])
+def test_the_project_tools_offer_no_default_profile(command: str) -> None:
+    from src.routing.filing import REFUSED_ROUTING_ARGS
+    from src.tools.definitions import _ALL_TOOL_DEFINITIONS
+
+    schema = next(t["input_schema"] for t in _ALL_TOOL_DEFINITIONS if t["name"] == command)
+    assert not set(REFUSED_ROUTING_ARGS) & set(schema["properties"])
+
+
+@pytest.mark.parametrize("principal", ["operator", "service"])
+async def test_a_project_command_refuses_a_default_profile(env, principal) -> None:
+    """Spec §5.1: ``create_project`` and ``edit_project`` refuse a project default."""
+    from src.routing.filing import ROUTING_CHOICE_FORBIDDEN
+
+    handler, db = env
+    before = await db.list_projects()
+    for command, args in (
+        ("create_project", {"name": "fresh"}),
+        ("edit_project", {"project_id": "p", "name": "Renamed"}),
+    ):
+        for argument, value in REFUSED_VALUES.items():
+            result = await _execute_as(handler, principal, command, {**args, argument: value})
+            assert result.get("success") is False, (command, argument, result)
+            assert result.get("code") == ROUTING_CHOICE_FORBIDDEN, result
+            assert result["refused"] == [argument], result
+            assert "router" in result["error"], result
+    assert await db.list_projects() == before
+
+
+async def test_a_created_project_is_bound_and_has_no_default(env) -> None:
+    handler, db = env
+    result = await handler.execute("create_project", {"name": "fresh"})
+    assert result["assignment_playbook_id"] == handler.config.routing.default_router
+    assert "default_profile_id" not in result
+    project = await db.get_project("fresh")
+    assert project.assignment_playbook_id == handler.config.routing.default_router
+
+
+async def test_the_typed_api_route_refuses_a_project_default(env, monkeypatch) -> None:
+    import httpx
+    from fastapi import FastAPI
+
+    from src.api import dependencies as deps
+    from src.api.codegen import build_category_routers
+    from src.routing.filing import ROUTING_CHOICE_FORBIDDEN
+
+    handler, db = env
+    monkeypatch.setattr(deps, "_command_handler", handler)
+    monkeypatch.setattr(deps, "_orchestrator", handler.orchestrator)
+    monkeypatch.setattr(deps, "_require_session_token", False)
+    app = FastAPI()
+    for router in build_category_routers():
+        app.include_router(router)
+    before = await db.list_projects()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for path, body in (
+            ("/api/project/create", {"name": "fresh", "default_profile_id": "coder"}),
+            ("/api/project/edit", {"project_id": "p", "default_profile_id": "coder"}),
+        ):
+            response = await client.post(path, json=body)
+            assert response.status_code == 422, (path, response.text)
+            assert response.json()["code"] == ROUTING_CHOICE_FORBIDDEN, response.text
+    assert await db.list_projects() == before
 
 
 if __name__ == "__main__":  # pragma: no cover - a developer's listing aid

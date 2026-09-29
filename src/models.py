@@ -407,11 +407,11 @@ class Project:
     discord_channel_id: str | None = None  # Per-project Discord channel
     repo_url: str = ""
     repo_default_branch: str = "main"
-    default_profile_id: str | None = None  # fallback profile for tasks in this project
     # The router binding (mandatory-routing spec §8): the routing playbook that
-    # routes this project's tasks.  Creation passes ``routing.default_router``;
+    # routes this project's tasks.  A project has no default profile; every
+    # project is bound (NOT NULL).  Creation passes ``routing.default_router``;
     # this default is that key's default.
-    assignment_playbook_id: str | None = DEFAULT_ROUTER_PLAYBOOK_ID
+    assignment_playbook_id: str = DEFAULT_ROUTER_PLAYBOOK_ID
     # Project-level integration policy: "direct" | "pull_request" | None
     # (None = inherit the system default, config ``integration.default_mode``).
     integration_mode: str | None = None
@@ -910,8 +910,9 @@ class AgentProfile:
     at task execution time (not during scheduling) to keep the scheduler
     deterministic and profile-unaware.
 
-    Resolution cascade: task.profile_id → project.default_profile_id → None
-    (system default).  See specs/agent-profiles.md.
+    A task's profile is its route, written by the project's router
+    (mandatory-routing spec 2026-09-28); there is no project default.  See
+    specs/agent-profiles.md.
     """
 
     id: str  # slug: "reviewer", "web-developer"

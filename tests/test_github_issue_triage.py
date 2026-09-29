@@ -63,7 +63,6 @@ async def env(command_handler_factory, monkeypatch):
         default_class="standard-high", aq_commands=["review_submit"],
         harness_tools=[], plugin_tools=[],
     ))
-    await db.update_project("agent-queue", default_profile_id="worker")
     issues = Issues()
     monkeypatch.setattr(handler, "_github_issue_client", AsyncMock(return_value=issues))
     try:

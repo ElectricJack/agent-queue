@@ -492,7 +492,7 @@ class Orchestrator(
             availability=self.provider_availability,
             config_getter=lambda: self.config,
             harness_registry=self.harness_registry,
-            # The same registry routing reads (``task_route_options``); in
+            # The same registry the router reads (``task_route_plan``); in
             # production it is ``self.intelligence_classes`` by reference.
             classes_getter=lambda: getattr(
                 self.session_spec_builder, "_intelligence_classes", None

@@ -44,13 +44,12 @@ async def _seed_project_with_profile(
     runtime="claude_sdk",
     workspace_count=1,
 ):
-    """Create a project with a default profile and N enabled workspaces."""
+    """Create a project, the profile *profile_id* and N enabled workspaces."""
     await db.create_profile(AgentProfile(
         id=profile_id, name=profile_id, runtime=runtime,
     ))
     await db.create_project(Project(
         id=project_id, name=project_id,
-        default_profile_id=profile_id,
         max_concurrent_agents=max_agents,
         status=ProjectStatus.ACTIVE,
         credit_weight=1.0, total_tokens_used=0,
@@ -99,7 +98,7 @@ async def test_creates_one_agent_for_one_ready_task(db):
 
 
 async def _seed_bare_project(db, *, project_id="p", max_agents=1):
-    """A project with a workspace but no default_profile_id."""
+    """A project with a workspace and no profiles."""
     await db.create_project(Project(
         id=project_id, name=project_id,
         max_concurrent_agents=max_agents,
@@ -128,7 +127,7 @@ async def test_an_unrouted_task_creates_no_agent_and_no_project_default(db):
     report = await AgentReconciler(db).reconcile()
 
     assert (report.created, report.skipped) == ([], [])
-    assert (await db.get_project("p")).default_profile_id is None
+    assert not hasattr(await db.get_project("p"), "default_profile_id")
     assert await db.list_agents() == []
 
 
@@ -143,7 +142,6 @@ async def test_backfill_skipped_when_all_tasks_carry_explicit_profile(db):
 
     await AgentReconciler(db).reconcile()
 
-    assert (await db.get_project("p")).default_profile_id is None
     assert [a.profile_id for a in await db.list_agents()] == ["claude-opus"]
 
 

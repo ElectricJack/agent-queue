@@ -81,22 +81,24 @@ def _names(values: Iterable[Any]) -> str:
     return ", ".join(str(value) for value in values if value) or "unknown"
 
 
-def unbound_reason(project_id: str) -> dict[str, Any]:
+def unbound_reason(project_id: str, why: str = "") -> dict[str, Any]:
+    """No router routes the project: none bound, or a missing or non-routing one."""
     return _reason(
         "router_unbound",
-        f"project '{project_id}' is bound to no routing playbook "
-        "(projects.assignment_playbook_id), so nothing routes its tasks; bind it to "
-        "the default router, default-assignment-routing",
+        (why or f"project '{project_id}' is bound to no router")
+        + "; nothing routes its tasks until it is bound to a routing playbook "
+        "(`aq doctor --check routing.bypassed --fix` binds the default router)",
         project_id,
     )
 
 
-def not_ready_reason(project_id: str, router: str) -> dict[str, Any]:
+def not_ready_reason(project_id: str, router: str, why: str = "") -> dict[str, Any]:
+    """The bound router has no enabled activation that grants ``task_route_apply``."""
     return _reason(
         "router_not_ready",
-        f"router '{router}' of project '{project_id}' is not ready: no enabled system "
-        "or project activation of it grants task_route_apply, so no task of the project "
-        f"is routed and this one waits (check the activations of '{router}')",
+        f"router '{router}' of project '{project_id}' is not ready"
+        + (f": {why}" if why else "")
+        + "; no task of the project is routed and this one waits",
         router,
     )
 

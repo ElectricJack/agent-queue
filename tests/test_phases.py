@@ -41,7 +41,6 @@ async def orch(orchestrator_factory):
     await orchestrator.db.create_profile(
         AgentProfile(id="coder", name="Coder", lifecycle="task")
     )
-    await orchestrator.db.update_project(PROJECT_ID, default_profile_id="coder")
     yield orchestrator
     await orchestrator.db.close()
 

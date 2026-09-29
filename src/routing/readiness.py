@@ -69,6 +69,70 @@ def ready_router_projects(
     return frozenset(ready)
 
 
+#: :func:`binding_state` answers.  Only ``ready`` routes a project's tasks.
+BINDING_READY = "ready"
+BINDING_UNBOUND = "unbound"  # no playbook named
+BINDING_MISSING = "missing"  # no activation of that playbook in the project's reach
+BINDING_NOT_ROUTER = "not_router"  # activated, but no artifact grants task_route_apply
+BINDING_NOT_READY = "not_ready"  # a router, but no enabled activation of it
+
+
+def _in_reach(row: Any, playbook_id: str, project_id: str) -> bool:
+    """An activation of *playbook_id* that can serve *project_id* (§9.1)."""
+    if _value(row, "playbook_id") != playbook_id:
+        return False
+    scope = _value(row, "scope")
+    identifier = _value(row, "scope_identifier") or ""
+    return (scope == "system" and identifier == "") or (
+        scope == "project" and identifier == project_id
+    )
+
+
+def binding_state(
+    project_id: str,
+    playbook_id: str | None,
+    activations: Iterable[Any],
+    grants_of: Callable[[str], frozenset[str]],
+) -> tuple[str, str]:
+    """``(state, detail)`` for binding *project_id* to *playbook_id* (spec §8, §10).
+
+    *activations* are every ``playbook_activations`` row, enabled or not.
+    ``ready`` agrees with :func:`ready_router_projects`: an enabled activation
+    in the project's reach whose artifact grants ``task_route_apply``.
+    """
+    bound = str(playbook_id or "").strip()
+    if not bound:
+        return BINDING_UNBOUND, f"project '{project_id}' is bound to no router"
+    reach = [row for row in activations if _in_reach(row, bound, project_id)]
+    if not reach:
+        return BINDING_MISSING, (
+            f"playbook '{bound}' has no system activation and none scoped to "
+            f"project '{project_id}'"
+        )
+    artifacts = [row for row in reach if _value(row, "active_artifact_sha256")]
+    routers = [
+        row for row in artifacts
+        if ROUTER_GRANT in grants_of(str(_value(row, "active_artifact_sha256")))
+    ]
+    if artifacts and not routers:
+        return BINDING_NOT_ROUTER, (
+            f"playbook '{bound}' is not a routing playbook: no activated artifact of it "
+            f"grants {ROUTER_GRANT}"
+        )
+    if any(_value(row, "enabled") is True for row in routers):
+        return BINDING_READY, f"playbook '{bound}' routes project '{project_id}'"
+    names = ", ".join(
+        f"{_value(row, 'activation_id') or '?'} ({_value(row, 'scope')}, "
+        f"{'enabled' if _value(row, 'enabled') is True else 'disabled'}, "
+        f"health {_value(row, 'health') or '?'})"
+        for row in (routers or reach)
+    )
+    return BINDING_NOT_READY, (
+        f"router '{bound}' has no enabled activation granting {ROUTER_GRANT}; "
+        f"fix activation {names}"
+    )
+
+
 class RouterReadiness:
     """The per-cycle ready set, and the grant cache behind it.
 
@@ -130,6 +194,19 @@ class RouterReadiness:
         return project_id in await self.ready_projects()
 
 
+def artifact_grants(orchestrator: Any, config: Any) -> Callable[[str], frozenset[str]]:
+    """The grant reader *orchestrator* caches, or one over *config*'s artifact store."""
+    readiness = getattr(orchestrator, "router_readiness", None)
+    if isinstance(readiness, RouterReadiness):
+        return readiness.grants
+    from src.playbooks.artifact_store import ArtifactStore
+
+    store = ArtifactStore(
+        config.compiled_root, max_artifact_bytes=config.playbooks.v2_max_artifact_bytes
+    )
+    return RouterReadiness(db_getter=lambda: None, artifact_loader=store.load).grants
+
+
 async def orchestrator_ready_projects(orchestrator: Any) -> frozenset[str]:
     """*orchestrator*'s ready set; empty when it carries no :class:`RouterReadiness`.
 
@@ -147,8 +224,15 @@ async def orchestrator_router_ready(orchestrator: Any, project_id: str) -> bool:
 
 
 __all__ = [
+    "BINDING_MISSING",
+    "BINDING_NOT_READY",
+    "BINDING_NOT_ROUTER",
+    "BINDING_READY",
+    "BINDING_UNBOUND",
     "ROUTER_GRANT",
     "RouterReadiness",
+    "artifact_grants",
+    "binding_state",
     "orchestrator_ready_projects",
     "orchestrator_router_ready",
     "ready_router_projects",

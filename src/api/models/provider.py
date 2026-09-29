@@ -486,7 +486,7 @@ class ProviderAllocationProject(BaseModel):
     name: str = ""
     status: str = ""
     preferred_provider: str | None = None
-    default_profile_id: str | None = None
+    assignment_playbook_id: str | None = None
     max_concurrent_agents: int | None = None
 
 

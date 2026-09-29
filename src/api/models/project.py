@@ -30,7 +30,6 @@ class GetProjectResponse(BaseModel):
     total_tokens_used: int = 0
     tokens_used_recent: int = 0
     budget_limit: int | None = None
-    default_profile_id: str | None = None
     assignment_playbook_id: str | None = None
 
 
@@ -52,7 +51,7 @@ class ListProjectsResponse(BaseModel):
 class CreateProjectResponse(BaseModel):
     created: str
     name: str
-    default_profile_id: str | None = None
+    assignment_playbook_id: str | None = None
 
 
 class EditProjectResponse(BaseModel):

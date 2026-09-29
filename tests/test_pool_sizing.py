@@ -42,8 +42,7 @@ async def test_unrouted_work_is_demand_for_no_pool(tmp_path):
             "model": "gpt-6",
         }
         orch.session_spec_builder._intelligence_classes["standard-medium"] = cls
-        await orch.db.update_project("p-1", default_profile_id="preferred-test-claude",
-                                     preferred_provider="codex")
+        await orch.db.update_project("p-1", preferred_provider="codex")
         await orch.db.create_task(Task(
             id="unrouted", project_id="p-1", title="Unrouted", description="",
             status=TaskStatus.READY,

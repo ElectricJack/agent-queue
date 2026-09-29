@@ -33,8 +33,6 @@ from src.git.github import GitHubAccess
 from src.git.github_contracts import GitHubCredentialMode
 from src.git.manager import GitError, GitManager, _validate_ref
 from src.models import Project, RepoSourceType, Workspace
-from src.profiles.default_selection import select_default_profile_id
-from src.profiles.catalog import active_catalog_profile_ids
 from src.projects.events import emit_project_created, project_created_payload
 from src.projects.github import (
     GhClient,
@@ -309,17 +307,13 @@ class ProjectOnboardingService:
                         )
 
                 await self.db.update_onboarding_phase(request.request_id, "register")
-                default_profile_id = select_default_profile_id(
-                    await self.db.list_profiles(),
-                    eligible_profile_ids=active_catalog_profile_ids(self.config.data_dir),
-                )
                 project = Project(
                     id=request.project_id,
                     name=request.project_name,
                     repo_url=remote_url or "",
                     repo_default_branch=default_branch,
-                    default_profile_id=default_profile_id,
-                    # Bound to a router like a created project (routing spec §8).
+                    # Bound to a router like a created project, with no
+                    # default profile (routing spec §8).
                     assignment_playbook_id=self.config.routing.default_router,
                 )
                 source_type = {

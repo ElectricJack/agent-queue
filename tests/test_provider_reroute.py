@@ -710,25 +710,10 @@ async def test_provider_paused_task_resumes_then_moves(orch):
     assert "legacy" in [d["task_id"] for d in result["moved"]]
 
 
-async def test_route_options_exclude_the_unavailable_provider(orch):
-    await _task(orch, "t", None, intent=CLASS_ONLY)
-    await _codex_down(orch)
-    result = await _handler(orch).execute("task_route_options", {"task_id": "t"})
-    assert result["success"], result
-    assert result["outcome"] == "explicit"
-    assert result["explicit_profile_id"] == "standard-high-claude"
-    assert all(o["provider_key"] != "codex" for o in result["options"])
-    assert {o["profile_id"] for o in result["unavailable_options"]} >= {"standard-high-codex"}
-    await _task(orch, "a", None, intent=CLASS_ONLY, cls="astra-high")
-    result = await _handler(orch).execute("task_route_options", {"task_id": "a"})
-    assert result["outcome"] == "held"
-
-
 async def test_an_unrouted_task_takes_no_project_default(orch):
-    """Mandatory routing §8: no project default -- raw, preferred or followed
-    to an equivalent rung while its provider is down -- routes a task."""
-    await orch.db.update_project("p-1", default_profile_id="standard-high-claude",
-                                 preferred_provider="codex")
+    """Mandatory routing §8: no project default -- preferred or followed to an
+    equivalent rung while its provider is down -- routes a task."""
+    await orch.db.update_project("p-1", preferred_provider="codex")
     project = await orch.db.get_project("p-1")
     await _task(orch, "default", None, intent=CLASS_ONLY)
     task = await orch.db.get_task("default")
@@ -744,7 +729,7 @@ async def test_an_unrouted_task_takes_no_project_default(orch):
                  "_backfill_default_profile_id"):
         assert not hasattr(orch, gone), gone
     assert not hasattr(orch.provider_reroute, "resolve_default_profile_id")
-    assert (await orch.db.get_project("p-1")).default_profile_id == "standard-high-claude"
+    assert not hasattr(project, "default_profile_id")
 
 
 async def test_recovery_leaves_moved_tasks_and_releases_holds(orch):

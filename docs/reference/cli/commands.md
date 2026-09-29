@@ -702,7 +702,6 @@ group is large.
 | `aq system render-prompt` | `render_prompt` | gen | Render a prompt template with variable substitution. |
 | `aq system scan-stub-staleness` | `scan_stub_staleness` | gen | Scan vault reference stubs to detect staleness. |
 | `aq system session-input` | `session_input` | gen | Type directly into a live terminal. |
-| `aq system task-route-options` | `task_route_options` | gen | Report whether the task is routed, whether its class is explicit, and which class, provider and profile combinations could execute it. |
 | `aq system token-audit` | `token_audit` | gen | Comprehensive token usage audit over a time range. |
 | `aq system update-config` | `update_config` | gen | Replace one top-level section in the YAML config and trigger a hot reload for hot-reloadable sections. |
 | `aq system vault-rebuild-index` | `vault_rebuild_index` | gen | Rebuild vault hub files with optional LLM-generated summaries. |

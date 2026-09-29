@@ -277,16 +277,6 @@ class TestDefaultInheritance:
         assert task.profile_id is None
         assert await handler.db.get_task_meta(task.id, "filed_by_profile_id") == "narrow"
 
-    async def test_worker_filing_does_not_take_the_project_default(self, handler):
-        """The project default is an implicit route too; a filing must be routed."""
-        await handler.db.update_project("p", default_profile_id="broad")
-        sid = await _session_for(handler, "narrow")
-
-        result = await _create(handler, sid)
-
-        assert "error" not in result, result
-        assert (await handler.db.get_task(result["task_id"])).profile_id is None
-
     async def test_worker_filing_with_a_class_is_routed_not_class_matched(self, handler):
         """A class is a hint: the filing is stored unrouted and the router
         routes it (mandatory-routing spec §5.3)."""

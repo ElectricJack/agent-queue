@@ -61,8 +61,8 @@ export default function ProjectOverview() {
   const budget = (project as { budget_limit?: number | null } | undefined)?.budget_limit;
   const tokensUsed = (project as { total_tokens_used?: number } | undefined)?.total_tokens_used;
   const tokensRecent = (project as { tokens_used_recent?: number } | undefined)?.tokens_used_recent;
-  const defaultProfile = (project as { default_profile_id?: string | null } | undefined)
-    ?.default_profile_id;
+  const router = (project as { assignment_playbook_id?: string | null } | undefined)
+    ?.assignment_playbook_id;
 
   return (
     <div className="space-y-6">
@@ -172,7 +172,7 @@ export default function ProjectOverview() {
           />
           <MetaField label="Credit weight" value={fmtNumber(creditWeight, "1.0")} />
           <MetaField label="Max concurrent agents" value={fmtNumber(maxAgents, "2")} />
-          <MetaField label="Default profile" value={defaultProfile ?? "— fallback —"} />
+          <MetaField label="Router" value={router ?? "—"} />
           <MetaField label="Budget limit" value={fmtBudget(budget)} />
           <MetaField
             label="Tokens used"

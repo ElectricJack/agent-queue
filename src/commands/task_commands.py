@@ -5357,10 +5357,13 @@ class TaskCommandsMixin:
         Returns ``(assignment_route, reason)``.  ``assignment_route`` is the
         route a task carries -- its source, profile, class, intent, and the
         router's lane, rule and reason (mandatory routing §10) -- and ``None``
-        when it has none.  ``reason`` is set only for queued, unassigned work
-        still owed a route (``unrouted``, or ``legacy`` in a project whose
-        router is ready): see :mod:`src.routing.explain` for the six codes.
-        A container is never routed (work-graph §13a), so it has no reason.
+        when it has none.  ``reason`` is set only for queued, unassigned
+        work: ``preferred_provider_unavailable`` when the project prefers a
+        provider with no worker for the task's class (the planner's
+        ``no_candidates`` reason, answered live), else, for work still owed a
+        route (``unrouted``, or ``legacy`` in a project whose router is
+        ready), one of the six codes of :mod:`src.routing.explain`.  A
+        container is never routed (work-graph §13a), so it has no reason.
         """
         import time
 
@@ -5400,6 +5403,31 @@ class TaskCommandsMixin:
             TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.DEFINED
         ):
             return detail, None
+        if await self.db.task_is_container(task.id):
+            return detail, None
+        from src.providers.intent import narrows_catalog
+
+        project = await self.db.get_project(task.project_id)
+        preferred_provider = getattr(project, "preferred_provider", None)
+        if preferred_provider and not narrows_catalog(task):
+            wanted = (
+                (task.intelligence_class or "").strip()
+                or (getattr(task, "class_hint", None) or "").strip()
+                or None
+            )
+            if not await self._preferred_provider_serves(
+                task.project_id, preferred_provider, wanted
+            ):
+                return detail, Reason(
+                    code="preferred_provider_unavailable",
+                    detail=(
+                        f"project prefers provider '{preferred_provider}', which has no "
+                        "enabled, launchable worker option for "
+                        + (f"intelligence class '{wanted}'" if wanted else "any class")
+                        + "; waiting for that provider or a change to the project preference"
+                    ),
+                    ref=preferred_provider,
+                )
         if source not in (UNROUTED, LEGACY):
             return detail, Reason(
                 code="route_waiting_for_compatible_agent",
@@ -5410,9 +5438,6 @@ class TaskCommandsMixin:
                 ),
                 ref=task.profile_id or task.id,
             )
-        if await self.db.task_is_container(task.id):
-            return detail, None
-        project = await self.db.get_project(task.project_id)
         router = (getattr(project, "assignment_playbook_id", None) or "").strip()
         ready = await orchestrator_router_ready(self.orchestrator, task.project_id)
         if source == LEGACY and not ready:
@@ -5426,10 +5451,29 @@ class TaskCommandsMixin:
                 ),
                 ref=task.profile_id or task.id,
             )
-        if not router:
-            return detail, Reason(**route_explain.unbound_reason(task.project_id))
         if not ready:
-            return detail, Reason(**route_explain.not_ready_reason(task.project_id, router))
+            # The same binding verdict ``aq doctor --check routing.bypassed``
+            # gives (spec §10): no router, or a missing or non-routing
+            # playbook, is unbound; a router without an enabled activation
+            # that grants task_route_apply is not ready.
+            from src.routing.readiness import (
+                BINDING_MISSING,
+                BINDING_NOT_ROUTER,
+                BINDING_UNBOUND,
+                artifact_grants,
+                binding_state,
+            )
+
+            state, why = binding_state(
+                task.project_id, router, await self.db.list_playbook_activations(),
+                artifact_grants(self.orchestrator, self.config),
+            )
+            default = str(getattr(getattr(self.config, "routing", None), "default_router", ""))
+            if state in (BINDING_UNBOUND, BINDING_MISSING, BINDING_NOT_ROUTER) and (
+                router != default or state == BINDING_UNBOUND
+            ):
+                return detail, Reason(**route_explain.unbound_reason(task.project_id, why))
+            return detail, Reason(**route_explain.not_ready_reason(task.project_id, router, why))
         now = time.time()
         try:
             run = await self.db.latest_router_run_for_task(
