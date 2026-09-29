@@ -705,6 +705,27 @@ task_gates = Table(
     Index("idx_task_gates_gate", "gate_id"),
 )
 
+# Object-script evaluation loops.  Images and logs live in the artifact store;
+# this row contains bounded identities, reservations and the next task intent.
+# A row lock serializes every transition and sibling budget reservation.
+object_loops = Table(
+    "object_loops",
+    metadata,
+    Column("object_id", Text, primary_key=True),
+    Column("project_id", Text, ForeignKey("projects.id"), nullable=False),
+    # Soft task/gate references survive normal task archival and cleanup.
+    Column("epic_task_id", Text, nullable=False),
+    Column("finalization_task_id", Text, nullable=False),
+    Column("terminal_gate_id", Text, nullable=False),
+    Column("version", Integer, nullable=False, server_default="1"),
+    Column("state", JSONB, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+    CheckConstraint("version >= 1", name="ck_object_loops_version"),
+    UniqueConstraint("epic_task_id", name="uq_object_loops_epic_task_id"),
+    Index("idx_object_loops_project", "project_id"),
+)
+
 # ---------------------------------------------------------------------------
 # Document reviews (document-review spec §3.2).
 #
