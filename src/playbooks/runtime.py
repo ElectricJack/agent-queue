@@ -22,6 +22,7 @@ from src.playbooks.required import (
     REQUIRED_SYSTEM_PLAYBOOK_IDS,
     retain_required_route_needed_event,
 )
+from src.playbooks.run_state import ArtifactVerificationFailed
 from src.playbooks.services import (
     INTEGRATION_LIFECYCLE_PLAYBOOK_IDS,
     IntegrationRouteTarget,
@@ -140,12 +141,16 @@ class V2PlaybookRuntime:
 
     async def _refresh_locked(self) -> None:
         rows = await self._db.list_playbook_activations(enabled_only=False)
-        enabled_rows = [row for row in rows if row.get("enabled") is True]
-        install_routing_activation_snapshot(self, enabled_rows, artifact_store=self._store)
+        # A verified but schema-invalid artifact must not poison the runtime
+        # catalog or the synchronous routing snapshot. Keep the classification
+        # local: activation health is computed on reads, and only command
+        # handlers change stored activation rows.
+        runtime_rows = [dict(row) for row in rows]
+        loaded_rows: list[dict[str, Any]] = []
         triggers: set[str] = set()
         integration_destinations: list[_IntegrationDestination] = []
         activation_addresses: list[_IntegrationDestination] = []
-        for row in rows:
+        for row in runtime_rows:
             sha = row.get("active_artifact_sha256")
             if sha:
                 activation_addresses.append(
@@ -167,9 +172,17 @@ class V2PlaybookRuntime:
                 continue
             try:
                 definition = self._store.load(sha)
-            except Exception:
-                logger.exception("Could not load active V2 artifact %s", sha)
+            except (OSError, ArtifactVerificationFailed) as exc:
+                row["health"] = "unavailable"
+                logger.warning(
+                    "Playbook %s artifact %s is unavailable: %s", row["playbook_id"], sha, exc
+                )
                 continue
+            except Exception:  # noqa: BLE001 - quarantine malformed definitions per activation
+                row["health"] = "invalid"
+                logger.exception("Playbook %s artifact %s is invalid", row["playbook_id"], sha)
+                continue
+            loaded_rows.append(row)
             triggers.update(rule.trigger.event_type for rule in definition.rules)
             integration_destinations.append(
                 _IntegrationDestination(
@@ -182,7 +195,8 @@ class V2PlaybookRuntime:
                 )
             )
         self._triggers = tuple(sorted(triggers))
-        self._required_inactive_ids = self._required_inactive_from(rows)
+        install_routing_activation_snapshot(self, loaded_rows, artifact_store=self._store)
+        self._required_inactive_ids = self._required_inactive_from(runtime_rows)
         self._integration_destinations = tuple(integration_destinations)
         self._integration_activation_addresses = tuple(activation_addresses)
         self._ensure_integration_reconciler()

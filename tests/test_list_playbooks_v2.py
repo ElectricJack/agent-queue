@@ -93,6 +93,38 @@ async def test_list_playbooks_applies_scope_filter() -> None:
     handler.db.latest_run_per_playbook.assert_awaited_once_with([])
 
 
+async def test_invalid_artifact_is_quarantined_without_hiding_good_playbooks(caplog) -> None:
+    handler = _Handler()
+    invalid = {
+        "activation_id": "activation-bad",
+        "playbook_id": "quilt-health-watch",
+        "scope": "project",
+        "scope_identifier": "quilt-trader",
+        "active_artifact_sha256": "sha256:bad",
+        "enabled": True,
+        "health": "ready",
+    }
+    good = handler.db.list_playbook_activations.return_value[0]
+    handler.db.list_playbook_activations.return_value = [invalid, good]
+    original_load = handler.engine.services.artifact_store.load
+
+    def load(sha):
+        if sha == "sha256:bad":
+            raise ValueError("agent_task profile_id must name a role")
+        return original_load(sha)
+
+    handler.engine.services.artifact_store.load = load
+
+    result = await handler._cmd_list_playbooks({})
+
+    assert result["count"] == 2
+    assert [row["id"] for row in result["playbooks"]] == ["quilt-health-watch", "router"]
+    assert result["playbooks"][0]["status"] == "invalid"
+    assert result["playbooks"][0]["triggers"] == []
+    assert result["playbooks"][1]["status"] == "ready"
+    assert "quilt-health-watch" in caplog.text
+
+
 async def test_list_runs_projects_v2_snapshots_to_dashboard_summaries() -> None:
     handler = _Handler()
     handler.db.list_runs.return_value = [SimpleNamespace(

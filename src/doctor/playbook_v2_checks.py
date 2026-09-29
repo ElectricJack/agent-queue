@@ -49,6 +49,7 @@ from src.doctor.models import CheckResult, DoctorCheck, DoctorContext, Severity
 OWNER = "playbook-v2"
 CHECK_ID = "playbooks.artifact_integrity"
 STALE_CHECK_ID = "playbooks.activation_stale"
+INVALID_CHECK_ID = "playbooks.activation_invalid"
 REPLAY_POLICY_CHECK_ID = "playbooks.pending_event_replay_policy"
 REVIEWED_BUNDLES_CHECK_ID = "playbooks.reviewed_bundles"
 
@@ -217,6 +218,49 @@ async def _check_activation_stale(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_activation_invalid(ctx: DoctorContext) -> CheckResult:
+    """Name enabled activations with verified artifacts the loader cannot parse."""
+    playbooks = getattr(ctx.config, "playbooks", None)
+    if playbooks is None or not getattr(playbooks, "enabled", False):
+        return CheckResult(
+            id=INVALID_CHECK_ID, severity=Severity.INFO, detail="playbooks.enabled is false"
+        )
+    db = ctx.db
+    if db is None or not hasattr(db, "list_playbook_activations"):
+        return CheckResult(
+            id=INVALID_CHECK_ID, severity=Severity.INFO, detail="V2 artifact tables are not available"
+        )
+
+    from src.playbooks.activation import ActivationHealth, load_activation_health
+
+    contracts, profiles = await _lookups(ctx)
+    records = await load_activation_health(
+        db, contracts=contracts, profiles=profiles, enabled_only=True
+    )
+    invalid = [
+        {
+            "playbook_id": record.playbook_id,
+            "artifact_sha256": record.active_artifact_sha256,
+            "reasons": [reason.as_dict() for reason in record.reasons],
+        }
+        for record in records
+        if record.health is ActivationHealth.INVALID
+    ]
+    if not invalid:
+        return CheckResult(
+            id=INVALID_CHECK_ID,
+            severity=Severity.OK,
+            detail=f"{len(records)} enabled activation(s) have valid definitions",
+            data={"checked": len(records)},
+        )
+    return CheckResult(
+        id=INVALID_CHECK_ID,
+        severity=Severity.WARN,
+        detail=f"{len(invalid)} enabled activation(s) have invalid definitions; recompile and reactivate them",
+        data={"checked": len(records), "count": len(invalid), "invalid": invalid},
+    )
+
+
 
 
 async def _check_pending_event_replay_policy(ctx: DoctorContext) -> CheckResult:
@@ -353,6 +397,7 @@ def playbook_v2_checks() -> list[DoctorCheck]:
     return [
         DoctorCheck(id=CHECK_ID, run=_check_artifact_integrity, fix=None, owner=OWNER),
         DoctorCheck(id=STALE_CHECK_ID, run=_check_activation_stale, fix=None, owner=OWNER),
+        DoctorCheck(id=INVALID_CHECK_ID, run=_check_activation_invalid, fix=None, owner=OWNER),
         DoctorCheck(
             id=REPLAY_POLICY_CHECK_ID,
             run=_check_pending_event_replay_policy,

@@ -44,6 +44,10 @@ class ActivationHealth(str, Enum):
     UNAVAILABLE = "unavailable"
 
 
+class InvalidArtifactDefinition(ValueError):
+    """A verified artifact has bytes that fail the strict definition parser."""
+
+
 @dataclass(frozen=True, slots=True)
 class HealthReason:
     code: str
@@ -97,6 +101,7 @@ def evaluate_health(
     artifact_profile_fingerprints: Mapping[str, str] | None = None,
     stored_profile_fingerprint: str | None = None,
     artifact_sha_mismatch: bool = False,
+    invalid_artifact: str | None = None,
 ) -> tuple[ActivationHealth, tuple[HealthReason, ...]]:
     """Health for one activation.  First match wins; the order is the contract.
 
@@ -123,6 +128,10 @@ def evaluate_health(
             ),
         )
     if artifact is None or not artifact_present:
+        if artifact is not None and invalid_artifact is not None:
+            return ActivationHealth.INVALID, (
+                HealthReason("artifact_invalid", invalid_artifact),
+            )
         return ActivationHealth.UNAVAILABLE, (HealthReason("artifact_missing", "Artifact is unavailable"),)
     errors = validation.get("errors", [])
     if errors:
@@ -235,7 +244,9 @@ def _artifact_snapshots(definition: Any) -> tuple[dict[str, str], dict[str, str]
     )
 
 
-def _load_definition(path: str | None, artifact_sha256: str | None) -> Any | None:
+def _load_definition(
+    path: str | None, artifact_sha256: str | None, *, raise_invalid: bool = False
+) -> Any | None:
     """The stored artifact, or ``None`` when it is gone or unreadable.
 
     Unreadable counts as absent on purpose: ``playbooks.artifact_integrity``
@@ -265,8 +276,10 @@ def _load_definition(path: str | None, artifact_sha256: str | None) -> Any | Non
         raise ArtifactVerificationFailed(f"artifact at {target} does not match {artifact_sha256}")
     try:
         return load_definition_json(data.decode("utf-8"))
-    except Exception:  # noqa: BLE001 - any malformed artifact reads as absent
-        logger.warning("Playbook V2 artifact at %s could not be loaded for health", path)
+    except Exception as exc:  # noqa: BLE001 - malformed verified bytes are quarantined
+        logger.warning("Playbook V2 artifact at %s has an invalid definition: %s", path, exc)
+        if raise_invalid:
+            raise InvalidArtifactDefinition(str(exc)) from exc
         return None
 
 
@@ -315,13 +328,18 @@ async def load_activation_health(
         artifact_row = await db.get_playbook_artifact_row(sha) if sha else None
         ref = ArtifactRef.from_row(artifact_row) if artifact_row else None
         artifact_sha_mismatch = False
+        invalid_artifact = None
         try:
             definition = _load_definition(
                 artifact_row.get("path") if artifact_row else None,
                 sha,
+                raise_invalid=True,
             )
         except ArtifactVerificationFailed:
             artifact_sha_mismatch = True
+            definition = None
+        except InvalidArtifactDefinition as exc:
+            invalid_artifact = str(exc)
             definition = None
         artifact_commands, artifact_profiles = _artifact_snapshots(definition)
         current_commands = {}
@@ -347,6 +365,7 @@ async def load_activation_health(
                 artifact_row.get("profile_fingerprint") if artifact_row else None
             ),
             artifact_sha_mismatch=artifact_sha_mismatch,
+            invalid_artifact=invalid_artifact,
         )
         records.append(
             ActivationHealthRecord(
