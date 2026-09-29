@@ -164,7 +164,7 @@ It is opt-in: the software-factory policy forbids mandatory multi-pass review
 chains, so run it only on a document that warrants it. Workers never dispatch
 or decide; `aq review dispatch` answers `operator_only` to them.
 
-**Pick rungs from the installed ladder**, never from memory:
+**Read the installed ladder**, never recall it from memory:
 
 ```bash
 aq system list-intelligence-classes
@@ -174,18 +174,20 @@ aq agent list-profiles
 On the shipped ladder Fable is `deep-high`'s `anthropic` slice
 (`deep-high-claude`) and Astra is the OpenAI-only `astra-high`
 (`astra-high-codex`). An install whose `deep-high` OpenAI slice is
-`gpt-6-astra` has Astra on `deep-high-codex`; the commands below assume that.
+`gpt-6-astra` has Astra on `deep-high-codex`. Nobody picks those rungs: the
+project's router does, from a task's kind and class hint, so the loop steers
+families through kinds and the reviewer's provider exclusion.
 
 **Family diversity is observed, not configured.** Dispatch names no profile:
 each reviewer excludes the provider the author revision ran on and the router
 picks among the other families; a revision task is unrouted with the
-`--responder-class` hint; an author task's `--pin` does not carry over to
-later tasks. Failover inside a class crosses families: an
-Anthropic outage can move `deep-high-claude` work to `deep-high-codex`. So for
-every writing and reviewing task, check what actually ran:
+`--responder-class` hint, and the router routes it like any other task.
+Failover inside a class can cross families: an Anthropic outage can move
+`deep-high-claude` work to `deep-high-codex`. So for every writing and
+reviewing task, check what actually ran:
 
 ```bash
-aq task show <task-id>                         # provider_intent, rerouted_from, reroute
+aq task show <task-id>                         # route, provider_intent, rerouted_from
 aq task recent-activity --hours 48 --json      # items[].attempts[].model
 ```
 
@@ -195,20 +197,28 @@ record it so, and never claim coverage you did not observe.
 
 **Procedure.**
 
-1. Record the plan — review, author and reviewer rungs, round cap (at most
+1. Before round 1, file the author task with the kind whose lane is the
+   author's family. On the shipped routing policy, `design` (code design)
+   runs at `deep-high` on Claude first and falls back to Codex, and `art`
+   (art-heavy design) runs on Codex and holds for it:
+
+   ```bash
+   aq task create --project <project> --title "Write spec: <topic>" --description "<brief>" --type design
+   ```
+
+   Check the route the router wrote (`aq task show`). If the human requires a
+   family the router did not pick, the local operator or the supervisor may
+   pin that one task with `aq task route-override --task-id <author-task>
+   --profile-id <profile> --reason "..."` on the human's word; otherwise take
+   the family that ran and record it.
+
+2. Record the plan — review, the author's observed family, round cap (at most
    three) and deadline (default two working days) — as a comment on the
    author task, and append each round's result there. The revision number is
    not the round counter.
 
    ```bash
-   aq task comment <author-task> --body "Adversarial review plan: author deep-high-claude, reviewer deep-high-codex, cap 3 rounds, deadline <date>."
-   ```
-
-2. Before round 1, file the author task on the author's rung, with `--pin`
-   when the family is a requirement:
-
-   ```bash
-   aq task create --project <project> --title "Write spec: <topic>" --description "<brief>" --profile deep-high-claude --pin
+   aq task comment <author-task> --body "Adversarial review plan: author on deep-high-claude (routed), reviewers exclude its provider, cap 3 rounds, deadline <date>."
    ```
 
 3. Read the current revision from `aq review show --review-id <id>`, then
@@ -227,8 +237,8 @@ record it so, and never claim coverage you did not observe.
    aq review show --review-id <id> --revision <n> --comments
    ```
 
-5. For material defects, request changes on that exact revision, naming both
-   the responder class and profile:
+5. For material defects, request changes on that exact revision, naming the
+   responder class (a hint; the router routes the revision task):
 
    ```bash
    aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high
@@ -271,7 +281,7 @@ that pretends otherwise; contracting the verbs is a separate feature.
 | `not_dispatched` / `wrong_revision` | Commenting without holding the dispatch task, or on another revision. |
 | `anchor_required` | A dispatched reviewer's comment had neither `--quote` nor `--heading-path`. |
 | `duplicate_dispatch` | This revision was already dispatched; `--force` dispatches more. |
-| `routing.choice_forbidden` | `--to <profile>` on dispatch or a responder profile on a decision; the router routes both. |
+| `routing.choice_forbidden` | A profile or pin on a filing, a dispatch or a decision; the router routes every task. |
 | `operator_only` | Dispatch from a session that is neither the local operator nor elevated. |
 | `invalid_responder` / `invalid_responder_class` | Responder options on an approval, or a class that does not exist. |
 | `stale_revision` / `not_in_review` | The review moved or is not awaiting a decision; re-read it. |

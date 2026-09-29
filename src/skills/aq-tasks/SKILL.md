@@ -233,7 +233,7 @@ a task parked in `WAITING_INPUT` with no question row behind it.
 `create_task` is on the agent surface: a worker or reviewer session may
 file emergent work it discovers. A worker-filed task starts DEFINED with a
 `discovered-from` edge back to the filing task; a root filing also opens a
-routing gate, so triage — not the filer — dedupes and routes it.
+routing gate, which resolves when the project's router routes the task.
 
 A session whose profile grants `create_task_graph` (a planner) may file a whole
 graph with `--graph` / `--from-spec` and a `--reason`. Its nodes land under the
@@ -253,17 +253,22 @@ visible and, while open, blocks that task's successful close. `--parent <id>`
 (an authorised alternative parent) and `--root` (cross-cutting work) are
 deliberate choices, never a way to move required work out of your task's way.
 
-Profile ids are installation-specific. Confirm the enabled `lifecycle: pool`
-profiles this install actually has with `aq agent list-profiles` (and classes
-with `aq system list-intelligence-classes`) rather than trusting a literal id
-or ID prefix from any document — omitting `--profile` lets the project default
-apply, which is usually right.
+**File with hints, never a route.** The project's router (its bound routing
+playbook) picks every task's profile, provider and model. A filing that names
+a profile, provider, model or pin (on the CLI, or as a graph's `profile` or
+`pin` key) is refused with `routing.choice_forbidden` and creates nothing. Give
+the router two hints instead: the kind (`--type`; `design` is code design,
+`art` is art-heavy design) and, only when the work is harder or easier than its
+kind suggests, an intelligence class (`--intelligence-class`; list them with
+`aq system list-intelligence-classes`). The task is stored unrouted, the
+router routes it within a cascade, and `aq task show` / `aq task explain`
+print the route it chose and why.
 
 ```bash
 # Ad-hoc task creation.  --reason is required on a worker-filed task and is
 # stored on the discovered-from edge back to the task you hold.
 aq task create --project <pid> --title "..." --description "..." \
-  --profile <enabled-pool-profile-id> --priority 50 --reason "why this exists"
+  --type bugfix --priority 50 --reason "why this exists"
 
 # From a spec (preferred for multi-task graphs)
 aq task create --from-spec vault/projects/<pid>/specs/<slug>.md
@@ -272,7 +277,7 @@ aq task create --from-spec <path> --after-review <review-id>  # every node waits
 
 # Create under an existing container (single task or a --from-spec graph)
 aq task create --project <pid> --title "..." --description "..." \
-  --profile <enabled-pool-profile-id> --parent <container_task_id>
+  --type feature --intelligence-class deep-high --parent <container_task_id>
 
 # Explicitly at project level — the opt-out for cross-cutting work filed from
 # inside an epic's child task.  Mutually exclusive with --parent.
@@ -511,8 +516,9 @@ archived id can never be recreated in a different project.
 - Explain non-obvious moves. When you close a task with `--outcome pass`, the
   summary should tell the reader what you did and why; link to relevant findings and comments.
 - File emergent work rather than widening your own scope: `aq task create`
-  from a worker session is expected, and lands behind a routing gate for
-  triage. Don't build task *graphs* from a worker session unless your profile
-  grants `create_task_graph` (planners); `formula cook` is supervisor-only.
+  from a worker session is expected, with a kind and, if it matters, a class
+  hint; the project's router routes it. Don't build task *graphs* from a
+  worker session unless your profile grants `create_task_graph` (planners);
+  `formula cook` is supervisor-only.
 - Don't retry an `out of scope: <command>` error. It is a property of your
   token, not a transient failure; say so in a comment and close or ask instead.

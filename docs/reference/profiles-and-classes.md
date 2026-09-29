@@ -211,11 +211,12 @@ name across.
 **Profile** for a task
 ([`resolve_task_profile`](../../src/agents/routing.py)):
 
-1. `task.profile_id`
-2. `project.default_profile_id`
-3. — nothing. There is no implicit system profile at this rung; the deterministic
-   fallback in [`src/profiles/default_selection.py`](../../src/profiles/default_selection.py)
-   is applied earlier, by stamping `project.default_profile_id`.
+1. `task.profile_id`, which only the project's router (`task_route_apply`), a
+   failover, spill or undo move among the router's candidates, an audited
+   override (`aq task route-override`) or a role creator writes
+2. — nothing. There is no project default profile and no implicit system
+   profile: an `unrouted` task resolves to no profile, is not claimable, and
+   waits for its router ([agents and routing](../concepts/agents-and-routing.md)).
 
 > **Note.** The profile is never evidence of which model ran. The model is
 > recorded per attempt in `task_session_attempts`, and a live session reports
@@ -257,29 +258,38 @@ Read as: run the `claude` CLI, therefore provider `anthropic`; think at
 than waiting to be assigned; keep between zero and four of these alive
 fleet-wide; each needs a `project-repo` workspace.
 
-Because `default_class` is set, this profile offers routing exactly one class
-row. Because `lifecycle` is `pool`, its workers only ever claim tasks whose
+Because `default_class` is set, this profile is a router candidate for exactly
+one class. Because `lifecycle` is `pool`, its workers only ever claim tasks whose
 class is `standard-high`.
 
 ### A class that adds a provider
 
 Adding `vault/intelligence-classes/spark-low.md` with a `google` slice and no
-`anthropic` slice makes `spark-low` routable on the `gemini` harness and
-refused on `claude` — `task_route` answers *"intelligence class 'spark-low' has
-no model mapping for provider 'anthropic'"* rather than launching something
-else.
+`anthropic` slice makes `spark-low` runnable on the `gemini` harness and not on
+`claude`. The router never offers a `claude` candidate for it, and an override
+onto one is refused — `aq task route-override` answers *"profile
+'standard-high-claude' cannot run class 'spark-low': its provider 'anthropic'
+maps no model for 'spark-low'"* rather than launching something else. The
+router considers the class at all only once its policy's `class_order` names
+it.
 
-### Pinning and unpinning one task
+### Re-routing and overriding one task
 
 ```bash
-aq task edit --task-id demo.4 --intelligence-class deep-high
-aq task edit --task-id demo.4 --intelligence-class null --profile-id null
+aq task route --task-id demo.4 --intelligence-class deep-high --reason "needs deeper reasoning"
+aq task route-override --task-id demo.4 --profile-id deep-high-codex \
+  --reason "claude is exhausted and this blocks the release"
+aq task route --task-id demo.4
 ```
 
-The first freezes the class; the next routing run only picks a profile to serve
-it. The second clears both fields, which makes the task a `task.route_needed`
-candidate again on the next orchestrator cycle. Neither is accepted while a
-worker holds the task.
+The first stores a new class hint, clears the task's profile, class and route
+record, and sets it `unrouted`, so the router plans it again on the next cascade;
+the router honours the hint up to the kind's `max_class`. `aq task edit
+--intelligence-class` on a queued, unclaimed task does the same. The second is
+the emergency override (local operator or live supervisor only): it pins the
+task to that profile, and `aq doctor --check routing.bypassed` lists it until
+the third sends the task back to the router. None is accepted while a worker
+holds the task, and no filing command takes a profile.
 
 ## Operator commands
 
@@ -298,7 +308,7 @@ worker holds the task.
 | `aq agent start-terminal` | Start a task-free interactive terminal for one worker. |
 | `aq system list-intelligence-classes` / `edit-intelligence-class` | Read and edit classes. Edits are revision-checked and refuse a stale write. |
 | `aq system reload-config` | Force a vault rescan. |
-| `aq task route` | The only way to resolve a `routing` gate by hand. |
+| `aq task route` / `route-override` | Send a queued task back to its router, optionally with a new class hint or kind; or, in an emergency, override its route (local operator or supervisor only, with a reason). An open `routing` gate resolves when the router, or an override, writes the route. |
 
 ## Related pages
 

@@ -18,6 +18,21 @@ the re-route engine), `.4` (in-flight failures), `.5` (dashboard, docs, end-to-e
 [worker pools](../guides/worker-pools.md),
 [assignment routing as a playbook](../superpowers/specs/2026-09-06-assignment-routing-as-playbook.md)
 
+> **Superseded in part by mandatory task routing (2026-09-28,
+> `projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md`).** The project's router
+> (its bound routing playbook, `projects.assignment_playbook_id`) is now the only writer of a
+> worker route, and it writes `provider_intent` itself: `pinned` for a hold lane (art design,
+> say) or an audited `aq task route-override`, else `class_only`. No filing surface takes a
+> profile, a pin or an intent any more, so the D9 surfaces that set one are refused with
+> `routing.choice_forbidden`. There is no project default profile, so nothing here that
+> derives, prefers or falls back to "the project default" or its equivalent rung (D12's
+> `order`, D13's *Unrouted* row and allocation preference, D22's `order` comment, §9's load
+> balancing) applies. Failover, capacity spill, reroute-undo, a manual `aq provider reroute`
+> (even `--force`) and `aq pool provider apply` move a router-routed task only among the
+> candidates the router recorded in `tasks.route.candidates`; a move outside them is an
+> override. Empty `provider_failover.order` means `WORKER_PROVIDERS` order (`claude`, then
+> `codex`), then any other provider. Each affected rule below carries its own note.
+
 Every numbered decision below is marked **D<n>** so an implementation task can
 cite it. Where a decision rejects an alternative, the alternative and the reason
 are stated, because the next person to touch this will otherwise propose it
@@ -354,6 +369,13 @@ A reader that finds `pinned`/`preferred` with `profile_id IS NULL` treats it as
 retirement paths already null or repoint `profile_id`, and a constraint would
 turn an operator's profile cleanup into a constraint violation.
 
+> **Superseded by mandatory task routing (2026-09-28):** `task_route_options` is gone; the
+> router plans with `task_route_plan` and writes with `task_route_apply`, and a task it
+> routes is `class_only` unless its lane holds (`pinned`). `preferred` survives only on
+> legacy rows and on role tasks. A different cross-column check now exists,
+> `ck_tasks_route_source_profile` (`(profile_id IS NULL) = (route_source = 'unrouted')`);
+> `delete_profile` satisfies it by setting `route_source = 'unrouted'` in the same statement.
+
 ### D9 — who sets which intent
 
 The command argument is `provider_intent`; the CLI sugar is `--pin` (= `pinned`)
@@ -382,6 +404,25 @@ follows **how the profile was chosen**:
 | `--profile-id` fill-in on `create_task_graph` for nodes that left it empty | `preferred` (the caller supplied it) |
 | Playbook `agent_task` step naming a profile | `preferred`; `pin_provider: true` → `pinned` |
 | Project default | never written to the row, so `class_only`. `projects.default_profile_id` expresses the project's *first choice of provider*, not a requirement (D13). |
+
+> **Superseded by mandatory task routing (2026-09-28):** every filing and routing row of
+> this table is gone. `aq task create` has no `--profile`, `--pin` or `--provider-intent`;
+> `aq task edit` has no `--profile-id`, `--pin` or `--provider-intent`; `aq task route` takes
+> no profile and only re-runs the router; a graph node, `defaults` or `parent:` with
+> `profile:` or `pin:`, a `--profile-id` fill-in, and a playbook `agent_task` step's
+> `pin_provider` are all refused with `routing.choice_forbidden`, and
+> `projects.default_profile_id` was dropped. A filer passes hints only: `--type` (the kind)
+> and `--intelligence-class`. The intent is written by:
+>
+> | Writer | Intent |
+> |---|---|
+> | The router (`task_route_apply`) | `pinned` when the chosen lane holds (art design, say), else `class_only` |
+> | `aq task route-override` (local operator or live supervisor, with a reason) | `pinned`, with `candidates = [profile]` |
+> | A role creator (`triage`, `spec-ingest`, `reviewer`, `final-reviewer`) | `preferred` |
+> | A new, unrouted task | `class_only` |
+>
+> The rest of D9 (the graph `pin` key, *Who may pin*, *Why an explicit profile is
+> `preferred`*) describes the retired filing surfaces and is kept as history.
 
 The graph grammar keeps refusing `provider`, `harness` and `model`
 (`src/task_graph/parser.py`, `unsupported_routing`): the profile already names
@@ -473,7 +514,10 @@ else in this section is active:
 3. **The catalog filter.** `build_route_options` annotates every row with
    `provider_key`, `provider_state` and `launchable`; automatic selection
    excludes non-launchable rows and reports them as `unavailable_options`,
-   beside the existing `disabled_options`.
+   beside the existing `disabled_options`. *Since mandatory task routing (2026-09-28)*
+   `build_route_options` is gone: the router's planner (`src/routing/planner.py`) reads
+   provider availability itself, never chooses an unlaunchable provider and answers `held`
+   when nothing is launchable.
 
 Moving a task is **policy**, so it is a command driven by a playbook, like
 assignment routing and the CI sentinel:
@@ -512,6 +556,15 @@ policy == "same_class":
 
 * **`order`** is `provider_failover.order`; empty means the project default's
   provider first, then `WORKER_PROVIDERS` order.
+  *Superseded by mandatory task routing (2026-09-28):* there is no project default, so an
+  empty `order` means `WORKER_PROVIDERS` order (`claude`, then `codex`), then any other
+  provider (`provider_order`, `src/providers/reroute.py`). And the loop above applies only
+  to a legacy task with no recorded candidates: a router-routed task moves to the next entry
+  of `tasks.route.candidates` whose profile still exists and whose provider is available,
+  in the router's order, and holds when none qualifies. A candidate's own class is kept,
+  so only the narrow lanes that map a class change it. `aq provider reroute --to-profile`
+  (even with `--force`) is limited to the candidates as well; a move outside them is an
+  `aq task route-override`.
 * **The class never changes.** v1 has exactly two policies, `same_class` and
   `hold`. Cross-class substitution (`astra-high → deep-high`) is a non-goal: it
   is precisely the silent model swap the operator ruled out, and a human who
@@ -547,6 +600,14 @@ policy == "same_class":
 | **Playbook `agent_task` steps** | The created task follows every rule above — a step that names a profile creates a `preferred` task (D9), so it fails over like any other. The run's wait is untouched: it ends when the step's `timeout_seconds` does (see §9 for why that is the only way it ends today), and the run overlay shows the child's `provider_hold` as the reason it is waiting. | `pin_provider: true` on the step. The child holds; the run waits out the outage or times out, which is the author's choice to make. |
 | **Headless `llm` steps and other direct-path callers** | See D13a. | n/a |
 
+> **Superseded by mandatory task routing (2026-09-28):** the *Unrouted* row is gone. There
+> is no project default and no `_effective_default_profile_id`: an unrouted task
+> (`route_source = 'unrouted'`, `profile_id` NULL) is not claimable, adds no pool demand and
+> waits for its project's router. The router never chooses an unlaunchable provider (it stays
+> among the candidates, for a later move) and holds the task when nothing is launchable. In
+> the *Playbook `agent_task` steps* row, a step may name only a role profile and
+> `pin_provider` is refused; its task is routed like any other.
+
 **Project allocation preference (provider-worker-allocation-controls, Task 7).**
 When `projects.preferred_provider` is set (a harness provider key, such as
 `codex`), automatic routing for unrouted and `class_only` work filters the
@@ -561,6 +622,14 @@ preferred provider, or no route when none exists. Pool demand, dispatch and
 claim default widening share that derived value; it is never persisted over
 `projects.default_profile_id`. Clearing the preference restores D13's normal
 availability fallback. The reviewed assignment-routing contract is unchanged.
+
+> **Superseded by mandatory task routing (2026-09-28):** `preferred_provider` is now an input
+> to the router only: its planner filters the candidates to that provider and answers
+> `no_candidates` with `preferred_provider_unavailable` when none remain. Creation does no
+> class-match selection, and there is no derived project default or default widening.
+> `aq pool provider apply` with `receive_new_work` resets the project's queued, unclaimed
+> router routes to `unrouted` so the router re-plans them with the preference applied,
+> instead of sweeping them to the preferred provider's rung.
 
 **As built (`bold-rapids.4`).** The decision is one pure function,
 `decide(availability, failure)` in `src/providers/inflight.py`, read *after*
@@ -665,7 +734,9 @@ So:
 `task_route_options` gains one outcome, **`held`**: the task has options in
 principle but every one is on an unavailable provider. The routing playbook ends
 the rule quietly on it, instead of failing a run every two minutes per task for
-the length of an outage.
+the length of an outage. (Since mandatory task routing, 2026-09-28, `task_route_options` is
+gone; its successor `task_route_plan` answers `held` in the same case, and `aq task explain`
+reports the task as `route_held`.)
 
 ## 4. Capacity protection
 
@@ -863,6 +934,10 @@ recorded, undoable re-route bounded by the D15 per-task limits.
   headroom holds `spill_no_target`. At most `spill.max_per_sweep` tasks move per sweep;
   the rest hold `spill_sweep_limit` naming the target the next sweep would use and how many
   are `ahead`.
+  *Since mandatory task routing (2026-09-28):* a router-routed task spills only to its own
+  `tasks.route.candidates`, in the router's order, so a spill never breaks a lane (an
+  integration repair never spills to OpenCode, art design never leaves Codex); only a
+  legacy task with no candidates keeps the same-class search above.
 * **S6 — a project's preferred provider.** When `projects.preferred_provider` is set,
   only rungs on that provider are targets. Spill never moves a task off it: a task whose
   source is on the preferred provider with no other same-class pool on that provider
@@ -913,6 +988,9 @@ When a provider leaves the unavailable half:
   running or claimed (the `update_task_routing` guard), writes a `task_reroutes`
   row with `reason_code = operator_undo`, and clears the marker. Undo is refused
   while the original provider is still unavailable unless `--force`.
+  *Since mandatory task routing (2026-09-28):* for a router-routed task, undo is refused,
+  `--force` or not, when `rerouted_from` is not among `tasks.route.candidates`; returning
+  it there would be an override.
 * **Intent never changes on a re-route.** A `preferred` Codex task moved to
   Claude is still `preferred`; if Claude later fails and Codex is back, D12 may
   move it home, subject to `max_auto_per_task`.
@@ -1178,6 +1256,11 @@ llm:
   fallback: null                 # optional second credential block (D13a); restart-required like the rest of llm:
 ```
 
+> **Superseded by mandatory task routing (2026-09-28):** an empty `order` no longer puts the
+> project default's provider first — there is no project default. It means
+> `WORKER_PROVIDERS` order (`claude`, then `codex`), then any other provider, and it is
+> consulted only for a legacy task with no recorded route candidates.
+
 * **`mode`** — `off` does nothing. `observe` runs evidence, state, events,
   surfaces and `provider_reroute` in plan-only form, but suppresses no launch
   and moves no task; it is how an operator watches the detector on their own box
@@ -1272,6 +1355,12 @@ pool to `(0, 0)` is pinned in `tests/test_provider_suppression.py` (D15's
 decision). A guard asserts the claim SQL references no provider table, and the existing
 claim-frontier perf test must still pass unchanged.
 
+> **Superseded by mandatory task routing (2026-09-28):** the D9 filing rows, the pin
+> refusal for a worker token or an inline graph (every principal is now refused with
+> `routing.choice_forbidden`), the vault formula pin and the availability-aware project
+> default no longer exist; `tests/test_routing_mandatory.py` pins the refusals. The re-route
+> and spill tests also pin that a routed task moves only among `tasks.route.candidates`.
+
 **In-flight** (`tests/test_provider_inflight.py`, `.4`): a startup death on a
 usage dialog leaves `retry_count` unchanged and resumes on the other provider; a
 mid-task `RATE_LIMIT` exit produces the WIP commit, the push and the hand-off
@@ -1316,6 +1405,10 @@ assertion takes `perf_strict`.
   the seam (D0).
 * **Load balancing.** `class_only` placement prefers the project default's
   provider and merely avoids unavailable ones; it does not spread load.
+  *Superseded by mandatory task routing (2026-09-28):* there is no project default. The
+  router places every task and balances at routing time by its policy's weights (pool
+  slots, routed backlog, provider usage and availability; ties go `codex`, `claude`,
+  `opencode`).
 * **`agent_task` waits.** `ChildTaskCompleted` has no producer in `src/` today, so
   an `agent_task` wait ends only at its step deadline whatever this design does to
   the child. No shipped playbook uses the step; recorded because D13 depends on

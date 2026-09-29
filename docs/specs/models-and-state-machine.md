@@ -104,6 +104,11 @@ Classifies the nature of a task for reporting and workflow differentiation.
 | `RESEARCH` | Investigation or research. |
 | `PLAN` | Plan generation task. |
 | `SYNC` | Workspace synchronization task (orchestrator-managed). |
+| `DESIGN` | Code or system design; the router sends it to the code-design lane (mandatory task routing, 2026-09-28). |
+| `ART` | Art-heavy design; the router sends it to the art-design lane. |
+
+Since mandatory task routing (2026-09-28) the type is also the filer's **kind** hint to the
+project's router: the routing policy maps each kind to a class, a class ceiling and a lane.
 
 ---
 
@@ -209,9 +214,13 @@ Represents a software project managed by the system. Projects are the top-level 
 | `budget_limit` | `int \| None` | Optional hard cap on total tokens. When set, no new tasks are started once this limit is reached. `None` means unlimited. |
 | `repo_url` | `str` | Repository URL for the project. Empty string if not set. |
 | `repo_default_branch` | `str` | Default branch name for the project's repository. Defaults to `"main"`. |
-| `default_profile_id` | `str \| None` | Default agent profile ID for tasks in this project. `None` if no profile resolved. |
-| `assignment_playbook_id` | `str \| None` | Assignment-routing playbook selected for the project. `None` uses the bundled default. |
+| `assignment_playbook_id` | `str` | The project's router binding: the routing playbook that routes its tasks and is the only writer of their worker routes. Never `None` (NOT NULL); defaults to `default-assignment-routing` (config `routing.default_router`). Re-bound with `aq project set <project> router <playbook-id>` (local operator only). |
 | `integration_mode` | `str \| None` | Project integration policy: `"direct"`, `"pull_request"`, or `None` to inherit `integration.default_mode`. |
+
+> **Superseded by mandatory task routing (2026-09-28,
+> `projects/agent-queue/specs/2026-09-28-mandatory-task-routing.md`):** `Project` no longer
+> has `default_profile_id` ("default agent profile for tasks in this project"). The column
+> was dropped in revision `a00000000043`, and no path falls back to a project default.
 
 ---
 
@@ -239,8 +248,13 @@ The central entity of the system. A task represents a unit of work to be execute
 | `pr_url` | `str \| None` | URL of the pull request created for this task. `None` until a PR exists. |
 | `plan_source` | `str \| None` | Filesystem path to the archived plan file that auto-generated this task. `None` for manually created tasks. |
 | `is_plan_subtask` | `bool` | `True` if this task was automatically generated from a parent task's plan output. Defaults to `False`. |
-| `task_type` | `TaskType` | Classification of the task (feature, bugfix, docs, etc.). Defaults to `FEATURE`. |
-| `profile_id` | `str` | ID of the agent profile to use for execution. Empty string if not set. |
+| `task_type` | `TaskType` | Classification of the task (feature, bugfix, docs, etc.). Defaults to `FEATURE`. The filer's kind hint to the router. |
+| `profile_id` | `str \| None` | ID of the agent profile to use for execution. Written only by the project's router, an audited override or a role creator — never by a filer. `None` while the task is unrouted. |
+| `intelligence_class` | `str \| None` | The class the route runs at. Written with `profile_id` by the router; `None` while unrouted. |
+| `provider_intent` | `str` | `pinned`, `preferred` or `class_only` (provider-failover D8). The router writes `pinned` for a hold lane or an override, else `class_only`. Defaults to `class_only`. |
+| `route_source` | `str` | Who wrote the route: `unrouted` (no route yet), `router`, `override`, `role` or `legacy` (written before the cutover). Defaults to `unrouted`. `(profile_id is None) == (route_source == "unrouted")` is a database check. |
+| `class_hint` | `str \| None` | The filer's intelligence-class hint (`--intelligence-class`), honoured by the router up to the kind's class ceiling. |
+| `route` | `dict \| None` | The router's record of the route: hints, classification, rule, lane, `candidates`, scores, reason, policy digest, playbook run, and `override` / `legacy` entries. Failover and spill move the task only among `route.candidates`. |
 | `preferred_workspace_id` | `str` | ID of a specific workspace to use. Empty string if not set. |
 | `attachments` | `list[str]` | File paths or URLs attached as additional context. Defaults to empty list. |
 
@@ -280,7 +294,9 @@ the "workspace identity, dynamic profile" model.
 part of this rewrite (see the design doc above). The coordination-category
 filter (`_task_agent_type_matches`) the former column supported was specced
 in `design/agent-coordination.md` but never implemented; profile selection
-now uses `task.profile_id → project.default_profile_id` directly.
+now uses `task.profile_id` directly. (It once fell back to
+`project.default_profile_id`; mandatory task routing, 2026-09-28, removed the project
+default, so a task runs only on the profile its router, an override or a role wrote.)
 
 ---
 

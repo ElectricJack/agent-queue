@@ -38,13 +38,12 @@ class GateCommandsMixin:
         if isinstance(waiters, str):
             waiters = [waiters]
 
-        # A ``routing`` gate means "this task still needs a profile". Attaching
-        # one to a task that already has a profile creates work that cannot be
-        # done: the default pipeline then ensures a triage task, an agent
-        # starts, finds nothing unrouted, and closes — once per created task.
-        # The gate itself is never resolved either; it sits open until the task
-        # finishes and it expires as "all waiters terminal", which reads as a
-        # task that ran unrouted when in fact it was routed at creation.
+        # A ``routing`` gate means "this task is waiting for its router".
+        # Only a route write resolves one (``task_route_apply`` or the
+        # override), so a gate on a task that already has a profile is never
+        # resolved: it sits open until the task finishes and expires as "all
+        # waiters terminal", which reads as a task that ran unrouted when in
+        # fact it was routed.
         if str(gate_type) == "routing" and waiters:
             unrouted = []
             for w in waiters:

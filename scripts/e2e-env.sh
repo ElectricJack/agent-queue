@@ -467,8 +467,8 @@ tags: [profile, agent-type, e2e]
 # E2E $role
 
 ## Role
-A task-lifecycle profile S4 routes the cooked formula nodes to with
-\`aq task route\`; a formula node carries hints only.
+A task-lifecycle profile S4 routes the cooked formula nodes to, standing in
+for the project's router; a formula node carries hints only.
 
 ## Config
 \`\`\`json

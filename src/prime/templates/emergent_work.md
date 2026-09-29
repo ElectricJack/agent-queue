@@ -9,12 +9,15 @@ your task *is* to file an epic, file it with its children in one graph whose `pa
 block creates it (`--root` places it at the project root), never as a plain task: a
 plain one is claimable before its children are moved under it. Your
 session token cannot read the project's queue (`list_tasks` is off the agent surface), so
-do not try to deduplicate by listing — a worker-filed task lands DEFINED with a routing
-gate for triage, which is where dedup and routing happen. Write the title so that
+do not try to deduplicate by listing — a worker-filed task lands DEFINED where the
+supervisor sees it, and the project's router routes it. Write the title so that
 judgement is easy: name the symptom and the file, not a generic area.
 
 Use `aq task create --project "$AQ_PROJECT_ID" --title "..." --description "..."
---reason "..."` with a clear title and description grounded in what you found. Pass
+--reason "..."` with a clear title and description grounded in what you found. Give the
+kind with `--type` (`bugfix`, `docs`, `test`, ...) and, only when the work is harder or
+easier than its kind suggests, an `--intelligence-class` hint; never a profile, provider,
+model or pin, which the router alone chooses (`routing.choice_forbidden`). Pass
 `--project` explicitly: without it the CLI first asks the daemon to list projects, which
 your token refuses. The worker filing path creates the `discovered-from` edge back to the
 task you hold; make `--reason` say why the task exists, referencing the current task and

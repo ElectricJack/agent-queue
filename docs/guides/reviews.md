@@ -95,7 +95,7 @@ plus the session id, so the audit trail always shows who actually pressed the
 button.
 
 Dispatch leaves the review state, decider, and gate unchanged. `aq review show`
-lists each selected profile, pinned revision, comment mode, task id, and task
+lists each dispatch's class hint, pinned revision, comment mode, task id, and task
 state. The reviewer reads the exact revision from its task instructions,
 anchors each finding with `--quote` or `--heading-path`, then closes its task
 with a verdict summary. The operator still decides the gate.
@@ -254,7 +254,7 @@ author and the reviewer; they never dispatch or decide.
 ### Rung names come from the installed ladder
 
 "Fable" and "Astra" are model families, not profile ids. Read the rungs off
-the install before choosing:
+the install before reading a route:
 
 ```bash
 aq system list-intelligence-classes
@@ -265,9 +265,13 @@ On the shipped ladder Fable is the `anthropic` slice of `deep-high`
 (`claude-fable-5`, rung `deep-high-claude`), and Astra (`gpt-6-astra`) is the
 OpenAI-only class `astra-high` on rung `astra-high-codex`; `deep-high-codex`
 runs `gpt-5.6-sol`. An install can differ: where `deep-high`'s OpenAI slice is
-`gpt-6-astra`, Astra *is* `deep-high-codex`. The examples below assume that
-install — Fable authors on `deep-high-claude`, Astra reviews on
-`deep-high-codex`. On the shipped ladder, substitute `astra-high-codex`.
+`gpt-6-astra`, Astra *is* `deep-high-codex`. Nobody picks those rungs: the
+project's router does, from a task's kind and class hint, so the loop steers
+families through kinds and the reviewers' provider exclusion. The examples
+below assume that install — a code-design author routed to `deep-high-claude`
+(Fable), and reviewers, which exclude Anthropic, routed to `deep-high-codex`
+(Astra). On the shipped ladder that reviewer runs `gpt-5.6-sol`; record the
+model that actually ran.
 
 ### Family diversity is observed, not configured
 
@@ -278,8 +282,11 @@ No flag guarantees which family runs a turn:
   other families; it is `class_only`, so it can fail over.
 - `aq review decide --decision request_changes` files the revision task
   unrouted with the class hint, `class_only` — never `pinned`.
-- `aq task create --pin` pins the first author task only. The pin does not
-  carry over to later reviewer or revision tasks.
+- The author task carries a kind, not a profile: `--type design` routes it to
+  the code-design lane (Claude first, then Codex) and `--type art` to the
+  art-design lane (Codex, held). Only the local operator or a live supervisor
+  session may pin it to one family, with `aq task route-override` on a human's
+  word; nothing pins the later reviewer or revision tasks.
 - Failover inside one class crosses families. During an Anthropic outage a
   task on `deep-high-claude` can be re-routed to `deep-high-codex`, which on
   the install above is Astra — author and reviewer on one family, with no
@@ -289,26 +296,42 @@ So a round's cross-family claim comes from what actually ran. For every
 writing and reviewing task in the round:
 
 ```bash
-aq task show <task-id>                         # provider_intent, rerouted_from, reroute
+aq task show <task-id>                         # route, provider_intent, rerouted_from
 aq task recent-activity --hours 48 --json      # items[].attempts[].model: what really ran
 ```
 
 If the required family was unavailable, or any material writing or review
 turn failed over or reports no model, label the round **inconclusive for
 cross-family coverage** in your round record. Do not report coverage you did
-not observe, and do not invent a pin flag in a note. You can wait for the
-provider to recover and dispatch the same revision again deliberately (see
-`--force` below). A `--pin` option on dispatch and decide is a possible later
-enhancement, not part of this recipe.
+not observe. You can wait for the provider to recover and dispatch the same
+revision again deliberately (see `--force` below). Dispatch and decide take no
+profile and no pin: the reviewers' provider exclusion is the only family
+control they carry.
 
 ### Before the first round
 
-Choose the review, the author and reviewer roles, a cap of at most **three
-critique rounds**, and a deadline (default: two working days). Record them as
-a comment on the author task, and keep appending each round's result there:
+File the author task with the kind whose lane is the author's family, never a
+profile. On the shipped routing policy `--type design` (code design) runs at
+`deep-high` on Claude first and falls back to Codex, and `--type art`
+(art-heavy design) runs on Codex and holds for it:
 
 ```bash
-aq task comment <author-task> --body "Adversarial review plan: author deep-high-claude (Fable), reviewer deep-high-codex (Astra), cap 3 rounds, deadline <date>."
+aq task create --project <project> --title "Write spec: <topic>" --description "<brief>" --type design
+```
+
+Check the route the router wrote (`aq task show <author-task>`). If the human
+requires a family the router did not pick, you or the supervisor may pin that
+one task on the human's word with `aq task route-override --task-id
+<author-task> --profile-id <profile> --reason "..."`; otherwise take the family
+that ran and record it.
+
+Then choose the review, a cap of at most **three critique rounds**, and a
+deadline (default: two working days). Record them, with the author's observed
+family, as a comment on the author task, and keep appending each round's result
+there:
+
+```bash
+aq task comment <author-task> --body "Adversarial review plan: author on deep-high-claude (routed, Fable), reviewers exclude its provider, cap 3 rounds, deadline <date>."
 ```
 
 The revision number is **not** the round counter. An imported vault edit or
@@ -317,14 +340,8 @@ the same revision twice. Count rounds in your record.
 
 ### One round
 
-1. **Author.** Before round 1 only: file the author task on the author's
-   profile, with `--pin` when the family is a requirement.
-
-   ```bash
-   aq task create --project <project> --title "Write spec: <topic>" --description "<brief>" --profile deep-high-claude --pin
-   ```
-
-   The author submits with `aq review submit --task-id <task> --file <draft>
+1. **Author.** Before round 1 only, the author task filed above writes the
+   draft. It submits with `aq review submit --task-id <task> --file <draft>
    --kind spec --title "…"` and closes with the review id and the revision's
    content hash (`revision.content_sha256` in `aq review show --review-id <id>
    --json`) in its summary. Closing the task approves nothing.
@@ -349,7 +366,7 @@ the same revision twice. Count rounds in your record.
    ```
 
 4. **Request changes** for material defects, on that exact current revision,
-   naming both the responder class and the profile:
+   naming the responder class (a hint; the router routes the revision task):
 
    ```bash
    aq review decide --review-id <id> --revision <n> --decision request_changes --note "Round 1 of 3: address or explicitly rebut every [blocking] finding" --responder-class deep-high
@@ -369,10 +386,9 @@ the same revision twice. Count rounds in your record.
 
 ### Rules that keep the loop honest
 
-- **No routine `--force`.** `duplicate_dispatch` for the same revision and
-  profile means the dispatch already exists — deduplication working. Pass
-  `--force` only to deliberately replace a failed or inconclusive round, and
-  record why.
+- **No routine `--force`.** `duplicate_dispatch` for the same revision means
+  the dispatch already exists — deduplication working. Pass `--force` only to
+  deliberately replace a failed or inconclusive round, and record why.
 - **`stale_revision` means re-read.** The review moved: `aq review show`, then
   act on the current revision. Never change the number blindly.
 - **`vault_diverged` means someone edited the vault file.** Promote the edit
@@ -494,7 +510,7 @@ most likely to meet:
 | `not_dispatched` / `wrong_revision` | A worker tried to comment without holding the matching dispatch task, or on a different revision. | Read the pinned revision in the task description and comment from that task's session. |
 | `anchor_required` | A dispatched reviewer commented without `--quote` or `--heading-path`. | Anchor the finding to the text or section it is about. |
 | `duplicate_dispatch` | This revision has already been dispatched. | Inspect `aq review show`, or pass `--force` to dispatch more reviewers. |
-| `routing.choice_forbidden` | `aq review dispatch --to <profile>` or a responder profile on a decision: reviewers and revision tasks are routed by the router. | Pass `--count`/`--class` to dispatch, `--responder-class` to decide. |
+| `routing.choice_forbidden` | A profile or pin on a filing (`aq task create`), a `--to <profile>` on a dispatch, or a responder profile on a decision: the router routes every task. | Give hints instead: `--type`/`--intelligence-class` to a filing, `--count`/`--class` to dispatch, `--responder-class` to decide. |
 | `operator_only` | `aq review dispatch` from a session that is neither the local operator nor elevated. | Dispatch as the local operator or from the supervisor. |
 | `invalid_responder` / `invalid_responder_class` | Responder routing on an approval, or an unknown class. | `aq system list-intelligence-classes`, then name a class that exists. |
 | `local_operator_only` | A session-scoped principal tried to `delegate` or `import-edits`, or the supervisor tried to set `review_delegate_to`. | Re-run the command as the local operator. |
@@ -546,8 +562,9 @@ something else.
   the operator's side of the cross-family recipe.
 - [Quick mini-project ideation](mini-projects.md) — an explicitly requested
   facilitator session that produces one plan for this review surface.
-- [Provider failover](../specs/provider-failover.md) — why a `preferred`
-  task can change provider, and where attempt attribution is recorded.
+- [Provider failover](../specs/provider-failover.md) — why a routed task can
+  change provider among its route candidates, and where attempt attribution is
+  recorded.
 - [Escalations and the hourly digest](escalations.md) — the other "human
   in the loop" surface; reviews share its local-operator-vs-supervisor
   principal model.

@@ -175,7 +175,7 @@ provider_failover:
 | Key | Default | Bounds | What it does |
 |---|---|---|---|
 | `mode` | `enforce` | `off`, `observe`, `enforce` | `enforce` suppresses launches against an unavailable provider and lets the sweep move work. `observe` tracks state, emits events, notifies and serves every surface, but suppresses nothing and moves nothing automatically. `off` records nothing. |
-| `order` | `[]` | List of provider keys; a duplicate is a warning | Failover target preference. Empty means the project default's provider first, then `claude`, then `codex`, then any other provider. |
+| `order` | `[]` | List of provider keys; a duplicate is a warning | Failover target preference for a task with no router candidates (a legacy route). Empty means `claude`, then `codex`, then any other provider. A router-routed task ignores it and moves only among `tasks.route.candidates`, in the router's order. |
 | `default_policy` | `same_class` | `same_class`, `hold` | What a class does when its provider is unavailable: move to the same class elsewhere, or hold. |
 | `classes` | `{}` | Map of class id to `same_class` or `hold` | Per-class override of `default_policy`. |
 
@@ -234,7 +234,8 @@ skips the trickle and the per-task limits.
 
 **`spill`** — capacity spill: the second pass of the automatic sweep moves READY work
 off a pool that cannot serve it (full, disabled, quarantined or out of project room) to a
-same-class pool with free capacity in the same project
+same-class pool with free capacity in the same project — for a router-routed task, only
+to one of its route candidates
 ([provider-failover D24](../specs/provider-failover.md#4a-capacity-spill-d24)). It runs
 only when failover would (`mode: enforce`, `reroute.enabled: true`), never moves a
 `pinned` task or a task off its project's preferred provider, and each move counts

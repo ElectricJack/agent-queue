@@ -38,8 +38,9 @@ capability: an agent's session token is scoped to its own task.
 ## Work
 
 **Task** — one unit of work, with a title, a description, a status and an
-owning project. Tasks carry the routing fields a worker needs (an intelligence
-class and a profile) and, optionally, declared deliverables.
+owning project. Tasks carry the hints their filer gave, the route the project's
+router wrote from them (an intelligence class and a profile) and, optionally,
+declared deliverables.
 
 **Task status** — one of `DEFINED`, `READY`, `ASSIGNED`, `IN_PROGRESS`,
 `WAITING_INPUT`, `PAUSED`, `COMPLETED`, `FAILED`, `BLOCKED`
@@ -90,15 +91,66 @@ A class resolves to a concrete provider model at launch.
 **Provider / model** — the LLM vendor and the specific model a class resolves
 to. A class is a policy; a model is what actually answers.
 
-**Routing** — deciding which profile and intelligence class a task needs.
-On current `main` this is a playbook, not orchestrator code: the orchestrator
-emits `task.route_needed` for a task missing those fields and decides nothing
-else ([`src/prompts/default_playbooks/default-assignment-routing.md`](../../src/prompts/default_playbooks/default-assignment-routing.md)).
+**Routing** — deciding which profile and intelligence class a task runs on.
+It is mandatory and has one writer, the project's router: the orchestrator
+emits `task.route_needed` for a queued task that has no route and decides
+nothing else, and no filing surface can choose a route
+([`src/routing/`](../../src/routing/)).
 
-**Profile pin** — an explicit `profile_id` on a task, which overrides routing.
-Clearing the pin lets routing choose again. It fixes the *profile*, not the
-provider: an explicit profile is only a preference for its provider (see
-provider intent).
+**Router** — the routing playbook that routes a project's tasks,
+`default-assignment-routing` unless the project is re-bound. It carries the
+routing policy as a reviewed YAML block (kind → class, lanes, reserved cells,
+balance weights). Its `task_route_plan` step applies that policy
+deterministically to the task's hints and the live fleet, an LLM step only
+classifies a task when the policy needs an answer its hints do not give, and
+`task_route_apply`, which only the bound router may call, writes the route. A
+router is *ready* once an enabled activation of it grants `task_route_apply`
+([`src/prompts/default_playbooks/default-assignment-routing.md`](../../src/prompts/default_playbooks/default-assignment-routing.md)).
+
+**Router binding** — `projects.assignment_playbook_id`, the router a project is
+bound to. Every project has one: a new project gets `routing.default_router`
+from `config.yaml`, and `aq project set <project> router <playbook-id>` (local
+operator only) re-binds it. There is no project default profile.
+
+**Hint** — what a filer gives the router instead of a route. There are two: an
+**intelligence-class hint** (`--intelligence-class`, stored as
+`tasks.class_hint`), honoured up to the kind's `max_class` and clamped above
+it, and the **kind** (`task_type`, `--type`: `feature`, `bugfix`, `design` for
+code design, `art` for art-heavy design, and so on), which selects the
+policy's default class, lane and bounds. A profile, provider, model, harness
+or pin passed to any filing surface is refused with `routing.choice_forbidden`.
+
+**Route** — the intelligence class, profile and provider intent a task runs
+on, plus its route source and the `tasks.route` record: the hints, the
+classification, the rule and lane that applied, the candidates with their
+scores, the reason, the policy digest and the router run. `aq task show` and
+`aq task explain` print it; `aq task route` sends an unclaimed task back to
+its router, optionally with new hints.
+
+**Route source** — `tasks.route_source`, who wrote the route: `unrouted` (no
+route yet, so no profile), `router`, `override`, `role` (a stage profile such
+as `triage` or `spec-ingest`, which is never routed) or `legacy` (written
+before routing became mandatory). Once a project's router is ready, only
+`router`, `override` and `role` routes are claimable.
+
+**Candidates** — `tasks.route.candidates`, the ordered worker profiles the
+router's policy allowed for a task. Failover, capacity spill, reroute-undo and
+`aq provider reroute` (even with `--force`) move a routed task only among
+them; a move outside them is an override. `aq pool provider apply` moves
+nothing itself: it sends queued routed work back to the router, which
+re-plans with the new preferred provider.
+
+**Override** — `aq task route-override --task-id <id> --profile-id <profile>
+--reason "..."`: the audited emergency route, allowed only to the local
+operator and the live supervisor session. It writes `route_source='override'`
+with a `pinned` intent and the profile as the only candidate, comments on the
+task, and is listed by `aq doctor --check routing.bypassed` until
+`aq task route` sends the task back to the router.
+
+**Pin** — a task whose provider intent is `pinned`: it holds during its
+provider's outage instead of failing over. An override pins, and so does a
+router lane marked `hold` (art design). Filing cannot pin: `--pin`, a graph
+`pin:` and `provider_intent` are refused.
 
 **Provider availability** — whether a provider's login can do work right now:
 `available` or `degraded` (launchable), or `exhausted`, `unauthenticated`,
@@ -106,11 +158,12 @@ provider intent).
 unavailable provider holds or fails over
 ([scheduling](../concepts/scheduling.md#provider-availability-and-failover)).
 
-**Provider intent** — `tasks.provider_intent`: `pinned` (a human required that
-provider; the task holds during its outage), `preferred` (an explicit profile;
-fails over to the same class elsewhere) or `class_only` (routing chose it;
-fails over). Only an explicit pin — `--pin`, a graph node's `pin: true`, the
-dashboard's *Pin to this provider* — sets `pinned`.
+**Provider intent** — `tasks.provider_intent`: `pinned` (an override or a
+`hold` lane; the task holds during its provider's outage), `class_only` (the
+router chose the provider, or the task is not routed yet; fails over among its
+candidates) or `preferred` (a role task's stage profile, or a legacy route
+written before routing became mandatory; fails over to the same class
+elsewhere).
 
 **Lifecycle** — how sessions for a profile are created:
 `task` (one session per assigned task, work is pushed), `pool` (a standing
@@ -154,7 +207,8 @@ claiming another.
 ## Repositories and workspaces
 
 **Project** — a registered Git repository plus its settings: default branch,
-concurrency limits, integration mode. [`src/projects/`](../../src/projects/).
+concurrency limits, integration mode, router binding.
+[`src/projects/`](../../src/projects/).
 
 **Workspace** — a directory a task is allowed to work in. Workspaces are typed
 and normalised: a *workspace kind* defines the type, and a task declares the

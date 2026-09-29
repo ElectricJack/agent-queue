@@ -145,7 +145,7 @@ and both shapes are pinned by
 Success is the command's result object, at the top level, with `200`:
 
 ```text
-{"created":"demo","name":"demo","default_profile_id":null}
+{"created":"demo","name":"demo","assignment_playbook_id":"default-assignment-routing"}
 ```
 
 Failures map onto HTTP status codes:
@@ -234,7 +234,7 @@ and never stored.
 | `403 out of scope: project_id mismatch` | The body named a different project than the token's. | Omit the field and let the daemon inject it. |
 | `403 out of scope: this interactive agent has no assigned project` | A manually opened terminal session has no project; only `prime`, `get_schema` and `subagent_event` work there. | Run the command from a task session, or as the local operator. |
 | `422 Field required` with `loc: ["body", …]` | The body is missing a required field, or a field has the wrong type. | Check the request schema in `openapi.json` or `/docs`. |
-| A `null` you sent was ignored | Typed routes drop `null` fields before dispatch, so "unset" and "explicitly null" normally collapse. | A few commands preserve an explicit null deliberately (`task_set`, `pool_scale`'s bounds, `edit_task`'s routing fields). For anything else, use `/api/execute`, which forwards `args` verbatim. |
+| A `null` you sent was ignored | Typed routes drop `null` fields before dispatch, so "unset" and "explicitly null" normally collapse. | A few commands preserve an explicit null deliberately (`task_set`, `pool_scale`'s bounds, `edit_task`'s `intelligence_class`, where null clears the class hint). For anything else, use `/api/execute`, which forwards `args` verbatim. |
 
 ## Related pages
 

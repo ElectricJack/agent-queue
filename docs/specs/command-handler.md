@@ -130,7 +130,8 @@ Returns all projects.
 **Parameters:** None.
 
 **Behavior:** Fetches all projects from the database and returns their core
-fields. Repository URL and assignment playbook are included only when set.
+fields. Repository URL is included only when set. `assignment_playbook_id` is the
+project's router binding; since mandatory task routing (2026-09-28) every project has one.
 `workspace` is the resolved primary workspace path (or null).
 
 **Returns on success:**
@@ -145,7 +146,7 @@ fields. Repository URL and assignment playbook are included only when set.
             "max_concurrent_agents": <int>,
             "workspace": <str>,
             "repo_url": <str>,              # present only if set
-            "assignment_playbook_id": <str>, # present only if set
+            "assignment_playbook_id": <str>, # the router binding (always set)
         },
         ...
     ]
@@ -169,16 +170,19 @@ creates the project, primary workspace, and vault structure as one operation.
 - `credit_weight` (optional, default `1.0`): Scheduler weight for this project.
 - `max_concurrent_agents` (optional, default `2`): Maximum agents that can work on this project simultaneously.
 
-**Behavior:** Derives the project ID from the name, selects the requested or
-system-default profile when one resolves, saves the project, creates its
-standard task/vault storage, and invokes the optional project-created callback.
+**Behavior:** Derives the project ID from the name, binds the project to the
+router named by config `routing.default_router` (default
+`default-assignment-routing`), saves the project, creates its standard
+task/vault storage, and emits `project.created`. A project has no default
+profile: `default_profile_id` (and every other routing choice) is refused with
+`routing.choice_forbidden` (mandatory task routing, 2026-09-28).
 
 **Returns on success:**
 ```python
 {
     "created": <str: project_id>,
     "name": <str>,
-    "default_profile_id": <str | None>,
+    "assignment_playbook_id": <str>,   # the router binding
 }
 ```
 
@@ -229,8 +233,13 @@ Updates one or more mutable fields on a project.
 - `name` (optional): New display name.
 - `credit_weight` (optional): New scheduler weight.
 - `max_concurrent_agents` (optional): New concurrency limit.
+- `assignment_playbook_id` (optional): Re-bind the project to another router
+  (`aq project set <project> router <playbook-id>`). Local operator only; refused
+  (`router_required`, `router_<state>`) when the value is empty or names a playbook with no
+  enabled system or project activation whose artifact grants `task_route_apply`.
 
-At least one optional field must be supplied.
+At least one optional field must be supplied. `default_profile_id` and the other routing
+choices are refused with `routing.choice_forbidden`: a project has no default profile.
 
 **Returns on success:**
 ```python
@@ -240,6 +249,7 @@ At least one optional field must be supplied.
 **Errors:**
 - Project not found.
 - No updatable fields provided.
+- `routing.choice_forbidden`, `local_operator_only` or a router refusal (above).
 
 ---
 
@@ -311,12 +321,19 @@ Creates a new task in READY status. If no `project_id` is given, the active proj
 - `project_id` (optional, falls back to active project): Project to assign the task to.
 - `priority` (optional, default: `100`): Scheduling priority (lower value = higher priority).
 - `integration_mode` (optional, default: `None` = inherit): Integration policy override — `'direct'` or `'pull_request'`. When unset, the effective mode is resolved down the chain: plan-subtask parent's task-level override → task override → project policy (`projects.integration_mode`) → config `integration.default_mode` (shipped default `pull_request`). In `pull_request` mode the worker pushes its branch and opens a PR; the task completes unmerged and the review pipeline owns the merge. In `direct` mode the completion pipeline merges the task branch on completion.
-- `task_type` (optional): Task type classification (feature, bugfix, docs, etc.).
-- `profile_id` (optional): Agent profile to use for execution.
+- `task_type` (optional): Task type classification (feature, bugfix, refactor, test, docs, chore, research, plan, sync, design, art) — the kind hint the router reads.
+- `intelligence_class` (optional): Intelligence-class hint for the router, stored as `class_hint`.
 - `preferred_workspace_id` (optional): Specific workspace to use.
 - `attachments` (optional): List of file paths or URLs for additional context.
 
-**Behavior:** Generates a human-readable task ID using `generate_task_id`. Creates the task in READY status.
+Filing carries hints, never routes (mandatory task routing, 2026-09-28): `profile_id`,
+`profile`, `provider`, `model`, `harness`, `agent_type`, `pin`, `provider_intent`,
+`preferred_provider` and `default_profile_id` are refused with `success: false`,
+`code: routing.choice_forbidden`, and nothing is written. The one exception is a role profile
+(`triage`, `spec-ingest`, `reviewer`, `final-reviewer`) passed by a `SERVICE` or `PLAYBOOK`
+principal, which is stored with `route_source='role'`.
+
+**Behavior:** Generates a human-readable task ID using `generate_task_id`. Creates the task in READY status, unrouted (`route_source='unrouted'`, `profile_id` and `intelligence_class` NULL, `provider_intent='class_only'`); `task.route_needed` then asks the project's router to route it.
 
 **Returns on success:**
 ```python
@@ -380,10 +397,16 @@ Updates one or more mutable fields on a task.
   `development`/`hierarchy`/`train` project and NULL otherwise (the value task creation
   gives it), because every publisher collects only its own project's tasks.
 - `status` (optional): Change status (goes through proper transition logging).
-- `task_type` (optional): Change task type classification.
+- `task_type` (optional): Change task type classification (the kind hint).
+- `intelligence_class` (optional): Change the class hint. On a queued, unclaimed task an edit
+  to either hint resets the route to `unrouted`, so the router plans again.
 - `max_retries` (optional): Update retry limit.
 - `verification_type` (optional): Change verification mode.
-- `profile_id` (optional): Change agent profile.
+
+`profile_id`, `provider_intent`, `pin` and the other routing choices are refused with
+`routing.choice_forbidden` (mandatory task routing, 2026-09-28). To re-route a task use
+`task_route` (`aq task route`), which re-runs the router; only the emergency
+`task_route_override` names a profile.
 - `integration_mode` (optional): Set the task-level integration policy override (`'direct'` or `'pull_request'`); pass `null` to clear the override so the task inherits from parent/project/config.
 
 At least one optional field must be supplied.

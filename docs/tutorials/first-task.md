@@ -27,11 +27,12 @@ invents no filesystem location, so `project_roots` starts empty and
 example](#a-realistic-disposable-example) below configures one; that is the
 step the installer is asking for.
 
-Choose one cheap active worker profile for this demonstration: a rung is a
-class, so `fast-low-<harness>` is the one to use for a one-file hello-world
-change rather than `deep-high-<harness>`. The example below uses Codex only
-when it appears as active on *your* daemon; otherwise substitute a `fast-low-`
-profile shown by the command.
+Check that one cheap worker is active for this demonstration. The project's
+router picks the worker, but only from the profiles you have: a rung is a class,
+so a task hinted `fast-low` goes to a `fast-low-<harness>` rung rather than
+`deep-high-<harness>`. The example below checks the Codex rung only when it
+appears as active on *your* daemon; otherwise substitute a `fast-low-` profile
+shown by the command.
 
 ```bash
 aq agent list-profiles
@@ -117,16 +118,17 @@ returns the durable status/result rather than creating a second project. Use a
 new request ID if you change the input.
 
 Create a task small enough to understand at a glance. This command's flags
-were checked with `aq task create --help`; replace the profile only after
-checking the profiles actually installed on your host.
+were checked with `aq task create --help`. You do not pick the worker: you give
+the task a kind and an intelligence-class hint, and the project's router picks
+the profile.
 
 ```bash
-aq agent list-profiles
 aq task create \
   --project hello-aq \
   --title "Add a hello script" \
   --description "Create hello.sh that prints Hello, AQ! and add a short README note." \
-  --profile "$AQ_FIRST_PROFILE"
+  --type feature \
+  --intelligence-class fast-low
 ```
 
 ```text
@@ -135,8 +137,12 @@ aq task create \
 … status: READY …
 ```
 
-The profile is a configured choice verified above. The task's default
-`project-repo` workspace requirement
+The router routes the task within a cycle or two. `aq task show <task-id>`
+names the profile it chose — one of your active `fast-low` rungs, such as the
+one you checked above — and `aq task explain --task-id <task-id>` says why a
+task is still waiting for a route. The hint is a request, not a choice: the
+router honours it within its policy for the kind, and `aq task create` refuses
+a profile outright. The task's default `project-repo` workspace requirement
 is shipped behaviour; you do not need to pass `--requires-kind` for this
 single-repository example ([task creation](../../src/commands/task_commands.py)).
 
@@ -187,8 +193,9 @@ flowchart LR
 | Input | Owner | Result |
 | --- | --- | --- |
 | `project_roots` id and relative path | Operator configuration | A new Git repository and AQ project/workspace. |
-| Project ID, title, description, profile | Operator creating the task | A durable task with its initial state and routing data. |
-| Worker harness credentials | Daemon host / selected profile | A worker can start a session when capacity and routing allow. |
+| Project ID, title, description, kind and class hint | Operator creating the task | A durable task with its initial state and routing hints. |
+| Task route | The project's router | The profile and class a worker runs the task with. |
+| Worker harness credentials | Daemon host / routed profile | A worker can start a session when capacity and routing allow. |
 | Worker commit and close summary | Worker | `aq task get-result` returns completion information. |
 
 ## State ownership
@@ -218,7 +225,7 @@ on the default branch.
 | `root_unavailable` or no roots listed | `aq project list-roots`, then `aq doctor` | Create/fix the configured directory and its read/write permissions; retry. |
 | `destination_conflict` | Check the requested relative path | Choose a new path. AQ will not overwrite an existing destination. |
 | `project_id_conflict` | `aq project get --project-id hello-aq` | Reuse the existing project only if intended, otherwise choose a new ID. |
-| Task remains ready | `aq task get --task-id <task-id>` and inspect profile availability | Check `aq agent check-profile <profile-id>` and daemon status; do not edit worker worktrees by hand. |
+| Task remains ready | `aq task explain --task-id <task-id>` names the routing state (`awaiting_route`, `route_no_candidates`, …) and `aq task show <task-id>` the route | Check `aq agent check-profile --profile-id <profile-id>` for the routed profile, and daemon status; do not edit worker worktrees by hand. |
 | No result yet | `aq task get --task-id <task-id>` | The task has not closed. Wait for a terminal state, then run `aq task get-result`. |
 | Onboarding was interrupted | `aq project get-onboarding --request-id hello-aq-first-run` | Retry unchanged with the same ID; change input only with a new ID. |
 

@@ -4581,10 +4581,9 @@ _ALL_TOOL_DEFINITIONS = [
                 "profile_id": {
                     "type": "string",
                     "description": (
-                        "Restrict the frontier to tasks this profile would be "
-                        "offered. Uses the same widening as the work query: when "
-                        "this is the project's default profile, unassigned tasks "
-                        "count as its work too."
+                        "Restrict the frontier to tasks routed to this profile. "
+                        "An unrouted task is no profile's work until the "
+                        "project's router routes it."
                     ),
                 },
                 "brief": {

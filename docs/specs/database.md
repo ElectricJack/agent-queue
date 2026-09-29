@@ -424,7 +424,7 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `discord_control_channel_id` | TEXT | nullable | Legacy column (superseded by `discord_channel_id`); kept for backward compatibility |
 | `repo_url` | TEXT | DEFAULT '' | Repository URL for the project (added via migration) |
 | `repo_default_branch` | TEXT | DEFAULT 'main' | Default branch name (added via migration) |
-| `preferred_provider` | TEXT | nullable | Operator preference for which provider serves this project's work; NULL defers to global provider selection and failover. Added by Alembic `a00000000037` |
+| `preferred_provider` | TEXT | nullable | Operator preference for which provider serves this project's work (set by `aq pool provider apply`); NULL defers to global provider selection and failover. Since mandatory task routing it is a router input only — the planner filters the candidates to this provider — and never a filing argument. Added by Alembic `a00000000037` |
 | `assignment_playbook_id` | TEXT | NOT NULL DEFAULT 'default-assignment-routing' | The project's router binding: the routing playbook that routes its tasks (mandatory-task-routing spec §8). A new project is bound to `routing.default_router` (default `default-assignment-routing`); `a00000000039` bound every unbound project and `a00000000043` made the binding NOT NULL. Re-bind with `aq project set <p> router <playbook-id>` (local operator only); `aq doctor --check routing.bypassed` reports a missing or non-routing binding. A project has no default profile: `a00000000043` dropped `default_profile_id`. Added by Alembic `a7c91e4d2b63` |
 | `integration_mode` | TEXT | nullable | Project-level integration policy: `'direct'`, `'pull_request'`, or NULL (fall through to config `integration.default_mode`). Added by Alembic `c4d5e6f7a8b9` |
 | `hierarchical_integration_mode` | TEXT | NOT NULL DEFAULT 'disabled' | *Effective* hierarchical-integration rollout mode: one of `disabled`, `observe`, `hierarchy`, `train` (`ck_projects_hierarchical_integration_mode`). Only the orchestrator advances it, via a compare-and-set on `hierarchical_integration_generation`. Added by Alembic `c7a1e5d92f40` |
@@ -551,18 +551,19 @@ There is no foreign key from `subject` to `projects(id)` — the column is also 
 | `pr_url` | TEXT | nullable | GitHub/GitLab PR link |
 | `plan_source` | TEXT | nullable | Path to the plan file that generated this task |
 | `is_plan_subtask` | INTEGER | NOT NULL DEFAULT 0 | Boolean (0/1); flags auto-generated plan subtasks |
-| `task_type` | TEXT | nullable | Task type classification (added via migration) |
-| `profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Agent profile for execution (added via migration) |
+| `task_type` | TEXT | nullable | Task type classification (added via migration): feature, bugfix, refactor, test, docs, chore, research, plan, sync, design, art. Free text, no check constraint. The filer's kind hint to the router (`design` and `art` added with mandatory task routing, no DDL) |
+| `profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Agent profile for execution (added via migration). Written only by the project's router (`task_route_apply`), an audited override, a role creator, or a failover/spill/undo move among `route.candidates` — never by a filer. NULL exactly when `route_source = 'unrouted'` |
+| `intelligence_class` | TEXT | nullable | The class the route runs at, written with `profile_id` by the router, an override or a role creator; NULL on a new, unrouted task and cleared by `aq task route`. The filer's class is `class_hint` |
 | `preferred_workspace_id` | TEXT | nullable REFERENCES workspaces(id) | Preferred workspace (added via migration) |
 | `attachments` | TEXT | DEFAULT '[]' | JSON-encoded list of attachment paths/URLs (added via migration) |
 | `next_child_ordinal` | INTEGER | NOT NULL DEFAULT 1 | Per-parent counter for dotted child ids (swarm-work-model §4, §6); incremented atomically by `task_names.reserve_child_ordinal`; never read for anything else |
 | `created_by_kind` | TEXT | nullable | Provenance (swarm-work-model §9): who created the row; stamped by `CommandHandler.execute` from the request scope (Plan 2); nullable so rows from legacy paths stay valid |
 | `created_by_id` | TEXT | nullable | Provenance (swarm-work-model §9), paired with `created_by_kind` |
-| `provider_intent` | TEXT | NOT NULL DEFAULT 'class_only' | `pinned`, `preferred` or `class_only` (`ck_tasks_provider_intent`): whether anyone meant the provider `profile_id` names (provider-failover D8). A pinned task holds while its provider is unavailable; the other two fail over. `pinned`/`preferred` with a NULL `profile_id` reads as `class_only` |
+| `provider_intent` | TEXT | NOT NULL DEFAULT 'class_only' | `pinned`, `preferred` or `class_only` (`ck_tasks_provider_intent`): whether anyone meant the provider `profile_id` names (provider-failover D8). A pinned task holds while its provider is unavailable; the other two fail over. `pinned`/`preferred` with a NULL `profile_id` reads as `class_only`. Since mandatory task routing no filer sets it: the router writes `pinned` for a hold lane and `class_only` otherwise, an override writes `pinned`, a role task is `preferred` |
 | `rerouted_from` | TEXT | nullable | The profile the task was on before its first automatic re-route that has not been undone (D17); NULL means "where it was put". Partial index `idx_tasks_rerouted` on (`profile_id`) WHERE `rerouted_from IS NOT NULL` is what the re-route trickle counts |
 | `route_source` | TEXT | NOT NULL DEFAULT 'unrouted' | Who wrote the route in `profile_id` (mandatory-task-routing spec 2026-09-28 §3, `ck_tasks_route_source`): `unrouted`, `router`, `override`, `role` (a stage profile: triage, spec-ingest, reviewer, final-reviewer) or `legacy`. `ck_tasks_route_source_profile` (`a00000000042`) holds `(profile_id IS NULL) = (route_source = 'unrouted')`: a profile write declares its source, and the query layer refuses one that does not (`src/routing/sources.py`). Once a project's router is ready, only `router`, `override` and `role` are claimable; `legacy` is claimable before that (spec §9.1). `delete_profile` sends the tasks naming the profile back to `unrouted`, keeping the lost route in `route.legacy`. Added by `a00000000039` |
-| `class_hint` | TEXT | nullable | The filer's intelligence-class hint to the router; `a00000000039` backfilled it from `intelligence_class` |
-| `route` | JSONB | nullable | The router's record of the route it chose: hints, classification, rule, lane, candidates and scores, policy digest, playbook run. Added by `a00000000039` as JSON; `a00000000040` retyped it JSONB because plain JSON breaks whole-row `SELECT DISTINCT tasks.*` (outage 2026-09-28). Downgrade keeps JSONB to avoid restoring the outage. |
+| `class_hint` | TEXT | nullable | The filer's intelligence-class hint to the router (`--intelligence-class`), honoured up to the kind's `max_class` in the routing policy; `a00000000039` backfilled it from `intelligence_class` |
+| `route` | JSONB | nullable | The router's record of the route it chose: hints, classification, rule, lane, candidates and scores, policy digest, playbook run. `candidates` bounds every later move (failover, spill, reroute-undo, `aq provider reroute`); an override adds `override: {by, at, reason}` and a lost pre-cutover route is kept as `legacy`. Added by `a00000000039` as JSON; `a00000000040` retyped it JSONB because plain JSON breaks whole-row `SELECT DISTINCT tasks.*` (outage 2026-09-28). Downgrade keeps JSONB to avoid restoring the outage. |
 | `created_at` | REAL | NOT NULL | Set on insert |
 | `updated_at` | REAL | NOT NULL | Set on insert and every update |
 
@@ -1117,7 +1118,7 @@ document. Added by Alembic `a00000000014`.
 | `submitted_task_id` | TEXT | nullable, no FK | The submitting task |
 | `changes_note` | TEXT | nullable | What changed since the previous revision |
 | `submitted_at` | REAL | NOT NULL | Unix timestamp |
-| `responder_class` / `responder_profile` / `responder_profile_source` | TEXT | nullable | Who revises after a feedback decision on this revision |
+| `responder_class` / `responder_profile` / `responder_profile_source` | TEXT | nullable | Who revises after a feedback decision on this revision. Since mandatory task routing `aq review decide --responder-profile` is refused: `responder_class` (`--responder-class`) is the revision task's class hint, `responder_profile` stays NULL and `responder_profile_source` is `router`; a named profile appears only on pre-routing rows |
 | `playbook` | JSON | nullable | A playbook review's pin: `playbook_id`, `artifact_sha256`, `source_sha256`, `source_path`, `contract_fingerprint`, `scope`, `scope_identifier`, `activate_on_approval`, diagnostic `counts`. Added by Alembic `a00000000036` |
 | `playbook_artifact` | TEXT | nullable | The pinned artifact's exact canonical bytes; approval stores them in the artifact store. Added by Alembic `a00000000036` |
 
@@ -1149,7 +1150,8 @@ survives task archival or deletion. Added by Alembic `a0000000001a`.
 |---|---|---|---|
 | `id` | TEXT | PRIMARY KEY | Dispatch id |
 | `review_id` | TEXT | NOT NULL, no FK | The document review |
-| `profile_id` | TEXT | NOT NULL | Reviewer profile selected for the dispatch |
+| `profile_id` | TEXT | nullable | Reviewer profile a pre-routing dispatch named. Since mandatory task routing (`a00000000041`) a dispatch names no profile: the project's router picks each reviewer's profile, so new rows leave it NULL |
+| `intelligence_class` | TEXT | nullable | The class hint the dispatch filed its reviewer task with (`aq review dispatch --class`, default `deep-high`). Added by `a00000000041` |
 | `revision` | INTEGER | NOT NULL | Review revision sent to the reviewer |
 | `with_comments` | BOOLEAN | NOT NULL | Whether review comments were included |
 | `focus` | TEXT | nullable | Optional focus for the reviewer |

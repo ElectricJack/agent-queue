@@ -5809,10 +5809,10 @@ class TaskCommandsMixin:
             "priority": args.get("priority", 100),
             "dedup_key": dedup_key,
             # Control-plane bookkeeping: suppress task.created emission so the
-            # default pipeline is not re-triggered against this task itself
-            # (would attach a routing gate to a task only the triage agent
-            # can resolve — self-deadlock).  Routing of tasks created via
-            # ensure_task is the ensuring pipeline's responsibility.
+            # default pipeline is not re-triggered against this task itself.
+            # Routing needs no event from here: the orchestrator emits
+            # ``task.route_needed`` for any unrouted task, and a role task
+            # arrives with its stage route.
             "_suppress_created_event": True,
         }
         # Do not recreate placement from truthy values: playbook and API

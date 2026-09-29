@@ -258,7 +258,7 @@ its outbox; transport failures never need a new author turn.
 
   | Finding | Action |
   | --- | --- |
-  | Work is queued for a pool without live sessions | Reroute to an eligible pool with live sessions, preserving the required class and any explicit provider pin. |
+  | Work is queued for a pool without live sessions | Find why the pool starts no session, then send the task back to its router (`aq task route --task-id <task> --reason "..."`); never name a profile to move it. |
   | A `blocks` edge remains after its blocker's commits reached the target branch | Remove that satisfied dependency edge. |
   | An integration child is stuck or a fix is outdated | Run the operation's recover-child sweep, or deploy a newer fix through the approved path. |
   | A parked development delivery holds work the target does not owe (already on a previous target, superseded, delivered another way) | `aq integration settle-parked <project> <operation-id> --reason "..."` from `aq integration status` `parked`; `--dismiss` retries a stale park instead. Never move the target branch by hand. |
@@ -412,41 +412,45 @@ its outbox; transport failures never need a new author turn.
   `reason` explaining why it was spawned. Describe the discovery or split, not
   merely the new task's subject; the reason is stored on the edge back to the
   originating task.
-- **Set execution requirements when creating work.** When the user requests a
-  provider, model, or intelligence class, inspect `aq agent list-profiles` and
-  `aq system list-intelligence-classes` first. Pick an enabled `lifecycle: pool`
-  profile whose harness matches the provider and a valid class ID such as
-  `deep-high`; profile IDs are installation-specific and must never be inferred
-  from a `worker-` prefix. For graphs,
-  set `defaults.profile` and `defaults.intelligence_class` (or each node's
-  `profile`/`intelligence_class`); CLI `--profile` and `--intelligence-class`
-  fill missing node routes. For individual tasks, pass both at creation.
-  Never create runnable work and add the requested route in a later call.
-  A task's description or agent affinity is not an execution constraint.
-  If the requested worker is unavailable, keep the requirement; do not
-  substitute a lighter worker or claim that routing implies execution.
-- **Pin a provider only when the provider is the requirement.** An explicit
-  `--profile` is a preference: when its provider runs out of usage or loses
-  its login, the task fails over to the same class on another provider. Pin
-  only when the provider itself is what was asked for — the human named that
-  provider or model (Astra art work, say), or the work needs a capability
-  only that provider has. Never pin merely because you named a profile, or
-  because the work is important. Pin at creation with `aq task create
-  --profile <id> --pin` (graphs: `pin: true` on the node or in `defaults`),
-  or later with `aq task route --task-id <task> --profile-id <id> --pin` or
-  `aq task edit --task-id <task> --profile-id <id> --pin`. A pinned task
-  holds for the whole outage instead of moving; a class only one provider
-  runs, such as `astra-*`, holds anyway. Before moving work by hand during
-  an outage, read `aq task explain --task-id <task>` (its `provider_hold`
-  reason says why the task is not moving), `aq provider status` and `aq
-  provider held-tasks`: most held work moves on its own within a few sweeps.
-  A pin is a human's statement, so force-move a pinned task (`aq provider
-  reroute --task-id <task> --to-profile <id> --force`) only on the human's
-  instruction.
+- **File with hints, never routes.** The project's router (its bound routing
+  playbook) picks every task's profile, provider and model, and balances
+  them across pools and provider usage. No filing names one: `aq task
+  create`, graphs, `aq task edit` and batch proposals refuse a profile,
+  provider, model, harness or pin with `routing.choice_forbidden` and write
+  nothing. File with the two hints instead: the kind (`--type`, or a graph
+  node's `task_type`; `design` is code design, `art` is art-heavy design)
+  and, when the work is harder or easier than its kind suggests, an
+  intelligence class (`--intelligence-class deep-high`, or a graph's
+  `defaults.intelligence_class` or a node's `intelligence_class`; check
+  `aq system list-intelligence-classes`). The router honours the class within
+  its policy's bounds for the kind and records why it chose the route (`aq
+  task show`, `aq task explain`). When the human asks for a provider or
+  model, file the kind and class that express the need and say that the
+  router chooses; rules such as "art design runs on Codex" live in the
+  routing policy, not in the filing. A description or agent affinity is not
+  an execution constraint.
+- **Re-route through the router.** `aq task route --task-id <task>
+  [--intelligence-class <hint>] [--task-type <kind>] --reason "..."` sends
+  an unclaimed task back to its router with new hints; stop a running task
+  first. `aq task explain` says why a task is still unrouted
+  (`awaiting_route`, `route_held`, `route_no_candidates`, `route_failed`,
+  `router_not_ready`, `router_unbound`); fix that cause rather than routing
+  around it. During a provider outage, failover moves queued work among the
+  candidates the router recorded. Before moving work by hand, read the
+  task's `provider_hold` reason in `aq task explain`, `aq provider status`
+  and `aq provider held-tasks`: most held work moves on its own within a few
+  sweeps, and a pinned task (an override, or a lane the policy holds, such
+  as art design) holds for the whole outage.
+- **Override only on the human's word.** `aq task route-override --task-id
+  <task> --profile-id <id> --reason "..."` pins one queued task to a worker
+  profile the router did not choose. Use it only when the human names the
+  model for that task, or when urgent work cannot wait for a policy change
+  and the human agrees. The reason (10-400 characters) is commented on the
+  task and `aq doctor --check routing.bypassed` lists the override until `aq
+  task route` clears it. Never override to express a preference the routing
+  policy could carry.
 - **Never route work to yourself.** The supervisor profile is control-plane
-  only and cannot execute queued tasks. When omitting `--profile`, AQ selects
-  the configured eligible worker default; fix that default rather than trying
-  `--profile supervisor`.
+  only and cannot execute queued tasks; no route or override may name it.
 - **Never run a task-scoped prime.** `aq prime --task-id <id>` renders that
   task's worker context and belongs to the worker holding it. Read a task
   with `aq task show` / `aq task explain`; your own `aq prime` reads your

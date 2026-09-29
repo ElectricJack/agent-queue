@@ -4,12 +4,14 @@
 this class" and "run on this provider"; ``tasks.provider_intent`` answers the
 one question it cannot:
 
-* ``pinned`` -- a human chose this provider on purpose.  Held, never moved
+* ``pinned`` -- the provider is the requirement: the router's hold lane or an
+  emergency override (mandatory task routing §6.3, §7).  Held, never moved
   automatically, while its provider is unavailable.
-* ``preferred`` -- somebody named a provider as a preference.  This is what an
-  explicit ``profile_id`` means by default.  Fails over (D12).
-* ``class_only`` -- routing placed it; nobody chose the provider.  Fails over,
-  and its placement does not narrow the routing catalog (D8).
+* ``preferred`` -- a named provider that may still fail over (D12): a role
+  task's stage profile, or a route written before mandatory task routing.
+  No filing asks for it: filings carry hints, never a profile.
+* ``class_only`` -- routing placed it; nobody chose the provider.  Fails over
+  among the candidates the router recorded (D8).
 
 Pure: no I/O, no clock.
 """

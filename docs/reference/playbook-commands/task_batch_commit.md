@@ -107,10 +107,13 @@ caller lose rather than duplicate.
    - **Re-validation.** The stored payload is the source of truth, but the ids
      it references may have vanished, so `_validate_shape`,
      `_validate_existing_refs` and `proposal_queries.detect_cycles` run again
-     against current state. The project default profile, and every explicit
-     `profile_id` / `intelligence_class` in the batch, are validated
-     *before* the claim, so an invalid route is an actionable admission refusal
-     instead of a half-materialised graph.
+     against current state. Batch tasks carry hints, never routes: a stored
+     spec that names a routing choice (`profile_id`, `pin`, `provider_intent`,
+     …, written before the refusal existed) is refused with
+     `routing.choice_forbidden`, and each `intelligence_class` is validated as a
+     class hint — both *before* the claim, so the refusal is actionable instead
+     of a half-materialised graph. `task_batch_propose` and `task_batch_update`
+     already refuse such a spec when it is written.
    - **Hierarchy projects.** When the project's `hierarchical_integration_mode`
      is `hierarchy` or `train`, the work is handed to
      `_commit_hierarchical_proposal` (`proposal_commands.py:496`), which claims
@@ -122,7 +125,8 @@ caller lose rather than duplicate.
      `rowcount == 0` and aborts **before** creating anything, which is what
      closes the double-commit race the old check-then-write had.
    - **Materialisation.** Tasks are created one at a time through
-     `_create_one_task`, each stamped with the proposal id in `task_metadata`,
+     `_create_one_task`, each stored `unrouted` with its class hint for the
+     project's router, each stamped with the proposal id in `task_metadata`,
      building a `tempId → real id` map; then each edge is created by
      re-entering `self.execute("add_dependency", …)` with the mapped ids.
    - **Unwind.** Any exception rolls the created edges back in reverse order,
@@ -156,7 +160,7 @@ second graph, and the `task_metadata` stamp is what lets that replay report the
 |---|---|
 | `already_committed` (success) | The proposal was already materialised; `task_ids` are the original ones. |
 | `not_approved` (failure) | No human decision approves this exact proposal: no gate, an open / expired / rejected gate, a gate of another type, a gate awaiting a different proposal, or a `project_id` that is not the proposal's owner. Nothing was created. |
-| `rejected` | Missing `proposal_id`; unknown proposal; a `discarded` proposal; a shape or reference re-validation failure; a detected cycle; an undefined or invalid project default profile; an invalid `profile_id` / `intelligence_class` in a batch entry; a hierarchical batch whose parent is outside the batch; the lost claim race (`proposal not in 'ready' state or already claimed`); or `commit failed: …` after a rollback. |
+| `rejected` | Missing `proposal_id`; unknown proposal; a `discarded` proposal; a shape or reference re-validation failure; a detected cycle; `routing.choice_forbidden` for a batch entry that names a routing choice; an unknown `intelligence_class` in a batch entry; a hierarchical batch whose parent is outside the batch; the lost claim race (`proposal not in 'ready' state or already claimed`); or `commit failed: …` after a rollback. |
 | `unauthorized` | The capability gate refused `task_batch_commit`. |
 | `contract_violation` | The dict did not satisfy `TaskBatchCommitValue` (`task_ids` is required), or the outcome has no transition and there is no `runtime_error` edge. |
 | `input_resolution_failed` | A resolved input failed `TaskBatchCommitArgs` — typically `proposal_id` resolving to `null` because the guard on `await_id` was omitted. |

@@ -150,7 +150,7 @@ def test_seeded_supervisor_profile_carries_operating_rules(tmp_path):
         assert instruction in rules, instruction
 
     for repair in (
-        "Reroute to an eligible pool with live sessions",
+        "send the task back to its router",
         "Remove that satisfied dependency edge",
         "recover-child sweep",
         "deploy a newer fix",

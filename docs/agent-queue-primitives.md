@@ -82,7 +82,7 @@ graph TB
 
     %% ===== EDGES =====
     Project -- owns --> Repo
-    Project -- default_profile_id --> Profile
+    Project -- assignment_playbook_id --> PBMd
     Project -- scopes --> Override
     Project -- has --> FactSheet
 
@@ -160,7 +160,7 @@ graph TB
 
 | Primitive | Table | Role |
 |---|---|---|
-| **Project** | `projects` | Scheduling unit. Owns credit weight, concurrency cap, budget, default profile, Discord channels. |
+| **Project** | `projects` | Scheduling unit. Owns credit weight, concurrency cap, budget, router binding (`assignment_playbook_id`: the routing playbook that writes every task's profile; there is no project default profile), Discord channels. |
 | **Task** | `tasks` (+ `task_criteria`, `task_context`, `task_metadata`, `task_tools`, `task_dependencies`, `task_results`) | Unit of work. State machine DEFINED → READY → ASSIGNED → IN_PROGRESS → COMPLETED/FAILED/BLOCKED. |
 | **Workspace** | `workspaces` | Filesystem execution context. Its lock (`locked_by_agent_id`, `locked_by_task_id`, `lock_mode`) *is* the agent. |
 | **Repo** | `repos` | Git config (url, default branch, source_type: CLONE/LINK/INIT/WORKTREE). |

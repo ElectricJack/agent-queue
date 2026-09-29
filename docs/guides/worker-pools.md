@@ -24,9 +24,11 @@ numbers are **fleet-wide**: one pool per profile, shared by every project
 (§3).
 
 The `supervisor` profile is a named control-plane session, never a pool or
-task route. Set project defaults and `aq task create --profile` to an eligible
-worker profile. A supervisor that omits `--profile` uses that worker default;
-an invalid supervisor default is refused before a task is inserted.
+task route. Nobody files a task onto a pool: the project's router picks every
+worker route from the task's hints (`--type`, `--intelligence-class`), and
+`aq task create` refuses a profile
+([agents and routing](../concepts/agents-and-routing.md#how-a-task-gets-routed)).
+The `--profile-id` flags on this page manage pools, not tasks.
 
 This guide is the operational half. The config reference is
 [`docs/specs/config.md` §4.11](../specs/config.md); the design is
@@ -238,8 +240,9 @@ desired = max(desired, running_busy + starting)        # never undercut work in 
 
 Every quantity is a sum across every active project: `running_busy` is the
 whole fleet's busy workers, and `ready` is the whole fleet's demand for that
-profile — READY tasks routed to it, plus a project's *unrouted* READY tasks
-where this profile is that project's default.
+profile — READY tasks routed to it. An unrouted task is demand for no pool, and
+neither is a legacy route once its project's router is ready: pools size for
+claimable work only.
 
 `min_active` is raised to `max(min_active, Σ min_per_project over eligible
 projects)` before the clamp, so a per-project warm floor the global floor
@@ -441,14 +444,17 @@ the sizer and placement read. In project X, a READY task on pool A moves when
 | it has waited `provider_failover.spill.after_seconds` (default 300) since `tasks.updated_at` | not considered yet |
 | A's provider is launchable (an unavailable one is failover's job) | failover moves it instead |
 | A cannot serve it: `ready - idle - starting > 0` in X, and A is at `max_active`, the fleet is at its global pool cap, `(X, A)` is quarantined, or X has no free workspace or room under its project cap. A disabled pool always counts as unable to serve. | `skip` |
-| intent is `preferred` or `class_only` | `pinned` holds `spill_pinned` |
+| intent is `class_only` (or `preferred`, on a legacy route) | `pinned` holds `spill_pinned` |
 | the class policy is not `hold`, and the task is under `reroute.max_auto_per_task` and outside `reroute.task_cooldown_seconds` (a spill counts as an automatic move for both) | `class_policy_hold` / `reroute_limit_reached` |
-| a same-class, enabled `lifecycle: pool` rung on an `available` provider (never `degraded`) has headroom in X, net of its own unserved demand and of the work failover is moving onto it this sweep | `spill_no_target`, or `spill_preferred_provider` when the project's preferred provider has no room |
+| one of the task's route candidates (a same-class rung for a legacy route without candidates) is an enabled `lifecycle: pool` rung on an `available` provider (never `degraded`) with headroom in X, net of its own unserved demand and of the work failover is moving onto it this sweep | `spill_no_target`, or `spill_preferred_provider` when the project's preferred provider has no room |
 | fewer than `provider_failover.spill.max_per_sweep` (default 5) tasks have moved this sweep | `spill_sweep_limit` |
 
-Targets are tried in the failover provider order, then by the canonical rung
-first. When a project sets a preferred provider, only rungs on that provider are
-targets, and spill never moves work off it.
+Targets are the task's route candidates, in the router's order, so a spill
+never breaks a lane: an integration repair never spills to OpenCode, and art
+design never leaves Codex. A legacy route with no recorded candidates is tried
+in the failover provider order, then by the canonical rung first. When a
+project sets a preferred provider, only rungs on that provider are targets, and
+spill never moves work off it.
 
 Each move writes a `task_reroutes` row with `reason_code: capacity_spill` and
 a batch id `spill-<UTC yyyymmddThhmm>`. It also leaves a task comment that
@@ -849,13 +855,17 @@ inspection, not a separate provider cap: `--max 2` on three enabled pool
 profiles configures a total ceiling of six, still subject to the global pool
 cap and project capacity.
 
-`--receive-new-work PROJECT` sets that project's preferred provider for
-unpinned work; `--clear-new-work PROJECT` restores default routing. The flags
-are mutually exclusive. Existing `class_only` READY work can move to equivalent
-rungs when setting a preference. Explicit pins, `preferred` task routes and
-in-progress work stay as routed. If the preferred provider has no compatible
-class option, new work waits with `preferred_provider_unavailable`; it does
-not silently spill to another provider.
+`--receive-new-work PROJECT` sets that project's preferred provider, a router
+input: the router routes new work only to candidates on that provider.
+`--clear-new-work PROJECT` removes the preference. The flags are mutually
+exclusive. Setting a preference sends the project's queued, unclaimed
+`class_only` router routes on other providers back to the router, which
+re-plans them with the preference applied, so their lanes and constraints
+survive; none of this is a re-route batch to undo. Pinned routes (overrides,
+hold lanes such as art design), role and legacy routes, and in-progress work
+stay as routed. If the preferred provider has no worker candidate for a task,
+it waits unrouted with `preferred_provider_unavailable`; it does not silently
+spill to another provider.
 
 Drain behavior is explicit:
 
@@ -1105,14 +1115,17 @@ ls ~/.agent-queue/vault/agent-types/
 aq agent profile-drift            # `retired` / `not_seeded` rows included
 ```
 
-**2. Move open work off the old ids.** Tasks and project defaults still point
-at the old profile, and deleting it clears those references.
+**2. Move open work off the old ids.** Queued tasks the router routed to the
+old profile still point at it. Deleting the profile clears those references and
+hands the tasks back to the router; to do it first, re-route them:
 
 ```bash
-aq task list --project agent-queue --status READY   # find the ones still pinned
+aq task list --project agent-queue --status READY   # find the ones on the old id
 aq task route --task-id <task-id>   # hand it back to the project's router
-aq project set agent-queue default-profile standard-high-claude
 ```
+
+There is no project default to move: the router offers only the worker
+profiles that exist, so once the old id is gone nothing routes to it again.
 
 **3. Move pool bounds across.** Bounds live on the profile itself, so they do
 not follow a rename — set them on the new id and stand the old one down:
@@ -1281,7 +1294,7 @@ reseed command is the supported path.
 | `pool status` shows a pool flat at 0, with `quarantined_reason` | §4a — harness, provider, base checkout, or a dead startup |
 | `pool status` shows a pool flat at 0, no quarantine reason | starved: no `project-repo` kind, or no free workspace. `aq doctor --check pools.placement_starved` names the blocking reason per project |
 | `desired` is below `ready` | `max_active` or `swarm.global_max_active` is binding — not a bug |
-| READY work waits on a full pool while a same-class pool sits idle | capacity spill (§3.3) moves it after `provider_failover.spill.after_seconds`. `aq provider reroute --dry-run` names each task's `kind` (`spill_pinned`, `spill_no_target`, ...); check `spill.enabled`, `provider_failover.mode` and that the `provider-failover` playbook is active |
+| READY work waits on a full pool while a same-class pool sits idle | capacity spill (§3.3) moves it, within the task's route candidates, after `provider_failover.spill.after_seconds`. `aq provider reroute --dry-run` names each task's `kind` (`spill_pinned`, `spill_no_target`, ...); check `spill.enabled`, `provider_failover.mode` and that the `provider-failover` playbook is active |
 | The fleet is much smaller than it was before an upgrade | bounds are fleet-wide now: `aq doctor --check pools.global_bounds_migration` (§3a) |
 | A project never gets a warm worker | placement follows demand; set `min_per_project` (§2) — and check `pools.floor_exceeds_max` if you already did |
 | `desired` is met but one project has no worker | placement chose elsewhere: read the `Projects` column and `pool.scaled`'s `placement_reason` |
