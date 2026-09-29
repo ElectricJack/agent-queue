@@ -242,6 +242,65 @@ async def test_requires_routing_gate_opens_no_second_connection(tmp_path):
     assert store.loads == [SHA]
 
 
+async def test_refresh_quarantines_bad_artifact_and_keeps_good_routing_policy():
+    artifact = _routing_artifact()
+    store = RecordingStore({SHA: artifact})
+    config = AppConfig()
+    config.playbooks.enabled = True
+    manager = SimpleNamespace(_config=config, _routing_activation_refresh_lock=asyncio.Lock())
+
+    class ActivationSource:
+        async def list_playbook_activations(self, *, enabled_only=False):
+            return [
+                {"playbook_id": "quilt-health-watch", "scope": "project",
+                 "scope_identifier": "quilt-trader", "active_artifact_sha256": OTHER_SHA,
+                 "enabled": True, "health": "ready"},
+                {"playbook_id": artifact.id, "scope": "system", "scope_identifier": "",
+                 "active_artifact_sha256": SHA, "enabled": True, "health": "ready"},
+            ]
+
+    await refresh_routing_activation_snapshot(
+        manager, ActivationSource(), artifact_store=store,
+    )
+
+    assert [row["playbook_id"] for row in manager._routing_activation_snapshot.rows] == [
+        artifact.id
+    ]
+    assert requires_routing_gate(manager, _task()) is True
+
+
+async def test_runtime_catalog_keeps_good_playbook_when_one_definition_is_invalid():
+    from src.playbooks.runtime import V2PlaybookRuntime
+
+    artifact = _routing_artifact()
+    runtime = object.__new__(V2PlaybookRuntime)
+
+    class ActivationSource:
+        async def list_playbook_activations(self, *, enabled_only=False):
+            return [
+                {"activation_id": "bad", "playbook_id": "quilt-health-watch",
+                 "scope": "project", "scope_identifier": "quilt-trader",
+                 "active_artifact_sha256": OTHER_SHA, "enabled": True, "health": "ready"},
+                {"activation_id": "good", "playbook_id": artifact.id,
+                 "scope": "system", "scope_identifier": "",
+                 "active_artifact_sha256": SHA, "enabled": True, "health": "ready"},
+            ]
+
+    runtime._db = ActivationSource()
+    runtime._store = RecordingStore({SHA: artifact})
+    runtime._required_playbook_status = {}
+    runtime._integration_wakeup = asyncio.Event()
+    runtime._ensure_integration_reconciler = lambda: None
+
+    await runtime._refresh_locked()
+
+    assert runtime.get_all_triggers() == ["task.created"]
+    assert [item.playbook_id for item in runtime._integration_destinations] == [artifact.id]
+    assert [row["playbook_id"] for row in runtime._routing_activation_snapshot.rows] == [
+        artifact.id
+    ]
+
+
 def test_unrelated_project_task_hook_does_not_shadow_system_routing_policy():
     system = _routing_artifact(artifact_id="system-routing")
     project = _routing_artifact(
@@ -349,7 +408,7 @@ async def test_refresh_reads_activations_before_admission():
 
     assert source.calls == 1
     assert requires_routing_gate(manager, _task()) is True
-    assert store.loads == [SHA]
+    assert store.loads == [SHA, SHA]
 
 
 async def test_refresh_failure_installs_fail_closed_snapshot():

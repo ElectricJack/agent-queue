@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+
+from src.playbooks.run_state import ArtifactVerificationFailed
+
+logger = logging.getLogger(__name__)
 
 
 def _last_run_summary(run: Any | None) -> dict[str, Any] | None:
@@ -293,23 +298,37 @@ class PlaybookCommandsMixin:
         active_counts = await self.db.count_active_runs_per_playbook(ids)
         playbooks: list[dict[str, Any]] = []
         for row in selected:
-            artifact = engine.services.artifact_store.load(row["active_artifact_sha256"])
-            compiled_at = artifact.compiled_at
+            sha = row.get("active_artifact_sha256")
+            try:
+                artifact = engine.services.artifact_store.load(sha) if sha else None
+            except (OSError, ArtifactVerificationFailed) as exc:
+                logger.warning(
+                    "Playbook %s artifact %s is unavailable: %s", row["playbook_id"], sha, exc
+                )
+                artifact = None
+                load_health = "unavailable"
+            except Exception:  # noqa: BLE001 - quarantine one bad definition, keep the catalog
+                logger.exception("Playbook %s artifact %s is invalid", row["playbook_id"], sha)
+                artifact = None
+                load_health = "invalid"
+            else:
+                load_health = "unavailable" if artifact is None else None
+            compiled_at = artifact.compiled_at if artifact is not None else None
             playbooks.append({
                 "id": row["playbook_id"],
                 "scope": row["scope"],
                 "scope_identifier": row.get("scope_identifier") or "",
                 "triggers": list(dict.fromkeys(
                     rule.trigger.event_type for rule in artifact.rules
-                )),
-                "version": artifact.version,
+                )) if artifact is not None else [],
+                "version": artifact.version if artifact is not None else None,
                 "compiled_at": (
                     compiled_at.isoformat()
                     if hasattr(compiled_at, "isoformat")
-                    else str(compiled_at)
+                    else str(compiled_at) if compiled_at is not None else None
                 ),
-                "node_count": len(artifact.steps),
-                "status": row.get("health") or "active",
+                "node_count": len(artifact.steps) if artifact is not None else 0,
+                "status": load_health or row.get("health") or "active",
                 "enabled": bool(row.get("enabled", True)),
                 "running_count": active_counts.get(row["playbook_id"], 0),
                 "last_run": _last_run_summary(latest_runs.get(row["playbook_id"])),
