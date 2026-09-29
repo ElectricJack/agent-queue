@@ -393,11 +393,7 @@ def render_rung_stub(profile: CatalogProfile) -> str:
 
 
 def _stage_profile_ids() -> frozenset[str]:
-    """Profiles written for one pipeline stage, not as a generic worker.
-
-    Imported lazily: :mod:`src.profiles.default_selection` imports this
-    module, so a module-level import would be a cycle.
-    """
+    """Profiles written for one pipeline stage, not as a generic worker."""
     from src.profiles.default_selection import (
         EXCLUDED_PROFILE_IDS,
         SPECIAL_PURPOSE_PROFILE_IDS,

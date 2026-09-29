@@ -417,27 +417,6 @@ class TaskRouteArgs(CommandArgs):
     pin: bool | None = None
 
 
-class TaskRouteOptionsArgs(CommandArgs):
-    task_id: str
-
-
-class TaskRouteOptionsValue(CommandValue):
-    task_id: str
-    project_id: str
-    title: str
-    description: str
-    priority: int
-    task_type: str
-    intelligence_class: str | None = None
-    profile_id: str | None = None
-    default_profile_id: str | None = None
-    explicit_profile_id: str | None = None
-    options: list[dict[str, Any]]
-    # Rows on an unavailable provider (provider-failover D11 mechanism 3):
-    # reported, never offered for automatic selection.
-    unavailable_options: list[dict[str, Any]] = Field(default_factory=list)
-
-
 class TaskRouteValue(CommandValue):
     task_id: str
     resolved_gate_ids: list[str]
@@ -849,9 +828,6 @@ def _outcome_of(name: str, raw: dict[str, Any]) -> str:
     if name == "github_issue_rejection":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in {"closed", "ignored"} else "rejected"
-    if name == "task_route_options":
-        outcome = str(raw.get("outcome") or "")
-        return outcome if outcome in _ROUTE_OPTION_OUTCOMES else "rejected"
     if name == "task_route_plan":
         outcome = str(raw.get("outcome") or "")
         return outcome if outcome in _ROUTE_PLAN_OUTCOMES else "rejected"
@@ -946,12 +922,6 @@ def _adapter(name: str, value_type: type[CommandValue]):
     return invoke
 
 
-#: ``held`` (provider-failover D13a): the task has options in principle, but
-#: every one is on an unavailable provider.  The routing playbook ends the
-#: rule quietly on it instead of failing a run every two minutes per task.
-_ROUTE_OPTION_OUTCOMES = frozenset(
-    {"already_routed", "explicit", "undecided", "no_options", "held"}
-)
 #: ``task_route_plan`` (mandatory-routing §6.2): a route, a question for the
 #: classifier, every candidate on an unlaunchable provider, nothing the policy
 #: allows, or a route the router leaves alone.
@@ -1547,30 +1517,6 @@ PRESENTATIONS: dict[str, CommandPresentation] = {
         },
         subject_labels={},
     ),
-    "task_route_options": CommandPresentation(
-        title="Read a task's routing options",
-        summary=(
-            "Report whether the task is routed, whether its class is explicit, and which "
-            "class, provider and profile combinations could execute it."
-        ),
-        arg_labels={"task_id": "Task"},
-        outcome_labels={
-            "already_routed": "Already routed",
-            "explicit": "Explicit class",
-            "undecided": "Needs a decision",
-            "no_options": "Nothing can run it",
-            "held": "Held: every option's provider is unavailable",
-            "rejected": "Rejected",
-        },
-        result_labels={
-            "intelligence_class": "Intelligence class",
-            "profile_id": "Agent profile",
-            "explicit_profile_id": "Profile serving the class",
-            "options": "Routing options",
-            "unavailable_options": "Options on an unavailable provider",
-        },
-        subject_labels={},
-    ),
     "task_route_plan": CommandPresentation(
         title="Plan a task's route",
         summary=(
@@ -1859,11 +1805,6 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
             (CreateClause(subject=EffectSubject.TASK_GRAPH),),
             IdempotencySpec(mode="keyed", key_field="proposal_id"),
             False,
-        ),
-        (
-            "task_route_options", TaskRouteOptionsArgs, TaskRouteOptionsValue,
-            _outcomes("already_routed", "explicit", "undecided", "no_options", "held"),
-            SideEffectClass.READ, (), IdempotencySpec(mode="natural"), True,
         ),
         (
             "task_route_plan",

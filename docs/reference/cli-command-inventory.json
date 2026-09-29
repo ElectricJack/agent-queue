@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 450,
+    "leaf_commands": 449,
     "registration": {
-      "generated": 289,
+      "generated": 288,
       "handwritten": 161
     },
     "ownership": {
-      "core": 411,
+      "core": 410,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 449
+      "supported": 448
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 289,
+      "dispatch": 288,
       "registration": 147
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 390
+      "untested": 389
     }
   },
   "commands": [
@@ -7407,7 +7407,6 @@
           "--max-concurrent-agents",
           "--repo-url",
           "--default-branch",
-          "--default-profile-id",
           "--json",
           "--brief",
           "--api-url"
@@ -12603,39 +12602,6 @@
         "structured": [
           "--plan"
         ],
-        "nullable": []
-      }
-    },
-    {
-      "path": "aq system task-route-options",
-      "registration": "generated",
-      "owner_kind": "core",
-      "owner": "agent-queue",
-      "backend_command": "task_route_options",
-      "callback": "src.cli.auto_commands.callback",
-      "support": "supported",
-      "alias_for": null,
-      "deprecation": null,
-      "unsupported_reason": null,
-      "evidence_level": "dispatch",
-      "evidence": [
-        "click-registration",
-        "json-schema",
-        "mock-dispatch",
-        "core-handler"
-      ],
-      "acceptance_status": "untested",
-      "acceptance_evidence": [],
-      "parameters": {
-        "required": [
-          "--task-id"
-        ],
-        "optional": [
-          "--json",
-          "--brief",
-          "--api-url"
-        ],
-        "structured": [],
         "nullable": []
       }
     },

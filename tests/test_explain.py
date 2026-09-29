@@ -278,7 +278,7 @@ async def test_capacity_spill_explanation_keeps_frontier_exclusions(handler, db,
 
 @pytest.mark.parametrize("profile_id", [None, "worker"])
 async def test_project_preferred_provider_unavailable_is_explained(handler, db, profile_id):
-    await db.update_project(PROJECT_ID, default_profile_id="worker", preferred_provider="codex")
+    await db.update_project(PROJECT_ID, preferred_provider="codex")
     await mktask(db, "preferred-held", status=TaskStatus.READY,
                  intelligence_class="fast-low", profile_id=profile_id)
     result = await handler._cmd_explain_task({"task_id": "preferred-held"})
@@ -809,12 +809,11 @@ class TestProjectReady:
         res = await handler._cmd_project_ready({"project_id": PROJECT_ID, "profile_id": "coder"})
         assert [t["task_id"] for t in res["ready"]] == ["c1"]
 
-    async def test_default_profile_does_not_get_unassigned_tasks(self, handler, db):
+    async def test_a_profile_does_not_get_unassigned_tasks(self, handler, db):
         """No project-default widening (mandatory routing §8): NULL profile is no one's."""
         from src.models import AgentProfile
 
         await db.create_profile(AgentProfile(id="coder", name="Coder"))
-        await db.update_project(PROJECT_ID, default_profile_id="coder")
         await mktask(db, "c1", status=TaskStatus.READY, profile_id="coder")
         await mktask(db, "u1", status=TaskStatus.READY)  # profile_id is NULL
 
@@ -826,7 +825,6 @@ class TestProjectReady:
 
         await db.create_profile(AgentProfile(id="coder", name="Coder"))
         await db.create_profile(AgentProfile(id="reviewer", name="Reviewer"))
-        await db.update_project(PROJECT_ID, default_profile_id="coder")
         await mktask(db, "u1", status=TaskStatus.READY)
 
         res = await handler._cmd_project_ready({"project_id": PROJECT_ID, "profile_id": "reviewer"})

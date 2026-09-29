@@ -808,7 +808,7 @@ async def _create_session_project(orch, *, project_id: str = "p-1") -> None:
             default_class="standard-medium",
         )
     )
-    await orch.db.create_project(Project(id=project_id, name="alpha", default_profile_id="claude"))
+    await orch.db.create_project(Project(id=project_id, name="alpha"))
     path = os.path.join(orch.config.workspace_dir, project_id)
     os.makedirs(path, exist_ok=True)
     await orch.db.create_workspace(

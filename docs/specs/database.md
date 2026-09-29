@@ -424,9 +424,8 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `discord_control_channel_id` | TEXT | nullable | Legacy column (superseded by `discord_channel_id`); kept for backward compatibility |
 | `repo_url` | TEXT | DEFAULT '' | Repository URL for the project (added via migration) |
 | `repo_default_branch` | TEXT | DEFAULT 'main' | Default branch name (added via migration) |
-| `default_profile_id` | TEXT | nullable REFERENCES agent_profiles(id) | Default agent profile (added via migration) |
 | `preferred_provider` | TEXT | nullable | Operator preference for which provider serves this project's work; NULL defers to global provider selection and failover. Added by Alembic `a00000000037` |
-| `assignment_playbook_id` | TEXT | nullable | The project's router binding: the routing playbook that routes its tasks (mandatory-task-routing spec §8). A new project is bound to `routing.default_router` (default `default-assignment-routing`); `a00000000039` bound every unbound project. Added by Alembic `a7c91e4d2b63` |
+| `assignment_playbook_id` | TEXT | NOT NULL DEFAULT 'default-assignment-routing' | The project's router binding: the routing playbook that routes its tasks (mandatory-task-routing spec §8). A new project is bound to `routing.default_router` (default `default-assignment-routing`); `a00000000039` bound every unbound project and `a00000000043` made the binding NOT NULL. Re-bind with `aq project set <p> router <playbook-id>` (local operator only); `aq doctor --check routing.bypassed` reports a missing or non-routing binding. A project has no default profile: `a00000000043` dropped `default_profile_id`. Added by Alembic `a7c91e4d2b63` |
 | `integration_mode` | TEXT | nullable | Project-level integration policy: `'direct'`, `'pull_request'`, or NULL (fall through to config `integration.default_mode`). Added by Alembic `c4d5e6f7a8b9` |
 | `hierarchical_integration_mode` | TEXT | NOT NULL DEFAULT 'disabled' | *Effective* hierarchical-integration rollout mode: one of `disabled`, `observe`, `hierarchy`, `train` (`ck_projects_hierarchical_integration_mode`). Only the orchestrator advances it, via a compare-and-set on `hierarchical_integration_generation`. Added by Alembic `c7a1e5d92f40` |
 | `integration_repository_id` | TEXT | nullable | The one `repos.id` designated as the hierarchical-integration repository (child branches, candidate trains and root promotion all target it). NULL leaves the project `repository_not_designated` and blocks every mode above `disabled`. Added by Alembic `c7a1e5d92f40` |
@@ -3476,7 +3475,7 @@ The full list of migrations applied in order:
 | `ALTER TABLE projects ADD COLUMN repo_url TEXT DEFAULT ''` | Adds project-level repo URL |
 | `ALTER TABLE projects ADD COLUMN repo_default_branch TEXT DEFAULT 'main'` | Adds project-level default branch |
 | `ALTER TABLE tasks ADD COLUMN profile_id TEXT REFERENCES agent_profiles(id)` | Adds agent profile reference to tasks |
-| `ALTER TABLE projects ADD COLUMN default_profile_id TEXT REFERENCES agent_profiles(id)` | Adds default profile to projects |
+| `ALTER TABLE projects ADD COLUMN default_profile_id TEXT REFERENCES agent_profiles(id)` | Adds default profile to projects (dropped by `a00000000043`, mandatory task routing §8) |
 | `ALTER TABLE archived_tasks ADD COLUMN profile_id TEXT` | Mirrors profile_id on archived tasks |
 | `ALTER TABLE tasks ADD COLUMN preferred_workspace_id TEXT REFERENCES workspaces(id)` | Adds preferred workspace to tasks |
 | `ALTER TABLE archived_tasks ADD COLUMN preferred_workspace_id TEXT` | Mirrors preferred_workspace_id on archived tasks |

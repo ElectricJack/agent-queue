@@ -5466,14 +5466,16 @@ class TaskCommandsMixin:
             project = await self.db.get_project(task.project_id)
             preferred_provider = getattr(project, "preferred_provider", None)
             if preferred_provider:
-                routing = await self._cmd_task_route_options({"task_id": task.id})
-                if routing.get("outcome") in {"held", "no_options"}:
+                wanted = explicit or (getattr(task, "class_hint", None) or "").strip() or None
+                if not await self._preferred_provider_serves(
+                    task.project_id, preferred_provider, wanted
+                ):
                     return detail, Reason(
                         code="preferred_provider_unavailable",
                         detail=(
                             f"project prefers provider '{preferred_provider}', which has no "
                             "enabled, launchable worker option for "
-                            + (f"intelligence class '{explicit}'" if explicit else "any class")
+                            + (f"intelligence class '{wanted}'" if wanted else "any class")
                             + "; waiting for that provider or a change to the project preference"
                         ),
                         ref=preferred_provider,

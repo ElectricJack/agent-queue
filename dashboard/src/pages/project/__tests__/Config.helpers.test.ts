@@ -3,7 +3,6 @@ import {
   parseOptionalInt,
   parseOptionalFloat,
   projectToForm,
-  dedupeProfileOptions,
 } from "../Config";
 
 describe("Config.tsx form helpers", () => {
@@ -23,7 +22,6 @@ describe("Config.tsx form helpers", () => {
     expect(projectToForm({})).toEqual({
       name: "",
       repo_default_branch: "",
-      default_profile_id: "",
       max_concurrent_agents: "",
       credit_weight: "",
       budget_limit: "",
@@ -31,14 +29,5 @@ describe("Config.tsx form helpers", () => {
     expect(projectToForm({ max_concurrent_agents: 3, credit_weight: 1.5 }).max_concurrent_agents).toBe(
       "3",
     );
-  });
-
-  it("dedupeProfileOptions keeps the first entry per id", () => {
-    const profiles = [
-      { id: "coder", name: "Coder" },
-      { id: "coder", name: "Coder (dupe)" },
-      { id: "reviewer", name: "Reviewer" },
-    ];
-    expect(dedupeProfileOptions(profiles).map((o) => o.id)).toEqual(["coder", "reviewer"]);
   });
 });

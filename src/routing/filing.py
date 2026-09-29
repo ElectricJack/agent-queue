@@ -17,6 +17,10 @@ The one exception is a role profile (``ROLE_PROFILE_IDS``) passed as
 ``profile_id`` to ``create_task`` or ``ensure_task`` by a ``SERVICE`` or
 ``PLAYBOOK`` principal (spec §4, D3).
 
+``create_project`` and ``edit_project`` (:data:`PROJECT_COMMANDS`) refuse the
+same arguments, ``default_profile_id`` above all: a project has no default
+profile, only a router binding (§8).
+
 Graph documents are refused where they are parsed (``src/task_graph/parser.py``)
 with the rule :data:`GRAPH_RULE`, so an inline graph, a vault spec's
 ``aq-graph`` block and a formula are all refused the same way.
@@ -88,6 +92,14 @@ FILING_HINTS: dict[str, tuple[str, ...]] = {
 
 FILING_COMMANDS: frozenset[str] = frozenset(FILING_HINTS)
 
+#: Project commands (spec §5.1, §8).  A project has no default profile and
+#: files nothing, so they refuse the same arguments with a refusal that names
+#: the router binding instead of the task hints.
+PROJECT_COMMANDS: frozenset[str] = frozenset({"create_project", "edit_project"})
+
+#: Every command the dispatch path guards.
+GUARDED_COMMANDS: frozenset[str] = FILING_COMMANDS | PROJECT_COMMANDS
+
 #: The surfaces on which a role creator may name a role profile (§4, D3).
 ROLE_FILING_COMMANDS: frozenset[str] = frozenset({"create_task", "ensure_task"})
 
@@ -155,6 +167,18 @@ def refused_arguments(
 
 def choice_forbidden(command: str, refused: list[str] | tuple[str, ...]) -> dict[str, Any]:
     """The refusal for *refused* arguments on *command*."""
+    if command in PROJECT_COMMANDS:
+        return {
+            "success": False,
+            "code": ROUTING_CHOICE_FORBIDDEN,
+            "error": (
+                f"{command} does not accept routing choices ({', '.join(refused)}): a "
+                "project has no default profile, and its bound router routes every task. "
+                "Bind another router with `aq project set <project> router <playbook-id>`."
+            ),
+            "refused": list(refused),
+            "hints": [],
+        }
     hints = FILING_HINTS.get(command, ("intelligence_class", "task_type"))
     return {
         "success": False,
@@ -200,7 +224,7 @@ def routing_choice_refusal(
     *principal* is the request's ``ExecutionPrincipal``; only its kind
     matters, for the role exception.
     """
-    if command not in FILING_COMMANDS or not isinstance(args, Mapping):
+    if command not in GUARDED_COMMANDS or not isinstance(args, Mapping):
         return None
     kind = str(getattr(principal, "kind", "") or "")
     refused = refused_arguments(command, args, role_creator=kind in {"service", "playbook"})
@@ -223,6 +247,8 @@ __all__ = [
     "FILING_COMMANDS",
     "FILING_HINTS",
     "GRAPH_RULE",
+    "GUARDED_COMMANDS",
+    "PROJECT_COMMANDS",
     "REFUSED_GRAPH_KEYS",
     "REFUSED_ROUTING_ARGS",
     "ROLE_FILING_COMMANDS",

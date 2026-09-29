@@ -17,12 +17,12 @@ class CreateProjectResponse:
     Attributes:
         created (str):
         name (str):
-        default_profile_id (None | str | Unset):
+        assignment_playbook_id (None | str | Unset):
     """
 
     created: str
     name: str
-    default_profile_id: None | str | Unset = UNSET
+    assignment_playbook_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -30,11 +30,11 @@ class CreateProjectResponse:
 
         name = self.name
 
-        default_profile_id: None | str | Unset
-        if isinstance(self.default_profile_id, Unset):
-            default_profile_id = UNSET
+        assignment_playbook_id: None | str | Unset
+        if isinstance(self.assignment_playbook_id, Unset):
+            assignment_playbook_id = UNSET
         else:
-            default_profile_id = self.default_profile_id
+            assignment_playbook_id = self.assignment_playbook_id
 
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
@@ -44,8 +44,8 @@ class CreateProjectResponse:
                 "name": name,
             }
         )
-        if default_profile_id is not UNSET:
-            field_dict["default_profile_id"] = default_profile_id
+        if assignment_playbook_id is not UNSET:
+            field_dict["assignment_playbook_id"] = assignment_playbook_id
 
         return field_dict
 
@@ -56,19 +56,19 @@ class CreateProjectResponse:
 
         name = d.pop("name")
 
-        def _parse_default_profile_id(data: object) -> None | str | Unset:
+        def _parse_assignment_playbook_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             return cast(None | str | Unset, data)
 
-        default_profile_id = _parse_default_profile_id(d.pop("default_profile_id", UNSET))
+        assignment_playbook_id = _parse_assignment_playbook_id(d.pop("assignment_playbook_id", UNSET))
 
         create_project_response = cls(
             created=created,
             name=name,
-            default_profile_id=default_profile_id,
+            assignment_playbook_id=assignment_playbook_id,
         )
 
         create_project_response.additional_properties = d

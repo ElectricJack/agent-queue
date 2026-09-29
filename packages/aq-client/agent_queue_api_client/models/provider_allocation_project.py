@@ -20,7 +20,7 @@ class ProviderAllocationProject:
         name (str | Unset):  Default: ''.
         status (str | Unset):  Default: ''.
         preferred_provider (None | str | Unset):
-        default_profile_id (None | str | Unset):
+        assignment_playbook_id (None | str | Unset):
         max_concurrent_agents (int | None | Unset):
     """
 
@@ -28,7 +28,7 @@ class ProviderAllocationProject:
     name: str | Unset = ""
     status: str | Unset = ""
     preferred_provider: None | str | Unset = UNSET
-    default_profile_id: None | str | Unset = UNSET
+    assignment_playbook_id: None | str | Unset = UNSET
     max_concurrent_agents: int | None | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
@@ -45,11 +45,11 @@ class ProviderAllocationProject:
         else:
             preferred_provider = self.preferred_provider
 
-        default_profile_id: None | str | Unset
-        if isinstance(self.default_profile_id, Unset):
-            default_profile_id = UNSET
+        assignment_playbook_id: None | str | Unset
+        if isinstance(self.assignment_playbook_id, Unset):
+            assignment_playbook_id = UNSET
         else:
-            default_profile_id = self.default_profile_id
+            assignment_playbook_id = self.assignment_playbook_id
 
         max_concurrent_agents: int | None | Unset
         if isinstance(self.max_concurrent_agents, Unset):
@@ -70,8 +70,8 @@ class ProviderAllocationProject:
             field_dict["status"] = status
         if preferred_provider is not UNSET:
             field_dict["preferred_provider"] = preferred_provider
-        if default_profile_id is not UNSET:
-            field_dict["default_profile_id"] = default_profile_id
+        if assignment_playbook_id is not UNSET:
+            field_dict["assignment_playbook_id"] = assignment_playbook_id
         if max_concurrent_agents is not UNSET:
             field_dict["max_concurrent_agents"] = max_concurrent_agents
 
@@ -95,14 +95,14 @@ class ProviderAllocationProject:
 
         preferred_provider = _parse_preferred_provider(d.pop("preferred_provider", UNSET))
 
-        def _parse_default_profile_id(data: object) -> None | str | Unset:
+        def _parse_assignment_playbook_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
             if isinstance(data, Unset):
                 return data
             return cast(None | str | Unset, data)
 
-        default_profile_id = _parse_default_profile_id(d.pop("default_profile_id", UNSET))
+        assignment_playbook_id = _parse_assignment_playbook_id(d.pop("assignment_playbook_id", UNSET))
 
         def _parse_max_concurrent_agents(data: object) -> int | None | Unset:
             if data is None:
@@ -118,7 +118,7 @@ class ProviderAllocationProject:
             name=name,
             status=status,
             preferred_provider=preferred_provider,
-            default_profile_id=default_profile_id,
+            assignment_playbook_id=assignment_playbook_id,
             max_concurrent_agents=max_concurrent_agents,
         )
 

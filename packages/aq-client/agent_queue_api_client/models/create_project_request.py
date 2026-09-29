@@ -20,10 +20,6 @@ class CreateProjectRequest:
         max_concurrent_agents (int | Unset): Max agents working on this project simultaneously Default: 2.
         repo_url (None | str | Unset): Git repository URL for this project (optional)
         default_branch (str | Unset): Default branch name (default: main) Default: 'main'.
-        default_profile_id (None | str | Unset): Eligible worker profile used for tasks in this project that don't
-            specify their own profile_id.  When omitted, a system default is chosen automatically by
-            src/profiles/default_selection.py (PREFERRED_DEFAULT_PROFILE_IDS, then any remaining general-purpose profile
-            alphabetically).  Run `aq agent list-profiles` for the ids this install has.
     """
 
     name: str
@@ -31,7 +27,6 @@ class CreateProjectRequest:
     max_concurrent_agents: int | Unset = 2
     repo_url: None | str | Unset = UNSET
     default_branch: str | Unset = "main"
-    default_profile_id: None | str | Unset = UNSET
     additional_properties: dict[str, Any] = _attrs_field(init=False, factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -49,12 +44,6 @@ class CreateProjectRequest:
 
         default_branch = self.default_branch
 
-        default_profile_id: None | str | Unset
-        if isinstance(self.default_profile_id, Unset):
-            default_profile_id = UNSET
-        else:
-            default_profile_id = self.default_profile_id
-
         field_dict: dict[str, Any] = {}
         field_dict.update(self.additional_properties)
         field_dict.update(
@@ -70,8 +59,6 @@ class CreateProjectRequest:
             field_dict["repo_url"] = repo_url
         if default_branch is not UNSET:
             field_dict["default_branch"] = default_branch
-        if default_profile_id is not UNSET:
-            field_dict["default_profile_id"] = default_profile_id
 
         return field_dict
 
@@ -95,22 +82,12 @@ class CreateProjectRequest:
 
         default_branch = d.pop("default_branch", UNSET)
 
-        def _parse_default_profile_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        default_profile_id = _parse_default_profile_id(d.pop("default_profile_id", UNSET))
-
         create_project_request = cls(
             name=name,
             credit_weight=credit_weight,
             max_concurrent_agents=max_concurrent_agents,
             repo_url=repo_url,
             default_branch=default_branch,
-            default_profile_id=default_profile_id,
         )
 
         create_project_request.additional_properties = d

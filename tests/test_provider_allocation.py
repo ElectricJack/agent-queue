@@ -74,7 +74,7 @@ async def orch(tmp_path):
     for project_id in (ALPHA, BRAVO):
         await create_session_project(
             orch, project_id=project_id,
-            default_profile_id="standard-high-claude", create_profile=False,
+            profile_id="standard-high-claude", create_profile=False,
         )
     await _fleet(orch)
     yield orch
@@ -366,7 +366,8 @@ async def test_projects_carry_preference_and_limits(orch):
     projects = {row["project_id"]: row for row in result["projects"]}
     assert list(projects) == [ALPHA, BRAVO]
     assert projects[ALPHA]["preferred_provider"] is None
-    assert projects[ALPHA]["default_profile_id"] == "standard-high-claude"
+    assert projects[ALPHA]["assignment_playbook_id"] == "default-assignment-routing"
+    assert "default_profile_id" not in projects[ALPHA]
     assert projects[ALPHA]["max_concurrent_agents"] == 2
     assert result["redacted"] is False and result["project_id"] is None
 

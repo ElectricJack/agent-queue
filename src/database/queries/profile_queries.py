@@ -8,7 +8,7 @@ import time
 from sqlalchemy import case, delete, func, insert, literal_column, null, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 
-from src.database.tables import agent_profiles, agents, projects, tasks
+from src.database.tables import agent_profiles, agents, tasks
 from src.models import AgentProfile, TaskStatus
 
 
@@ -208,7 +208,7 @@ class ProfileQueryMixin:
             return "created"
 
     async def delete_profile(self, profile_id: str) -> None:
-        """Delete a profile and clear foreign-key references.
+        """Delete a profile and clear the task references to it.
 
         A task that loses its profile loses its provider intent with it
         (provider-failover D17): ``pinned``/``preferred`` named a provider
@@ -253,11 +253,6 @@ class ProfileQueryMixin:
                         else_=tasks.c.rerouted_from,
                     ),
                 )
-            )
-            await conn.execute(
-                update(projects)
-                .where(projects.c.default_profile_id == profile_id)
-                .values(default_profile_id=None)
             )
             await conn.execute(delete(agent_profiles).where(agent_profiles.c.id == profile_id))
 

@@ -55,7 +55,6 @@ class ProjectQueryMixin:
                     discord_channel_id=project.discord_channel_id,
                     repo_url=project.repo_url,
                     repo_default_branch=project.repo_default_branch,
-                    default_profile_id=project.default_profile_id,
                     preferred_provider=project.preferred_provider,
                     # Never unbound (routing spec §8): the command layer passes
                     # ``routing.default_router``; a caller that passes nothing
@@ -349,9 +348,10 @@ class ProjectQueryMixin:
             repo_default_branch=row["repo_default_branch"]
             if row.get("repo_default_branch")
             else "main",
-            default_profile_id=row.get("default_profile_id"),
             preferred_provider=row.get("preferred_provider"),
-            assignment_playbook_id=row.get("assignment_playbook_id"),
+            # NOT NULL; an empty binding is read as stored, so doctor
+            # (``routing.bypassed``) sees the project as unbound.
+            assignment_playbook_id=row.get("assignment_playbook_id") or "",
             integration_mode=row.get("integration_mode"),
             hierarchical_integration_mode=(row.get("hierarchical_integration_mode") or "disabled"),
             integration_repository_id=row.get("integration_repository_id"),

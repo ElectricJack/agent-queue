@@ -134,11 +134,12 @@ it, never an automatic stage or a chain of passes (software-factory policy,
 
 Assignment routing is a **separate** playbook,
 `default-assignment-routing`. It fires on `task.route_needed` — emitted
-for a task that lacks an `intelligence_class`, a `profile_id`, or both —
-reads the catalog with `task_route_options`, and writes the chosen class
-and profile back with `task_route`, which also resolves the task's
-routing gate. A project that wants different routing keeps a
-project-scope copy of that file.
+for a queued task its router still owes a route — plans the route with
+`task_route_plan`, and writes it with `task_route_apply`, which also
+resolves the task's routing gate. Every project is bound to a router
+(`aq project set <project> router <playbook-id>`, local operator only);
+a project that wants different routing runs a project-scope copy of that
+file under its own id and is bound to it.
 
 To see them in action:
 

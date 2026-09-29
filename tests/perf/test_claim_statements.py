@@ -534,9 +534,7 @@ class TestClaimStatementBudgets:
                 )
             )
         for i in range(3):
-            await any_db.create_project(
-                Project(id=f"proj-{i}", name=f"p{i}", default_profile_id="worker-0")
-            )
+            await any_db.create_project(Project(id=f"proj-{i}", name=f"p{i}"))
 
         cfg = AppConfig(
             discord=DiscordConfig(bot_token="t", guild_id="1"),

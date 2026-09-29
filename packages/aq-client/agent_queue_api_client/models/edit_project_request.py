@@ -26,10 +26,8 @@ class EditProjectRequest:
         credit_weight (float | None | Unset): New scheduling weight (optional)
         max_concurrent_agents (int | None | Unset): New max concurrent agents (optional)
         budget_limit (int | None | Unset): Token budget limit (optional, null to clear)
-        default_profile_id (None | str | Unset): Default agent profile ID for tasks in this project (optional, null to
-            clear)
-        assignment_playbook_id (None | str | Unset): Project-scoped assignment-routing playbook ID (optional, null to
-            use the system default)
+        assignment_playbook_id (None | str | Unset): LOCAL-only: the routing playbook that routes this project's tasks
+            (its router binding). It must be active and grant task_route_apply; a project is never unbound.
         repo_default_branch (None | str | Unset): Default git branch for the project (e.g. main, dev, master)
         review_delegate_to (None | str | Unset): LOCAL-only default document-review decider; empty clears it.
         integration_repository_id (None | str | Unset): LOCAL-only designated integration repository ID.
@@ -44,7 +42,6 @@ class EditProjectRequest:
     credit_weight: float | None | Unset = UNSET
     max_concurrent_agents: int | None | Unset = UNSET
     budget_limit: int | None | Unset = UNSET
-    default_profile_id: None | str | Unset = UNSET
     assignment_playbook_id: None | str | Unset = UNSET
     repo_default_branch: None | str | Unset = UNSET
     review_delegate_to: None | str | Unset = UNSET
@@ -84,12 +81,6 @@ class EditProjectRequest:
             budget_limit = UNSET
         else:
             budget_limit = self.budget_limit
-
-        default_profile_id: None | str | Unset
-        if isinstance(self.default_profile_id, Unset):
-            default_profile_id = UNSET
-        else:
-            default_profile_id = self.default_profile_id
 
         assignment_playbook_id: None | str | Unset
         if isinstance(self.assignment_playbook_id, Unset):
@@ -150,8 +141,6 @@ class EditProjectRequest:
             field_dict["max_concurrent_agents"] = max_concurrent_agents
         if budget_limit is not UNSET:
             field_dict["budget_limit"] = budget_limit
-        if default_profile_id is not UNSET:
-            field_dict["default_profile_id"] = default_profile_id
         if assignment_playbook_id is not UNSET:
             field_dict["assignment_playbook_id"] = assignment_playbook_id
         if repo_default_branch is not UNSET:
@@ -213,15 +202,6 @@ class EditProjectRequest:
             return cast(int | None | Unset, data)
 
         budget_limit = _parse_budget_limit(d.pop("budget_limit", UNSET))
-
-        def _parse_default_profile_id(data: object) -> None | str | Unset:
-            if data is None:
-                return data
-            if isinstance(data, Unset):
-                return data
-            return cast(None | str | Unset, data)
-
-        default_profile_id = _parse_default_profile_id(d.pop("default_profile_id", UNSET))
 
         def _parse_assignment_playbook_id(data: object) -> None | str | Unset:
             if data is None:
@@ -308,7 +288,6 @@ class EditProjectRequest:
             credit_weight=credit_weight,
             max_concurrent_agents=max_concurrent_agents,
             budget_limit=budget_limit,
-            default_profile_id=default_profile_id,
             assignment_playbook_id=assignment_playbook_id,
             repo_default_branch=repo_default_branch,
             review_delegate_to=review_delegate_to,

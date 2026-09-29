@@ -51,9 +51,16 @@ projects = Table(
     Column("discord_control_channel_id", Text, nullable=True),
     Column("repo_url", Text, nullable=True, server_default=""),
     Column("repo_default_branch", Text, nullable=True, server_default="main"),
-    Column("default_profile_id", Text, ForeignKey("agent_profiles.id"), nullable=True),
     Column("preferred_provider", Text, nullable=True),
-    Column("assignment_playbook_id", Text, nullable=True),
+    # The router binding (mandatory-routing spec §8, revision a00000000043):
+    # every project names the routing playbook that routes its tasks.  There
+    # is no project default profile; ``default_profile_id`` was dropped.
+    Column(
+        "assignment_playbook_id",
+        Text,
+        nullable=False,
+        server_default="default-assignment-routing",
+    ),
     # Project-level integration policy: 'direct' | 'pull_request' | NULL
     # (NULL = inherit config ``integration.default_mode``).
     Column("integration_mode", Text, nullable=True),

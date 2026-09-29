@@ -619,7 +619,8 @@ def ensure_project(project_id: str, workspaces: list[str]) -> None:
     """
     existing = {p["id"] for p in collection_rows(api_checked("list_projects", {}), "projects")}
     if project_id not in existing:
-        api_checked("create_project", {"name": project_id, "default_profile_id": POOL_PROFILE})
+        # Bound to the default router; a project has no default profile (routing §8).
+        api_checked("create_project", {"name": project_id})
     have = {
         w["workspace_path"]
         for w in collection_rows(

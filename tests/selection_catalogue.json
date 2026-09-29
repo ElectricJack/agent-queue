@@ -575,7 +575,6 @@
         "tests/test_intelligence_classes.py",
         "tests/test_profile_catalog.py",
         "tests/test_profile_default_class.py",
-        "tests/test_profile_default_selection.py",
         "tests/test_profile_intelligence.py",
         "tests/test_session_class_effort.py",
         "tests/test_session_intelligence_class.py",
@@ -706,6 +705,7 @@
         "tests/test_migration_playbook_blocked_lifecycle.py",
         "tests/test_migration_playbook_v2.py",
         "tests/test_migration_postgres_upgrade_head.py",
+        "tests/test_migration_project_router_binding.py",
         "tests/test_migration_repair_stages.py",
         "tests/test_migration_retired_intelligence_classes.py",
         "tests/test_migration_review_playbook_pin.py",
@@ -1100,7 +1100,7 @@
       ]
     },
     "task-routing": {
-      "description": "Task routing: routing gates, task_route, class/profile requirements, V2 admission, cross-project routing, the shipped assignment-routing policy, the router's policy, planner, task_route_plan/task_route_apply, and router readiness with only routed work claimable.",
+      "description": "Task routing: routing gates, task_route, class/profile requirements, V2 admission, cross-project routing, the shipped assignment-routing policy, the router's policy, planner, task_route_plan/task_route_apply, router readiness, project router bindings and the routing.bypassed doctor check.",
       "modules": [
         "tests/test_agent_task_routing.py",
         "tests/test_assignment_routing.py",
@@ -1108,6 +1108,7 @@
         "tests/test_default_assignment_routing_playbook.py",
         "tests/test_pool_agent_routing.py",
         "tests/test_routing_admission_v2.py",
+        "tests/test_routing_doctor.py",
         "tests/test_routing_enforcement.py",
         "tests/test_routing_gate_guard.py",
         "tests/test_routing_mandatory.py",
@@ -1296,7 +1297,7 @@
       ]
     }
   },
-  "digest": "sha256:43ea8bc9070b26f6cff122fdc50335cfeb55da50193c6f9760a963d8a0cfc324",
+  "digest": "sha256:d5c87fa7f68a001f2d6c3a605854e855f2854d6462e993b62673993832f08ae6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2502,15 +2503,13 @@
       "imports": [
         "src.assignment_routing",
         "src.commands.handler",
-        "src.commands.routing_commands",
         "src.config",
         "src.database",
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.route_needed",
-        "src.sessions.harness_parser",
-        "src.sessions.harness_registry"
+        "src.sessions.harness_parser"
       ],
       "markers": [
         "parametrize"
@@ -4970,6 +4969,7 @@
         "src.doctor.provider_checks",
         "src.doctor.resource_checks",
         "src.doctor.review_checks",
+        "src.doctor.routing_checks",
         "src.doctor.runner",
         "src.doctor.service_checks",
         "src.doctor.session_checks",
@@ -8798,6 +8798,21 @@
       ],
       "summary": "Fresh PostgreSQL baseline creation, usable defaults, and schema parity."
     },
+    "tests/test_migration_project_router_binding.py": {
+      "areas": [
+        "migrations"
+      ],
+      "default_arm": false,
+      "imports": [
+        "src.database.engine",
+        "src.database.tables"
+      ],
+      "markers": [
+        "migration",
+        "parametrize"
+      ],
+      "summary": "a00000000043: every project bound to a router, ``default_profile_id`` dropped."
+    },
     "tests/test_migration_repair_stages.py": {
       "areas": [
         "migrations"
@@ -10133,7 +10148,6 @@
       "imports": [
         "src.install.logins",
         "src.profiles.catalog",
-        "src.profiles.default_selection",
         "src.profiles.parser",
         "src.profiles.retired_defaults",
         "src.vault"
@@ -10151,18 +10165,6 @@
       ],
       "markers": [],
       "summary": ""
-    },
-    "tests/test_profile_default_selection.py": {
-      "areas": [
-        "intelligence-classes"
-      ],
-      "default_arm": true,
-      "imports": [
-        "src.models",
-        "src.profiles.default_selection"
-      ],
-      "markers": [],
-      "summary": "Unit tests for src/profiles/default_selection.py."
     },
     "tests/test_profile_drift.py": {
       "areas": [
@@ -11531,6 +11533,29 @@
         "parametrize"
       ],
       "summary": "Package 7 T-9/T-10: task admission reads active V2 artifacts."
+    },
+    "tests/test_routing_doctor.py": {
+      "areas": [
+        "task-routing"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.doctor",
+        "src.doctor.models",
+        "src.doctor.routing_checks",
+        "src.doctor.runner",
+        "src.models",
+        "src.playbooks.artifact_ref",
+        "src.profiles.capabilities",
+        "src.routing.readiness",
+        "src.routing.sources"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Projects bound to the router and ``aq doctor --check routing.bypassed`` (Task 8)."
     },
     "tests/test_routing_enforcement.py": {
       "areas": [

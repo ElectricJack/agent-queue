@@ -10,7 +10,6 @@ import {
 import {
   useEditProject,
   usePauseProject,
-  useProfiles,
   useProject,
   useResumeProject,
 } from "../../api/hooks";
@@ -19,7 +18,6 @@ import DeleteProjectModal from "../../components/DeleteProjectModal";
 export interface FormState {
   name: string;
   repo_default_branch: string;
-  default_profile_id: string;
   max_concurrent_agents: string;
   credit_weight: string;
   budget_limit: string;
@@ -28,7 +26,6 @@ export interface FormState {
 const EMPTY_FORM: FormState = {
   name: "",
   repo_default_branch: "",
-  default_profile_id: "",
   max_concurrent_agents: "",
   credit_weight: "",
   budget_limit: "",
@@ -37,7 +34,6 @@ const EMPTY_FORM: FormState = {
 export default function ProjectConfig() {
   const { projectId = "" } = useParams();
   const { data: project, isLoading } = useProject(projectId);
-  const { data: profiles } = useProfiles();
   const editProject = useEditProject();
   const pauseProject = usePauseProject();
   const resumeProject = useResumeProject();
@@ -53,8 +49,6 @@ export default function ProjectConfig() {
 
   if (isLoading) return <p className="text-sm text-gray-500">Loading...</p>;
   if (!project) return <p className="text-sm text-gray-500">Project not found.</p>;
-
-  const profileOptions = dedupeProfileOptions(profiles ?? []);
 
   const startEdit = () => {
     setForm(projectToForm(project));
@@ -75,7 +69,6 @@ export default function ProjectConfig() {
         project_id: project.id,
         name: form.name.trim() || null,
         repo_default_branch: form.repo_default_branch.trim() || null,
-        default_profile_id: form.default_profile_id.trim() || null,
         max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
         credit_weight: parseOptionalFloat(form.credit_weight),
         budget_limit: parseOptionalFloat(form.budget_limit),
@@ -164,23 +157,12 @@ export default function ProjectConfig() {
         <Row label="Repo URL" striped>
           <span className="font-mono text-xs text-gray-400">{project.repo_url ?? "—"}</span>
         </Row>
-        <Row label="Default profile" striped={false}>
-          {editing ? (
-            <select
-              value={form.default_profile_id}
-              onChange={(e) => setForm({ ...form, default_profile_id: e.target.value })}
-              className="w-full rounded-md border border-gray-700 bg-gray-950 px-3 py-1.5 text-sm text-gray-200 focus:border-indigo-500 focus:outline-none"
-            >
-              <option value="">— inherit / none —</option>
-              {profileOptions.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.id})
-                </option>
-              ))}
-            </select>
-          ) : (
-            project.default_profile_id ?? "—"
-          )}
+        {/* A project has no default profile: its router routes every task.
+            Re-binding it is local-operator only (aq project set <p> router). */}
+        <Row label="Router" striped={false}>
+          <span className="font-mono text-xs text-gray-400">
+            {project.assignment_playbook_id ?? "—"}
+          </span>
         </Row>
         <Row label="Max concurrent agents" striped>
           {editing ? (
@@ -350,24 +332,15 @@ function NumberInput({
 export interface ProjectData {
   name?: string | null;
   repo_default_branch?: string | null;
-  default_profile_id?: string | null;
   max_concurrent_agents?: number | null;
   credit_weight?: number | null;
   budget_limit?: number | null;
-}
-
-/** Agent profiles are global, so the picker is just the deduped profile list. */
-export function dedupeProfileOptions(
-  profiles: { id: string; name: string }[],
-): { id: string; name: string }[] {
-  return profiles.filter((p, i, arr) => arr.findIndex((q) => q.id === p.id) === i);
 }
 
 export function projectToForm(p: ProjectData): FormState {
   return {
     name: p.name ?? "",
     repo_default_branch: p.repo_default_branch ?? "",
-    default_profile_id: p.default_profile_id ?? "",
     max_concurrent_agents:
       p.max_concurrent_agents != null ? String(p.max_concurrent_agents) : "",
     credit_weight: p.credit_weight != null ? String(p.credit_weight) : "",

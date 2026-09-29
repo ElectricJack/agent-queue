@@ -226,7 +226,14 @@ def project_set(
     expected_integration_generation: int | None,
     reason: str | None,
 ) -> None:
-    """Set a project property. e.g. aq project set myproj max-agents 4"""
+    """Set a project property. e.g. aq project set myproj max-agents 4
+
+    \b
+    `router <playbook-id>` re-binds the project to another routing playbook
+    (local operator only). The playbook must be active and grant
+    task_route_apply. A project has no default profile: its router routes
+    every task.
+    """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
     KEY_MAP = {
@@ -235,7 +242,7 @@ def project_set(
         "credit-weight": "credit_weight",
         "budget-limit": "budget_limit",
         "branch": "default_branch",
-        "default-profile": "default_profile_id",
+        "router": "assignment_playbook_id",
         "integration-repository": "integration_repository",
         "integration-repository-id": "integration_repository_id",
         "integration-policy": "hierarchical_integration_policy",
@@ -254,10 +261,6 @@ def project_set(
         coerced = float(value)
     elif field == "budget_limit":
         coerced = None if value.lower() in ("none", "null", "unlimited") else int(value)
-    elif field == "default_profile_id":
-        # Clearing falls the task back to the profile-resolution chain rather
-        # than pinning every unpinned task to one lane.
-        coerced = None if value.lower() in ("none", "null", "clear") else value
     elif field == "review_delegate_to":
         # Local-operator only; empty clears the delegation back to the default.
         lowered = value.lower()

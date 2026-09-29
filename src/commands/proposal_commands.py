@@ -372,18 +372,6 @@ class TaskProposalCommandsMixin:
             return {"success": False, "error": f"cycle(s): {cycles}"}
 
         project = await self.db.get_project(project_id)
-        if project is not None and project.default_profile_id:
-            default_profile = await self.db.get_profile(project.default_profile_id)
-            if default_profile is None:
-                return {
-                    "success": False,
-                    "error": (
-                        f"project default profile '{project.default_profile_id}' is not defined; "
-                        "configure an eligible worker default before materializing the batch"
-                    ),
-                }
-            if error := self._task_execution_profile_error(default_profile):
-                return {"success": False, "error": f"project default is invalid: {error}"}
         # Batch tasks carry hints like direct and graph-created work: a
         # stored spec naming a route (written before the refusal existed) is
         # refused, and a class is validated as a hint — both before the

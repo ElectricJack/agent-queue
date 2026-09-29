@@ -113,8 +113,6 @@ async def env(command_handler_factory, tmp_path):
             needs_workspace=False,
         )
     )
-    await db.update_project("p", default_profile_id="worker")
-    await db.update_project("other", default_profile_id="worker")
     await db.create_task(
         Task(
             id="author",
@@ -673,7 +671,6 @@ async def test_response_routing_files_the_decided_class_as_a_hint(env):
             default_class=class_id, needs_workspace=False,
             aq_commands=[], harness_tools=[], plugin_tools=[],
         ))
-    await db.update_project("p", default_profile_id="fast-high-codex")
 
     chosen = await handler.execute("review_submit", {
         "task_id": "author", "kind": "spec", "title": "Chosen route", "content": "# Chosen\n",

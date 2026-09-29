@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-134 commands are registered.
+133 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -41,7 +41,6 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`task_recovery_notify`](task_recovery_notify.md) | Wake a task's recovery incident | Record or reuse the one durable recovery incident for a blocked task and queue its single supervisor notice; a replayed failure reuses the same incident. |
 | [`task_route`](task_route.md) | Route a task to a profile | Assign the agent profile that will run the task, and clear its routing gate. |
 | [`task_route_apply`](task_route_apply.md) | Apply a planned route | Re-select among the plan's candidates on fresh capacity, write the route, and clear the task's routing gate. Only the project's bound router may call it. |
-| [`task_route_options`](task_route_options.md) | Read a task's routing options | Report whether the task is routed, whether its class is explicit, and which class, provider and profile combinations could execute it. |
 | [`task_route_plan`](task_route_plan.md) | Plan a task's route | Apply the routing policy to the task's hints and the live pool capacity, provider availability and usage, and propose a route without writing it. |
 
 ### Memory

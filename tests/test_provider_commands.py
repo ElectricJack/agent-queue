@@ -167,9 +167,8 @@ async def test_status_held_count_is_exactly_what_the_derived_hold_holds(handler,
         await db.create_profile(
             AgentProfile(id=profile_id, name=profile_id, harness=harness, default_class=cls)
         )
-    # The stale project defaults route nothing.
-    await db.create_project(Project(id="rung", name="rung", default_profile_id="sh-codex"))
-    await db.create_project(Project(id="astra", name="astra", default_profile_id="astra-codex"))
+    await db.create_project(Project(id="rung", name="rung"))
+    await db.create_project(Project(id="astra", name="astra"))
     tasks = [
         ("ready", "rung", "sh-codex", TaskStatus.READY),
         ("defined", "rung", "sh-codex", TaskStatus.DEFINED),

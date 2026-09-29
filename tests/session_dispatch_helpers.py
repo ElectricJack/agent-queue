@@ -118,20 +118,19 @@ async def create_session_project(
     orch: Orchestrator,
     *,
     project_id: str = "p-1",
-    default_profile_id: str | None = "claude",
+    profile_id: str | None = "claude",
     create_profile: bool = True,
 ) -> str:
-    """A project (defaulting to *default_profile_id*) with one bound workspace.
+    """A project with one bound workspace, and the session profile *profile_id*.
 
-    Returns the workspace path.  When *create_profile* is true the default
-    profile is created first so the project's FK is satisfied; pass
-    ``create_profile=False`` when the test registers profiles itself.
+    Returns the workspace path.  A project has no default profile (mandatory
+    routing §8): *profile_id* is only registered, when *create_profile* is
+    true, so a test can route tasks to it; pass ``create_profile=False`` when
+    the test registers profiles itself.
     """
-    if default_profile_id and create_profile:
-        await create_session_profile(orch, default_profile_id)
-    await orch.db.create_project(
-        Project(id=project_id, name="test-project", default_profile_id=default_profile_id)
-    )
+    if profile_id and create_profile:
+        await create_session_profile(orch, profile_id)
+    await orch.db.create_project(Project(id=project_id, name="test-project"))
     path = os.path.join(orch.config.workspace_dir, project_id)
     os.makedirs(path, exist_ok=True)
     await orch.db.create_workspace(

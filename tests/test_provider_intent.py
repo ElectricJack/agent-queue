@@ -81,7 +81,6 @@ async def setup(tmp_path):
         _worker("astra-high-codex", "codex", "astra-high"),
     ):
         await db.create_profile(profile)
-    await db.update_project("p", default_profile_id="standard-high-claude")
     data_dir = str(tmp_path / "data")
     ensure_default_intelligence_classes(data_dir)
     config = AppConfig(

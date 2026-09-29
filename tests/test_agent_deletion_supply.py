@@ -29,7 +29,7 @@ async def db(tmp_path):
         AgentProfile(id="pool-worker", name="Pool worker", harness="claude", lifecycle="pool"),
     ):
         await db.create_profile(profile)
-    await db.create_project(Project(id="p", name="P", default_profile_id="worker"))
+    await db.create_project(Project(id="p", name="P"))
     await db.create_workspace(
         Workspace(
             id="w",
