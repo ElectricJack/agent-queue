@@ -116,6 +116,7 @@ def test_registry_has_categories(registry):
         "git",
         "project",
         "agent",
+        "supervisor",
         "memory",
         "notes",
         "system",

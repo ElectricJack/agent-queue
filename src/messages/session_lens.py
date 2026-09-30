@@ -50,6 +50,10 @@ logger = logging.getLogger(__name__)
 __all__ = ["Activity", "SessionManagerProto", "SessionLens"]
 
 
+class SupervisorRestartError(ValueError):
+    """A supervisor restart was refused or could not complete safely."""
+
+
 #: Coarse activity signal reported to the delivery engine.
 #:
 #: * ``idle``     — live and quiet; safe to nudge.
@@ -292,6 +296,8 @@ class SessionLens:
     async def _ensure_started_locked(
         self, *, kind: str, target_id: str, project_id: str | None,
         raise_start_error: bool = False,
+        wake: str | None = None,
+        resume_key: str | None = None,
     ) -> bool:
         # Only supervisor-named sessions are wake-on-demand. Task sessions
         # are launched by the task lifecycle; spawning one from the message
@@ -455,11 +461,14 @@ class SessionLens:
              and (agent is None or s.agent_id in {None, agent.id})),
             key=lambda s: s.started_at or 0, default=None,
         )
-        resume_key = (
-            previous.session_key if previous is not None
-            and getattr(profile, "wake_mode", None) == "resume"
-            and harness.resume.style != "none" else None
-        )
+        if wake is None:
+            resume_key = (
+                previous.session_key if previous is not None
+                and getattr(profile, "wake_mode", None) == "resume"
+                and harness.resume.style != "none" else None
+            )
+        elif wake == "fresh":
+            resume_key = None
         handle = None
         try:
             spec = self._spec_builder.build_named_spec(
@@ -521,6 +530,92 @@ class SessionLens:
                 raise
             return False
         return True
+
+    async def restart_supervisor(
+        self, *, target_id: str, project_id: str | None,
+        resume: bool = False, expected_session_id: str | None = None,
+    ) -> SessionRecord:
+        """Retire one fenced instance and relaunch through the named spec builder.
+
+        Share the cold-start lock with message delivery and reconciliation so
+        neither can start a replacement between stop and launch.
+        """
+        if not target_id.startswith(_SUPERVISOR_NAME_PREFIX) or target_id == "supervisor-":
+            raise SupervisorRestartError("name must be a supervisor messaging address")
+        name = _resolve_runtime_session_name("session", target_id)
+        async with self._start_locks.setdefault(name, asyncio.Lock()):
+            row, handle = await self._resolve(
+                kind="session", target_id=target_id, project_id=project_id
+            )
+            if (row is None or row.lifecycle != "named" or row.task_id
+                    or row.profile_id != "supervisor" or row.project_id != project_id):
+                raise SupervisorRestartError("No named supervisor session to restart")
+            if expected_session_id is not None and row.id != expected_session_id:
+                raise SupervisorRestartError("Supervisor session changed; refresh before restarting")
+            if not getattr(self._config.sessions, "enabled", False):
+                raise SupervisorRestartError("Session runtime is disabled")
+            if self._token_store is None:
+                raise SupervisorRestartError("Supervisor token service is unavailable")
+            profile = await self._profiles_loader("supervisor")
+            if profile is None:
+                raise SupervisorRestartError("Supervisor profile is unavailable")
+            if row.project_id is None:
+                from src.agents.configuration import apply_agent_overrides, ensure_supervisor_agent
+
+                agent = await ensure_supervisor_agent(self._db)
+                if not agent.enabled:
+                    raise SupervisorRestartError("Supervisor is disabled; enable it before restarting")
+                profile = apply_agent_overrides(profile, agent)
+            harness = self._harnesses.get(
+                getattr(profile, "harness", None) or "claude", project_id=row.project_id
+            )
+            if harness is None:
+                raise SupervisorRestartError("Supervisor harness is not registered")
+            resume_key = row.session_key if resume else None
+            if resume and (
+                not resume_key or harness.resume.style == "none"
+                or harness.id != row.harness
+                or row.work_dir != self._supervisor_work_dir(row.project_id)
+            ):
+                raise SupervisorRestartError("The prior supervisor conversation cannot be resumed")
+            try:
+                provider = self._providers.create(row.provider)
+                # Persist intent before signalling; a concurrent observer must
+                # treat this death as requested instead of spending crash budget.
+                changed = await self._db.update_session_instance(
+                    row.id, row.instance_token, desired_state="stopped"
+                )
+                if not changed:
+                    raise SupervisorRestartError("Supervisor session changed; refresh before restarting")
+                await provider.stop(handle)
+                if not await provider.confirm_stopped(handle):
+                    raise SupervisorRestartError("Could not confirm the supervisor stopped")
+            except SupervisorRestartError:
+                raise
+            except Exception as exc:
+                raise SupervisorRestartError("Could not stop the supervisor; check session logs") from exc
+            fields = dict(desired_state="stopped", ended_at=time.time(), end_reason="operator_restart")
+            # Keep quarantine evidence on a terminal row; it cannot transition
+            # back to stopped, and the successor has its own fresh row.
+            if row.state != "quarantined":
+                fields["state"] = "stopped"
+            await self._db.update_session_instance(row.id, row.instance_token, **fields)
+            await self._token_store.revoke_session(row.id)
+            self._activity_cursors.pop(row.id, None)
+            try:
+                started = await self._ensure_started_locked(
+                    kind="session", target_id=target_id, project_id=row.project_id,
+                    raise_start_error=True,
+                    wake="resume" if resume else "fresh", resume_key=resume_key,
+                )
+            except SessionExecutableNotFound as exc:
+                raise SupervisorRestartError(str(exc)) from exc
+            if not started:
+                raise SupervisorRestartError("Supervisor stopped but relaunch failed; check session logs")
+            successor = await self._db.get_session_by_name(name)
+            if successor is None or successor.id == row.id:
+                raise SupervisorRestartError("Supervisor relaunch did not publish a new session")
+            return successor
 
     async def nudge(
         self,

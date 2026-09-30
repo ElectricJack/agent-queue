@@ -233,11 +233,15 @@ class TestSkipPermissionsGating:
         harness = replace(CLAUDE, permission_flag="")
         assert self.FLAG not in _isolated(builder, harness=harness).command
 
-    def test_a_named_session_profile_can_opt_in(self, builder):
+    @pytest.mark.parametrize("opt_in", [
+        {"permission_mode": "bypassPermissions"},
+        {"claude_dangerously_skip_permissions": True},
+    ])
+    def test_a_named_session_profile_can_opt_in(self, builder, opt_in):
         """Named sessions have no workspace; the profile opt-in is the only
         way for e.g. the supervisor (vault work_dir) to skip prompts."""
         spec = builder.build_named_spec(
-            profile=_Profile(id="supervisor", permission_mode="bypassPermissions"),
+            profile=_Profile(id="supervisor", **opt_in),
             harness=CLAUDE,
             project_id="proj-1",
             work_dir="/vault/projects/proj-1",
@@ -245,6 +249,7 @@ class TestSkipPermissionsGating:
             instance_token="t1",
         )
         assert self.FLAG in spec.command
+        assert "--permission-mode" not in spec.command
 
     def test_a_named_session_without_opt_in_is_withheld(self, builder):
         spec = builder.build_named_spec(
@@ -264,6 +269,12 @@ class TestSkipPermissionsGating:
         assert skip_permissions_allowed(_Profile(), RepoSourceType.WORKTREE) is True
         assert skip_permissions_allowed(_Profile(), RepoSourceType.LINK) is False
         assert skip_permissions_allowed(_Profile(), None) is False
+        assert skip_permissions_allowed(
+            _Profile(claude_dangerously_skip_permissions=True), None
+        ) is True
+        assert skip_permissions_allowed(
+            _Profile(harness="codex", claude_dangerously_skip_permissions=True), None
+        ) is False
         assert (
             skip_permissions_allowed(
                 _Profile(permission_mode="bypassPermissions"), None

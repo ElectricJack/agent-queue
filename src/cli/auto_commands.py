@@ -235,6 +235,7 @@ CATEGORY_CLI_DESCRIPTIONS: dict[str, str] = {
     "message": "Inter-agent and user message queue.",
     "escalation": "Durable human escalations and supervisor-owned resolution.",
     "supervisor-inbox": "Supervisor conversations — status, history, and explicit replies.",
+    "supervisor": "Supervisor session lifecycle.",
     "review": "Document reviews: submit specs and plans for Jack's approval",
     "github-issue": "GitHub issue triage and review actions for the bound project.",
     "digest": "Hourly activity digest — dry preview and schedule health.",

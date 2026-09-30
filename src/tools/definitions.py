@@ -306,6 +306,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "session_kill": "system",
     "session_sleep": "system",
     "session_wake": "system",
+    "supervisor_restart": "supervisor",
     # Dev/e2e facility — mints a bearer token for an existing session so a
     # harness can act as it (see src/commands/session_commands.py).
     # Elevated/local only: deliberately absent from AGENT_COMMAND_SET.
@@ -2071,6 +2072,31 @@ _ALL_TOOL_DEFINITIONS = [
                 "key": {"type": "string"},
             },
             "required": ["session_id"],
+        },
+    },
+    {
+        "name": "supervisor_restart",
+        "description": (
+            "Restart a named supervisor through AQ with current profile permissions, model and effort. "
+            "Starts a fresh conversation by default; --resume resumes its prior conversation. "
+            "Requires global admin."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string", "default": "supervisor-global",
+                    "description": "Supervisor messaging address (supervisor-global or supervisor-<project>)",
+                },
+                "resume": {
+                    "type": "boolean", "default": False,
+                    "description": "Resume the prior conversation instead of starting fresh",
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": "Restart only if this is still the current session",
+                },
+            },
         },
     },
     {

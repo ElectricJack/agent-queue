@@ -1349,6 +1349,9 @@ from .supervisor_inbox_reply_request import SupervisorInboxReplyRequest
 from .supervisor_inbox_reply_response import SupervisorInboxReplyResponse
 from .supervisor_inbox_status_request import SupervisorInboxStatusRequest
 from .supervisor_inbox_status_response import SupervisorInboxStatusResponse
+from .supervisor_restart_request import SupervisorRestartRequest
+from .supervisor_restart_response import SupervisorRestartResponse
+from .supervisor_restart_response_422 import SupervisorRestartResponse422
 from .tail_api_streams_stream_id_tail_get_response_tail_api_streams_stream_id_tail_get import (
     TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet,
 )
@@ -2902,6 +2905,9 @@ __all__ = (
     "SupervisorInboxReplyResponse",
     "SupervisorInboxStatusRequest",
     "SupervisorInboxStatusResponse",
+    "SupervisorRestartRequest",
+    "SupervisorRestartResponse",
+    "SupervisorRestartResponse422",
     "TailApiStreamsStreamIdTailGetResponseTailApiStreamsStreamIdTailGet",
     "TaskActivityAttempt",
     "TaskActivityItem",

@@ -12144,6 +12144,53 @@
         }
       }
     },
+    "/api/supervisor/restart": {
+      "post": {
+        "tags": [
+          "supervisor"
+        ],
+        "summary": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires global admin.",
+        "description": "Restart a named supervisor through AQ with current profile permissions, model and effort. Starts a fresh conversation by default; --resume resumes its prior conversation. Requires global admin.",
+        "operationId": "supervisor_restart",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupervisorRestartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupervisorRestartResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/supervisor_inbox/history": {
       "post": {
         "tags": [
@@ -55920,6 +55967,69 @@
           "intake"
         ],
         "title": "SupervisorInboxStatusResponse"
+      },
+      "SupervisorRestartRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Supervisor messaging address (supervisor-global or supervisor-<project>)",
+            "default": "supervisor-global"
+          },
+          "resume": {
+            "type": "boolean",
+            "title": "Resume",
+            "description": "Resume the prior conversation instead of starting fresh",
+            "default": false
+          },
+          "session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id",
+            "description": "Restart only if this is still the current session"
+          }
+        },
+        "type": "object",
+        "title": "SupervisorRestartRequest"
+      },
+      "SupervisorRestartResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "session_id": {
+            "type": "string",
+            "title": "Session Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "mode": {
+            "type": "string",
+            "title": "Mode"
+          }
+        },
+        "type": "object",
+        "required": [
+          "session_id",
+          "name",
+          "state",
+          "mode"
+        ],
+        "title": "SupervisorRestartResponse"
       },
       "TaskActivityAttempt": {
         "properties": {

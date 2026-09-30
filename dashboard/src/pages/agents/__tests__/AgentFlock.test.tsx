@@ -14,7 +14,7 @@ vi.mock("@xterm/addon-fit", async () => ({ FitAddon: (await import("../../../tes
 const api = vi.hoisted(() => ({
   listAgents: vi.fn(), listProjects: vi.fn(), listProfiles: vi.fn(),
   getAgent: vi.fn(), editAgent: vi.fn(), createAgent: vi.fn(), deleteAgent: vi.fn(), listIntelligenceClasses: vi.fn(),
-  sessionInput: vi.fn(), startAgentTerminal: vi.fn(),
+  sessionInput: vi.fn(), startAgentTerminal: vi.fn(), supervisorRestart: vi.fn(),
   poolStatus: vi.fn(), poolScale: vi.fn(), sessionList: vi.fn(),
 }));
 vi.mock("../../../api/client", () => api);
@@ -110,6 +110,10 @@ beforeEach(() => {
     return { data: { deleted: deleted.id, name: deleted.name } };
   });
   api.sessionInput.mockResolvedValue({ data: { success: true, session_id: "session-b", accepted: true } });
+  api.supervisorRestart.mockImplementation(async ({ body }: { body: { resume?: boolean } }) => {
+    roster = roster.map((row) => row.role === "supervisor" ? { ...row, session_id: "restarted-supervisor" } : row);
+    return { data: { success: true, name: "supervisor-global", session_id: "restarted-supervisor", state: "running", mode: body.resume ? "resume" : "fresh" } };
+  });
   api.startAgentTerminal.mockImplementation(async ({ body }: { body: { agent_id: string; project_id?: string } }) => {
     roster = roster.map((row) => row.id === body.agent_id
       ? { ...row, session_id: "started-" + row.id, session_state: "running", session_provider: "tmux",
@@ -809,5 +813,50 @@ describe("Task-lifecycle sessions running on a pool's route", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open opencode-b (outside pool)" }), { shiftKey: true });
     expect(screen.getByLabelText("Current location")).toHaveTextContent("/agents?agent=oc-1&agent=oc-2");
     expect(await screen.findByRole("region", { name: "opencode-b agent window" })).toBeInTheDocument();
+  });
+});
+
+
+describe("supervisor restart", () => {
+  it("restarts fresh by default and reconnects the terminal to its replacement", async () => {
+    renderFlock("/agents?agent=a", true);
+    const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    expect(within(supervisor).getByRole("combobox", { name: "Restart conversation" })).toHaveValue("fresh");
+    fireEvent.click(within(supervisor).getByRole("button", { name: "Restart" }));
+    await waitFor(() => expect(api.supervisorRestart).toHaveBeenCalledWith({
+      body: { name: "supervisor-global", resume: false, session_id: "session-a" }, throwOnError: true,
+    }));
+    await within(supervisor).findByText("Supervisor restarted with a fresh conversation.");
+    await waitFor(() => expect(TerminalSocketMock.instances.some((socket) => socket.url.includes("/restarted-supervisor"))).toBe(true));
+  });
+
+  it("lets the user resume the prior conversation", async () => {
+    renderFlock("/agents?agent=a", true);
+    const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.change(within(supervisor).getByRole("combobox", { name: "Restart conversation" }), { target: { value: "resume" } });
+    fireEvent.click(within(supervisor).getByRole("button", { name: "Restart" }));
+    await waitFor(() => expect(api.supervisorRestart).toHaveBeenCalledWith({
+      body: { name: "supervisor-global", resume: true, session_id: "session-a" }, throwOnError: true,
+    }));
+    await within(supervisor).findByText("Supervisor restarted with the prior conversation.");
+  });
+
+  it("prevents repeated clicks during restart and shows a launch failure", async () => {
+    let reject!: (error: Error) => void;
+    api.supervisorRestart.mockReturnValue(new Promise((_resolve, fail) => { reject = fail; }));
+    renderFlock("/agents?agent=a", true);
+    const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(supervisor).getByRole("button", { name: "Restart" }));
+    expect(await within(supervisor).findByRole("button", { name: "Restarting…" })).toBeDisabled();
+    expect(within(supervisor).getByRole("combobox", { name: "Restart conversation" })).toBeDisabled();
+    act(() => reject(new Error("Supervisor stopped but relaunch failed")));
+    expect(await within(supervisor).findByRole("alert")).toHaveTextContent("relaunch failed");
+    expect(api.supervisorRestart).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not offer supervisor restart in a worker window", async () => {
+    renderFlock("/agents?agent=b", true);
+    const worker = await screen.findByRole("region", { name: "Builder agent window" });
+    expect(within(worker).queryByRole("button", { name: "Restart" })).not.toBeInTheDocument();
   });
 });
