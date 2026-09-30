@@ -11136,13 +11136,17 @@
       "acceptance_status": "untested",
       "acceptance_evidence": [],
       "parameters": {
-        "required": [],
+        "required": [
+          "--manifest"
+        ],
         "optional": [
           "--json",
           "--brief",
           "--api-url"
         ],
-        "structured": [],
+        "structured": [
+          "--manifest"
+        ],
         "nullable": []
       }
     },

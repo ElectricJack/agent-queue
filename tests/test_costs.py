@@ -324,6 +324,63 @@ def _config(entries=()):
     return config
 
 
+@pytest.mark.parametrize(
+    ("elevated", "project_id", "allowed"),
+    [(False, "p-1", False), (True, "p-2", False), (True, "p-1", True)],
+)
+async def test_benchmark_report_schema_preserves_manifest_and_authorization(
+    elevated, project_id, allowed
+):
+    from unittest.mock import AsyncMock
+
+    from src.api.codegen import _make_input_model
+    from src.api.models import get_all_response_models
+    from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
+    from src.profiles.capabilities import DENY_ALL
+    from src.tools import _ALL_TOOL_DEFINITIONS
+
+    schema = next(
+        tool["input_schema"] for tool in _ALL_TOOL_DEFINITIONS
+        if tool["name"] == "get_benchmark_report"
+    )
+    model = _make_input_model("get_benchmark_report", schema)
+    manifest = {
+        "version": 1, "project_id": "p-1", "policy_sha256": "sha256:frozen",
+        "rate_card_version": "v1",
+        "arms": {"opus": {"class": "deep-high", "harness": "claude",
+                          "requested_model": "claude-opus-5-5",
+                          "observed_models": ["claude-opus-5-5*"]}},
+        "pairs": [{"specimen": "rock", "arm": "opus", "attempt": "1",
+                   "task_ids": ["t-1"]}],
+    }
+    with pytest.raises(ValueError):
+        model()
+    with pytest.raises(ValueError):
+        model(manifest=[])
+    database = AsyncMock()
+    database.get_benchmark_evidence.return_value = {
+        "tasks": {"t-1": {"status": "FAILED"}}, "attempts": [], "ledger": [],
+    }
+    principal = ExecutionPrincipal(
+        kind=PrincipalKind.SESSION, policy=DENY_ALL,
+        project_id=project_id, elevated=elevated,
+    )
+    with principal_context(principal):
+        result = await _Handler(database, _config())._cmd_get_benchmark_report(
+            model(manifest=manifest).model_dump()
+        )
+    if not allowed:
+        assert "out of scope" in result["error"]
+        database.get_benchmark_evidence.assert_not_awaited()
+    else:
+        database.get_benchmark_evidence.assert_awaited_once_with("p-1", ["t-1"])
+        response = get_all_response_models()["get_benchmark_report"].model_validate(result)
+        assert response.model_dump() == result
+        assert response.attempts_failed == 1
+        assert response.pairs[0]["route_check"] == "unknown"
+        assert response.cost_complete is False
+
+
 class TestGetCostsCommand:
     async def test_cache_rates_and_missing_cache_rates_remain_explicit(self, db):
         await _seed(db)

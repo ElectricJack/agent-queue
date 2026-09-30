@@ -380,6 +380,11 @@ from .get_agent_error_response import GetAgentErrorResponse
 from .get_agent_error_response_422 import GetAgentErrorResponse422
 from .get_agent_request import GetAgentRequest
 from .get_agent_response_422 import GetAgentResponse422
+from .get_benchmark_report_request import GetBenchmarkReportRequest
+from .get_benchmark_report_request_manifest import GetBenchmarkReportRequestManifest
+from .get_benchmark_report_response import GetBenchmarkReportResponse
+from .get_benchmark_report_response_422 import GetBenchmarkReportResponse422
+from .get_benchmark_report_response_pairs_item import GetBenchmarkReportResponsePairsItem
 from .get_chain_health_request import GetChainHealthRequest
 from .get_chain_health_response import GetChainHealthResponse
 from .get_chain_health_response_422 import GetChainHealthResponse422
@@ -1988,6 +1993,11 @@ __all__ = (
     "GetAgentErrorResponse422",
     "GetAgentRequest",
     "GetAgentResponse422",
+    "GetBenchmarkReportRequest",
+    "GetBenchmarkReportRequestManifest",
+    "GetBenchmarkReportResponse",
+    "GetBenchmarkReportResponse422",
+    "GetBenchmarkReportResponsePairsItem",
     "GetChainHealthRequest",
     "GetChainHealthResponse",
     "GetChainHealthResponse422",

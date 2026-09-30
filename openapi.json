@@ -12870,6 +12870,53 @@
         }
       }
     },
+    "/api/system/get-benchmark-report": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Export usage, costs, routing provenance and stage measurements for an explicit frozen benchmark cohort. Requires an operator or project supervisor; missing attribution and charges remain unknown.",
+        "description": "Export usage, costs, routing provenance and stage measurements for an explicit frozen benchmark cohort. Requires an operator or project supervisor; missing attribution and charges remain unknown.",
+        "operationId": "get_benchmark_report",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetBenchmarkReportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetBenchmarkReportResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/get-chat-analyzer-metrics": {
       "post": {
         "tags": [
@@ -30224,6 +30271,93 @@
           "agent_id"
         ],
         "title": "GetAgentRequest"
+      },
+      "GetBenchmarkReportRequest": {
+        "properties": {
+          "manifest": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Manifest",
+            "description": "Version 1 cohort manifest with project_id, policy_sha256, rate_card_version, arms and explicit specimen/arm/attempt/task_ids pairs."
+          }
+        },
+        "type": "object",
+        "required": [
+          "manifest"
+        ],
+        "title": "GetBenchmarkReportRequest"
+      },
+      "GetBenchmarkReportResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success"
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id"
+          },
+          "policy_sha256": {
+            "type": "string",
+            "title": "Policy Sha256"
+          },
+          "rate_card_version": {
+            "type": "string",
+            "title": "Rate Card Version"
+          },
+          "rate_card_sha256": {
+            "type": "string",
+            "title": "Rate Card Sha256"
+          },
+          "pairs": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Pairs"
+          },
+          "attempts_total": {
+            "type": "integer",
+            "title": "Attempts Total"
+          },
+          "attempts_failed": {
+            "type": "integer",
+            "title": "Attempts Failed"
+          },
+          "cost_complete": {
+            "type": "boolean",
+            "title": "Cost Complete"
+          },
+          "estimated_api_cost_usd": {
+            "type": "number",
+            "title": "Estimated Api Cost Usd"
+          },
+          "unpriced_tokens": {
+            "type": "integer",
+            "title": "Unpriced Tokens"
+          },
+          "tokens_total": {
+            "type": "integer",
+            "title": "Tokens Total"
+          }
+        },
+        "type": "object",
+        "required": [
+          "success",
+          "project_id",
+          "policy_sha256",
+          "rate_card_version",
+          "rate_card_sha256",
+          "pairs",
+          "attempts_total",
+          "attempts_failed",
+          "cost_complete",
+          "estimated_api_cost_usd",
+          "unpriced_tokens",
+          "tokens_total"
+        ],
+        "title": "GetBenchmarkReportResponse"
       },
       "GetChainHealthRequest": {
         "properties": {

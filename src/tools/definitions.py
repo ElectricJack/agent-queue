@@ -268,6 +268,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "delete_intelligence_class": "system",
     "doctor": "system",
     "get_costs": "system",
+    "get_benchmark_report": "system",
     "db_preflight_hierarchy": "system",
     "get_schema": "system",
     # aq-surface task commands.
@@ -4494,6 +4495,28 @@ _ALL_TOOL_DEFINITIONS = [
         },
     },
     # -- Ops: doctor / costs (docs/specs/design/trust-and-ops.md §5, §7) ----
+    {
+        "name": "get_benchmark_report",
+        "description": (
+            "Export usage, costs, routing provenance and stage measurements for an explicit "
+            "frozen benchmark cohort. Requires an operator or project supervisor; missing "
+            "attribution and charges remain unknown."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "manifest": {
+                    "type": "object",
+                    "additionalProperties": True,
+                    "description": (
+                        "Version 1 cohort manifest with project_id, policy_sha256, "
+                        "rate_card_version, arms and explicit specimen/arm/attempt/task_ids pairs."
+                    ),
+                },
+            },
+            "required": ["manifest"],
+        },
+    },
     {
         "name": "doctor",
         "description": (

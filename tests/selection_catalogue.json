@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:2d1473972006eb60a32bdc6e85e31f60da7f9dc5b5afaf320af8789528834355",
+  "digest": "sha256:1493c985aaba546a20852b52e58b233cc6d76f01d3023b3d9c4042963a6fabb6",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4136,15 +4136,19 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.api.codegen",
         "src.api.models",
         "src.benchmark.opencode",
         "src.benchmark.report",
         "src.commands.ops_commands",
+        "src.commands.principal",
         "src.config",
         "src.config_editor",
         "src.database",
         "src.models",
-        "src.routing.sources"
+        "src.profiles.capabilities",
+        "src.routing.sources",
+        "src.tools"
       ],
       "markers": [
         "parametrize"

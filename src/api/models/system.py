@@ -29,6 +29,21 @@ class GetTokenUsageResponse(BaseModel):
     total: int = 0
 
 
+class GetBenchmarkReportResponse(BaseModel):
+    success: bool
+    project_id: str
+    policy_sha256: str
+    rate_card_version: str
+    rate_card_sha256: str
+    pairs: list[dict[str, Any]]
+    attempts_total: int
+    attempts_failed: int
+    cost_complete: bool
+    estimated_api_cost_usd: float
+    unpriced_tokens: int
+    tokens_total: int
+
+
 class TokenAuditResponse(BaseModel):
     total: int = 0
     days: int = 7
@@ -315,6 +330,7 @@ class DeleteIntelligenceClassResponse(BaseModel):
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_status": GetStatusResponse,
     "get_token_usage": GetTokenUsageResponse,
+    "get_benchmark_report": GetBenchmarkReportResponse,
     "token_audit": TokenAuditResponse,
     "claude_usage": ClaudeUsageResponse,
     "get_recent_events": GetRecentEventsResponse,

@@ -23,7 +23,8 @@ semantic bodies, without an LLM:
 
 This writes the fixture bundle only.  Two trees hold byte-identical copies of
 a reviewed recording and are not touched here — copy them across by hand after
-a rebuild, and update each ``manifest.md``'s digests:
+a rebuild. Existing fixture ``manifest.md`` digests are refreshed from the
+compiler output without changing their policy or review prose:
 
 * ``src/prompts/reviewed_playbooks/<id>/`` — what the daemon seeds into the
   vault and activates (``src/playbooks/required.py``).  Guarded by
@@ -1373,6 +1374,20 @@ def main() -> int:
             files[directory / "artifact.sha256"] = (
                 result["artifact_sha256"] + "\n"
             ).encode("utf-8")
+            manifest_path = directory / "manifest.md"
+            if manifest_path.exists():
+                manifest = manifest_path.read_text(encoding="utf-8")
+                for key, value in {
+                    "artifact_sha256": result["artifact_sha256"],
+                    "source_sha256": artifact.source_hash,
+                    "contract_fingerprint": artifact.contract_fingerprint(),
+                }.items():
+                    manifest, count = re.subn(
+                        rf"^{key}: .+$", f"{key}: {value}", manifest, count=1, flags=re.M
+                    )
+                    if count != 1:
+                        raise SystemExit(f"{manifest_path}: missing {key}")
+                files[manifest_path] = manifest.encode("utf-8")
             print(f"  approvable: {result['artifact_sha256']}")
         else:
             for diagnostic in result["diagnostics"]:
@@ -1397,6 +1412,14 @@ def main() -> int:
                 # The hash covers `compiled_at`, so it moves whenever that does;
                 # `artifact.json` above is the assertion that matters.
                 continue
+            if args.check and path.name == "manifest.md" and existing is not None:
+                # The artifact hash covers compiled_at; the deterministic artifact
+                # and the manifest's recorded hash are checked independently.
+                stable = lambda data: re.sub(  # noqa: E731
+                    r"^artifact_sha256: .+$", "", data.decode("utf-8"), flags=re.M
+                )
+                if stable(existing) == stable(payload):
+                    continue
             drift += 1
             rel = path.relative_to(REPO_ROOT)
             if args.check:
