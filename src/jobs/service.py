@@ -338,22 +338,19 @@ class JobService:
             directory = await asyncio.to_thread(
                 job_directory, Path(self.config.data_dir), job["id"]
             )
-            artifacts = []
-            for name in ("completion", "started", "intent"):
+            from src.jobs.identity import require_readable_identity
+
+            async def read_receipt(name):
                 value = await asyncio.to_thread(read_json, directory / f"{name}.json")
                 if value is not None and not isinstance(value, dict):
                     raise ValueError("invalid job receipt")
-                artifacts.append(
-                    value
-                    if value and value.get("nonce") == nonce and value.get("job_id") == job["id"]
-                    else None
-                )
-            receipt, started, intent = artifacts
-            from src.jobs.identity import require_readable_identity
+                if not value or value.get("nonce") != nonce or value.get("job_id") != job["id"]:
+                    return None
+                await require_readable_identity(value)
+                return value
 
-            for value in artifacts:
-                if value:
-                    await require_readable_identity(value)
+            artifacts = [await read_receipt(name) for name in ("completion", "started", "intent")]
+            receipt, started, intent = artifacts
             alive = await processes(nonce)
             # A just-created starting row may precede the detached exec. Bound
             # that gap without ever launching again on adoption.
@@ -384,6 +381,11 @@ class JobService:
 
                     await stop_tree(nonce)
                 return
+            # A runner commits completion before exiting. It can do both while
+            # the process scan is in flight, after our initial artifact read.
+            # Refresh the fenced receipt after proving execution has ended so
+            # that a completed command is never recorded as a lost launch.
+            receipt = await read_receipt("completion")
             lock_dir = job["contract"].get("lock_dir")
             if lock_dir:
                 from src.resources.test_runs import held_slots

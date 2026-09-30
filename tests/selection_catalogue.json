@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:098de40af1318d6d826fe7a95d77b40e4150427dcd42bf893924a57c23667671",
+  "digest": "sha256:9b0fdc4f63a8ab1e2dd1908dc6954c4b0e41d01f5bae018243aa4aa3c6e12cf0",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7845,7 +7845,9 @@
         "src.jobs.result",
         "src.jobs.service"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Receipt adoption, retention, authorization and deterministic admission."
     },
     "tests/test_jobs_runner.py": {
