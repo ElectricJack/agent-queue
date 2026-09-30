@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 462,
+    "leaf_commands": 466,
     "registration": {
-      "generated": 297,
-      "handwritten": 165
+      "generated": 299,
+      "handwritten": 167
     },
     "ownership": {
-      "core": 423,
+      "core": 427,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 461
+      "supported": 465
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 297,
-      "registration": 151
+      "dispatch": 299,
+      "registration": 153
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 402
+      "untested": 406
     }
   },
   "commands": [
@@ -794,6 +794,75 @@
         ],
         "optional": [
           "--project-id",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq benchmark export",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "get_benchmark_report",
+      "callback": "src.cli.doctor.benchmark_export",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--manifest"
+        ],
+        "optional": [
+          "--output",
+          "--opencode-export",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq benchmark stage-record",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "benchmark_stage_record",
+      "callback": "src.cli.doctor.benchmark_stage_record",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id",
+          "--span-id",
+          "--stage",
+          "--started-monotonic-ns",
+          "--ended-monotonic-ns"
+        ],
+        "optional": [
+          "--claim-epoch",
           "--json",
           "--brief",
           "--api-url"
@@ -11047,6 +11116,37 @@
       }
     },
     {
+      "path": "aq system get-benchmark-report",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "get_benchmark_report",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq system get-chat-analyzer-metrics",
       "registration": "generated",
       "owner_kind": "core",
@@ -13299,6 +13399,44 @@
         "structured": [
           "--payload"
         ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task benchmark-stage-record",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "benchmark_stage_record",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id",
+          "--span-id",
+          "--stage",
+          "--started-monotonic-ns",
+          "--ended-monotonic-ns"
+        ],
+        "optional": [
+          "--claim-epoch",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
         "nullable": []
       }
     },

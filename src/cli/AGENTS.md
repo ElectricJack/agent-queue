@@ -27,7 +27,7 @@ dashboard.py       Hand-written `aq dashboard` group (the generated `state-*` co
                    Discord links name, via src/remote_links.py); also the helpers `aq start|
                    stop|restart|status` call, so the PID/log/config paths come from daemon.py
 db.py              `aq db` — the operator's migration door (`current`, `upgrade`)
-doctor.py          `aq doctor` and `aq costs`
+doctor.py          `aq doctor`, `aq costs`, and `aq benchmark` evidence commands
 envelope.py        Versioned JSON envelope: envelope(), error_envelope(), emit(),
                    BRIEF_PROJECTIONS — see docs/specs/design/aq-surface.md §4
 exceptions.py      CommandError, DaemonNotRunningError, ScopeDeniedError

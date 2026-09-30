@@ -60,6 +60,19 @@ def _rollout(base: Path, lines: list[dict]) -> Path:
     return path
 
 
+@pytest.mark.asyncio
+async def test_token_usage_keeps_transcript_declared_model_across_incremental_reads(tmp_path):
+    context = {"timestamp": "2026-08-21T13:28:34Z", "type": "turn_context",
+               "payload": {"model": "gpt-6-astra"}}
+    path = _rollout(tmp_path, [context, _token_count_line(info=INFO)])
+    reader = CodexTranscriptReader(base_dir=tmp_path)
+    offset = len((json.dumps(context) + "\n").encode())
+    entries, _ = await reader.read_new(path, offset)
+    assert len(entries) == 1
+    assert entries[0].model == "gpt-6-astra"
+    assert entries[0].model_source == "turn_context"
+
+
 # ---------------------------------------------------------------------------
 # _rate_limits_from_payload
 # ---------------------------------------------------------------------------

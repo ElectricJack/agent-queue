@@ -288,6 +288,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "task_show": "task",
     "task_set": "task",
     "task_comment": "task",
+    "benchmark_stage_record": "task",
     "task_comments": "task",
     "task_comment_edit": "task",
     "task_comment_delete": "task",
@@ -4669,6 +4670,26 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["task_id", "body"],
+        },
+    },
+    {
+        "name": "benchmark_stage_record",
+        "description": "Append an idempotent monotonic stage measurement to the held benchmark task.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "span_id": {"type": "string", "minLength": 1, "maxLength": 120},
+                "stage": {"type": "string", "enum": [
+                    "author_edit", "local_validation", "bake", "readiness",
+                    "capture", "scoring", "queue_wait", "human_review",
+                ]},
+                "started_monotonic_ns": {"type": "integer", "minimum": 0},
+                "ended_monotonic_ns": {"type": "integer", "minimum": 0},
+                "claim_epoch": {"type": "integer", "minimum": 0},
+            },
+            "required": ["task_id", "span_id", "stage", "started_monotonic_ns",
+                         "ended_monotonic_ns"],
         },
     },
     {

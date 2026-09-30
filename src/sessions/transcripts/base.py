@@ -77,6 +77,8 @@ class TranscriptEntry:
     #: Defaulted so the Claude reader and every existing construction are
     #: untouched.
     rate_limits: dict | None = None
+    #: Provenance of ``model`` (provider response, transcript context, etc.).
+    model_source: str | None = None
 
 
 class TranscriptReader(ABC):

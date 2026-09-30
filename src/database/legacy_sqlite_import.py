@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from sqlalchemy import Integer, insert, or_, select, text, update
+from sqlalchemy import Integer, inspect, insert, null, or_, select, text, update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -182,8 +182,18 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "pull_request_inbox_snapshot",
         "object_loops",
         "doc_review_attachments",
+        # Revision 47's monotonic benchmark measurements were never in SQLite.
+        "benchmark_stage_spans",
     }
 )
+
+# Nullable columns added after the legacy source format was retired. Missing
+# provenance stays unknown; all other missing source columns still fail closed.
+_POSTGRES_ONLY_COLUMNS = {
+    "archived_tasks": frozenset({"route"}),
+    "token_ledger": frozenset({"session_id", "attempt_id", "call_id", "model_source"}),
+}
+
 
 _ORDERED_TABLES = [
     # No FK dependencies
@@ -494,7 +504,17 @@ async def _copy_tables(
 
         for table in _ORDERED_TABLES:
             async with src.connect() as src_conn:
-                result = await src_conn.execute(select(table))
+                projection = list(table.c)
+                if optional := _POSTGRES_ONLY_COLUMNS.get(table.name):
+                    present = await src_conn.run_sync(
+                        lambda conn: {column["name"] for column in inspect(conn).get_columns(table.name)}
+                    )
+                    projection = [
+                        null().label(column.name)
+                        if column.name in optional and column.name not in present else column
+                        for column in table.c
+                    ]
+                result = await src_conn.execute(select(*projection).select_from(table))
                 rows = result.mappings().fetchall()
 
             if not rows:

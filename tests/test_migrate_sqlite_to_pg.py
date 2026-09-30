@@ -196,6 +196,17 @@ async def _seeded_source(tmp_path) -> str:
     # Revision 40 changed the PostgreSQL route column to JSONB. Legacy
     # SQLite stored JSON; preserve SQL NULL rather than a JSON null value.
     source_metadata.tables["tasks"].c.route.type = JSON(none_as_null=True)
+    # Archived route provenance was introduced by PostgreSQL revision 47;
+    # legacy sources lack it and the importer must leave the new column NULL.
+    archived = source_metadata.tables["archived_tasks"]
+    archived._columns.remove(archived.c.route)
+    ledger = source_metadata.tables["token_ledger"]
+    ledger.indexes = {
+        index for index in ledger.indexes
+        if index.name not in {"idx_token_ledger_task_attempt", "uq_token_ledger_call"}
+    }
+    for name in ("session_id", "attempt_id", "call_id", "model_source"):
+        ledger._columns.remove(ledger.c[name])
 
     path = str(tmp_path / "source.db")
     source = create_async_engine(f"sqlite+aiosqlite:///{path}")
@@ -219,6 +230,15 @@ async def _seeded_source(tmp_path) -> str:
                 "VALUES ('a','a','worker','p',0)"
             )
         )
+        await conn.execute(text(
+            "INSERT INTO token_ledger (id, project_id, agent_id, task_id, tokens_used, timestamp) "
+            "VALUES ('legacy-call', 'x', 'a', 'p', 12, 0)"
+        ))
+        await conn.execute(text(
+            "INSERT INTO archived_tasks "
+            "(id, project_id, title, description, status, created_at, updated_at, archived_at) "
+            "VALUES ('legacy-archive', 'x', 'old', 'old', 'COMPLETED', 0, 0, 0)"
+        ))
         await conn.execute(
             text(
                 "INSERT INTO epic_dependencies "
@@ -285,6 +305,15 @@ async def test_migrate_sqlite_to_postgres_copies_rows_and_restores_deferred_fks(
         assert counts["epic_dependencies"] == 1
         assert counts["supervisor_report_requests"] == 1
         async with target._engine.connect() as conn:
+            ledger = (await conn.execute(select(metadata.tables["token_ledger"]))).mappings().one()
+            assert ledger["tokens_used"] == 12
+            assert all(ledger[name] is None for name in (
+                "session_id", "attempt_id", "call_id", "model_source",
+            ))
+            archived = (
+                await conn.execute(select(metadata.tables["archived_tasks"]))
+            ).mappings().one()
+            assert archived["id"] == "legacy-archive" and archived["route"] is None
             for table_name, expected in _DURABLE_ROWS.items():
                 assert counts[table_name] == 1
                 actual = (

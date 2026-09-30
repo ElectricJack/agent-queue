@@ -643,10 +643,14 @@ class DatabaseBackend(Protocol):
         tokens: int,
         *,
         model: str | None = None,
+        model_source: str | None = None,
         input_tokens: int | None = None,
         output_tokens: int | None = None,
         cache_read_tokens: int | None = None,
         cache_write_tokens: int | None = None,
+        session_id: str | None = None,
+        attempt_id: str | None = None,
+        call_id: str | None = None,
     ) -> None: ...
     async def get_cost_rollup(
         self,

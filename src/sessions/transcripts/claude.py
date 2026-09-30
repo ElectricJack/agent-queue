@@ -104,6 +104,7 @@ def _entry_from_line(raw: dict) -> TranscriptEntry | None:
         type=line_type,
         text=text,
         model=str(model) if model else None,
+        model_source="assistant_response" if model else None,
         usage=usage if isinstance(usage, dict) else None,
         ts=ts,
         turn_complete=line_type == "assistant"

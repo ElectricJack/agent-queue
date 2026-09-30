@@ -29,6 +29,8 @@ EXPECTED_AGENT_COMMANDS = {
     "task_progress",
     "task_heartbeat",
     "task_handoff",
+    # Benchmark stages are recorded only on the session's held task.
+    "benchmark_stage_record",
     # Typed waits derive their owner and fence mutations against the live claim.
     "wait_register",
     "wait_get",
@@ -76,6 +78,8 @@ EXPECTED_AGENT_COMMANDS = {
     "review_list",
     "review_withdraw",
     "review_comment",
+    "review_attachment_add",
+    "review_attachment_list",
     "report_get",
     "report_list",
     "morning_report_preview",
@@ -86,6 +90,12 @@ EXPECTED_AGENT_COMMANDS = {
 
 
 class TestCheckCommandScope:
+    def test_benchmark_stage_record_pins_the_held_task_and_project(self):
+        assert check_command_scope("benchmark_stage_record", {"task_id": "t1"}, SESSION) is None
+        for args in ({"task_id": "t2"}, {"task_id": "t1", "project_id": "p2"}):
+            assert "mismatch" in check_command_scope("benchmark_stage_record", args, SESSION)
+        assert check_command_scope("get_benchmark_report", {}, SESSION) is not None
+
     def test_local_scope_allows_anything(self):
         assert check_command_scope("literally_anything", {"x": 1}, LOCAL_SCOPE) is None
         assert check_command_scope("delete_project", {}, LOCAL_SCOPE) is None

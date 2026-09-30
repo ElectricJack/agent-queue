@@ -119,6 +119,25 @@ class RoutingCommandsMixin:
 
     # -- the router (mandatory-routing spec §6.2-§6.6) -------------------------
 
+    def _benchmark_mapped_model(self, class_id: str, harness_id: str,
+                                project_id: str) -> str | None:
+        """Resolve the model a benchmark route would launch under the live class map."""
+        from src.intelligence_classes import load_intelligence_classes, resolve_class
+        from src.profiles.intelligence import provider_for_harness
+
+        classes = self._live_intelligence_classes()
+        if classes is None:
+            classes = load_intelligence_classes(self.config.data_dir)
+        cls = classes.get(class_id)
+        if cls is None:
+            return None
+        registry = getattr(self.orchestrator, "harness_registry", None)
+        harness = registry.get(harness_id, project_id) if registry else None
+        provider = str(getattr(harness, "provider", "") or provider_for_harness(harness_id))
+        mapping = resolve_class(cls, "codex") if harness_id == "codex" else {}
+        mapping = mapping or (resolve_class(cls, provider) if provider else {})
+        return str(mapping.get("model") or "").strip() or None
+
     async def _routing_static_facts(
         self, project_id: str, class_ids
     ) -> tuple[tuple[ProfileFacts, ...], dict[str, ProviderFacts]]:
@@ -237,6 +256,7 @@ class RoutingCommandsMixin:
 
     async def _routing_task_facts(self, task, project) -> TaskFacts:
         requirements = await self.db.fetch_task_workspace_requirements(task.id)
+        labels = await self.db.get_task_labels(task.id)
         exclude = route_constraints(task).get("exclude_providers") or []
         task_type = getattr(task.task_type, "value", task.task_type)
         class_hint = (getattr(task, "class_hint", None) or "").strip() or None
@@ -255,6 +275,10 @@ class RoutingCommandsMixin:
             class_hint=class_hint,
             created_by_kind=getattr(task, "created_by_kind", None),
             exclude_providers=frozenset(str(p) for p in exclude if p),
+            benchmark_arms=tuple(sorted(
+                label.removeprefix("benchmark:") for label in labels
+                if label.startswith("benchmark:")
+            )),
             preferred_provider=(getattr(project, "preferred_provider", None) or None)
             if project is not None else None,
             needs_task_lifecycle=any(
@@ -301,6 +325,17 @@ class RoutingCommandsMixin:
             busy=await self.db.count_busy_sessions_by_profile(),
             backlog=await self.db.count_routed_backlog_by_profile(),
         )
+        if len(facts.benchmark_arms) == 1:
+            arm_name = facts.benchmark_arms[0]
+            arm = policy.benchmark_arms.get(arm_name)
+            if arm is not None:
+                mapped = self._benchmark_mapped_model(arm.class_, arm.harness, task.project_id)
+                if mapped != arm.requested_model:
+                    return {
+                        "success": True, "outcome": "held", "task_id": task.id,
+                        "benchmark_arm": arm_name, "reason": "requested_model_unavailable",
+                        "requested_model": arm.requested_model, "mapped_model": mapped,
+                    }
         result = plan_route(
             facts, policy, snapshot,
             policy_sha256=digest, classification=args.get("classification"),
@@ -368,6 +403,25 @@ class RoutingCommandsMixin:
                 raise ValueError(f"plan is for task '{plan.get('task_id')}'")
             candidates = [Candidate.from_dict(item) for item in plan["candidates"]]
             balance = Balance.model_validate(plan.get("balance") or {})
+            selectors = [
+                label.removeprefix("benchmark:")
+                for label in await self.db.get_task_labels(task.id)
+                if label.startswith("benchmark:")
+            ]
+            if selectors and not plan.get("benchmark_arm"):
+                raise ValueError("benchmark task requires an allowlisted arm plan")
+            if arm := plan.get("benchmark_arm"):
+                if selectors != [arm]:
+                    raise ValueError("benchmark selector changed since route planning")
+                if not plan.get("requested_model") or not plan.get("observed_models"):
+                    raise ValueError("benchmark plan has no model provenance")
+                if any(
+                    not candidate.hold
+                    or candidate.intelligence_class != plan.get("benchmark_class")
+                    or candidate.harness != plan.get("benchmark_harness")
+                    for candidate in candidates
+                ):
+                    raise ValueError("benchmark candidates differ from allowlisted arm")
         except (ValueError, KeyError, TypeError) as exc:
             return {"success": False, "code": "routing.invalid_plan", "error": str(exc)}
 
@@ -382,6 +436,11 @@ class RoutingCommandsMixin:
                 if stale is not None:
                     return {"success": True, "outcome": "stale", "task_id": task.id,
                             "reason": stale}
+                if plan.get("benchmark_arm") and self._benchmark_mapped_model(
+                    plan["benchmark_class"], plan["benchmark_harness"], task.project_id
+                ) != plan["requested_model"]:
+                    return {"success": True, "outcome": "stale", "task_id": task.id,
+                            "reason": "benchmark requested model mapping changed"}
                 snapshot = Snapshot(
                     profiles=profiles,
                     providers=providers,
@@ -429,6 +488,11 @@ class RoutingCommandsMixin:
                     "scores": [s.as_dict() for s in selection.scores],
                     "reason": reason,
                     "policy_sha256": plan.get("policy_sha256"),
+                    "benchmark_arm": plan.get("benchmark_arm"),
+                    "benchmark_class": plan.get("benchmark_class"),
+                    "benchmark_harness": plan.get("benchmark_harness"),
+                    "requested_model": plan.get("requested_model"),
+                    "observed_models": plan.get("observed_models"),
                     "playbook_id": invocation.artifact_ref.playbook_id,
                     "artifact_sha256": invocation.artifact_ref.artifact_sha256,
                     "run_id": invocation.run_id,

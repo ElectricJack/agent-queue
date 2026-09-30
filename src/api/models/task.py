@@ -14,6 +14,15 @@ from . import TaskRef
 # ---------------------------------------------------------------------------
 
 
+class BenchmarkStageRecordResponse(BaseModel):
+    success: bool = True
+    span_id: str
+    inserted: bool
+    duration_ms: float
+    stage: str
+    session_attempt_id: str | None = None
+
+
 class TaskCompletionDetail(BaseModel):
     id: str
     task_id: str
@@ -1142,6 +1151,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "create_task": CreateTaskResponse,
     "get_task": GetTaskResponse,
     "task_show": TaskShowResponse,
+    "benchmark_stage_record": BenchmarkStageRecordResponse,
     "task_set": TaskSetResponse,
     "task_comment": TaskCommentResponse,
     "task_comments": TaskCommentsResponse,

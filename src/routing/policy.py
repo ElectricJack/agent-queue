@@ -119,6 +119,15 @@ class Reserved(_Strict):
     only_lanes: tuple[str, ...] = Field(min_length=1)
 
 
+class BenchmarkArm(_Strict):
+    """An explicitly allowlisted, pinned route for a named benchmark arm."""
+
+    class_: str = Field(alias="class")
+    harness: str = Field(min_length=1)
+    requested_model: str = Field(min_length=1)
+    observed_models: tuple[str, ...] = Field(min_length=1)
+
+
 class Balance(_Strict):
     """``balance``: the weights of the load score (§6.4 step 5)."""
 
@@ -149,6 +158,7 @@ class RoutingPolicy(_Strict):
     origins: dict[str, OriginRule] = Field(default_factory=dict)
     lanes: dict[str, Lane] = Field(default_factory=dict)
     reserved: tuple[Reserved, ...] = ()
+    benchmark_arms: dict[str, BenchmarkArm] = Field(default_factory=dict)
     balance: Balance = Field(default_factory=Balance)
 
     @model_validator(mode="after")
@@ -197,6 +207,10 @@ class RoutingPolicy(_Strict):
             for lane in cell.only_lanes:
                 if lane not in self.lanes:
                     raise ValueError(f"reserved[{index}] names lane '{lane}', which is not under lanes")
+        for name, arm in self.benchmark_arms.items():
+            if not name or not name.strip() or ":" in name:
+                raise ValueError(f"invalid benchmark arm name {name!r}")
+            check_class(f"benchmark_arms.{name}.class", arm.class_)
         return self
 
     def rank(self, class_id: str) -> int:
