@@ -176,6 +176,7 @@ class IntegrationControlService:
                 )
             ).scalar_one_or_none()
         if unmaterialized is None:
+            await self.cleanup_service.reconcile_aggregate(batch_id, self.clock())
             return result
         materialized = await self.cleanup_service.materialize(batch_id)
         if materialized.outcome in {"materialized", "already_materialized"}:

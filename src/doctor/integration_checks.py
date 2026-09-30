@@ -1348,6 +1348,26 @@ async def _check_stranded_delegates(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _check_missing_repair_owners(ctx: DoctorContext) -> CheckResult:
+    from src.integration.repair import RepairService
+
+    check_id = "integration.missing_repair_owners"
+    if ctx.db is None:
+        return CheckResult(id=check_id, severity=Severity.INFO,
+                           detail="database not initialised — repair ownership unknown")
+    missing = await RepairService(ctx.db).missing_delegate_reservations()
+    return CheckResult(
+        id=check_id,
+        severity=Severity.WARN if missing else Severity.OK,
+        detail=(
+            f"{len(missing)} active repair delegate(s) lack a reserved owner; run "
+            f"`aq integration reserve-owner --task-id {missing[0]['repair_task_id']}`"
+            if missing else "active detached repair delegates have reserved owners"
+        ),
+        data={"count": len(missing), "delegates": missing},
+    )
+
+
 async def _check_stale_repair_intents(ctx: DoctorContext) -> CheckResult:
     """Find live delegates whose stage or dossier still names a superseded intent."""
     if ctx.db is None:
@@ -2215,6 +2235,11 @@ def integration_checks() -> list[DoctorCheck]:
         DoctorCheck(
             id="integration.stale_repair_intents",
             run=_check_stale_repair_intents,
+            owner=OWNER,
+        ),
+        DoctorCheck(
+            id="integration.missing_repair_owners",
+            run=_check_missing_repair_owners,
             owner=OWNER,
         ),
         # Fixable, and the fix is the scheduler's own release: it frees only a
