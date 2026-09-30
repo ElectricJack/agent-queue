@@ -115,6 +115,7 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "review_list": "review",
     "review_withdraw": "review",
     "review_decide": "review",
+    "approve_pull_request": "review",
     "review_comment": "review",
     "review_dispatch": "review",
     "review_delegate": "review",
@@ -6813,6 +6814,19 @@ _ALL_TOOL_DEFINITIONS.extend(
                     "responder_class": {"type": "string", "description": "After request_changes or reject: intelligence-class hint for the new revision task, which the project's router routes. A responder profile is not accepted."},
                 },
                 "required": ["review_id", "revision", "decision"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "approve_pull_request",
+            "description": "Approve a task-linked GitHub PR at its displayed head as the local operator's saved gh user.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "head_sha": {"type": "string", "pattern": "^[a-fA-F0-9]{40}$"},
+                },
+                "required": ["task_id", "head_sha"],
                 "additionalProperties": False,
             },
         },

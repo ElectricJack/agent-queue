@@ -88,6 +88,7 @@ class StubProxy:
     def __init__(self, upstream_ok: bool = True) -> None:
         self.stats = RelayStats()
         self.http_paths: list[str] = []
+        self.http_headers: list[list[tuple[bytes, bytes]]] = []
         self.ws_paths: list[str] = []
         self.started = 0
         self.closed = 0
@@ -104,6 +105,7 @@ class StubProxy:
 
     async def http(self, scope, receive, send) -> None:
         self.http_paths.append(scope["path"])
+        self.http_headers.append(list(scope["headers"]))
         await send({"type": "http.response.start", "status": 299, "headers": []})
         await send({"type": "http.response.body", "body": b"proxied"})
 
@@ -257,6 +259,21 @@ async def test_a_lan_peer_is_refused_bearer_tokens_but_not_the_api(tmp_path):
     assert plain.status_code == 299
     assert (bearer.status_code, bearer.json()["error"]) == (403, "loopback_only")
     assert proxy.http_paths == ["/api/tasks"]
+
+
+async def test_proxy_overwrites_client_viewer_assertion(tmp_path):
+    app, proxy = _app(tmp_path, host="192.168.1.5")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("192.168.1.9", 50000)),
+        base_url="http://192.168.1.5:8082",
+    ) as client:
+        response = await client.get("/api/reviews/pull-requests", headers={
+            "x-aq-dashboard-viewer": "operator",
+        })
+    assert response.status_code == 299
+    viewer_headers = [value for name, value in proxy.http_headers[-1]
+                      if name.lower() == b"x-aq-dashboard-viewer"]
+    assert viewer_headers == [b"other"]
 
 
 async def test_the_identity_endpoint_names_the_process_and_its_bundle(tmp_path):

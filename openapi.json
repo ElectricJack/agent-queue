@@ -2233,6 +2233,57 @@
         }
       }
     },
+    "/api/reviews/pull-requests/{task_id}/approve": {
+      "post": {
+        "summary": "Approve Pull Request",
+        "operationId": "approve_pull_request_api_reviews_pull_requests__task_id__approve_post",
+        "parameters": [
+          {
+            "name": "task_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Task Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovePendingPullRequestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Approve Pull Request Api Reviews Pull Requests  Task Id  Approve Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/agent/message": {
       "post": {
         "tags": [
@@ -11721,6 +11772,53 @@
         }
       }
     },
+    "/api/review/approve-pull-request": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Approve a task-linked GitHub PR at its displayed head as the local operator's saved gh user.",
+        "description": "Approve a task-linked GitHub PR at its displayed head as the local operator's saved gh user.",
+        "operationId": "approve_pull_request",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovePullRequestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PullRequestApproveResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/comment": {
       "post": {
         "tags": [
@@ -19428,6 +19526,39 @@
         },
         "type": "object",
         "title": "AppendNoteResponse"
+      },
+      "ApprovePendingPullRequestRequest": {
+        "properties": {
+          "head_sha": {
+            "type": "string",
+            "title": "Head Sha"
+          }
+        },
+        "type": "object",
+        "required": [
+          "head_sha"
+        ],
+        "title": "ApprovePendingPullRequestRequest"
+      },
+      "ApprovePullRequestRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": ""
+          },
+          "head_sha": {
+            "type": "string",
+            "title": "Head Sha",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "head_sha"
+        ],
+        "title": "ApprovePullRequestRequest"
       },
       "ArchiveSettingsRequest": {
         "properties": {},
@@ -39969,11 +40100,9 @@
           },
           "state": {
             "type": "string",
-            "enum": [
-              "open",
-              "unknown"
-            ],
-            "title": "State"
+            "const": "open",
+            "title": "State",
+            "default": "open"
           },
           "opened_at": {
             "anyOf": [
@@ -39985,6 +40114,41 @@
               }
             ],
             "title": "Opened At"
+          },
+          "head_sha": {
+            "type": "string",
+            "title": "Head Sha"
+          },
+          "review_decision": {
+            "type": "string",
+            "enum": [
+              "approved",
+              "changes requested",
+              "pending"
+            ],
+            "title": "Review Decision",
+            "default": "pending"
+          },
+          "ci_status": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure",
+              "pending"
+            ],
+            "title": "Ci Status",
+            "default": "pending"
+          },
+          "train_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Train State"
           }
         },
         "type": "object",
@@ -39995,8 +40159,7 @@
           "project_id",
           "project_name",
           "task_id",
-          "state",
-          "opened_at"
+          "head_sha"
         ],
         "title": "PendingPullRequest"
       },
@@ -40008,6 +40171,33 @@
             },
             "type": "array",
             "title": "Pull Requests"
+          },
+          "snapshot_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot At"
+          },
+          "snapshot_age_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Snapshot Age Seconds"
+          },
+          "can_approve": {
+            "type": "boolean",
+            "title": "Can Approve",
+            "default": false
           }
         },
         "type": "object",
@@ -48984,6 +49174,57 @@
         ],
         "title": "ProviderUsageSnapshot",
         "description": "One observation of one limit window.\n\n``resets_at`` is nullable because a percentage without a clock still beats\nno reading at all --- the providers do not always print a reset clause."
+      },
+      "PullRequestApproveResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "task_id": {
+            "type": "string",
+            "title": "Task Id"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "head_sha": {
+            "type": "string",
+            "title": "Head Sha"
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Id"
+          },
+          "integration_flush": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Flush"
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "url",
+          "head_sha"
+        ],
+        "title": "PullRequestApproveResponse"
       },
       "PushBranchRequest": {
         "properties": {

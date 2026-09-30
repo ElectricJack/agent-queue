@@ -1,15 +1,15 @@
 """Persist object-script loop state and reservations.
 
-Revision ID: a00000000044
-Revises: a00000000043
+Revision ID: a00000000045
+Revises: a00000000044
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
 
-revision = "a00000000044"
-down_revision = "a00000000043"
+revision = "a00000000045"
+down_revision = "a00000000044"
 branch_labels = None
 depends_on = None
 

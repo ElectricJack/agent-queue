@@ -26,6 +26,7 @@ def _scope(
     scheme: str = "http",
     headers: list[tuple[bytes, bytes]] | None = None,
     subprotocols: list[str] | None = None,
+    method: str = "GET",
 ) -> dict:
     raw: list[tuple[bytes, bytes]] = []
     if host is not None:
@@ -38,6 +39,7 @@ def _scope(
         "path": path,
         "raw_path": path.encode(),
         "scheme": scheme,
+        "method": method,
         "headers": raw,
         "client": client,
     }
@@ -213,6 +215,21 @@ def test_an_unknown_peer_is_not_loopback():
     gate = _gate()
     assert _error(gate, _scope("/ws/terminal/s", client=None)) == "403 loopback_only"
     assert _error(gate, _scope("/ws/terminal/s", client=("localhost", 1))) == "403 loopback_only"
+
+
+def test_pull_request_approval_requires_local_or_trusted_tailnet_browser():
+    origin = "https://jack.tailnet.ts.net"
+    gate = _gate(trusted_origins=(origin,))
+    path = "/api/reviews/pull-requests/task-1/approve"
+    common = {"host": "jack.tailnet.ts.net", "origin": origin,
+              "scheme": "https", "method": "POST"}
+    assert _error(gate, _scope(path, client=LOOPBACK_PEER, **common)) is None
+    assert _error(gate, _scope(path, client=("100.101.102.103", 1), **common)) is None
+    assert gate.operator_viewer(_scope(path, client=("100.101.102.103", 1), **common))
+    assert not gate.operator_viewer(_scope(path, client=("192.168.1.9", 1), **common))
+    assert _error(gate, _scope(path, client=("192.168.1.9", 1), **common)) == "403 operator_only"
+    no_origin = {key: value for key, value in common.items() if key != "origin"}
+    assert _error(gate, _scope(path, client=("100.101.102.103", 1), **no_origin)) == "403 operator_only"
 
 
 def test_the_gates_run_in_order_host_then_origin_then_peer():

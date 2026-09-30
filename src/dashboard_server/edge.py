@@ -30,6 +30,8 @@ from src.dashboard_server.settings import DashboardServerSettings, normalise_ori
 _WILDCARD_BINDS = frozenset({"0.0.0.0", "::"})
 _BEARER_PREFIX = "aq-bearer."
 _TERMINAL_PREFIX = "/ws/terminal/"
+_TAILNET_V4 = ipaddress.ip_network("100.64.0.0/10")
+_TAILNET_V6 = ipaddress.ip_network("fd7a:115c:a1e0::/48")
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,17 @@ def _peer_is_loopback(scope: dict[str, Any]) -> bool:
     return host != "localhost" and is_loopback_host(host)
 
 
+def _peer_is_tailnet(scope: dict[str, Any]) -> bool:
+    client = scope.get("client")
+    if not client:
+        return False
+    try:
+        address = ipaddress.ip_address(str(client[0]))
+    except ValueError:
+        return False
+    return address in _TAILNET_V4 or address in _TAILNET_V6
+
+
 def _hostname_of_origin(origin: str) -> str:
     host = origin.split("://", 1)[1]
     if host.startswith("["):
@@ -117,6 +130,18 @@ class EdgeGate:
 
     def host_allowed(self, hostname: str) -> bool:
         return is_loopback_host(hostname) or hostname in self._allowed_hostnames
+
+    def operator_viewer(self, scope: dict[str, Any]) -> bool:
+        """Whether this browser may see the human GitHub approval control."""
+        if _peer_is_loopback(scope):
+            return True
+        if not _peer_is_tailnet(scope):
+            return False
+        hosts = _headers(scope, b"host")
+        if len(hosts) != 1:
+            return False
+        scheme = "https" if scope.get("scheme") == "https" else "http"
+        return normalise_origin(f"{scheme}://{hosts[0]}") in self._trusted
 
     def check(self, scope: dict[str, Any]) -> EdgeDenial | None:
         """``None`` when the request may be proxied, else the refusal to send."""
@@ -143,6 +168,19 @@ class EdgeGate:
                     "This origin may not drive this install. Add it to "
                     "api_auth.trusted_dashboard_origins if it should.",
                 )
+
+        # The daemon sees this proxy's loopback address, not the browser's.
+        # For a human GitHub approval, the edge must retain the real-peer
+        # distinction: only Jack's loopback browser or a configured origin on
+        # his tailnet may issue the POST.  Remote native clients lack Origin.
+        path = scope.get("path", "")
+        if (scope.get("method") == "POST"
+                and path.startswith("/api/reviews/pull-requests/")
+                and path.endswith("/approve")
+                and not _peer_is_loopback(scope)):
+            origin = normalise_origin(origins[0]) if len(origins) == 1 else None
+            if not _peer_is_tailnet(scope) or origin not in self._trusted:
+                return EdgeDenial(403, "operator_only", "Approval requires a trusted tailnet dashboard")
 
         if not _peer_is_loopback(scope) and self._needs_loopback(scope):
             return EdgeDenial(
