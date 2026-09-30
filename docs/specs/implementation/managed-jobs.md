@@ -43,6 +43,13 @@ own run deadline. It reaps marked descendants before writing `completion.json`.
 Adoption checks boot id, process start ticks and nonce. Daemon loss does not own
 execution lifetime, and disabling new admission still reconciles existing jobs.
 
+After observing that no marked process remains, reconciliation rereads a missing
+completion receipt before recording a lost result. The runner may have fsynced
+that receipt and exited between the first artifact read and the process scan.
+The fresh receipt must match the job id and launch nonce and pass the same process
+identity checks. This ordering preserves a real terminal result without replaying
+execution or relaxing cleanup proof.
+
 `output.head` keeps the first 1 MiB and `output.tail` is a bounded 63 MiB byte
 ring. The fsync-renamed manifest records logical offsets and physical-block
 hashes. Interrupted overwrites become explicit gaps; they cannot return fresh

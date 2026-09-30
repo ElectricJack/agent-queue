@@ -101,6 +101,30 @@ async def test_upgrade_head_applies_the_baseline_on_postgres():
         await conn.close()
 
 
+async def test_continuous_repair_upgrade_from_two_stage_schema():
+    dsn = await create_scratch_database("continuous48")
+    before = _alembic_pg(dsn, "upgrade", "a00000000047")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # Simulate an existing installation, not the live-metadata baseline.
+        await conn.execute("DROP TABLE integration_source_ci")
+        await conn.execute("ALTER TABLE integration_repair_stages DROP CONSTRAINT ck_integration_repair_stages_ordinal")
+        await conn.execute("ALTER TABLE integration_repair_stages ADD CONSTRAINT ck_integration_repair_stages_ordinal CHECK (ordinal IN (0, 1))")
+    finally:
+        await conn.close()
+    upgraded = _alembic_pg(dsn, "upgrade", "head")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        constraint = await conn.fetchval("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='ck_integration_repair_stages_ordinal'")
+        assert "ordinal >= 0" in constraint
+        assert await conn.fetchval("SELECT data_type FROM information_schema.columns WHERE table_name='integration_source_ci' AND column_name='evidence'") == "jsonb"
+        assert await conn.fetchval("SELECT column_default FROM information_schema.columns WHERE table_name='integration_source_ci' AND column_name='repair_attempt'") == "0"
+    finally:
+        await conn.close()
+
+
 async def test_benchmark_attribution_upgrade_from_revision_46():
     """Revision 47 adds attribution after inbox, object loops and attachments."""
     dsn = await create_scratch_database("benchmark47")
@@ -128,7 +152,9 @@ async def test_benchmark_attribution_upgrade_from_revision_46():
             "SELECT COUNT(*) FROM information_schema.columns "
             "WHERE table_name='archived_tasks' AND column_name='route'"
         ) == 1
-        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000047"
+        head = _alembic_pg(dsn, "heads")
+        assert head.returncode == 0, head.stderr
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == head.stdout.split()[0]
         for table in ("pull_request_inbox_snapshot", "object_loops", "doc_review_attachments"):
             assert await conn.fetchval("SELECT to_regclass($1)", table)
     finally:

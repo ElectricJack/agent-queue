@@ -3,6 +3,7 @@
 import time
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import update
 from src.config import AppConfig
 from src.database.tables import jobs
@@ -63,6 +64,39 @@ async def test_ambiguous_spawn_lost_retains_pin_until_receipt(db, tmp_path):
     await svc.reconcile(lost)
     assert not await db.workspace_has_job_pin("w")
     assert (await db.get_job(job["id"]))["state"] == "lost"  # terminal results are immutable
+
+
+@pytest.mark.parametrize("foreign_field", [None, "nonce", "job_id"])
+async def test_completion_between_receipt_read_and_process_scan_is_fenced(
+    db, tmp_path, monkeypatch, foreign_field
+):
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time() - 31)
+    directory = job_directory(tmp_path / "data", job["id"])
+    atomic_json(directory / "intent.json", {
+        "job_id": job["id"], "nonce": job["runner_nonce"],
+    })
+
+    async def runner_exits_after_receipts_were_read(_):
+        # The detached runner fsyncs completion before exiting. Reconciliation
+        # must observe that receipt after it proves the process has gone.
+        completion = {
+            "job_id": job["id"], "nonce": job["runner_nonce"], "exit_code": 0,
+        }
+        if foreign_field:
+            completion[foreign_field] = "another-job"
+        atomic_json(directory / "completion.json", completion)
+        return []
+
+    monkeypatch.setattr("src.jobs.service.processes", runner_exits_after_receipts_were_read)
+    await svc.reconcile(job)
+    adopted = await db.get_job(job["id"])
+    assert adopted["state"] == ("lost" if foreign_field else "succeeded")
+    if not foreign_field:
+        assert adopted["result"]["exit_code"] == 0
+    assert read_json(directory / "result.json") == adopted["result"]
+    assert not await db.workspace_has_job_pin("w")
 
 
 async def test_unreadable_process_identity_quarantines_job(db, tmp_path, monkeypatch):

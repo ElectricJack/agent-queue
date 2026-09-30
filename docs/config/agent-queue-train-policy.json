@@ -22,12 +22,17 @@
       ],
       "producer_id": "15368"
     },
+    "admission": "reviewed",
+    "authorized_task_ids": [],
     "repair": {
       "primary_seconds": 1800,
       "primary_attempts": 3,
       "debug_seconds": 3600,
       "debug_attempts": 3,
-      "debug_intelligence_class": "standard-high"
+      "debug_intelligence_class": "standard-high",
+      "conflict_scope": "member",
+      "on_exhausted": "continue",
+      "source_ci": false
     },
     "route": {
       "playbook_id": "agent-queue-parent-integration",
@@ -36,9 +41,9 @@
       "activation_id": null,
       "artifact": {
         "playbook_id": "agent-queue-parent-integration",
-        "artifact_sha256": "sha256:a6a39410cf600b46cf90619966d604ae99284d48cf037f60b575a8d1068532eb",
+        "artifact_sha256": "sha256:587cdd5181963d152e8425b50f278896f0bc036cb78b84f37e3007f5c26e3622",
         "schema_generation": 2,
-        "contract_fingerprint": "sha256:785231157149d5982aca42894c2c0fb73653624f9b1d65303afb9fbfbb73d50e",
+        "contract_fingerprint": "sha256:e84411d236ed2ab7326f03d7a2f1e54707cbe99b6cfe514df9f152c2aaa34e07",
         "source_digest": "sha256:1de9265e7bba73272a2777fb17e042bd81014e5cc3c7e4214a6a5471eab5d200",
         "compiler_build": "playbook-v2-compiler/1",
         "compiled_at": null,
@@ -70,12 +75,19 @@
       ],
       "producer_id": "15368"
     },
+    "admission": "authorized",
+    "authorized_task_ids": [
+      "steady-delta"
+    ],
     "repair": {
       "primary_seconds": 1800,
       "primary_attempts": 3,
       "debug_seconds": 3600,
       "debug_attempts": 3,
-      "debug_intelligence_class": "standard-high"
+      "debug_intelligence_class": "standard-high",
+      "conflict_scope": "batch",
+      "on_exhausted": "continue",
+      "source_ci": true
     },
     "route": {
       "playbook_id": "agent-queue-root-train",
@@ -84,10 +96,10 @@
       "activation_id": null,
       "artifact": {
         "playbook_id": "agent-queue-root-train",
-        "artifact_sha256": "sha256:ba3c982468daebe36942083b23c5662d8f744815723286d2e5adc32b998b88dd",
+        "artifact_sha256": "sha256:8e34c15d9c3dfe6ba22f600113e6e4bbdd118a453504d61608c4aae42f91ea65",
         "schema_generation": 2,
-        "contract_fingerprint": "sha256:d3091151928c5dfc17d8c4e6a84503ac551f88ff33e5d9b33284c5efcce6c645",
-        "source_digest": "sha256:90479b1a40be0a5a340fe185065c9a4ac5f02c797f4bf7f4edf2cb9b116801f6",
+        "contract_fingerprint": "sha256:1b70a6bcef122a31aa89b507432f8cd94b7e750b698ad6538e6669e4384e6bbd",
+        "source_digest": "sha256:da4f0cd28522b2e85654c5019f96ed0c7b560db2746550eaae561a0edb295d07",
         "compiler_build": "playbook-v2-compiler/1",
         "compiled_at": null,
         "version": 1

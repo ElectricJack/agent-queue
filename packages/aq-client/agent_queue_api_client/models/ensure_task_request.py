@@ -19,6 +19,9 @@ class EnsureTaskRequest:
         dedup_key (str): Stable dedup key scoped to the project (e.g. 'triage-open'). Only one open task per
             (project_id, dedup_key) exists at a time.
         title (str): Task title (used on create)
+        repo_id (None | str | Unset): Repository ID (used on create)
+        task_type (None | str | Unset): Task type (used on create)
+        integration_mode (None | str | Unset): Integration mode (used on create)
         description (str | Unset): Task description (used on create) Default: ''.
         priority (int | Unset): Priority (lower = higher priority, default 100) Default: 100.
         intelligence_class (None | str | Unset): Intelligence-class hint for the task on create: the task is stored
@@ -34,6 +37,9 @@ class EnsureTaskRequest:
     project_id: str
     dedup_key: str
     title: str
+    repo_id: None | str | Unset = UNSET
+    task_type: None | str | Unset = UNSET
+    integration_mode: None | str | Unset = UNSET
     description: str | Unset = ""
     priority: int | Unset = 100
     intelligence_class: None | str | Unset = UNSET
@@ -47,6 +53,24 @@ class EnsureTaskRequest:
         dedup_key = self.dedup_key
 
         title = self.title
+
+        repo_id: None | str | Unset
+        if isinstance(self.repo_id, Unset):
+            repo_id = UNSET
+        else:
+            repo_id = self.repo_id
+
+        task_type: None | str | Unset
+        if isinstance(self.task_type, Unset):
+            task_type = UNSET
+        else:
+            task_type = self.task_type
+
+        integration_mode: None | str | Unset
+        if isinstance(self.integration_mode, Unset):
+            integration_mode = UNSET
+        else:
+            integration_mode = self.integration_mode
 
         description = self.description
 
@@ -79,6 +103,12 @@ class EnsureTaskRequest:
                 "title": title,
             }
         )
+        if repo_id is not UNSET:
+            field_dict["repo_id"] = repo_id
+        if task_type is not UNSET:
+            field_dict["task_type"] = task_type
+        if integration_mode is not UNSET:
+            field_dict["integration_mode"] = integration_mode
         if description is not UNSET:
             field_dict["description"] = description
         if priority is not UNSET:
@@ -100,6 +130,33 @@ class EnsureTaskRequest:
         dedup_key = d.pop("dedup_key")
 
         title = d.pop("title")
+
+        def _parse_repo_id(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        repo_id = _parse_repo_id(d.pop("repo_id", UNSET))
+
+        def _parse_task_type(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        task_type = _parse_task_type(d.pop("task_type", UNSET))
+
+        def _parse_integration_mode(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        integration_mode = _parse_integration_mode(d.pop("integration_mode", UNSET))
 
         description = d.pop("description", UNSET)
 
@@ -136,6 +193,9 @@ class EnsureTaskRequest:
             project_id=project_id,
             dedup_key=dedup_key,
             title=title,
+            repo_id=repo_id,
+            task_type=task_type,
+            integration_mode=integration_mode,
             description=description,
             priority=priority,
             intelligence_class=intelligence_class,

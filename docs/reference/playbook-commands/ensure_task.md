@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:6a4c41c5028e2864029871a47bef0e30bfbe3c074ce40aa6ae1b638e3a35b5f4` |
+| Contract fingerprint | `sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5` |
 
 ## Parameters
 
@@ -23,6 +23,9 @@
 | `dedup_key` | `string` | yes | — | Deduplication key |
 | `title` | `string` | yes | — | Title |
 | `project_id` | `string \| null` | no | `null` | Project |
+| `repo_id` | `string \| null` | no | `null` | — |
+| `task_type` | `string \| null` | no | `null` | — |
+| `integration_mode` | `string \| null` | no | `null` | — |
 | `description` | `string \| null` | no | `null` | Description |
 | `priority` | `integer \| null` | no | `null` | Priority |
 | `profile_id` | `string \| null` | no | `null` | Agent profile |

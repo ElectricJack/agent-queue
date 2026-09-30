@@ -14,14 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:52778dd4975a305a724dfcbe715aacb6fabb97b1645f2df763c2164aa40aee85` |
+| Contract fingerprint | `sha256:3ff83ac355e3a9f6ed8be11c9e5cae143a07eafc1fa0c6c102947f792c6527d5` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `operation_id` | `string` | yes | — | — |
-| `stage` | `0 \| 1` | yes | — | — |
+| `stage` | `integer` | yes | — | — |
 | `task_id` | `string` | yes | — | — |
 | `session_id` | `string` | yes | — | — |
 | `instance_token` | `string` | yes | — | — |

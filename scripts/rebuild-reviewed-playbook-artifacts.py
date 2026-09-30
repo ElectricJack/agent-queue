@@ -71,6 +71,9 @@ SHIPPED = {
     "agent-queue-root-train": (
         "src/prompts/project_playbooks/agent-queue/agent-queue-root-train.md"
     ),
+    "agent-queue-parent-integration": (
+        "src/prompts/project_playbooks/agent-queue/agent-queue-parent-integration.md"
+    ),
     "blocked-task-escalation": "src/prompts/default_playbooks/blocked-task-escalation.md",
     "supervisor-failure-triage": "src/prompts/default_playbooks/supervisor-failure-triage.md",
     "provider-usage-probe": "src/prompts/default_playbooks/provider-usage-probe.md",
@@ -317,6 +320,8 @@ def semantic_body(playbook_id: str, source: PlaybookSource) -> dict[str, Any]:
         return _root_integration_train_body(source)
     if playbook_id == "parent-integration":
         return _rebased_recorded_body("agent-queue-parent-integration", source)
+    if playbook_id == "agent-queue-parent-integration":
+        return _recorded_semantic_body(playbook_id)
     if playbook_id == "blocked-task-escalation":
         return _blocked_task_escalation_body(source)
     if playbook_id == "supervisor-failure-triage":
@@ -570,8 +575,7 @@ def _root_integration_train_body(source: PlaybookSource) -> dict[str, Any]:
                   "entry_step": entry, "source": ref(rule)})
     steps[entry] = {"type": "command", "rule": rule, "title": "dispatch", "source": ref(rule),
                     "command": "integration_repair_dispatch", "inputs": {
-                        "operation_id": event("operation_id"),
-                        "stage": {"type": "literal", "value": 1}},
+                        "operation_id": event("operation_id")},
                     "transitions": {name: (done if name in {"dispatched", "already_dispatched", "writer_reused"}
                                            else failed) for name in (
                         "dispatched", "already_dispatched", "writer_reused", "busy",

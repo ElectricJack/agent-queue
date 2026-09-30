@@ -54,7 +54,11 @@ async def note_approval(conn, *, project_id: str, now: float) -> dict[str, Any]:
 
 
 async def settled(conn, *, project_id: str, now: float) -> bool:
-    """Return whether an armed window has reached its firing time."""
+    """Delay only an armed window; ordinary periodic sweeps keep running.
+
+    Sealing disarms the window. Requiring another approval to arm it stranded
+    already-authorized work and prevented the next batch after promotion.
+    """
     fires_at = (
         await conn.execute(
             select(project_integration_schedules.c.settling_fires_at).where(
@@ -62,7 +66,7 @@ async def settled(conn, *, project_id: str, now: float) -> bool:
             )
         )
     ).scalar_one_or_none()
-    return fires_at is not None and now >= fires_at
+    return fires_at is None or now >= fires_at
 
 
 async def clear(conn, *, project_id: str) -> None:

@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:12e0c46747ee76cb977cd2515549598d296987400d6a138a01ac9561fe7750f9` |
+| Contract fingerprint | `sha256:eb90121f766375d8df05a570c8fe87cd97a30d0de7c26cc8e1788b506173e61f` |
 
 ## Parameters
 
@@ -31,7 +31,7 @@ Redacted in receipts and explanations: `starting_sha`.
 | Field | Type | Description |
 |---|---|---|
 | `operation_id` | `string \| null` | — |
-| `stage` | `0 \| 1 \| null` | — |
+| `stage` | `integer \| null` | — |
 | `starting_sha` | `string \| null` | — |
 | `started_at` | `number \| null` | — |
 | `deadline_at` | `number \| null` | — |

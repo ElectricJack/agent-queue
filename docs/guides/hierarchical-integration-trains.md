@@ -114,6 +114,18 @@ the project lock and refuses an unresolved or competing branch owner. A stopped
 task's ordinary `aq task restart` performs the same check before moving it to
 READY. Doctor reports this condition but does not reserve branches itself.
 
+For an active repair delegate, the same `reserve-owner` command redispatches
+the current stage, preserving its deadline and attempts. It transfers the exact
+previous writer only with stop/detach proof, or reclaims a released reservation.
+The integration loop retries interrupted handoffs after owner recovery.
+`integration.missing_repair_owners` reports delegates stranded without their
+reserved fence. An absent owner row still requires investigation; it is not
+proof that an earlier writer stopped.
+
+Once every cleanup item completes for a delivered batch, cleanup releases its
+exact detached collector reservation. `aq integration retry-cleanup BATCH_ID`
+also reconciles that release for batches cleaned up by older versions.
+
 `aq doctor --check stall.sweep` reports `unmaterialized_train_pr` for a
 COMPLETED train root with a PR but no checkpoint or live branch origin. The
 GitHub review poller also warns when such a root has no eligible review source.
@@ -295,6 +307,14 @@ does not enable integration for projects that have no policy or remain disabled.
 Repository and policy changes are accepted only while the project is disabled,
 fully drained, and has no active integration work. Bind one field, reread status
 for the incremented generation, then bind the next:
+
+Use `aq integration status PROJECT_ID --control-only` when only the current
+generation, schedule, active batch and durable drain blockers are needed. This
+read avoids historical Git delivery checks and external preflight. Its
+`projection_kind: control` response leaves readiness unknown; use the full
+status and candidate evidence for rollout and promotion decisions. A retained
+worker claim is a drain blocker until its ordinary pushed completion/handoff
+releases ownership.
 
 ```bash
 aq integration status example
@@ -513,6 +533,44 @@ invoke the contracted `integration_record_noop` command when its policy grants
 that exact capability. Worker sessions cannot invoke it.
 
 ### Candidate-member conflict repair
+
+The agent-queue continuous policy in `docs/config/agent-queue-train-policy.json`
+opts into root `admission: authorized`, `repair.source_ci: true`,
+`repair.conflict_scope: batch` and `repair.on_exhausted: continue`. Completed
+feature/bugfix tasks receive exact remote-head/tree authorization evidence tagged
+with the project policy generation. `root.authorized_task_ids` explicitly admits
+additional authorized task types; the agent-queue policy names the `steady-delta`
+chore without changing its type or parent verification. It does not impersonate a human review or
+override a rejection, open gate or hold. Missing legacy root checkpoints still
+require the audited `integration materialize-root` proof; branches without task
+provenance remain outside admission.
+
+Failed and terminally cancelled source checks file deduplicated repair roots with
+exact source identity and actionable check links. A newer pending/successful
+rerun supersedes an old cancellation. Repair branches preserve source ancestry;
+when a repaired source is green, both it and its covered original source can
+enter the train and receive normal delivery/cleanup receipts. Every final
+candidate still requires its own exact authenticated green CI.
+
+With batch conflict scope, the assignment includes the whole frozen source
+manifest. Start at its partial head, merge every remaining source in order, and
+resolve all needed files in that one workspace. Earlier code, migrations and
+generated files may change: re-chain migration collisions and regenerate
+generated artifacts. Every frozen source must remain an ancestor. Record the
+ordered **first-parent** range using
+`git rev-list --first-parent --reverse PARTIAL_HEAD..HEAD`, then submit through
+the same fenced `resolve-candidate-member` command below. AQ verifies the complete
+batch ancestry and rejects unsealed side branches before accepting the aggregate.
+
+Continuous repair stages retain finite time/attempt budgets. At exhaustion AQ
+stops and proves the exact old writer, retains its checkout/index/dirty work,
+fences and releases its pool claim, and files a fresh operation-bound stage.
+Incomplete handoffs are retried by the reconciler. Old counters and history stay
+visible. Periodic sweeps continue after the settling window is cleared, so a
+released batch does not need another review event to schedule the next batch.
+
+For existing frozen policies using the default `conflict_scope: member` and
+`on_exhausted: human`, the original protocol remains:
 
 When ordered candidate construction conflicts on a reviewed member, the repair
 delegate's task description records the exact batch, candidate revision, member

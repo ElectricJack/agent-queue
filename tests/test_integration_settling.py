@@ -88,7 +88,7 @@ async def test_extension_is_capped_from_first_approval(db):
 
 async def test_settled_only_once_window_fires(db):
     async with db.immediate() as conn:
-        assert await settled(conn, project_id="p", now=9999.0) is False
+        assert await settled(conn, project_id="p", now=9999.0) is True
         await note_approval(conn, project_id="p", now=1000.0)
         assert await settled(conn, project_id="p", now=1299.0) is False
         assert await settled(conn, project_id="p", now=1300.0) is True
@@ -98,7 +98,7 @@ async def test_clear_disarms_the_window(db):
     async with db.immediate() as conn:
         await note_approval(conn, project_id="p", now=1000.0)
         await clear(conn, project_id="p")
-        assert await settled(conn, project_id="p", now=9999.0) is False
+        assert await settled(conn, project_id="p", now=9999.0) is True
     assert await _window(db) == (None, None)
 
     async with db.immediate() as conn:

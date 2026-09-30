@@ -79,6 +79,18 @@ async def test_ensure_task_returns_existing(handler):
     assert r2["task_id"] == r1["task_id"]
 
 
+async def test_ensure_task_preserves_source_repair_repository_and_type(handler):
+    args = {"project_id": PROJECT_ID, "dedup_key": "source-ci:source:head:1",
+            "title": "Repair source", "repo_id": "repo", "task_type": "bugfix",
+            "integration_mode": "pull_request", "root": True}
+    with patch.object(handler, "_cmd_create_task", new=AsyncMock(return_value={"created": "repair"})) as filing:
+        response = await handler._cmd_ensure_task(args)
+    assert response["success"] is True
+    filed = filing.call_args.args[0]
+    assert filed["repo_id"] == "repo" and filed["task_type"] == "bugfix"
+    assert filed["integration_mode"] == "pull_request" and filed["root"] is True
+
+
 async def test_ensure_task_ignores_completed_task(handler, db):
     r1 = await handler.execute(
         "ensure_task",

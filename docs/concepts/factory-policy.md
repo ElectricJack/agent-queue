@@ -52,6 +52,12 @@ reports, reviews and superseded specs are evidence, not directives.
 - A known transient failure retries within the existing budget. An unknown
   cause, an exhausted budget or a human-only decision holds with a concrete
   reason and one durable escalation.
+- An explicitly authorized continuous integration policy may replace an
+  exhausted repair session with a fresh bounded stage. It preserves previous
+  attempts, dossiers and stopped-writer/fence proof; it does not reset the old
+  session's budget. Routine CI/conflict repair continues automatically under
+  that policy. Explicit product holds, reviewer rejections and human gates
+  remain binding.
 - Never fabricate a pass, reset a counter, delete a branch or restart a
   retired operation to make state look healthy. Retired work is shown as
   retired; resource cleanup is tracked separately.

@@ -338,16 +338,17 @@ class JobService:
             directory = await asyncio.to_thread(
                 job_directory, Path(self.config.data_dir), job["id"]
             )
-            artifacts = []
-            for name in ("completion", "started", "intent"):
+            async def artifact(name):
                 value = await asyncio.to_thread(read_json, directory / f"{name}.json")
                 if value is not None and not isinstance(value, dict):
                     raise ValueError("invalid job receipt")
-                artifacts.append(
+                return (
                     value
                     if value and value.get("nonce") == nonce and value.get("job_id") == job["id"]
                     else None
                 )
+
+            artifacts = [await artifact(name) for name in ("completion", "started", "intent")]
             receipt, started, intent = artifacts
             from src.jobs.identity import require_readable_identity
 
@@ -384,6 +385,13 @@ class JobService:
 
                     await stop_tree(nonce)
                 return
+            if not receipt:
+                # The runner writes completion before exiting. It may have
+                # finished between our artifact read and process scan; avoid
+                # committing an immutable lost result from that stale read.
+                receipt = await artifact("completion")
+                if receipt:
+                    await require_readable_identity(receipt)
             lock_dir = job["contract"].get("lock_dir")
             if lock_dir:
                 from src.resources.test_runs import held_slots

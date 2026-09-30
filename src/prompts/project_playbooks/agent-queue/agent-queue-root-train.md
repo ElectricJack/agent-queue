@@ -76,8 +76,12 @@ The close event itself never supplies success evidence or promotes a candidate.
 ## Rule: dispatch-debug
 
 On `integration.repair_exhausted`, dispatch the exact operation's existing
-debug stage. Exhausted debug or human-required dispatch ends visibly failed;
-this policy never creates an unbounded replacement budget.
+current successor stage, resolved server-side without a caller-supplied stage.
+Under the authorized continuous policy each exhausted session checkpoints its
+work and hands its fenced workspace to a fresh bounded worker. History and
+old attempt counters stay intact. A live/unknown writer or ambiguous publication
+keeps the fence until reconciliation proves the handoff. Explicit human gates
+remain binding. Routine budget exhaustion requires no new human approval.
 
 ## Rule: release-promoted
 

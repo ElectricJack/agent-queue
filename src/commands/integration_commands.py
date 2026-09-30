@@ -32,6 +32,109 @@ def _failure(outcome: str, error: str) -> dict[str, Any]:
 class IntegrationCommandsMixin:
     """Implemented integration command handlers are registered incrementally."""
 
+    async def _cmd_observe_integration_source_ci(self, observation) -> dict:
+        """Daemon-only adapter for trusted CI observations, never a raw tool input."""
+        from sqlalchemy import text
+        from src.integration.source_ci import SourceCIObservation
+        if not isinstance(observation, SourceCIObservation):
+            return _failure("invalid", "source observation must be server-observed")
+        identity = self._integration_source_ci_identity(observation)
+        # Serialize the complete observe/file/link sequence across daemons.
+        # A restart releases this transaction lock; ensure_task recovers a
+        # filed-but-not-yet-linked assignment by its immutable dedup key.
+        async with self.db._engine.begin() as conn:
+            await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                               {"key": identity})
+            return await self._record_integration_source_ci(observation)
+
+    @staticmethod
+    def _integration_source_ci_identity(observation) -> str:
+        import hashlib
+
+        source = observation.source
+        key = [source["project_id"], observation.task_id, source["repository_id"],
+               source["base"], source["head"], source["generation"]]
+        return "source-ci:" + hashlib.sha256(json.dumps(key).encode()).hexdigest()
+
+    async def _record_integration_source_ci(self, observation) -> dict:
+        from sqlalchemy import select, update
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+        from src.database.tables import archived_tasks, integration_source_ci, projects, tasks
+        from src.integration.models import HierarchicalIntegrationPolicy
+        from src.integration.review_evidence import ReviewEvidenceProducer
+        from src.integration.source_ci import SourceCIObservation, repair_description
+
+        if not isinstance(observation, SourceCIObservation):
+            return _failure("invalid", "source observation must be server-observed")
+        source = observation.source
+        producer = ReviewEvidenceProducer(self.db, None)
+        key = {
+            "task_id": observation.task_id, "repository_id": source["repository_id"],
+            "source_base": source["base"], "source_head": source["head"],
+            "generation": source["generation"],
+        }
+        conditions = [integration_source_ci.c[name] == value for name, value in key.items()]
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, source["project_id"])
+            project = (await conn.execute(select(projects).where(
+                projects.c.id == source["project_id"]))).mappings().one()
+            policy = HierarchicalIntegrationPolicy.model_validate(project["hierarchical_integration_policy"])
+            if (not policy.root.repair.source_ci
+                    or project["hierarchical_integration_generation"] != observation.policy_generation
+                    or await producer._pull_request_source_on(conn, observation.task_id) != source
+                    or not await producer._authorization_on(
+                        conn, observation.task_id, source, observation.policy_generation, allow_reviewed=True)):
+                return _failure("stale", "source policy, authorization or exact identity changed")
+            values = {
+                "policy_generation": observation.policy_generation,
+                "state": observation.state, "evidence": observation.evidence,
+                "observed_at": time.time(),
+            }
+            await conn.execute(pg_insert(integration_source_ci).values(**key, **values)
+                .on_conflict_do_update(index_elements=list(key), set_=values))
+            record = dict((await conn.execute(select(integration_source_ci)
+                          .where(*conditions))).mappings().one())
+            if observation.state not in {"red", "cancelled"}:
+                return {"success": True, "outcome": "observed", "state": observation.state}
+            if record["repair_task_id"]:
+                status = (await conn.execute(select(tasks.c.status).where(
+                    tasks.c.id == record["repair_task_id"]))).scalar_one_or_none()
+                if status is None:
+                    status = (await conn.execute(select(archived_tasks.c.status).where(
+                        archived_tasks.c.id == record["repair_task_id"]))).scalar_one_or_none()
+                if status != TaskStatus.FAILED.value:
+                    return {"success": True, "outcome": "already_repairing",
+                            "repair_task_id": record["repair_task_id"]}
+                if policy.root.repair.on_exhausted != "continue":
+                    return _failure("human_required", "source repair failed under finite policy")
+            attempt = record["repair_attempt"] + 1
+        # Creation stays on the normal CommandHandler filing/routing path.
+        # The enclosing source lock protects replay and competing ticks.
+        created = await self._cmd_ensure_task({
+            "project_id": source["project_id"], "repo_id": source["repository_id"],
+            "dedup_key": f"{self._integration_source_ci_identity(observation)}:{attempt}",
+            "title": f"Repair source CI: {observation.task_id} ({source['head'][:12]})",
+            "description": repair_description(observation), "task_type": "bugfix",
+            "root": True, "reason": "authorized exact source CI recovery",
+            "intelligence_class": policy.root.repair.debug_intelligence_class,
+        })
+        if not created.get("success"):
+            return created
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, source["project_id"])
+            current = (await conn.execute(select(integration_source_ci).where(*conditions)
+                       .with_for_update())).mappings().one()
+            if current["repair_attempt"] >= attempt:
+                return {"success": True, "outcome": "already_repairing",
+                        "repair_task_id": current["repair_task_id"]}
+            history = list(current["repair_history"] or [])
+            if current["repair_task_id"]:
+                history.append({"task_id": current["repair_task_id"],
+                                "attempt": current["repair_attempt"]})
+            await conn.execute(update(integration_source_ci).where(*conditions).values(
+                repair_task_id=created["task_id"], repair_attempt=attempt, repair_history=history))
+        return {"success": True, "outcome": "repair_created", "repair_task_id": created["task_id"]}
+
     async def _integration_task_matches_target(
         self, task_id: str, target: BranchKey, project_id: str
     ) -> bool:
@@ -344,6 +447,8 @@ class IntegrationCommandsMixin:
             authorized = principal.kind in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}
         if not authorized:
             return _failure("unauthorized", "integration status is outside the caller project")
+        if args.get("control_only"):
+            return await self._integration_control_service().status(project_id, control_only=True)
         return await self._integration_control_service().status(project_id)
 
     async def _integration_app_inputs(
@@ -811,7 +916,10 @@ class IntegrationCommandsMixin:
         _principal, refusal = await integration_operator(self.db, task.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
-        result = await reserve_canonical_task_branch(self.db, task.id)
+        if task.created_by_kind == "integration_repair":
+            result = await self._integration_repair_service().reserve_delegate(task.id)
+        else:
+            result = await reserve_canonical_task_branch(self.db, task.id)
         return {"success": result["outcome"] in {"acquired", "already_reserved"}, **result}
 
     async def _cmd_integration_release_stale_owners(self, args: dict) -> dict:

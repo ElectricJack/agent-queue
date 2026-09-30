@@ -14,21 +14,21 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:c52808e3b6cf5d527d52eb579fa4464096717ac75fd3d3953d245d46ffad6cc1` |
+| Contract fingerprint | `sha256:1e3c7806b3d4b028bc6bc23f5e8b8205831b33e64fce84b9097e10ca63d35366` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `operation_id` | `string` | yes | — | — |
-| `stage` | `0 \| 1` | yes | — | — |
+| `stage` | `integer` | yes | — | — |
 
 ## Result
 
 | Field | Type | Description |
 |---|---|---|
 | `operation_id` | `string \| null` | — |
-| `stage` | `0 \| 1 \| null` | — |
+| `stage` | `integer \| null` | — |
 | `action` | `"ignore" \| "dispatch_debug" \| "block_for_human" \| "none" \| "wait" \| "awaiting_promotion" \| null` | — |
 
 Projected into the run receipt: `operation_id`, `stage`, `action`.

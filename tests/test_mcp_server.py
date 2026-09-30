@@ -672,6 +672,9 @@ class TestDriftDetection:
             # SubagentStart/SubagentStop hooks, not by the LLM, so it is left
             # to auto-discovery rather than given a rich schema.
             "subagent_event",
+            # Trusted daemon observations take a server-created typed object,
+            # and DEFAULT_EXCLUDED_COMMANDS keeps them off the agent surface.
+            "observe_integration_source_ci",
             # Dev/e2e credential minter (src/commands/session_commands.py).
             # Excluded from MCP outright (DEFAULT_EXCLUDED_COMMANDS) and
             # elevated/local-only on HTTP, so it carries a codegen-only

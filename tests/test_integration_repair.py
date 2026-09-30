@@ -149,7 +149,7 @@ async def _configure_db(database) -> None:
 
 
 async def _seed_parent_operation(
-    db, *, evidence_id: str = "failed-check", starting_sha: str = STARTING_SHA
+    db, *, evidence_id: str = "failed-check", starting_sha: str = STARTING_SHA, policy=None
 ) -> None:
     await db.create_task(
         Task(
@@ -181,7 +181,7 @@ async def _seed_parent_operation(
                 episode_id="episode",
                 active_stage=0,
                 state="active",
-                policy_snapshot=_policy(),
+                policy_snapshot=policy or _policy(),
                 artifact_snapshot=_artifact().model_dump(mode="json"),
                 required_check_version="checks-v1",
                 route_playbook_id="hierarchical-delivery",
@@ -1305,6 +1305,41 @@ async def test_primary_deadline_expires_without_any_ci_event(db):
         "operation_id": "operation",
         "stage": 1,
     }
+
+
+async def test_exhaustion_continues_with_fresh_bounded_stages_and_deduped_workers(db):
+    from src.integration.repair import RepairService
+
+    policy = _policy()
+    policy["parent"]["repair"]["on_exhausted"] = "continue"
+    await _seed_parent_operation(db, policy=policy)
+    ownership = BranchOwnership(db)
+    await ownership.acquire(BranchKey(repository_id="repo", branch="aq/parent"), "operation", "collector")
+    service = RepairService(db)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    first = await service.dispatch("operation", 0)
+    assert first["outcome"] == "dispatched"
+    for ordinal, due in ((0, 130.0), (1, 190.0), (2, 250.0)):
+        expired = await service.expire("operation", ordinal, now=due)
+        assert expired["action"] == "dispatch_debug"
+        assert expired["stage"] == ordinal + 1
+        replay_timeout = await service.expire("operation", ordinal, now=due + 1)
+        assert replay_timeout["action"] == "dispatch_debug"
+        assert replay_timeout["stage"] == ordinal + 1
+        terminal = await _repair_stage(db, "operation", ordinal)
+        assert terminal["state"] == "expired" and terminal["completed_at"] == due
+        successor = await _repair_stage(db, "operation", ordinal + 1)
+        assert successor["started_at"] == due and successor["deadline_at"] == due + 60
+        assert successor["attempts"] == 0
+        dispatched = await service.dispatch("operation", ordinal + 1)
+        assert dispatched["outcome"] == "dispatched", dispatched
+        assert dispatched["repair_task_id"] != first["repair_task_id"]
+        replay = await service.dispatch("operation", ordinal + 1)
+        assert replay["outcome"] == "already_dispatched"
+        assert replay["repair_task_id"] == dispatched["repair_task_id"]
+        first = dispatched
+    operation = await db.get_integration_operation("operation")
+    assert operation["active_stage"] == 3 and operation["state"] == "escalated"
 
 
 async def test_due_stage_query_does_not_require_an_agent_or_ci_event(db):
@@ -2684,8 +2719,9 @@ async def test_primary_dispatch_reuses_only_exact_live_attached_verifier(
     "retained_state",
     ["tracked", "untracked", "unmerged", "unpushed"],
 )
+@pytest.mark.parametrize("lifecycle", ["task", "pool"])
 async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
-    db, tmp_path, retained_state
+    db, tmp_path, retained_state, lifecycle
 ):
     """A stopped primary's exact workspace is rebound before debug becomes ready."""
     from src.integration.repair import RepairService
@@ -2736,7 +2772,10 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
         assert "UU tracked.txt" in git("status", "--porcelain=v1")
     retained_head = git("rev-parse", "HEAD")
 
-    await _seed_parent_operation(db)
+    policy = _policy()
+    if lifecycle == "pool":
+        policy["parent"]["repair"]["on_exhausted"] = "continue"
+    await _seed_parent_operation(db, policy=policy)
     await _add_parent_evidence(
         db, "failed-check-2", run_id="run-2", conclusion="failure"
     )
@@ -2763,7 +2802,7 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
             "session_id": owner["session_id"],
             "workspace_id": owner["workspace_id"],
             "head_sha": retained_head,
-            "instance_token": "token",
+            "instance_token": (await db.get_session(owner["session_id"])).instance_token,
         }
 
     service = RepairService(
@@ -2782,7 +2821,8 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
             harness="fake",
             provider="fake",
             name="s-primary",
-            lifecycle="task",
+            lifecycle=lifecycle,
+            last_claim_epoch=1 if lifecycle == "pool" else None,
             state="running",
             work_dir=str(checkout),
             epoch="epoch",
@@ -2805,7 +2845,7 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
         await conn.execute(
             update(tasks)
             .where(tasks.c.id == primary_task_id)
-            .values(status="IN_PROGRESS")
+            .values(status="IN_PROGRESS", claim_epoch=1 if lifecycle == "pool" else 0)
         )
         await conn.execute(
             update(integration_branch_owners)
@@ -2818,6 +2858,9 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
         )
     await service.record_result("operation", "failed-check", now=101.0)
     await service.record_result("operation", "failed-check-2", now=102.0)
+    if lifecycle == "pool":
+        from src.claim_file import write_claim_file
+        write_claim_file(str(checkout), {"task_id": primary_task_id, "claim_epoch": 1})
 
     failed_stop = await RepairService(
         db,
@@ -2902,6 +2945,31 @@ async def test_debug_dispatch_retains_unfinished_primary_workspace_atomically(
         },
     )
     assert after == before
+    if lifecycle == "pool":
+        from src.claim_file import read_claim_file, write_claim_file
+        assert (await db.get_session("primary-session")).task_id is None
+        assert read_claim_file(str(checkout)) is None
+        await db.create_session(SessionRecord(
+            id="successor-session", task_id=debug_task.id, project_id="p",
+            profile_id="repairer", harness="fake", provider="fake", name="s-successor",
+            lifecycle="pool", state="running", work_dir=str(checkout), epoch="next",
+            instance_token="next-token", started_at=104.0, last_claim_epoch=2))
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == debug_task.id).values(
+                status="IN_PROGRESS", claim_epoch=2))
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.id == "owner").values(
+                handoff_state="attached", session_id="successor-session", workspace_id="retained"))
+        write_claim_file(str(checkout), {"task_id": debug_task.id, "claim_epoch": 2})
+        assert (await service.expire("operation", 1, now=162.0))["stage"] == 2
+        third = await service.dispatch("operation", 2)
+        assert third["outcome"] == "dispatched"
+        assert third["repair_task_id"] != debug_task.id
+        assert (await db.get_session("successor-session")).task_id is None
+        assert read_claim_file(str(checkout)) is None
+        assert (await db.get_workspace("retained")).locked_by_task_id == third["repair_task_id"]
+        assert git("status", "--porcelain=v1") == before[0]
+        assert git("ls-files", "--stage") == before[1]
 
 
 async def test_debug_dossier_refreshes_exact_unpushed_commits_and_late_receipts(
@@ -4464,7 +4532,8 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
         handler.orchestrator.release_session_task_resources.assert_awaited()
 
 
-async def test_debug_escalation_accepts_a_released_primary_repair_writer(db):
+@pytest.mark.parametrize("owner_state", ["reserved", "released", "handoff_pending"])
+async def test_debug_escalation_accepts_a_released_primary_repair_writer(db, owner_state):
     """A primary delegate that closed cleanly is a provable predecessor.
 
     A successful close self-transfers the delegate back to a ``reserved``
@@ -4495,7 +4564,7 @@ async def test_debug_escalation_accepts_a_released_primary_repair_writer(db):
             )
         )
     service = RepairService(
-        db,
+        db, confirm_handoff=lambda _owner: True,
     )
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     primary = await service.dispatch("operation", 0)
@@ -4513,9 +4582,9 @@ async def test_debug_escalation_accepts_a_released_primary_repair_writer(db):
             .values(
                 owner_id=primary_task_id,
                 owner_role="repair",
-                handoff_state="reserved",
-                session_id=None,
-                workspace_id=None,
+                handoff_state=owner_state,
+                session_id="old-session" if owner_state == "handoff_pending" else None,
+                workspace_id="old-workspace" if owner_state == "handoff_pending" else None,
                 confirmed_workspace_id="repair-workspace",
             )
         )
@@ -5494,3 +5563,55 @@ async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db, pr
         "operation_id": "operation",
         "observed_at": 203.0,
     }
+
+
+@pytest.mark.parametrize("recovery", ["reconcile", "command"])
+async def test_pending_primary_release_recovers_stranded_debug_delegate(db, recovery):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.doctor.integration_checks import run_check
+    from src.doctor.models import Severity
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await _add_parent_evidence(db, "failed-check-2", run_id="run-2", conclusion="failure")
+    await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch="aq/parent"), "operation", "collector")
+    service = RepairService(db, confirm_handoff=lambda _owner: False)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    primary = await service.dispatch("operation", 0)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state="handoff_pending", session_id="stopped-session",
+            workspace_id="old-workspace",
+        ))
+    await service.record_result("operation", "failed-check", now=101.0)
+    await service.record_result("operation", "failed-check-2", now=102.0)
+    blocked = await service.dispatch("operation", 1)
+    assert blocked["outcome"] == "busy"
+    task_id = blocked["repair_task_id"]
+    assert task_id != primary["repair_task_id"]
+    diagnostic = await run_check(db, "integration.missing_repair_owners")
+    assert diagnostic.severity == Severity.WARN
+    assert diagnostic.data["delegates"][0]["repair_task_id"] == task_id
+    before = await _repair_stage(db, "operation", 1)
+    # Provider-backed owner recovery has now preserved and detached the writer.
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state="released", session_id=None, workspace_id=None,
+            confirmed_workspace_id="old-workspace",
+        ))
+    if recovery == "reconcile":
+        await service.reconcile_delegate_reservations(103.0)
+    else:
+        handler = IntegrationCommandsMixin()
+        handler.db = db
+        handler.orchestrator = SimpleNamespace(repair_service=service)
+        result = await handler._cmd_integration_reserve_owner({"task_id": task_id})
+        assert result["outcome"] == "acquired"
+        replay = await handler._cmd_integration_reserve_owner({"task_id": task_id})
+        assert replay["outcome"] == "already_reserved"
+    assert (await db.get_task(task_id)).status == TaskStatus.READY
+    assert (await run_check(db, "integration.missing_repair_owners")).severity == Severity.OK
+    after = await _repair_stage(db, "operation", 1)
+    for field in ("started_at", "deadline_at", "attempts", "policy"):
+        assert after[field] == before[field]
+    assert (await service.reserve_delegate(primary["repair_task_id"]))["outcome"] == "not_eligible"

@@ -1450,6 +1450,9 @@ _ALL_TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "project_id": {"type": "string", "description": "Project ID"},
+                "repo_id": {"type": "string", "description": "Repository ID (used on create)"},
+                "task_type": {"type": "string", "description": "Task type (used on create)"},
+                "integration_mode": {"type": "string", "description": "Integration mode (used on create)"},
                 "dedup_key": {
                     "type": "string",
                     "description": (
@@ -2289,6 +2292,10 @@ _ALL_TOOL_DEFINITIONS = [
                     "description": "Exact recovery incident ID from the supervisor notification",
                 },
                 "decision": {"type": "string", "enum": ["retry", "hold"]},
+                "expected_hold_at": {
+                    "type": "number",
+                    "description": "Release a cleared hold by retrying this incident; exact decided_at of the prior hold. All recovery guards and remaining budgets still apply.",
+                },
                 "reason": {
                     "type": "string",
                     "description": "Diagnosis and rationale for this decision",

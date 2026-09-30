@@ -85,6 +85,7 @@ BRIEF_PROJECTIONS: dict[str, tuple[str, ...]] = {
     ),
     "integration": (
         "outcome",
+        "projection_kind",
         "project_id",
         "operation_id",
         "batch_id",

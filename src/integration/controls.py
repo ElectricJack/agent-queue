@@ -176,6 +176,7 @@ class IntegrationControlService:
                 )
             ).scalar_one_or_none()
         if unmaterialized is None:
+            await self.cleanup_service.reconcile_aggregate(batch_id, self.clock())
             return result
         materialized = await self.cleanup_service.materialize(batch_id)
         if materialized.outcome in {"materialized", "already_materialized"}:
@@ -254,10 +255,15 @@ class IntegrationControlService:
         projection["ready"] = not projection["blockers"]
         return projection, warnings
 
-    async def status(self, project_id: str) -> dict[str, Any]:
+    async def status(self, project_id: str, *, control_only: bool = False) -> dict[str, Any]:
         """Return status plus live functional wiring blockers."""
         from src.integration.status import IntegrationStatusService
 
+        if control_only:
+            status = await IntegrationStatusService(self.db).control_status(project_id)
+            if status is None:
+                return {"outcome": "not_found", "project_id": project_id}
+            return {"outcome": "status", **status}
         status = await IntegrationStatusService(self.db, clock=self.clock).status(project_id)
         if status is None:
             return {"outcome": "not_found", "project_id": project_id}
@@ -1398,7 +1404,8 @@ class IntegrationControlService:
             return dict(_LEGACY_POLICY_OFF)
         return {key: bool(row[key]) for key in _LEGACY_POLICY_OFF}
 
-    async def _has_active_work_on(self, conn: Any, project_id: str) -> bool:
+    @staticmethod
+    def _active_work_queries(project_id: str):
         checks = (
             select(integration_batches.c.id).where(
                 integration_batches.c.project_id == project_id,
@@ -1410,7 +1417,13 @@ class IntegrationControlService:
                     )
                 ),
             ),
-            select(integration_repair_operations.c.id)
+            select(
+                integration_repair_operations.c.id,
+                integration_repair_operations.c.state,
+                integration_repair_operations.c.target_kind,
+                integration_repair_operations.c.batch_id,
+                integration_repair_operations.c.parent_task_id,
+            )
             .select_from(
                 integration_repair_operations
                 .outerjoin(
@@ -1427,7 +1440,13 @@ class IntegrationControlService:
                 (integration_batches.c.project_id == project_id)
                 | (tasks.c.project_id == project_id),
             ),
-            select(integration_branch_owners.c.id)
+            select(
+                integration_branch_owners.c.id,
+                integration_branch_owners.c.owner_id,
+                integration_branch_owners.c.owner_role,
+                integration_branch_owners.c.ref,
+                integration_branch_owners.c.handoff_state,
+            )
             .select_from(
                 integration_branch_owners.join(
                     repos, repos.c.id == integration_branch_owners.c.repository_id
@@ -1452,7 +1471,22 @@ class IntegrationControlService:
                 integration_cleanup_items.c.state.in_(("pending", "retryable")),
             ),
         )
-        for statement in checks:
+        return zip(
+            ("batch", "operation", "branch_owner", "lease", "promotion", "cleanup"),
+            checks,
+            strict=True,
+        )
+
+    async def drain_blockers_on(self, conn: Any, project_id: str) -> list[dict[str, Any]]:
+        """Expose the same durable items the mode-transition guard counts."""
+        blockers = []
+        for kind, statement in self._active_work_queries(project_id):
+            rows = (await conn.execute(statement)).mappings().all()
+            blockers.extend({"kind": kind, **dict(row)} for row in rows)
+        return sorted(blockers, key=lambda item: (item["kind"], str(item)))
+
+    async def _has_active_work_on(self, conn: Any, project_id: str) -> bool:
+        for _kind, statement in self._active_work_queries(project_id):
             if (await conn.execute(statement.limit(1))).scalar_one_or_none() is not None:
                 return True
         return False

@@ -27271,6 +27271,42 @@
             "title": "Project Id",
             "description": "Project ID"
           },
+          "repo_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo Id",
+            "description": "Repository ID (used on create)"
+          },
+          "task_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Task Type",
+            "description": "Task type (used on create)"
+          },
+          "integration_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Integration Mode",
+            "description": "Integration mode (used on create)"
+          },
           "dedup_key": {
             "type": "string",
             "title": "Dedup Key",
@@ -59763,6 +59799,18 @@
             "type": "string",
             "title": "Decision",
             "description": ""
+          },
+          "expected_hold_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Hold At",
+            "description": "Release a cleared hold by retrying this incident; exact decided_at of the prior hold. All recovery guards and remaining budgets still apply."
           },
           "reason": {
             "type": "string",

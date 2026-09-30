@@ -34,6 +34,13 @@ def _assert_schema(connection) -> None:
         for constraint in schema.get_unique_constraints("integration_repair_operations")
     }
     assert "uq_integration_repair_operations_batch_episode" in operation_unique
+    ordinal = next(item for item in schema.get_check_constraints("integration_repair_stages")
+                   if item["name"] == "ck_integration_repair_stages_ordinal")
+    assert ordinal["sqltext"].replace(" ", "").strip("()") == "ordinal>=0"
+    source = {column["name"]: column for column in schema.get_columns("integration_source_ci")}
+    assert {"source_head", "source_base", "generation", "policy_generation", "repair_history"} <= source.keys()
+    assert str(source["evidence"]["type"]) == "JSONB"
+    assert str(source["repair_history"]["type"]) == "JSONB"
 
 
 async def test_baseline_repair_stages_schema():

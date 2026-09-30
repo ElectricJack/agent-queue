@@ -104,6 +104,10 @@ class IntegrationStatusArgs(CommandArgs):
     project_id: str = Field(min_length=1)
 
 
+class IntegrationStatusReadArgs(IntegrationStatusArgs):
+    control_only: bool = False
+
+
 class IntegrationTrustManifestArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     #: A policy document to build from instead of the bound one (``--policy FILE``).
@@ -520,6 +524,8 @@ class IntegrationOperationalValue(CommandValue):
 
 
 class IntegrationStatusValue(IntegrationOperationalValue):
+    projection_kind: Literal["control"] | None = None
+    drain_blockers: tuple[dict[str, Any], ...] = ()
     #: Non-blocking App-mode configuration warnings (spec §6.2); never part
     #: of ``blockers``, their digest or ``ready``.
     warnings: tuple[dict[str, Any], ...] = ()
@@ -714,7 +720,7 @@ class IntegrationBuildCandidateValue(CommandValue):
 
 class IntegrationRepairCloseCurrentArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
-    stage: Literal[0, 1]
+    stage: int = Field(ge=0)
     task_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     instance_token: str = Field(min_length=1)
@@ -880,7 +886,7 @@ class IntegrationRepairStartArgs(CommandArgs):
 
 class IntegrationRepairStartValue(CommandValue):
     operation_id: str | None = None
-    stage: Literal[0, 1] | None = None
+    stage: int | None = Field(default=None, ge=0)
     starting_sha: str | None = None
     started_at: float | None = None
     deadline_at: float | None = None
@@ -888,7 +894,7 @@ class IntegrationRepairStartValue(CommandValue):
 
 class IntegrationRepairDispatchArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
-    stage: Literal[0, 1] | None = None
+    stage: int | None = Field(default=None, ge=0)
     batch_id: str | None = None
     revision: int | None = Field(default=None, ge=0)
     head_sha: str | None = None
@@ -907,7 +913,7 @@ class IntegrationRepairDispatchArgs(CommandArgs):
 
 class IntegrationRepairDispatchValue(CommandValue):
     operation_id: str | None = None
-    stage: Literal[0, 1] | None = None
+    stage: int | None = Field(default=None, ge=0)
     repair_task_id: str | None = None
     writer_kind: Literal["repair_delegate", "existing_verifier"] | None = None
     fence: Fence | None = None
@@ -930,17 +936,17 @@ class IntegrationRecordRepairValue(CommandValue):
         "stale",
     ] | None = None
     attempts: int | None = None
-    stage: Literal[0, 1] | None = None
+    stage: int | None = Field(default=None, ge=0)
 
 
 class IntegrationRepairTimeoutArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
-    stage: Literal[0, 1]
+    stage: int = Field(ge=0)
 
 
 class IntegrationRepairTimeoutValue(CommandValue):
     operation_id: str | None = None
-    stage: Literal[0, 1] | None = None
+    stage: int | None = Field(default=None, ge=0)
     action: Literal[
         "ignore",
         "dispatch_debug",
@@ -1008,7 +1014,7 @@ RETRY_CLEANUP_OUTCOMES = (
 
 INTEGRATION_STATUS = _operational_contract(
     "integration_status",
-    IntegrationStatusArgs,
+    IntegrationStatusReadArgs,
     ("status", "not_found"),
     successes=frozenset({"status"}),
     side_effect=SideEffectClass.READ,
@@ -2545,7 +2551,7 @@ async def _seal_adapter(args: IntegrationSealArgs, ctx: CommandContext | None):
     )
 
 
-async def _status_adapter(args: IntegrationStatusArgs, ctx: CommandContext | None):
+async def _status_adapter(args: IntegrationStatusReadArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_status", args, ctx, IntegrationStatusValue, {"status", "not_found"}
     )

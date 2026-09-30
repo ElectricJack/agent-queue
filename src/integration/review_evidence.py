@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Any
 
-from sqlalchemy import and_, func, insert, select
+from sqlalchemy import and_, exists, func, insert, select
 
 from src.database.queries.hierarchy_queries import HierarchyError
 from src.database.tables import (
@@ -19,10 +19,15 @@ from src.database.tables import (
     task_session_attempts,
     tasks,
     projects,
+    gates,
+    task_gates,
+    task_labels,
+    integration_source_ci,
 )
 from src.git.manager import RemoteRefState
 from src.integration.epic_dependencies import dependents_of
 from src.integration.settling import note_approval
+from src.integration.models import HierarchicalIntegrationPolicy
 from src.models import TaskStatus
 
 
@@ -39,6 +44,60 @@ class ReviewEvidenceProducer:
         self.clock = clock
 
     async def snapshot_from_pull_request(
+        self, epic_task_id: str, **kwargs: Any
+    ) -> dict[str, Any] | None:
+        return await self._snapshot_pull_request(epic_task_id, **kwargs)
+
+    async def snapshot_authorized(
+        self, epic_task_id: str, *, reviewed_sha: str, policy_generation: int
+    ) -> dict[str, Any] | None:
+        """Pin task authorization without impersonating a human review.
+
+        Only an explicit operator-enabled project policy admits completed
+        feature/bugfix tasks and explicitly named tasks this way. Holds, open gates and reviewer rejections
+        remain binding. Git still proves the exact remote head and tree.
+        """
+        return await self._snapshot_pull_request(
+            epic_task_id, verdict="approved", reviewer_login="task-authorization",
+            reviewed_sha=reviewed_sha, authorization_generation=policy_generation,
+        )
+
+    async def _authorization_on(self, conn, task_id, source, generation, *, allow_reviewed=False) -> bool:
+        row = (await conn.execute(
+            select(tasks.c.task_type, projects.c.hierarchical_integration_policy,
+                   projects.c.hierarchical_integration_generation)
+            .select_from(tasks.join(projects, projects.c.id == tasks.c.project_id))
+            .where(
+                tasks.c.id == task_id,
+                ~exists(select(task_labels.c.task_id).where(
+                    task_labels.c.task_id == task_id, task_labels.c.label.like("hold:%"))),
+                ~exists(select(task_gates.c.task_id).select_from(
+                    task_gates.join(gates, gates.c.id == task_gates.c.gate_id)
+                ).where(task_gates.c.task_id == task_id, gates.c.status == "open")),
+            )
+        )).mappings().one_or_none()
+        if (row is None
+                or row["hierarchical_integration_generation"] != generation
+                or not row["hierarchical_integration_policy"]):
+            return False
+        policy = HierarchicalIntegrationPolicy.model_validate(row["hierarchical_integration_policy"])
+        if row["task_type"] not in {"feature", "bugfix"} and task_id not in policy.root.authorized_task_ids:
+            return False
+        if policy.root.admission != "authorized" and not allow_reviewed:
+            return False
+        latest = (await conn.execute(select(integration_review_evidence).where(
+            integration_review_evidence.c.source_task_id == task_id,
+            integration_review_evidence.c.repository_id == source["repository_id"],
+            integration_review_evidence.c.source_base == source["base"],
+            integration_review_evidence.c.reviewed_head_sha == source["head"],
+            integration_review_evidence.c.generation == source["generation"],
+        ).order_by(integration_review_evidence.c.created_at.desc(),
+                   integration_review_evidence.c.id.desc()).limit(1))).mappings().one_or_none()
+        if policy.root.admission == "reviewed":
+            return latest is not None and latest["verdict"] == "approved"
+        return latest is None or latest["verdict"] == "approved"
+
+    async def _snapshot_pull_request(
         self,
         epic_task_id: str,
         *,
@@ -48,6 +107,7 @@ class ReviewEvidenceProducer:
         summary: str = "",
         feedback: str = "",
         github_review_id: int | None = None,
+        authorization_generation: int | None = None,
     ) -> dict[str, Any] | None:
         """Store a GitHub verdict against the exact verified train epic head."""
         if verdict not in {"approved", "rejected"}:
@@ -63,6 +123,11 @@ class ReviewEvidenceProducer:
 
         async with self.db._engine.connect() as conn:
             source = await self._pull_request_source_on(conn, epic_task_id)
+            if source is not None and authorization_generation is not None:
+                if not await self._authorization_on(conn, epic_task_id, source, authorization_generation):
+                    return None
+            repaired_sources = list((await conn.execute(select(integration_source_ci.c.source_head)
+                .where(integration_source_ci.c.repair_task_id == epic_task_id))).scalars())
         if source is None:
             return None
         if reviewed_sha != source["head"]:
@@ -80,15 +145,24 @@ class ReviewEvidenceProducer:
             if remote.state is not RemoteRefState.PRESENT or remote.oid != reviewed_sha:
                 raise HierarchyError("stale_head", "reviewed remote ref is not the exact head")
             tree = await self.promotion._tree_oid(resolved.retained_git_dir, reviewed_sha)
+            for source_head in repaired_sources:
+                if await self.promotion.git.ais_ancestor(
+                    str(resolved.retained_git_dir), source_head, reviewed_sha, strict=True
+                ) is not True:
+                    raise HierarchyError("stale_head", "repair does not preserve its source ancestry")
 
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, source["project_id"])
             current = await self._pull_request_source_on(conn, epic_task_id)
             if current != source:
                 raise HierarchyError("stale_head", "epic snapshot changed before verdict commit")
+            if authorization_generation is not None and not await self._authorization_on(
+                conn, epic_task_id, source, authorization_generation
+            ):
+                return None
             identity = ":".join(
                 (
-                    "github",
+                    "task-authorization" if authorization_generation is not None else "github",
                     epic_task_id,
                     source["repository_id"],
                     source["base"],
@@ -98,6 +172,7 @@ class ReviewEvidenceProducer:
                     reviewer_login,
                     source["pr_url"],
                     str(github_review_id) if github_review_id is not None else "",
+                    *((str(authorization_generation),) if authorization_generation is not None else ()),
                 )
             )
             evidence_id = f"review-{uuid.uuid5(_EVIDENCE_NAMESPACE, identity)}"
@@ -137,12 +212,16 @@ class ReviewEvidenceProducer:
                 "reviewed_tree_sha": tree,
                 "reviewer_task_id": None,
                 "reviewer_session_attempt_id": None,
-                "reviewer_identity": f"github:{reviewer_login}",
+                "reviewer_identity": (f"task-authorization:{authorization_generation}"
+                                      if authorization_generation is not None else f"github:{reviewer_login}"),
                 "review_kind": source["review_kind"],
                 "generation": source["generation"],
                 "verdict": verdict,
                 "evidence": {
-                    "decision_path": "github_pull_request",
+                    "decision_path": ("authorized_task" if authorization_generation is not None
+                                      else "github_pull_request"),
+                    **({"policy_generation": authorization_generation}
+                       if authorization_generation is not None else {}),
                     "summary": summary,
                     "feedback": feedback,
                     "reviewed_sha": reviewed_sha,

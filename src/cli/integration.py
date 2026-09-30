@@ -33,11 +33,15 @@ def integration() -> None:
 
 @integration.command("status")
 @click.argument("project_id")
+@click.option("--control-only", is_flag=True, help="Read durable control state without readiness observations.")
 @click.pass_context
 @_handle_errors
-def integration_status(ctx: click.Context, project_id: str) -> None:
+def integration_status(ctx: click.Context, project_id: str, control_only: bool) -> None:
     """Show rollout, readiness, active work, and cleanup for PROJECT_ID."""
-    _execute(ctx, "integration_status", {"project_id": project_id})
+    args: dict[str, Any] = {"project_id": project_id}
+    if control_only:
+        args["control_only"] = True
+    _execute(ctx, "integration_status", args)
 
 
 @integration.command("record-noop")

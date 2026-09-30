@@ -95,6 +95,9 @@ class EnsureTaskArgs(CommandArgs):
     dedup_key: str
     title: str
     project_id: str | None = None
+    repo_id: str | None = None
+    task_type: str | None = None
+    integration_mode: str | None = None
     description: str | None = None
     priority: int | None = None
     profile_id: str | None = None

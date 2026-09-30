@@ -1181,6 +1181,31 @@ class Orchestrator(
         except Exception as exc:  # best-effort by contract
             logger.warning("Could not salvage paused workspace for %s: %s", task_id, exc)
 
+    async def _observe_integration_source_ci(self, observation):
+        from src.commands.principal import ExecutionPrincipal, principal_context
+        if self._command_handler is None:
+            return {"success": False, "outcome": "not_ready"}
+        with principal_context(ExecutionPrincipal.service("integration-source-ci")):
+            return await self._command_handler._cmd_observe_integration_source_ci(observation)
+
+    async def _dispatch_pending_integration_repairs(self, _now):
+        from src.commands.principal import ExecutionPrincipal, principal_context
+        if self._command_handler is None:
+            return
+        repair = self._command_handler._integration_repair_service()
+        after = getattr(self, "_repair_dispatch_after", None)
+        rows = await repair.pending_dispatches(after=after)
+        if not rows and after is not None:
+            rows = await repair.pending_dispatches()
+        self._repair_dispatch_after = ((rows[-1]["operation_id"], rows[-1]["ordinal"]) if rows else None)
+        with principal_context(ExecutionPrincipal.service("integration-repair-continuation")):
+            for row in rows:
+                try:
+                    await self._command_handler._cmd_integration_repair_dispatch({
+                        "operation_id": row["operation_id"], "stage": row["ordinal"]})
+                except Exception:
+                    logger.exception("Integration repair continuation failed for %s", row["operation_id"])
+
     async def _drain_branch_materializations(self, now: float) -> None:
         """Materialize reserved task refs through the fenced hierarchy service."""
         if self.branch_materialization_service is not None:
@@ -1870,9 +1895,11 @@ class Orchestrator(
             branch_materialization_handler=self._drain_branch_materializations,
             owner_recovery_handler=self._sweep_stranded_owners,
             review_handler=GitHubReviewPoller(
-                self.db, ReviewEvidenceProducer(self.db, self.promotion_service), self.git
+                self.db, ReviewEvidenceProducer(self.db, self.promotion_service), self.git,
+                source_ci_handler=self._observe_integration_source_ci,
             ).tick,
             root_pull_request_handler=RootPullRequestReconciler(self.db, self.git).tick,
+            repair_dispatch_handler=self._dispatch_pending_integration_repairs,
         )
         self.integration_service.start()
 

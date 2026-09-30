@@ -132,6 +132,27 @@ the ladder survives daemon restarts.
 
 ### 4.2 Named sessions
 
+The global supervisor's terminal always has system scope (`project_id = NULL`),
+including explicit starts and resumes from the agent flock. Its launch form shows
+access to all projects and has no project selector. A caller-supplied project is
+ignored for the canonical global supervisor before project validation or live-session
+reuse; worker terminals retain their optional project attachment and scope checks.
+The supervisor's launch/resume instructions explicitly describe its global authority;
+reconnecting a live terminal reuses that exact session and never asks for a project.
+
+Supervisor idle sleep requires both terminal inactivity and no outstanding supervision
+work. The global supervisor checks all projects; a project supervisor checks its own
+project. Outstanding work includes non-completed, non-archived tasks (including failed,
+blocked, paused, or waiting tasks), open gates, active integration batches, and live
+task-bearing sessions. The global check also includes live playbook runs. Archived
+projects and task history do not keep a supervisor awake, but a live task-bearing
+session remains a responsibility even if its project was archived. Idle pool workers
+without a task do not count. Failure to read this state defers automatic sleep.
+This check must use bounded existence queries and must not fabricate terminal activity
+or mark the message transport busy: a quiet supervisor can still accept messages.
+Once the outstanding work clears, the existing inactivity timeout applies. Other named
+sessions retain their profile-based idle policy.
+
 Named sessions (`lifecycle: named` on the profile — the supervisor, warm pool workers) are
 persistent interactive CLIs. Work arrives as nudges and inbox injections (delivery policy:
 [supervisor-agent](supervisor-agent.md)). Behavior knobs live on the profile:

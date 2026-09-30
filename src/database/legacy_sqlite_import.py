@@ -184,6 +184,8 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "doc_review_attachments",
         # Revision 47's monotonic benchmark measurements were never in SQLite.
         "benchmark_stage_spans",
+        # Exact source-CI recovery shipped in PostgreSQL revision 48.
+        "integration_source_ci",
     }
 )
 

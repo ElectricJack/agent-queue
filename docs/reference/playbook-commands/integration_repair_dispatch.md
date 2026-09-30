@@ -14,14 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:9bcd818cc23e3c0c35c9a898cf22fb976152de64e5b77cf837648f753de85550` |
+| Contract fingerprint | `sha256:6b1d7abe4afb8768db6cded913ea20d825aaaf9478fde968dad300a11b0779d3` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `operation_id` | `string` | yes | — | — |
-| `stage` | `0 \| 1 \| null` | no | `null` | — |
+| `stage` | `integer \| null` | no | `null` | — |
 | `batch_id` | `string \| null` | no | `null` | — |
 | `revision` | `integer \| null` | no | `null` | — |
 | `head_sha` | `string \| null` | no | `null` | — |
@@ -31,7 +31,7 @@
 | Field | Type | Description |
 |---|---|---|
 | `operation_id` | `string \| null` | — |
-| `stage` | `0 \| 1 \| null` | — |
+| `stage` | `integer \| null` | — |
 | `repair_task_id` | `string \| null` | — |
 | `writer_kind` | `"repair_delegate" \| "existing_verifier" \| null` | — |
 | `fence` | `Fence \| null` | — |

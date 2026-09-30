@@ -601,6 +601,7 @@ class TaskRecoveryQueryMixin:
         author_id,
         project_id=None,
         stopped_session=None,
+        expected_hold_at=None,
     ):
         """Atomically fence, record and optionally requeue one failed attempt."""
         result = None
@@ -614,7 +615,17 @@ class TaskRecoveryQueryMixin:
                 raise ValueError("Task not found or out of scope")
             meta, attempt = await self._recovery_context(conn, task)
             incident = meta.get(INCIDENT_KEY) or {}
-            if incident.get("id") != incident_id or incident.get("decision"):
+            releasing_hold = (
+                decision == "retry"
+                and expected_hold_at is not None
+                and incident.get("decision") == "hold"
+                and incident.get("decided_at") == expected_hold_at
+            )
+            if (
+                incident.get("id") != incident_id
+                or (incident.get("decision") and not releasing_hold)
+                or (expected_hold_at is not None and not releasing_hold)
+            ):
                 raise ValueError("Incident is stale or already has a decision")
             if (
                 task["status"] != "BLOCKED"
@@ -635,7 +646,8 @@ class TaskRecoveryQueryMixin:
                         f"{owner['operation_state']}; its delegate is retired and cannot be restarted"
                     )
                 await self._guard_task_recovery(
-                    conn, task, meta, attempt, incident, stopped_session
+                    conn, task, meta, attempt, incident, stopped_session,
+                    releasing_hold=releasing_hold,
                 )
                 result = await self._apply_transition(
                     conn,
@@ -655,6 +667,12 @@ class TaskRecoveryQueryMixin:
                     )
                 )
             now = time.time()
+            history = list(incident.get("decision_history", []))
+            if releasing_hold:
+                history.append({
+                    key: incident[key]
+                    for key in ("decision", "decision_reason", "decided_at", "decided_by")
+                })
             await self._upsert_meta(
                 task_id,
                 INCIDENT_KEY,
@@ -664,15 +682,19 @@ class TaskRecoveryQueryMixin:
                     "decision_reason": reason,
                     "decided_at": now,
                     "decided_by": author_id,
+                    "decision_history": history,
                 },
                 conn=conn,
             )
             await conn.execute(
                 insert(task_comments).values(
-                    id="comment-" + incident_id,
+                    id="comment-" + incident_id + ("-release" if releasing_hold else ""),
                     task_id=task_id,
                     project_id=task["project_id"],
-                    body=f"Recovery decision: {decision} ({incident['reason']}, session {attempt['session_id']}).\n{reason}",
+                    body=(
+                        (f"Cleared recovery hold from {expected_hold_at}.\n" if releasing_hold else "")
+                        + f"Recovery decision: {decision} ({incident['reason']}, session {attempt['session_id']}).\n{reason}"
+                    ),
                     author_kind=author_kind,
                     author_id=author_id,
                     created_at=now,
@@ -693,7 +715,9 @@ class TaskRecoveryQueryMixin:
             "status": "READY" if decision == "retry" else "BLOCKED",
         }
 
-    async def _guard_task_recovery(self, conn, task, meta, attempt, incident, stopped_session):
+    async def _guard_task_recovery(
+        self, conn, task, meta, attempt, incident, stopped_session, *, releasing_hold=False
+    ):
         row = (
             (
                 await conn.execute(
@@ -722,7 +746,14 @@ class TaskRecoveryQueryMixin:
             raise ValueError(
                 "This failure requires operator review; automatic recovery is not allowed"
             )
-        if attempt["end_reason"] not in RETRYABLE_REASONS:
+        held_pool_drain = (
+            releasing_hold
+            and row["lifecycle"] == "pool"
+            and row["desired_state"] == "stopped"
+            and row["end_reason"] == "drained"
+            and attempt["end_reason"] == "drained"
+        )
+        if attempt["end_reason"] not in RETRYABLE_REASONS and not held_pool_drain:
             raise ValueError("Session exit was not a recoverable operational failure")
         if "manual_pause" in meta or task["resume_after"] is not None:
             raise ValueError("Task is paused or cooling down")

@@ -981,7 +981,7 @@ def test_the_llm_tool_loop_refuses_ahead_of_the_args_model() -> None:
 #: and no reviewed bundle that calls them goes stale (spec §5.1).
 FINGERPRINTS = {
     "create_task": "sha256:6b42134bd02d6111e6dde186aa5ffebfb2aae8ba6842a9c4024a465086359ca2",
-    "ensure_task": "sha256:6a4c41c5028e2864029871a47bef0e30bfbe3c074ce40aa6ae1b638e3a35b5f4",
+    "ensure_task": "sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5",
     "edit_task": "sha256:a5c02bc88c11931d870330d03db0b1a7237e539a51a7d65a18149b3dc63b9fb6",
 }
 

@@ -233,7 +233,9 @@ jobs:
        !(github.event.pull_request.head.repo.full_name == github.repository &&
          startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Include setup and post-job cleanup around the real daemon scenarios.
+    # A passing graphs group consumed 261 seconds before its cleanup steps.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:

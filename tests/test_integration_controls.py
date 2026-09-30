@@ -14,6 +14,7 @@ from src.database.tables import (
     integration_repair_stages,
     integration_review_evidence,
     integration_batches,
+    integration_branch_owners,
     integration_release_results,
     integration_rollout_transitions,
     project_integration_schedules,
@@ -63,6 +64,70 @@ async def test_project_control_state_is_typed_and_defaults_disabled(db):
         "review_policy_invalid",
     }
     assert status["certification"]["status"] == "not_performed"
+
+
+async def test_control_status_survives_unavailable_delivery_and_preflight(db, monkeypatch):
+    from src.integration.controls import IntegrationControlService
+
+    async def unavailable(*_args, **_kwargs):
+        raise AssertionError("control status must not inspect delivery or readiness")
+
+    monkeypatch.setattr(IntegrationStatusService, "_observe", unavailable)
+    monkeypatch.setattr(IntegrationStatusService, "_task_blockers_on", unavailable)
+    monkeypatch.setattr(IntegrationControlService, "_preflight_with_warnings", unavailable)
+    async with db.immediate() as conn:
+        await conn.execute(update(projects).where(projects.c.id == "p").values(
+            integration_repository_id="repo",
+            hierarchical_integration_mode="train",
+            hierarchical_integration_desired_mode="train",
+            hierarchical_integration_generation=79,
+        ))
+        await conn.execute(insert(project_integration_schedules).values(
+            project_id="p", enabled=True, interval_seconds=300,
+            request_sequence=72, next_due_at=100.0, updated_at=50.0,
+        ))
+        await conn.execute(insert(integration_batches).values(
+            id="active", project_id="p", repository_id="repo", request_id="request-1",
+            trigger="manual", source_manifest_digest="sha256:" + "c" * 64,
+            base_sha="1" * 40, lifecycle="sealed", integration_branch="aq/integration/active",
+            policy_snapshot={}, artifact_snapshot={}, cleanup_state="pending",
+            created_at=1.0, updated_at=2.0,
+        ))
+        await conn.execute(insert(integration_branch_owners).values(
+            id="worker-owner", repository_id="repo", ref="aq/worker", owner_id="worker",
+            owner_role="worker", fence_token=1, handoff_state="reserved",
+            created_at=1.0, updated_at=2.0,
+        ))
+    statements = []
+
+    def read_only(_conn, _cursor, statement, _parameters, _context, _executemany):
+        verb = statement.lstrip().split(None, 1)[0].upper()
+        assert verb not in {"INSERT", "UPDATE", "DELETE", "REPLACE"}
+        statements.append(verb)
+
+    event.listen(db._engine.sync_engine, "before_cursor_execute", read_only)
+    try:
+        status = await IntegrationControlService(db).status("p", control_only=True)
+    finally:
+        event.remove(db._engine.sync_engine, "before_cursor_execute", read_only)
+    assert status["outcome"] == "status"
+    assert status["projection_kind"] == "control"
+    assert status["generation"] == 79
+    assert status["effective_mode"] == status["desired_mode"] == "train"
+    assert status["repository_id"] == "repo"
+    assert status["schedule"]["request_sequence"] == 72
+    assert status["active_batch"]["id"] == "active"
+    assert status["drain_blockers"] == [
+        {"kind": "batch", "id": "active"},
+        {"kind": "branch_owner", "id": "worker-owner", "owner_id": "worker",
+         "owner_role": "worker", "ref": "aq/worker", "handoff_state": "reserved"},
+    ]
+    assert status["ready"] is None and status["rollout_ready"] is None
+    assert "blockers" not in status and "certification" not in status
+    assert statements.count("SELECT") == 10
+    assert await IntegrationControlService(db).status("missing", control_only=True) == {
+        "outcome": "not_found", "project_id": "missing",
+    }
 
 
 @pytest.mark.parametrize("state", [TaskStatus.COMPLETED, TaskStatus.FAILED])

@@ -214,14 +214,11 @@ async def test_ended_lifecycles_are_stale(db, lifecycle):
 
 
 async def test_periodic_tick_frees_a_stale_request_before_the_settling_gate(db):
-    """Item 5: an unarmed settling window returns before ``next_due_at`` moves.
-
-    That latch is deliberate (a periodic sweep waits for an approval), so the
-    tick that keeps finding the row due is exactly the one that must free a
-    request nothing else will end.
-    """
+    """A pending settling window must not retain a stale sweep request."""
     first = await _wedged(db)
     scheduler = IntegrationScheduler(db)
+    async with db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=400.0)
 
     unarmed = await scheduler.mark_due(project_id="p", now=400.0, trigger="periodic")
 
