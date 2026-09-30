@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import re
+import tempfile
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -18,29 +19,33 @@ from sqlalchemy.exc import IntegrityError
 
 from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
 from src.database.tables import (
-    integration_batch_members,
     integration_attestation_publications,
+    integration_batch_members,
     integration_batches,
     integration_branch_owners,
     integration_candidate_member_results,
-    integration_candidate_revisions,
     integration_candidate_publications,
     integration_candidate_ref_mutations,
     integration_candidate_resolutions,
+    integration_candidate_revisions,
     integration_repair_operations,
     integration_repair_stages,
     project_integration_leases,
     projects,
-    tasks,
-
     sessions,
+    tasks,
     workspaces,
 )
 from src.git.manager import GitManager, is_valid_git_oid
+from src.integration.development import GENERATED_MERGE_CONFIG
 from src.integration.models import BranchKey, Fence, RepairPolicy
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
+from src.integration.regeneration import (
+    RegenerationFailure,
+    _remove_worktree,
+    regenerated_tree,
+)
 from src.integration.repair import RepairService
-
 
 _CANDIDATE_MUTATION_PURPOSES = frozenset(
     {"candidate_partial", "candidate_final", "repair_resolution", "repair_handoff"}
@@ -105,6 +110,23 @@ class CandidateAuthorizationError(ValueError):
 
 class CandidateStaleAuthority(RuntimeError):
     """The snapshotted hierarchy, lease, revision, or branch fence changed."""
+
+
+class MergeConflictError(RuntimeError):
+    """The member overlap could not be resolved by generation or absorbed by driver."""
+
+    def __init__(self, evidence: str) -> None:
+        super().__init__(evidence or "merge conflict")
+        self.evidence = evidence or "merge conflict"
+
+
+def _merge_evidence(result) -> str:
+    """The merge-tree diagnostic from a failed ``merge-tree`` result, if any."""
+    for stream in (result.stdout, result.stderr):
+        stream = (stream or "").strip()
+        if stream:
+            return stream
+    return ""
 
 
 class CandidateRepairResult(BaseModel):
@@ -190,6 +212,8 @@ class CandidateService:
         crash_hook: CrashHook | None = None,
         repair_service: RepairService | None = None,
         branch_ownership: BranchOwnership | None = None,
+        regenerate_command: str = "scripts/regenerate-generated.sh",
+        regenerate_timeout_seconds: int = 600,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db = db
@@ -200,6 +224,8 @@ class CandidateService:
         self.app_client = app_client
         self.crash_hook = crash_hook
         self.repair = repair_service or RepairService(db, clock=clock)
+        self.regenerate_command = regenerate_command
+        self.regenerate_timeout_seconds = regenerate_timeout_seconds
         self.ownership = branch_ownership or BranchOwnership(db, clock=clock)
         self.clock = clock
 
@@ -1786,12 +1812,12 @@ class CandidateService:
                     current,
                     accepted["resolved_head_sha"],
                 ]
-            tree = await self.git.arun_git_result(merge_args, cwd=str(store))
-            if tree.returncode != 0:
+            try:
+                tree_sha = await self._merge_with_generated_fallback(merge_args, store)
+            except MergeConflictError as exc:
                 return await self._conflict(
-                    state, revision, member, current, tree.stdout or tree.stderr, operation_id
+                    state, revision, member, current, exc.evidence, operation_id
                 )
-            tree_sha = tree.stdout.splitlines()[0].strip()
             authors = await self._authors(
                 store, member["source_base_sha"], member["reviewed_head_sha"]
             )
@@ -1851,6 +1877,67 @@ class CandidateService:
             )
             await self.repair.bind_current_batch_subject_on(conn, operation_id, now=self.clock())
         return {**revision, "state": "built", "head_sha": current}
+
+    async def _merge_with_generated_fallback(self, merge_args, store: Path) -> str:
+        """Produce the merged tree; when overlap is confined to generated
+        artifacts, resolve the driver conflict in a scratch worktree and
+        regenerate the affected artifacts before returning.
+
+        ``merge_args`` is a ``merge-tree --write-tree`` argument list: the two
+        sides to merge after the ``--merge-base=`` token.  ``merge-tree``
+        does not invoke per-path merge drivers — only ``git merge`` inside a
+        worktree does — so on a driver-only conflict the merge is redone in a
+        scratch worktree with the ``aq-generated`` driver.  The successful
+        tree is then fed through :func:`regenerated_tree`, which re-checks out
+        it, runs the configured regenerator, and verifies every changed path
+        carries the ``merge=aq-generated`` attribute before committing the
+        final tree.
+
+        Returns the merge tree SHA.  Raises :class:`MergeConflictError` when
+        the conflict is not confined to generated artifacts, or the
+        regeneration sweep cannot be verified.
+        """
+        plain = await self.git.arun_git_result(merge_args, cwd=str(store))
+        if plain.returncode == 0:
+            return plain.stdout.splitlines()[0].strip()
+        # ``merge_args`` shape: ["merge-tree","--write-tree",
+        # "--merge-base=…", current, other]; git auto-detects the base
+        # for ``git merge`` so we only need the two sides.
+        current_side = merge_args[-2]
+        other_side = merge_args[-1]
+
+        worktree = Path(tempfile.mkdtemp(prefix="aq-merge-", dir=str(store.parent)))
+        try:
+            await self.git.aworktree_add(
+                str(store), str(worktree), ref=current_side, detach=True
+            )
+            merged = await self.git.arun_git_result(
+                [*GENERATED_MERGE_CONFIG, "merge", "--no-edit", other_side],
+                cwd=str(worktree),
+            )
+            if merged.returncode != 0:
+                raise MergeConflictError(_merge_evidence(plain))
+            tree_sha = (
+                await self.git.arun_git_result(
+                    ["rev-parse", "HEAD^{tree}"], cwd=str(worktree)
+                )
+            ).stdout.strip()
+            if not is_valid_git_oid(tree_sha):
+                raise MergeConflictError(_merge_evidence(plain))
+        finally:
+            await _remove_worktree(self.git, store, worktree)
+        try:
+            return await regenerated_tree(
+                self.git,
+                store,
+                tree_sha,
+                command=self.regenerate_command,
+                timeout_seconds=self.regenerate_timeout_seconds,
+            )
+        except RegenerationFailure as exc:
+            raise MergeConflictError(
+                f"generated conflict, regeneration failed: {exc.reason}"
+            ) from exc
 
     async def _publish(self, state, revision, store):
         batch = state["batch"]
