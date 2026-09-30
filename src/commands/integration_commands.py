@@ -38,8 +38,7 @@ class IntegrationCommandsMixin:
         from src.integration.source_ci import SourceCIObservation
         if not isinstance(observation, SourceCIObservation):
             return _failure("invalid", "source observation must be server-observed")
-        source = observation.source
-        identity = f"source-ci:{source['project_id']}:{observation.task_id}:{source['head']}"
+        identity = self._integration_source_ci_identity(observation)
         # Serialize the complete observe/file/link sequence across daemons.
         # A restart releases this transaction lock; ensure_task recovers a
         # filed-but-not-yet-linked assignment by its immutable dedup key.
@@ -47,6 +46,15 @@ class IntegrationCommandsMixin:
             await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
                                {"key": identity})
             return await self._record_integration_source_ci(observation)
+
+    @staticmethod
+    def _integration_source_ci_identity(observation) -> str:
+        import hashlib
+
+        source = observation.source
+        key = [source["project_id"], observation.task_id, source["repository_id"],
+               source["base"], source["head"], source["generation"]]
+        return "source-ci:" + hashlib.sha256(json.dumps(key).encode()).hexdigest()
 
     async def _record_integration_source_ci(self, observation) -> dict:
         from sqlalchemy import select, update
@@ -104,7 +112,7 @@ class IntegrationCommandsMixin:
         # The enclosing source lock protects replay and competing ticks.
         created = await self._cmd_ensure_task({
             "project_id": source["project_id"], "repo_id": source["repository_id"],
-            "dedup_key": f"source-ci:{observation.task_id}:{source['head']}:{attempt}",
+            "dedup_key": f"{self._integration_source_ci_identity(observation)}:{attempt}",
             "title": f"Repair source CI: {observation.task_id} ({source['head'][:12]})",
             "description": repair_description(observation), "task_type": "bugfix",
             "root": True, "reason": "authorized exact source CI recovery",
@@ -906,7 +914,10 @@ class IntegrationCommandsMixin:
         _principal, refusal = await integration_operator(self.db, task.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
-        result = await reserve_canonical_task_branch(self.db, task.id)
+        if task.created_by_kind == "integration_repair":
+            result = await self._integration_repair_service().reserve_delegate(task.id)
+        else:
+            result = await reserve_canonical_task_branch(self.db, task.id)
         return {"success": result["outcome"] in {"acquired", "already_reserved"}, **result}
 
     async def _cmd_integration_release_stale_owners(self, args: dict) -> dict:

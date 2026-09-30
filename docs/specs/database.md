@@ -2034,6 +2034,27 @@ a stale owner's push is rejected before it reaches the remote.
 | `created_at` | REAL | NOT NULL | Unix timestamp |
 | `updated_at` | REAL | NOT NULL | Unix timestamp |
 
+### Table: `integration_source_ci`
+
+Exact source CI observation and durable repair lineage. Source identity is the
+composite primary key; policy generation fences admission. Logical task IDs retain
+history after archive and refuse hard deletion through the integration guard.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `task_id` | TEXT | PRIMARY KEY | Source task |
+| `repository_id` | TEXT | PRIMARY KEY, FK `repos.id` | Repository |
+| `source_base` | TEXT | PRIMARY KEY | Frozen source base |
+| `source_head` | TEXT | PRIMARY KEY | Exact observed source head |
+| `generation` | INTEGER | PRIMARY KEY, `>= 0` | Source checkpoint generation |
+| `policy_generation` | INTEGER | NOT NULL | Observed project policy generation |
+| `state` | TEXT | NOT NULL | green, red, cancelled or pending |
+| `evidence` | JSONB | NOT NULL | Trusted required-check facts and links |
+| `repair_task_id` | TEXT | nullable, indexed | Current deduplicated repair |
+| `repair_attempt` | INTEGER | NOT NULL, default 0, `>= 0` | Successor count |
+| `repair_history` | JSONB | NOT NULL, default `[]` | Previous repair task/attempt identities |
+| `observed_at` | REAL | NOT NULL | Unix timestamp |
+
 ### Table: `integration_review_evidence`
 
 Immutable record that a reviewer approved (or rejected) an exact

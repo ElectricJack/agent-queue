@@ -2,9 +2,9 @@
   "success": true,
   "artifact": {
     "playbook_id": "default-pipeline",
-    "artifact_sha256": "sha256:af15f27c50e369769b42a399ace1131745413f8e8092548fe5fa13a3773303d6",
+    "artifact_sha256": "sha256:7563817097f26dc9246d6507c25f148b63876c5f387f264944e060ff057fa131",
     "schema_generation": 2,
-    "contract_fingerprint": "sha256:062adc2d6ba974478bf3616d09dc6c4518279550940bdecf338288ebbf67a6d1",
+    "contract_fingerprint": "sha256:565d015d06fea62c297544d45fc32cb6740ea04ea5f48b548f8911ece2b20c58",
     "source_digest": "sha256:6f1c0d2b9a4e7f38c5b1de20a7f4c8931ee5b0a6d2c74f9138ab5e0c7d41928f",
     "compiler_build": "fixture",
     "compiled_at": "2026-09-01T00:00:00+00:00",
@@ -225,7 +225,7 @@
             "terminal_outcome": "failed"
           }
         ],
-        "contract_fingerprint": "sha256:6a4c41c5028e2864029871a47bef0e30bfbe3c074ce40aa6ae1b638e3a35b5f4",
+        "contract_fingerprint": "sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5",
         "docs_url": "https://github.com/ElectricJack/agent-queue/blob/main/docs/reference/playbook-commands/ensure_task.md",
         "renderer": "contract"
       },
@@ -428,7 +428,7 @@
             "policy": "safe"
           }
         ],
-        "execution_fingerprint": "sha256:6a4c41c5028e2864029871a47bef0e30bfbe3c074ce40aa6ae1b638e3a35b5f4"
+        "execution_fingerprint": "sha256:929601590279773295d422058c0b67038deab23827c38e254105174d654dd4e5"
       },
       "diagnostics": [],
       "out_degree": 4,

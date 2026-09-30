@@ -11,11 +11,11 @@ the daemon:
 * **Origin gate** -- an ``Origin``, when present, must equal ``scheme://Host``
   or be trusted; otherwise ``403 origin_not_allowed``.  No ``Origin`` (curl, a
   same-origin ``GET``) passes.
-* **Peer gate** -- from a non-loopback peer, ``/ws/terminal/*`` and any request
-  carrying ``Authorization`` or an ``aq-bearer.*`` subprotocol are refused
-  ``403 loopback_only``: the two daemon rules that key on the peer address
-  would otherwise silently stop meaning anything.  No forwarding header is
-  invented for the daemon to trust instead.
+* **Peer gate** -- non-loopback terminals and their read-only reconnect probes
+  require an explicitly trusted origin. Same-origin HTTP probes may omit the
+  Origin header; only those GETs can use ``browser_origin`` or scheme/Host.
+  Requests carrying ``Authorization`` or an ``aq-bearer.*`` subprotocol remain
+  loopback-only, even for trusted origins. No forwarding header is invented.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ import ipaddress
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import parse_qs
 
 from src.dashboard_server.settings import DashboardServerSettings, normalise_origin
 
@@ -157,6 +158,7 @@ class EdgeGate:
             )
 
         origins = _headers(scope, b"origin")
+        origin = None
         if origins:
             scheme = "https" if scope.get("scheme") in {"https", "wss"} else "http"
             origin = normalise_origin(origins[0]) if len(origins) == 1 else None
@@ -182,23 +184,44 @@ class EdgeGate:
             if not _peer_is_tailnet(scope) or origin not in self._trusted:
                 return EdgeDenial(403, "operator_only", "Approval requires a trusted tailnet dashboard")
 
-        if not _peer_is_loopback(scope) and self._needs_loopback(scope):
+        if not _peer_is_loopback(scope) and self._needs_loopback(scope, origin):
             return EdgeDenial(
                 403,
                 "loopback_only",
-                "Interactive terminals and bearer-token requests are accepted only from this "
-                "machine. Forward the port instead: ssh -L 8082:127.0.0.1:8082 <host>.",
+                "Remote terminals and access checks require an origin listed in "
+                "api_auth.trusted_dashboard_origins. Bearer-token requests require a local "
+                "connection. Use a trusted dashboard origin or forward the port over SSH.",
             )
         return None
 
-    @staticmethod
-    def _needs_loopback(scope: dict[str, Any]) -> bool:
-        path = scope.get("path", "")
-        if path == _TERMINAL_PREFIX.rstrip("/") or path.startswith(_TERMINAL_PREFIX):
-            return True
+    def _needs_loopback(self, scope: dict[str, Any], origin: str | None) -> bool:
         if _headers(scope, b"authorization"):
             return True
-        return any(protocol.startswith(_BEARER_PREFIX) for protocol in _subprotocols(scope))
+        if any(protocol.startswith(_BEARER_PREFIX) for protocol in _subprotocols(scope)):
+            return True
+        path = scope.get("path", "")
+        if path == _TERMINAL_PREFIX.rstrip("/") or path.startswith(_TERMINAL_PREFIX):
+            if scope.get("type") == "websocket":
+                return origin not in self._trusted
+            session_id = path.removeprefix(_TERMINAL_PREFIX)
+            if (
+                scope.get("type") == "http" and scope.get("method") == "GET"
+                and path.startswith(_TERMINAL_PREFIX) and session_id and "/" not in session_id
+            ):
+                return (origin or self._probe_origin(scope)) not in self._trusted
+            return True
+        return False
+
+    @staticmethod
+    def _probe_origin(scope: dict[str, Any]) -> str | None:
+        """Match the daemon's origin fallback for an HTTP diagnostic without Origin."""
+        query = parse_qs(scope.get("query_string", b"").decode("latin-1"), keep_blank_values=True)
+        origins = query.get("browser_origin")
+        if origins is not None:
+            return normalise_origin(origins[0]) if len(origins) == 1 and origins[0] else None
+        # Host syntax and multiplicity have already passed the Host gate.
+        host = _headers(scope, b"host")[0]
+        return normalise_origin(f"{scope.get('scheme', 'http')}://{host}")
 
 
 def _subprotocols(scope: dict[str, Any]) -> Iterable[str]:

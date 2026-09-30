@@ -14,6 +14,7 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
   const [tab, setTab] = useState<"terminal" | "settings">("terminal");
   const [resume, setResume] = useState(false);
   const restart = useRestartSupervisor();
+  const supervisor = agent.role === "supervisor" || agent.id === "supervisor-global";
   const id = useId();
   useEffect(() => {
     if (resetToken || focusRequest) setTab("terminal");
@@ -44,9 +45,9 @@ export default function AgentWindow({ agent, onClose, resetToken, focusRequest }
               <AgentEligibility agent={agent} />
             </p>
             <p className="mt-0.5 truncate text-xs text-gray-400" title={agent.current_task_title || agent.current_task_id || ""}>
-              {agent.current_task_title || agent.current_task_id || "Idle — no assigned task"}
+              {agent.current_task_title || agent.current_task_id || (supervisor ? "Supervises all AQ projects" : "Idle — no assigned task")}
             </p>
-            {agent.session_id && !agent.current_task_id && agent.project_id && (
+            {!supervisor && agent.session_id && !agent.current_task_id && agent.project_id && (
               <p className="mt-0.5 truncate text-xs text-indigo-300">Attached project: {agent.project_id}</p>
             )}
           </div>

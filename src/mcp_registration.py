@@ -51,6 +51,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_EXCLUDED_COMMANDS = {
+    # Trusted daemon facts carry a SourceCIObservation, never agent-authored JSON.
+    "observe_integration_source_ci",
     "reconcile_agent_waits",  # daemon-only bounded durable scan
     "reconcile_collaborations",  # daemon-only expiry and retention
     "job_reconcile",

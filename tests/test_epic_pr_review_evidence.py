@@ -143,6 +143,43 @@ async def test_source_ci_repair_is_deduplicated_and_replaced_only_after_failure(
     async with case["db"]._engine.connect() as conn:
         record = (await conn.execute(select(integration_source_ci))).mappings().one()
     assert record["repair_attempt"] == 2 and record["repair_history"][0]["task_id"] == first["repair_task_id"]
+    # A new verified generation is a new source identity even at the same
+    # Git head; its assignment must not reuse a predecessor's dedup key.
+    async with case["db"].immediate() as conn:
+        # Verification evidence is append-only. Create the next completed
+        # episode instead of rewriting the first generation's receipts.
+        for table, values in (
+            (integration_parent_episodes, {
+                "id": "episode-e1-next", "generation": 2,
+            }),
+            (integration_repair_operations, {
+                "id": "operation-e1-next", "episode_id": "episode-e1-next",
+            }),
+            (integration_parent_verifications, {
+                "id": "verification-e1-next", "operation_id": "operation-e1-next",
+                "episode_id": "episode-e1-next", "generation": 2,
+            }),
+            (integration_parent_operation_completions, {
+                "operation_id": "operation-e1-next", "verification_id": "verification-e1-next",
+                "episode_id": "episode-e1-next",
+            }),
+        ):
+            previous = (await conn.execute(select(table))).mappings().one()
+            await conn.execute(insert(table).values({**previous, **values}))
+        await conn.execute(update(task_integration_checkpoints).where(
+            task_integration_checkpoints.c.task_id == "e1"
+        ).values(
+            generation=2, verified_generation=2, episode_id="episode-e1-next",
+            current_verification_id="verification-e1-next",
+            last_completed_operation_id="operation-e1-next",
+            last_completed_verification_id="verification-e1-next",
+        ))
+    async with case["db"]._engine.connect() as conn:
+        next_source = await case["producer"]._pull_request_source_on(conn, "e1")
+    assert next_source["generation"] == 2 and next_source["head"] == source["head"]
+    changed = await handler._cmd_observe_integration_source_ci(
+        SourceCIObservation("e1", next_source, 0, state, checks))
+    assert changed["repair_task_id"] not in {first["repair_task_id"], successor["repair_task_id"]}
 
 
 def test_cancelled_old_check_cannot_supersede_newer_run():

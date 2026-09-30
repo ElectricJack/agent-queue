@@ -2157,11 +2157,12 @@ async def test_direct_caller_repair_lineage_is_not_authoritative(db, tmp_path):
         ("exact", "accepted", 0, "before_repair_acceptance"),
         ("exact", "accepted", 1, "operator_recovery"),
         ("exact", "wait", 1, "operator_recovery_wait"),
-        ("extra", "rejected", 1, "operator_reject"),
+        ("extra", "accepted", 1, "operator_recovery"),
         ("exact", "accepted", 0, "overlap"),
+        ("exact", "rejected", 0, "superseded_recovery"),
         ("exact", "accepted", 1, None),
         ("reserved", "stale", 0, None),
-        ("extra", "stale", 0, None),
+        ("extra", "accepted", 0, None),
         ("batch", "accepted", 0, None),
         ("batch_missing", "stale", 0, None),
     ),
@@ -2434,6 +2435,37 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
             )
         assert await service.push_repair(reservation_id, repair_fence) == reservation_id
     await db.update_session(session_id, state="stopped", desired_state="stopped")
+    if handoff_crash == "superseded_recovery":
+        await repair.expire("repair-batch-batch", 0, now=131.0)
+        await repair.expire("repair-batch-batch", 1, now=300.0)
+        recovery_clock[0] = 300.0
+        # An attached predecessor remains guarded even when its session stopped.
+        assert (await service.recover_repair(reservation_id)).outcome == "stale"
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.repository_id == "repo"
+            ).values(handoff_state="released", session_id=None, workspace_id=None))
+        original_app = service.app_client
+        class ChangedRemoteApp(_AppClient):
+            async def exact_head_ref(self, branch):
+                return "f" * 40
+        service.app_client = ChangedRemoteApp(origin)
+        assert (await service.recover_repair(reservation_id)).outcome == "stale"
+        service.app_client = original_app
+        result = await service.recover_repair(reservation_id)
+        assert result.outcome == "rejected"
+        assert result.invariant == "superseded_repair_stage_preserved"
+        assert (await service.recover_repair(reservation_id)).outcome == "rejected"
+        assert await app.exact_head_ref(conflict.branch.removeprefix("refs/heads/")) == (
+            conflict.head_sha
+        )
+        async with db._engine.connect() as conn:
+            row = (await conn.execute(select(integration_candidate_resolutions).where(
+                integration_candidate_resolutions.c.id == reservation_id
+            ))).mappings().one()
+        assert await app.exact_head_ref(row["target_branch"].removeprefix("refs/heads/")) == resolved
+        assert row["rejection_evidence"]["preserved_sha"] == resolved
+        return
     if handoff_crash in {"operator_recovery", "operator_recovery_wait"}:
         expired = await repair.expire("repair-batch-batch", stage, now=300.0)
         assert expired["outcome"] == "expired"
@@ -3547,8 +3579,8 @@ async def test_member_already_contained_in_base_applies_as_noop(db, tmp_path):
     assert rows[0]["generated_squash_sha"] == base
     assert rows[1]["generated_squash_sha"] == result.head_sha
 
-async def test_contained_frozen_member_allows_only_an_empty_repair_tree(db, tmp_path):
-    """A pre-guard conflict can be accepted without inventing a source-path edit."""
+async def test_contained_frozen_member_accepts_any_repair_tree(db, tmp_path):
+    """A contained member accepts an empty repair and any repair edit CI needs."""
     from src.integration.candidates import CandidateRepairLineage, CandidateService
 
     origin = tmp_path / "contained-repair-origin.git"
@@ -3593,20 +3625,17 @@ async def test_contained_frozen_member_allows_only_an_empty_repair_tree(db, tmp_
     assert await service._valid_repair_lineage(store, lineage)
 
     (work / "shared.txt").write_text("unreviewed repair edit\n")
-    _git(work, "commit", "-am", "must not change contained repair")
+    _git(work, "commit", "-am", "repair edit needed for CI")
     changed = _git(work, "rev-parse", "HEAD")
     _git(store, "fetch", str(work), changed)
     changed_lineage = lineage.model_copy(
         update={"resolved_head_sha": changed, "repair_commit_shas": (resolved, changed)}
     )
-    assert (
-        await service._repair_lineage_failure(store, changed_lineage)
-        == "contained_source_repair_changes_the_candidate"
-    )
+    assert await service._repair_lineage_failure(store, changed_lineage) is None
 
 
-async def test_two_commit_source_repair_cannot_substitute_only_its_tip(db, tmp_path):
-    """Every source commit needs frozen repair coverage, even on one path."""
+async def test_two_commit_source_repair_may_resolve_with_only_its_tip(db, tmp_path):
+    """A repair need not mirror the reviewed commit series one-for-one."""
     from src.integration.candidates import CandidateRepairLineage, CandidateService
 
     work = tmp_path / "two-commit-repair-work"
@@ -3661,5 +3690,5 @@ async def test_two_commit_source_repair_cannot_substitute_only_its_tip(db, tmp_p
                 }
             ),
         )
-        == "repair_commit_count_does_not_cover_reviewed_source"
+        is None
     )

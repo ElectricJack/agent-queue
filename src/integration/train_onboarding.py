@@ -865,6 +865,8 @@ def build_policy(
     parent_route: PlaybookRoute,
     root_route: PlaybookRoute,
     intelligence_class: str,
+    continuous: bool = False,
+    authorized_task_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """The project's hierarchical integration policy, validated by its model.
 
@@ -888,16 +890,21 @@ def build_policy(
             "verifier_intelligence_class": intelligence_class,
         }
 
-    policy = HierarchicalIntegrationPolicy.model_validate(
-        {
-            "version": 1,
-            "parent": boundary(parent_route),
-            "root": boundary(root_route),
-            "branchless_parent": "verifier",
-            "on_failed_child": "block",
-            "on_main_moved": "rebuild",
-        }
-    )
+    inputs = {
+        "version": 1,
+        "parent": boundary(parent_route),
+        "root": boundary(root_route),
+        "branchless_parent": "verifier",
+        "on_failed_child": "block",
+        "on_main_moved": "rebuild",
+    }
+    if continuous:
+        inputs["parent"]["repair"]["on_exhausted"] = "continue"
+        inputs["root"].update(admission="authorized", authorized_task_ids=authorized_task_ids)
+        inputs["root"]["repair"].update(
+            on_exhausted="continue", conflict_scope="batch", source_ci=True
+        )
+    policy = HierarchicalIntegrationPolicy.model_validate(inputs)
     dumped = policy.model_dump(mode="json")
     # The deprecated profile fields dump as nulls; omit them so the written
     # policy file never suggests filling them in (a bind would refuse them).
@@ -1579,6 +1586,8 @@ def plan_onboarding(
             parent_route=parent_route,
             root_route=root_route,
             intelligence_class=intelligence_class,
+            continuous=project == "agent-queue",
+            authorized_task_ids=("steady-delta",) if project == "agent-queue" else (),
         )
     # Status reports the designated repository outside development mode; with no
     # designation the project's own id names the record the binding creates.

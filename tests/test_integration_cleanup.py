@@ -866,6 +866,12 @@ async def test_cleanup_executes_exact_refs_and_prs_once(release_db):
         forge_provider=forge,
         clock=lambda: 30.0,
     )
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_branch_owners).values(
+            id="delivered-collector", repository_id="repo", ref=BRANCH,
+            owner_id="op", owner_role="collector", fence_token=7,
+            handoff_state="reserved", created_at=1.0, updated_at=1.0,
+        ))
     await service.materialize("batch", now=30.0)
     results = await service.advance("batch", now=30.0, limit=10)
     assert {result.outcome for result in results} == {"complete"}
@@ -877,6 +883,11 @@ async def test_cleanup_executes_exact_refs_and_prs_once(release_db):
     assert git.local_refs == {}
     assert sorted(forge.closed) == [1, 9]
     assert len(forge.comments) == 1
+
+    async with db._engine.connect() as conn:
+        owner_state = (await conn.execute(select(integration_branch_owners.c.handoff_state)
+                      .where(integration_branch_owners.c.id == "delivered-collector"))).scalar_one()
+    assert owner_state == "released"
 
     replay = await service.advance("batch", now=31.0, limit=10)
     assert replay == []
@@ -1768,3 +1779,34 @@ async def test_cleanup_does_not_infer_worktree_absence_from_failed_head_lookup(
     assert retained_path.is_dir()
     assert replay.outcome == "retryable"
     assert git.removes == 1
+
+
+@pytest.mark.parametrize("protection", ["none", "attached", "successor", "other_ref"])
+async def test_completed_cleanup_reconciles_only_exact_detached_collector(release_db, protection):
+    from src.integration.controls import IntegrationControlService
+
+    db, _scheduler = release_db
+    service = IntegrationCleanupService(db, data_dir="/daemon", clock=lambda: 30.0)
+    await service.materialize("batch", now=30.0)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_cleanup_items).values(
+            state="complete", terminal_at=30.0,
+        ))
+        await conn.execute(insert(integration_branch_owners).values(
+            id="delivered-collector", repository_id="repo",
+            ref="refs/heads/other" if protection == "other_ref" else BRANCH,
+            owner_id="op", owner_role="collector",
+            fence_token=8 if protection == "successor" else 7,
+            handoff_state="attached" if protection == "attached" else "reserved",
+            session_id="live" if protection == "attached" else None,
+            workspace_id="checkout" if protection == "attached" else None,
+            created_at=1.0, updated_at=1.0,
+        ))
+    recovered = await IntegrationControlService(
+        db, cleanup_service=service, clock=lambda: 31.0,
+    ).retry_cleanup("batch")
+    assert recovered["outcome"] == "nothing_to_retry"
+    async with db._engine.connect() as conn:
+        state = (await conn.execute(select(integration_branch_owners.c.handoff_state)
+                 .where(integration_branch_owners.c.id == "delivered-collector"))).scalar_one()
+    assert state == {"none": "released", "attached": "attached"}.get(protection, "reserved")

@@ -946,6 +946,27 @@ def write_graph_fixture() -> None:
     GRAPH_FIXTURE.write_text(expected_graph_fixture())
 
 
+def refresh_golden_contracts() -> None:
+    """Regenerate live command pins in authored goldens and their receipts."""
+    contracts = StubContracts()
+    for path in (GOLDEN, GOLDEN_V6):
+        payload = json.loads(path.read_text())
+        for name in payload["compiled_against"]["commands"]:
+            contract = contracts.get(name)
+            if contract is not None:
+                payload["compiled_against"]["commands"][name] = contract.execution_fingerprint
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    payload = json.loads(GOLDEN.read_text())
+    path = FIXTURE_DIR / "review-pipeline.receipts.json"
+    receipts = json.loads(path.read_text())
+    for receipt in receipts["receipts"]:
+        step = payload["steps"].get(receipt["step_id"], {})
+        if step.get("command"):
+            receipt["contract_fingerprint"] = contracts.get(step["command"]).execution_fingerprint
+    path.write_text(json.dumps(receipts, indent=2, ensure_ascii=False) + "\n")
+
+
 if __name__ == "__main__":  # pragma: no cover - regeneration entry point
+    refresh_golden_contracts()
     write_invalid_fixtures()
     write_graph_fixture()

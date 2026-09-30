@@ -118,7 +118,6 @@ its outbox; transport failures never need a new author turn.
     "gate_list",
     "get_schema",
     "get_task",
-    "write_note",
     "integration_abort",
     "integration_adopt",
     "integration_adopt_legacy_deliveries",
@@ -219,6 +218,7 @@ its outbox; transport failures never need a new author turn.
     "task_subtasks"
   ],
   "plugin_tools": [
+    "write_note",
     "count_project_memory_files",
     "git_diff",
     "memory_save",

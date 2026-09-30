@@ -22,13 +22,17 @@
       ],
       "producer_id": "15368"
     },
+    "admission": "reviewed",
+    "authorized_task_ids": [],
     "repair": {
       "primary_seconds": 1800,
       "primary_attempts": 3,
       "debug_seconds": 3600,
       "debug_attempts": 3,
       "debug_intelligence_class": "standard-high",
-      "on_exhausted": "continue"
+      "conflict_scope": "member",
+      "on_exhausted": "continue",
+      "source_ci": false
     },
     "route": {
       "playbook_id": "agent-queue-parent-integration",
@@ -71,14 +75,18 @@
       ],
       "producer_id": "15368"
     },
+    "admission": "authorized",
+    "authorized_task_ids": [
+      "steady-delta"
+    ],
     "repair": {
       "primary_seconds": 1800,
       "primary_attempts": 3,
       "debug_seconds": 3600,
       "debug_attempts": 3,
       "debug_intelligence_class": "standard-high",
-      "on_exhausted": "continue",
       "conflict_scope": "batch",
+      "on_exhausted": "continue",
       "source_ci": true
     },
     "route": {
@@ -98,9 +106,7 @@
       }
     },
     "primary_intelligence_class": "standard-high",
-    "verifier_intelligence_class": "standard-high",
-    "admission": "authorized",
-    "authorized_task_ids": ["steady-delta"]
+    "verifier_intelligence_class": "standard-high"
   },
   "branchless_parent": "verifier",
   "on_failed_child": "block",

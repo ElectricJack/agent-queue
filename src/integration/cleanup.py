@@ -108,7 +108,7 @@ class IntegrationCleanupService:
             await self.execute(row["batch_id"], row["kind"], row["identity"], now=observed_at)
             for row in rows
         ]
-        await self._reconcile_aggregate(batch_id, observed_at)
+        await self.reconcile_aggregate(batch_id, observed_at)
         return results
 
     async def handle_item(self, row: dict[str, Any], now: float) -> CleanupExecutionResult:
@@ -599,7 +599,8 @@ class IntegrationCleanupService:
         finalized = dict(row) | values
         return self._execution_result(outcome, finalized)
 
-    async def _reconcile_aggregate(self, batch_id, now):
+    async def reconcile_aggregate(self, batch_id, now):
+        """Reconcile cleanup completion and its detached collector reservation."""
         async with self.db.immediate() as conn:
             batch = (
                 await conn.execute(
@@ -628,6 +629,37 @@ class IntegrationCleanupService:
         aggregate = (
             "conflict" if any(state in {"conflict", "failed"} for state in rows) else "complete"
         )
+        if aggregate == "complete":
+            # Cleanup consumed the collector's exact fence. Retain that fence
+            # until every item has finished, then release only its detached
+            # reservation; never release a successor or an attached writer.
+            intent = (await conn.execute(
+                select(integration_promotion_intents, integration_batches.c.integration_branch)
+                .join(integration_batches,
+                      integration_batches.c.id == integration_promotion_intents.c.root_batch_id)
+                .where(
+                    integration_batches.c.id == batch_id,
+                    integration_batches.c.lifecycle == "promoted",
+                    integration_promotion_intents.c.intent_kind == "root",
+                    integration_promotion_intents.c.root_candidate_revision
+                    == integration_batches.c.current_revision,
+                    integration_promotion_intents.c.state == "committed",
+                    integration_promotion_intents.c.branch_fence_owner_id.is_not(None),
+                )
+            )).mappings().all()
+            for delivered in intent:
+                await conn.execute(
+                    update(integration_branch_owners).where(
+                        integration_branch_owners.c.repository_id == delivered["repository_id"],
+                        integration_branch_owners.c.ref == delivered["integration_branch"],
+                        integration_branch_owners.c.owner_id == delivered["branch_fence_owner_id"],
+                        integration_branch_owners.c.fence_token == delivered["branch_fence_token"],
+                        integration_branch_owners.c.owner_role == "collector",
+                        integration_branch_owners.c.handoff_state == "reserved",
+                        integration_branch_owners.c.session_id.is_(None),
+                        integration_branch_owners.c.workspace_id.is_(None),
+                    ).values(handoff_state="released", updated_at=now)
+                )
         await conn.execute(
             update(integration_batches)
             .where(

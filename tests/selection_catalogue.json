@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:a80beacf6adbc3969d68edcbfbe23f8cb714a74a29e6ba37b504979ec6422a5e",
+  "digest": "sha256:1e2850144a427ebff5a08c3dbd17c77d8b14b22ef3a4a5e5c7bcd67aeaae8ae1",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6919,6 +6919,7 @@
         "src.database.tables",
         "src.git.github_app",
         "src.integration.cleanup",
+        "src.integration.controls",
         "src.integration.release",
         "src.integration.scheduler",
         "src.integration.settling",
@@ -7414,10 +7415,13 @@
       "default_arm": true,
       "imports": [
         "src.claim_file",
+        "src.commands.integration_commands",
         "src.commands.principal",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
         "src.git.manager",
         "src.integration.controls",
         "src.integration.development",
@@ -12199,9 +12203,12 @@
       "imports": [
         "src.database",
         "src.database.queries.session_queries",
+        "src.database.tables",
         "src.models"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "SessionQueryMixin — CRUD, ranked name resolution, atomic restart bump."
     },
     "tests/test_session_reconciler.py": {
@@ -13384,7 +13391,8 @@
         "src.api",
         "src.api.auth",
         "src.api.terminal_stream",
-        "src.dashboard_server.proxy",
+        "src.dashboard_server.app",
+        "src.dashboard_server.settings",
         "src.database",
         "src.models",
         "src.sessions.terminal_input",

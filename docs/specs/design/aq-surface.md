@@ -98,6 +98,9 @@ requires no live session or held workspace, and acquires only an unowned or
 released branch. `aq task restart` applies this reservation check before moving
 a BLOCKED checkpointed producer to READY.
 
+For an active repair delegate, `reserve-owner` instead redispatches its current
+repair stage using the normal fenced handoff, without resetting its budget.
+
 > **Retired (2026-09-08):** the never-implemented `ask_human` / `aq task
 > ask-human` surface was removed. Live worker questions are recorded by the
 > claim-fenced `AgentQuestionService` from completed native transcript turns

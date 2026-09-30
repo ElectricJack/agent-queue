@@ -44,6 +44,11 @@ authority cannot select another batch, alter the frozen source heads, or write
 main. Every accepted repair creates a new candidate identity and invalidates
 previous CI evidence.
 
+The deployment-compatible merge also retains the operator's linear repair
+permission to edit any necessary file, while keeping its exact commit list and
+single-member ancestry shape. Detached delegate reservation recovery and pending
+handoff proof remain available alongside the new bounded successor stages.
+
 ## Finite sessions, durable work
 
 Each repair session retains its attempt and wall-clock budget. At exhaustion the
@@ -112,3 +117,16 @@ supervisor `write_note` capabilities merge additively on profile reload/start;
 operator profile edits and worker scope remain intact. The worker has not migrated
 the operator database or restarted its daemon. Live deployment, hold recovery and
 backlog coverage will be recorded on `fair-current` by supported commands.
+
+Hosted CI found stale live contract pins in golden test artifacts, missing
+source-CI table documentation/importer exclusions, the note grant in the wrong
+capability namespace and onboarding policy drift. The follow-up regenerates the
+goldens/graph/receipts, places trusted observations outside agent MCP, grants
+`write_note` under `plugin_tools`, and makes explicit agent-queue onboarding
+reproduce its continuous policy. It merges deployed `65e54a1` without discarding
+LAN, supervisor, delegate reservation or superseded-repair recovery.
+
+Legacy PR #660 has a real completed repair child but no collection episode or
+parent verification. Deployment uses a fresh explicitly authorized repair root
+carrying source and repair-child ancestry, followed by proven supersession of
+covered legacy work; no parent receipt is fabricated.
