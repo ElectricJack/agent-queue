@@ -2324,11 +2324,12 @@ async def test_cleanup_retry_names_why_materialization_was_refused(db):
 async def test_cleanup_retry_never_rematerializes_a_batch_that_has_items(db):
     await _promoted_batch(db, "settled")
     await _cleanup_item(db, "settled", "done", "complete")
-    cleanup = SimpleNamespace(materialize=AsyncMock())
+    cleanup = SimpleNamespace(materialize=AsyncMock(), reconcile_aggregate=AsyncMock())
     service = IntegrationControlService(db, cleanup_service=cleanup)
 
     assert (await service.retry_cleanup("settled"))["outcome"] == "nothing_to_retry"
     cleanup.materialize.assert_not_awaited()
+    cleanup.reconcile_aggregate.assert_awaited_once()
     # Without a cleanup service the retry stays a pure requeue.
     await _promoted_batch(db, "bare")
     assert (await IntegrationControlService(db).retry_cleanup("bare"))[

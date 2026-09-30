@@ -40,6 +40,23 @@ async def test_tick_retires_terminal_delegates_without_a_new_completion_event(db
     repair.retire_terminal_delegates.assert_awaited_once_with(100.0)
 
 
+async def test_tick_retries_repair_reservations_after_owner_recovery(db):
+    calls = []
+
+    async def recovered(now):
+        calls.append(("recovery", now))
+
+    async def reserved(now):
+        calls.append(("reservation", now))
+
+    service = IntegrationService(
+        db, SimpleNamespace(), SimpleNamespace(reconcile_delegate_reservations=reserved),
+        SimpleNamespace(dispatch_due=AsyncMock()), owner_recovery_handler=recovered,
+    )
+    await service.tick(100.0)
+    assert calls == [("recovery", 100.0), ("reservation", 100.0)]
+
+
 async def test_due_schedule_keyset_pages_every_row_once_past_two_hundred(db):
     count = 205
     async with db.immediate() as conn:
