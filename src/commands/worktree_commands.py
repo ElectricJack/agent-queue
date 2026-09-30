@@ -20,7 +20,6 @@ import logging
 from pathlib import Path
 
 from src.models import KIND_MODE_WORKTREE
-from src.orchestrator.worktree_manager import resolve_managed_exclude_path
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +47,8 @@ class WorktreeCommandsMixin:
         * ``redundant_clone`` — a git kind is in worktree mode but the
           project still has extra non-slot rows beyond the designated base.
         """
+        from src.orchestrator.worktree_manager import resolve_managed_exclude_path
+
         project_id = args.get("project_id") or self._active_project_id
         findings: list[dict] = []
 

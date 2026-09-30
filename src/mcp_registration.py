@@ -25,12 +25,7 @@ import json
 import logging
 import os
 import textwrap
-from typing import Any
-
-from mcp.server import FastMCP
-from mcp.server.fastmcp.tools import Tool
-from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata, ArgModelBase
-from pydantic import ConfigDict
+from typing import TYPE_CHECKING, Any
 
 from src.database import Database
 from src.models import AgentState, TaskStatus
@@ -42,6 +37,9 @@ from src.mcp_interfaces import (
     task_to_dict,
     workspace_to_dict,
 )
+
+if TYPE_CHECKING:
+    from mcp.server import FastMCP
 
 logger = logging.getLogger(__name__)
 
@@ -138,30 +136,6 @@ def get_effective_exclusions(
         excluded.update(name.strip() for name in env_val.split(",") if name.strip())
 
     return excluded
-
-
-# ---------------------------------------------------------------------------
-# Permissive argument model for dynamic tool registration
-# ---------------------------------------------------------------------------
-
-
-class _AnyArgs(ArgModelBase):
-    """Accepts any JSON fields — used for dynamically registered tools
-    whose schemas come from ``_ALL_TOOL_DEFINITIONS`` rather than from
-    Python function signatures."""
-
-    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
-
-    def model_dump_one_level(self) -> dict[str, Any]:
-        result = super().model_dump_one_level()
-        if self.__pydantic_extra__:
-            result.update(self.__pydantic_extra__)
-        return result
-
-
-# Shared FuncMetadata instance — all dynamic tools use the same permissive
-# argument model (actual validation is done by CommandHandler).
-_ANY_ARGS_METADATA = FuncMetadata(arg_model=_AnyArgs, fn_is_coroutine=True)
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +323,25 @@ def register_command_tools(
     Returns:
         List of registered tool names.
     """
+    # Command discovery also runs on every CLI invocation. Load the MCP
+    # transport only when a server actually registers its tools.
+    from mcp.server.fastmcp.tools import Tool
+    from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase, FuncMetadata
+    from pydantic import ConfigDict
+
+    class _AnyArgs(ArgModelBase):
+        """Accept arbitrary fields; CommandHandler validates command arguments."""
+
+        model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+
+        def model_dump_one_level(self) -> dict[str, Any]:
+            result = super().model_dump_one_level()
+            if self.__pydantic_extra__:
+                result.update(self.__pydantic_extra__)
+            return result
+
+    argument_metadata = FuncMetadata(arg_model=_AnyArgs, fn_is_coroutine=True)
+
     if excluded is None:
         excluded = DEFAULT_EXCLUDED_COMMANDS
 
@@ -389,7 +382,7 @@ def register_command_tools(
             name=name,
             description=description,
             parameters=input_schema,
-            fn_metadata=_ANY_ARGS_METADATA,
+            fn_metadata=argument_metadata,
             is_async=True,
         )
         mcp_server._tool_manager._tools[name] = tool

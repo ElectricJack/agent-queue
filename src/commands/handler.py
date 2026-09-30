@@ -33,10 +33,9 @@ import time
 from collections.abc import Callable
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.config import AppConfig
-from src.orchestrator import Orchestrator
 from src.logging_config import CorrelationContext
 
 # Mixin imports — each provides one domain of _cmd_* methods
@@ -103,6 +102,9 @@ from src.commands.github_issue_commands import GitHubIssueCommandsMixin
 from src.commands.proposal_commands import TaskProposalCommandsMixin
 from src.commands.spec_commands import SpecCommandsMixin
 from src.routing.filing import GUARDED_COMMANDS, routing_choice_refusal, without_inert_choices
+
+if TYPE_CHECKING:
+    from src.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
