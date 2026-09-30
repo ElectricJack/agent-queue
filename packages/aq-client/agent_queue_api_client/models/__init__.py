@@ -1177,6 +1177,14 @@ from .resume_project_response_422 import ResumeProjectResponse422
 from .resume_task_request import ResumeTaskRequest
 from .resume_task_response_422 import ResumeTaskResponse422
 from .retry_policy_dto import RetryPolicyDTO
+from .review_attachment_add_request import ReviewAttachmentAddRequest
+from .review_attachment_add_response import ReviewAttachmentAddResponse
+from .review_attachment_add_response_422 import ReviewAttachmentAddResponse422
+from .review_attachment_add_response_attachment import ReviewAttachmentAddResponseAttachment
+from .review_attachment_list_request import ReviewAttachmentListRequest
+from .review_attachment_list_response import ReviewAttachmentListResponse
+from .review_attachment_list_response_422 import ReviewAttachmentListResponse422
+from .review_attachment_list_response_attachments_item import ReviewAttachmentListResponseAttachmentsItem
 from .review_comment_request import ReviewCommentRequest
 from .review_comment_response import ReviewCommentResponse
 from .review_comment_response_422 import ReviewCommentResponse422
@@ -1203,6 +1211,7 @@ from .review_response_route_class_summaries import ReviewResponseRouteClassSumma
 from .review_show_request import ReviewShowRequest
 from .review_show_response import ReviewShowResponse
 from .review_show_response_422 import ReviewShowResponse422
+from .review_show_response_attachments_item import ReviewShowResponseAttachmentsItem
 from .review_show_response_comments_type_0_item import ReviewShowResponseCommentsType0Item
 from .review_show_response_diff_type_0_item import ReviewShowResponseDiffType0Item
 from .review_show_response_dispatches_item import ReviewShowResponseDispatchesItem
@@ -2743,6 +2752,14 @@ __all__ = (
     "ResumeTaskRequest",
     "ResumeTaskResponse422",
     "RetryPolicyDTO",
+    "ReviewAttachmentAddRequest",
+    "ReviewAttachmentAddResponse",
+    "ReviewAttachmentAddResponse422",
+    "ReviewAttachmentAddResponseAttachment",
+    "ReviewAttachmentListRequest",
+    "ReviewAttachmentListResponse",
+    "ReviewAttachmentListResponse422",
+    "ReviewAttachmentListResponseAttachmentsItem",
     "ReviewCommentRequest",
     "ReviewCommentResponse",
     "ReviewCommentResponse422",
@@ -2769,6 +2786,7 @@ __all__ = (
     "ReviewShowRequest",
     "ReviewShowResponse",
     "ReviewShowResponse422",
+    "ReviewShowResponseAttachmentsItem",
     "ReviewShowResponseCommentsType0Item",
     "ReviewShowResponseDiffType0Item",
     "ReviewShowResponseDispatchesItem",

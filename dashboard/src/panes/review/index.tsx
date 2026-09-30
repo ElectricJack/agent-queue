@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
 import type { ExtraProps } from "react-markdown";
 
-import { useCommentReview, useDecideReview, useImportReviewEdits, useReview } from "../../api/reviews";
+import { useCommentReview, useDecideReview, useImportReviewEdits, useReview, type ReviewAttachment } from "../../api/reviews";
 import MarkdownPreview from "../../components/MarkdownPreview";
 import { useRawEventSubscription } from "../../ws/useEventStream";
 import type { NotifyEvent } from "../../ws/types";
@@ -14,6 +14,7 @@ import { CommentPopover } from "./CommentPopover";
 import { DecisionBar, type ResponseRoute, type ReviewDecision } from "./DecisionBar";
 import type { ReviewArgs } from "./manifest";
 import { RevisionHeader, type RevisionSummary } from "./RevisionHeader";
+import { ReviewAttachments } from "./ReviewAttachments";
 
 type ReviewRecord = {
   id: string;
@@ -31,6 +32,7 @@ type ReviewResponse = {
   vault_state: string;
   comments?: ReviewComment[] | null;
   diff?: { op: "equal" | "added" | "removed"; text: string }[] | null;
+  attachments?: ReviewAttachment[];
   response_route: ResponseRoute;
 };
 
@@ -270,6 +272,12 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
         )}
         <div ref={bodyRef} onMouseUp={selectCurrentText} className="relative min-w-0 flex-1 overflow-y-auto p-5" data-review-body>
           <MarkdownPreview source={renderedBody} headingComponents={headingComponents} />
+          <ReviewAttachments
+            reviewId={reviewId}
+            revision={viewedRevision!}
+            attachments={response.attachments ?? []}
+            editable={response.review.state === "in_review" && viewedRevision === response.review.current_revision && !revisedSinceOpen}
+          />
           {selection && !commentAnchor && (
             <button
               type="button"

@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:850faa54f119aa4b0d49ec4265f2fe94bb75935ee659de700ce0b368319f7afe",
+  "digest": "sha256:7f5496c838fd930b6f2a9b34dd8e213958b8edcaa361a66e48ae7bf49957b779",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -11553,7 +11553,8 @@
         "src.database",
         "src.models",
         "src.playbooks.definition",
-        "src.playbooks.routing"
+        "src.playbooks.routing",
+        "src.playbooks.runtime"
       ],
       "markers": [
         "parametrize"

@@ -8,6 +8,7 @@ import {
 
 import {
   reviewComment,
+  reviewAttachmentAdd,
   reviewDecide,
   reviewImportEdits,
   reviewList,
@@ -20,6 +21,42 @@ import {
   type ReviewShowResponse,
   type ReviewWithdrawResponse,
 } from "./client";
+
+export type ReviewAttachment = {
+  id: string;
+  review_id: string;
+  revision: number;
+  url: string;
+  sha256: string;
+  content_type: string;
+  size: number;
+  caption: string;
+  view_id: string;
+  candidate_id: string;
+};
+
+type AttachInput = {
+  review_id: string;
+  revision: number;
+  data_base64: string;
+  content_type: string;
+  caption: string;
+  view_id: string;
+  candidate_id: string;
+};
+
+export function useAttachReviewImage(): UseMutationResult<unknown, Error, AttachInput> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (input) => (await reviewAttachmentAdd({
+      body: input,
+      throwOnError: true,
+    })).data,
+    onSuccess: (_data, input) => {
+      void queryClient.invalidateQueries({ queryKey: ["review", input.review_id] });
+    },
+  });
+}
 
 type ReviewFilters = { projectId?: string; state?: string; kind?: string; taskId?: string };
 

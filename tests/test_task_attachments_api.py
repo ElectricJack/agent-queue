@@ -171,7 +171,7 @@ async def _hold(db, tmp_path, *, lifecycle: str, task_id: str = "task/unsafe") -
         default_class="standard-low",
     ))
     await db.create_agent(Agent(id="a1", name="a1", profile_id="coder"))
-    await db.transition_task(task_id, TaskStatus.IN_PROGRESS, context="test")
+    await db.transition_task(task_id, TaskStatus.IN_PROGRESS, context="test", force=True)
     await db.update_task(task_id, assigned_agent_id="a1", profile_id="coder", route_source="legacy")
     await db.update_agent("a1", state=AgentState.BUSY, current_task_id=task_id)
     task = await db.get_task(task_id)
@@ -214,6 +214,73 @@ async def test_pool_session_attaches_to_the_task_it_holds(attachment_app, tmp_pa
         removed = await client.delete(attachment["url"])
         assert removed.status_code == 200
     assert (await db.get_task("task/unsafe")).attachments == []
+
+
+async def test_review_download_checks_packet_scope_and_integrity(attachment_app, tmp_path):
+    app, db, config = attachment_app
+    handler = deps._command_handler
+    submitted = await handler.execute("review_submit", {
+        "task_id": "task/unsafe", "kind": "other", "title": "Evidence",
+        "content": "# Evidence\n",
+    })
+    review_id = submitted["review_id"]
+    payload = {
+        "review_id": review_id, "revision": 1,
+        "data_base64": base64.b64encode(PNG_BYTES).decode("ascii"),
+        "content_type": "image/png", "caption": "Front view",
+        "view_id": "front", "candidate_id": "rock-1",
+    }
+    async with _client(app) as client:
+        posted = await client.post("/api/review/attachment-add", json=payload)
+        assert posted.status_code == 200, posted.text
+        attached = posted.json()
+        listed = await client.post("/api/review/attachment-list", json={
+            "review_id": review_id, "revision": 1,
+        })
+        assert listed.json()["attachments"][0]["id"] == attached["attachment"]["id"]
+    assert attached["success"]
+    url = attached["attachment"]["url"]
+    assert "/review-attachments/" in (
+        await db.get_review_attachment(attached["attachment"]["id"])
+    )["path"]
+
+    async with _client(app) as client:
+        assert (await client.get(url)).content == PNG_BYTES
+        await _hold(db, tmp_path, lifecycle="pool")
+        client.headers.update(await _token(task_id=None))
+        assert (await client.get(url)).content == PNG_BYTES
+        await db.update_session("s1", state="stopped")
+        assert (await client.get(url)).status_code == 404
+
+        await db.create_project(Project(id="foreign", name="Foreign"))
+        await db.create_agent(Agent(id="a2", name="a2", profile_id="coder"))
+        await db.create_task(Task(
+            id="foreign-task", project_id="foreign", title="Foreign task", description="",
+            status=TaskStatus.IN_PROGRESS, assigned_agent_id="a2", profile_id="coder",
+            route_source="legacy",
+        ))
+        await db.update_agent("a2", state=AgentState.BUSY, current_task_id="foreign-task")
+        await db.create_session(SessionRecord(
+            id="s2", task_id="foreign-task", project_id="foreign", agent_id="a2",
+            profile_id="coder", harness="claude", provider="fake", name="s2",
+            lifecycle="pool", state="running", work_dir=str(tmp_path), epoch="test",
+            instance_token="foreign-instance", started_at=time.time(),
+            last_claim_epoch=(await db.get_task("foreign-task")).claim_epoch,
+        ))
+        foreign_token = await deps._token_store.mint(
+            session_id="s2", session_instance_token="foreign-instance",
+            task_id=None, project_id="foreign",
+        )
+        client.headers["Authorization"] = f"Bearer {foreign_token}"
+        assert (await client.get(url)).status_code == 404
+
+    # The immutable bytes are still present when the source session ends.
+    row = await db.get_review_attachment(attached["attachment"]["id"])
+    assert Path(row["path"]).read_bytes() == PNG_BYTES
+    assert Path(row["path"]).is_relative_to(Path(config.data_dir) / "review-attachments")
+    Path(row["path"]).write_bytes(b"tampered")
+    async with _client(app) as client:
+        assert (await client.get(url)).status_code == 409
 
 
 async def test_pool_session_cannot_attach_to_a_task_it_does_not_hold(attachment_app, tmp_path):

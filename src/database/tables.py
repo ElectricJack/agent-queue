@@ -798,6 +798,32 @@ doc_review_revisions = Table(
     Column("playbook_artifact", Text, nullable=True),
 )
 
+# Image evidence belongs to the submitted review revision, not the source task.
+# Rows and files are append-only; later revisions never update earlier evidence.
+doc_review_attachments = Table(
+    "doc_review_attachments",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("review_id", Text, nullable=False),
+    Column("revision", Integer, nullable=False),
+    Column("path", Text, nullable=False, unique=True),
+    Column("sha256", Text, nullable=False),
+    Column("content_type", Text, nullable=False),
+    Column("size", Integer, nullable=False),
+    Column("caption", Text, nullable=False),
+    Column("view_id", Text, nullable=False),
+    Column("candidate_id", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    ForeignKeyConstraint(
+        ["review_id", "revision"],
+        ["doc_review_revisions.review_id", "doc_review_revisions.revision"],
+        name="fk_doc_review_attachments_revision",
+        ondelete="CASCADE",
+    ),
+    CheckConstraint("size > 0", name="ck_doc_review_attachments_size"),
+    Index("idx_doc_review_attachments_revision", "review_id", "revision"),
+)
+
 doc_review_comments = Table(
     "doc_review_comments",
     metadata,
