@@ -5,21 +5,21 @@ import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.object_checkpoint_read_request import ObjectCheckpointReadRequest
-from ...models.object_checkpoint_read_response import ObjectCheckpointReadResponse
-from ...models.object_checkpoint_read_response_422 import ObjectCheckpointReadResponse422
+from ...models.review_attachment_add_request import ReviewAttachmentAddRequest
+from ...models.review_attachment_add_response import ReviewAttachmentAddResponse
+from ...models.review_attachment_add_response_422 import ReviewAttachmentAddResponse422
 from ...types import Response
 
 
 def _get_kwargs(
     *,
-    body: ObjectCheckpointReadRequest,
+    body: ReviewAttachmentAddRequest,
 ) -> dict[str, Any]:
     headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
         "method": "post",
-        "url": "/api/task/object-checkpoint-read",
+        "url": "/api/review/attachment-add",
     }
 
     _kwargs["json"] = body.to_dict()
@@ -32,14 +32,14 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422 | None:
+) -> ReviewAttachmentAddResponse | ReviewAttachmentAddResponse422 | None:
     if response.status_code == 200:
-        response_200 = ObjectCheckpointReadResponse.from_dict(response.json())
+        response_200 = ReviewAttachmentAddResponse.from_dict(response.json())
 
         return response_200
 
     if response.status_code == 422:
-        response_422 = ObjectCheckpointReadResponse422.from_dict(response.json())
+        response_422 = ReviewAttachmentAddResponse422.from_dict(response.json())
 
         return response_422
 
@@ -51,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422]:
+) -> Response[ReviewAttachmentAddResponse | ReviewAttachmentAddResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -63,21 +63,21 @@ def _build_response(
 def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: ObjectCheckpointReadRequest,
-) -> Response[ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422]:
-    """Coordinate a bounded, durable object evaluation round.
+    body: ReviewAttachmentAddRequest,
+) -> Response[ReviewAttachmentAddResponse | ReviewAttachmentAddResponse422]:
+    """Append an immutable screenshot to the current open review revision.
 
-     Coordinate a bounded, durable object evaluation round.
+     Append an immutable screenshot to the current open review revision.
 
     Args:
-        body (ObjectCheckpointReadRequest):
+        body (ReviewAttachmentAddRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422]
+        Response[ReviewAttachmentAddResponse | ReviewAttachmentAddResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -94,21 +94,21 @@ def sync_detailed(
 def sync(
     *,
     client: AuthenticatedClient | Client,
-    body: ObjectCheckpointReadRequest,
-) -> ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422 | None:
-    """Coordinate a bounded, durable object evaluation round.
+    body: ReviewAttachmentAddRequest,
+) -> ReviewAttachmentAddResponse | ReviewAttachmentAddResponse422 | None:
+    """Append an immutable screenshot to the current open review revision.
 
-     Coordinate a bounded, durable object evaluation round.
+     Append an immutable screenshot to the current open review revision.
 
     Args:
-        body (ObjectCheckpointReadRequest):
+        body (ReviewAttachmentAddRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422
+        ReviewAttachmentAddResponse | ReviewAttachmentAddResponse422
     """
 
     return sync_detailed(
@@ -120,21 +120,21 @@ def sync(
 async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
-    body: ObjectCheckpointReadRequest,
-) -> Response[ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422]:
-    """Coordinate a bounded, durable object evaluation round.
+    body: ReviewAttachmentAddRequest,
+) -> Response[ReviewAttachmentAddResponse | ReviewAttachmentAddResponse422]:
+    """Append an immutable screenshot to the current open review revision.
 
-     Coordinate a bounded, durable object evaluation round.
+     Append an immutable screenshot to the current open review revision.
 
     Args:
-        body (ObjectCheckpointReadRequest):
+        body (ReviewAttachmentAddRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422]
+        Response[ReviewAttachmentAddResponse | ReviewAttachmentAddResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -149,21 +149,21 @@ async def asyncio_detailed(
 async def asyncio(
     *,
     client: AuthenticatedClient | Client,
-    body: ObjectCheckpointReadRequest,
-) -> ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422 | None:
-    """Coordinate a bounded, durable object evaluation round.
+    body: ReviewAttachmentAddRequest,
+) -> ReviewAttachmentAddResponse | ReviewAttachmentAddResponse422 | None:
+    """Append an immutable screenshot to the current open review revision.
 
-     Coordinate a bounded, durable object evaluation round.
+     Append an immutable screenshot to the current open review revision.
 
     Args:
-        body (ObjectCheckpointReadRequest):
+        body (ReviewAttachmentAddRequest):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422
+        ReviewAttachmentAddResponse | ReviewAttachmentAddResponse422
     """
 
     return (

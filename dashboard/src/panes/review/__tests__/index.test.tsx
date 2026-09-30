@@ -9,6 +9,7 @@ const hooks = vi.hoisted(() => ({
   comment: { mutateAsync: vi.fn().mockResolvedValue({}) },
   decide: { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false },
   importEdits: { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false },
+  attach: { mutateAsync: vi.fn().mockResolvedValue({}), isPending: false },
   listener: null as ((event: { event_type: string; review_id?: string }) => void) | null,
 }));
 
@@ -17,6 +18,7 @@ vi.mock("../../../api/reviews", () => ({
   useCommentReview: () => hooks.comment,
   useDecideReview: () => hooks.decide,
   useImportReviewEdits: () => hooks.importEdits,
+  useAttachReviewImage: () => hooks.attach,
 }));
 vi.mock("../../../api/hooks", () => ({
   useIntelligenceClasses: () => ({ data: { classes: [
@@ -71,6 +73,41 @@ describe("review pane", () => {
     expect(screen.getByText("draft")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Goal" })).toBeInTheDocument();
     expect(screen.getByText("Visible body")).toBeInTheDocument();
+  });
+
+  it("renders images for the selected revision with pinned metadata", () => {
+    hooks.useReview.mockImplementation(() => ({
+      data: { ...response, attachments: [{
+        id: "image-1", review_id: "rev-x", revision: 2,
+        url: "/api/reviews/rev-x/revisions/2/attachments/image-1",
+        sha256: "abc123", content_type: "image/png", size: 42,
+        caption: "Front comparison", view_id: "front", candidate_id: "rock-7",
+      }] }, isLoading: false, error: null,
+    }));
+    renderPane();
+    expect(screen.getByRole("img", { name: "Front comparison" })).toHaveAttribute(
+      "src", "/api/reviews/rev-x/revisions/2/attachments/image-1",
+    );
+    expect(screen.getByText("View front · Candidate rock-7")).toBeInTheDocument();
+    expect(screen.getByText("SHA-256 abc123")).toBeInTheDocument();
+  });
+
+  it("submits an image with the viewed revision and view/candidate IDs", async () => {
+    renderPane();
+    fireEvent.change(screen.getByLabelText("Screenshot image"), {
+      target: { files: [new File(["image bytes"], "front.png", { type: "image/png" })] },
+    });
+    fireEvent.change(screen.getByLabelText("Screenshot caption"), {
+      target: { value: "Front comparison" },
+    });
+    fireEvent.change(screen.getByLabelText("View ID"), { target: { value: "front" } });
+    fireEvent.change(screen.getByLabelText("Candidate ID"), { target: { value: "rock-7" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Attach screenshot" }).closest("form")!);
+    await waitFor(() => expect(hooks.attach.mutateAsync).toHaveBeenCalledWith({
+      review_id: "rev-x", revision: 2, data_base64: btoa("image bytes"),
+      content_type: "image/png", caption: "Front comparison",
+      view_id: "front", candidate_id: "rock-7",
+    }));
   });
 
   it("requests the selected revision and its previous-revision diff", async () => {

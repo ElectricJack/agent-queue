@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import logging
@@ -9,7 +11,15 @@ import os
 import re
 import time
 import uuid
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
+
+from fastapi import HTTPException
+
+from src.api.task_attachments import MAX_ATTACHMENT_BYTES, _ALLOWED_TYPES, _verify_image
+from src.api.auth import RequestScope
+from src.api.scope import held_task_for_session
 
 from src.commands.principal import TRUSTED_LOCAL, PrincipalKind, current_principal
 from src.api.auth import operator_viewer_allowed
@@ -159,6 +169,131 @@ class ReviewCommandsMixin:
                 changes_requested=self._on_review_changes_requested,
             ),
         )
+
+    async def _review_attachment_access(
+        self, review: dict, revision: int, *, write: bool
+    ) -> dict | None:
+        """Authorize the held author/revision task, or a pinned dispatch read."""
+        if not self._is_worker():
+            return None
+        scope = self._current_scope or {}
+        held = await held_task_for_session(self.db, RequestScope(
+            kind="session",
+            session_id=scope.get("session_id"),
+            session_instance_token=scope.get("session_instance_token"),
+            task_id=scope.get("task_id"),
+            project_id=scope.get("project_id"),
+        ))
+        if held is None:
+            return _error("not_your_task", "a live held task is required")
+        if held.project_id != review["project_id"]:
+            return _error("not_your_task", "review belongs to another project")
+        revision_row = await self.db.get_review_revision(review["id"], revision)
+        if revision_row is None:
+            return _error("revision_not_found", "review revision was not found")
+        if held.id in (review["author_task_id"], revision_row.get("submitted_task_id")):
+            return None
+        dispatch = await self.db.get_review_dispatch_for_task(held.id)
+        if not write and dispatch and (
+            dispatch["review_id"] == review["id"] and dispatch["revision"] == revision
+        ):
+            return None
+        return _error("not_dispatched", "this task cannot access that review packet")
+
+    async def _cmd_review_attachment_add(self, args: dict) -> dict:
+        review, error = await self._review_for_caller(args.get("review_id"))
+        if error:
+            return error
+        revision = args.get("revision")
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            return _error("bad_revision", "revision must be a positive integer")
+        if error := await self._review_attachment_access(review, revision, write=True):
+            return error
+        claimed_type = args.get("content_type")
+        if claimed_type not in _ALLOWED_TYPES:
+            return _error("bad_image", "only PNG, JPEG, GIF, and WebP are allowed")
+        fields = {}
+        for field, limit in (("caption", 500), ("view_id", 120), ("candidate_id", 120)):
+            value = args.get(field)
+            if not isinstance(value, str) or not value.strip() or len(value) > limit:
+                return _error("bad_metadata", f"{field} must have 1 to {limit} characters")
+            if field != "caption" and not re.fullmatch(r"[A-Za-z0-9._:/-]+", value):
+                return _error("bad_metadata", f"{field} must be a stable identifier")
+            if any(ord(char) < 32 or ord(char) == 127 for char in value):
+                return _error("bad_metadata", f"{field} cannot contain control characters")
+            fields[field] = value.strip()
+        encoded = args.get("data_base64")
+        if not isinstance(encoded, str) or len(encoded) > ((MAX_ATTACHMENT_BYTES + 2) // 3) * 4:
+            return _error("too_large", "image exceeds the 10 MiB cap")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return _error("bad_image", "image must be valid base64")
+        if not data or len(data) > MAX_ATTACHMENT_BYTES:
+            return _error("too_large", "image must be 1 byte to 10 MiB")
+        attachment_id = uuid4().hex
+        ext = _ALLOWED_TYPES[claimed_type][1]
+        directory = Path(self.config.data_dir).expanduser().resolve() / "review-attachments"
+        destination = directory / review["id"] / str(revision) / f"{attachment_id}{ext}"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with destination.open("xb") as handle:
+                handle.write(data)
+            try:
+                _verify_image(destination, claimed_type)
+            except HTTPException as exc:
+                return _error("bad_image", str(exc.detail))
+            async with self.db.immediate() as conn:
+                locked = await self.db.lock_review_for_dispatch(review["id"], conn=conn)
+                if locked is None or locked["state"] != "in_review" or locked["current_revision"] != revision:
+                    return _error("stale_revision", "only the current open review revision accepts images")
+                if error := await self._review_attachment_access(review, revision, write=True):
+                    return error
+                if any(
+                    item["revision"] == revision
+                    for item in await self.db.list_review_dispatches(review["id"], conn=conn)
+                ):
+                    return _error("packet_dispatched", "a dispatched review packet cannot gain images")
+                # A revision/decision can race the upload. The row lock keeps
+                # this append before or after that transition, never between.
+                await self.db.insert_review_attachment({
+                    "id": attachment_id,
+                    "review_id": review["id"],
+                    "revision": revision,
+                    "path": str(destination),
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "content_type": claimed_type,
+                    "size": len(data),
+                    "created_at": time.time(),
+                    **fields,
+                }, conn=conn)
+            return {"success": True, "attachment": {
+                "id": attachment_id, "review_id": review["id"], "revision": revision,
+                "sha256": hashlib.sha256(data).hexdigest(), "content_type": claimed_type,
+                "size": len(data), "url": f"/api/reviews/{review['id']}/revisions/{revision}/attachments/{attachment_id}",
+                **fields,
+            }}
+        finally:
+            # The DB row is the durable ownership marker. On a refusal there
+            # is no row, so an orphan upload must not survive.
+            if await self.db.get_review_attachment(attachment_id) is None:
+                destination.unlink(missing_ok=True)
+
+    async def _cmd_review_attachment_list(self, args: dict) -> dict:
+        review, error = await self._review_for_caller(args.get("review_id"))
+        if error:
+            return error
+        revision = args.get("revision")
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+            return _error("bad_revision", "revision must be a positive integer")
+        if error := await self._review_attachment_access(review, revision, write=False):
+            return error
+        rows = await self.db.list_review_attachments(review["id"], revision)
+        return {"success": True, "attachments": [
+            {key: value for key, value in row.items() if key not in {"path", "created_at"}}
+            | {"url": f"/api/reviews/{review['id']}/revisions/{revision}/attachments/{row['id']}"}
+            for row in rows
+        ]}
 
     async def _emit_review_event(self, event_type: str, payload: dict) -> None:
         """Persist then fan out a review event; neither observer may undo a write."""
@@ -576,6 +711,24 @@ class ReviewCommandsMixin:
         review, error = await self._review_for_caller(args.get("review_id"))
         if error:
             return error
+        dispatch = None
+        if self._is_worker():
+            held, error = await self._worker_held_task()
+            if error:
+                return error
+            dispatch = await self.db.get_review_dispatch_for_task(held.id)
+            if dispatch and (
+                dispatch["review_id"] != review["id"]
+                or args.get("revision", dispatch["revision"]) != dispatch["revision"]
+                or args.get("diff_from") is not None
+            ):
+                return _error("not_dispatched", "dispatched reviewer may read only its pinned packet")
+            if dispatch:
+                if error := await self._review_attachment_access(
+                    review, dispatch["revision"], write=False
+                ):
+                    return error
+                args = {**args, "revision": dispatch["revision"]}
         try:
             shown = await self._review_service().show(
                 review_id=review["id"],
@@ -583,13 +736,39 @@ class ReviewCommandsMixin:
                 comments=bool(args.get("comments", False)),
                 diff_from=args.get("diff_from"),
             )
+            if dispatch:
+                shown["revisions"] = [
+                    row for row in shown["revisions"]
+                    if row["revision"] == dispatch["revision"]
+                ]
+                shown["dispatches"] = [
+                    row for row in shown["dispatches"]
+                    if row["task_id"] == held.id
+                ]
+                if dispatch["with_comments"] and "comments" in shown:
+                    shown["comments"] = [
+                        row for row in shown["comments"]
+                        if row["revision"] == dispatch["revision"]
+                    ]
+                else:
+                    shown.pop("comments", None)
             current = next(
                 row for row in shown["revisions"]
-                if row["revision"] == review["current_revision"]
+                if row["revision"] == (dispatch["revision"] if dispatch else review["current_revision"])
             )
+            viewed_revision = shown["revision"]["revision"]
+            attachment_access = await self._review_attachment_access(
+                review, viewed_revision, write=False
+            )
+            attachments = []
+            if attachment_access is None:
+                attachments = (await self._cmd_review_attachment_list({
+                    "review_id": review["id"], "revision": viewed_revision,
+                }))["attachments"]
             return {
                 "success": True,
                 **shown,
+                "attachments": attachments,
                 "response_route": await self._review_response_route(review, current),
             }
         except ReviewError as error:

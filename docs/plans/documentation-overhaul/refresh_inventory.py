@@ -380,6 +380,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
      "Recognises a task whose work product is a review verdict."),
     ("src/reviews/**", "tasks", "docs/guides/reviews.md", PRODUCTION,
      "Document review revisions, gates, vault copies and notifications."),
+    ("src/object_loop/**", "tasks", "docs/specs/design/object-script-loop.md", PRODUCTION,
+     "Object evaluation receipts, evidence validation and bounded loop contracts."),
 
     ("src/orchestrator/workspace.py", "workspaces",
      "docs/concepts/projects-and-workspaces.md", PRODUCTION,

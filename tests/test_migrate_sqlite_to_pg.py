@@ -178,20 +178,24 @@ async def _empty_pg_adapter():
 
 
 async def _seeded_source(tmp_path) -> str:
-    """A SQLite source at head with rows across the deferred-FK tables:
+    """A legacy SQLite source with rows across the deferred-FK tables:
     a self-FK parent pointer (tasks) and the agents⇄tasks circular FK."""
-    from sqlalchemy import MetaData, insert, text
+    from sqlalchemy import JSON, MetaData, insert, text
 
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from src.database.tables import supervisor_report_requests
 
-    # The legacy source predates PostgreSQL-only timestamp defaults. Keep
-    # production metadata intact while recreating its columns for the import.
+    # The legacy source predates PostgreSQL-only tables and timestamp defaults.
+    # Keep production metadata intact while recreating its importable columns.
     source_metadata = MetaData()
     for table in metadata.tables.values():
-        table.to_metadata(source_metadata)
+        if table.name not in _EXCLUDED_TABLES:
+            table.to_metadata(source_metadata)
     source_metadata.tables["task_context"].c.created_at.server_default = None
+    # Revision 40 changed the PostgreSQL route column to JSONB. Legacy
+    # SQLite stored JSON; preserve SQL NULL rather than a JSON null value.
+    source_metadata.tables["tasks"].c.route.type = JSON(none_as_null=True)
 
     path = str(tmp_path / "source.db")
     source = create_async_engine(f"sqlite+aiosqlite:///{path}")

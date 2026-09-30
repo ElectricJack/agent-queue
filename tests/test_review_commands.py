@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import time
 from pathlib import Path
 
@@ -11,7 +13,9 @@ from src.api.auth import RequestScope
 from src.api.scope import check_command_scope
 from src.event_bus import EventBus
 from src.models import (
+    Agent,
     AgentProfile,
+    AgentState,
     Project,
     RepoConfig,
     RepoSourceType,
@@ -22,6 +26,33 @@ from src.models import (
 from src.api.websocket import _FORWARDED_PREFIXES
 from src.vault import ensure_default_intelligence_classes
 from src.intelligence_classes import load_intelligence_classes
+
+_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUB"
+    "AScY42YAAAAASUVORK5CYII="
+)
+
+
+def _image_args(review_id: str, revision: int = 1, data: bytes = _PNG) -> dict:
+    return {
+        "review_id": review_id, "revision": revision,
+        "data_base64": base64.b64encode(data).decode("ascii"),
+        "content_type": "image/png", "caption": "Front reference versus render",
+        "view_id": "front", "candidate_id": "rock-1",
+    }
+
+
+async def _live_worker(db, session_id: str, task_id: str) -> None:
+    agent_id = f"agent-{session_id}"
+    await db.create_agent(Agent(id=agent_id, name=agent_id, profile_id="worker"))
+    await db.update_task(
+        task_id, assigned_agent_id=agent_id, profile_id="worker", route_source="legacy",
+    )
+    await db.update_agent(agent_id, state=AgentState.BUSY, current_task_id=task_id)
+    task = await db.get_task(task_id)
+    await db.update_session(
+        session_id, task_id=task_id, agent_id=agent_id, last_claim_epoch=task.claim_epoch,
+    )
 
 
 async def _scoped(
@@ -199,6 +230,99 @@ async def test_submit_persists_events_and_enforces_worker_author_scope(env):
         handler, "review_list", {"task_id": "someone-else"}, session_id="worker"
     )
     assert listed.get("error_code") == "not_your_task" or "scope" in listed["error"]
+
+
+async def test_review_images_are_revision_owned_and_survive_source_removal(env):
+    handler, db = env
+    await _live_worker(db, "worker", "author")
+    submitted = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "other", "title": "Rock evidence", "content": "# Rock\n",
+    })
+    review_id = submitted["review_id"]
+    attached = await _scoped(
+        handler, "review_attachment_add", _image_args(review_id), session_id="worker",
+    )
+    assert attached["success"], attached
+    image = attached["attachment"]
+    assert image["sha256"] == hashlib.sha256(_PNG).hexdigest()
+    assert image["view_id"] == "front" and image["candidate_id"] == "rock-1"
+    assert (await db.get_review_attachment(image["id"]))["path"].startswith(
+        str(handler.config.data_dir)
+    )
+    invalid = await handler.execute("review_attachment_add", _image_args(review_id, data=b"bad"))
+    assert invalid["error_code"] == "bad_image"
+    too_large = await handler.execute("review_attachment_add", {
+        **_image_args(review_id), "data_base64": "A" * (14 * 1024 * 1024),
+    })
+    assert too_large["error_code"] == "too_large"
+    assert len(await db.list_review_attachments(review_id, 1)) == 1
+
+    decided = await handler.execute("review_decide", {
+        "review_id": review_id, "revision": 1, "decision": "request_changes", "note": "Another view",
+    })
+    assert decided["success"], decided
+    revised = await handler.execute("review_submit", {
+        "review_id": review_id, "content": "# Rock\nSecond view\n", "changes": "New view",
+    })
+    assert revised["revision"] == 2
+    stale = await handler.execute("review_attachment_add", _image_args(review_id))
+    assert stale["error_code"] == "stale_revision"
+    r2 = await handler.execute("review_attachment_add", _image_args(review_id, revision=2))
+    assert r2["success"], r2
+    assert [a["id"] for a in (await handler.execute("review_attachment_list", {
+        "review_id": review_id, "revision": 1,
+    }))["attachments"]] == [image["id"]]
+    assert [a["id"] for a in (await handler.execute("review_show", {
+        "review_id": review_id, "revision": 2,
+    }))["attachments"]] == [r2["attachment"]["id"]]
+    assert (await handler.execute("review_decide", {
+        "review_id": review_id, "revision": 2, "decision": "approve",
+    }))["success"]
+
+    # Review rows and bytes have no task/worktree foreign key. A removed
+    # source cannot change the approved evidence packet.
+    await db.delete_session("worker")
+    await db.delete_task("author")
+    assert (await handler.execute("review_attachment_list", {
+        "review_id": review_id, "revision": 1,
+    }))["attachments"][0]["sha256"] == image["sha256"]
+
+
+async def test_dispatched_worker_sees_only_its_review_image_packet(env):
+    handler, db = env
+    first = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "other", "title": "First packet", "content": "# One\n",
+    })
+    second = await handler.execute("review_submit", {
+        "task_id": "author", "kind": "other", "title": "Second packet", "content": "# Two\n",
+    })
+    first_id, second_id = first["review_id"], second["review_id"]
+    assert (await handler.execute("review_attachment_add", _image_args(first_id)))["success"]
+    assert (await handler.execute("review_attachment_add", _image_args(second_id)))["success"]
+    task_id = (await handler.execute("review_dispatch", {
+        "review_id": first_id,
+    }))["dispatches"][0]["task_id"]
+    assert (await handler.execute(
+        "review_attachment_add", _image_args(first_id)
+    ))["error_code"] == "packet_dispatched"
+    await db.transition_task(task_id, TaskStatus.IN_PROGRESS, context="test", force=True)
+    await _live_worker(db, "peer-worker", task_id)
+    own = await _scoped(handler, "review_attachment_list", {
+        "review_id": first_id, "revision": 1,
+    }, session_id="peer-worker", task_id=task_id)
+    assert len(own["attachments"]) == 1
+    wrong = await _scoped(handler, "review_attachment_list", {
+        "review_id": second_id, "revision": 1,
+    }, session_id="peer-worker", task_id=task_id)
+    assert wrong["error_code"] in {"not_dispatched", "capability_denied"}
+    shown = await _scoped(handler, "review_show", {
+        "review_id": second_id,
+    }, session_id="peer-worker", task_id=task_id)
+    assert shown["error_code"] == "not_dispatched"
+    foreign = await _scoped(handler, "review_attachment_list", {
+        "review_id": first_id, "revision": 1,
+    }, session_id="other-worker", project_id="other")
+    assert not foreign["success"]
 
 
 async def test_delegated_supervisor_creates_revision_task_without_changing_author(env):
