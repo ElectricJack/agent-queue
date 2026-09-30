@@ -151,6 +151,12 @@ async def _snapshot_on(conn, task_id: str) -> dict[str, Any] | None:
             )
         )
     ).scalar_one_or_none()
+    object_experiment = (
+        await conn.execute(select(task_metadata.c.task_id).where(
+            task_metadata.c.task_id == task_id,
+            task_metadata.c.key == "object_experiment",
+        ))
+    ).scalar_one_or_none()
     parent = parent_checkpoint = operation = None
     if task["parent_task_id"] is not None:
         parent = (
@@ -203,6 +209,7 @@ async def _snapshot_on(conn, task_id: str) -> dict[str, Any] | None:
         "completion_id": completion["id"] if completion is not None else None,
         "completed_at": completion["completed_at"] if completion is not None else None,
         "rework_at": float(json.loads(rework_value)) if rework_value is not None else None,
+        "object_experiment": object_experiment is not None,
         "parent": dict(parent) if parent is not None else None,
         "parent_checkpoint": dict(parent_checkpoint) if parent_checkpoint is not None else None,
         "operation": dict(operation) if operation is not None else None,
@@ -211,6 +218,8 @@ async def _snapshot_on(conn, task_id: str) -> dict[str, Any] | None:
 
 def _child_refusal(snapshot: dict[str, Any]) -> tuple[str, str] | None:
     """Why this task is not a completed code child that could be assembled."""
+    if snapshot.get("object_experiment"):
+        return "not_eligible", "object evaluation is an artifact-only experiment"
     if snapshot["mode"] not in MANAGED_MODES:
         return "not_eligible", "the project is not in hierarchy or train mode"
     if snapshot["parent_task_id"] is None:

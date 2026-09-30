@@ -113,6 +113,8 @@ class CollectionService:
         for child in sorted(children, key=lambda child: child.id):
             if child.status.value != "COMPLETED":
                 continue
+            if await self.db.get_task_meta(child.id, "object_experiment") is not None:
+                continue
             origin = await self.db.get_task_branch_origin_for_promotion(child.id, parent.repo_id)
             source = await self.db.get_integration_checkpoint(child.id)
             if (

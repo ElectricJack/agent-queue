@@ -855,6 +855,8 @@ class PromotionService:
         task = await self.db.get_task(request.source_task_id)
         if task is None or not task.parent_task_id or not task.repo_id or not task.branch_name:
             raise PromotionSourceMoved("source task has no materialized parent delivery identity")
+        if await self.db.get_task_meta(task.id, "object_experiment") is not None:
+            raise PromotionSourceMoved("object evaluation is an artifact-only experiment")
         parent = await self.db.get_task(task.parent_task_id)
         if (
             parent is None

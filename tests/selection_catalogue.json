@@ -726,6 +726,12 @@
         "tests/test_worktree_migration.py"
       ]
     },
+    "object-loop": {
+      "description": "Object evaluation loop contracts: typed evidence, budget reservations, durable intents, checkpoint approvals, fan-in and publication exclusion.",
+      "modules": [
+        "tests/test_object_loop.py"
+      ]
+    },
     "orchestrator": {
       "description": "The orchestrator cycle and daemon lifecycle: run_one_cycle, promotion and assignment, pre-assignment constraints, failure events, daemon entry-point lifecycle and the workflow pipeline view.",
       "modules": [
@@ -1297,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:3c23579ff095c53ef759feaf7a875379baae0ef61fe4603d41f5041cc54ec044",
+  "digest": "sha256:df1e521add96d6a2845b159e74b02900a2bc349392e6da8b411eee0e3dbebb6a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -9105,6 +9111,24 @@
         "asyncio"
       ],
       "summary": "M0 messaging strip: the daemon boots and schedules with no messaging adapter."
+    },
+    "tests/test_object_loop.py": {
+      "areas": [
+        "object-loop"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.contracts.object_loop",
+        "src.commands.object_loop_commands",
+        "src.database.tables",
+        "src.integration.child_delivery",
+        "src.integration.development",
+        "src.integration.promotion",
+        "src.models",
+        "src.object_loop.contracts"
+      ],
+      "markers": [],
+      "summary": "AQ-2 object-loop identity, budget and crash recovery contracts."
     },
     "tests/test_onboarding_queries.py": {
       "areas": [

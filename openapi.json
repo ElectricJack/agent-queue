@@ -15378,6 +15378,186 @@
         }
       }
     },
+    "/api/task/object-checkpoint-read": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Coordinate a bounded, durable object evaluation round.",
+        "description": "Coordinate a bounded, durable object evaluation round.",
+        "operationId": "object_checkpoint_read",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObjectCheckpointReadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/object-loop-reconcile": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Coordinate a bounded, durable object evaluation round.",
+        "description": "Coordinate a bounded, durable object evaluation round.",
+        "operationId": "object_loop_reconcile",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObjectLoopReconcileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/object-loop-start": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Coordinate a bounded, durable object evaluation round.",
+        "description": "Coordinate a bounded, durable object evaluation round.",
+        "operationId": "object_loop_start",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObjectLoopStartRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/task/object-score-record": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Coordinate a bounded, durable object evaluation round.",
+        "description": "Coordinate a bounded, durable object evaluation round.",
+        "operationId": "object_score_record",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ObjectScoreRecordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/pause": {
       "post": {
         "tags": [
@@ -38739,6 +38919,354 @@
         },
         "type": "object",
         "title": "NoteSummary"
+      },
+      "ObjectCheckpointReadRequest": {
+        "properties": {
+          "object_id": {
+            "type": "string",
+            "title": "Object Id",
+            "description": ""
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "project_id"
+        ],
+        "title": "ObjectCheckpointReadRequest"
+      },
+      "ObjectLoopReconcileRequest": {
+        "properties": {
+          "object_id": {
+            "type": "string",
+            "title": "Object Id",
+            "description": ""
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "expected_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Version",
+            "description": ""
+          },
+          "next_variants": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Variants",
+            "description": ""
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "project_id"
+        ],
+        "title": "ObjectLoopReconcileRequest"
+      },
+      "ObjectLoopStartRequest": {
+        "properties": {
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "epic_task_id": {
+            "type": "string",
+            "title": "Epic Task Id",
+            "description": ""
+          },
+          "object_id": {
+            "type": "string",
+            "title": "Object Id",
+            "description": ""
+          },
+          "attempt_id": {
+            "type": "string",
+            "title": "Attempt Id",
+            "description": ""
+          },
+          "incumbent_sha256": {
+            "type": "string",
+            "title": "Incumbent Sha256",
+            "description": ""
+          },
+          "incumbent_artifact": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Incumbent Artifact",
+            "description": ""
+          },
+          "reference_sha256": {
+            "type": "string",
+            "title": "Reference Sha256",
+            "description": ""
+          },
+          "rig_sha256": {
+            "type": "string",
+            "title": "Rig Sha256",
+            "description": ""
+          },
+          "scorer_sha256": {
+            "type": "string",
+            "title": "Scorer Sha256",
+            "description": ""
+          },
+          "render_profile_sha256": {
+            "type": "string",
+            "title": "Render Profile Sha256",
+            "description": ""
+          },
+          "policy_sha256": {
+            "type": "string",
+            "title": "Policy Sha256",
+            "description": ""
+          },
+          "brief_review_id": {
+            "type": "string",
+            "title": "Brief Review Id",
+            "description": ""
+          },
+          "brief_review_revision": {
+            "type": "integer",
+            "title": "Brief Review Revision",
+            "description": ""
+          },
+          "brief_review_sha256": {
+            "type": "string",
+            "title": "Brief Review Sha256",
+            "description": ""
+          },
+          "mandatory_views": {
+            "items": {},
+            "type": "array",
+            "title": "Mandatory Views",
+            "description": ""
+          },
+          "limits": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Limits",
+            "description": ""
+          },
+          "final_reserve": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Final Reserve",
+            "description": ""
+          },
+          "score_reservation": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Score Reservation",
+            "description": ""
+          },
+          "noise_band": {
+            "type": "number",
+            "title": "Noise Band",
+            "description": ""
+          },
+          "max_repair_rounds": {
+            "type": "integer",
+            "title": "Max Repair Rounds",
+            "description": "",
+            "default": 2
+          },
+          "max_plateau_rounds": {
+            "type": "integer",
+            "title": "Max Plateau Rounds",
+            "description": "",
+            "default": 3
+          },
+          "variants": {
+            "items": {},
+            "type": "array",
+            "title": "Variants",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "project_id",
+          "epic_task_id",
+          "object_id",
+          "attempt_id",
+          "incumbent_sha256",
+          "reference_sha256",
+          "rig_sha256",
+          "scorer_sha256",
+          "render_profile_sha256",
+          "policy_sha256",
+          "brief_review_id",
+          "brief_review_revision",
+          "brief_review_sha256",
+          "mandatory_views",
+          "limits",
+          "final_reserve",
+          "score_reservation",
+          "noise_band",
+          "variants"
+        ],
+        "title": "ObjectLoopStartRequest"
+      },
+      "ObjectScoreRecordRequest": {
+        "properties": {
+          "object_id": {
+            "type": "string",
+            "title": "Object Id",
+            "description": ""
+          },
+          "project_id": {
+            "type": "string",
+            "title": "Project Id",
+            "description": ""
+          },
+          "expected_version": {
+            "type": "integer",
+            "title": "Expected Version",
+            "description": ""
+          },
+          "score_task_id": {
+            "type": "string",
+            "title": "Score Task Id",
+            "description": ""
+          },
+          "receipts": {
+            "items": {},
+            "type": "array",
+            "title": "Receipts",
+            "description": ""
+          },
+          "spent": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spent",
+            "description": ""
+          },
+          "action": {
+            "type": "string",
+            "title": "Action",
+            "description": ""
+          },
+          "next_variants": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Variants",
+            "description": ""
+          },
+          "stop_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stop Reason",
+            "description": ""
+          },
+          "review_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Id",
+            "description": ""
+          },
+          "review_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Revision",
+            "description": ""
+          },
+          "review_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Sha256",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "project_id",
+          "expected_version",
+          "score_task_id",
+          "receipts",
+          "action"
+        ],
+        "title": "ObjectScoreRecordRequest"
       },
       "OnboardProjectRequest": {
         "properties": {
