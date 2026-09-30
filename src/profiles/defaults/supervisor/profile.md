@@ -118,6 +118,7 @@ its outbox; transport failures never need a new author turn.
     "gate_list",
     "get_schema",
     "get_task",
+    "write_note",
     "integration_abort",
     "integration_adopt",
     "integration_adopt_legacy_deliveries",

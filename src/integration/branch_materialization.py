@@ -30,7 +30,7 @@ import logging
 import time
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 
 from src.database.tables import (
     integration_branch_owners,
@@ -73,8 +73,9 @@ class BranchMaterializationService:
         #: whichever loop arrives second has nothing to add, and the next tick
         #: retries anyway.  Mirrors ``IntegrationService._tick_lock``.
         self._drain_lock = asyncio.Lock()
+        self._after_origin = None
 
-    async def pending_origins(self, *, limit: int = DEFAULT_LIMIT) -> list[dict]:
+    async def pending_origins(self, *, limit: int = DEFAULT_LIMIT, after=None) -> list[dict]:
         """Live reservations with no branch, oldest first, in enabled projects."""
         async with self.db._engine.connect() as conn:
             rows = (
@@ -84,6 +85,7 @@ class BranchMaterializationService:
                             task_branch_origins.c.id,
                             task_branch_origins.c.task_id,
                             task_branch_origins.c.repository_id,
+                            task_branch_origins.c.created_at,
                         )
                         .select_from(
                             task_branch_origins.join(
@@ -97,8 +99,10 @@ class BranchMaterializationService:
                             projects.c.hierarchical_integration_mode.in_(
                                 ("hierarchy", "train")
                             ),
+                            *([tuple_(task_branch_origins.c.created_at, task_branch_origins.c.id) > after]
+                              if after else []),
                         )
-                        .order_by(task_branch_origins.c.created_at)
+                        .order_by(task_branch_origins.c.created_at, task_branch_origins.c.id)
                         .limit(limit)
                     )
                 )
@@ -127,7 +131,12 @@ class BranchMaterializationService:
             return await self._drain(limit=limit)
 
     async def _drain(self, *, limit: int) -> list[dict]:
-        pending = await self.pending_origins(limit=limit)
+        pending = await self.pending_origins(limit=limit, after=self._after_origin)
+        if not pending and self._after_origin is not None:
+            self._after_origin = None
+            pending = await self.pending_origins(limit=limit, after=None)
+        if pending:
+            self._after_origin = (pending[-1]["created_at"], pending[-1]["id"])
         service = self.hierarchy_service_factory()
         if service is None:
             logger.debug("branch materialization: no hierarchy service available")

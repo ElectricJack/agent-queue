@@ -15,6 +15,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import case, insert, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
 from src.database.tables import (
@@ -97,6 +98,8 @@ class CandidateRepairLineage(BaseModel):
     source_head_sha: str
     resolved_head_sha: str
     repair_commit_shas: tuple[str, ...]
+    conflict_scope: Literal["member", "batch"] = "member"
+    source_head_shas: tuple[str, ...] = ()
 
 
 class CandidateAuthorizationError(ValueError):
@@ -231,8 +234,19 @@ class CandidateService:
                 operation_id=state["operation"]["id"] if state["operation"] else None,
             )
         revision_number = int(batch["current_revision"])
+        construction_base = batch["base_sha"]
+        if batch["policy_snapshot"]["root"]["repair"].get("on_exhausted") == "continue":
+            repository = await self._repository(batch["repository_id"])
+            self._assert_repository_binding(repository)
+            construction_base = await self.app_client.exact_head_ref(repository.default_branch)
+            if construction_base is None:
+                return CandidateBuildResult(
+                    outcome="base_moved", batch_id=batch_id, revision=revision_number
+                )
+        # Source bases remain frozen provenance. A fresh continuous candidate
+        # must also retain main from the preceding batch, before spending CI.
         try:
-            revision = await self._ensure_revision(state, revision_number, batch["base_sha"])
+            revision = await self._ensure_revision(state, revision_number, construction_base)
         except CandidateStaleAuthority:
             return CandidateBuildResult(outcome="wait", batch_id=batch_id, revision=revision_number)
         was_built = revision["state"] in {"built", "green"}
@@ -868,18 +882,7 @@ class CandidateService:
             reservation["resolved_head_sha"],
             f"refs/aq/integration-resolutions/{lineage}",
         )
-        repair_lineage = CandidateRepairLineage(
-            batch_id=reservation["batch_id"],
-            revision=reservation["revision"],
-            member_ordinal=reservation["member_ordinal"],
-            operation_id=reservation["operation_id"],
-            operation_stage=reservation["stage_ordinal"],
-            partial_head_sha=reservation["partial_head_sha"],
-            source_base_sha=reservation["source_base_sha"],
-            source_head_sha=reservation["source_head_sha"],
-            resolved_head_sha=reservation["resolved_head_sha"],
-            repair_commit_shas=tuple(reservation["repair_commit_shas"]),
-        )
+        repair_lineage = await self._reserved_lineage(reservation)
         lineage_failure = await self._repair_lineage_failure(store, repair_lineage)
         if lineage_failure is not None:
             return self._repair_result("stale", reservation, invariant=lineage_failure)
@@ -1132,6 +1135,9 @@ class CandidateService:
         return self._repair_result("rejected", reservation, invariant=invariant)
 
     async def _accept_repair_result(self, state, reservation):
+        aggregate = (
+            state["batch"]["policy_snapshot"]["root"]["repair"].get("conflict_scope") == "batch"
+        )
         now = self.clock()
         try:
             async with self.db.immediate() as conn:
@@ -1166,7 +1172,9 @@ class CandidateService:
                         == reservation["member_ordinal"],
                     )
                     .values(
-                        next_member_ordinal=reservation["member_ordinal"] + 1,
+                        next_member_ordinal=(
+                            len(state["members"]) if aggregate else reservation["member_ordinal"] + 1
+                        ),
                         head_sha=reservation["resolved_head_sha"],
                         updated_at=now,
                     )
@@ -1181,6 +1189,31 @@ class CandidateService:
                 )
                 if member.rowcount != 1 or cursor.rowcount != 1 or consumed.rowcount != 1:
                     raise CandidateStaleAuthority("candidate repair acceptance CAS lost")
+                if aggregate:
+                    for covered in state["members"]:
+                        if covered["ordinal"] <= reservation["member_ordinal"]:
+                            continue
+                        statement = pg_insert(integration_candidate_member_results).values(
+                            batch_id=reservation["batch_id"],
+                            revision=reservation["revision"],
+                            member_ordinal=covered["ordinal"],
+                            input_head_sha=covered["reviewed_head_sha"],
+                            input_tree_sha=covered["reviewed_tree_sha"],
+                            created_at=now,
+                            result="applied",
+                            generated_squash_sha=reservation["resolved_head_sha"],
+                            conflict_evidence={"covered_by_reservation_id": reservation["id"]},
+                            updated_at=now,
+                        )
+                        await conn.execute(statement.on_conflict_do_update(
+                            index_elements=["batch_id", "revision", "member_ordinal"],
+                            set_={
+                                "result": statement.excluded.result,
+                                "generated_squash_sha": statement.excluded.generated_squash_sha,
+                                "conflict_evidence": statement.excluded.conflict_evidence,
+                                "updated_at": now,
+                            },
+                        ))
                 await conn.execute(
                     update(integration_batches)
                     .where(integration_batches.c.id == reservation["batch_id"])
@@ -1805,10 +1838,16 @@ class CandidateService:
                 }
             )
             authored_at = f"@{int(state['batch']['created_at'])} +0000"
+            parent_heads = [member["reviewed_head_sha"]]
+            if parent_repair is not None:
+                accepted = parent_repair["accepted_lineage"]
+                if accepted.get("conflict_scope") == "batch":
+                    parent_heads = list(accepted["source_head_shas"])
             committed = await self.git.arun_git_result(
                 [
                     "commit-tree", tree_sha, "-p", current,
-                    "-p", member["reviewed_head_sha"], "-m", message,
+                    *[arg for head in dict.fromkeys(parent_heads) for arg in ("-p", head)],
+                    "-m", message,
                 ],
                 cwd=str(store),
                 env={
@@ -2929,7 +2968,22 @@ class CandidateService:
             accepted["resolved_head_sha"],
             f"refs/aq/integration-resolutions/{reservation_id}",
         )
-        lineage = CandidateRepairLineage(
+        lineage = await self._reserved_lineage(accepted)
+        if not await self._valid_repair_lineage(store, lineage):
+            raise CandidateStaleAuthority("accepted candidate repair lineage is invalid")
+        return {"accepted_lineage": lineage.model_dump(mode="json")}
+
+    async def _reserved_lineage(self, accepted):
+        async with self.db._engine.connect() as conn:
+            policy = await conn.scalar(select(integration_batches.c.policy_snapshot).where(
+                integration_batches.c.id == accepted["batch_id"]
+            ))
+            heads = tuple((await conn.execute(
+                select(integration_batch_members.c.reviewed_head_sha).where(
+                    integration_batch_members.c.batch_id == accepted["batch_id"]
+                ).order_by(integration_batch_members.c.ordinal)
+            )).scalars())
+        return CandidateRepairLineage(
             batch_id=accepted["batch_id"],
             revision=int(accepted["revision"]),
             member_ordinal=int(accepted["member_ordinal"]),
@@ -2940,10 +2994,9 @@ class CandidateService:
             source_head_sha=accepted["source_head_sha"],
             resolved_head_sha=accepted["resolved_head_sha"],
             repair_commit_shas=tuple(accepted["repair_commit_shas"]),
+            conflict_scope=policy["root"]["repair"].get("conflict_scope", "member"),
+            source_head_shas=heads,
         )
-        if not await self._valid_repair_lineage(store, lineage):
-            raise CandidateStaleAuthority("accepted candidate repair lineage is invalid")
-        return {"accepted_lineage": lineage.model_dump(mode="json")}
 
     async def _conflict(self, state, revision, member, partial, evidence, operation_id):
         detail = {
@@ -3043,6 +3096,8 @@ class CandidateService:
             str(store), lineage.partial_head_sha, lineage.resolved_head_sha, strict=True
         ):
             return "partial_head_is_not_a_strict_ancestor"
+        if lineage.conflict_scope == "batch":
+            return await self._batch_lineage_failure(store, lineage)
         commits = await self.git.arun_git_result(
             [
                 "rev-list",
@@ -3123,6 +3178,43 @@ class CandidateService:
                 return "reviewed_path_was_not_resolved"
             elif status.startswith("A") and resolved_blob != source_blob:
                 return "added_reviewed_path_does_not_match_source"
+        return None
+
+    async def _batch_lineage_failure(self, store: Path, lineage: CandidateRepairLineage):
+        """Authorize the complete aggregate through frozen ancestry and first-parent work.
+
+        Repair files may differ from source paths, but every sealed feature must
+        remain reachable. Side parents can only come from sealed sources or the
+        partial candidate, so a repair cannot import an unrelated branch.
+        """
+        if not lineage.source_head_shas:
+            return "batch_source_lineage_missing"
+        commits = await self.git.arun_git_result([
+            "rev-list", "--first-parent", "--reverse",
+            f"{lineage.partial_head_sha}..{lineage.resolved_head_sha}",
+        ], cwd=str(store))
+        if commits.returncode or tuple(commits.stdout.split()) != lineage.repair_commit_shas:
+            return "repair_commit_lineage_does_not_match"
+        for head in lineage.source_head_shas:
+            if not await self.git.ais_ancestor(str(store), head, lineage.resolved_head_sha):
+                return "batch_source_head_not_covered"
+        previous = lineage.partial_head_sha
+        for commit in lineage.repair_commit_shas:
+            result = await self.git.arun_git_result(
+                ["rev-list", "--parents", "-n", "1", commit], cwd=str(store)
+            )
+            parents = result.stdout.split()[1:]
+            if result.returncode or not parents or parents[0] != previous:
+                return "batch_repair_first_parent_changed"
+            for parent in parents[1:]:
+                allowed = False
+                for head in (*lineage.source_head_shas, lineage.partial_head_sha):
+                    if await self.git.ais_ancestor(str(store), parent, head):
+                        allowed = True
+                        break
+                if not allowed:
+                    return "batch_repair_imports_unsealed_source"
+            previous = commit
         return None
 
     async def _blob(self, store: Path, commit: str, path: str) -> str | None:

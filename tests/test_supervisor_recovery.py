@@ -244,6 +244,50 @@ async def test_retry_preserves_work_and_routing_records_comment_and_consumes_bud
     assert "Transcript shows progress" in comments["comments"][0]["body"]
 
 
+async def test_cleared_hold_retries_once_with_audit_and_preserved_work(env):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert "error" in await decide(env, current)
+    assert "error" in await decide(env, current, expected_hold_at=held["decided_at"] - 1)
+    results = await asyncio.gather(*(
+        decide(env, current, expected_hold_at=held["decided_at"])
+        for _ in range(2)
+    ))
+    assert sum("error" not in result for result in results) == 1, results
+    task = await env.db.get_task("t")
+    assert task.status == TaskStatus.READY and task.retry_count == 1
+    assert task.branch_name == "aq/keep" and task.description == "Keep requirements"
+    released = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    assert released["decision"] == "retry"
+    assert released["decision_history"] == [{
+        key: held[key]
+        for key in ("decision", "decision_reason", "decided_at", "decided_by")
+    }]
+    comments = await env.handler.execute("task_comments", {"task_id": "t"})
+    assert len(comments["comments"]) == 2
+    assert "Cleared recovery hold" in comments["comments"][0]["body"]
+
+
+@pytest.mark.parametrize("guard", ["budget", "live_worker", "hold_label"])
+async def test_hold_release_rechecks_recovery_guards(env, guard):
+    current = await incident(env)
+    assert "error" not in await decide(env, current, "hold")
+    held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    if guard == "budget":
+        await env.db.update_task("t", retry_count=3)
+    elif guard == "live_worker":
+        env.orch.session_providers.create = lambda *_: SimpleNamespace(
+            confirm_stopped=AsyncMock(return_value=False)
+        )
+    else:
+        await env.db.add_task_label("t", "hold:recovery")
+    result = await decide(env, current, expected_hold_at=held["decided_at"])
+    assert "error" in result, result
+    assert (await env.db.get_task("t")).status == TaskStatus.BLOCKED
+    assert (await env.db.get_task_meta("t", "supervisor_recovery_incident"))["decision"] == "hold"
+
+
 @pytest.mark.parametrize(
     "guard",
     [

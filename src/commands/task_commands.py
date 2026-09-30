@@ -4215,6 +4215,13 @@ class TaskCommandsMixin:
         reason = args.get("reason")
         if decision not in ("retry", "hold") or not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 4000:
             return {"error": "Provide decision retry|hold and a reason of 1 to 4000 characters"}
+        expected_hold_at = args.get("expected_hold_at")
+        if expected_hold_at is not None and (
+            decision != "retry"
+            or isinstance(expected_hold_at, bool)
+            or not isinstance(expected_hold_at, (int, float))
+        ):
+            return {"error": "expected_hold_at requires retry and the prior hold's decided_at"}
         repair_operation = await self.db.get_active_integration_repair_for_task(task_id)
         verifier_operation = await self.db.get_active_integration_verifier_for_task(task_id)
         if repair_operation is not None or verifier_operation is not None:
@@ -4251,6 +4258,7 @@ class TaskCommandsMixin:
             author_kind="supervisor" if scope.get("kind") == "session" else "user",
             author_id=scope.get("session_id") or "operator",
             project_id=scope.get("project_id"), stopped_session=stopped_session,
+            expected_hold_at=expected_hold_at,
         )
         await self._emit_task_graph_change("task.updated", await self.db.get_task(task_id))
         return result
@@ -5815,6 +5823,9 @@ class TaskCommandsMixin:
             # arrives with its stage route.
             "_suppress_created_event": True,
         }
+        for key in ("repo_id", "task_type", "integration_mode"):
+            if key in args:
+                create_args[key] = args[key]
         # Do not recreate placement from truthy values: playbook and API
         # callers need omitted, selected, and explicit-null parent choices to
         # reach ``_cmd_create_task`` unchanged.  A dedup replay returns above

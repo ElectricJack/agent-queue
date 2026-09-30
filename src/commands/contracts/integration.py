@@ -714,7 +714,7 @@ class IntegrationBuildCandidateValue(CommandValue):
 
 class IntegrationRepairCloseCurrentArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
-    stage: Literal[0, 1]
+    stage: int = Field(ge=0)
     task_id: str = Field(min_length=1)
     session_id: str = Field(min_length=1)
     instance_token: str = Field(min_length=1)
@@ -880,7 +880,7 @@ class IntegrationRepairStartArgs(CommandArgs):
 
 class IntegrationRepairStartValue(CommandValue):
     operation_id: str | None = None
-    stage: Literal[0, 1] | None = None
+    stage: int | None = Field(default=None, ge=0)
     starting_sha: str | None = None
     started_at: float | None = None
     deadline_at: float | None = None
@@ -888,7 +888,7 @@ class IntegrationRepairStartValue(CommandValue):
 
 class IntegrationRepairDispatchArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
-    stage: Literal[0, 1] | None = None
+    stage: int | None = Field(default=None, ge=0)
     batch_id: str | None = None
     revision: int | None = Field(default=None, ge=0)
     head_sha: str | None = None
@@ -907,7 +907,7 @@ class IntegrationRepairDispatchArgs(CommandArgs):
 
 class IntegrationRepairDispatchValue(CommandValue):
     operation_id: str | None = None
-    stage: Literal[0, 1] | None = None
+    stage: int | None = Field(default=None, ge=0)
     repair_task_id: str | None = None
     writer_kind: Literal["repair_delegate", "existing_verifier"] | None = None
     fence: Fence | None = None
@@ -930,17 +930,17 @@ class IntegrationRecordRepairValue(CommandValue):
         "stale",
     ] | None = None
     attempts: int | None = None
-    stage: Literal[0, 1] | None = None
+    stage: int | None = Field(default=None, ge=0)
 
 
 class IntegrationRepairTimeoutArgs(CommandArgs):
     operation_id: str = Field(min_length=1)
-    stage: Literal[0, 1]
+    stage: int = Field(ge=0)
 
 
 class IntegrationRepairTimeoutValue(CommandValue):
     operation_id: str | None = None
-    stage: Literal[0, 1] | None = None
+    stage: int | None = Field(default=None, ge=0)
     action: Literal[
         "ignore",
         "dispatch_debug",

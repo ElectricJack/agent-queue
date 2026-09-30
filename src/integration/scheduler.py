@@ -15,6 +15,7 @@ from src.database.tables import (
     integration_batches,
     integration_promotion_intents,
     integration_repair_operations,
+    integration_source_ci,
     playbook_artifacts,
     project_integration_leases,
     project_integration_schedules,
@@ -718,6 +719,44 @@ class TrainService:
                 members.append({**candidate, "review": review})
             after = (page[-1]["task_id"], page[-1]["source_head"])
         members.sort(key=lambda row: (row["task_id"], row["source_head"]))
+        project = (await conn.execute(select(projects).where(projects.c.id == project_id))).mappings().one()
+        policy_data = project["hierarchical_integration_policy"]
+        policy = HierarchicalIntegrationPolicy.model_validate(policy_data) if policy_data else None
+        if policy is not None:
+            members = [member for member in members if (
+                member["review"]["evidence"].get("decision_path") != "authorized_task"
+                or (policy.root.admission == "authorized" and
+                    member["review"]["evidence"].get("policy_generation")
+                    == project["hierarchical_integration_generation"]))]
+        if policy is not None and policy.root.repair.source_ci:
+            records = (await conn.execute(select(integration_source_ci).where(
+                integration_source_ci.c.repository_id == repository_id,
+                integration_source_ci.c.task_id.in_([member["task_id"] for member in members]),
+            ))).mappings().all()
+            exact = {(row["task_id"], row["source_base"], row["source_head"], row["generation"]): row
+                     for row in records if row["policy_generation"] == project["hierarchical_integration_generation"]}
+            green = {member["task_id"] for member in members if (
+                exact.get((member["task_id"], member["source_base"], member["source_head"], member["generation"]), {}).get("state") == "green")}
+            admitted_ids = set(green)
+            # Follow the complete repair chain, so repeated CI repair also
+            # delivers/cleans every proven ancestor source rather than only
+            # the immediate predecessor of the final green repair.
+            while True:
+                covered = {member["task_id"] for member in members if (
+                    exact.get((member["task_id"], member["source_base"], member["source_head"], member["generation"]), {}).get("repair_task_id") in admitted_ids)}
+                if covered <= admitted_ids:
+                    break
+                admitted_ids.update(covered)
+            admitted = []
+            for member in members:
+                record = exact.get((member["task_id"], member["source_base"], member["source_head"], member["generation"]))
+                # A green repair is Git-attested to retain the failed source's
+                # ancestry before authorization evidence is recorded. Seat
+                # both so normal exact coverage receipts/cleanup include the
+                # original PR, not merely the repair's PR.
+                if record and member["task_id"] in admitted_ids:
+                    admitted.append(member)
+            members = admitted
         edges = await dependencies_for(conn, [member["task_id"] for member in members])
         delivered = await self.db.delivered_root_task_ids_on(
             conn, project_id=project_id, repository_id=repository_id

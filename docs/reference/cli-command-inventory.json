@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 466,
+    "leaf_commands": 467,
     "registration": {
-      "generated": 299,
+      "generated": 300,
       "handwritten": 167
     },
     "ownership": {
-      "core": 427,
+      "core": 428,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 465
+      "supported": 466
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 299,
+      "dispatch": 300,
       "registration": 153
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 406
+      "untested": 407
     }
   },
   "commands": [
@@ -12542,6 +12542,37 @@
       }
     },
     {
+      "path": "aq system observe-integration-source-ci",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "observe_integration_source_ci",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq system orchestrator-control",
       "registration": "generated",
       "owner_kind": "core",
@@ -13974,6 +14005,9 @@
           "--title"
         ],
         "optional": [
+          "--repo-id",
+          "--task-type",
+          "--integration-mode",
           "--description",
           "--priority",
           "--intelligence-class",
@@ -14891,6 +14925,7 @@
           "--reason"
         ],
         "optional": [
+          "--expected-hold-at",
           "--json",
           "--brief",
           "--api-url"

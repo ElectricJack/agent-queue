@@ -272,6 +272,35 @@ async def test_pending_origin_is_not_claim_frontier_eligible(db, hierarchy):
     assert await db.count_ready_by_profile("p") == {None: 1}
 
 
+async def test_materialization_failures_do_not_starve_later_claimable_work(db, hierarchy):
+    from src.integration.branch_materialization import BranchMaterializationService
+
+    await _create(db, "parent")
+    result = await hierarchy.file_children("parent", [{"title": f"child {n}"} for n in range(12)], 0)
+    origins = result["origins"]
+    calls = []
+
+    class Materializer:
+        async def materialize_origin(self, origin_id):
+            calls.append(origin_id)
+            if origin_id in {origin["id"] for origin in origins[:10]}:
+                raise RuntimeError("unavailable source; retry without starving later work")
+            async with db.immediate() as conn:
+                await conn.execute(update(task_branch_origins).where(
+                    task_branch_origins.c.id == origin_id
+                ).values(materialized=True, materialized_at=1.0))
+            return {"outcome": "materialized"}
+
+    service = BranchMaterializationService(db, hierarchy_service_factory=Materializer)
+    first = await service.drain_due(limit=10)
+    assert len(first) == 10
+    second = await service.drain_due(limit=10)
+    assert any(row["outcome"] == "materialized" for row in second)
+    assert len(set(calls)) > 10
+    third = await service.drain_due(limit=10)
+    assert third  # Wrap around and retry the earlier failures.
+
+
 async def test_checkpoint_rejects_stale_generation(db, hierarchy):
     await _create(db, "parent")
     await hierarchy.file_children("parent", [{"title": "child"}], 0)

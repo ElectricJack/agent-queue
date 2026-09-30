@@ -382,7 +382,7 @@ async def test_branch_materialization_drain_is_not_reentrant():
         MagicMock(), hierarchy_service_factory=lambda: None
     )
 
-    async def pending_origins(*, limit=10):
+    async def pending_origins(*, limit=10, after=None):
         nonlocal calls
         calls += 1
         entered.set()

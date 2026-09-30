@@ -33,6 +33,7 @@ from src.database.tables import (
     integration_parent_episodes,
     integration_parent_verifications,
     integration_repair_operations,
+    integration_source_ci,
 )
 
 #: ``(table, column)`` → how a task leaving disposes of that reference.
@@ -50,6 +51,8 @@ TASK_REFERENCE_DISPOSITIONS: dict[tuple[str, str], str] = {
     ("integration_parent_episodes", "parent_task_id"): "history",
     ("integration_parent_verifications", "parent_task_id"): "history",
     ("integration_repair_operations", "verifier_task_id"): "history",
+    ("integration_source_ci", "task_id"): "history",
+    ("integration_source_ci", "repair_task_id"): "history",
     ("sessions", "task_id"): "nulled",
     ("task_assignment_routes", "task_id"): "db_cascade",
     ("task_context", "task_id"): "deleted",
@@ -80,6 +83,8 @@ class IntegrationTaskReference:
 
 #: History entries, in the order a hard-delete refusal reports them.
 INTEGRATION_TASK_REFERENCES: tuple[IntegrationTaskReference, ...] = (
+    IntegrationTaskReference("integration_source_ci", "task_id", "exact source CI recovery"),
+    IntegrationTaskReference("integration_source_ci", "repair_task_id", "exact source CI recovery"),
     IntegrationTaskReference(
         "integration_parent_episodes",
         "parent_task_id",
@@ -103,10 +108,11 @@ INTEGRATION_TASK_REFERENCES: tuple[IntegrationTaskReference, ...] = (
 )
 
 _COLUMNS = {
-    "integration_parent_episodes": integration_parent_episodes.c.parent_task_id,
-    "integration_parent_verifications": integration_parent_verifications.c.parent_task_id,
-    "integration_repair_operations": integration_repair_operations.c.verifier_task_id,
-    "integration_candidate_resolutions": integration_candidate_resolutions.c.repair_task_id,
+    (ref.table, ref.column): table.c[ref.column]
+    for ref in INTEGRATION_TASK_REFERENCES
+    for table in (integration_parent_episodes, integration_parent_verifications,
+                  integration_repair_operations, integration_candidate_resolutions, integration_source_ci)
+    if table.name == ref.table
 }
 
 
@@ -120,7 +126,7 @@ async def find_integration_task_references(conn, ids: Sequence[str]) -> list[dic
         return []
     found: list[dict] = []
     for ref in INTEGRATION_TASK_REFERENCES:
-        column = _COLUMNS[ref.table]
+        column = _COLUMNS[ref.table, ref.column]
         rows = (
             (await conn.execute(select(column).where(column.in_(list(ids))).distinct()))
             .scalars()
@@ -142,6 +148,7 @@ async def find_integration_repository_references(conn, ids: Sequence[str]) -> li
     if not ids:
         return []
     columns = (
+        ("integration_source_ci", "repository_id", integration_source_ci.c.repository_id),
         ("integration_parent_episodes", "repository_id", integration_parent_episodes.c.repository_id),
         (
             "integration_candidate_resolutions",

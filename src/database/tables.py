@@ -659,6 +659,31 @@ task_metadata = Table(
     Column("value", Text, nullable=False),
 )
 
+# Exact source CI observations and their deduplicated local repair lineage.
+integration_source_ci = Table(
+    "integration_source_ci",
+    metadata,
+    Column("task_id", Text, primary_key=True),
+    Column("repository_id", Text, ForeignKey("repos.id"), primary_key=True),
+    Column("source_base", Text, primary_key=True),
+    Column("source_head", Text, primary_key=True),
+    Column("generation", Integer, primary_key=True),
+    Column("policy_generation", Integer, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("evidence", JSONB, nullable=False),
+    Column("repair_task_id", Text),
+    Column("repair_attempt", Integer, nullable=False, server_default="0"),
+    Column("repair_history", JSONB, nullable=False, server_default="[]"),
+    Column("observed_at", Float, nullable=False),
+    CheckConstraint("generation >= 0", name="ck_integration_source_ci_generation"),
+    CheckConstraint("repair_attempt >= 0", name="ck_integration_source_ci_attempt"),
+    CheckConstraint(
+        "state IN ('green', 'red', 'cancelled', 'pending')",
+        name="ck_integration_source_ci_state",
+    ),
+    Index("idx_integration_source_ci_repair", "repair_task_id"),
+)
+
 # ---------------------------------------------------------------------------
 # Gates and labels (work-graph spec §2.3 / §2.4).
 #
@@ -3846,7 +3871,7 @@ integration_repair_stages = Table(
     Column("dossier", JSON, nullable=True),
     Column("state", Text, nullable=False),
     Column("completed_at", Float, nullable=True),
-    CheckConstraint("ordinal IN (0, 1)", name="ck_integration_repair_stages_ordinal"),
+    CheckConstraint("ordinal >= 0", name="ck_integration_repair_stages_ordinal"),
     CheckConstraint("attempts >= 0", name="ck_integration_repair_stages_attempts"),
     CheckConstraint(
         "writer_kind IS NULL OR writer_kind IN ('repair_delegate', 'existing_verifier')",

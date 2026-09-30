@@ -59,19 +59,29 @@ async def test_periodic_sweep_waits_for_settling_but_manual_bypasses_it(db):
     scheduler = IntegrationScheduler(db)
     await scheduler.configure(project_id="p", now=0.0, enabled=True, interval_seconds=300)
 
-    unarmed = await scheduler.mark_due(project_id="p", now=300.0, trigger="periodic")
-    assert unarmed == {"outcome": "not_due", "project_id": "p", "reason": "settling"}
-    assert (await _schedule_row(db))["next_due_at"] == 300.0
-
     async with db.immediate() as conn:
         await note_approval(conn, project_id="p", now=300.0)
     waiting = await scheduler.mark_due(project_id="p", now=599.0, trigger="periodic")
-    assert waiting == unarmed
+    assert waiting == {"outcome": "not_due", "project_id": "p", "reason": "settling"}
     assert (await _schedule_row(db))["next_due_at"] == 300.0
 
     manual = await scheduler.mark_due(project_id="p", now=599.0, trigger="manual")
     assert manual["outcome"] == "due"
     assert manual["trigger"] == "manual"
+
+
+async def test_periodic_sweep_continues_without_another_approval(db):
+    from src.integration.settling import clear
+
+    scheduler = IntegrationScheduler(db)
+    await scheduler.configure(project_id="p", now=0.0, enabled=True, interval_seconds=300)
+    async with db.immediate() as conn:
+        await note_approval(conn, project_id="p", now=100.0)
+        await clear(conn, project_id="p")
+    due = await scheduler.mark_due(project_id="p", now=900.0, trigger="periodic")
+    assert due["outcome"] == "due"
+    assert due["next_due_at"] == 1200.0
+    assert due["request_sequence"] == 1
 
 
 async def test_periodic_sweep_runs_when_window_fires(db):

@@ -155,7 +155,8 @@ async def db(tmp_path, reuse_database):
     yield database
 
 
-async def _seed_batch(db, *, lifecycle="sealed", members=(), base_sha=BASE):
+async def _seed_batch(db, *, lifecycle="sealed", members=(), base_sha=BASE, policy=None):
+    policy = policy or _policy()
     async with db.immediate() as conn:
         await conn.execute(
             insert(integration_batches).values(
@@ -173,7 +174,7 @@ async def _seed_batch(db, *, lifecycle="sealed", members=(), base_sha=BASE):
                     if lifecycle != "empty"
                     else None
                 ),
-                policy_snapshot=_policy(),
+                policy_snapshot=policy,
                 artifact_snapshot=_artifact().model_dump(mode="json"),
                 cleanup_state="pending" if lifecycle != "empty" else "complete",
                 created_at=1.0,
@@ -241,7 +242,7 @@ async def _seed_batch(db, *, lifecycle="sealed", members=(), base_sha=BASE):
                     episode_id="batch",
                     active_stage=0,
                     state="active",
-                    policy_snapshot=_policy(),
+                    policy_snapshot=policy,
                     artifact_snapshot=_artifact().model_dump(mode="json"),
                     required_check_version="checks-v1",
                     route_playbook_id="root-train",
@@ -333,7 +334,7 @@ def _make_origin(tmp_path: Path):
     return origin, work, base, members
 
 
-def _make_conflicting_origin(tmp_path: Path):
+def _make_conflicting_origin(tmp_path: Path, texts=("first\n", "second\n")):
     origin = tmp_path / "origin.git"
     work = tmp_path / "work"
     _git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
@@ -346,7 +347,7 @@ def _make_conflicting_origin(tmp_path: Path):
     base = _git(work, "rev-parse", "HEAD")
     _git(work, "push", "origin", "main")
     members = []
-    for ordinal, text in enumerate(("first\n", "second\n")):
+    for ordinal, text in enumerate(texts):
         _git(work, "switch", "-C", f"root-{ordinal}", base)
         (work / "shared.txt").write_text(text)
         _git(work, "add", "shared.txt")
@@ -2161,6 +2162,8 @@ async def test_direct_caller_repair_lineage_is_not_authoritative(db, tmp_path):
         ("exact", "accepted", 1, None),
         ("reserved", "stale", 0, None),
         ("extra", "stale", 0, None),
+        ("batch", "accepted", 0, None),
+        ("batch_missing", "stale", 0, None),
     ),
 )
 async def test_instance_bound_repair_reservation_push_and_accept_once(
@@ -2178,9 +2181,15 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
     from src.integration.repair import RepairService
     from src.profiles.capabilities import CapabilityPolicy
 
-    origin, work, base, members = _make_conflicting_origin(tmp_path)
+    aggregate = repair_change.startswith("batch")
+    origin, work, base, members = _make_conflicting_origin(
+        tmp_path, ("first\n", "second\n", "third\n") if aggregate else ("first\n", "second\n")
+    )
     await db.update_repo("repo", url=str(origin))
-    await _seed_batch(db, members=members, base_sha=base)
+    policy = _policy()
+    if aggregate:
+        policy["root"]["repair"]["conflict_scope"] = "batch"
+    await _seed_batch(db, members=members, base_sha=base, policy=policy)
     app = _AppClient(origin)
     app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
 
@@ -2284,12 +2293,25 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
     await ownership.attach(repair_fence, session_id, workspace_id, expected_role="repair")
     _git(work, "fetch", str(origin), conflict.branch)
     _git(work, "switch", "--detach", "FETCH_HEAD")
+    partial = _git(work, "rev-parse", "HEAD")
+    if repair_change == "batch":
+        for _base, head, _tree in members[1:]:
+            merged = subprocess.run(
+                ["git", "merge", "--no-ff", "--no-edit", head], cwd=work,
+                capture_output=True, text=True, env=_scrubbed_env(),
+            )
+            assert merged.returncode == 1
+            (work / "shared.txt").write_text("first and second and third\n")
+            _git(work, "add", "shared.txt")
+            _git(work, "commit", "-m", "resolve frozen source")
     (work / "shared.txt").write_text("first and second\n")
     if repair_change == "reserved":
         (work / ".codex").mkdir()
         (work / ".codex" / "settings.json").write_text("{}\n")
     elif repair_change == "extra":
         (work / "extra.txt").write_text("not in the sealed member delta\n")
+    elif aggregate:
+        (work / "extra.txt").write_text("authorized batch repair outside source paths\n")
     _git(work, "add", "shared.txt")
     if repair_change != "exact":
         _git(work, "add", "-A")
@@ -2312,7 +2334,10 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         operation_id="repair-batch-batch",
         resolved_head_sha=resolved,
         resolved_tree_sha=tree,
-        repair_commit_shas=(resolved,),
+        repair_commit_shas=(
+            tuple(_git(work, "rev-list", "--first-parent", "--reverse", f"{partial}..{resolved}").split())
+            if aggregate else (resolved,)
+        ),
         fence=repair_fence,
     )
     stale_principal = replace(principal, session_instance_token="replaced")
@@ -2684,10 +2709,10 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         if handoff_crash == "operator_recovery_wait"
         else "stale"
     )
-    if repair_change == "exact" and (stage == 0 or handoff_crash == "operator_recovery"):
+    if repair_change in {"exact", "batch"} and (stage == 0 or handoff_crash == "operator_recovery"):
         resumed = await service.build("batch")
         assert resumed.outcome in {"built", "already_built"}
-        assert resumed.revision == 1
+        assert resumed.revision == (0 if aggregate else 1)
         for member in members:
             _git(origin, "merge-base", "--is-ancestor", member[1], resumed.head_sha)
         assert resumed.pr_url == "https://github.com/example/repo/pull/9"
@@ -2713,6 +2738,10 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         assert rebuilt.outcome in {"built", "already_built"}
         assert _git(origin, "show", f"{rebuilt.head_sha}:shared.txt") == "first and second"
         assert _git(origin, "rev-parse", "refs/heads/root-1") == source_before
+        if aggregate:
+            assert _git(origin, "show", f"{rebuilt.head_sha}:extra.txt") == "authorized batch repair outside source paths"
+            for _base, head, _tree in members:
+                _git(origin, "merge-base", "--is-ancestor", head, rebuilt.head_sha)
 
 
 async def test_command_handler_resolves_exact_assigned_candidate_member_and_replays(

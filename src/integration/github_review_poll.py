@@ -21,6 +21,7 @@ class GitHubReviewPoller:
     def __init__(
         self, db: Any, evidence_producer: Any, git_manager: Any, *,
         interval_seconds: float = 30.0, page_size: int = 20,
+        source_ci_handler=None,
     ) -> None:
         if interval_seconds <= 0 or page_size <= 0:
             raise ValueError("review poll interval and page size must be positive")
@@ -31,6 +32,7 @@ class GitHubReviewPoller:
         self.page_size = page_size
         self.next_due_at = 0.0
         self.after_id: str | None = None
+        self.source_ci_handler = source_ci_handler
 
     async def tick(self, now: float) -> None:
         if now < self.next_due_at:
@@ -52,6 +54,8 @@ class GitHubReviewPoller:
             select(
                 tasks.c.id, tasks.c.pr_url, repos.c.url,
                 repos.c.default_branch,
+                projects.c.hierarchical_integration_policy,
+                projects.c.hierarchical_integration_generation,
             )
             .select_from(
                 tasks.join(projects, projects.c.id == tasks.c.project_id).join(
@@ -137,4 +141,15 @@ class GitHubReviewPoller:
                 summary=note if approved else "",
                 feedback="" if approved else note or state.lower(),
                 github_review_id=review_id,
+            )
+        if self.source_ci_handler is not None:
+            from src.integration.source_ci import observe_source_ci
+            await observe_source_ci(
+                row=row, source=source, client=client, handler=self.source_ci_handler
+            )
+        policy = row.get("hierarchical_integration_policy") or {}
+        if policy.get("root", {}).get("admission") == "authorized":
+            await self.producer.snapshot_authorized(
+                row["id"], reviewed_sha=source["head"],
+                policy_generation=row["hierarchical_integration_generation"],
             )

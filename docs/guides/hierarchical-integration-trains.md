@@ -514,6 +514,44 @@ that exact capability. Worker sessions cannot invoke it.
 
 ### Candidate-member conflict repair
 
+The agent-queue continuous policy in `docs/config/agent-queue-train-policy.json`
+opts into root `admission: authorized`, `repair.source_ci: true`,
+`repair.conflict_scope: batch` and `repair.on_exhausted: continue`. Completed
+feature/bugfix tasks receive exact remote-head/tree authorization evidence tagged
+with the project policy generation. `root.authorized_task_ids` explicitly admits
+additional authorized task types; the agent-queue policy names the `steady-delta`
+chore without changing its type or parent verification. It does not impersonate a human review or
+override a rejection, open gate or hold. Missing legacy root checkpoints still
+require the audited `integration materialize-root` proof; branches without task
+provenance remain outside admission.
+
+Failed and terminally cancelled source checks file deduplicated repair roots with
+exact source identity and actionable check links. A newer pending/successful
+rerun supersedes an old cancellation. Repair branches preserve source ancestry;
+when a repaired source is green, both it and its covered original source can
+enter the train and receive normal delivery/cleanup receipts. Every final
+candidate still requires its own exact authenticated green CI.
+
+With batch conflict scope, the assignment includes the whole frozen source
+manifest. Start at its partial head, merge every remaining source in order, and
+resolve all needed files in that one workspace. Earlier code, migrations and
+generated files may change: re-chain migration collisions and regenerate
+generated artifacts. Every frozen source must remain an ancestor. Record the
+ordered **first-parent** range using
+`git rev-list --first-parent --reverse PARTIAL_HEAD..HEAD`, then submit through
+the same fenced `resolve-candidate-member` command below. AQ verifies the complete
+batch ancestry and rejects unsealed side branches before accepting the aggregate.
+
+Continuous repair stages retain finite time/attempt budgets. At exhaustion AQ
+stops and proves the exact old writer, retains its checkout/index/dirty work,
+fences and releases its pool claim, and files a fresh operation-bound stage.
+Incomplete handoffs are retried by the reconciler. Old counters and history stay
+visible. Periodic sweeps continue after the settling window is cleared, so a
+released batch does not need another review event to schedule the next batch.
+
+For existing frozen policies using the default `conflict_scope: member` and
+`on_exhausted: human`, the original protocol remains:
+
 When ordered candidate construction conflicts on a reviewed member, the repair
 delegate's task description records the exact batch, candidate revision, member
 ordinal, partial head, and reviewed source range. Start from that partial head,

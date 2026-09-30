@@ -423,8 +423,10 @@ def test_repair_contracts_expose_exact_typed_public_protocol():
         start.args_model(
             operation_id="op", starting_sha="A" * 40, trigger_id="trigger"
         )
+    assert dispatch.args_model(operation_id="op", stage=2).stage == 2
+    assert dispatch.args_model(operation_id="op", stage=27).stage == 27
     with pytest.raises(Exception):
-        dispatch.args_model(operation_id="op", stage=2)
+        dispatch.args_model(operation_id="op", stage=-1)
     for action in {
         "repair",
         "infrastructure_retry",

@@ -36,6 +36,7 @@ class IntegrationService:
         owner_recovery_handler: DrainHandler | None = None,
         review_handler: DrainHandler | None = None,
         root_pull_request_handler: DrainHandler | None = None,
+        repair_dispatch_handler: DrainHandler | None = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.time,
@@ -61,6 +62,7 @@ class IntegrationService:
         self._owner_recovery_handler = owner_recovery_handler
         self._review_handler = review_handler
         self._root_pull_request_handler = root_pull_request_handler
+        self._repair_dispatch_handler = repair_dispatch_handler
         self._page_size = page_size
         self._interval_seconds = interval_seconds
         self._clock = clock
@@ -111,6 +113,8 @@ class IntegrationService:
             # to the repair-deadline pass below.
             await self._source("candidate CI", self._tick_candidate_ci, now)
             await self._source("repair deadline", self._tick_repair_stages, now)
+            if self._repair_dispatch_handler is not None:
+                await self._source("repair dispatch", self._repair_dispatch_handler, now)
             if self._parent_ci_handler is not None:
                 await self._source("parent CI", self._parent_ci_handler, now)
             await self._source("integration intent", self._tick_intents, now)

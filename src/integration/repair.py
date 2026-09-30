@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -58,8 +58,8 @@ def repair_subject_sha(subject: dict[str, Any] | None) -> str:
     return str(raw.get("head_sha") or raw.get("candidate_sha") or "")
 
 
-# Ownership states in which the stage-0 writer can still be recognised as this
-# operation's primary.  ``attached`` is a live writer whose dirty checkout the
+# Ownership states in which a predecessor writer can still be recognised as
+# belonging to this operation. ``attached`` is a live writer whose dirty checkout the
 # debug escalation retains (design spec §9.2); the released pair is a delegate
 # that closed successfully and self-transferred back to its own reserved fence.
 _ATTACHED_PRIMARY_STATES = frozenset({"attached"})
@@ -88,6 +88,26 @@ class RepairService:
         self._ownership = BranchOwnership(db, confirm_handoff=confirm_handoff, clock=clock)
         self._confirm_stopped = confirm_stopped
         self._owner_recovery = owner_recovery
+
+    async def pending_dispatches(self, *, after=None, limit=20):
+        """Replay incomplete continuous-policy handoffs through the command path."""
+        stage = integration_repair_stages
+        operation = integration_repair_operations
+        statement = select(stage.c.operation_id, stage.c.ordinal).select_from(
+            stage.join(operation, operation.c.id == stage.c.operation_id)
+            .outerjoin(tasks, tasks.c.id == stage.c.repair_task_id)
+        ).where(
+            operation.c.active_stage == stage.c.ordinal,
+            operation.c.state.in_(("active", "escalated")),
+            stage.c.state == "active",
+            stage.c.policy["on_exhausted"].as_string() == "continue",
+            or_(stage.c.repair_task_id.is_(None), tasks.c.status == "PAUSED",
+                (tasks.c.status == "COMPLETED") & (stage.c.attempts > 0)),
+        ).order_by(stage.c.operation_id, stage.c.ordinal).limit(limit)
+        if after is not None:
+            statement = statement.where(tuple_(stage.c.operation_id, stage.c.ordinal) > after)
+        async with self.db._engine.connect() as conn:
+            return [dict(row) for row in (await conn.execute(statement)).mappings()]
 
     async def retire_terminal_delegates(self, now: float, *, limit: int = 100) -> list[str]:
         """Settle unfinished delegates whose owning operation has already ended.
@@ -842,7 +862,7 @@ class RepairService:
                     )
                 )
             elif counted and evidence["conclusion"] == "failure" and attempts >= limit:
-                if int(stage["ordinal"]) == 0:
+                if int(stage["ordinal"]) == 0 or RepairPolicy.model_validate(stage["policy"]).on_exhausted == "continue":
                     outcome = "escalate"
                     action = "dispatch_debug"
                     await self._activate_debug_on(
@@ -852,7 +872,7 @@ class RepairService:
                         attempts=attempts,
                         now=recorded_at,
                     )
-                    result_extra["stage"] = 1
+                    result_extra["stage"] = int(stage["ordinal"]) + 1
                 else:
                     outcome = "human_required"
                     action = "block_for_human"
@@ -957,10 +977,29 @@ class RepairService:
             .on_conflict_do_nothing(index_elements=[messages.c.id])
         )
 
+    async def _successor_for_closed_writer(self, operation_id, stage):
+        async with self.db.immediate() as conn:
+            stage = await self._effective_dispatch_stage_on(conn, operation_id, stage)
+            context = await self._dispatch_context_on(conn, operation_id, stage)
+            if context is None:
+                return stage
+            operation, repair_stage, _target, _project = context
+            if (RepairPolicy.model_validate(repair_stage["policy"]).on_exhausted != "continue"
+                    or not repair_stage["repair_task_id"] or repair_stage["state"] != "active"):
+                return stage
+            status = (await conn.execute(select(tasks.c.status).where(
+                tasks.c.id == repair_stage["repair_task_id"]))).scalar_one_or_none()
+            if status != "COMPLETED":
+                return stage
+            await self._activate_debug_on(conn, operation=dict(operation), primary=dict(repair_stage),
+                attempts=repair_stage["attempts"], now=self.clock())
+            return stage + 1
+
     async def dispatch(self, operation_id: str, stage: int) -> dict[str, Any]:
         """Create and safely hand off to the exact current repair writer."""
-        if stage not in {0, 1}:
+        if stage < 0:
             return self._dispatch_value("stale", operation_id, stage)
+        stage = await self._successor_for_closed_writer(operation_id, stage)
 
         # The durable relationship and paused task are committed before the
         # ownership callback is allowed to stop/detach the predecessor.
@@ -1095,8 +1134,8 @@ class RepairService:
                 )
             replay = False
         else:
-            retained_primary = stage == 1 and await self._is_primary_writer(
-                owner, operation_id
+            retained_primary = stage > 0 and await self._is_primary_writer(
+                owner, operation_id, ordinal=stage - 1
             )
             if retained_primary:
                 fence = await self._retained_debug_handoff(
@@ -1115,8 +1154,8 @@ class RepairService:
                         writer_kind="repair_delegate",
                     )
             else:
-                released_primary = stage == 1 and await self._is_primary_writer(
-                    owner, operation_id, states=_RELEASED_PRIMARY_STATES
+                released_primary = stage > 0 and await self._is_primary_writer(
+                    owner, operation_id, ordinal=stage - 1, states=_RELEASED_PRIMARY_STATES
                 )
                 if not released_primary and not self._predecessor_matches(
                     owner, operation
@@ -1404,7 +1443,7 @@ class RepairService:
     ) -> dict[str, Any]:
         """Conditionally expire the exact current stage at its absolute deadline."""
         observed_at = self.clock() if now is None else now
-        if stage not in {0, 1}:
+        if stage < 0:
             return self._timeout_value("stale", "ignore", operation_id, stage)
         async with self.db.immediate() as conn:
             operation = (
@@ -1427,11 +1466,12 @@ class RepairService:
             if operation is None or row is None:
                 return self._timeout_value("stale", "ignore", operation_id, stage)
             if row["state"] in {"failed", "expired"}:
+                continues = stage == 0 or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue"
                 return self._timeout_value(
                     "already_terminal",
-                    "dispatch_debug" if stage == 0 else "block_for_human",
+                    "dispatch_debug" if continues else "block_for_human",
                     operation_id,
-                    1 if stage == 0 else stage,
+                    stage + 1 if continues else stage,
                 )
             if row["state"] in {"passed", "cancelled"}:
                 return self._timeout_value(
@@ -1478,7 +1518,7 @@ class RepairService:
                 return self._timeout_value(
                     "not_due", "awaiting_promotion", operation_id, stage
                 )
-            if stage == 0:
+            if stage == 0 or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue":
                 await self._activate_debug_on(
                     conn,
                     operation=dict(operation),
@@ -1488,7 +1528,7 @@ class RepairService:
                     terminal_state="expired",
                 )
                 return self._timeout_value(
-                    "expired", "dispatch_debug", operation_id, 1
+                    "expired", "dispatch_debug", operation_id, stage + 1
                 )
             transition = await self._human_block_on(
                 conn,
@@ -1565,7 +1605,7 @@ class RepairService:
                         integration_repair_operations.c.episode_id == batch_id,
                         integration_repair_operations.c.target_kind == "batch",
                         integration_repair_operations.c.state == "escalated",
-                        integration_repair_operations.c.active_stage == 1,
+                        integration_repair_operations.c.active_stage >= 1,
                     )
                     .with_for_update()
                 )
@@ -1587,7 +1627,7 @@ class RepairService:
                         select(integration_repair_stages)
                         .where(
                             integration_repair_stages.c.operation_id == operation_id,
-                            integration_repair_stages.c.ordinal == 1,
+                            integration_repair_stages.c.ordinal == operation["active_stage"],
                         )
                         .with_for_update()
                     )
@@ -2436,8 +2476,9 @@ class RepairService:
         operation_id: str,
         *,
         states: frozenset[str] = _ATTACHED_PRIMARY_STATES,
+        ordinal: int = 0,
     ) -> bool:
-        """Whether *owner* is this operation's stage-0 writer in one of *states*.
+        """Whether *owner* is a predecessor writer in one of *states*.
 
         ``attached`` (the default) is the retained-handoff case of design spec
         §9.2: the primary is still live and its dirty checkout is rebound to
@@ -2455,10 +2496,11 @@ class RepairService:
                 await conn.execute(
                     select(integration_repair_stages).where(
                         integration_repair_stages.c.operation_id == operation_id,
-                        integration_repair_stages.c.ordinal == 0,
+                        integration_repair_stages.c.ordinal <= ordinal,
+                        integration_repair_stages.c.repair_task_id == owner["owner_id"],
                     )
                 )
-            ).mappings().one_or_none()
+            ).mappings().first()
         return bool(
             primary is not None
             and primary["repair_task_id"] == owner["owner_id"]
@@ -2500,6 +2542,9 @@ class RepairService:
             return None
         old_task_id = owner["owner_id"]
         old_token = int(owner["fence_token"])
+        released_claim = None
+        released_epoch = None
+        retained_path = None
         async with self.db.immediate() as conn:
             context = await self._dispatch_context_on(
                 conn, operation["id"], int(debug_stage["ordinal"])
@@ -2509,8 +2554,11 @@ class RepairService:
                     select(integration_repair_stages)
                     .where(
                         integration_repair_stages.c.operation_id == operation["id"],
-                        integration_repair_stages.c.ordinal == 0,
+                        integration_repair_stages.c.ordinal < int(debug_stage["ordinal"]),
+                        integration_repair_stages.c.repair_task_id == old_task_id,
                     )
+                    .order_by(integration_repair_stages.c.ordinal.desc())
+                    .limit(1)
                     .with_for_update()
                 )
             ).mappings().one_or_none()
@@ -2625,7 +2673,7 @@ class RepairService:
                 await conn.execute(
                     select(integration_repair_stages).where(
                         integration_repair_stages.c.operation_id == operation["id"],
-                        integration_repair_stages.c.ordinal == 1,
+                        integration_repair_stages.c.ordinal == debug_stage["ordinal"],
                     )
                 )
             ).mappings().one()
@@ -2635,7 +2683,7 @@ class RepairService:
                 update(integration_repair_stages)
                 .where(
                     integration_repair_stages.c.operation_id == operation["id"],
-                    integration_repair_stages.c.ordinal == 1,
+                    integration_repair_stages.c.ordinal == debug_stage["ordinal"],
                     integration_repair_stages.c.repair_task_id == debug_task_id,
                     integration_repair_stages.c.retained_workspace_id.is_(None),
                 )
@@ -2682,12 +2730,29 @@ class RepairService:
                 _manual_pause_control=True,
                 assigned_agent_id=None,
             )
+            if session["lifecycle"] == "pool" and session["last_claim_epoch"] is not None:
+                released_epoch = session["last_claim_epoch"]
+                retained_path = workspace["workspace_path"]
+                released_claim = await self.db.release_claim(
+                    session_id, conn=conn, task_status=old_status,
+                    context="integration_repair_retained_handoff", now=self.clock(),
+                    expected_task_id=old_task_id, expected_claim_epoch=released_epoch,
+                    preserve_terminal_task=True, stop_after_release=True,
+                )
+                if not released_claim.released:
+                    raise _RepairInvariant("retained writer claim could not be fenced and released")
             if (
                 changed.rowcount != 1
                 or rebound.rowcount != 1
                 or stage_changed.rowcount != 1
             ):
                 raise RuntimeError("retained repair handoff lost its compare-and-swap")
+        if released_claim is not None:
+            from src.claim_file import remove_claim_file_if_matches
+            remove_claim_file_if_matches(retained_path, old_task_id, released_epoch)
+            await self.db.log_blocked_flips(released_claim.flipped)
+            await self.db._notify_settled(released_claim.settled)
+            await self.db._notify_ready(released_claim.ready)
         return Fence(target=target, owner_id=debug_task_id, token=new_token)
 
     async def _restore_archived_delegate_on(
@@ -2787,7 +2852,17 @@ class RepairService:
                 ).mappings().one_or_none()
             detail = member["conflict_evidence"] if member is not None else None
             if detail and detail.get("operation_id") == operation["id"]:
-                conflict = detail
+                conflict = dict(detail)
+                if operation["policy_snapshot"]["root"]["repair"].get("conflict_scope") == "batch":
+                    conflict["members"] = [dict(row) for row in (await conn.execute(
+                        select(
+                            integration_batch_members.c.ordinal,
+                            integration_batch_members.c.task_id,
+                            integration_batch_members.c.source_base_sha,
+                            integration_batch_members.c.reviewed_head_sha,
+                        ).where(integration_batch_members.c.batch_id == batch["id"])
+                        .order_by(integration_batch_members.c.ordinal)
+                    )).mappings()]
         return self._delegate_description(operation, repair_stage, conflict=conflict)
 
     @staticmethod
@@ -2801,6 +2876,31 @@ class RepairService:
         )
         if not conflict:
             return description
+        if conflict.get("members"):
+            manifest = "\n".join(
+                f"- {member['ordinal']}: {member['task_id']}, base {member['source_base_sha']}, "
+                f"head {member['reviewed_head_sha']}"
+                for member in conflict["members"]
+            )
+            return (
+                f"{description}\n\n## Complete batch conflict repair\n\n"
+                f"Batch: {conflict['batch_id']}\nRevision: {conflict['revision']}\n"
+                f"Partial head: {conflict['partial_head_sha']}\n\n{manifest}\n\n"
+                "Start at the partial head and merge EVERY remaining frozen source head in "
+                "manifest order in this workspace. Resolve all conflicts together, preserving "
+                "the intended features. Retain every source head as an ancestor of the final "
+                "head. You may edit any necessary repair file, including earlier features and "
+                "migrations; re-chain colliding migration revisions and check alembic heads. "
+                "Regenerate generated artifacts from resolved sources; never hand-merge them. "
+                "Run focused checks, commit repairs, and record the complete first-parent "
+                "range with git rev-list --first-parent --reverse PARTIAL_HEAD..HEAD.\n\n"
+                "Submit through aq integration resolve-candidate-member with "
+                "--resolved-head-sha HEAD --resolved-tree-sha TREE and one "
+                "--repair-commit-sha per first-parent commit. The frozen policy makes this "
+                "a complete batch resolution; the daemon derives all authority and publishes "
+                "under its fence. Do not push the integration branch or main yourself. "
+                "Candidate CI must pass on the exact resulting SHA before promotion."
+            )
         return (
             f"{description}\n\n"
             "## Candidate member conflict\n\n"
@@ -3022,13 +3122,15 @@ class RepairService:
     ) -> None:
         policy = HierarchicalIntegrationPolicy.model_validate(operation["policy_snapshot"])
         boundary = policy.parent if operation["target_kind"] == "parent" else policy.root
+        previous_ordinal = int(primary["ordinal"])
+        next_ordinal = previous_ordinal + 1
         primary_dossier = dict(primary["dossier"] or {})
         primary_dossier["receipts"] = await self._current_receipts_on(conn, operation)
         await conn.execute(
             update(integration_repair_stages)
             .where(
                 integration_repair_stages.c.operation_id == operation["id"],
-                integration_repair_stages.c.ordinal == 0,
+                integration_repair_stages.c.ordinal == previous_ordinal,
                 integration_repair_stages.c.state.in_(("active", "awaiting_completion")),
             )
             .values(
@@ -3043,21 +3145,24 @@ class RepairService:
         debug_dossier["starting_sha"] = self._subject_sha(primary["current_subject"])
         debug_dossier["branch_sha"] = self._subject_sha(primary["current_subject"])
         debug_dossier["budget"] = {
-            "ordinal": 1,
+            "ordinal": next_ordinal,
             "started_at": now,
             "deadline_at": now + boundary.repair.debug_seconds,
             "attempt_limit": boundary.repair.debug_attempts,
             "attempts": 0,
         }
         debug_dossier["previous_stage"] = {
-            "ordinal": 0,
+            "ordinal": previous_ordinal,
             "attempts": attempts,
             "budget": primary_budget,
-            "dossier": primary_dossier,
+            "dossier": primary_dossier if previous_ordinal == 0 else {
+                "starting_sha": primary["starting_sha"],
+                "current_subject": primary["current_subject"],
+            },
         }
         debug = {
             "operation_id": operation["id"],
-            "ordinal": 1,
+            "ordinal": next_ordinal,
             "policy": boundary.repair.model_dump(mode="json"),
             "intelligence_class": boundary.repair.debug_intelligence_class,
             # Deprecated column; ``debug_profile_id`` is ignored (routing spec §5.3).
@@ -3065,9 +3170,9 @@ class RepairService:
             "repair_task_id": None,
             "writer_kind": None,
             "starting_sha": self._subject_sha(primary["current_subject"]),
-            "trigger_id": f"stage-exhausted:{operation['id']}:0",
+            "trigger_id": f"stage-exhausted:{operation['id']}:{previous_ordinal}",
             "current_subject": primary["current_subject"],
-                "deadline_event_id": f"repair-deadline-{operation['id']}-1",
+            "deadline_event_id": f"repair-deadline-{operation['id']}-{next_ordinal}",
             "success_subject": None,
             "success_evidence_id": None,
             "started_at": now,
@@ -3081,18 +3186,18 @@ class RepairService:
             update(integration_repair_operations)
             .where(
                 integration_repair_operations.c.id == operation["id"],
-                integration_repair_operations.c.active_stage == 0,
-                integration_repair_operations.c.state == "active",
+                integration_repair_operations.c.active_stage == previous_ordinal,
+                integration_repair_operations.c.state.in_(("active", "escalated")),
             )
-            .values(active_stage=1, state="escalated", updated_at=now)
+            .values(active_stage=next_ordinal, state="escalated", updated_at=now)
         )
         if escalated.rowcount != 1:
             raise _RepairInvariant("repair operation changed before debug escalation")
         project_id = await self._operation_project_id_on(conn, operation)
         await enqueue_integration_event(
             conn,
-            event_id=f"repair-exhausted-{operation['id']}-0",
-            dedup_key=f"repair-exhausted:{operation['id']}:0",
+            event_id=f"repair-exhausted-{operation['id']}-{previous_ordinal}",
+            dedup_key=f"repair-exhausted:{operation['id']}:{previous_ordinal}",
             project_id=project_id,
             event_type="integration.repair_exhausted",
             payload={"operation_id": operation["id"]},

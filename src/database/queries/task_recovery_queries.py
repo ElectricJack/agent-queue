@@ -601,6 +601,7 @@ class TaskRecoveryQueryMixin:
         author_id,
         project_id=None,
         stopped_session=None,
+        expected_hold_at=None,
     ):
         """Atomically fence, record and optionally requeue one failed attempt."""
         result = None
@@ -614,7 +615,17 @@ class TaskRecoveryQueryMixin:
                 raise ValueError("Task not found or out of scope")
             meta, attempt = await self._recovery_context(conn, task)
             incident = meta.get(INCIDENT_KEY) or {}
-            if incident.get("id") != incident_id or incident.get("decision"):
+            releasing_hold = (
+                decision == "retry"
+                and expected_hold_at is not None
+                and incident.get("decision") == "hold"
+                and incident.get("decided_at") == expected_hold_at
+            )
+            if (
+                incident.get("id") != incident_id
+                or (incident.get("decision") and not releasing_hold)
+                or (expected_hold_at is not None and not releasing_hold)
+            ):
                 raise ValueError("Incident is stale or already has a decision")
             if (
                 task["status"] != "BLOCKED"
@@ -655,6 +666,12 @@ class TaskRecoveryQueryMixin:
                     )
                 )
             now = time.time()
+            history = list(incident.get("decision_history", []))
+            if releasing_hold:
+                history.append({
+                    key: incident[key]
+                    for key in ("decision", "decision_reason", "decided_at", "decided_by")
+                })
             await self._upsert_meta(
                 task_id,
                 INCIDENT_KEY,
@@ -664,15 +681,19 @@ class TaskRecoveryQueryMixin:
                     "decision_reason": reason,
                     "decided_at": now,
                     "decided_by": author_id,
+                    "decision_history": history,
                 },
                 conn=conn,
             )
             await conn.execute(
                 insert(task_comments).values(
-                    id="comment-" + incident_id,
+                    id="comment-" + incident_id + ("-release" if releasing_hold else ""),
                     task_id=task_id,
                     project_id=task["project_id"],
-                    body=f"Recovery decision: {decision} ({incident['reason']}, session {attempt['session_id']}).\n{reason}",
+                    body=(
+                        (f"Cleared recovery hold from {expected_hold_at}.\n" if releasing_hold else "")
+                        + f"Recovery decision: {decision} ({incident['reason']}, session {attempt['session_id']}).\n{reason}"
+                    ),
                     author_kind=author_kind,
                     author_id=author_id,
                     created_at=now,

@@ -87,6 +87,9 @@ class RepairPolicy(BaseModel):
     debug_seconds: int = Field(default=3600, gt=0)
     debug_attempts: int = Field(default=3, gt=0)
     debug_intelligence_class: str
+    conflict_scope: Literal["member", "batch"] = "member"
+    on_exhausted: Literal["human", "continue"] = "human"
+    source_ci: bool = False
     # Deprecated and ignored: mandatory routing files repairs with the
     # ``debug_intelligence_class`` hint only and the router writes the
     # route.  The field stays so stored ``policy_snapshot`` values naming it
@@ -146,6 +149,8 @@ class IntegrationBoundaryPolicy(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     required_checks: RequiredCheckSet
+    admission: Literal["reviewed", "authorized"] = "reviewed"
+    authorized_task_ids: tuple[str, ...] = ()
     repair: RepairPolicy
     route: PlaybookRoute
     primary_intelligence_class: str | None = Field(default=None, min_length=1)

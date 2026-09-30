@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:1493c985aaba546a20852b52e58b233cc6d76f01d3023b3d9c4042963a6fabb6",
+  "digest": "sha256:a80beacf6adbc3969d68edcbfbe23f8cb714a74a29e6ba37b504979ec6422a5e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5363,18 +5363,24 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.handler",
+        "src.config",
         "src.database",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.doctor.stall_checks",
         "src.git.manager",
         "src.integration.github_review_poll",
+        "src.integration.models",
         "src.integration.promotion",
         "src.integration.review_evidence",
         "src.integration.root_materialization",
         "src.integration.scheduler",
         "src.integration.settling",
-        "src.models"
+        "src.integration.source_ci",
+        "src.models",
+        "src.orchestrator",
+        "src.vault"
       ],
       "markers": [
         "parametrize"
@@ -5400,6 +5406,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.principal",
         "src.database",
         "src.database.tables",
         "src.git.github_app",
@@ -5409,14 +5416,19 @@
         "src.integration.cleanup",
         "src.integration.epic_pr",
         "src.integration.main_promotion",
+        "src.integration.models",
+        "src.integration.ownership",
         "src.integration.promotion",
+        "src.integration.release",
         "src.integration.repair",
         "src.integration.review_evidence",
         "src.integration.scheduler",
-        "src.models"
+        "src.models",
+        "src.profiles.capabilities"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "The epic PR and integration train advance as one connected delivery."
     },
@@ -7050,6 +7062,7 @@
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.branch_materialization",
         "src.integration.collection",
         "src.integration.hierarchy",
         "src.integration.models",
@@ -7400,6 +7413,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.claim_file",
         "src.commands.principal",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
