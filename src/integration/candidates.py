@@ -3069,36 +3069,18 @@ class CandidateService:
         )
         if source_commits.returncode != 0 or not source_commits.stdout.strip():
             return "reviewed_source_commit_lineage_is_unavailable"
-        intended_paths = {line.split("\t", 1)[1] for line in changed.stdout.splitlines()}
         repaired = await self.git.arun_git_result(
             ["diff", "--name-only", lineage.partial_head_sha, lineage.resolved_head_sha],
             cwd=str(store),
         )
         if repaired.returncode != 0:
             return "resolved_delta_is_unavailable"
-        source_already_contained = await self.git.ais_ancestor(
-            str(store), lineage.source_head_sha, lineage.partial_head_sha
-        )
-        if source_already_contained:
-            # This is a persisted conflict that predates the contained-member
-            # construction guard.  The reviewed source is already in the
-            # frozen partial candidate, so accepting a repair that changes a
-            # path would manufacture a second, unreviewed edit.  An empty-tree
-            # repair commit is still required: it binds the exact pushed
-            # resolution to the writer's immutable reservation without asking
-            # an operator to create a fake source-path edit.
-            if repaired.stdout.strip():
-                return "contained_source_repair_changes_the_candidate"
-        else:
-            # Path-only coverage lets a repair carry just the tip of a source
-            # series when several source commits touched the same path. Keep a
-            # one-for-one frozen record of that series: a repair may resolve
-            # conflicts, but it cannot claim delivery of an unaccounted source
-            # commit merely because the final path list happens to match.
-            if len(lineage.repair_commit_shas) != len(source_commits.stdout.split()):
-                return "repair_commit_count_does_not_cover_reviewed_source"
-            if set(repaired.stdout.splitlines()) != intended_paths:
-                return "resolved_paths_do_not_match_reviewed_source"
+        # Operator policy: a repair may change any file -- including reviewed
+        # code and files a reviewed member added -- when that is what it takes
+        # for the batch to merge and pass CI.  The lineage stays exact (strict
+        # ancestry, the frozen commit list, no merges) so the published
+        # candidate is still fully attributable; only the content restrictions
+        # are gone.
         merges = await self.git.arun_git_result(
             [
                 "rev-list",
@@ -3109,20 +3091,6 @@ class CandidateService:
         )
         if merges.returncode != 0 or merges.stdout.strip():
             return "repair_lineage_contains_a_merge"
-        if source_already_contained:
-            return None
-        for line in changed.stdout.splitlines():
-            status, path = line.split("\t", 1)
-            source_blob = await self._blob(store, lineage.source_head_sha, path)
-            resolved_blob = await self._blob(store, lineage.resolved_head_sha, path)
-            partial_blob = await self._blob(store, lineage.partial_head_sha, path)
-            if status.startswith("D"):
-                if resolved_blob is not None:
-                    return "deleted_reviewed_path_was_restored"
-            elif resolved_blob is None or resolved_blob == partial_blob:
-                return "reviewed_path_was_not_resolved"
-            elif status.startswith("A") and resolved_blob != source_blob:
-                return "added_reviewed_path_does_not_match_source"
         return None
 
     async def _blob(self, store: Path, commit: str, path: str) -> str | None:
