@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -25,6 +26,7 @@ from src.database.tables import (
     integration_repair_operations,
     integration_repair_stages,
     integration_review_evidence,
+    messages,
     playbook_artifacts,
     project_integration_leases,
     project_integration_schedules,
@@ -47,9 +49,261 @@ from src.models import Project, RepoConfig, RepoSourceType, TaskStatus
 from src.profiles.capabilities import CapabilityPolicy
 from tests.pg_dsn import ensure_worker_postgres_dsn
 from tests.pg_trigger_helpers import injected_trigger
+from src.integration.migration_heads import MigrationHead, MigrationInspector, declaration, select_members
 
 BASE_SHA = "a" * 40
 POSTGRES_TEST_DSN = ensure_worker_postgres_dsn()
+
+
+@pytest.mark.parametrize(
+    "source, parents",
+    [
+        ("revision = '44'\ndown_revision = '43'", ("43",)),
+        ("revision: str = '44'\ndown_revision: tuple = ('42', '43')", ("42", "43")),
+        ("revision = '44'\ndown_revision = None", ()),
+    ],
+)
+def test_migration_declaration_reads_literals_without_executing(source, parents):
+    head = declaration("migrations/versions/new.py", source + "\nraise RuntimeError('never run')")
+    assert head.revision == "44"
+    assert head.down_revisions == parents
+
+
+def test_dynamic_migration_revision_is_not_executed():
+    with pytest.raises(ValueError):
+        declaration("migration.py", "revision = dangerous()\ndown_revision = '43'")
+
+
+async def test_migration_inspector_reads_only_added_files_at_the_reviewed_head(tmp_path):
+    from src.git.manager import GitManager
+    from tests.test_integration_candidates import _git, _make_origin
+
+    origin, work, base, _members = _make_origin(tmp_path)
+    _git(work, "switch", "-C", "migration", base)
+    directory = work / "migrations" / "versions"
+    directory.mkdir(parents=True)
+    (directory / "__init__.py").write_text("")
+    (directory / "44.py").write_text(
+        "revision: str = '44'\ndown_revision = '43'\nraise RuntimeError('never execute')\n"
+    )
+    _git(work, "add", ".")
+    _git(work, "commit", "-m", "migration")
+    reviewed = _git(work, "rev-parse", "HEAD")
+    # Moving the local branch after review must not change inspected metadata.
+    (directory / "44.py").write_text("revision = '999'\ndown_revision = '998'\n")
+    _git(work, "commit", "-am", "after review")
+    git = GitManager()
+    git.bind_github_repository = AsyncMock(return_value=SimpleNamespace())
+    git.afetch_repository_oid = AsyncMock()
+    promotion = SimpleNamespace(
+        git=git,
+        _ensure_retained_repository=AsyncMock(),
+        _resolve_repository=AsyncMock(
+            return_value=SimpleNamespace(retained_git_dir=work, origin_url=str(origin))
+        ),
+    )
+    heads = await MigrationInspector(promotion)(
+        dict(repository_id="repo", source_base=base, source_head=reviewed)
+    )
+    assert heads == (MigrationHead("migrations/versions/44.py", "44", ("43",)),)
+    assert [call.kwargs["oid"] for call in git.afetch_repository_oid.await_args_list] == [
+        base,
+        reviewed,
+    ]
+
+
+def test_internal_migration_chain_does_not_hide_a_sibling_collision():
+    members = [
+        dict(task_id=task, repository_id="repo", source_base="base", source_head=task)
+        for task in ("first", "second", "third")
+    ]
+    inspected = {
+        (member["task_id"], "repo", "base", member["source_head"]): heads
+        for member, heads in zip(
+            members,
+            (
+                (MigrationHead("44.py", "44", ("43",)), MigrationHead("45.py", "45", ("44",))),
+                (MigrationHead("46.py", "46", ("43",)),),
+                (MigrationHead("47.py", "47", ("45",)),),
+            ),
+            strict=True,
+        )
+    }
+    accepted, deferred = select_members(members, inspected)
+    assert [member["task_id"] for member in accepted] == ["first", "third"]
+    assert [member["task_id"] for member in deferred] == ["second"]
+
+
+def test_separate_alembic_environments_can_use_the_same_revision_ids():
+    members = [
+        dict(task_id=task, repository_id="repo", source_base="base", source_head=task)
+        for task in ("first", "second")
+    ]
+    inspected = {
+        (member["task_id"], "repo", "base", member["source_head"]): (
+            MigrationHead(f"{member['task_id']}/migrations/versions/44.py", "44", ("43",)),
+        )
+        for member in members
+    }
+    accepted, deferred = select_members(members, inspected)
+    assert accepted == members and deferred == []
+
+
+@pytest.mark.parametrize(
+    "second_revision, second_parent", [("44", "43"), ("45", "43"), ("44", "42")]
+)
+async def test_seal_defers_alembic_collisions_and_notifies_once(db, second_revision, second_parent):
+    from src.integration.scheduler import TrainService
+
+    await _enable_train(db)
+    await _seed_leaf(db, "first", "1" * 40)
+    await _seed_leaf(db, "second", "2" * 40)
+    await _seed_leaf(db, "unrelated", "3" * 40)
+    request = await _request(db)
+
+    async def inspect(member):
+        if member["task_id"] == "unrelated":
+            return ()
+        revision, parent = (
+            ("44", "43") if member["task_id"] == "first" else (second_revision, second_parent)
+        )
+        return (MigrationHead(f"migrations/versions/{revision}.py", revision, (parent,)),)
+
+    service = TrainService(db, page_size=1, migration_inspector=inspect)
+    batch = await service.seal("p", request["request_id"], 20.0)
+    assert batch["outcome"] == "sealed"
+    assert await service.seal("p", request["request_id"], 21.0) == batch
+    async with db._engine.connect() as conn:
+        members = (
+            (
+                await conn.execute(
+                    select(integration_batch_members.c.task_id).order_by(
+                        integration_batch_members.c.ordinal
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        notices = (await conn.execute(select(messages))).mappings().all()
+        approval = (
+            await conn.execute(
+                select(integration_review_evidence.c.verdict).where(
+                    integration_review_evidence.c.source_task_id == "second"
+                )
+            )
+        ).scalar_one()
+        eligible = await db.eligible_root_page_on(
+            conn, project_id="p", repository_id="repo", after=None, limit=100
+        )
+    assert members == ["first", "unrelated"]
+    assert len(notices) == 1
+    assert notices[0]["to_id"] == "supervisor-p"
+    assert "second" in notices[0]["body"] and "Rechain" in notices[0]["body"]
+    assert approval == "approved"
+    assert "second" in {member["task_id"] for member in eligible}
+
+
+async def test_collision_deferral_also_defers_its_declared_dependent(db):
+    from src.integration.scheduler import TrainService
+    from src.integration.epic_dependencies import declare
+
+    await _enable_train(db)
+    for index, task in enumerate(("first", "second", "dependent", "independent"), start=1):
+        await _seed_leaf(db, task, str(index) * 40)
+    async with db.immediate() as conn:
+        await declare(conn, dependent_task_id="dependent", dependency_task_id="second", now=2.0)
+    request = await _request(db)
+
+    async def inspect(member):
+        if member["task_id"] in {"dependent", "independent"}:
+            return (MigrationHead("99.py", "99", ("98",)),)
+        return (MigrationHead("44.py", "44", ("43",)),)
+
+    await TrainService(db, migration_inspector=inspect).seal("p", request["request_id"], 20.0)
+    async with db._engine.connect() as conn:
+        assert (
+            await conn.execute(
+                select(integration_batch_members.c.task_id).order_by(
+                    integration_batch_members.c.ordinal
+                )
+            )
+        ).scalars().all() == ["first", "independent"]
+
+
+async def test_seal_rechecks_reviewed_head_after_migration_inspection(db):
+    from src.integration.scheduler import TrainService
+
+    await _enable_train(db)
+    await _seed_leaf(db, "first", "1" * 40)
+    request = await _request(db)
+
+    async def inspect(member):
+        await _seed_leaf(db, "late", "2" * 40)
+        return ()
+
+    result = await TrainService(db, migration_inspector=inspect)._seal_once(
+        "p", request["request_id"], 20.0
+    )
+    assert result["outcome"] == "stale"
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches.c.id))).first() is None
+
+
+async def test_public_seal_reinspects_a_frontier_that_changed_during_git_reads(db):
+    from src.integration.scheduler import TrainService
+
+    await _enable_train(db)
+    await _seed_leaf(db, "first", "1" * 40)
+    request = await _request(db)
+    inspected = []
+
+    async def inspect(member):
+        if not inspected:
+            await _seed_leaf(db, "late", "2" * 40)
+        inspected.append(member["task_id"])
+        return ()
+
+    result = await TrainService(db, migration_inspector=inspect).seal(
+        "p", request["request_id"], 20.0
+    )
+    assert result["outcome"] == "sealed"
+    assert inspected == ["first", "first", "late"]
+
+
+async def test_continuously_changing_frontier_gets_a_bounded_durable_retry(db):
+    from src.integration.scheduler import TrainService
+
+    await _enable_train(db)
+    await _seed_leaf(db, "first", "1" * 40)
+    request = await _request(db)
+    observations = []
+
+    async def inspect(member):
+        observations.append(member["task_id"])
+        ordinal = len(observations)
+        await _seed_leaf(db, f"late-{ordinal}", f"{ordinal + 10:040x}")
+        return ()
+
+    result = await TrainService(db, migration_inspector=inspect).seal(
+        "p", request["request_id"], 20.0
+    )
+    assert result["outcome"] == "busy"
+    assert len(observations) == 7  # Three snapshots of 1, 2 and 4 sources.
+    async with db._engine.connect() as conn:
+        assert (await conn.execute(select(integration_batches.c.id))).first() is None
+        retries = (
+            (
+                await conn.execute(
+                    select(integration_outbox).where(
+                        integration_outbox.c.id.startswith("integration-seal-retry:")
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert len(retries) == 1 and retries[0]["available_at"] == 25.0
 
 
 def _artifact() -> ArtifactSnapshot:

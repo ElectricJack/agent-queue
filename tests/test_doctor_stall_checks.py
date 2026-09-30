@@ -251,6 +251,7 @@ async def test_sweep_is_registered_and_reports_all_active_projects(context, monk
 
     monkeypatch.setattr(module, "_branch_findings", branches)
     monkeypatch.setattr(module, "_unmaterialized_pr_findings", lambda *args: branches())
+    monkeypatch.setattr(module, "_reviewed_file_guard_findings", lambda *args: branches())
     monkeypatch.setattr(module, "_validation_findings", validation)
     assert module.stall_checks()[0].fix is None
     result = await module._check_sweep(context)
@@ -259,3 +260,25 @@ async def test_sweep_is_registered_and_reports_all_active_projects(context, monk
     assert result.data["vault_root"] == context.config.vault_root
     assert "unclaimed_work one: one-ready" in result.detail
     assert "unclaimed_work two: two-ready" in result.detail
+
+
+async def test_reviewed_file_guard_stall_names_batch_and_recovery(context, monkeypatch):
+    async def blocked(ctx):
+        return [
+            dict(
+                project_id=pid,
+                batch_id=f"batch-{pid}",
+                invariant="added_reviewed_path_does_not_match_source",
+            )
+            for pid in ("one", "inactive")
+        ]
+
+    monkeypatch.setattr(
+        import_module("src.doctor.integration_checks"),
+        "_find_reviewed_file_blocked_batches",
+        blocked,
+    )
+    findings = await module._reviewed_file_guard_findings(context, {"one"})
+    assert len(findings) == 1
+    assert findings[0]["kind"] == "reviewed_file_guard"
+    assert "batch-one" in findings[0]["detail"] and "eject" in findings[0]["detail"]
