@@ -686,6 +686,21 @@ Successful or already-observed pushes enqueue the durable
 `integration.resolution_push_observed` lifecycle fact keyed by operation and intent; only trusted
 service/playbook reconciliation proves the remote tip and atomically finalizes the original receipt.
 
+Candidate-member admission has a narrow Alembic sibling-collision proof. A reviewed delta adding
+one `migrations/versions/*.py` revision may rechain that revision when its ID already belongs to
+a different migration path in the frozen partial candidate with the same predecessor. The partial
+migration graph must be a complete single chain. The replacement uses a fresh ID, points to that
+chain's head, and preserves the reviewed Python AST except for the literal `revision` and
+`down_revision` values and the module docstring's `Revision ID:` / `Revises:` header values.
+Branch labels and dependencies must be absent or null. Its filename may stay unchanged or replace
+only the old revision prefix with the new one. Existing partial migration tree entries remain
+identical; all other reviewed paths retain the ordinary admission checks. Ambiguous metadata,
+graph shapes, extra paths, executable changes, and edits to existing migrations fail closed.
+This proof does not waive commit coverage, linear ancestry, reserved-path checks, remote evidence,
+or writer fences. The immutable reservation still records the original source and exact repair;
+aggregate validation runs on the repaired candidate. Both initial and replay
+`integration_resolve_candidate_member` responses expose the admission `invariant` on refusal.
+
 The CI evidence contract is also the sole authority for attempt accounting. An attempt is consumed
 only when it records a conclusive result for the exact candidate SHA. Launch requests, cancelled
 runs, and superseded runs are not attempts.

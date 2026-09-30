@@ -333,7 +333,19 @@ def _make_origin(tmp_path: Path):
     return origin, work, base, members
 
 
-def _make_conflicting_origin(tmp_path: Path):
+def _migration_text(revision, parent, table="attachments"):
+    return (
+        f'"""Create {table}.\n\nRevision ID: {revision}\nRevises: {parent}\n"""\n'
+        'from alembic import op\n'
+        f'revision: str = {revision!r}\n'
+        f'down_revision = {parent!r}\n'
+        'branch_labels = None\ndepends_on = None\n'
+        f'def upgrade():\n    op.create_table({table!r})\n'
+        f'def downgrade():\n    op.drop_table({table!r})\n'
+    )
+
+
+def _make_conflicting_origin(tmp_path: Path, *, migrations=False):
     origin = tmp_path / "origin.git"
     work = tmp_path / "work"
     _git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
@@ -342,6 +354,13 @@ def _make_conflicting_origin(tmp_path: Path):
     _git(work, "config", "user.email", "candidate@example.test")
     (work / "shared.txt").write_text("base\n")
     _git(work, "add", "shared.txt")
+    if migrations:
+        versions = work / "migrations" / "versions"
+        versions.mkdir(parents=True)
+        (versions / "a00000000043_base.py").write_text(
+            _migration_text("a00000000043", None, "base")
+        )
+        _git(work, "add", "migrations")
     _git(work, "commit", "-m", "base")
     base = _git(work, "rev-parse", "HEAD")
     _git(work, "push", "origin", "main")
@@ -350,6 +369,12 @@ def _make_conflicting_origin(tmp_path: Path):
         _git(work, "switch", "-C", f"root-{ordinal}", base)
         (work / "shared.txt").write_text(text)
         _git(work, "add", "shared.txt")
+        if migrations:
+            name = "object_loops" if ordinal == 0 else "review_attachments"
+            (versions / f"a00000000044_{name}.py").write_text(
+                _migration_text("a00000000044", "a00000000043", name)
+            )
+            _git(work, "add", "migrations")
         _git(work, "commit", "-m", f"member {ordinal}")
         head = _git(work, "rev-parse", "HEAD")
         tree = _git(work, "rev-parse", f"{head}^{{tree}}")
@@ -2715,8 +2740,11 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         assert _git(origin, "rev-parse", "refs/heads/root-1") == source_before
 
 
+@pytest.mark.parametrize(
+    "migration_repair", [None, "rename", "in_place", "tampered", "tampered_in_place"]
+)
 async def test_command_handler_resolves_exact_assigned_candidate_member_and_replays(
-    command_handler_factory, tmp_path
+    command_handler_factory, tmp_path, migration_repair
 ):
     """The public command derives authority, accepts once, then resumes later members."""
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
@@ -2733,7 +2761,9 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
     await db.create_profile(AgentProfile(id="repairer", name="Repairer"))
     await db.create_profile(AgentProfile(id="debugger", name="Debugger"))
     await db.create_project(Project(id="p", name="project"))
-    origin, work, base, members = _make_conflicting_origin(tmp_path)
+    origin, work, base, members = _make_conflicting_origin(
+        tmp_path, migrations=migration_repair is not None
+    )
     await db.create_repo(
         RepoConfig(
             id="repo",
@@ -2856,6 +2886,17 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
     _git(work, "switch", "--detach", "FETCH_HEAD")
     (work / "shared.txt").write_text("first and second\n")
     _git(work, "add", "shared.txt")
+    if migration_repair:
+        number = (
+            "a00000000044" if migration_repair in {"in_place", "tampered_in_place"}
+            else "a00000000045"
+        )
+        migration_path = f"migrations/versions/{number}_review_attachments.py"
+        text = _migration_text("a00000000045", "a00000000044", "review_attachments")
+        if migration_repair in {"tampered", "tampered_in_place"}:
+            text = text.replace("op.create_table", "op.drop_table")
+        (work / migration_path).write_text(text)
+        _git(work, "add", "migrations")
     _git(work, "commit", "-m", "resolve exact command candidate conflict")
     resolved = _git(work, "rev-parse", "HEAD")
     tree = _git(work, "rev-parse", "HEAD^{tree}")
@@ -2916,6 +2957,28 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
     assert wrong_instance["outcome"] == "unauthorized"
     assert wrong_epoch["outcome"] == "stale"
     assert supplied_fence["outcome"] == "invariant_error"
+    if migration_repair in {"tampered", "tampered_in_place"}:
+        for result in (accepted, replay):
+            assert result["success"] is False
+            assert result["outcome"] == "stale"
+            assert result["invariant"] == (
+                "added_reviewed_path_does_not_match_source" if migration_repair == "tampered_in_place"
+                else "resolved_paths_do_not_match_reviewed_source"
+            )
+            assert result["continuation"] is None
+        assert accepted["reservation_id"] == replay["reservation_id"]
+        async with db._engine.connect() as conn:
+            resolution = (
+                await conn.execute(select(integration_candidate_resolutions))
+            ).mappings().one()
+        assert resolution["state"] == "pushed"
+        assert resolution["source_head_sha"] == members[1][1]
+        assert resolution["resolved_head_sha"] == resolved
+        assert _git(origin, "rev-parse", resolution["target_branch"]) == resolved
+        assert _git(origin, "rev-parse", conflict.branch) == conflict.head_sha
+        await db.close()
+        return
+    assert accepted["invariant"] is None
     assert accepted["outcome"] == "accepted"
     assert replay["outcome"] == "already_accepted"
     assert old_claim_reuse["outcome"] == "unauthorized"
@@ -2934,6 +2997,15 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
             await conn.execute(select(integration_candidate_resolutions))
         ).mappings().one()
     assert resolution["state"] == "accepted"
+    assert resolution["source_head_sha"] == members[1][1]
+    assert resolution["resolved_head_sha"] == resolved
+    if migration_repair:
+        candidate = accepted["continuation"]["head_sha"]
+        assert _git(origin, "show", f"{candidate}:{migration_path}") == text.strip()
+        sibling_path = "migrations/versions/a00000000044_object_loops.py"
+        assert _git(origin, "rev-parse", f"{candidate}:{sibling_path}") == _git(
+            origin, "rev-parse", f"{conflict.head_sha}:{sibling_path}"
+        )
     assert resolution["repair_task_id"] == repair_task_id
     assert resolution["repair_session_id"] == session_id
     assert resolution["repair_session_instance_token"] == "instance-1"
@@ -3634,3 +3706,115 @@ async def test_two_commit_source_repair_cannot_substitute_only_its_tip(db, tmp_p
         )
         == "repair_commit_count_does_not_cover_reviewed_source"
     )
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "rename", "in_place", "body", "wrong_parent", "occupied_revision", "no_collision",
+        "non_sibling", "partial_edit", "extra_path", "wrong_filename", "mode", "dynamic_metadata",
+        "duplicate_metadata", "branch_labels", "depends_on", "multiple_heads", "missing_parent",
+        "cycle", "docstring", "missing_source_commit", "two_commits", "conditional_metadata",
+        "duplicate_partial_id", "later_partial_head",
+    ],
+)
+async def test_migration_rechain_preserves_frozen_candidate_and_reviewed_code(tmp_path, case):
+    from src.integration.candidates import CandidateRepairLineage, CandidateService
+
+    _origin, work, base, members = _make_conflicting_origin(tmp_path, migrations=True)
+    source = members[1][1]
+    versions = work / "migrations" / "versions"
+    source_path = versions / "a00000000044_review_attachments.py"
+    source_text = source_path.read_text()
+    if case in {
+        "non_sibling", "dynamic_metadata", "duplicate_metadata", "missing_source_commit", "two_commits",
+        "conditional_metadata",
+    }:
+        if case == "non_sibling":
+            source_text = source_text.replace("a00000000043", "unknown")
+        elif case == "dynamic_metadata":
+            source_text = source_text.replace("'a00000000044'", "'a000000000' + '44'")
+        elif case == "conditional_metadata":
+            source_text += "if True:\n    revision = 'hidden_revision'\n"
+        elif case == "duplicate_metadata":
+            source_text += "revision = 'a00000000044'\n"
+        else:
+            (work / "shared.txt").write_text("second source commit\n")
+        source_path.write_text(source_text)
+        _git(work, "add", "-A")
+        if case in {"missing_source_commit", "two_commits"}:
+            _git(work, "commit", "-m", "second source commit")
+        else:
+            _git(work, "commit", "--amend", "--no-edit")
+        source = _git(work, "rev-parse", "HEAD")
+    _git(work, "switch", "--detach", members[0][1])
+    sibling = versions / "a00000000044_object_loops.py"
+    if case == "no_collision":
+        sibling.write_text(_migration_text("other_id", "a00000000043", "object_loops"))
+    elif case == "duplicate_partial_id":
+        (versions / "duplicate.py").write_text(_migration_text("a00000000044", "a00000000043"))
+    elif case == "later_partial_head":
+        (versions / "later.py").write_text(_migration_text("a00000000046", "a00000000044"))
+    elif case == "multiple_heads":
+        (versions / "other.py").write_text(_migration_text("other", "a00000000043"))
+    elif case == "missing_parent":
+        sibling.write_text(_migration_text("a00000000044", "missing", "object_loops"))
+    elif case == "cycle":
+        (versions / "a00000000043_base.py").write_text(
+            _migration_text("a00000000043", "a00000000044", "base")
+        )
+    _git(work, "add", "-A")
+    _git(work, "commit", "--allow-empty", "-m", "freeze partial graph")
+    partial = _git(work, "rev-parse", "HEAD")
+    repaired_text = source_text.replace("a00000000044", "a00000000045").replace(
+        "a00000000043", "a00000000044"
+    )
+    if case == "later_partial_head":
+        repaired_text = repaired_text.replace("a00000000044", "a00000000046")
+    if case == "body":
+        repaired_text = repaired_text.replace("op.create_table", "op.drop_table")
+    elif case == "wrong_parent":
+        repaired_text = repaired_text.replace("'a00000000044'", "'a00000000043'")
+    elif case == "occupied_revision":
+        repaired_text = repaired_text.replace("a00000000045", "a00000000043")
+    elif case == "branch_labels":
+        repaired_text = repaired_text.replace("branch_labels = None", "branch_labels = 'hidden'")
+    elif case == "depends_on":
+        repaired_text = repaired_text.replace("depends_on = None", "depends_on = 'hidden'")
+    elif case == "docstring":
+        repaired_text = repaired_text.replace("Create review_attachments.", "Changed purpose.")
+    if case == "partial_edit":
+        sibling.write_text(sibling.read_text() + "\n# unreviewed partial edit\n")
+    if case == "extra_path":
+        (work / "unreviewed.txt").write_text("not part of member\n")
+    filename = (
+        "a00000000044_review_attachments.py" if case == "in_place"
+        else "a00000000045_unrelated.py" if case == "wrong_filename"
+        else "a00000000045_review_attachments.py"
+    )
+    repaired_path = versions / filename
+    repaired_path.write_text(repaired_text)
+    if case == "mode":
+        repaired_path.chmod(0o755)
+    (work / "shared.txt").write_text("first and second\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-m", "repair sibling collision")
+    first_repair = _git(work, "rev-parse", "HEAD")
+    if case == "two_commits":
+        (work / "shared.txt").write_text("first and second source commit\n")
+        _git(work, "commit", "-am", "repair second reviewed commit")
+    resolved = _git(work, "rev-parse", "HEAD")
+    lineage = CandidateRepairLineage(
+        batch_id="batch", revision=0, member_ordinal=1, operation_id="repair-batch-batch",
+        operation_stage=0, partial_head_sha=partial, source_base_sha=base,
+        source_head_sha=source, resolved_head_sha=resolved,
+        repair_commit_shas=(first_repair, resolved) if case == "two_commits" else (resolved,),
+    )
+    service = CandidateService(None, data_dir=tmp_path / "data", git_manager=GitManager())
+    invariant = await service._repair_lineage_failure(work, lineage)
+    if case in {"rename", "in_place", "two_commits", "later_partial_head"}:
+        assert invariant is None
+    elif case == "missing_source_commit":
+        assert invariant == "repair_commit_count_does_not_cover_reviewed_source"
+    else:
+        assert invariant == "resolved_paths_do_not_match_reviewed_source"

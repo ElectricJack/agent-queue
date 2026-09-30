@@ -676,6 +676,7 @@ class IntegrationResolveCandidateMemberArgs(CommandArgs):
 
 
 class IntegrationResolveCandidateMemberValue(CommandValue):
+    invariant: str | None = None
     reservation_id: str | None = None
     batch_id: str | None = None
     revision: int | None = None
