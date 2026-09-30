@@ -1347,9 +1347,18 @@ class DevelopmentIntegration:
                     proof = await truth.evaluate(request)
                     if proof.source_oid:
                         source = proof.source_oid
-                contained = bool(source) and await self.git.ais_ancestor(
+                probe = await self.git.ais_ancestor(
                     truth.store, source, head_sha, strict=True
-                ) is True
+                ) if source else None
+                contained = probe is True
+                if not contained:
+                    # False is observed non-ancestry; None is a failed or absent probe.
+                    logger.warning(
+                        "development adoption: %s source %s (branch %s, completion %s) "
+                        "is not observed in %s; ancestry probe %s",
+                        task_id, source, branch, request and request.completion_id,
+                        head_sha, probe,
+                    )
                 manifest.append({
                     "task_id": task_id,
                     "source_sha": source,

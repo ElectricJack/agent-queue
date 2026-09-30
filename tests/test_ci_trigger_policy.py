@@ -277,7 +277,7 @@ def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
     assert e2e['if'] == jobs['test']['if']
     assert e2e['strategy']['matrix']['group'] == list(SCENARIO_GROUPS)
     assert e2e['strategy']['fail-fast'] == 'false'
-    assert e2e['timeout-minutes'] == '5'
+    assert e2e['timeout-minutes'] == '8'
     run = e2e['steps'][-1]['run']
     assert run == (
         "pytest 'tests/test_e2e_cli_stateful.py::"

@@ -233,7 +233,10 @@ jobs:
        !(github.event.pull_request.head.repo.full_name == github.repository &&
          startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Cold dependency installation and post-job cache/container cleanup are
+    # outside the smoke subprocess's 270-second deadline. A passing failover
+    # group hit the former five-minute job cap during cleanup (run 36654088476).
+    timeout-minutes: 8
     strategy:
       fail-fast: false
       matrix:

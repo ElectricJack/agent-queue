@@ -103,7 +103,7 @@ at 10 minutes, including installation and migrations. These limits bound
 failures and improve diagnostics. Profiling on 2026-09-26 measured the
 unsharded default suite at about 21 minutes; it now runs in eight shards as
 described below. The original stateful CLI smoke measured 11–16 minutes; its scenarios now
-run in four separate jobs with five-minute caps, as described below. Hosted
+run in four separate jobs with eight-minute caps, as described below. Hosted
 runner timings must confirm that the groups finish within those caps. A longer test marker does not make that job fit within its cap.
 
 Worker counts are explicit: four for the broad suite arms, matching the
@@ -200,7 +200,7 @@ test time measured on hosted runners after any performance changes.
 
 The `e2e-cli` job runs the [Tier 1 end-to-end kit](../guides/e2e-swarm.md) on
 the same PR, candidate and parent events. Its four matrix entries run in
-parallel, with a five-minute budget per job and `fail-fast: false`:
+parallel, with an eight-minute budget per job and `fail-fast: false`:
 
 | Group | Scenarios |
 |---|---|
@@ -218,7 +218,13 @@ at the five-minute cap. Setup consumed 20–60 seconds and individual scenario
 timings varied substantially between runners. The groups spread independent
 S11 and S14 into claims, S13 into CLI, S12 into graphs and S18 into failover.
 This balances scenario work near 218–230 seconds per group using the slower
-measured timings, retaining every scenario and the existing job cap.
+measured timings, retaining every scenario.
+Balancing alone did not fit the former five-minute cap: in run
+[36786775568](https://github.com/ElectricJack/agent-queue/actions/runs/36786775568)
+the `graphs` group passed in a 236.68-second test, but a cold dependency
+installation (37 seconds) left the job cancelled at 5:03 during finalization.
+The smoke subprocess retains its 270-second deadline; the eight-minute job
+budget also covers cold installation and post-job cache/container cleanup.
 Fresh hosted runs must verify the complete job result, including finalization.
 
 Each runner selects one parametrized node from `tests/test_e2e_cli_stateful.py`
