@@ -38,7 +38,6 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import subprocess
@@ -46,6 +45,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -1743,11 +1743,16 @@ def s15_development_delivery(state: dict) -> str:
     head = _git_text(str(source), "rev-parse", "HEAD")
     _git_text(str(source), "push", "origin", "fixture-feature")
     task = api("create_task", {"project_id": "e2e-development", "repo_id": configured["repository_id"],
-        "title": "development delivery", "description": "real Git fixture"})
+        "title": "development delivery", "description": "real Git fixture",
+        "labels": ["hold:e2e-git-fixture"]})
     task_id = task.get("task_id") or task.get("created")
     check(bool(task_id), str(task))
+    # This source models operator-managed legacy work. Keep pool workers from
+    # claiming it during setup or the later READY -> PAUSED adoption transition.
     aq("task", "set", task_id, "--branch", "fixture-feature")
     aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
+    check(task_show(task_id)["branch_name"] == "fixture-feature",
+          "legacy fixture source branch changed during setup")
     successor = api("create_task", {
         "project_id": "e2e-development", "title": "wait for delivered code",
         "description": "must not start before the prerequisite reaches main",
@@ -1790,7 +1795,9 @@ def s15_development_delivery(state: dict) -> str:
     check("provenance migration" in str(refused.get("_error")),
           f"adoption invented legacy completion identity: {refused}")
     aq("task", "set-status", "--task-id", task_id, "--status", "READY")
-    api("pause_task", {"task_id": task_id})
+    api_checked("pause_task", {"task_id": task_id})
+    check(task_show(task_id)["branch_name"] == "fixture-feature",
+          "legacy fixture source branch changed before adoption")
     adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
                  "--target-ref", feature_ref, "--head-sha", head,
                  "--reason", "operator creates an exact completion generation")
