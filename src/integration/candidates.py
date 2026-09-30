@@ -3079,6 +3079,7 @@ class CandidateService:
         source_already_contained = await self.git.ais_ancestor(
             str(store), lineage.source_head_sha, lineage.partial_head_sha
         )
+        migration_paths = {}
         if source_already_contained:
             # This is a persisted conflict that predates the contained-member
             # construction guard.  The reviewed source is already in the
@@ -3097,7 +3098,21 @@ class CandidateService:
             # commit merely because the final path list happens to match.
             if len(lineage.repair_commit_shas) != len(source_commits.stdout.split()):
                 return "repair_commit_count_does_not_cover_reviewed_source"
-            if set(repaired.stdout.splitlines()) != intended_paths:
+            from src.integration.migration_repair import migration_rechain_paths
+
+            migration_paths = await migration_rechain_paths(
+                self.git,
+                store,
+                source_head=lineage.source_head_sha,
+                partial_head=lineage.partial_head_sha,
+                resolved_head=lineage.resolved_head_sha,
+                source_changes={
+                    path: status
+                    for status, path in (line.split("\t", 1) for line in changed.stdout.splitlines())
+                },
+            )
+            resolved_paths = {migration_paths.get(path, path) for path in intended_paths}
+            if set(repaired.stdout.splitlines()) != resolved_paths:
                 return "resolved_paths_do_not_match_reviewed_source"
         merges = await self.git.arun_git_result(
             [
@@ -3113,6 +3128,10 @@ class CandidateService:
             return None
         for line in changed.stdout.splitlines():
             status, path = line.split("\t", 1)
+            if path in migration_paths:
+                # Only literal revision metadata/header values and its filename
+                # prefix differ; the frozen partial graph and reviewed code match.
+                continue
             source_blob = await self._blob(store, lineage.source_head_sha, path)
             resolved_blob = await self._blob(store, lineage.resolved_head_sha, path)
             partial_blob = await self._blob(store, lineage.partial_head_sha, path)

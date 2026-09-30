@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:9e20b1a77bb04c8a4414e020c8b8dd9a8b7324e722683b9dc847ee0639edf91f` |
+| Contract fingerprint | `sha256:0c83c7aac29e96b1b9f46c75b66f559524cd7623ca7bea36f03d2fec5c2bb0dd` |
 
 ## Parameters
 
@@ -34,6 +34,7 @@ Redacted in receipts and explanations: `repair_commit_shas`, `resolved_head_sha`
 
 | Field | Type | Description |
 |---|---|---|
+| `invariant` | `string \| null` | — |
 | `reservation_id` | `string \| null` | — |
 | `batch_id` | `string \| null` | — |
 | `revision` | `integer \| null` | — |

@@ -555,9 +555,10 @@ def test_promotion_contracts_declare_retry_and_domain_identity():
     }
 
 
-@pytest.mark.parametrize("outcome", ["accepted", "already_accepted"])
+@pytest.mark.parametrize("outcome", ["accepted", "already_accepted", "stale"])
 @pytest.mark.asyncio
 async def test_candidate_member_contract_adapter_preserves_typed_result_fields(outcome):
+    invariant = "resolved_paths_do_not_match_reviewed_source" if outcome == "stale" else None
     continuation = {
         "outcome": "built",
         "batch_id": "batch-1",
@@ -565,8 +566,9 @@ async def test_candidate_member_contract_adapter_preserves_typed_result_fields(o
         "head_sha": "f" * 40,
     }
     raw = {
-        "success": True,
+        "success": outcome != "stale",
         "outcome": outcome,
+        "invariant": invariant,
         "reservation_id": "reservation-1",
         "batch_id": "batch-1",
         "revision": 3,
@@ -598,6 +600,7 @@ async def test_candidate_member_contract_adapter_preserves_typed_result_fields(o
 
     assert result.outcome == outcome
     assert result.value.model_dump() == {
+        "invariant": invariant,
         "reservation_id": "reservation-1",
         "batch_id": "batch-1",
         "revision": 3,
