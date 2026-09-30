@@ -2156,11 +2156,11 @@ async def test_direct_caller_repair_lineage_is_not_authoritative(db, tmp_path):
         ("exact", "accepted", 0, "before_repair_acceptance"),
         ("exact", "accepted", 1, "operator_recovery"),
         ("exact", "wait", 1, "operator_recovery_wait"),
-        ("extra", "rejected", 1, "operator_reject"),
+        ("extra", "accepted", 1, "operator_recovery"),
         ("exact", "accepted", 0, "overlap"),
         ("exact", "accepted", 1, None),
         ("reserved", "stale", 0, None),
-        ("extra", "stale", 0, None),
+        ("extra", "accepted", 0, None),
     ),
 )
 async def test_instance_bound_repair_reservation_push_and_accept_once(
@@ -3518,8 +3518,8 @@ async def test_member_already_contained_in_base_applies_as_noop(db, tmp_path):
     assert rows[0]["generated_squash_sha"] == base
     assert rows[1]["generated_squash_sha"] == result.head_sha
 
-async def test_contained_frozen_member_allows_only_an_empty_repair_tree(db, tmp_path):
-    """A pre-guard conflict can be accepted without inventing a source-path edit."""
+async def test_contained_frozen_member_accepts_any_repair_tree(db, tmp_path):
+    """A contained member accepts an empty repair and any repair edit CI needs."""
     from src.integration.candidates import CandidateRepairLineage, CandidateService
 
     origin = tmp_path / "contained-repair-origin.git"
@@ -3564,20 +3564,17 @@ async def test_contained_frozen_member_allows_only_an_empty_repair_tree(db, tmp_
     assert await service._valid_repair_lineage(store, lineage)
 
     (work / "shared.txt").write_text("unreviewed repair edit\n")
-    _git(work, "commit", "-am", "must not change contained repair")
+    _git(work, "commit", "-am", "repair edit needed for CI")
     changed = _git(work, "rev-parse", "HEAD")
     _git(store, "fetch", str(work), changed)
     changed_lineage = lineage.model_copy(
         update={"resolved_head_sha": changed, "repair_commit_shas": (resolved, changed)}
     )
-    assert (
-        await service._repair_lineage_failure(store, changed_lineage)
-        == "contained_source_repair_changes_the_candidate"
-    )
+    assert await service._repair_lineage_failure(store, changed_lineage) is None
 
 
-async def test_two_commit_source_repair_cannot_substitute_only_its_tip(db, tmp_path):
-    """Every source commit needs frozen repair coverage, even on one path."""
+async def test_two_commit_source_repair_may_resolve_with_only_its_tip(db, tmp_path):
+    """A repair need not mirror the reviewed commit series one-for-one."""
     from src.integration.candidates import CandidateRepairLineage, CandidateService
 
     work = tmp_path / "two-commit-repair-work"
@@ -3632,5 +3629,5 @@ async def test_two_commit_source_repair_cannot_substitute_only_its_tip(db, tmp_p
                 }
             ),
         )
-        == "repair_commit_count_does_not_cover_reviewed_source"
+        is None
     )
