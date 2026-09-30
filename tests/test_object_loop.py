@@ -25,6 +25,95 @@ B = "b" * 64
 C = "c" * 64
 
 
+@pytest.mark.parametrize("scorer_status", ["FAILED", "BLOCKED"])
+async def test_aq3_probe_exhausted_scorer_can_record_stop(command_handler_factory, scorer_status):
+    handler = await command_handler_factory()
+    db = handler.db
+    try:
+        await db.create_project(Project(id="p", name="Project"))
+        await db.create_task(Task(id="epic", project_id="p", title="Epic",
+                                  description="Epic", status=TaskStatus.READY))
+        await approved_brief(db)
+        assert (await handler._cmd_object_loop_start(start_args()))["success"]
+        wave = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+        candidate = wave["state"]["wave"][0]["task_id"]
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == candidate)
+                               .values(status="BLOCKED"))
+        fan_in = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == fan_in["state"]["score_task_id"])
+                               .values(status=scorer_status, retry_count=3, max_retries=3))
+        reconciled = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+        assert reconciled["outcome"] == "waiting_for_score"
+        stopped = await handler._cmd_object_score_record({
+            "project_id": "p", "object_id": "rock", "expected_version": fan_in["version"],
+            "score_task_id": fan_in["state"]["score_task_id"], "receipts": [],
+            "action": "stop", "stop_reason": "scorer retries exhausted",
+        })
+        assert stopped["success"], stopped
+    finally:
+        await db.close()
+
+
+@pytest.mark.parametrize("review_state", ["rejected", "withdrawn", "changes_requested"])
+async def test_aq3_probe_unapproved_checkpoint_can_record_defect_stop(
+    command_handler_factory, review_state,
+):
+    handler = await command_handler_factory()
+    db = handler.db
+    try:
+        await db.create_project(Project(id="p", name="Project"))
+        await db.create_task(Task(id="epic", project_id="p", title="Epic",
+                                  description="Epic", status=TaskStatus.READY))
+        await approved_brief(db)
+        assert (await handler._cmd_object_loop_start(start_args()))["success"]
+        wave = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+        candidate = wave["state"]["wave"][0]["task_id"]
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == candidate).values(status="COMPLETED"))
+        fan_in = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+        score_id = fan_in["state"]["score_task_id"]
+        gate_id, _ = await db.create_gate("p", "review", "Review rock", await_id="review-1")
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == score_id).values(status="COMPLETED"))
+            await conn.execute(insert(doc_reviews).values(
+                id="review-1", project_id="p", author_task_id=None, kind="other",
+                title="Rock", vault_path="projects/p/review-rock.md", current_revision=1,
+                state="in_review", gate_id=gate_id, decider="user",
+                created_at=1.0, updated_at=1.0,
+            ))
+            await conn.execute(insert(doc_review_revisions).values(
+                review_id="review-1", revision=1, content="packet", content_sha256=B,
+                submitted_by="agent", submitted_at=1.0,
+            ))
+        score_request = {
+            "project_id": "p", "object_id": "rock", "expected_version": fan_in["version"],
+            "score_task_id": score_id, "receipts": [receipt(task_id=candidate)],
+            "action": "checkpoint", "review_id": "review-1", "review_revision": 1,
+            "review_sha256": B,
+        }
+        checkpoint = await handler._cmd_object_score_record(score_request)
+        assert checkpoint["success"], checkpoint
+        assert checkpoint["state"]["incumbent_sha256"] == B
+        async with db.immediate() as conn:
+            await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "review-1")
+                               .values(state=review_state, decided_at=1.0, decided_by="Jack"))
+        # Reusing authentic score evidence is not an alternate stop path after promotion.
+        alternate = await handler._cmd_object_score_record({
+            **score_request, "expected_version": checkpoint["version"], "action": "stop",
+            "stop_reason": "checkpoint rejected; retain defect report",
+        })
+        assert not alternate["success"] and "base_candidate_sha256" in alternate["error"]
+        stopped = await handler._cmd_object_loop_reconcile({
+            "project_id": "p", "object_id": "rock", "expected_version": checkpoint["version"],
+            "stop_reason": "checkpoint rejected; retain defect report",
+        })
+        assert stopped["success"], stopped
+    finally:
+        await db.close()
+
+
 def variant(name="a", usd=1):
     return Variant(variant_id=name, title=name, hypothesis="try a change", reservation=Reservation(
         usd=usd, calls=1, bakes=1, active_seconds=10,
