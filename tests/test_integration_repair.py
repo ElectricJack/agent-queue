@@ -1535,6 +1535,142 @@ async def _seed_root_operation(db, *, branch: str = "aq/integration/batch") -> s
     return operation["id"]
 
 
+async def _record_root_green(db, service, operation_id, *, now=110.0):
+    """Project the candidate and stage identities persisted by green CI."""
+    await service.record_result(operation_id, "root-green", now=now)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_candidate_revisions).values(
+            state="green", ci_evidence_id="root-green",
+        ))
+        await conn.execute(update(integration_batches).values(
+            tested_candidate_sha=STARTING_SHA, ci_evidence_id="root-green",
+        ))
+
+
+@pytest.mark.parametrize("now", [110.0, 130.0, 131.0])
+async def test_root_green_same_head_adoption_preserves_evidence_and_budget(db, now):
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(db)
+    service = RepairService(db)
+    await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
+    await _record_root_green(db, service, operation_id)
+    tables = (integration_batches, integration_candidate_revisions, integration_repair_stages)
+    async with db.immediate() as conn:
+        before = [(await conn.execute(select(table))).mappings().all() for table in tables]
+        await service.adopt_batch_repair_on(
+            conn, operation_id, head_sha=STARTING_SHA,
+            commit_proof={"base_sha": STARTING_SHA, "head_sha": STARTING_SHA, "commits": []},
+            now=now,
+        )
+        after = [(await conn.execute(select(table))).mappings().all() for table in tables]
+    assert after == before
+    assert after[2][0]["deadline_at"] == 130.0
+    assert after[2][0]["state"] == "awaiting_completion"
+
+
+@pytest.mark.parametrize("invalid", [
+    "changed_head", "old_candidate", "current_subject", "success_subject",
+    "success_evidence", "missing_evidence", "candidate_evidence", "batch_evidence",
+    "tested_sha", "candidate_state", "batch_state", "evidence_revision",
+    "evidence_operation", "evidence_batch", "evidence_version", "evidence_failure",
+    "evidence_inconclusive", "missing_proof", "stale_proof", "extra_commits",
+    "expired_stage", "completed_operation",
+])
+async def test_root_green_adoption_refuses_changed_head_or_stale_proof(db, invalid):
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(db)
+    service = RepairService(db)
+    await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
+    await _record_root_green(db, service, operation_id)
+    head = STARTING_SHA
+    proof = {"base_sha": head, "head_sha": head, "commits": []}
+    subject = {"kind": "batch", "revision": 1, "candidate_sha": "b" * 40}
+    mutations = {
+        "current_subject": (integration_repair_stages, {"current_subject": subject}),
+        "success_subject": (integration_repair_stages, {"success_subject": subject}),
+        "success_evidence": (integration_repair_stages, {"success_evidence_id": None}),
+        "candidate_evidence": (integration_candidate_revisions, {"ci_evidence_id": None}),
+        "batch_evidence": (integration_batches, {"ci_evidence_id": None}),
+        "tested_sha": (integration_batches, {"tested_candidate_sha": "b" * 40}),
+        "candidate_state": (integration_candidate_revisions, {"state": "testing"}),
+        "batch_state": (integration_batches, {"lifecycle": "aborted"}),
+        "evidence_revision": (integration_check_evidence, {"candidate_revision": 1}),
+        "evidence_operation": (integration_check_evidence, {"operation_id": "other"}),
+        "evidence_batch": (integration_check_evidence, {"batch_id": "other"}),
+        "evidence_version": (integration_check_evidence, {"required_check_version": "old"}),
+        "evidence_failure": (integration_check_evidence, {"conclusion": "failure"}),
+        "evidence_inconclusive": (integration_check_evidence, {"classification": "inconclusive"}),
+        "expired_stage": (integration_repair_stages, {"state": "expired"}),
+        "completed_operation": (integration_repair_operations, {"state": "completed"}),
+    }
+    async with db.immediate() as conn:
+        replacement_evidence_id = "missing" if invalid == "missing_evidence" else None
+        if invalid in mutations:
+            table, values = mutations[invalid]
+            if table is integration_check_evidence:
+                # Evidence is append-only: point at a different immutable
+                # record instead of editing the original green result.
+                evidence = dict((await conn.execute(select(table))).mappings().one())
+                replacement_evidence_id = "stale-evidence"
+                evidence.update(id=replacement_evidence_id, run_id="stale-run", **values)
+                await conn.execute(insert(table).values(**evidence))
+            else:
+                await conn.execute(update(table).values(**values))
+        if replacement_evidence_id is not None:
+            for table, column in (
+                (integration_repair_stages, "success_evidence_id"),
+                (integration_candidate_revisions, "ci_evidence_id"),
+                (integration_batches, "ci_evidence_id"),
+            ):
+                await conn.execute(update(table).values(**{column: replacement_evidence_id}))
+        elif invalid == "old_candidate":
+            await conn.execute(insert(integration_candidate_revisions).values(
+                batch_id="batch", revision=1, construction_base_sha=STARTING_SHA,
+                head_sha="b" * 40, state="built", created_at=111.0, updated_at=111.0,
+            ))
+            await conn.execute(update(integration_batches).values(current_revision=1))
+    if invalid == "changed_head":
+        head = "b" * 40
+        proof = {"base_sha": STARTING_SHA, "head_sha": head, "commits": [head]}
+    elif invalid == "missing_proof":
+        proof = None
+    elif invalid == "stale_proof":
+        proof["base_sha"] = "b" * 40
+    elif invalid == "extra_commits":
+        proof["commits"] = [head]
+    tables = (integration_batches, integration_candidate_revisions, integration_repair_stages)
+    async with db._engine.connect() as conn:
+        before = [(await conn.execute(select(table))).mappings().all() for table in tables]
+    with pytest.raises(ValueError):
+        async with db.immediate() as conn:
+            await service.adopt_batch_repair_on(
+                conn, operation_id, head_sha=head, commit_proof=proof, now=111.0,
+            )
+    async with db._engine.connect() as conn:
+        after = [(await conn.execute(select(table))).mappings().all() for table in tables]
+    assert after == before
+
+
+@pytest.mark.parametrize("head", [STARTING_SHA, "b" * 40])
+async def test_root_active_adoption_still_refuses_at_deadline(db, head):
+    from src.integration.repair import RepairService
+
+    operation_id = await _seed_root_operation(db)
+    service = RepairService(db)
+    await service.start(operation_id, STARTING_SHA, "batch", now=100.0)
+    with pytest.raises(ValueError, match="stage is no longer active"):
+        async with db.immediate() as conn:
+            await service.adopt_batch_repair_on(
+                conn, operation_id, head_sha=head,
+                commit_proof={
+                    "base_sha": STARTING_SHA, "head_sha": head,
+                    "commits": [] if head == STARTING_SHA else [head],
+                }, now=130.0,
+            )
+
+
 async def test_root_green_waits_for_promotion_but_new_revision_reuses_budget(db):
     """A main-movement rebuild clears readiness without resetting the stage clock."""
     from src.integration.repair import RepairService
@@ -4235,8 +4371,9 @@ async def test_batch_repair_delegate_can_file_only_explicit_project_root(
 
 
 @pytest.mark.parametrize("lifecycle", ["task", "pool"])
+@pytest.mark.parametrize("green", [False, True])
 async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_slot(
-    command_handler_factory, lifecycle
+    command_handler_factory, lifecycle, green
 ):
     """A root delegate anchors its proof on ``candidate_sha``, not ``head_sha``.
 
@@ -4273,7 +4410,7 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
     await service.start(operation_id, STARTING_SHA, "batch", now=time.time())
     dispatched = await service.dispatch(operation_id, 0)
     repair_task_id = dispatched["repair_task_id"]
-    repair_head = "d" * 40
+    repair_head = STARTING_SHA if green else "d" * 40
     is_pool = lifecycle == "pool"
     await handler.db.create_agent(
         Agent(
@@ -4340,7 +4477,7 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
         if args[0] == "status":
             return ""
         if args[0] == "rev-list":
-            return f"{repair_head}\n"
+            return "" if green else f"{repair_head}\n"
         return repair_head
 
     handler.orchestrator.git._arun = AsyncMock(side_effect=run_git)
@@ -4373,12 +4510,29 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
 
     # Legacy built candidates could leave their stage bound to the old
     # construction base. Close must refresh under the exact writer fence.
-    async with handler.db.immediate() as conn:
-        await conn.execute(update(integration_repair_stages).where(
-            integration_repair_stages.c.operation_id == operation_id,
-            integration_repair_stages.c.ordinal == 0,
-        ).values(current_subject={"kind": "batch", "revision": 0,
-                                  "candidate_sha": "e" * 40}))
+    if green:
+        await _record_root_green(handler.db, service, operation_id, now=time.time())
+        scope = await handler.db.get_repair_filing_scope(
+            repair_task_id, session_id="root-repair-session",
+        )
+        refused = await service.complete_delegate(
+            repair_task_id,
+            **{key: scope[key] for key in (
+                "operation_id", "stage", "session_id", "instance_token", "workspace_id",
+            )},
+            fence_token=scope["fence_token"] + 1,
+            head_sha=repair_head,
+            commit_proof={"base_sha": repair_head, "head_sha": repair_head, "commits": []},
+        )
+        assert refused == {"outcome": "stale"}
+        assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.IN_PROGRESS
+    else:
+        async with handler.db.immediate() as conn:
+            await conn.execute(update(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.ordinal == 0,
+            ).values(current_subject={"kind": "batch", "revision": 0,
+                                      "candidate_sha": "e" * 40}))
     from src.integration.outbox import enqueue_integration_event
     async with handler.db.immediate() as conn:
         await enqueue_integration_event(
@@ -4401,11 +4555,13 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
     assert (await handler.db.get_task(repair_task_id)).status is TaskStatus.COMPLETED
     handler.orchestrator._run_completion_pipeline.assert_not_awaited()
     # The lineage proof starts at the batch subject's ``candidate_sha``.
-    assert handler.orchestrator.git.ais_ancestor.await_args.args == (
-        "/tmp/root-repair",
-        STARTING_SHA,
-        repair_head,
-    )
+    if green:
+        handler.orchestrator.git.ais_ancestor.assert_not_awaited()
+    else:
+        assert handler.orchestrator.git.ais_ancestor.await_args.args == (
+            "/tmp/root-repair", STARTING_SHA, repair_head,
+        )
+    handler.orchestrator.git.als_remote_ref.assert_awaited()
     async with handler.db._engine.connect() as conn:
         close_events = (
             await conn.execute(
@@ -4416,19 +4572,20 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
             )
         ).mappings().all()
     async with handler.db._engine.connect() as conn:
+        revision = 0 if green else 1
         candidate = (await conn.execute(select(integration_candidate_revisions).where(
             integration_candidate_revisions.c.batch_id == "batch",
-            integration_candidate_revisions.c.revision == 1,
+            integration_candidate_revisions.c.revision == revision,
         ))).mappings().one()
     assert candidate["head_sha"] == repair_head
-    assert candidate["ci_evidence_id"] is None
-    assert candidate["repair_parent_revision"] == 0
+    assert candidate["ci_evidence_id"] == ("root-green" if green else None)
+    assert candidate["repair_parent_revision"] == (None if green else 0)
     assert len(close_events) == 2
     close_events = [e for e in close_events if e["payload"].get("fence_token") != 0]
     assert close_events[0]["payload"]["task_id"] == repair_task_id
     assert close_events[0]["payload"]["workspace_id"] == "root-repair-workspace"
     assert close_events[0]["payload"]["batch_id"] == "batch"
-    assert close_events[0]["payload"]["revision"] == 1
+    assert close_events[0]["payload"]["revision"] == revision
     assert close_events[0]["payload"]["head_sha"] == repair_head
     close_fence = {key: close_events[0]["payload"][key] for key in (
         "operation_id", "stage", "task_id", "session_id", "instance_token",
@@ -4436,7 +4593,7 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
     )}
     current = await handler._cmd_integration_repair_close_current(close_fence)
     assert current == {
-        "success": True, "outcome": "current", "batch_id": "batch", "revision": 1,
+        "success": True, "outcome": "current", "batch_id": "batch", "revision": revision,
     }
     stale = await handler._cmd_integration_repair_close_current(
         {**close_fence, "fence_token": close_fence["fence_token"] + 1}
