@@ -6,6 +6,7 @@ identity checks, reservations, task intents and the finalization hold.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import time
@@ -266,35 +267,56 @@ class ObjectLoopCommandsMixin:
             ).with_for_update())).mappings().first()
             if row is None:
                 return _error("object loop not found in project")
-            state = dict(row.state)
+            state = copy.deepcopy(row.state)
+            if request.next_variants and request.stop_reason:
+                return _error("choose next variants or a stop reason")
+            if request.stop_reason:
+                if state["status"] == "stopped":
+                    if (request.stop_reason != state["stop_reason"] or
+                            request.expected_version != state.get("stop_request_version")):
+                        return _error("object loop already stopped with a different request")
+                else:
+                    if request.expected_version != row.version:
+                        return _error("stale object loop version")
+                    # A terminal defect/deadline report needs no product approval.
+                    # Retain the checkpoint as evidence, never label it approved.
+                    state["status"] = "stopped"
+                    state["stop_reason"] = request.stop_reason
+                    state["stop_request_version"] = request.expected_version
+                    state["intent"] = None
+            if request.next_variants and state["status"] == "stopped":
+                return _error("object loop is stopped")
             if (state["status"] != "stopped" and not await _approval_valid(
                 conn, state["project_id"], state["brief_checkpoint"]
             )):
                 return {"success": True, "object_id": request.object_id, "version": row.version,
                         "state": state, "outcome": "brief_held"}
-            if request.next_variants or request.stop_reason:
+            if request.next_variants:
                 if not state.get("checkpoint"):
                     return _error("continuation is only accepted at a checkpoint")
                 if request.expected_version != row.version:
                     return _error("stale object loop version")
                 if not await _review_verdict(conn, state):
                     return _error("checkpoint is not approved for this candidate revision")
-                if request.next_variants and request.stop_reason:
-                    return _error("choose next variants or a stop reason")
                 state["last_approved_checkpoint"] = state["checkpoint"]
                 state["checkpoint"] = None
-                if request.stop_reason:
-                    state["status"] = "stopped"
-                    state["stop_reason"] = request.stop_reason
-                else:
-                    state["round_id"] += 1
-                    state["last_approved_checkpoint"]["released_for_round"] = state["round_id"]
-                    try:
-                        _reserve(state, request.next_variants)
-                    except ValueError as exc:
-                        return _error(str(exc))
+                state["round_id"] += 1
+                state["last_approved_checkpoint"]["released_for_round"] = state["round_id"]
+                try:
+                    _reserve(state, request.next_variants)
+                except ValueError as exc:
+                    return _error(str(exc))
             if state["status"] == "stopped":
-                gate_to_release = row.terminal_gate_id
+                # Include children committed before an interrupted intent was recorded.
+                children = (await conn.execute(select(tasks).where(
+                    tasks.c.project_id == row.project_id,
+                    tasks.c.created_by_kind == "object_loop",
+                    tasks.c.created_by_id == row.object_id,
+                    tasks.c.id != row.finalization_task_id,
+                ))).mappings().all()
+                settled = all(_task_settled(child) for child in children)
+                if settled:
+                    gate_to_release = row.terminal_gate_id
             elif state.get("checkpoint") and not await _review_verdict(conn, state):
                 return {"success": True, "object_id": request.object_id, "version": row.version,
                         "state": state, "outcome": "checkpoint_held"}
@@ -349,16 +371,20 @@ class ObjectLoopCommandsMixin:
             else:
                 return {"success": True, "object_id": request.object_id, "version": row.version,
                         "state": state, "outcome": "waiting_for_score"}
-            await conn.execute(update(object_loops).where(object_loops.c.object_id == request.object_id)
-                               .values(state=state, version=row.version + 1, updated_at=time.time()))
-            version = row.version + 1
+            version = row.version
+            if state != row.state:
+                version += 1
+                await conn.execute(update(object_loops).where(
+                    object_loops.c.object_id == request.object_id
+                ).values(state=state, version=version, updated_at=time.time()))
         if gate_to_release:
             await self.db.resolve_gate(gate_to_release, resolved_by="object_loop",
                                        resolution="recorded stop")
             return {"success": True, "object_id": request.object_id,
-                    "version": row.version, "state": state, "outcome": "stopped"}
+                    "version": version, "state": state, "outcome": "stopped"}
         return {"success": True, "object_id": request.object_id, "version": version,
-                "state": state, "outcome": "reconciled"}
+                "state": state, "outcome": ("waiting_for_settlement"
+                                             if state["status"] == "stopped" else "reconciled")}
 
     async def _object_wave_rows(self, conn, state):
         ids = [member["task_id"] for member in state["wave"]]

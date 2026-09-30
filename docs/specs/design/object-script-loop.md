@@ -45,8 +45,15 @@ caps are enforced.
 revision and document hash, approved state, decision timestamp, project and
 candidate hash. Review events only wake reconciliation; they are never proof
 of approval. A checkpoint continuation must name the expected loop version
-and either a finite next wave or an explicit stop reason. Reconciliation files
-no continuation task while the checkpoint is unresolved or stale. A stop can
+and a finite next wave. A terminal stop instead requires the current loop version
+and an explicit reason, independently of brief or candidate approval. It retains
+the checkpoint and verified incumbent without changing any review decision,
+clears pending creation intent, and never creates another wave or scorer. An
+exact retry of the stop version and reason is idempotent; conflicting stops and
+continuations after a stop are refused. The finalization gate remains held until
+all existing object candidate/scorer children settle. Reconciliation after restart
+retries gate release without changing the recorded stop or loop version.
+Reconciliation files no continuation task while the checkpoint is unresolved or stale. A stop can
 release the finalizer for a defect report without approving product code.
 The brief gate and the approved checkpoint gate are attached to their
 respective candidate tasks in the creation transaction; the exact revision is
