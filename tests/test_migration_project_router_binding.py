@@ -50,7 +50,7 @@ def bindings(conn) -> dict[str, str | None]:
 
 def test_revision_chains_onto_revision_2():
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    assert REVISION in script.get_heads()
+    assert script.get_revision("a00000000044").down_revision == REVISION
     assert PRECEDING_REVISION == "a00000000042"
 
 

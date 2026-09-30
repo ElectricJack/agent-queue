@@ -19,7 +19,19 @@ export default defineConfig({
     host: true,
     port: 5173,
     proxy: {
-      "/api": target,
+      "/api": {
+        target,
+        configure(proxy) {
+          proxy.on("proxyReq", (request, incoming) => {
+            // Dev proxy peers must not forge the production dashboard's
+            // operator verdict before the daemon sees their loopback hop.
+            const peer = incoming.socket.remoteAddress;
+            const local = peer === "127.0.0.1" || peer === "::1"
+              || peer === "::ffff:127.0.0.1";
+            request.setHeader("x-aq-dashboard-viewer", local ? "operator" : "other");
+          });
+        },
+      },
       "/health": target,
       "/ready": target,
       "/ws": { target, ws: true },

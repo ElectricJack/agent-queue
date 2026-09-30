@@ -185,7 +185,10 @@ def create_app(
 
     # Open PR links next to document reviews, with GitHub as the state source.
     app.include_router(
-        build_pull_requests_router(db=orchestrator.db, github_access=orchestrator.github_access)
+        build_pull_requests_router(
+            db=orchestrator.db, github_access=orchestrator.github_access,
+            command_handler=ch,
+        )
     )
 
     # Auto-generated typed command routes (POST /api/{category}/{command})

@@ -87,6 +87,15 @@ class ReviewDecideResponse(BaseModel):
     playbook: dict[str, Any] | None = None
 
 
+class PullRequestApproveResponse(BaseModel):
+    success: bool = True
+    task_id: str
+    url: str
+    head_sha: str
+    review_id: int | None = None
+    integration_flush: dict[str, Any] | None = None
+
+
 class ReviewCommentResponse(BaseModel):
     success: bool = True
     comment_id: str
@@ -141,6 +150,7 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "review_list": ReviewListResponse,
     "review_withdraw": ReviewWithdrawResponse,
     "review_decide": ReviewDecideResponse,
+    "approve_pull_request": PullRequestApproveResponse,
     "review_comment": ReviewCommentResponse,
     "review_delegate": ReviewDelegateResponse,
     "review_dispatch": ReviewDispatchResponse,

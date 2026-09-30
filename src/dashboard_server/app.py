@@ -137,7 +137,14 @@ class DashboardServerApp:
             if denial is not None:
                 await self._json(send, denial.status, denial.body())
                 return
-            await self.proxy.http(scope, receive, send)
+            # The daemon sees this proxy's loopback peer.  Replace any
+            # untrusted client assertion with the edge's real-peer verdict so
+            # read responses can hide operator controls from LAN viewers.
+            headers = [(key, value) for key, value in scope.get("headers", ())
+                       if key.lower() != b"x-aq-dashboard-viewer"]
+            headers.append((b"x-aq-dashboard-viewer",
+                            b"operator" if self.edge.operator_viewer(scope) else b"other"))
+            await self.proxy.http({**scope, "headers": headers}, receive, send)
         elif route in {"identity", "metrics"}:
             if scope["method"] not in {"GET", "HEAD"}:
                 await self._json(send, 405, {"ok": False, "error": "method_not_allowed"},

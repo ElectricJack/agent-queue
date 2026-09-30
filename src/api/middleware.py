@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from src.api import dependencies as deps
-from src.api.auth import LOCAL_SCOPE
+from src.api.auth import LOCAL_SCOPE, operator_viewer_context, request_operator_viewer
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
@@ -98,10 +98,11 @@ class TokenAuthMiddleware(BaseHTTPMiddleware):
             scope = await _attach_derived_identity(scope)
 
         request.state.scope = scope
-        if scope.kind == "session" and scope.session_id:
-            with structlog.contextvars.bound_contextvars(session_id=scope.session_id):
-                return await call_next(request)
-        return await call_next(request)
+        with operator_viewer_context(request_operator_viewer(request)):
+            if scope.kind == "session" and scope.session_id:
+                with structlog.contextvars.bound_contextvars(session_id=scope.session_id):
+                    return await call_next(request)
+            return await call_next(request)
 
 
 async def _attach_derived_identity(scope):

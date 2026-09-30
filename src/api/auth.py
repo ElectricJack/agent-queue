@@ -14,9 +14,11 @@ import hashlib
 import logging
 import secrets
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Iterator, Literal
 
 if TYPE_CHECKING:
     from src.database import Database
@@ -70,6 +72,41 @@ class RequestScope:
 
 
 LOCAL_SCOPE = RequestScope(kind="local")
+
+# The dashboard proxy can see the real peer while the daemon sees loopback.
+# Keep its operator-viewer verdict in request context so the generic command
+# route cannot bypass the Reviews route's approval gate.
+_operator_viewer_allowed: ContextVar[bool] = ContextVar(
+    "operator_viewer_allowed", default=True,
+)
+
+
+def operator_viewer_allowed() -> bool:
+    return _operator_viewer_allowed.get()
+
+
+def request_operator_viewer(request) -> bool:
+    """Trust only a local peer and a first-party proxy verdict or loopback Host."""
+    client_host = request.client.host if request.client else None
+    if client_host not in {"127.0.0.1", "::1", "localhost"}:
+        return False
+    viewer = request.headers.get("x-aq-dashboard-viewer")
+    if viewer == "other":
+        return False
+    if viewer == "operator":
+        return True
+    # Direct daemon/CLI access has no proxy assertion.  An unrecognised Host
+    # may be a browser pointed at loopback through DNS rebinding.
+    return request.url.hostname in {"localhost", "127.0.0.1", "::1"}
+
+
+@contextmanager
+def operator_viewer_context(allowed: bool) -> Iterator[None]:
+    token = _operator_viewer_allowed.set(allowed)
+    try:
+        yield
+    finally:
+        _operator_viewer_allowed.reset(token)
 
 
 def _hash(token: str) -> str:

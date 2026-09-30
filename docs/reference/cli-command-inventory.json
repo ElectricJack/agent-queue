@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 456,
+    "leaf_commands": 457,
     "registration": {
-      "generated": 294,
+      "generated": 295,
       "handwritten": 162
     },
     "ownership": {
-      "core": 417,
+      "core": 418,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 455
+      "supported": 456
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 294,
+      "dispatch": 295,
       "registration": 148
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 396
+      "untested": 397
     }
   },
   "commands": [
@@ -9021,6 +9021,40 @@
         "optional": [
           "--no-dashboard",
           "--no-dashboard-server",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq review approve-pull-request",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "approve_pull_request",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--task-id",
+          "--head-sha"
+        ],
+        "optional": [
           "--json",
           "--brief",
           "--api-url"
