@@ -2339,6 +2339,7 @@ class IntegrationCommandsMixin:
             return {
                 "success": accepted.outcome in {"accepted", "already_accepted"},
                 "outcome": accepted.outcome,
+                "invariant": accepted.invariant,
                 "reservation_id": reservation["id"],
                 "batch_id": reservation["batch_id"],
                 "revision": int(reservation["revision"]),
@@ -2442,6 +2443,7 @@ class IntegrationCommandsMixin:
         return {
             "success": accepted.outcome in {"accepted", "already_accepted"},
             "outcome": accepted.outcome,
+            "invariant": accepted.invariant,
             "reservation_id": reservation_id,
             "batch_id": accepted.batch_id,
             "revision": accepted.revision,

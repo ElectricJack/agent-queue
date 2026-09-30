@@ -539,6 +539,17 @@ not command options: the daemon derives them from the authenticated live repair
 assignment, verifies the exact remote resolution, and then continues with later
 batch members under the collector's next fence.
 
+For one added Alembic migration whose revision ID collides with a sibling already
+in the partial candidate, the repair may assign a fresh revision ID and set
+`down_revision` to the partial candidate's single migration head. Keep its
+reviewed code unchanged; only those literal metadata values and the docstring's
+`Revision ID:` / `Revises:` headers may change. The filename may retain its name
+or replace its old revision prefix with the new ID. All existing partial
+migrations must remain identical. Branched, incomplete, or ambiguous migration
+graphs are refused. The usual linear commit coverage and guarded publication
+still apply. A refused admission includes `invariant` in both the initial and
+retry response; its reservation and private repair ref remain forensic evidence.
+
 ## 5. Human controls and rollback
 
 Status lists `repair`, `promotion`, `reconciliation`, and `cleanup_pending`

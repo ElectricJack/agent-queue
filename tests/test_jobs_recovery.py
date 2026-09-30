@@ -3,14 +3,17 @@
 import time
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import update
+
+from src.commands.job_commands import JobCommandsMixin
 from src.config import AppConfig
 from src.database.tables import jobs
 from src.jobs.artifacts import atomic_json, job_directory, read_json
 from src.jobs.policy import next_admission
 from src.jobs.service import JobService
-from src.commands.job_commands import JobCommandsMixin
-from tests.test_jobs_queries import values, db as jobs_db
+from tests.test_jobs_queries import db as jobs_db
+from tests.test_jobs_queries import values
 
 db = jobs_db
 
@@ -63,6 +66,34 @@ async def test_ambiguous_spawn_lost_retains_pin_until_receipt(db, tmp_path):
     await svc.reconcile(lost)
     assert not await db.workspace_has_job_pin("w")
     assert (await db.get_job(job["id"]))["state"] == "lost"  # terminal results are immutable
+
+
+@pytest.mark.parametrize("mismatch", [None, "nonce", "job_id"])
+async def test_completion_written_during_process_scan_is_adopted(
+    db, tmp_path, monkeypatch, mismatch
+):
+    svc = service(db, tmp_path)
+    job = await db.submit_job(values())
+    job = await db.transition_job(job["id"], 0, "starting", launch_at=time.time())
+    directory = job_directory(tmp_path / "data", job["id"])
+    identity = {"job_id": job["id"], "nonce": job["runner_nonce"]}
+    atomic_json(directory / "intent.json", identity)
+
+    async def finish_during_scan(nonce):
+        assert nonce == job["runner_nonce"]
+        completion = {**identity, "exit_code": 0}
+        if mismatch:
+            completion[mismatch] = "another-launch"
+        atomic_json(directory / "completion.json", completion)
+        return []
+
+    monkeypatch.setattr("src.jobs.service.processes", finish_during_scan)
+    await svc.reconcile(job)
+
+    adopted = await db.get_job(job["id"])
+    assert adopted["state"] == ("lost" if mismatch else "succeeded")
+    assert read_json(directory / "result.json") == adopted["result"]
+    assert not await db.workspace_has_job_pin("w")
 
 
 async def test_unreadable_process_identity_quarantines_job(db, tmp_path, monkeypatch):
@@ -174,6 +205,7 @@ async def test_wrong_launch_identity_and_corrupt_receipt_never_release_pin(db, t
 async def test_service_launch_and_adoption_preserve_canonical_result(db, tmp_path, monkeypatch):
     import asyncio
     import sys
+
     from src.jobs.policy import Preset
 
     svc = service(db, tmp_path)

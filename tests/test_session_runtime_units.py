@@ -489,10 +489,13 @@ class TestProctable:
 
     def test_marked_root_is_the_topmost_process_carrying_the_token(self):
         token = f"tok-{uuid.uuid4().hex}"
+        # The child must finish exec before /proc exposes its marked environment.
+        # Announce readiness from the child itself rather than its spawning parent.
+        child_script = "import os, time; print(os.getpid(), flush=True); time.sleep(60)"
         script = (
             "import subprocess, sys, time;"
-            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
-            "print(c.pid, flush=True); time.sleep(60)"
+            f"subprocess.Popen([sys.executable, '-c', {child_script!r}]);"
+            "time.sleep(60)"
         )
         harness = subprocess.Popen(
             [sys.executable, "-c", script], stdout=subprocess.PIPE, env=self._marked_env(token)
