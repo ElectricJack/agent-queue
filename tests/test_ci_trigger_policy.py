@@ -289,3 +289,11 @@ def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
     checkout = e2e['steps'][0]
     assert checkout['uses'] == 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
     assert checkout['with']['ref'] == '${{ github.sha }}'
+
+
+def test_e2e_groups_cover_every_scenario_once_and_keep_claim_dependencies_together():
+    scenarios = [scenario for group in SCENARIO_GROUPS.values() for scenario in group]
+    expected = {f'S{index}' for index in range(1, 20)} - {'S16'} | {'S16a', 'S16b'}
+    assert set(scenarios) == expected
+    assert len(scenarios) == len(expected)
+    assert SCENARIO_GROUPS['claims'][:3] == ('S1', 'S2', 'S3')

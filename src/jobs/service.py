@@ -12,11 +12,18 @@ import sys
 import time
 import uuid
 from pathlib import Path
+
 from src.jobs.artifacts import OutputStore, atomic_json, job_directory, read_json
 from src.jobs.identity import processes, verified
 from src.jobs.policy import (
-    JobError, NODE_PRESETS, TERMINAL, next_admission, node_executable, presets,
-    request_hash, validate_args,
+    NODE_PRESETS,
+    TERMINAL,
+    JobError,
+    next_admission,
+    node_executable,
+    presets,
+    request_hash,
+    validate_args,
 )
 from src.jobs.result import build_result
 from src.resources import project_tests
@@ -157,7 +164,7 @@ class JobService:
         if test_setup:
             env = test_setup.child_env(env)
         if preset == "e2e":
-            from urllib.parse import urlsplit, unquote
+            from urllib.parse import unquote, urlsplit
 
             parsed = urlsplit(cfg.test_database_url)
             env.update(
@@ -384,6 +391,20 @@ class JobService:
 
                     await stop_tree(nonce)
                 return
+            if receipt is None:
+                # The supervisor can publish completion and exit between the
+                # initial artifact read and process scan. Observe its final
+                # receipt before making an immutable lost result.
+                completion = await asyncio.to_thread(read_json, directory / "completion.json")
+                if completion is not None and not isinstance(completion, dict):
+                    raise ValueError("invalid job receipt")
+                if (
+                    completion
+                    and completion.get("nonce") == nonce
+                    and completion.get("job_id") == job["id"]
+                ):
+                    await require_readable_identity(completion)
+                    receipt = completion
             lock_dir = job["contract"].get("lock_dir")
             if lock_dir:
                 from src.resources.test_runs import held_slots

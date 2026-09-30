@@ -60,9 +60,11 @@ def _parse(text: str) -> _Migration | None:
                 and node not in literal_targets
             ):
                 return None
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                if node.name in _METADATA:
-                    return None
+            if (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and node.name in _METADATA
+            ):
+                return None
             if isinstance(node, ast.alias) and (node.asname or node.name) in _METADATA:
                 return None
         revision = values.get("revision")

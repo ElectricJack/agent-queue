@@ -204,10 +204,22 @@ parallel, with a five-minute budget per job and `fail-fast: false`:
 
 | Group | Scenarios |
 |---|---|
-| `claims` | S1–S3, S6–S7, S19 |
-| `cli` | S5, S8–S9, S12, S17 |
-| `graphs` | S10, S16b, S18 |
-| `failover` | S4, S11, S13–S15, S16a |
+| `claims` | S1–S3, S6–S7, S11, S14, S19 |
+| `cli` | S5, S8–S9, S13, S17 |
+| `graphs` | S10, S12, S16b |
+| `failover` | S4, S15, S18, S16a |
+
+Hosted runs
+[36650001662](https://github.com/ElectricJack/agent-queue/actions/runs/36650001662)
+[36782814278](https://github.com/ElectricJack/agent-queue/actions/runs/36782814278)
+and [36783591351](https://github.com/ElectricJack/agent-queue/actions/runs/36783591351)
+reported passing group tests taking 238–272 seconds, then job cancellation
+at the five-minute cap. Setup consumed 20–60 seconds and individual scenario
+timings varied substantially between runners. The groups spread independent
+S11 and S14 into claims, S13 into CLI, S12 into graphs and S18 into failover.
+This balances scenario work near 218–230 seconds per group using the slower
+measured timings, retaining every scenario and the existing job cap.
+Fresh hosted runs must verify the complete job result, including finalization.
 
 Each runner selects one parametrized node from `tests/test_e2e_cli_stateful.py`
 with `-m integration -s`. It creates and cleans up its own database, daemon,

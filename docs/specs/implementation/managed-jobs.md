@@ -43,6 +43,12 @@ own run deadline. It reaps marked descendants before writing `completion.json`.
 Adoption checks boot id, process start ticks and nonce. Daemon loss does not own
 execution lifetime, and disabling new admission still reconciles existing jobs.
 
+When no marked processes remain, adoption re-reads any missing completion
+receipt before declaring the job lost. A runner may write that receipt and
+exit between the initial artifact read and process scan. The late receipt
+must match the job id and launch nonce and pass the same identity checks;
+terminal results remain immutable.
+
 `output.head` keeps the first 1 MiB and `output.tail` is a bounded 63 MiB byte
 ring. The fsync-renamed manifest records logical offsets and physical-block
 hashes. Interrupted overwrites become explicit gaps; they cannot return fresh
