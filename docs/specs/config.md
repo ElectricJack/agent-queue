@@ -323,6 +323,16 @@ Maps to `SchedulingConfig`. The YAML key is `scheduling`.
 |---|---|---|---|
 | `rolling_window_hours` | `int` | `24` | Length of the rolling window (in hours) used for credit-weight scheduling calculations. |
 | `min_task_guarantee` | `bool` | `True` | When `True`, the scheduler guarantees every project receives at least one task slot even if its credit weight is proportionally very small. |
+| `cycle_interval_seconds` | `float` | `5.0` | Periodic reconciliation backstop when no relevant event arrives. |
+| `min_cycle_interval_seconds` | `float` | `1.0` | Minimum start-to-start interval for event-triggered cycles; coalesces bursts without changing capacity or provider backoff. Must not exceed the periodic interval. |
+| `config_poll_interval_seconds` | `float` | `30.0` | Config watcher polling cadence; updated on hot reload. |
+
+The three cadence values must be finite and positive. Task/routing/gate/provider/
+session changes wake the normal deterministic scheduler before its next periodic
+poll. Events request reconciliation; durable readiness and identity fences remain
+authoritative. Failed cycles retain the periodic retry delay even during an event
+burst. Idle installations keep the existing periodic and config polling cadence.
+
 
 ### 4.5 `pause_retry` Section
 

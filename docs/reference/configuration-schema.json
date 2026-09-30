@@ -2370,6 +2370,9 @@
       "additionalProperties": false,
       "default": {
         "affinity_wait_seconds": 120,
+        "config_poll_interval_seconds": 30.0,
+        "cycle_interval_seconds": 5.0,
+        "min_cycle_interval_seconds": 1.0,
         "min_task_guarantee": true,
         "rolling_window_hours": 24
       },
@@ -2377,6 +2380,18 @@
         "affinity_wait_seconds": {
           "default": 120,
           "type": "integer"
+        },
+        "config_poll_interval_seconds": {
+          "default": 30.0,
+          "type": "number"
+        },
+        "cycle_interval_seconds": {
+          "default": 5.0,
+          "type": "number"
+        },
+        "min_cycle_interval_seconds": {
+          "default": 1.0,
+          "type": "number"
         },
         "min_task_guarantee": {
           "default": true,

@@ -278,11 +278,10 @@ def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
     assert e2e['strategy']['matrix']['group'] == list(SCENARIO_GROUPS)
     assert e2e['strategy']['fail-fast'] == 'false'
     assert e2e['timeout-minutes'] == '10'
-    run = e2e['steps'][-1]['run']
+    run = next(step['run'] for step in e2e['steps'] if step['name'] == 'Run scenario group')
     assert run == (
-        "pytest 'tests/test_e2e_cli_stateful.py::"
-        "test_disposable_daemon_stateful_cli_smoke[${{ matrix.group }}]' "
-        "-m integration -s --durations=0"
+        "pytest tests/test_e2e_cli_stateful.py -k '${{ matrix.group }}' "
+        "-m integration -s --durations=0 --junitxml=e2e-results.xml"
     )
     suites = {suite['name']: suite['command'] for suite in jobs['test']['strategy']['matrix']['suite']}
     assert '--ignore=tests/test_e2e_cli_stateful.py' in suites['postgres-integration']

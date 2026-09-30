@@ -591,6 +591,11 @@ mcp_server:
     enabled: false
 
 # The whole point of the kit.
+scheduling:
+  cycle_interval_seconds: ${AQ_E2E_CYCLE_SECONDS:-5}
+  min_cycle_interval_seconds: 1
+  config_poll_interval_seconds: ${AQ_E2E_CONFIG_POLL_SECONDS:-30}
+
 swarm:
   enabled: true
   # Keep the fixture aligned with the production default: every claimed task
@@ -631,9 +636,9 @@ worktrees:
   enabled: false
 
 work_graph:
-  gate_sweep_interval_seconds: 5
+  gate_sweep_interval_seconds: ${AQ_E2E_GRAPH_SWEEP_SECONDS:-5}
   conditional_autoclose: true
-  container_sweep_interval_seconds: 5
+  container_sweep_interval_seconds: ${AQ_E2E_GRAPH_SWEEP_SECONDS:-5}
 
 state_machine:
   enforce: false

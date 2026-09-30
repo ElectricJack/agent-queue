@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:a8b8eb907a06fdeb5429bb1230072d8f434b5251b20be59d94e93cec087d4071",
+  "digest": "sha256:c331fc6d7e415c692b985bbba375dee332f5ee6e0d33dc6665dcf4c377604c30",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5186,9 +5186,11 @@
       "markers": [
         "integration",
         "parametrize",
-        "timeout"
+        "perf",
+        "timeout",
+        "xdist_group"
       ],
-      "summary": "Opt-in real-daemon acceptance test for the disposable CLI smoke kit."
+      "summary": "Individually selectable CLI scenarios sharing one disposable world per shard."
     },
     "tests/test_e2e_kit_fixtures.py": {
       "areas": [
@@ -5203,6 +5205,7 @@
         "src.routing.planner"
       ],
       "markers": [
+        "asyncio",
         "parametrize"
       ],
       "summary": "The swarm e2e kit's Tier-1 stand-ins must close the way a real agent would."

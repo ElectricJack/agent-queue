@@ -59,8 +59,10 @@ POOL_PROFILE = "worker"
 POOL_CLASS = "fast-high"
 PLANNER_PROFILE = "planner"
 
-#: How long a scenario waits for the 5s cascade to converge before failing.
+#: Bounded convergence budget; cadence belongs to the disposable daemon launcher.
 CONVERGE_TIMEOUT = float(os.environ.get("AQ_E2E_CONVERGE_TIMEOUT", "60"))
+POLL_INTERVAL = float(os.environ.get("AQ_E2E_POLL_SECONDS", "2"))
+TIMINGS: dict[str, float] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +154,7 @@ def run_aq(
     if json_mode:
         argv.append("--json")
     argv.extend(args)
+    started = time.monotonic()
     proc = subprocess.run(
         argv,
         capture_output=True,
@@ -160,6 +163,8 @@ def run_aq(
         env=_cli_env(token=token, session_id=session_id, extra=extra_env),
         timeout=timeout,
     )
+    TIMINGS["cli_seconds"] = TIMINGS.get("cli_seconds", 0) + time.monotonic() - started
+    TIMINGS["cli_calls"] = TIMINGS.get("cli_calls", 0) + 1
     return CliRun(proc.returncode, proc.stdout.strip(), proc.stderr.strip())
 
 
@@ -279,22 +284,26 @@ def api_checked(command: str, args: dict) -> dict | list:
 
 
 def wait_for(
-    predicate, *, what: str, timeout: float = CONVERGE_TIMEOUT, interval: float = 2.0,
+    predicate, *, what: str, timeout: float = CONVERGE_TIMEOUT, interval: float = POLL_INTERVAL,
     extend_if=None, diagnostic=None,
 ):
     """Poll *predicate* until it returns something truthy, or fail loudly.
 
-    Every wait in this file is on the 5s cascade, so the failure message
-    matters more than the mechanism: "the pool never reached 2 sessions
+    The failure message must name the condition: "the pool never reached 2 sessions
     (last saw 1)" is a bug report; "timeout" is not.
     """
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
     last = None
     extended = False
     allowed = timeout
     while True:
         last = predicate()
         if last:
+            TIMINGS["condition_seconds"] = (
+                TIMINGS.get("condition_seconds", 0) + time.monotonic() - started
+            )
+            TIMINGS["condition_waits"] = TIMINGS.get("condition_waits", 0) + 1
             return last
         remaining = deadline - time.monotonic()
         if remaining > 0:
@@ -313,6 +322,26 @@ def wait_for(
             f"timed out after {allowed:.0f}s waiting for {what} "
             f"(last saw {last!r}{detail})"
         )
+
+
+def observe_scheduler_cycles(assertion, *, cycles: int = 2) -> None:
+    """Keep a negative assertion true across completed fake-daemon cycles."""
+    path = Path(os.environ.get("AQ_E2E_HOME", os.path.expanduser("~/.agent-queue-e2e"))) / "scheduler-cycles"
+    if not path.exists():
+        # A manually started src.main daemon has no test observer. Retain the
+        # original observation window rather than infer its cadence.
+        for _ in range(6):
+            assertion()
+            time.sleep(2)
+        assertion()
+        return
+    initial = int(path.read_text())
+
+    def observed():
+        assertion()
+        return int(path.read_text()) - initial >= cycles
+
+    wait_for(observed, what=f"{cycles} completed scheduler cycles")
 
 
 # ---------------------------------------------------------------------------
@@ -2020,15 +2049,13 @@ def _run_failover_phase(state: dict, phase) -> str:
     # shipped provider-failover playbook would otherwise consume S16's state
     # change and move the first task before this scenario can inspect the full
     # held set and exercise the operator's dry-run/live commands itself.
-    set_failover_policy_enabled(False)
-    note("paused the automatic provider-failover playbook for manual sweep coverage")
     try:
+        set_failover_policy_enabled(False)
+        note("paused the automatic provider-failover playbook for manual sweep coverage")
         return phase(state)
     finally:
         try:
             _restore_providers()
-        except Exception as exc:  # noqa: BLE001 — cleanup failure belongs in the report
-            print(f"     ! S16 cleanup could not restore providers: {exc}")
         finally:
             set_failover_policy_enabled(True)
 
@@ -2081,13 +2108,18 @@ def _s16_outage(state: dict) -> dict:
         f"prova {down['state']} ({down['reason_code']}): {down['reason']} — after "
         f"{len(prova_launches)} launch(es); remediation: {down['remediation']}"
     )
-    time.sleep(12)  # two more cascades: a suppressed provider launches nothing
+    def suppressed():
+        current = login_deaths(PROVA, since=t0)
+        check(len(current) == len(prova_launches),
+              f"launches continued against unavailable prova: {len(prova_launches)} -> {len(current)}")
+
+    observe_scheduler_cycles(suppressed)
     after = login_deaths(PROVA, since=t0)
     check(
         len(after) == len(prova_launches),
         f"launches continued against unavailable prova: {len(prova_launches)} -> {len(after)}",
     )
-    note(f"no further prova launches in 12s ({len(after)} total)")
+    note(f"no further prova launches across two completed cycles ({len(after)} total)")
 
     # -- 3. every hold names its reason ----------------------------------------
     held = held_tasks()
@@ -2155,9 +2187,7 @@ def _s16_outage(state: dict) -> dict:
     check([d["task_id"] for d in second["moved"]] == [pref[1]], f"top-up moved {second['moved']}")
     check(second["batch_ids"] == [batch], f"a top-up opened a new batch: {second['batch_ids']}")
     note(f"top-up sweep: moved {pref[1]} into the same batch {batch}")
-    for _ in range(3):
-        _provb_session()
-        time.sleep(2)
+    observe_scheduler_cycles(_provb_session)
     check(peak <= 1, f"provb ran {peak} sessions at once; max_active is 1")
     note(f"provb never exceeded max_active=1 (peak {peak})")
 
@@ -2207,6 +2237,7 @@ def _s16_recovery(outage: dict) -> str:
     pref, pinned, solo, incident = (
         outage[key] for key in ("pref", "pinned", "solo", "incident")
     )
+    started = time.monotonic()
     # -- 6. recovery: log in, recheck, probation, one launch -------------------
     fake_script()  # prova's login works again
     recheck = aq("provider", "recheck", "--provider", PROVA)
@@ -2318,6 +2349,7 @@ def _s16_recovery(outage: dict) -> str:
     check(check_row["severity"] == "error", f"doctor with every provider down: {check_row}")
     note(f"doctor providers.availability: {check_row['severity']} — {check_row['detail'][:120]}")
     aq("task", "delete", "--task-id", filler, check_ok=False)
+    TIMINGS["provider_recovery_seconds"] = time.monotonic() - started
     return (
         "recheck→probation→available; "
         f"undo returned {pref[1]}; all-down held everything, claim={result}, critical escalation"
@@ -3064,6 +3096,7 @@ def main() -> int:
         if only and scenario.key not in only:
             continue
         report.scenarios.append(scenario)
+        TIMINGS.clear()
         started = time.monotonic()
         try:
             scenario.detail = scenario.fn(state) or ""
@@ -3078,6 +3111,8 @@ def main() -> int:
         status = "PASS" if scenario.ok else "FAIL"
         print(f"{status} {scenario.key} {scenario.title} ({scenario.seconds:.1f}s)")
         print(f"     {scenario.detail}")
+        print("TIMING " + json.dumps({"scenario": scenario.key,
+                                      "seconds": scenario.seconds, **TIMINGS}))
 
     # A scenario that bailed mid-flight may have left swarm disabled.
     if state.get("swarm_disabled"):

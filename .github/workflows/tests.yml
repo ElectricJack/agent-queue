@@ -239,7 +239,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # IDs in tests/test_e2e_cli_stateful.py; together these cover S1-S19.
+        # Shards in tests/test_e2e_cli_stateful.py; together these cover S1-S19.
         group: [claims, cli, graphs, failover]
 
     services:
@@ -307,6 +307,17 @@ jobs:
         run: python -m pip install --no-deps --no-build-isolation -e packages/aq-client -e .
 
       # The smoke setup migrates its own unique disposable database. Run only
-      # this group's node, with no xdist workers or other suites competing.
+      # this shard's scenario items, with no xdist workers or other suites competing.
       - name: Run scenario group
-        run: pytest 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_stateful_cli_smoke[${{ matrix.group }}]' -m integration -s --durations=0
+        env:
+          AQ_E2E_TIMINGS_DIR: ${{ runner.temp }}/e2e-timings
+        run: pytest tests/test_e2e_cli_stateful.py -k '${{ matrix.group }}' -m integration -s --durations=0 --junitxml=e2e-results.xml
+
+      - name: Upload scenario results and timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: e2e-${{ matrix.group }}
+          path: |
+            e2e-results.xml
+            ${{ runner.temp }}/e2e-timings/*.jsonl

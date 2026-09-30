@@ -834,3 +834,255 @@ def test_cleanup_rejects_operator_and_default_tmux_sockets_before_any_action(
     env, trace = _cleanup_env(tmp_path, home, socket=socket)
 
     _assert_cleanup_refused_without_actions(env, trace, decoy)
+
+
+def test_scenario_selection_is_individual_and_keeps_declared_prerequisites(monkeypatch):
+    from tests.test_e2e_cli_stateful import World
+
+    world = World("claims", {})
+    calls = []
+    resets = []
+
+    def run(argv, **_kwargs):
+        keys = argv[1:]
+        calls.append(keys)
+        return SimpleNamespace(returncode=0, stderr="", stdout="\n".join(
+            [*(f"PASS {key} scenario" for key in keys),
+             f"{len(keys)}/{len(keys)} scenarios passed",
+             "passed unsupported dependency-unavailable explicitly-untested"]))
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(world, "reset", lambda: resets.append(True))
+    world.run("S2")
+    world.run("S3")
+    assert calls == [["S1", "S2"], ["S3"]]
+    assert resets == [True]
+
+
+@pytest.mark.parametrize("failure", ["assertion", "timeout"])
+def test_scenario_failure_cleans_chain_and_rebuilds_prerequisites(monkeypatch, failure):
+    from tests.test_e2e_cli_stateful import World
+
+    world = World("claims", {})
+    world.completed.add("S1")
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(argv[1:])
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(argv, 270, output=b"PASS S1 (1s)")
+        return SimpleNamespace(returncode=1, stdout="FAIL S2", stderr="failure")
+
+    def reset():
+        world.completed.clear()
+        calls.append("reset")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(world, "reset", reset)
+    with pytest.raises(AssertionError):
+        world.run("S2")
+    assert calls == [["S2"], "reset"]
+    assert not world.completed
+
+
+def test_world_reset_removes_terminal_tasks_sessions_and_restores_globals(monkeypatch):
+    from tests.test_e2e_cli_stateful import World
+
+    world = World("graphs", {})
+    world.swarm = {"enabled": True, "max_starts_per_tick": 2, "scale_down_grace": 3600}
+    smoke = world.smoke
+    sessions = [{"id": "holding"}, {"id": "draining"}]
+    tasks = [{"id": "completed", "status": "COMPLETED"},
+             {"id": "failed", "status": "FAILED"}]
+    calls = []
+    modes = []
+
+    def api(command, args):
+        calls.append((command, args))
+        if command == "session_list":
+            assert args == {"live_only": True}
+            return {"sessions": list(sessions)}
+        if command == "session_kill":
+            sessions[:] = [row for row in sessions if row["id"] != args["session_id"]]
+        if command == "list_projects":
+            return [{"id": "e2e"}]
+        if command == "list_tasks":
+            assert args["include_completed"]
+            return list(tasks)
+        if command == "delete_task":
+            assert args["cascade"]
+            tasks[:] = [row for row in tasks if row["id"] != args["task_id"]]
+        return {"success": True}
+
+    monkeypatch.setattr(smoke, "api", api)
+    monkeypatch.setattr(smoke, "fake_script", lambda: modes.append("healthy"))
+    monkeypatch.setattr(smoke, "wait_for", lambda fn, **_: fn() or fn())
+    world.completed.add("S1")
+    world.reset()
+    assert not tasks and not sessions and not world.completed
+    assert modes == ["healthy"]
+    assert ("update_config", {"section": "swarm", "data": world.swarm}) in calls
+    assert ("set_playbook_enabled", {"playbook_id": smoke.FAILOVER_PLAYBOOK, "enabled": True}) in calls
+    assert {args["provider"] for cmd, args in calls if cmd == "provider_set_state"} == {
+        "claude", "codex", smoke.PROVA, smoke.PROVB,
+    }
+
+
+def test_cleanup_failure_prevents_reusing_the_world(monkeypatch):
+    from tests.test_e2e_cli_stateful import World
+
+    world = World("graphs", {})
+    monkeypatch.setattr(world.smoke, "wait_for", lambda *_args, **_kwargs:
+                        (_ for _ in ()).throw(RuntimeError("cleanup failed")))
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        world.reset()
+    assert world.poisoned
+    with pytest.raises(AssertionError, match="contaminated"):
+        world.run("S18")
+
+
+@pytest.mark.parametrize("fail_stage", [None, "build", "start", "scenario"])
+def test_disposable_fixture_builds_once_and_cleans_even_after_failure(monkeypatch, tmp_path, fail_stage):
+    from tests import test_e2e_cli_stateful as acceptance
+
+    home = tmp_path / "world"
+    env = acceptance.world_env(home)
+    calls = []
+    world = SimpleNamespace(timing=lambda _: None, cli_server=None)
+    monkeypatch.setattr(acceptance, "World", lambda *_: world)
+    monkeypatch.setattr(acceptance, "start_cli_server", lambda _: None)
+
+    def run(argv, **_kwargs):
+        script = Path(argv[0]).name
+        calls.append(script)
+        if script == "e2e-env.sh":
+            home.mkdir()
+            (home / ".aq-e2e").touch()
+            (home / "config.yaml").write_text("swarm:\n  enabled: true\n")
+        stage = {"e2e-env.sh": "build", "e2e-daemon.sh": "start"}.get(script)
+        return SimpleNamespace(returncode=int(stage == fail_stage and stage is not None),
+                               stdout="fixture", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    try:
+        with acceptance.disposable_world("graphs", env) as fixture:
+            assert fixture is world
+            if fail_stage == "scenario":
+                raise AssertionError("scenario failure")
+    except AssertionError:
+        assert fail_stage is not None
+    assert calls.count("e2e-env.sh") == 1
+    assert calls.count("e2e-clean.sh") == 1
+    assert calls.count("e2e-daemon.sh") == int(fail_stage != "build")
+
+
+def test_parallel_worlds_fence_inherited_e2e_targets(monkeypatch, tmp_path):
+    from tests.test_e2e_cli_stateful import world_env
+
+    for key in ("AQ_E2E_HOME", "AQ_E2E_API_URL", "E2E_DB_NAME", "E2E_FAKE_SCRIPT"):
+        monkeypatch.setenv(key, "operator-owned")
+    first = world_env(tmp_path / "one")
+    second = world_env(tmp_path / "two")
+    for key in ("AQ_E2E_HOME", "AQ_E2E_API_URL", "E2E_DB_NAME", "AQ_E2E_TMUX_SOCKET"):
+        assert first[key] != second[key]
+        assert first[key] != "operator-owned"
+    assert "E2E_FAKE_SCRIPT" not in first
+
+
+def test_s16_restoration_failure_is_a_failure_and_still_restores_policy(monkeypatch):
+    smoke = _load_smoke()
+    restored = []
+    monkeypatch.setattr(smoke, "set_failover_policy_enabled", restored.append)
+    monkeypatch.setattr(smoke, "_s16", lambda _: "passed")
+    monkeypatch.setattr(smoke, "_restore_providers", lambda:
+                        (_ for _ in ()).throw(RuntimeError("provider cleanup failed")))
+    with pytest.raises(RuntimeError, match="provider cleanup failed"):
+        smoke.s16_provider_failover({})
+    assert restored == [False, True]
+
+
+@pytest.mark.asyncio
+async def test_negative_provider_assertion_observes_completed_scheduler_cycles(monkeypatch, tmp_path):
+    from scripts.e2e.daemon import run_fake_cycles
+
+    smoke = _load_smoke()
+    monkeypatch.setenv("AQ_E2E_HOME", str(tmp_path))
+    observed = []
+    orch = SimpleNamespace(run_one_cycle=None)
+
+    async def original():
+        observed.append("cycle")
+
+    async def scheduler(worker, _shutdown, *, interval):
+        assert interval == 0.25
+        for _ in range(3):
+            await worker.run_one_cycle()
+
+    orch.run_one_cycle = original
+    await run_fake_cycles(scheduler, orch, None, 0.25)
+    assert (tmp_path / "scheduler-cycles").read_text() == "3"
+    assert orch.run_one_cycle is original
+
+    def wait(predicate, **_kwargs):
+        assert not predicate()
+        (tmp_path / "scheduler-cycles").write_text("4")
+        assert not predicate()
+        (tmp_path / "scheduler-cycles").write_text("5")
+        assert predicate()
+
+    monkeypatch.setattr(smoke, "wait_for", wait)
+    smoke.observe_scheduler_cycles(lambda: observed.append("assertion"))
+    assert observed == ["cycle"] * 3 + ["assertion"] * 3
+
+
+def test_preloaded_cli_keeps_output_exit_codes_and_environment_isolation(tmp_path):
+    import signal
+    from scripts.e2e.cli_server import request
+    from tests.test_e2e_cli_stateful import World, start_cli_server, world_env
+
+    env = world_env(tmp_path)
+    world = World("probe", env)
+    start_cli_server(world)
+    try:
+        for argv in (["--json", "schema"], ["--json", "task", "show"]):
+            normal = subprocess.run([sys.executable, str(REPO_ROOT / "scripts/e2e/aq.py"), *argv],
+                                    env={k: v for k, v in env.items() if k != "AQ_E2E_CLI_SOCKET"},
+                                    capture_output=True, text=True, timeout=30)
+            fast = request(env["AQ_E2E_CLI_SOCKET"], argv, env)
+            assert fast["returncode"] == normal.returncode
+            assert fast["stdout"] == normal.stdout
+        legacy_env = {**env, "AQ_JSON_LEGACY": "1"}
+        legacy = request(env["AQ_E2E_CLI_SOCKET"], ["--json", "schema"], legacy_env)
+        fresh = request(env["AQ_E2E_CLI_SOCKET"], ["--json", "schema"], env)
+        assert "data" not in json.loads(legacy["stdout"])
+        assert "data" in json.loads(fresh["stdout"])
+    finally:
+        os.killpg(world.cli_server.pid, signal.SIGTERM)
+        world.cli_server.wait(timeout=5)
+
+
+@pytest.mark.parametrize("argv", [
+    ["task", "claim", "--help"],
+    ["task", "create", "--graph", "/definitely-missing.yaml"],
+    ["e2e-fixture", "ping"],
+])
+def test_race_and_plugin_probes_bypass_cli_preloading(tmp_path, argv):
+    env = {**os.environ, "AQ_E2E_CLI_SOCKET": str(tmp_path / "missing.sock")}
+    result = subprocess.run([sys.executable, str(REPO_ROOT / "scripts/e2e/aq.py"), *argv],
+                            env=env, capture_output=True, text=True, timeout=30)
+    assert result.returncode in (0, 2)
+    assert "Traceback" not in result.stderr
+
+
+def test_pytest_collection_selects_only_the_requested_shard():
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "tests/test_e2e_cli_stateful.py", "--co", "-q",
+         "-m", "integration", "-k", "graphs"],
+        cwd=REPO_ROOT, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    nodes = [line for line in result.stdout.splitlines()
+             if line.startswith("tests/test_e2e_cli_stateful.py::")]
+    assert {line.rsplit("[", 1)[1].removesuffix("]") for line in nodes} == {
+        f"graphs-{key}" for key in SCENARIO_GROUPS["graphs"]
+    }

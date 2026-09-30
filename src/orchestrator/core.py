@@ -2102,6 +2102,7 @@ class Orchestrator(
                 config_path=self.config._config_path,
                 event_bus=self.bus,
                 current_config=self.config,
+                poll_interval=self.config.scheduling.config_poll_interval_seconds,
             )
             self.bus.subscribe("config.reloaded", self._on_config_reloaded)
             self._config_watcher.start()
@@ -3537,6 +3538,8 @@ class Orchestrator(
         previous_aspect = getattr(getattr(previous, "graph_layout", None), "row_aspect", None)
         current_aspect = getattr(getattr(config, "graph_layout", None), "row_aspect", None)
         self.config = config
+        if self._config_watcher is not None:
+            self._config_watcher._poll_interval = config.scheduling.config_poll_interval_seconds
         # Propagate the global budget to the manager ``_schedule`` reads it
         # back out of.  Assign unconditionally: ``None`` means "no global
         # cap", and skipping it would leave a cleared budget enforced until

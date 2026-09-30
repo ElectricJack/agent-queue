@@ -418,3 +418,113 @@ async def test_pending_readiness_cleanup_is_bounded(monkeypatch, caplog):
     lingering.cancel.assert_called_once()
     finished.cancel.assert_called_once()
     assert "did not finish cancellation" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_scheduler_injected_cadence_remains_interruptible(monkeypatch):
+    shutdown = asyncio.Event()
+    timeouts = []
+    orch = SimpleNamespace(run_one_cycle=AsyncMock())
+
+    async def wait(awaitable, timeout):
+        timeouts.append(timeout)
+        shutdown.set()
+        await awaitable
+
+    monkeypatch.setattr(asyncio, "wait_for", wait)
+    await main_mod._run_scheduler_cycles(orch, shutdown, interval=0.25)
+    assert timeouts == [0.25]
+    orch.run_one_cycle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_coalesces_events_during_cycle_and_enforces_minimum_cadence(monkeypatch):
+    from src.config import SchedulingConfig
+
+    bus = EventBus(validate_events=False)
+    shutdown = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    clock = {"now": 100.0}
+    monkeypatch.setattr(loop, "time", lambda: clock["now"])
+    cycles = []
+    timeouts = []
+    config = SimpleNamespace(scheduling=SchedulingConfig())
+
+    async def cycle():
+        cycles.append(clock["now"])
+        if len(cycles) == 1:
+            for _ in range(100):
+                await bus.emit("task.created")
+        else:
+            shutdown.set()
+
+    async def wait(awaitable, timeout):
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            await awaitable
+        else:
+            awaitable.close()
+            clock["now"] += timeout
+            raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", wait)
+    await main_mod._run_scheduler_cycles(SimpleNamespace(bus=bus, config=config, run_one_cycle=cycle), shutdown)
+    assert cycles == [100, 101]
+    assert timeouts == [5, 1]
+    assert all(bus.subscriber_count(event) == 0 for event in main_mod.SCHEDULER_WAKE_EVENTS)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_event_wakes_sleep_and_unsubscribes_on_cancellation():
+    from src.config import SchedulingConfig
+
+    bus = EventBus(validate_events=False)
+    entered = asyncio.Event()
+    second = asyncio.Event()
+    shutdown = asyncio.Event()
+    calls = 0
+
+    async def cycle():
+        nonlocal calls
+        calls += 1
+        (entered if calls == 1 else second).set()
+
+    config = SimpleNamespace(scheduling=SchedulingConfig(cycle_interval_seconds=60,
+                                                        min_cycle_interval_seconds=0.001))
+    scheduler = asyncio.create_task(main_mod._run_scheduler_cycles(
+        SimpleNamespace(bus=bus, config=config, run_one_cycle=cycle), shutdown))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await bus.emit("provider.state_changed")
+        await asyncio.wait_for(second.wait(), 5)
+    finally:
+        scheduler.cancel()
+        await asyncio.gather(scheduler, return_exceptions=True)
+    assert calls == 2
+    assert all(bus.subscriber_count(event) == 0 for event in main_mod.SCHEDULER_WAKE_EVENTS)
+
+
+@pytest.mark.asyncio
+async def test_degraded_scheduler_ignores_event_storm_until_periodic_retry(monkeypatch):
+    bus = EventBus(validate_events=False)
+    shutdown = asyncio.Event()
+    delays = []
+    calls = 0
+
+    async def cycle():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            await bus.emit("task.created")
+            raise RuntimeError("database temporarily unavailable")
+        shutdown.set()
+
+    async def wait(awaitable, timeout):
+        delays.append((awaitable.cr_code.co_name, timeout))
+        awaitable.close()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(asyncio, "wait_for", wait)
+    await main_mod._run_scheduler_cycles(SimpleNamespace(bus=bus, run_one_cycle=cycle), shutdown)
+    assert calls == 2
+    assert delays == [("wait", 5)]
