@@ -128,7 +128,9 @@ async def test_benchmark_attribution_upgrade_from_revision_46():
             "SELECT COUNT(*) FROM information_schema.columns "
             "WHERE table_name='archived_tasks' AND column_name='route'"
         ) == 1
-        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000047"
+        heads = _alembic_pg(dsn, "heads")
+        assert heads.returncode == 0, heads.stderr
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == heads.stdout.split()[0]
         for table in ("pull_request_inbox_snapshot", "object_loops", "doc_review_attachments"):
             assert await conn.fetchval("SELECT to_regclass($1)", table)
     finally:

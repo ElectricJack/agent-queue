@@ -99,16 +99,18 @@ async def test_baseline_controls_are_append_only():
 async def test_repair_ejection_upgrade_backfills_existing_candidates_and_is_idempotent(
     reuse_database,
 ):
+    from importlib import import_module
+
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
-    from importlib import import_module
     from sqlalchemy import select
+
     from src.database.tables import integration_candidate_revisions
     from src.integration.controls import IntegrationControlService
     from src.integration.scheduler import TrainService
     from src.models import Project, RepoConfig, RepoSourceType
-    from tests.test_integration_sealing import _enable_train, _request, _seed_leaf
     from tests.test_integration_eject import _start_repair
+    from tests.test_integration_sealing import _enable_train, _request, _seed_leaf
 
     db = await reuse_database("repair-ejection-upgrade")
     await db.create_project(Project(id="p", name="P"))
@@ -121,7 +123,7 @@ async def test_repair_ejection_upgrade_backfills_existing_candidates_and_is_idem
     await _start_repair(db, batch)
 
     def upgrade_existing(connection):
-        # Recreate revision 43's non-empty candidate membership shape. This
+        # Recreate revision 47's non-empty candidate membership shape. This
         # is the disposable database leased for this test, never the operator DB.
         connection.execute(
             text("ALTER TABLE integration_candidate_revisions DROP COLUMN source_manifest")
@@ -136,7 +138,7 @@ async def test_repair_ejection_upgrade_backfills_existing_candidates_and_is_idem
         )
         context = MigrationContext.configure(connection)
         with Operations.context(context):
-            module = import_module("migrations.versions.a00000000044_repair_ejection")
+            module = import_module("migrations.versions.a00000000048_repair_ejection")
             module.upgrade()
             module.upgrade()
 
