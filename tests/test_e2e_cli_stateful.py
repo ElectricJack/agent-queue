@@ -23,8 +23,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCENARIO_GROUPS = {
     "claims": ("S1", "S2", "S3", "S6", "S7", "S19"),
     "cli": ("S5", "S8", "S9", "S12", "S17"),
-    "graphs": ("S10", "S16b", "S18"),
-    "failover": ("S4", "S11", "S13", "S14", "S15", "S16a"),
+    "graphs": ("S10", "S15", "S16b", "S18"),
+    "failover": ("S4", "S11", "S13", "S14", "S16a"),
 }
 
 

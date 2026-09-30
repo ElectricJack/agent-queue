@@ -206,8 +206,8 @@ parallel, with an eight-minute budget per job and `fail-fast: false`:
 |---|---|
 | `claims` | S1–S3, S6–S7, S19 |
 | `cli` | S5, S8–S9, S12, S17 |
-| `graphs` | S10, S16b, S18 |
-| `failover` | S4, S11, S13–S15, S16a |
+| `graphs` | S10, S15, S16b, S18 |
+| `failover` | S4, S11, S13–S14, S16a |
 
 Each runner selects one parametrized node from `tests/test_e2e_cli_stateful.py`
 with `-m integration -s`. It creates and cleans up its own database, daemon,
@@ -220,6 +220,10 @@ covers cold dependency installation and post-job cache/container cleanup:
 run [36654088476](https://github.com/ElectricJack/agent-queue/actions/runs/36654088476)
 passed all six failover scenarios in a 231.30-second test but exceeded the
 former five-minute job limit during cleanup.
+S15 runs with the shorter graphs group to keep failover within the unchanged
+smoke deadline. Run [36783223235](https://github.com/ElectricJack/agent-queue/actions/runs/36783223235)
+measured S15 at 63.9 seconds and the original graphs group at 180.22 seconds;
+the original failover group reached its 270-second subprocess deadline.
 `--durations=0` also reports the complete group call, including environment
 setup and cleanup, alongside pytest fixture setup and teardown.
 Fixture registration/cleanup and background state inspection use the public
