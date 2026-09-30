@@ -63,6 +63,11 @@ reason and prior hold decision as a compare-and-swap guard. Release reruns all
 stopped-writer, workspace, claim, ownership and remaining-budget checks. It records
 both decisions and preserves the existing branch/workspace. It cannot release a
 different incident or silently reset retry counters.
+If that exact operational incident's pool attempt was subsequently drained, the
+explicit hold release may accept the administrative `drained` exit. Ordinary
+retries cannot accept it, and a task session or other manual/unknown exit remains
+ineligible. The prior hold, operational incident reason, same stopped process,
+preserved owner handoff and all remaining recovery guards are still required.
 
 ## Validation and publication
 
@@ -136,3 +141,14 @@ member under the current policy. A later product hold, rejected review or change
 source generation withholds all downstream repairs, even if their own green CI
 and authorization evidence already exist. The train cannot route around that
 gate by seating the final repair on its own.
+
+Live rollout needs an independent control read when the full historical delivery
+and external readiness projection is slow or unavailable. `aq integration status
+PROJECT_ID --control-only` returns the project mode, generation, designated
+repository, durable schedule and active batch from one read-only database
+snapshot, together with the exact durable items the drain guard counts. It uses
+the existing project/supervisor authorization and performs no
+Git observation, task readiness scan or external preflight. The response identifies
+itself as a control projection and leaves readiness unknown; it cannot authorize
+promotion or stand in for full rollout evidence. Policy changes still compare and
+swap against the returned generation.

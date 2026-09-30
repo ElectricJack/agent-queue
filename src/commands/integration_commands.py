@@ -447,6 +447,8 @@ class IntegrationCommandsMixin:
             authorized = principal.kind in {PrincipalKind.LOCAL, PrincipalKind.SERVICE}
         if not authorized:
             return _failure("unauthorized", "integration status is outside the caller project")
+        if args.get("control_only"):
+            return await self._integration_control_service().status(project_id, control_only=True)
         return await self._integration_control_service().status(project_id)
 
     async def _integration_app_inputs(

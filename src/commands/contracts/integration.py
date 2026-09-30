@@ -104,6 +104,10 @@ class IntegrationStatusArgs(CommandArgs):
     project_id: str = Field(min_length=1)
 
 
+class IntegrationStatusReadArgs(IntegrationStatusArgs):
+    control_only: bool = False
+
+
 class IntegrationTrustManifestArgs(CommandArgs):
     project_id: str = Field(min_length=1)
     #: A policy document to build from instead of the bound one (``--policy FILE``).
@@ -520,6 +524,8 @@ class IntegrationOperationalValue(CommandValue):
 
 
 class IntegrationStatusValue(IntegrationOperationalValue):
+    projection_kind: Literal["control"] | None = None
+    drain_blockers: tuple[dict[str, Any], ...] = ()
     #: Non-blocking App-mode configuration warnings (spec §6.2); never part
     #: of ``blockers``, their digest or ``ready``.
     warnings: tuple[dict[str, Any], ...] = ()
@@ -1008,7 +1014,7 @@ RETRY_CLEANUP_OUTCOMES = (
 
 INTEGRATION_STATUS = _operational_contract(
     "integration_status",
-    IntegrationStatusArgs,
+    IntegrationStatusReadArgs,
     ("status", "not_found"),
     successes=frozenset({"status"}),
     side_effect=SideEffectClass.READ,
@@ -2545,7 +2551,7 @@ async def _seal_adapter(args: IntegrationSealArgs, ctx: CommandContext | None):
     )
 
 
-async def _status_adapter(args: IntegrationStatusArgs, ctx: CommandContext | None):
+async def _status_adapter(args: IntegrationStatusReadArgs, ctx: CommandContext | None):
     return await _hierarchy_adapter(
         "integration_status", args, ctx, IntegrationStatusValue, {"status", "not_found"}
     )

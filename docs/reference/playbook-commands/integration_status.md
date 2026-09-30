@@ -14,13 +14,14 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/integration.py`](../../../src/commands/contracts/integration.py) |
-| Contract fingerprint | `sha256:4e4a8a0e1a22b4dc123880144c671055c06995b970ab948928684a7e65812b39` |
+| Contract fingerprint | `sha256:4e16ef68e35b9d7c99836540992cf4c29220fc4d0945df4bd54d69d2bfeef08c` |
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |---|---|---|---|---|
 | `project_id` | `string` | yes | — | — |
+| `control_only` | `boolean` | no | `false` | — |
 
 ## Result
 
@@ -82,9 +83,11 @@
 | `leases` | `object[]` | — |
 | `bound` | `object[]` | — |
 | `unproven` | `string[]` | — |
+| `projection_kind` | `"control" \| null` | — |
+| `drain_blockers` | `object[]` | — |
 | `warnings` | `object[]` | — |
 
-Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `project_id`, `operation_id`, `batch_id`, `task_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`, `outcomes`, `dry_run`, `leases`, `bound`, `unproven`, `warnings`.
+Projected into the run receipt: `id`, `head_sha`, `recovered_task_id`, `source_sha`, `manifest`, `evidence`, `policy`, `deliveries`, `pending_publications`, `parked`, `preserved_owners`, `released_delegates`, `project_id`, `operation_id`, `batch_id`, `task_id`, `effective_mode`, `desired_mode`, `mode`, `generation`, `draining`, `ready`, `rollout_ready`, `blockers`, `blocker_digest`, `certification`, `repository_id`, `schedule`, `active_batch`, `members`, `parent_readiness`, `ownership`, `lease`, `repair`, `ci_evidence`, `promotion`, `reconciliation`, `cleanup_pending`, `release`, `legacy_suppression`, `waiver_id`, `request_id`, `request_sequence`, `trigger`, `requested_at`, `next_due_at`, `state`, `stage`, `deadline_at`, `reason`, `count`, `outcomes`, `dry_run`, `leases`, `bound`, `unproven`, `projection_kind`, `drain_blockers`, `warnings`.
 
 ## Outcomes
 

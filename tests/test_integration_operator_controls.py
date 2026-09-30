@@ -488,14 +488,20 @@ _ENABLE_ARGS = {
 }
 
 
-async def test_global_supervisor_reads_integration_status_for_any_project(db):
+@pytest.mark.parametrize("control_only", [False, True])
+async def test_global_supervisor_reads_integration_status_for_any_project(db, control_only):
     """The global supervisor has no project scope, so status cannot match on it."""
     handler, controls = _handler_with_controls(db)
     with principal_context(_session("super-global", None)):
         for project_id in ("p", "other"):
-            result = await handler._cmd_integration_status({"project_id": project_id})
+            result = await handler._cmd_integration_status(
+                {"project_id": project_id, "control_only": control_only}
+            )
             assert result["outcome"] == "status", project_id
     assert [call.args for call in controls.status.await_args_list] == [("p",), ("other",)]
+    assert [call.kwargs for call in controls.status.await_args_list] == [
+        {"control_only": True} if control_only else {},
+    ] * 2
 
 
 async def test_global_supervisor_enables_integration_under_its_own_audit_label(db):
@@ -530,7 +536,7 @@ async def test_global_supervisor_enables_integration_under_its_own_audit_label(d
 async def test_status_refuses_other_projects_and_projectless_non_supervisors(db, principal):
     handler, controls = _handler_with_controls(db)
     with principal_context(principal):
-        result = await handler._cmd_integration_status({"project_id": "p"})
+        result = await handler._cmd_integration_status({"project_id": "p", "control_only": True})
     assert result["outcome"] == "unauthorized"
     controls.status.assert_not_awaited()
 

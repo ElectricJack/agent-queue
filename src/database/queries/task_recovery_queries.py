@@ -646,7 +646,8 @@ class TaskRecoveryQueryMixin:
                         f"{owner['operation_state']}; its delegate is retired and cannot be restarted"
                     )
                 await self._guard_task_recovery(
-                    conn, task, meta, attempt, incident, stopped_session
+                    conn, task, meta, attempt, incident, stopped_session,
+                    releasing_hold=releasing_hold,
                 )
                 result = await self._apply_transition(
                     conn,
@@ -714,7 +715,9 @@ class TaskRecoveryQueryMixin:
             "status": "READY" if decision == "retry" else "BLOCKED",
         }
 
-    async def _guard_task_recovery(self, conn, task, meta, attempt, incident, stopped_session):
+    async def _guard_task_recovery(
+        self, conn, task, meta, attempt, incident, stopped_session, *, releasing_hold=False
+    ):
         row = (
             (
                 await conn.execute(
@@ -743,7 +746,14 @@ class TaskRecoveryQueryMixin:
             raise ValueError(
                 "This failure requires operator review; automatic recovery is not allowed"
             )
-        if attempt["end_reason"] not in RETRYABLE_REASONS:
+        held_pool_drain = (
+            releasing_hold
+            and row["lifecycle"] == "pool"
+            and row["desired_state"] == "stopped"
+            and row["end_reason"] == "drained"
+            and attempt["end_reason"] == "drained"
+        )
+        if attempt["end_reason"] not in RETRYABLE_REASONS and not held_pool_drain:
             raise ValueError("Session exit was not a recoverable operational failure")
         if "manual_pause" in meta or task["resume_after"] is not None:
             raise ValueError("Task is paused or cooling down")

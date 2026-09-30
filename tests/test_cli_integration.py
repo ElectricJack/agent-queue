@@ -41,6 +41,8 @@ def _client(result):
     ("argv", "command", "args"),
     [
         (["status", "p"], "integration_status", {"project_id": "p"}),
+        (["status", "p", "--control-only"], "integration_status",
+         {"project_id": "p", "control_only": True}),
         (
             ["record-noop", "parent.1", "--expected-head-sha", "a" * 40],
             "integration_record_noop",
@@ -348,6 +350,7 @@ def test_integration_status_brief_keeps_operator_fences_and_drops_deep_detail():
     data = json.loads(result.output)["data"]
     assert data == {
         "outcome": "status",
+        "projection_kind": None,
         "project_id": "p",
         "operation_id": None,
         "batch_id": None,

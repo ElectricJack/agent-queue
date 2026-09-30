@@ -4536,6 +4536,7 @@
           "project_id"
         ],
         "optional": [
+          "--control-only",
           "--json",
           "--brief",
           "--api-url"

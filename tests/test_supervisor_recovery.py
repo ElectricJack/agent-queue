@@ -269,9 +269,50 @@ async def test_cleared_hold_retries_once_with_audit_and_preserved_work(env):
     assert "Cleared recovery hold" in comments["comments"][0]["body"]
 
 
+@pytest.mark.parametrize(
+    "lifecycle,end_reason,held,accepted",
+    [
+        ("pool", "drained", True, True),
+        ("pool", "drained", False, False),
+        ("task", "drained", True, False),
+        ("pool", "manual_stop", True, False),
+    ],
+)
+async def test_only_exact_operational_pool_hold_can_release_a_drained_attempt(
+    env, lifecycle, end_reason, held, accepted
+):
+    await stopped_attempt(env, reason=end_reason)
+    await env.db.update_session("s", lifecycle=lifecycle)
+    await env.db.set_task_meta("t", "needs_attention", "session_not_live")
+    await env.db.queue_task_recovery_notifications()
+    current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    args = {}
+    if held:
+        assert "error" not in await decide(env, current, "hold")
+        hold = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+        args["expected_hold_at"] = hold["decided_at"]
+    result = await decide(env, current, **args)
+    assert ("error" not in result) is accepted, result
+    task = await env.db.get_task("t")
+    assert task.retry_count == int(accepted)
+    assert task.status == (TaskStatus.READY if accepted else TaskStatus.BLOCKED)
+    if held:
+        recorded = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+        assert recorded["decision"] == ("retry" if accepted else "hold")
+        assert bool(recorded["decision_history"]) is accepted
+
+
 @pytest.mark.parametrize("guard", ["budget", "live_worker", "hold_label"])
-async def test_hold_release_rechecks_recovery_guards(env, guard):
-    current = await incident(env)
+@pytest.mark.parametrize("drained", [False, True])
+async def test_hold_release_rechecks_recovery_guards(env, guard, drained):
+    if drained:
+        await stopped_attempt(env, reason="drained")
+        await env.db.update_session("s", lifecycle="pool")
+        await env.db.set_task_meta("t", "needs_attention", "session_not_live")
+        await env.db.queue_task_recovery_notifications()
+        current = await env.db.get_task_meta("t", "supervisor_recovery_incident")
+    else:
+        current = await incident(env)
     assert "error" not in await decide(env, current, "hold")
     held = await env.db.get_task_meta("t", "supervisor_recovery_incident")
     if guard == "budget":

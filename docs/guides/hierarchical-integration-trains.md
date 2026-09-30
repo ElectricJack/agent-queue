@@ -308,6 +308,14 @@ Repository and policy changes are accepted only while the project is disabled,
 fully drained, and has no active integration work. Bind one field, reread status
 for the incremented generation, then bind the next:
 
+Use `aq integration status PROJECT_ID --control-only` when only the current
+generation, schedule, active batch and durable drain blockers are needed. This
+read avoids historical Git delivery checks and external preflight. Its
+`projection_kind: control` response leaves readiness unknown; use the full
+status and candidate evidence for rollout and promotion decisions. A retained
+worker claim is a drain blocker until its ordinary pushed completion/handoff
+releases ownership.
+
 ```bash
 aq integration status example
 aq project set example integration-repository '{"id":"repo","url":"https://github.com/OWNER/REPOSITORY.git","default_branch":"main"}' --expected-integration-generation 0 --reason 'bind exact existing project repository'

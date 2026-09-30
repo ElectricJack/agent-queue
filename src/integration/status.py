@@ -231,6 +231,58 @@ class IntegrationStatusService:
         finally:
             await conn.close()
 
+    async def control_status(self, project_id: str) -> dict[str, Any] | None:
+        """Read durable control state without delivery or readiness observations."""
+        async with self._consistent_snapshot() as conn:
+            project = await self._one(
+                conn, select(projects).where(projects.c.id == project_id)
+            )
+            if project is None:
+                return None
+            schedule = await self._one(
+                conn,
+                select(project_integration_schedules).where(
+                    project_integration_schedules.c.project_id == project_id
+                ),
+            )
+            batch = await self._one(
+                conn,
+                select(integration_batches)
+                .where(
+                    integration_batches.c.project_id == project_id,
+                    integration_batches.c.lifecycle.in_(ACTIVE_BATCH_STATES),
+                )
+                .order_by(integration_batches.c.updated_at.desc(), integration_batches.c.id),
+            )
+            revision = None
+            if batch is not None:
+                revision = await self._one(
+                    conn,
+                    select(integration_candidate_revisions).where(
+                        integration_candidate_revisions.c.batch_id == batch["id"],
+                        integration_candidate_revisions.c.revision == batch["current_revision"],
+                    ),
+                )
+            from src.integration.controls import IntegrationControlService
+
+            drain_blockers = await IntegrationControlService(self.db).drain_blockers_on(
+                conn, project_id
+            )
+            return {
+                "projection_kind": "control",
+                "project_id": project_id,
+                "effective_mode": project["hierarchical_integration_mode"],
+                "desired_mode": project["hierarchical_integration_desired_mode"],
+                "draining": bool(project["hierarchical_integration_draining"]),
+                "generation": project["hierarchical_integration_generation"],
+                "repository_id": project["integration_repository_id"],
+                "schedule": schedule,
+                "active_batch": self._batch_projection(batch, revision),
+                "drain_blockers": drain_blockers,
+                "ready": None,
+                "rollout_ready": None,
+            }
+
     async def status(self, project_id: str) -> dict[str, Any] | None:
         """Return one complete project projection from one database snapshot.
 
