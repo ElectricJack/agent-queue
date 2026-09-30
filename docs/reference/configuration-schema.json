@@ -1543,6 +1543,20 @@
           "items": {
             "additionalProperties": false,
             "properties": {
+              "cache_read_per_mtok": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "cache_write_per_mtok": {
+                "default": null,
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
               "input_per_mtok": {
                 "default": 0.0,
                 "type": "number"

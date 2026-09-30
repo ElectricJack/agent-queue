@@ -113,6 +113,92 @@ class OpsCommandsMixin:
     # costs
     # -----------------------------------------------------------------------
 
+    async def _cmd_benchmark_stage_record(self, args: dict) -> dict:
+        """Append one measured monotonic stage for the held task."""
+        from src.benchmark.report import STAGES
+        from src.commands.principal import PrincipalKind, current_principal
+
+        principal = current_principal()
+        task_id = args.get("task_id")
+        stage = args.get("stage")
+        span_id = args.get("span_id")
+        start = args.get("started_monotonic_ns")
+        end = args.get("ended_monotonic_ns")
+        if (not isinstance(task_id, str) or not task_id
+                or not isinstance(span_id, str) or not 1 <= len(span_id) <= 120
+                or stage not in STAGES
+                or type(start) is not int or type(end) is not int
+                or start < 0 or end < start or end - start > 30 * 86400 * 1_000_000_000):
+            return {"error": "invalid task, span, stage or monotonic bounds"}
+        if principal is not None and principal.kind in {
+            PrincipalKind.SESSION, PrincipalKind.PLAYBOOK,
+        } and not principal.elevated and principal.task_id not in {None, task_id}:
+            return {"error": "out of scope: stage task must be the held task"}
+        task = await self.db.get_task(task_id)
+        if task is None:
+            return {"error": "stage task must be active"}
+        if principal is not None and principal.project_id not in {None, task.project_id}:
+            return {"error": "out of scope: project_id mismatch"}
+        if principal is not None and principal.kind == PrincipalKind.SESSION and not principal.elevated:
+            epoch = args.get("claim_epoch")
+            if epoch is not None and (type(epoch) is not int or epoch < 0):
+                return {"error": "claim_epoch must be a nonnegative integer"}
+            refusal = await self._assert_session_owns(
+                task_id, session_id=principal.session_id, claim_epoch=epoch
+            )
+            if refusal:
+                return refusal
+            session = await self.db.get_session(principal.session_id)
+            if (session is None or session.project_id != task.project_id
+                    or session.task_id != task_id
+                    or session.state not in {"starting", "running", "draining"}
+                    or session.agent_id != task.assigned_agent_id):
+                return {"error": "out of scope: this session no longer owns the task"}
+        session_attempt_id = None
+        if principal is not None and principal.session_id:
+            session_attempt_id = await self.db.get_open_task_session_attempt_id(
+                principal.session_id, task_id
+            )
+        try:
+            inserted = await self.db.record_benchmark_stage(
+                span_id=span_id, project_id=task.project_id, task_id=task_id,
+                session_attempt_id=session_attempt_id, stage=stage,
+                started_monotonic_ns=start, ended_monotonic_ns=end,
+                owner_session_id=(principal.session_id if principal is not None
+                                  and principal.kind == PrincipalKind.SESSION
+                                  and not principal.elevated else None),
+                claim_epoch=args.get("claim_epoch"),
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+        return {"success": True, "span_id": span_id, "inserted": inserted,
+                "duration_ms": (end - start) / 1_000_000, "stage": stage,
+                "session_attempt_id": session_attempt_id}
+
+    async def _cmd_get_benchmark_report(self, args: dict) -> dict:
+        """Export a frozen, explicit paired task set with observed usage."""
+        from src.benchmark.report import _manifest_pairs, build_report
+        from src.commands.principal import PrincipalKind, current_principal
+
+        principal = current_principal()
+        if principal is not None and principal.kind in {
+            PrincipalKind.SESSION, PrincipalKind.PLAYBOOK,
+        } and not principal.elevated:
+            return {"error": "out of scope: benchmark reports require an operator or supervisor"}
+        manifest = args.get("manifest")
+        if not isinstance(manifest, dict):
+            return {"error": "manifest must be an object"}
+        try:
+            _pairs, task_ids = _manifest_pairs(manifest)
+            project_id = manifest["project_id"]
+            if principal is not None and principal.project_id not in {None, project_id}:
+                return {"error": "out of scope: project_id mismatch"}
+            evidence = await self.db.get_benchmark_evidence(project_id, task_ids)
+            return {"success": True, **build_report(manifest, evidence, self.config.pricing)}
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+
     async def _cmd_get_costs(self, args: dict) -> dict:
         """Roll the token ledger up into money using ``pricing:`` from config.
 
@@ -125,10 +211,10 @@ class OpsCommandsMixin:
             ``{"success": True, "rows": [...], "total_cost_usd": float,
             "unpriced_tokens": int, "pricing_models": [...]}``.
 
-        Honesty rule (design §7): a row is priced only when it carries both a
-        ``model`` that matches a pricing entry **and** an input/output split.
-        Everything else counts toward ``unpriced_tokens`` with ``cost_usd``
-        left null — the ledger is never priced at a guessed rate.
+        Honesty rule (design §7): a model must match a configured rate before
+        any component is priced. Cache read/write components additionally
+        require their own explicit rates; missing rates leave those tokens
+        unpriced. A partial priced subtotal never implies complete cost.
 
         The rule applies *within* a row too.  ``get_cost_rollup`` buckets by
         ``(group, model)``, so one bucket can hold both split and unsplit
@@ -167,25 +253,41 @@ class OpsCommandsMixin:
         for row in rollup:
             model = row.get("model")
             entry = pricing.match(model) if model else None
-            split_tokens = (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0)
+            input_tokens = row.get("input_tokens") or 0
+            output_tokens = row.get("output_tokens") or 0
+            cache_read = row.get("cache_read_tokens") or 0
+            cache_write = row.get("cache_write_tokens") or 0
+            split_tokens = input_tokens + output_tokens + cache_read + cache_write
             total_tokens = row.get("tokens_used", 0) or 0
             cost: float | None = None
+            priced_tokens = 0
             if entry is not None and split_tokens:
-                cost = (row.get("input_tokens") or 0) * entry.input_per_mtok / 1_000_000 + (
-                    row.get("output_tokens") or 0
-                ) * entry.output_per_mtok / 1_000_000
-                total_cost += cost
-                # Tokens in this bucket that carried no split are not covered
-                # by `cost` — count them as unpriced rather than losing them.
-                row_unpriced = max(0, total_tokens - split_tokens)
-            else:
-                row_unpriced = total_tokens
+                cost = (input_tokens * entry.input_per_mtok
+                        + output_tokens * entry.output_per_mtok) / 1_000_000
+                priced_tokens = input_tokens + output_tokens
+                if entry.cache_read_per_mtok is not None:
+                    cost += cache_read * entry.cache_read_per_mtok / 1_000_000
+                    priced_tokens += cache_read
+                if entry.cache_write_per_mtok is not None:
+                    cost += cache_write * entry.cache_write_per_mtok / 1_000_000
+                    priced_tokens += cache_write
+                if priced_tokens:
+                    total_cost += cost
+                else:
+                    cost = None
+            # Historic unsplit rows, unknown models and missing cache rates
+            # remain explicit even when another component was priced.
+            row_unpriced = max(0, total_tokens - priced_tokens)
             unpriced += row_unpriced
             rows.append(
                 {
                     **row,
                     "cost_usd": cost,
                     "unpriced_tokens": row_unpriced,
+                    "unpriced_cache_read_tokens": cache_read if entry is None or entry.cache_read_per_mtok is None else 0,
+                    "unpriced_cache_write_tokens": cache_write if entry is None or entry.cache_write_per_mtok is None else 0,
+                    "unattributed_tokens": max(0, total_tokens - split_tokens),
+                    "cost_complete": row_unpriced == 0,
                     "pricing_model": entry.model if entry else None,
                 }
             )
@@ -198,6 +300,7 @@ class OpsCommandsMixin:
             "since": since_ts,
             "total_cost_usd": round(total_cost, 6),
             "unpriced_tokens": unpriced,
+            "cost_complete": unpriced == 0,
             "pricing_models": [m.model for m in pricing.models],
         }
 

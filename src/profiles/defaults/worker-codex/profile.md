@@ -105,6 +105,7 @@ somehow declares none.
     "task_claim",
     "task_close",
     "task_comment",
+    "benchmark_stage_record",
     "task_comments",
     "task_handoff",
     "task_heartbeat",

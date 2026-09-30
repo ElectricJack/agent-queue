@@ -420,6 +420,12 @@ class TaskRoutePlanValue(CommandValue):
     profile_id: str | None = None
     provider: str | None = None
     provider_intent: str | None = None
+    benchmark_arm: str | None = None
+    benchmark_class: str | None = None
+    benchmark_harness: str | None = None
+    requested_model: str | None = None
+    observed_models: list[str] = Field(default_factory=list)
+    mapped_model: str | None = None
     #: ``planned``: the kind the policy applied.  ``needs_classification``:
     #: the task's own kind, empty when it has none.
     task_type: str | None = None

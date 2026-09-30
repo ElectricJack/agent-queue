@@ -1645,6 +1645,8 @@ class ModelPricing:
     model: str = ""  # glob, fnmatch-style; entries match in order
     input_per_mtok: float = 0.0  # USD per million input tokens
     output_per_mtok: float = 0.0
+    cache_read_per_mtok: float | None = None
+    cache_write_per_mtok: float | None = None
 
 
 @dataclass
@@ -1681,6 +1683,10 @@ class PricingConfig:
                 errors.append(
                     ConfigError("pricing", f"models[{idx}].output_per_mtok", "must be >= 0")
                 )
+            for name in ("cache_read_per_mtok", "cache_write_per_mtok"):
+                value = getattr(entry, name)
+                if value is not None and value < 0:
+                    errors.append(ConfigError("pricing", f"models[{idx}].{name}", "must be >= 0"))
         return errors
 
 
@@ -4700,6 +4706,14 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     model=str(row.get("model", "")),
                     input_per_mtok=float(row.get("input_per_mtok", 0.0)),
                     output_per_mtok=float(row.get("output_per_mtok", 0.0)),
+                    cache_read_per_mtok=(
+                        float(row["cache_read_per_mtok"])
+                        if row.get("cache_read_per_mtok") is not None else None
+                    ),
+                    cache_write_per_mtok=(
+                        float(row["cache_write_per_mtok"])
+                        if row.get("cache_write_per_mtok") is not None else None
+                    ),
                 )
             )
         config.pricing = PricingConfig(models=entries)

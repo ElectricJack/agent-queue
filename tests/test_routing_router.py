@@ -177,6 +177,74 @@ async def test_plan_holds_when_every_candidate_provider_is_out(handler, orch):
     assert held["providers"] == ["claude", "codex"]
 
 
+async def test_benchmark_arm_holds_if_requested_model_mapping_differs(handler, orch):
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    await orch.db.add_task_label("t", "benchmark:astra")
+    policy = SHIPPED_POLICY + """\
+benchmark_arms:
+  astra:
+    class: standard-high
+    harness: codex
+    requested_model: another-model
+    observed_models: [another-model]
+"""
+    held = await handler.execute("task_route_plan", {"task_id": "t", "policy": policy})
+    assert held["outcome"] == "held"
+    assert held["reason"] == "requested_model_unavailable"
+    assert held["mapped_model"] == "gpt-standard-high"
+
+    policy = policy.replace("another-model", "gpt-standard-high")
+    planned = await handler.execute("task_route_plan", {"task_id": "t", "policy": policy})
+    assert planned["outcome"] == "planned", planned
+    orch.intelligence_classes.replace({
+        **CLASSES,
+        "standard-high": IntelligenceClass("standard-high", "", "", {
+            "codex": {"model": "mapping-changed"},
+        }),
+    })
+    with _as_playbook():
+        stale = await handler.execute("task_route_apply", {"task_id": "t", "plan": planned})
+    assert stale["outcome"] == "stale"
+    assert "mapping changed" in stale["reason"]
+
+
+@pytest.mark.parametrize("requested_model", ["gpt-standard-high", "unavailable-model"])
+async def test_benchmark_contract_preserves_provenance_for_apply(
+    handler, orch, monkeypatch, requested_model
+):
+    from src.commands.contracts import builtin
+    from src.commands.principal import ExecutionPrincipal
+
+    monkeypatch.setattr(builtin, "_handler_provider", lambda: handler)
+    await _create(orch.db, "t", task_type=TaskType.RESEARCH)
+    await orch.db.add_task_label("t", "benchmark:astra")
+    policy = SHIPPED_POLICY + f"""\
+benchmark_arms:
+  astra:
+    class: standard-high
+    harness: codex
+    requested_model: {requested_model}
+    observed_models: [{requested_model}]
+"""
+    registration = CONTRACTS.get("task_route_plan")
+    args = registration.contract.execution.args_model(task_id="t", policy=policy)
+    with _as_playbook():
+        result = await registration.invoke(args, ExecutionPrincipal.service("playbook-dispatch"))
+        assert result.value.benchmark_arm == "astra"
+        assert result.value.requested_model == requested_model
+        if requested_model == "unavailable-model":
+            assert result.outcome == "held"
+            assert result.value.mapped_model == "gpt-standard-high"
+        else:
+            assert result.outcome == "planned"
+            assert result.value.observed_models == [requested_model]
+            routed = await handler.execute("task_route_apply", {
+                "task_id": "t", "plan": result.value.model_dump(exclude_none=True),
+            })
+            assert routed["outcome"] == "routed", routed
+            assert (await orch.db.get_task("t")).route["benchmark_arm"] == "astra"
+
+
 async def test_plan_honours_exclude_providers_from_the_route_constraints(handler, orch):
     await _create(orch.db, "t", task_type=TaskType.RESEARCH,
                   route={"constraints": {"exclude_providers": ["codex"]}})

@@ -14,7 +14,7 @@
 | Timeout | none |
 | Preview | not supported |
 | Defined in | [`src/commands/contracts/builtin.py`](../../../src/commands/contracts/builtin.py) |
-| Contract fingerprint | `sha256:bfe58ec43ea30acd6c329398deb26c2826482177c68e9b0f06bcd29997978417` |
+| Contract fingerprint | `sha256:2097f7e8ce2856856c4ff08965ae8aa571a525774a3d01da4ab774187e970b3a` |
 
 ## Parameters
 
@@ -33,6 +33,12 @@
 | `profile_id` | `string \| null` | Agent profile |
 | `provider` | `string \| null` | Provider |
 | `provider_intent` | `string \| null` | — |
+| `benchmark_arm` | `string \| null` | — |
+| `benchmark_class` | `string \| null` | — |
+| `benchmark_harness` | `string \| null` | — |
+| `requested_model` | `string \| null` | — |
+| `observed_models` | `string[]` | — |
+| `mapped_model` | `string \| null` | — |
 | `task_type` | `string \| null` | — |
 | `lane` | `string \| null` | Lane |
 | `rule` | `string \| null` | Policy rule |

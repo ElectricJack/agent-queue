@@ -653,6 +653,8 @@ RULES: list[tuple[str, str, str, str, str]] = [
 
     ("src/doctor/**", "operations", "docs/guides/operations.md", PRODUCTION,
      "`aq doctor` check."),
+    ("src/benchmark/**", "operations", "docs/guides/benchmark-routing-export.md", PRODUCTION,
+     "Frozen benchmark routing and evidence export."),
     ("src/metrics/**", "operations", "docs/guides/operations.md", PRODUCTION,
      "Fleet metrics sampling."),
     ("src/logging_config.py", "operations", "docs/guides/operations.md",

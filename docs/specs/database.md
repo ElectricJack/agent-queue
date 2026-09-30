@@ -836,6 +836,10 @@ Immutable append-only log of token usage events.
 | `task_id` | TEXT | NOT NULL REFERENCES tasks(id) | |
 | `tokens_used` | INTEGER | NOT NULL | Tokens consumed in this event (authoritative total) |
 | `model` | TEXT | nullable | Model that consumed the tokens; NULL for writers that don't report it |
+| `model_source` | TEXT | nullable | Transcript evidence source, such as `assistant_response` or `turn_context`; added by revision 47 |
+| `session_id` | TEXT | nullable | Session captured when usage is ingested |
+| `attempt_id` | TEXT | nullable | Open task-session attempt captured at ingest; historical rows stay unattributed |
+| `call_id` | TEXT | nullable | Stable transcript entry identity |
 | `input_tokens` | INTEGER | nullable | Input half of the split; NULL when unknown |
 | `output_tokens` | INTEGER | nullable | Output half of the split; NULL when unknown |
 | `timestamp` | REAL | NOT NULL | Unix timestamp, set on insert |
@@ -843,6 +847,31 @@ Immutable append-only log of token usage events.
 The three pricing columns are nullable by design: rows written before they existed cannot be priced accurately, so `get_cost_rollup` / `aq costs` report them as `unpriced_tokens` rather than pricing them at a guessed rate (`docs/specs/design/trust-and-ops.md` §7).
 
 No deletes on this table during normal operation. Deleted only as part of cascading `delete_project` or `delete_task`.
+
+Indexes: `idx_token_ledger_task_attempt` (`task_id`, `attempt_id`) and unique
+`uq_token_ledger_call` (`session_id`, `call_id`). Nullable identities preserve
+historical rows without inventing attribution. Added by Alembic `a00000000047`.
+
+### Table: `benchmark_stage_spans`
+
+Idempotent monotonic stage measurements recorded through `benchmark_stage_record`.
+Added by Alembic `a00000000047`. The legacy SQLite importer excludes this table
+because it was introduced after SQLite removal.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Caller-supplied stable span ID |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) ON DELETE CASCADE | Owning project |
+| `task_id` | TEXT | NOT NULL | Soft task reference retained after archival |
+| `session_attempt_id` | TEXT | nullable | Open worker attempt at recording time |
+| `stage` | TEXT | NOT NULL | Measured benchmark stage |
+| `started_monotonic_ns` | BIGINT | NOT NULL | Start on the same host and clock as the end |
+| `ended_monotonic_ns` | BIGINT | NOT NULL | End timestamp |
+| `duration_ms` | FLOAT | NOT NULL | Difference converted to milliseconds |
+| `recorded_at` | FLOAT | NOT NULL | Recording wall-clock timestamp |
+
+Index: `idx_benchmark_stage_task` (`task_id`, `session_attempt_id`). An identical
+span retry returns `inserted: false`; conflicting evidence for the same ID is refused.
 
 ### Table: `events`
 
@@ -1003,6 +1032,9 @@ Two indexes: on `(project_id, status)` and on `suggestion_hash`. Reused by the C
 Mirrors the `tasks` table schema plus an `archived_at` REAL column. Stores tasks that have been archived (completed/failed tasks moved out of the active tasks table).
 
 Methods: `archive_task`, `archive_completed_tasks`, `archive_old_terminal_tasks`, `list_archived_tasks`, `get_archived_task`, `restore_archived_task`, `delete_archived_task`, `count_archived_tasks`.
+
+`route` is nullable JSONB, preserving the active task's routing record, including
+benchmark arm, requested model and policy digest. Added by Alembic `a00000000047`.
 
 ### Table: `task_metadata`
 
@@ -3440,6 +3472,11 @@ Uses a `key in row.keys()` guard for `repo_id` for backward compatibility.
 ### `record_token_usage(project_id, agent_id, task_id, tokens, *, model=None, input_tokens=None, output_tokens=None) -> None`
 
 Appends one row to `token_ledger`. The `id` is a fresh UUID4 and `timestamp` is `time.time()`. `tokens` is the authoritative total; `model` and the input/output split are optional because most writers only know the total.
+
+Optional `model_source`, `session_id`, `attempt_id` and `call_id` capture evidence
+at ingest. The legacy SQLite importer fills absent revision-47 attribution and
+archived-route columns with SQL NULL, retaining historical rows without guessing
+their benchmark provenance. Other missing source columns remain an import error.
 
 ### `get_cost_rollup(*, project_id=None, since_ts=None, group_by='project') -> list[dict]`
 

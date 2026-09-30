@@ -14739,6 +14739,53 @@
         }
       }
     },
+    "/api/task/benchmark-stage-record": {
+      "post": {
+        "tags": [
+          "task"
+        ],
+        "summary": "Append an idempotent monotonic stage measurement to the held benchmark task.",
+        "description": "Append an idempotent monotonic stage measurement to the held benchmark task.",
+        "operationId": "benchmark_stage_record",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BenchmarkStageRecordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BenchmarkStageRecordResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/task/create": {
       "post": {
         "tags": [
@@ -20043,6 +20090,100 @@
         ],
         "title": "AssignmentRouteDetail",
         "description": "A routed task's route, as ``aq task explain`` prints it (mandatory routing \u00a710)."
+      },
+      "BenchmarkStageRecordRequest": {
+        "properties": {
+          "task_id": {
+            "type": "string",
+            "title": "Task Id",
+            "description": ""
+          },
+          "span_id": {
+            "type": "string",
+            "title": "Span Id",
+            "description": ""
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage",
+            "description": ""
+          },
+          "started_monotonic_ns": {
+            "type": "integer",
+            "title": "Started Monotonic Ns",
+            "description": ""
+          },
+          "ended_monotonic_ns": {
+            "type": "integer",
+            "title": "Ended Monotonic Ns",
+            "description": ""
+          },
+          "claim_epoch": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Epoch",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "task_id",
+          "span_id",
+          "stage",
+          "started_monotonic_ns",
+          "ended_monotonic_ns"
+        ],
+        "title": "BenchmarkStageRecordRequest"
+      },
+      "BenchmarkStageRecordResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "span_id": {
+            "type": "string",
+            "title": "Span Id"
+          },
+          "inserted": {
+            "type": "boolean",
+            "title": "Inserted"
+          },
+          "duration_ms": {
+            "type": "number",
+            "title": "Duration Ms"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "session_attempt_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Attempt Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "span_id",
+          "inserted",
+          "duration_ms",
+          "stage"
+        ],
+        "title": "BenchmarkStageRecordResponse"
       },
       "Body_upload_attachment_api_tasks__task_id__attachments_post": {
         "properties": {

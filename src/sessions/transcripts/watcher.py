@@ -470,16 +470,23 @@ class TranscriptWatcher:
         if total <= 0:
             return
         try:
+            attempt_id = None
+            if row.task_id and hasattr(self.db, "get_open_task_session_attempt_id"):
+                attempt_id = await self.db.get_open_task_session_attempt_id(row.id, row.task_id)
             await self.db.record_token_usage(
                 row.project_id,
                 agent_id,
                 row.task_id or "",
                 total,
                 model=entry.model,
+                model_source=entry.model_source,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read,
                 cache_write_tokens=cache_write,
+                session_id=row.id,
+                attempt_id=attempt_id,
+                call_id=entry.uuid or None,
             )
         except Exception:
             logger.debug(

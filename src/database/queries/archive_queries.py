@@ -445,6 +445,7 @@ class ArchiveQueryMixin:
                 created_by_id=task.created_by_id,
                 provider_intent=task.provider_intent or "class_only",
                 rerouted_from=task.rerouted_from,
+                route=task.route,
                 created_at=0.0,
                 updated_at=0.0,
                 archived_at=now,

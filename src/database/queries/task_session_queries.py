@@ -55,6 +55,23 @@ def live_attempt_predicate(now: float, stale_after: float):
 
 
 class TaskSessionQueryMixin:
+    async def get_open_task_session_attempt_id(
+        self, session_id: str, task_id: str
+    ) -> str | None:
+        """Return the live association to snapshot on a usage row.
+
+        Missing associations stay missing; historical usage must not be
+        assigned to an attempt later by a timestamp guess.
+        """
+        stmt = (
+            select(task_session_attempts.c.id)
+            .where(*open_attempts(session_id), task_session_attempts.c.task_id == task_id)
+            .order_by(task_session_attempts.c.started_at.desc())
+            .limit(1)
+        )
+        async with self._engine.begin() as conn:
+            return (await conn.execute(stmt)).scalar_one_or_none()
+
     async def _start_task_session_attempt(
         self, conn, session_id, *, started_at=None, work_dir=None
     ):
