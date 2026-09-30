@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+E2E_TEST_TIMEOUT_SECONDS = 540
 
 # Keep S1-S3 together: the claim and filing cases use the pool S1 creates.
 # Provider outage and recovery prepare independent fixtures in separate groups.
@@ -35,7 +36,7 @@ def _unused_loopback_port() -> int:
 
 
 @pytest.mark.integration
-@pytest.mark.timeout(540)
+@pytest.mark.timeout(E2E_TEST_TIMEOUT_SECONDS)
 @pytest.mark.parametrize("scenarios", SCENARIO_GROUPS.values(), ids=list(SCENARIO_GROUPS))
 def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
     env = {
@@ -71,9 +72,9 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
             capture_output=True,
             check=False,
             text=True,
-            # CI gives each group its own runner and a five-minute job budget.
-            # Leave thirty seconds for environment setup and cleanup; daemon
-            # startup is part of this subprocess, alongside the scenarios.
+            # Keep the scenario deadline below the overall test/job budgets;
+            # daemon startup is part of this subprocess. Setup and cleanup
+            # retain their own deadlines of 180 and 90 seconds respectively.
             timeout=270,
         )
         # Keep the scenario durations visible on successful CI runs too;

@@ -233,7 +233,9 @@ jobs:
        !(github.event.pull_request.head.repo.full_name == github.repository &&
          startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # The test permits 540s for setup, scenarios and cleanup. Include cold
+    # dependency installation and action/container cleanup in the job budget.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
