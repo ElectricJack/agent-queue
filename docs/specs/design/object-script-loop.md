@@ -41,6 +41,18 @@ continue decision reserves every sibling and retry allowance together in the
 same loop-row update as the score decision. Eight rounds, repair and plateau
 caps are enforced.
 
+An exhausted FAILED or BLOCKED scorer may instead record a defect stop with
+the exact loop version, `action=stop`, an explicit nonblank reason and no
+receipts, next variants or checkpoint review. The wave must already be settled;
+a FAILED scorer with retries remaining cannot stop the loop. This path charges
+the full wave reservation, records the scorer failure, preserves the incumbent
+and its metrics, and admits no more candidates. It requires no asset approval
+and never records successful scoring or resolves an approval gate. Replaying
+the same decision is idempotent. Terminal reconciliation rechecks candidate and
+scorer settlement before releasing only the loop's terminal gate, and does not
+advance the loop version on a replay, including after restart. Reopened work
+keeps that gate held until it settles again. Failed children retain their status.
+
 `object_checkpoint_read` checks the recorded review ID, exact current
 revision and document hash, approved state, decision timestamp, project and
 candidate hash. Review events only wake reconciliation; they are never proof

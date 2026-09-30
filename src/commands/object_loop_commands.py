@@ -259,6 +259,7 @@ class ObjectLoopCommandsMixin:
         except ValidationError as exc:
             return _error(str(exc))
         gate_to_release = None
+        stopped_outcome = None
         async with self.db.immediate() as conn:
             row = (await conn.execute(select(object_loops).where(
                 object_loops.c.object_id == request.object_id,
@@ -294,7 +295,17 @@ class ObjectLoopCommandsMixin:
                     except ValueError as exc:
                         return _error(str(exc))
             if state["status"] == "stopped":
-                gate_to_release = row.terminal_gate_id
+                wave_rows = await self._object_wave_rows(conn, state)
+                scorer = None
+                if state["score_task_id"]:
+                    scorer = (await conn.execute(select(tasks).where(
+                        tasks.c.id == state["score_task_id"],
+                    ))).mappings().first()
+                if (all(_task_settled(wave_rows.get(m["task_id"])) for m in state["wave"])
+                        and (not state["score_task_id"] or _task_settled(scorer))):
+                    gate_to_release = row.terminal_gate_id
+                else:
+                    stopped_outcome = "waiting_for_settlement"
             elif state.get("checkpoint") and not await _review_verdict(conn, state):
                 return {"success": True, "object_id": request.object_id, "version": row.version,
                         "state": state, "outcome": "checkpoint_held"}
@@ -349,16 +360,19 @@ class ObjectLoopCommandsMixin:
             else:
                 return {"success": True, "object_id": request.object_id, "version": row.version,
                         "state": state, "outcome": "waiting_for_score"}
-            await conn.execute(update(object_loops).where(object_loops.c.object_id == request.object_id)
-                               .values(state=state, version=row.version + 1, updated_at=time.time()))
-            version = row.version + 1
+            version = row.version
+            if state != row.state:
+                version += 1
+                await conn.execute(update(object_loops).where(
+                    object_loops.c.object_id == request.object_id,
+                ).values(state=state, version=version, updated_at=time.time()))
         if gate_to_release:
             await self.db.resolve_gate(gate_to_release, resolved_by="object_loop",
                                        resolution="recorded stop")
             return {"success": True, "object_id": request.object_id,
-                    "version": row.version, "state": state, "outcome": "stopped"}
+                    "version": version, "state": state, "outcome": "stopped"}
         return {"success": True, "object_id": request.object_id, "version": version,
-                "state": state, "outcome": "reconciled"}
+                "state": state, "outcome": stopped_outcome or "reconciled"}
 
     async def _object_wave_rows(self, conn, state):
         ids = [member["task_id"] for member in state["wave"]]
@@ -413,6 +427,42 @@ class ObjectLoopCommandsMixin:
             if row is None:
                 return _error("object loop not found in project")
             state = dict(row.state)
+            if state.get("decision_sha256") == fingerprint:
+                return {"success": True, "object_id": request.object_id, "version": row.version,
+                        "state": state, "outcome": "reused"}
+            if row.version != request.expected_version:
+                return _error("stale object loop version")
+            if state["status"] != "active" or state["score_task_id"] != request.score_task_id:
+                return _error("score task is not the current round scorer")
+            scorer = (await conn.execute(select(tasks).where(
+                tasks.c.id == request.score_task_id,
+            ))).mappings().first()
+            if scorer is None or scorer.status != "COMPLETED":
+                if request.action != "stop" or not _task_settled(scorer):
+                    return _error("scoring task has not completed")
+                if not request.stop_reason or not request.stop_reason.strip():
+                    return _error("stop requires an explicit reason")
+                if (request.receipts or request.next_variants or request.review_id is not None
+                        or request.review_revision is not None or request.review_sha256 is not None):
+                    return _error("failed scorer stop cannot include scores, variants or a review")
+                wave_rows = await self._object_wave_rows(conn, state)
+                if not all(_task_settled(wave_rows.get(m["task_id"])) for m in state["wave"]):
+                    return _error("wave has unsettled candidates")
+                # A failed scorer cannot establish measured cost coverage or a winner.
+                _charge(state, None)
+                state["status"] = "stopped"
+                state["stop_reason"] = request.stop_reason
+                state["intent"] = None
+                state["defect_stop"] = {
+                    "score_task_id": request.score_task_id, "status": scorer.status,
+                    "retry_count": scorer.retry_count, "max_retries": scorer.max_retries,
+                }
+                state["decision_sha256"] = fingerprint
+                await conn.execute(update(object_loops).where(
+                    object_loops.c.object_id == request.object_id,
+                ).values(state=state, version=row.version + 1, updated_at=time.time()))
+                return {"success": True, "object_id": request.object_id,
+                        "version": row.version + 1, "state": state, "outcome": "stop"}
             if (request.action != "stop" and not await _approval_valid(
                 conn, state["project_id"], state["brief_checkpoint"]
             )):
@@ -423,18 +473,6 @@ class ObjectLoopCommandsMixin:
                         conn, state["project_id"], approved_checkpoint
                     )):
                 return _error("checkpoint approval changed during this round")
-            if state.get("decision_sha256") == fingerprint:
-                return {"success": True, "object_id": request.object_id, "version": row.version,
-                        "state": state, "outcome": "reused"}
-            if row.version != request.expected_version:
-                return _error("stale object loop version")
-            if state["status"] != "active" or state["score_task_id"] != request.score_task_id:
-                return _error("score task is not the current round scorer")
-            scorer = (await conn.execute(select(tasks.c.status).where(
-                tasks.c.id == request.score_task_id
-            ))).scalar_one_or_none()
-            if scorer != "COMPLETED":
-                return _error("scoring task has not completed")
             wave_rows = await self._object_wave_rows(conn, state)
             if not all(_task_settled(wave_rows.get(m["task_id"])) for m in state["wave"]):
                 return _error("wave has unsettled candidates")
