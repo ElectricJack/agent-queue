@@ -114,6 +114,18 @@ the project lock and refuses an unresolved or competing branch owner. A stopped
 task's ordinary `aq task restart` performs the same check before moving it to
 READY. Doctor reports this condition but does not reserve branches itself.
 
+For an active repair delegate, the same `reserve-owner` command redispatches
+the current stage, preserving its deadline and attempts. It transfers the exact
+previous writer only with stop/detach proof, or reclaims a released reservation.
+The integration loop retries interrupted handoffs after owner recovery.
+`integration.missing_repair_owners` reports delegates stranded without their
+reserved fence. An absent owner row still requires investigation; it is not
+proof that an earlier writer stopped.
+
+Once every cleanup item completes for a delivered batch, cleanup releases its
+exact detached collector reservation. `aq integration retry-cleanup BATCH_ID`
+also reconciles that release for batches cleaned up by older versions.
+
 `aq doctor --check stall.sweep` reports `unmaterialized_train_pr` for a
 COMPLETED train root with a PR but no checkpoint or live branch origin. The
 GitHub review poller also warns when such a root has no eligible review source.

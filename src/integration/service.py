@@ -111,6 +111,9 @@ class IntegrationService:
             # to the repair-deadline pass below.
             await self._source("candidate CI", self._tick_candidate_ci, now)
             await self._source("repair deadline", self._tick_repair_stages, now)
+            reconcile = getattr(self._repair, "reconcile_delegate_reservations", None)
+            if callable(reconcile):
+                await self._source("repair reservations", reconcile, now)
             if self._parent_ci_handler is not None:
                 await self._source("parent CI", self._parent_ci_handler, now)
             await self._source("integration intent", self._tick_intents, now)

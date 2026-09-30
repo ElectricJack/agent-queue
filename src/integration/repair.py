@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import (
@@ -60,10 +60,10 @@ def repair_subject_sha(subject: dict[str, Any] | None) -> str:
 
 # Ownership states in which the stage-0 writer can still be recognised as this
 # operation's primary.  ``attached`` is a live writer whose dirty checkout the
-# debug escalation retains (design spec §9.2); the released pair is a delegate
-# that closed successfully and self-transferred back to its own reserved fence.
+# debug escalation retains (design spec §9.2). Other predecessor states use
+# ordinary fenced transfer, including pending handoffs that still need proof.
 _ATTACHED_PRIMARY_STATES = frozenset({"attached"})
-_RELEASED_PRIMARY_STATES = frozenset({"reserved", "released"})
+_TRANSFERABLE_PRIMARY_STATES = frozenset({"reserved", "released", "handoff_pending"})
 STUCK_BATCH_ATTEMPTS = 3
 
 
@@ -88,6 +88,7 @@ class RepairService:
         self._ownership = BranchOwnership(db, confirm_handoff=confirm_handoff, clock=clock)
         self._confirm_stopped = confirm_stopped
         self._owner_recovery = owner_recovery
+        self._reservation_cursor: str | None = None
 
     async def retire_terminal_delegates(self, now: float, *, limit: int = 100) -> list[str]:
         """Settle unfinished delegates whose owning operation has already ended.
@@ -957,6 +958,78 @@ class RepairService:
             .on_conflict_do_nothing(index_elements=[messages.c.id])
         )
 
+    async def missing_delegate_reservations(
+        self, *, limit: int = 100, after: str | None = None
+    ) -> list[dict]:
+        """Read detached current delegates that cannot pass owner admission."""
+        stage, operation, owner = (
+            integration_repair_stages, integration_repair_operations, integration_branch_owners
+        )
+        valid_owner = select(owner.c.id).where(
+            owner.c.repository_id == tasks.c.repo_id,
+            or_(
+                owner.c.ref == tasks.c.branch_name,
+                owner.c.ref == "refs/heads/" + tasks.c.branch_name,
+                "refs/heads/" + owner.c.ref == tasks.c.branch_name,
+            ),
+            owner.c.owner_id == tasks.c.id,
+            owner.c.owner_role == "repair",
+            owner.c.handoff_state == "reserved",
+        ).exists()
+        async with self.db._engine.connect() as conn:
+            rows = (await conn.execute(
+                select(stage.c.operation_id, stage.c.ordinal, stage.c.repair_task_id)
+                .select_from(stage.join(operation, operation.c.id == stage.c.operation_id)
+                             .join(tasks, tasks.c.id == stage.c.repair_task_id))
+                .where(
+                    operation.c.active_stage == stage.c.ordinal,
+                    operation.c.state.in_(("active", "escalated")),
+                    stage.c.state.in_(("active", "awaiting_completion")),
+                    stage.c.writer_kind == "repair_delegate",
+                    tasks.c.status.in_(("READY", "PAUSED", "BLOCKED")),
+                    operation.c.id > (after or ""),
+                    ~valid_owner,
+                )
+                .order_by(stage.c.operation_id, stage.c.ordinal).limit(limit)
+            )).mappings().all()
+        return [dict(row) for row in rows]
+
+    async def reconcile_delegate_reservations(self, now: float) -> None:
+        """Retry interrupted handoffs without restarting the repair clock."""
+        rows = await self.missing_delegate_reservations(after=self._reservation_cursor)
+        if not rows and self._reservation_cursor is not None:
+            self._reservation_cursor = None
+            rows = await self.missing_delegate_reservations()
+        for row in rows:
+            # A persistently busy or broken handoff must not starve later pages.
+            self._reservation_cursor = row["operation_id"]
+            await self.dispatch(row["operation_id"], int(row["ordinal"]))
+
+    async def reserve_delegate(self, task_id: str) -> dict:
+        """Recover only the delegate already bound to the current stage."""
+        async with self.db._engine.connect() as conn:
+            rows = (await conn.execute(
+                select(integration_repair_stages.c.operation_id,
+                       integration_repair_stages.c.ordinal)
+                .join(integration_repair_operations,
+                      integration_repair_operations.c.id
+                      == integration_repair_stages.c.operation_id)
+                .where(
+                    integration_repair_stages.c.repair_task_id == task_id,
+                    integration_repair_stages.c.writer_kind == "repair_delegate",
+                    integration_repair_operations.c.active_stage
+                    == integration_repair_stages.c.ordinal,
+                    integration_repair_operations.c.state.in_(("active", "escalated")),
+                )
+            )).mappings().all()
+        if len(rows) != 1:
+            return {"outcome": "not_eligible", "reason": "task is not the active repair delegate"}
+        result = await self.dispatch(rows[0]["operation_id"], int(rows[0]["ordinal"]))
+        outcome = {"dispatched": "acquired", "already_dispatched": "already_reserved"}.get(
+            result["outcome"], "not_eligible"
+        )
+        return {"outcome": outcome, "dispatch": result}
+
     async def dispatch(self, operation_id: str, stage: int) -> dict[str, Any]:
         """Create and safely hand off to the exact current repair writer."""
         if stage not in {0, 1}:
@@ -1116,7 +1189,7 @@ class RepairService:
                     )
             else:
                 released_primary = stage == 1 and await self._is_primary_writer(
-                    owner, operation_id, states=_RELEASED_PRIMARY_STATES
+                    owner, operation_id, states=_TRANSFERABLE_PRIMARY_STATES
                 )
                 if not released_primary and not self._predecessor_matches(
                     owner, operation
@@ -2441,7 +2514,7 @@ class RepairService:
 
         ``attached`` (the default) is the retained-handoff case of design spec
         §9.2: the primary is still live and its dirty checkout is rebound to
-        the debugger.  ``_RELEASED_PRIMARY_STATES`` is the other half — a
+        the debugger.  ``_TRANSFERABLE_PRIMARY_STATES`` is the other half — a
         delegate that closed successfully self-transfers back to a ``reserved``
         fence in its own ``repair`` role
         (``arelease_integration_writer_for_retry``), which is already proven
@@ -2449,6 +2522,8 @@ class RepairService:
         stage.  Without it the escalation after a *successful* primary stage
         fell through to :meth:`_predecessor_matches`, which knows only
         ``collector`` and ``verifier``, and answered ``human_required``.
+        A pending handoff is also recognized, but transfer still requires fresh
+        server-side stop and detach confirmation before assigning its fence.
         """
         async with self.db._engine.connect() as conn:
             primary = (

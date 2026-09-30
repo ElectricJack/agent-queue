@@ -1,5 +1,23 @@
 # Integration identity diagnostics
 
+## Repair delegate reservations
+
+Stage advancement recognizes its exact previous writer in `handoff_pending`.
+Transfer still requires server-side stop and detach proof. A released owner
+can be reserved for the active delegate without resetting its stage budget.
+Integration reconciliation retries interrupted delegate handoffs after owner
+recovery. Unrelated live owners are never replaced.
+
+`aq integration reserve-owner --task-id TASK` also accepts an active repair
+delegate, redispatching its current stage through the same fenced handoff.
+The command remains restricted to the operator or project supervisor.
+`integration.missing_repair_owners` reports active stages whose detached
+delegates lack their reserved repair owner, with the recovery command.
+
+After all delivered-batch cleanup items complete, release the exact detached
+collector reservation recorded by the committed root intent. A successor fence
+or attached writer is retained. Cleanup replay reconciles old reserved rows.
+
 ## Superseded repair intents
 
 Recovery of an unwritten parent conflict resolution preserves the old intent

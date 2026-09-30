@@ -4464,7 +4464,8 @@ async def test_root_repair_close_reads_the_candidate_subject_and_frees_a_pool_sl
         handler.orchestrator.release_session_task_resources.assert_awaited()
 
 
-async def test_debug_escalation_accepts_a_released_primary_repair_writer(db):
+@pytest.mark.parametrize("owner_state", ["reserved", "released", "handoff_pending"])
+async def test_debug_escalation_accepts_a_released_primary_repair_writer(db, owner_state):
     """A primary delegate that closed cleanly is a provable predecessor.
 
     A successful close self-transfers the delegate back to a ``reserved``
@@ -4495,7 +4496,7 @@ async def test_debug_escalation_accepts_a_released_primary_repair_writer(db):
             )
         )
     service = RepairService(
-        db,
+        db, confirm_handoff=lambda _owner: True,
     )
     await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
     primary = await service.dispatch("operation", 0)
@@ -4513,9 +4514,9 @@ async def test_debug_escalation_accepts_a_released_primary_repair_writer(db):
             .values(
                 owner_id=primary_task_id,
                 owner_role="repair",
-                handoff_state="reserved",
-                session_id=None,
-                workspace_id=None,
+                handoff_state=owner_state,
+                session_id="old-session" if owner_state == "handoff_pending" else None,
+                workspace_id="old-workspace" if owner_state == "handoff_pending" else None,
                 confirmed_workspace_id="repair-workspace",
             )
         )
@@ -5494,3 +5495,55 @@ async def test_human_resume_rearms_exact_live_unstarted_resolution_writer(db, pr
         "operation_id": "operation",
         "observed_at": 203.0,
     }
+
+
+@pytest.mark.parametrize("recovery", ["reconcile", "command"])
+async def test_pending_primary_release_recovers_stranded_debug_delegate(db, recovery):
+    from src.commands.integration_commands import IntegrationCommandsMixin
+    from src.doctor.integration_checks import run_check
+    from src.doctor.models import Severity
+    from src.integration.repair import RepairService
+
+    await _seed_parent_operation(db)
+    await _add_parent_evidence(db, "failed-check-2", run_id="run-2", conclusion="failure")
+    await BranchOwnership(db).acquire(BranchKey(repository_id="repo", branch="aq/parent"), "operation", "collector")
+    service = RepairService(db, confirm_handoff=lambda _owner: False)
+    await service.start("operation", STARTING_SHA, "failed-check", now=100.0)
+    primary = await service.dispatch("operation", 0)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state="handoff_pending", session_id="stopped-session",
+            workspace_id="old-workspace",
+        ))
+    await service.record_result("operation", "failed-check", now=101.0)
+    await service.record_result("operation", "failed-check-2", now=102.0)
+    blocked = await service.dispatch("operation", 1)
+    assert blocked["outcome"] == "busy"
+    task_id = blocked["repair_task_id"]
+    assert task_id != primary["repair_task_id"]
+    diagnostic = await run_check(db, "integration.missing_repair_owners")
+    assert diagnostic.severity == Severity.WARN
+    assert diagnostic.data["delegates"][0]["repair_task_id"] == task_id
+    before = await _repair_stage(db, "operation", 1)
+    # Provider-backed owner recovery has now preserved and detached the writer.
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state="released", session_id=None, workspace_id=None,
+            confirmed_workspace_id="old-workspace",
+        ))
+    if recovery == "reconcile":
+        await service.reconcile_delegate_reservations(103.0)
+    else:
+        handler = IntegrationCommandsMixin()
+        handler.db = db
+        handler.orchestrator = SimpleNamespace(repair_service=service)
+        result = await handler._cmd_integration_reserve_owner({"task_id": task_id})
+        assert result["outcome"] == "acquired"
+        replay = await handler._cmd_integration_reserve_owner({"task_id": task_id})
+        assert replay["outcome"] == "already_reserved"
+    assert (await db.get_task(task_id)).status == TaskStatus.READY
+    assert (await run_check(db, "integration.missing_repair_owners")).severity == Severity.OK
+    after = await _repair_stage(db, "operation", 1)
+    for field in ("started_at", "deadline_at", "attempts", "policy"):
+        assert after[field] == before[field]
+    assert (await service.reserve_delegate(primary["repair_task_id"]))["outcome"] == "not_eligible"

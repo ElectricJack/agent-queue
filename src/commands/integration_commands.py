@@ -811,7 +811,10 @@ class IntegrationCommandsMixin:
         _principal, refusal = await integration_operator(self.db, task.project_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
-        result = await reserve_canonical_task_branch(self.db, task.id)
+        if task.created_by_kind == "integration_repair":
+            result = await self._integration_repair_service().reserve_delegate(task.id)
+        else:
+            result = await reserve_canonical_task_branch(self.db, task.id)
         return {"success": result["outcome"] in {"acquired", "already_reserved"}, **result}
 
     async def _cmd_integration_release_stale_owners(self, args: dict) -> dict:
