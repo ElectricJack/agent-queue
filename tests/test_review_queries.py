@@ -546,9 +546,9 @@ class TestProjectDelegation:
 # ── migration a00000000014 ─────────────────────────────────────────────────
 
 
-def _load_migration():
-    path = REPO_ROOT / "migrations" / "versions" / "a00000000014_document_reviews.py"
-    spec = importlib.util.spec_from_file_location("a00000000014", path)
+def _load_migration(filename="a00000000014_document_reviews.py"):
+    path = REPO_ROOT / "migrations" / "versions" / filename
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -686,9 +686,13 @@ class TestMigration:
         async with db.immediate() as conn:
             await db.attach_gate_waiters(review["gate_id"], ["impl"], conn=conn)
         migration = _load_migration()
+        attachments_migration = _load_migration("a00000000045_review_attachments.py")
         async with db._engine.connect() as conn:
             trans = await conn.begin()
             try:
+                # Later evidence references review revisions; rewind that migration
+                # before exercising the original document-review downgrade.
+                await conn.run_sync(_run(attachments_migration, "downgrade"))
                 await conn.run_sync(_run(migration, "downgrade"))
                 assert await _shape(conn) == _BEFORE
                 remaining = (
@@ -705,6 +709,11 @@ class TestMigration:
                 assert not blocked
 
                 await conn.run_sync(_run(migration, "upgrade"))
+                await conn.run_sync(_run(attachments_migration, "upgrade", "upgrade"))
                 assert await _shape(conn) == _HEAD
+                attachments = (
+                    await conn.execute(text("SELECT count(*) FROM doc_review_attachments"))
+                ).scalar()
+                assert attachments == 0
             finally:
                 await trans.rollback()
