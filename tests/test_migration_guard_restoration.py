@@ -68,7 +68,10 @@ async def test_existing_database_receives_guard_repair(initial_revision):
                     "WHERE NOT tgisinternal AND n.nspname='public'"
                 )
             }
-            assert installed == {(name, table) for name, table, _ in TRIGGERS}
+            assert installed == {(name, table) for name, table, _ in TRIGGERS} | {
+                ("integration_result_current_member", "integration_candidate_member_results"),
+                ("integration_revision_manifest_immutable", "integration_candidate_revisions"),
+            }
             for statement in (
                 "UPDATE integration_review_evidence SET verdict='rejected' WHERE id='keep'",
                 "DELETE FROM integration_review_evidence WHERE id='keep'",
