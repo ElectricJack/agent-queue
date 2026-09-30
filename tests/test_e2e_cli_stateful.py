@@ -71,9 +71,9 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
             capture_output=True,
             check=False,
             text=True,
-            # CI gives each group its own runner and a five-minute job budget.
-            # Leave thirty seconds for environment setup and cleanup; daemon
-            # startup is part of this subprocess, alongside the scenarios.
+            # Bound the smoke separately from CI's eight-minute job budget,
+            # which also covers installation, environment setup and cleanup.
+            # Daemon startup is part of this subprocess with the scenarios.
             timeout=270,
         )
         # Keep the scenario durations visible on successful CI runs too;

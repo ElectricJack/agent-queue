@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:1493c985aaba546a20852b52e58b233cc6d76f01d3023b3d9c4042963a6fabb6",
+  "digest": "sha256:217ce808bdbbd00a8f0c7a2512b5605d4e7ac575d340c00540dc7a898f38009a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6907,6 +6907,7 @@
         "src.database.tables",
         "src.git.github_app",
         "src.integration.cleanup",
+        "src.integration.controls",
         "src.integration.release",
         "src.integration.scheduler",
         "src.integration.settling",
@@ -7400,10 +7401,13 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.integration_commands",
         "src.commands.principal",
         "src.database.queries.claim_queries",
         "src.database.queries.hierarchy_queries",
         "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
         "src.git.manager",
         "src.integration.controls",
         "src.integration.development",
