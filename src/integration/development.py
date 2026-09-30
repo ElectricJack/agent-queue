@@ -100,6 +100,15 @@ REPAIR_GENERATIONS = 3
 #: How much of a failure a repair description quotes.
 REPAIR_TESTS_LISTED = 20
 REPAIR_OUTPUT_TAIL_CHARS = 3000
+
+
+def _publishable_object_task(task):
+    """Experimental object candidates are artifact-only, including on replay."""
+    marker = task_metadata.alias()
+    return ~select(marker.c.task_id).where(
+        marker.c.task_id == task.c.id,
+        marker.c.key == "object_experiment",
+    ).correlate(task).exists()
 #: The ``merge`` attribute a repository gives its generated artifacts in
 #: ``.gitattributes``.  Under a ``regenerate`` policy the publisher defines this
 #: driver for its own merges as a text merge that keeps our side of every
@@ -832,6 +841,7 @@ class DevelopmentIntegration:
                         task_completion_records.c.task_id == tasks.c.id,
                     ).exists(),
                     ~obsolete_marker(tasks),
+                    _publishable_object_task(tasks),
                 ).limit(1)
             )
             return candidate is not None
@@ -1563,6 +1573,7 @@ class DevelopmentIntegration:
                                 tasks.c.project_id == project_id,
                                 tasks.c.status == "COMPLETED",
                                 (tasks.c.repo_id == repo.id) | tasks.c.repo_id.is_(None),
+                                _publishable_object_task(tasks),
                                 *([tasks.c.id == isolated_child] if isolated_child else []),
                             )
                             .order_by(tasks.c.updated_at, tasks.c.id)

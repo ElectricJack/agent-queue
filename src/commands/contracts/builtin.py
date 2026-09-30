@@ -1973,6 +1973,9 @@ def register_builtin_contracts(registry: ContractRegistry) -> None:
     from src.commands.contracts.job import register_job_contracts
 
     register_job_contracts(registry)
+    from src.commands.contracts.object_loop import register_object_loop_contracts
+
+    register_object_loop_contracts(registry)
     from src.commands.contracts.handoff import register_handoff_contract
 
     register_handoff_contract(registry)

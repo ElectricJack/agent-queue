@@ -2,23 +2,23 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 452,
+    "leaf_commands": 456,
     "registration": {
-      "generated": 290,
+      "generated": 294,
       "handwritten": 162
     },
     "ownership": {
-      "core": 413,
+      "core": 417,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 451
+      "supported": 455
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 290,
+      "dispatch": 294,
       "registration": 148
     },
     "acceptance_status": {
@@ -26,7 +26,7 @@
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 392
+      "untested": 396
     }
   },
   "commands": [
@@ -14150,6 +14150,196 @@
         ],
         "structured": [],
         "nullable": []
+      }
+    },
+    {
+      "path": "aq task object-checkpoint-read",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "object_checkpoint_read",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--object-id",
+          "--project-id"
+        ],
+        "optional": [
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task object-loop-reconcile",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "object_loop_reconcile",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--object-id",
+          "--project-id"
+        ],
+        "optional": [
+          "--expected-version",
+          "--next-variants",
+          "--stop-reason",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--next-variants"
+        ],
+        "nullable": [
+          "--expected-version",
+          "--stop-reason"
+        ]
+      }
+    },
+    {
+      "path": "aq task object-loop-start",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "object_loop_start",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--project-id",
+          "--epic-task-id",
+          "--object-id",
+          "--attempt-id",
+          "--incumbent-sha256",
+          "--reference-sha256",
+          "--rig-sha256",
+          "--scorer-sha256",
+          "--render-profile-sha256",
+          "--policy-sha256",
+          "--brief-review-id",
+          "--brief-review-revision",
+          "--brief-review-sha256",
+          "--mandatory-views",
+          "--limits",
+          "--final-reserve",
+          "--score-reservation",
+          "--noise-band",
+          "--variants"
+        ],
+        "optional": [
+          "--incumbent-artifact",
+          "--max-repair-rounds",
+          "--max-plateau-rounds",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--incumbent-artifact",
+          "--mandatory-views",
+          "--limits",
+          "--final-reserve",
+          "--score-reservation",
+          "--variants"
+        ],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq task object-score-record",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "object_score_record",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "--object-id",
+          "--project-id",
+          "--expected-version",
+          "--score-task-id",
+          "--receipts",
+          "--action"
+        ],
+        "optional": [
+          "--spent",
+          "--next-variants",
+          "--stop-reason",
+          "--review-id",
+          "--review-revision",
+          "--review-sha256",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [
+          "--receipts",
+          "--spent",
+          "--next-variants"
+        ],
+        "nullable": [
+          "--stop-reason",
+          "--review-id",
+          "--review-revision",
+          "--review-sha256"
+        ]
       }
     },
     {
