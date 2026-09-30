@@ -45,6 +45,73 @@ async def _age(db, task_id: str, age_s: float) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "lifecycle, guard_revision, expected",
+    [
+        ("repairing", 0, Severity.WARN),
+        ("human_blocked", 0, Severity.WARN),
+        ("repairing", 9, Severity.OK),
+        ("aborted", 0, Severity.OK),
+    ],
+)
+async def test_reviewed_file_guard_reports_only_the_current_live_batch(
+    db,
+    tmp_path,
+    lifecycle,
+    guard_revision,
+    expected,
+):
+    from sqlalchemy import select, update
+    from src.database.tables import integration_batches
+    from src.integration.candidates import CandidateService
+    from src.integration.scheduler import TrainService
+    from src.models import RepoConfig, RepoSourceType
+    from tests.test_integration_sealing import _enable_train, _request, _seed_leaf
+    from tests.test_integration_eject import _start_repair
+
+    await db.create_repo(
+        RepoConfig(
+            id="repo", project_id="p", source_type=RepoSourceType.LINK, default_branch="main"
+        )
+    )
+    await _enable_train(db)
+    await _seed_leaf(db, "first", "1" * 40)
+    request = await _request(db)
+    batch = await TrainService(db).seal("p", request["request_id"], 20.0)
+    await _start_repair(db, batch)
+    candidate = CandidateService(db, data_dir=tmp_path, git_manager=None, clock=lambda: 25.0)
+    reservation = dict(
+        project_id="p",
+        batch_id=batch["batch_id"],
+        revision=0,
+        operation_id=batch["operation_id"],
+        stage_ordinal=0,
+        member_ordinal=0,
+        id="guarded-resolution",
+    )
+    await candidate._record_reviewed_file_guard(
+        reservation,
+        "added_reviewed_path_does_not_match_source",
+    )
+    # A later attempt that isn't a reviewed-file invariant must not replace
+    # the meaningful failure with an unrelated generic lineage diagnostic.
+    await candidate._record_reviewed_file_guard(reservation, "repair_commit_lineage_missing")
+    from src.database.tables import integration_repair_stages
+
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(lifecycle=lifecycle))
+        stage = (await conn.execute(select(integration_repair_stages))).mappings().one()
+        dossier = dict(stage["dossier"])
+        dossier["reviewed_file_guard"]["revision"] = guard_revision
+        await conn.execute(update(integration_repair_stages).values(dossier=dossier))
+    result = await run_check(db, "integration.reviewed_file_guard")
+    assert result.severity is expected
+    assert result.data["count"] == (1 if expected is Severity.WARN else 0)
+    if expected is Severity.WARN:
+        assert batch["batch_id"] in result.detail and "eject" in result.detail
+        assert result.data["batches"][0]["reservation_id"] == "guarded-resolution"
+
+
 async def _identity_task(db, task_id, *, status=TaskStatus.DEFINED, branch=None):
     from sqlalchemy import update
 

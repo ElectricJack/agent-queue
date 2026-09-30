@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from click.testing import CliRunner
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from src.cli.integration import integration as integration_cli
@@ -17,14 +17,238 @@ from src.database.tables import (
     events,
     integration_batch_members,
     integration_batches,
+    integration_candidate_revisions,
+    integration_candidate_member_results,
+    integration_branch_owners,
+    integration_repair_stages,
+    integration_repair_operations,
     integration_review_evidence,
 )
 from src.integration.controls import IntegrationControlService
 from src.integration.candidates import CandidateService
 from src.integration.scheduler import IntegrationScheduler, TrainService
-from src.models import Project, RepoConfig, RepoSourceType
+from src.integration.repair import RepairService
+from src.models import Project, RepoConfig, RepoSourceType, Task, TaskStatus
 from src.profiles.capabilities import DENY_ALL
 from tests.test_integration_sealing import _enable_train, _request, _seed_leaf
+
+
+async def _start_repair(db, batch):
+    batch_id = batch["batch_id"]
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_candidate_revisions).values(
+                batch_id=batch_id,
+                revision=0,
+                construction_base_sha="a" * 40,
+                head_sha="b" * 40,
+                state="red",
+                created_at=21.0,
+                updated_at=21.0,
+            )
+        )
+        await conn.execute(
+            insert(integration_candidate_member_results).values(
+                batch_id=batch_id,
+                revision=0,
+                member_ordinal=0,
+                input_head_sha="1" * 40,
+                input_tree_sha="c" * 40,
+                result="applied",
+                generated_squash_sha="d" * 40,
+                created_at=21.0,
+                updated_at=21.0,
+            )
+        )
+        await conn.execute(
+            update(integration_batches)
+            .where(
+                integration_batches.c.id == batch_id,
+            )
+            .values(lifecycle="repairing", tested_candidate_sha="b" * 40, ci_evidence_id="old-ci")
+        )
+    started = await RepairService(db, clock=lambda: 21.0).start(
+        batch["operation_id"],
+        "b" * 40,
+        batch_id,
+        now=21.0,
+    )
+    assert started["outcome"] == "started"
+
+
+async def test_repair_eject_supersedes_candidate_and_rebuilds_without_revoking_review(
+    control_service,
+    sealed_batch,
+    members_of,
+    db,
+):
+    await _start_repair(db, sealed_batch)
+    result = await control_service.eject(
+        sealed_batch["batch_id"],
+        task_id="e1",
+        reason="migration collision",
+        operator_id="supervisor",
+    )
+    assert result["outcome"] == "ejected"
+    assert await members_of(sealed_batch["batch_id"]) == ["e2"]
+    async with db._engine.connect() as conn:
+        batch = (await conn.execute(select(integration_batches))).mappings().one()
+        revisions = (
+            (
+                await conn.execute(
+                    select(integration_candidate_revisions).order_by(
+                        integration_candidate_revisions.c.revision
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        stage = (await conn.execute(select(integration_repair_stages))).mappings().one()
+        old_results = (
+            (await conn.execute(select(integration_candidate_member_results))).mappings().all()
+        )
+        assert (
+            await conn.execute(select(integration_review_evidence.c.verdict))
+        ).scalars().all() == ["approved", "approved"]
+    assert batch["current_revision"] == 1 and batch["lifecycle"] == "sealed"
+    assert batch["tested_candidate_sha"] is None and batch["ci_evidence_id"] is None
+    assert revisions[0]["state"] == "superseded"
+    assert [member["task_id"] for member in revisions[0]["source_manifest"]] == ["e1", "e2"]
+    assert revisions[1]["state"] == "constructing" and revisions[1]["head_sha"] == "a" * 40
+    assert [member["task_id"] for member in revisions[1]["source_manifest"]] == ["e2"]
+    assert old_results[0]["generated_squash_sha"] == "d" * 40
+    assert stage["deadline_at"] == 51.0 and stage["attempts"] == 0
+    assert stage["current_subject"]["revision"] == 1
+    assert stage["starting_sha"] == stage["dossier"]["starting_sha"] == "a" * 40
+    # Superseded ordinal zero belonged to e1; it cannot be updated as if e2
+    # were the source, nor can a late worker insert more old-revision results.
+    with pytest.raises((IntegrityError, DBAPIError)):
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_candidate_member_results).values(updated_at=40.0))
+
+
+async def test_repair_eject_refuses_an_attached_writer(
+    control_service, sealed_batch, db, members_of
+):
+    await _start_repair(db, sealed_batch)
+    async with db.immediate() as conn:
+        await conn.execute(
+            insert(integration_branch_owners).values(
+                id="owner",
+                repository_id="repo",
+                ref=(
+                    await conn.execute(select(integration_batches.c.integration_branch))
+                ).scalar_one(),
+                owner_id=sealed_batch["operation_id"],
+                owner_role="collector",
+                fence_token=1,
+                handoff_state="attached",
+                session_id="live",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+        )
+    result = await control_service.eject(
+        sealed_batch["batch_id"], task_id="e1", reason="collision", operator_id="supervisor"
+    )
+    assert result["outcome"] == "invalid_state" and "writer" in result["blockers"]
+    assert await members_of(sealed_batch["batch_id"]) == ["e1", "e2"]
+
+
+@pytest.mark.parametrize("status", [TaskStatus.READY, TaskStatus.PAUSED])
+async def test_repair_eject_retires_an_unclaimed_delegate(
+    control_service, sealed_batch, db, status
+):
+    await _start_repair(db, sealed_batch)
+    await db.create_task(
+        Task(
+            id="unclaimed-repair",
+            project_id="p",
+            title="Repair",
+            description="Repair the discarded candidate",
+            status=status,
+        )
+    )
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_repair_stages).values(
+                repair_task_id="unclaimed-repair",
+                writer_kind="repair_delegate",
+            )
+        )
+    result = await control_service.eject(
+        sealed_batch["batch_id"],
+        task_id="e1",
+        reason="collision",
+        operator_id="supervisor",
+    )
+    assert result["outcome"] == "ejected"
+    assert (await db.get_task("unclaimed-repair")).status is TaskStatus.FAILED
+    retirement = await db.get_task_meta("unclaimed-repair", "integration_retirement")
+    assert retirement["previous_status"] == status.value
+    async with db._engine.connect() as conn:
+        stage = (await conn.execute(select(integration_repair_stages))).mappings().one()
+    assert stage["repair_task_id"] is None
+
+
+async def test_repair_eject_last_member_aborts_and_releases_request(
+    control_service, sealed_batch, db
+):
+    await control_service.eject(
+        sealed_batch["batch_id"], task_id="e1", reason="first", operator_id="supervisor"
+    )
+    await _start_repair(db, sealed_batch)
+    result = await control_service.eject(
+        sealed_batch["batch_id"], task_id="e2", reason="last", operator_id="supervisor"
+    )
+    assert result["outcome"] == "ejected"
+    async with db._engine.connect() as conn:
+        batch = (await conn.execute(select(integration_batches))).mappings().one()
+        assert batch["lifecycle"] == "aborted"
+        assert batch["tested_candidate_sha"] is None and batch["ci_evidence_id"] is None
+    assert (await IntegrationScheduler(db).mark_due("p", 40.0, "manual"))["outcome"] == "due"
+
+
+async def test_human_blocked_eject_rearms_a_bounded_stage_without_refunding_attempts(
+    control_service,
+    sealed_batch,
+    db,
+):
+    await _start_repair(db, sealed_batch)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(lifecycle="human_blocked"))
+        await conn.execute(update(integration_repair_operations).values(state="human_required"))
+        await conn.execute(
+            update(integration_repair_stages).values(
+                state="expired",
+                deadline_at=25.0,
+                completed_at=25.0,
+                attempts=1,
+            )
+        )
+    assert (
+        await control_service.eject(
+            sealed_batch["batch_id"], task_id="e1", reason="collision", operator_id="supervisor"
+        )
+    )["outcome"] == "ejected"
+    async with db._engine.connect() as conn:
+        stage = (await conn.execute(select(integration_repair_stages))).mappings().one()
+    assert stage["attempts"] == 1 and stage["deadline_at"] == 60.0
+    assert stage["state"] == "active"
+    assert "-eject-1" in stage["deadline_event_id"]
+    assert stage["dossier"]["budget"]["deadline_at"] == stage["deadline_at"]
+    assert stage["dossier"]["budget"]["attempts"] == stage["attempts"]
+
+
+async def test_repair_ejection_keeps_revision_manifest_immutable(control_service, sealed_batch, db):
+    await _start_repair(db, sealed_batch)
+    await control_service.eject(
+        sealed_batch["batch_id"], task_id="e1", reason="collision", operator_id="supervisor"
+    )
+    with pytest.raises((IntegrityError, DBAPIError)):
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_candidate_revisions).values(source_manifest=[]))
 
 
 @pytest.fixture
