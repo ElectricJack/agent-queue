@@ -113,6 +113,14 @@ class SessionKillResponse(BaseModel):
     session_id: str
 
 
+class SupervisorRestartResponse(BaseModel):
+    success: bool = True
+    session_id: str
+    name: str
+    state: str
+    mode: str
+
+
 class SessionDesiredStateResponse(BaseModel):
     """``session_sleep`` / ``session_wake`` — intent, not observation.
 
@@ -145,6 +153,7 @@ class SessionTokenResponse(BaseModel):
 
 
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
+    "supervisor_restart": SupervisorRestartResponse,
     "session_list": ListSessionsResponse,
     "session_show": ShowSessionResponse,
     "session_peek": SessionPeekResponse,

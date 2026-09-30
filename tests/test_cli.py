@@ -836,6 +836,23 @@ class TestCLICommands:
         mock_client.execute = AsyncMock(side_effect=mock_execute)
         return mock_client
 
+    @pytest.mark.parametrize("flags, resume", [([], False), (["--resume"], True)])
+    def test_supervisor_restart_dispatches_fresh_or_resume(self, runner, flags, resume):
+        from src.cli.app import cli
+
+        mock = self._mock_client({"supervisor_restart": {
+            "success": True, "session_id": "replacement", "name": "supervisor-global",
+            "state": "running", "mode": "resume" if resume else "fresh",
+        }})
+        with patch("src.cli.app._get_client", return_value=mock):
+            result = runner.invoke(cli, ["supervisor", "restart", *flags, "--json"])
+        assert result.exit_code == 0, result.output
+        assert mock.execute.await_args.args[0] == "supervisor_restart"
+        args = mock.execute.await_args.args[1]
+        assert args.get("resume", False) is resume
+        assert args.get("name", "supervisor-global") == "supervisor-global"
+        assert "replacement" in result.output
+
     def test_task_list_with_formatter(self, runner):
         """`task list` (hand-crafted since aq-surface Phase S0, previously
         auto-generated from list_tasks — see src/cli/tasks.py) should use

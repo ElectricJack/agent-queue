@@ -94,6 +94,10 @@ CATEGORIES: dict[str, CategoryMeta] = {
         name="agent",
         description=("Agent management, agent profiles, profile import/export"),
     ),
+    "supervisor": CategoryMeta(
+        name="supervisor",
+        description="Supervisor session lifecycle — fresh or resumed restarts through AQ",
+    ),
     "memory": CategoryMeta(
         name="memory",
         description=("Semantic memory — search, project profiles, compaction, reindexing"),

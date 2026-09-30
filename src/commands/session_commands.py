@@ -172,6 +172,41 @@ class SessionCommandsMixin:
     # operator surface
     # ------------------------------------------------------------------
 
+    async def _cmd_supervisor_restart(self, args: dict) -> dict:
+        from src.messages.session_lens import SupervisorRestartError
+
+        if error := self._agent_settings_scope_error():
+            return {"success": False, "error": error}
+        name = args.get("name", "supervisor-global")
+        resume = args.get("resume", False)
+        session_id = args.get("session_id")
+        if not isinstance(name, str) or not name.startswith("supervisor-") or name == "supervisor-":
+            return {"success": False, "error": "name must be a supervisor messaging address"}
+        if not isinstance(resume, bool):
+            return {"success": False, "error": "resume must be a boolean"}
+        if session_id is not None and (not isinstance(session_id, str) or not session_id):
+            return {"success": False, "error": "session_id must be a non-empty string"}
+        lens = getattr(self.orchestrator, "session_lens", None)
+        if lens is None:
+            return {"success": False, "error": "Supervisor session service is unavailable"}
+        project_id = None if name == "supervisor-global" else name.removeprefix("supervisor-")
+        try:
+            session = await lens.restart_supervisor(
+                target_id=name, project_id=project_id, resume=resume,
+                expected_session_id=session_id,
+            )
+        except SupervisorRestartError as exc:
+            return {"success": False, "error": str(exc)}
+        await self.orchestrator.bus.emit("session.started", {
+            "session_id": session.id, "name": session.name,
+            "task_id": None, "project_id": session.project_id,
+            "harness": session.harness, "provider": session.provider, "work_dir": session.work_dir,
+        })
+        return {
+            "success": True, "session_id": session.id, "name": name,
+            "state": session.state, "mode": "resume" if resume else "fresh",
+        }
+
     async def _cmd_session_list(self, args: dict) -> dict:
         """List sessions with lifecycle, state, task, harness, activity."""
         limit = args.get("limit")

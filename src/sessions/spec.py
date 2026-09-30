@@ -110,7 +110,7 @@ BOOTSTRAP_PROMPT = (
 )
 
 
-def skip_permissions_allowed(profile, workspace_source_type) -> bool:
+def skip_permissions_allowed(profile, workspace_source_type, *, harness=None) -> bool:
     """Whether this launch may carry the harness's skip-permissions flag.
 
     [[design/trust-and-ops]] §4 is narrow about this: skip-permissions
@@ -125,11 +125,17 @@ def skip_permissions_allowed(profile, workspace_source_type) -> bool:
     Two ways to qualify:
 
     * the workspace is a git worktree (``RepoSourceType.WORKTREE``), or
-    * the profile sets ``permission_mode: bypassPermissions``, which is the
-      explicit opt-in §4 asks for.
+    * the profile sets ``permission_mode: bypassPermissions`` or, for Claude,
+      ``claude_dangerously_skip_permissions: true`` as an explicit opt-in.
     """
     value = getattr(workspace_source_type, "value", workspace_source_type)
     if isinstance(value, str) and value.lower() == "worktree":
+        return True
+    is_claude = (
+        _is_claude_cli(harness) if harness is not None
+        else (getattr(profile, "harness", None) or "claude") == "claude"
+    )
+    if is_claude and getattr(profile, "claude_dangerously_skip_permissions", False):
         return True
     mode = str(getattr(profile, "permission_mode", "") or "").strip()
     return mode == BYPASS_PERMISSION_MODE
@@ -346,7 +352,9 @@ class SessionSpecBuilder:
             resume_key=resume_key,
             bootstrap=bootstrap,
             lifecycle="task",
-            allow_skip_permissions=skip_permissions_allowed(profile, workspace_source_type),
+            allow_skip_permissions=skip_permissions_allowed(
+                profile, workspace_source_type, harness=harness
+            ),
             task_intelligence_class=getattr(task, "intelligence_class", None),
             extra_env=extra_env,
         )
@@ -407,9 +415,8 @@ class SessionSpecBuilder:
             bootstrap=bootstrap,
             lifecycle="named",
             # Named sessions have no workspace, so only the profile's
-            # explicit ``permission_mode: bypassPermissions`` opt-in
-            # (trust-and-ops §4) can grant the skip-permissions flag.
-            allow_skip_permissions=skip_permissions_allowed(profile, None),
+            # explicit permission opt-in can grant the skip-permissions flag.
+            allow_skip_permissions=skip_permissions_allowed(profile, None, harness=harness),
         )
 
     def build_pool_spec(
@@ -470,7 +477,9 @@ class SessionSpecBuilder:
             resume_key=resume_key,
             bootstrap=bootstrap,
             lifecycle="pool",
-            allow_skip_permissions=skip_permissions_allowed(profile, workspace_source_type),
+            allow_skip_permissions=skip_permissions_allowed(
+                profile, workspace_source_type, harness=harness
+            ),
             extra_env=extra_env,
         )
 
