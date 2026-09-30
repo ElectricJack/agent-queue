@@ -491,7 +491,9 @@ class TestProctable:
         token = f"tok-{uuid.uuid4().hex}"
         script = (
             "import subprocess, sys, time;"
-            "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
+            "c = subprocess.Popen([sys.executable, '-c', "
+            "'import time; print(\"ready\", flush=True); time.sleep(60)'], stdout=subprocess.PIPE);"
+            "assert c.stdout.readline().strip() == b'ready';"
             "print(c.pid, flush=True); time.sleep(60)"
         )
         harness = subprocess.Popen(

@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:1493c985aaba546a20852b52e58b233cc6d76f01d3023b3d9c4042963a6fabb6",
+  "digest": "sha256:098de40af1318d6d826fe7a95d77b40e4150427dcd42bf893924a57c23667671",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3603,7 +3603,8 @@
         "src.tools.registry"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "perf"
       ],
       "summary": "Bounded message long-poll on the same durable wait, with lossless cursors."
     },

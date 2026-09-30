@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import inspect
 import re
@@ -3355,13 +3356,23 @@ class CandidateService:
         store = self.data_dir / "integration-repositories" / f"{digest}.git"
         store.parent.mkdir(parents=True, exist_ok=True)
         if not store.exists():
-            result = await self.git.arun_git_result(
-                ["init", "--bare", "--template=", str(store)], cwd=str(store.parent)
-            )
-            if result.returncode != 0:
-                raise RuntimeError(
-                    result.stderr or "candidate retained store initialization failed"
+            # Initialize privately, then publish the complete store atomically.
+            # Concurrent services (including separate processes) must neither
+            # share git-init lock files nor observe a partially initialized store.
+            with tempfile.TemporaryDirectory(prefix=f".{digest}.", dir=store.parent) as staging:
+                initialized = Path(staging) / store.name
+                result = await self.git.arun_git_result(
+                    ["init", "--bare", "--template=", str(initialized)], cwd=str(store.parent)
                 )
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        result.stderr or "candidate retained store initialization failed"
+                    )
+                try:
+                    initialized.rename(store)
+                except OSError as exc:
+                    if exc.errno not in (errno.EEXIST, errno.ENOTEMPTY) or not store.is_dir():
+                        raise
         return store
 
     async def _fetch_oid(self, store: Path, oid: str, destination_ref: str) -> None:
