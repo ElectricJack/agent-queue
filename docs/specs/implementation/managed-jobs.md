@@ -180,3 +180,32 @@ after the chunk, and `data_base64`, the original bytes: rendered text length is
 not a byte offset for invalid UTF-8. The console pane caps displayed text at
 1 MiB, marks the view truncated, and reconnects on a slow-reader marker without
 rendering it as output.
+
+### Finite Matter rendering (object-script proposal AQ-4)
+
+`matter_render` invokes only an operator-configured Python interpreter and the
+ME-1 capture wrapper. Submitters provide a frozen bundle relative to
+their pinned workspace; executable, output directory and device are server-owned.
+Admission requires `resources.jobs.enabled`, `matter_python`,
+`matter_capture_script` and `matter_editor`. A server-owned shim loads the trusted
+adapter and evaluates the author's pinned source tree. ME-1's `capture BUNDLE
+NEW_RUN_DIR --editor EDITOR --timeout SECONDS` contract supplies its embedded rig.
+`matter_gpu_id` identifies the reserved physical device;
+every cooperating author targeting that device uses the same id.
+
+The existing job/wait transaction, scope, idempotency and durable terminal outbox
+apply unchanged. Render jobs use an independent exclusive device lock, never a
+pytest slot. A surviving POSIX child retains its inherited device lock. Windows
+execution from WSL also holds a native named mutex and a kill-on-close Windows
+Job Object: descendants are assigned before execution, cannot escape the job,
+and die when their native owner dies. The native owner independently observes
+cancellation and the deadline; reconciliation verifies native tree cleanup before
+releasing a workspace pin. Missing/unreadable native identity blocks cleanup.
+
+Capture runs into a fresh `<data_dir>/runs/<job_id>/capture/` directory. The
+set of receipt and image files is retained with hashes in the immutable job
+result for `result_days`, independently of log retention and workspace cleanup.
+Successful evidence must fit `matter_artifact_bytes`. Missing, invalid or
+oversized capture evidence fails the job; exit zero alone is insufficient.
+Cancellation and timeout remain authoritative even if a receipt claims success.
+This job layer records capture validity, not a quality score or human approval.

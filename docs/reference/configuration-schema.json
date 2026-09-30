@@ -2166,6 +2166,11 @@
           "head_bytes": 1048576,
           "log_budget_bytes": 2147483648,
           "log_days": 14,
+          "matter_artifact_bytes": 268435456,
+          "matter_capture_script": "",
+          "matter_editor": "",
+          "matter_gpu_id": "default",
+          "matter_python": "",
           "max_queued": 100,
           "per_task_active": 2,
           "per_task_queued": 10,
@@ -2230,6 +2235,11 @@
             "head_bytes": 1048576,
             "log_budget_bytes": 2147483648,
             "log_days": 14,
+            "matter_artifact_bytes": 268435456,
+            "matter_capture_script": "",
+            "matter_editor": "",
+            "matter_gpu_id": "default",
+            "matter_python": "",
             "max_queued": 100,
             "per_task_active": 2,
             "per_task_queued": 10,
@@ -2259,6 +2269,26 @@
             "log_days": {
               "default": 14,
               "type": "integer"
+            },
+            "matter_artifact_bytes": {
+              "default": 268435456,
+              "type": "integer"
+            },
+            "matter_capture_script": {
+              "default": "",
+              "type": "string"
+            },
+            "matter_editor": {
+              "default": "",
+              "type": "string"
+            },
+            "matter_gpu_id": {
+              "default": "default",
+              "type": "string"
+            },
+            "matter_python": {
+              "default": "",
+              "type": "string"
             },
             "max_queued": {
               "default": 100,

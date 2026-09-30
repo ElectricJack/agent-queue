@@ -62,7 +62,12 @@ class JobService:
             raise JobError("jobs.disabled")
         if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
             raise JobError("jobs.idempotency_key_invalid")
-        accepted = presets(self.root).get(preset)
+        if preset == "matter_render":
+            from src.jobs.matter import preset as matter_preset
+
+            accepted = matter_preset(cfg)
+        else:
+            accepted = presets(self.root).get(preset)
         if not accepted or owner_kind not in {"task", "integration"}:
             raise JobError("jobs.preset_denied")
         if input_mode not in {"live", "snapshot"}:
@@ -84,9 +89,20 @@ class JobService:
             xdist = await asyncio.to_thread(project_tests.has_xdist, test_setup.python)
         if test_setup:
             accepted = presets(self.root, test_python=test_setup.python)[preset]
-        argv = validate_args(
-            accepted, args, cwd, self.config.resources.test_worker_cap(), xdist=xdist
-        )
+        if preset == "matter_render":
+            from src.jobs.matter import capture_inputs, file_hash
+
+            if input_mode != "live" or owner_kind != "task":
+                raise JobError("jobs.preset_denied")
+            bundle, capture_expected = await asyncio.to_thread(capture_inputs, args, cwd)
+            adapter_hash = await asyncio.to_thread(file_hash, cfg.matter_capture_script)
+            editor_hash = await asyncio.to_thread(file_hash, cfg.matter_editor)
+            capture_expected["editor_sha256"] = editor_hash
+            argv = [*accepted.argv, str(cwd), cfg.matter_editor, bundle]
+        else:
+            argv = validate_args(
+                accepted, args, cwd, self.config.resources.test_worker_cap(), xdist=xdist
+            )
         job_class = accepted.job_class
         if accepted.pytest:
             from src.cli.test_runner import _is_full_suite
@@ -123,6 +139,8 @@ class JobService:
             "run_seconds": run_seconds,
             "adapter_request_hash": adapter_request_hash,
         }
+        if preset == "matter_render":
+            canonical["capture_expected"] = capture_expected
         job_id, nonce, now = str(uuid.uuid4()), uuid.uuid4().hex, time.time()
         env = {
             "PATH": f"{Path(sys.executable).parent}:/usr/bin:/bin",
@@ -182,6 +200,27 @@ class JobService:
             "adapter_request_hash": adapter_request_hash,
             "tool_versions": {"python": sys.version, "executable": sys.executable},
         }
+        if preset == "matter_render":
+            import hashlib
+
+            from src.jobs.matter import windows_path
+
+            device = cfg.matter_gpu_id
+            contract.update(
+                gpu_id=device,
+                capacity=1,
+                lock_dir=str(Path(self.config.data_dir) / "locks/gpus" /
+                             hashlib.sha256(device.encode()).hexdigest()),
+                artifact_bytes=cfg.matter_artifact_bytes,
+                capture_expected=capture_expected,
+                adapter_sha256=adapter_hash,
+            )
+            env.pop("AQ_TEST_RUN_ID", None)
+            if cfg.matter_python.lower().endswith(".exe"):
+                contract["native_windows"] = {
+                    "python": cfg.matter_python,
+                    "owner_script": await windows_path(self.root / "src/jobs/windows_owner.py"),
+                }
         if (queue_seconds is not None or run_seconds is not None) and owner_kind != "integration":
             raise JobError("jobs.preset_denied")
         default_queue = (
@@ -363,6 +402,21 @@ class JobService:
                 and time.time() - (job.get("launch_at") or job["submitted_at"]) < 30
             ):
                 return
+            if job["contract"].get("native_windows"):
+                from src.jobs.matter import cancel_native, native_status
+
+                if alive and not (directory / "native-intent.json").exists():
+                    return  # native owner has not reached its intent barrier yet
+                native = await native_status(job, directory)
+                if native["active_processes"] or native["owner_alive"]:
+                    if (
+                        job["state"] == "cancelling"
+                        or not intent
+                        or not await verified(intent, nonce)
+                    ):
+                        await cancel_native(directory)
+                    if not alive:
+                        return
             if alive:
                 if job["state"] == "starting" and started and await verified(started, nonce):
                     await self.db.transition_job(
@@ -423,6 +477,34 @@ class JobService:
                     receipt["output_store_failed"] = True
             if job["state"] == "cancelling" and receipt:
                 receipt["cancelled"] = True
+            if job["preset"] == "matter_render" and receipt:
+                from src.jobs.matter import retain_capture
+
+                if job["contract"].get("native_windows"):
+                    native_receipt = read_json(directory / "native-completion.json")
+                    if not native_receipt or native_receipt.get("nonce") != nonce:
+                        receipt["infra_reason"] = (
+                            receipt.get("infra_reason") or "native_receipt_missing"
+                        )
+                    else:
+                        receipt["infra_reason"] = (
+                            receipt.get("infra_reason") or native_receipt.get("infra_reason")
+                        )
+                        receipt["cancelled"] = (
+                            receipt.get("cancelled") or native_receipt.get("cancelled")
+                        )
+                if (
+                    receipt.get("exit_code") == 0
+                    and not receipt.get("infra_reason")
+                    and not receipt.get("cancelled")
+                ):
+                    try:
+                        receipt["capture"] = await asyncio.to_thread(
+                            retain_capture, directory, job["contract"]["artifact_bytes"],
+                            job["contract"]["capture_expected"],
+                        )
+                    except (OSError, ValueError, TypeError, KeyError):
+                        receipt["infra_reason"] = "capture_artifact_invalid"
             result = build_result(job, receipt, tail)
             await asyncio.to_thread(atomic_json, directory / "result.json", result)
             # starting may finish before a reconciliation cycle observes running.
