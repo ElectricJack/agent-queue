@@ -45,6 +45,69 @@ from src.models import AgentProfile, Project, RepoConfig, RepoSourceType, Sessio
 BASE = "a" * 40
 
 
+async def test_repair_eject_builds_a_new_candidate_without_the_removed_source(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+    from src.integration.controls import IntegrationControlService
+
+    origin, _work, base, members = _make_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    git = _LocalPushGit(origin)
+    candidate = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=git,
+        forge_provider=_AuditForge(),
+        app_client=app,
+        clock=lambda: 100.0,
+    )
+    old = await candidate.build("batch")
+    assert old.outcome == "built"
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_batches)
+            .where(integration_batches.c.id == "batch")
+            .values(
+                lifecycle="repairing", tested_candidate_sha=old.head_sha, ci_evidence_id="old-ci"
+            )
+        )
+        await conn.execute(update(integration_candidate_revisions).values(state="red"))
+    result = await IntegrationControlService(db, clock=lambda: 110.0).eject(
+        "batch",
+        task_id="root-0",
+        reason="migration collision",
+        operator_id="supervisor",
+    )
+    assert result["outcome"] == "ejected"
+    candidate.forge_provider = _AuditForge()
+    rebuilt = await candidate.build("batch")
+    # The existing audit PR is reused even though this revision was rebuilt.
+    assert rebuilt.outcome == "already_built" and rebuilt.revision == 1
+    assert rebuilt.head_sha != old.head_sha
+    _git(origin, "merge-base", "--is-ancestor", members[1][1], rebuilt.head_sha)
+    assert not await git.ais_ancestor(str(origin), members[0][1], rebuilt.head_sha)
+    assert _git(origin, "ls-tree", "--name-only", rebuilt.head_sha).splitlines() == [
+        "base.txt",
+        "member-1.txt",
+    ]
+    async with db._engine.connect() as conn:
+        revisions = (
+            (
+                await conn.execute(
+                    select(integration_candidate_revisions).order_by(
+                        integration_candidate_revisions.c.revision
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert revisions[0]["state"] == "superseded" and revisions[1]["state"] == "built"
+
+
 # Sessions and CI runners export GIT_AUTHOR_*/GIT_COMMITTER_*, which outrank the
 # per-repository ``user.*`` config these fixtures rely on to author the source
 # commits.  The product pins the identity of the commits *it* creates; the
@@ -2356,9 +2419,7 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
                     .values(workspace_id=workspace_id)
                 )
                 await conn.execute(
-                    update(sessions)
-                    .where(sessions.c.id == session_id)
-                    .values(work_dir=str(work))
+                    update(sessions).where(sessions.c.id == session_id).values(work_dir=str(work))
                 )
             rebound_path = tmp_path / "same-id-rebound-workspace"
             rebound_path.mkdir()
@@ -2382,9 +2443,7 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
                     .values(workspace_path=str(work))
                 )
                 await conn.execute(
-                    update(sessions)
-                    .where(sessions.c.id == session_id)
-                    .values(work_dir=str(work))
+                    update(sessions).where(sessions.c.id == session_id).values(work_dir=str(work))
                 )
         wrong_target = Fence(
             target={"repository_id": "repo", "branch": conflict.branch + "-other"},
@@ -2420,13 +2479,17 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
             assert accepted.outcome == "wait"
             async with db._engine.connect() as conn:
                 recovered_stage = (
-                    await conn.execute(
-                        select(integration_repair_stages).where(
-                            integration_repair_stages.c.operation_id == "repair-batch-batch",
-                            integration_repair_stages.c.ordinal == stage,
+                    (
+                        await conn.execute(
+                            select(integration_repair_stages).where(
+                                integration_repair_stages.c.operation_id == "repair-batch-batch",
+                                integration_repair_stages.c.ordinal == stage,
+                            )
                         )
                     )
-                ).mappings().one()
+                    .mappings()
+                    .one()
+                )
             assert recovered_stage["state"] == "active"
             assert recovered_stage["started_at"] == 300.0
             assert recovered_stage["deadline_at"] == 360.0
@@ -2460,15 +2523,21 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         # a second writer. Normal stopped-claim cleanup and handoff come first.
         assert (await controls.resume("repair-batch-batch"))["outcome"] == "invalid_state"
         async with db.immediate() as conn:
-            await conn.execute(update(tasks).where(tasks.c.id == repair_task).values(
-                status="READY", assigned_agent_id=None
-            ))
-            await conn.execute(update(workspaces).where(workspaces.c.id == workspace_id).values(
-                locked_by_task_id=None, locked_by_agent_id=None
-            ))
-            await conn.execute(update(sessions).where(sessions.c.id == session_id).values(
-                task_id=None, claim_phase=None
-            ))
+            await conn.execute(
+                update(tasks)
+                .where(tasks.c.id == repair_task)
+                .values(status="READY", assigned_agent_id=None)
+            )
+            await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.id == workspace_id)
+                .values(locked_by_task_id=None, locked_by_agent_id=None)
+            )
+            await conn.execute(
+                update(sessions)
+                .where(sessions.c.id == session_id)
+                .values(task_id=None, claim_phase=None)
+            )
         await ownership.transfer(repair_fence, repair_task, "repair")
         resumed = await controls.resume("repair-batch-batch")
         assert resumed["outcome"] == "resumed"
@@ -2536,12 +2605,16 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         assert [blocker["ref"] for blocker in blocked_successor["blockers"]] == ["writer"]
         async with db._engine.connect() as conn:
             rejected = (
-                await conn.execute(
-                    select(integration_candidate_resolutions).where(
-                        integration_candidate_resolutions.c.id == reservation_id
+                (
+                    await conn.execute(
+                        select(integration_candidate_resolutions).where(
+                            integration_candidate_resolutions.c.id == reservation_id
+                        )
                     )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
         assert rejected["state"] == "rejected"
         assert rejected["push_evidence"]["remote_sha"] == resolved
         assert rejected["rejection_evidence"]["invariant"] == accepted.invariant
@@ -2675,6 +2748,22 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         accepted = await service.accept_repair(reservation_id)
         replay = await service.accept_repair(reservation_id)
     assert accepted.outcome == expected
+    if expected == "stale" and accepted.invariant == "resolved_paths_do_not_match_reviewed_source":
+        from src.doctor.integration_checks import run_check
+        from src.doctor.models import Severity
+        from src.integration.controls import IntegrationControlService
+
+        diagnostic = await run_check(db, "integration.reviewed_file_guard")
+        assert diagnostic.severity is Severity.WARN
+        assert diagnostic.data["batches"][0]["reservation_id"] == reservation_id
+        refused = await IntegrationControlService(db, clock=lambda: 100.0).eject(
+            "batch",
+            task_id="root-1",
+            reason="reviewed-file guard",
+            operator_id="supervisor",
+        )
+        assert refused["outcome"] == "invalid_state"
+        assert f"resolution:{reservation_id}" in refused["blockers"]
     assert replay.outcome == (
         "already_accepted"
         if expected == "accepted"
@@ -2693,13 +2782,17 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         assert resumed.pr_url == "https://github.com/example/repo/pull/9"
         async with db._engine.connect() as conn:
             publication = (
-                await conn.execute(
-                    select(integration_candidate_publications).where(
-                        integration_candidate_publications.c.batch_id == "batch",
-                        integration_candidate_publications.c.revision == resumed.revision,
+                (
+                    await conn.execute(
+                        select(integration_candidate_publications).where(
+                            integration_candidate_publications.c.batch_id == "batch",
+                            integration_candidate_publications.c.revision == resumed.revision,
+                        )
                     )
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
         assert publication["expected_old_sha"] == resolved
         source_before = _git(origin, "rev-parse", "refs/heads/root-1")
         _git(work, "switch", "-C", "main", base)
@@ -2713,6 +2806,98 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
         assert rebuilt.outcome in {"built", "already_built"}
         assert _git(origin, "show", f"{rebuilt.head_sha}:shared.txt") == "first and second"
         assert _git(origin, "rev-parse", "refs/heads/root-1") == source_before
+
+    if repair_change == "extra" and expected == "stale":
+        # A known refused push is safe to retain and reject only after its exact
+        # session stopped, the workspace detached, and the remote SHA was read.
+        from src.integration.controls import IntegrationControlService
+
+        control = IntegrationControlService(db, clock=lambda: 100.0)
+
+        async def observe(resolution):
+            return await app.exact_head_ref(resolution["target_branch"].removeprefix("refs/heads/"))
+
+        attached = await control.eject(
+            "batch",
+            task_id="root-1",
+            reason="rechain",
+            operator_id="supervisor",
+            resolution_observer=observe,
+        )
+        assert attached["outcome"] == "invalid_state"
+        assert "writer" in attached["blockers"]
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(tasks).where(tasks.c.id == repair_task).values(status="FAILED")
+            )
+            await conn.execute(
+                update(workspaces)
+                .where(workspaces.c.id == workspace_id)
+                .values(
+                    locked_by_task_id=None,
+                )
+            )
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.repository_id == "repo",
+                )
+                .values(
+                    handoff_state="released",
+                    session_id=None,
+                    workspace_id=None,
+                    confirmed_workspace_id=workspace_id,
+                )
+            )
+
+        async def changed_remote(_resolution):
+            return "f" * 40
+
+        stale = await control.eject(
+            "batch",
+            task_id="root-1",
+            reason="rechain",
+            operator_id="supervisor",
+            resolution_observer=changed_remote,
+        )
+        assert stale["outcome"] == "invalid_state"
+        assert f"resolution:{reservation_id}" in stale["blockers"]
+        from types import SimpleNamespace
+        from src.commands.integration_commands import IntegrationCommandsMixin
+
+        handler = IntegrationCommandsMixin()
+        handler.db = db
+        handler.orchestrator = SimpleNamespace(
+            integration_control_service=control,
+            integration_candidate_service=service,
+        )
+        ejected = await handler._cmd_integration_eject(
+            {
+                "batch_id": "batch",
+                "task_id": "root-1",
+                "reason": "rechain",
+            }
+        )
+        assert ejected["outcome"] == "ejected", ejected
+        async with db._engine.connect() as conn:
+            retained = (
+                (
+                    await conn.execute(
+                        select(integration_candidate_resolutions).where(
+                            integration_candidate_resolutions.c.id == reservation_id,
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert retained["state"] == "rejected"
+        assert retained["rejection_evidence"]["disposition"] == "membership_ejection"
+        assert _git(origin, "rev-parse", retained["target_branch"]) == resolved
+        rebuilt = await service.build("batch")
+        assert rebuilt.outcome in {"built", "already_built"}
+        assert rebuilt.revision == 1
+        assert _git(origin, "rev-parse", f"{rebuilt.head_sha}^{{tree}}") == members[0][2]
 
 
 async def test_command_handler_resolves_exact_assigned_candidate_member_and_replays(

@@ -2098,8 +2098,93 @@ async def _check_delivery_path(ctx: DoctorContext) -> CheckResult:
     )
 
 
+async def _find_reviewed_file_blocked_batches(ctx: DoctorContext) -> list[dict]:
+    from sqlalchemy import select
+
+    from src.database.tables import (
+        integration_batches,
+        integration_repair_operations,
+        integration_repair_stages,
+    )
+    from src.integration.migration_heads import REVIEWED_FILE_GUARDS
+
+    batch, operation, stage = (
+        integration_batches,
+        integration_repair_operations,
+        integration_repair_stages,
+    )
+    async with ctx.db._engine.connect() as conn:
+        rows = (
+            (
+                await conn.execute(
+                    select(
+                        batch.c.id.label("batch_id"),
+                        batch.c.project_id,
+                        batch.c.current_revision,
+                        operation.c.id.label("operation_id"),
+                        stage.c.repair_task_id,
+                        stage.c.dossier,
+                    )
+                    .select_from(
+                        batch.join(operation, operation.c.batch_id == batch.c.id).join(
+                            stage,
+                            (stage.c.operation_id == operation.c.id)
+                            & (stage.c.ordinal == operation.c.active_stage),
+                        )
+                    )
+                    .where(
+                        batch.c.lifecycle.in_(("repairing", "human_blocked")),
+                        operation.c.state.in_(("active", "escalated", "human_required")),
+                        stage.c.dossier["reviewed_file_guard"]["invariant"]
+                        .as_string()
+                        .in_(REVIEWED_FILE_GUARDS),
+                    )
+                    .order_by(batch.c.id)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    findings = []
+    for row in rows:
+        guard = row["dossier"]["reviewed_file_guard"]
+        if guard.get("revision") != row["current_revision"]:
+            continue
+        findings.append(
+            {key: row[key] for key in ("batch_id", "project_id", "operation_id", "repair_task_id")}
+            | guard
+        )
+    return findings
+
+
+async def _check_reviewed_file_blocked_batches(ctx: DoctorContext) -> CheckResult:
+    check_id = "integration.reviewed_file_guard"
+    if ctx.db is None:
+        return CheckResult(check_id, Severity.INFO, "database required")
+    findings = await _find_reviewed_file_blocked_batches(ctx)
+    return CheckResult(
+        check_id,
+        Severity.WARN if findings else Severity.OK,
+        "\n".join(
+            f"Batch {item['batch_id']} repair is blocked by {item['invariant']}; "
+            "settle and detach the repair writer; retain an exact observed rejected push or "
+            "recover other pending resolutions, then "
+            "use aq integration eject to rebuild without the conflicting member and rechain "
+            "its source branch for a fresh review."
+            for item in findings
+        )
+        or "no batch repairs blocked by a reviewed-file guard",
+        data={"count": len(findings), "batches": findings},
+    )
+
+
 def integration_checks() -> list[DoctorCheck]:
     return [
+        DoctorCheck(
+            id="integration.reviewed_file_guard",
+            run=_check_reviewed_file_blocked_batches,
+            owner=OWNER,
+        ),
         # Report-only: which delivery path a project should use is the
         # operator's policy decision, not doctor's.
         DoctorCheck(

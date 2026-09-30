@@ -882,6 +882,7 @@ class CandidateService:
         )
         lineage_failure = await self._repair_lineage_failure(store, repair_lineage)
         if lineage_failure is not None:
+            await self._record_reviewed_file_guard(reservation, lineage_failure)
             return self._repair_result("stale", reservation, invariant=lineage_failure)
         resolved_tree = await self.git.arun_git_result(
             ["rev-parse", f"{reservation['resolved_head_sha']}^{{tree}}"], cwd=str(store)
@@ -968,6 +969,8 @@ class CandidateService:
             repair_commit_shas=tuple(reservation["repair_commit_shas"]),
         )
         invariant = await self._repair_lineage_failure(store, lineage)
+        if invariant is not None:
+            await self._record_reviewed_file_guard(reservation, invariant)
         if invariant is None:
             # A terminal stage cannot be resumed while this pushed proof is
             # still a blocker.  Re-arm only this exact frozen stage, then
@@ -1686,6 +1689,7 @@ class CandidateService:
                         batch_id=state["batch"]["id"],
                         revision=revision,
                         construction_base_sha=base_sha,
+                        source_manifest=state["members"],
                         next_member_ordinal=0,
                         head_sha=base_sha,
                         state="constructing",
@@ -3033,6 +3037,75 @@ class CandidateService:
         reason for its public, operator-actionable stale result.
         """
         return await self._repair_lineage_failure(store, lineage) is None
+
+    async def _record_reviewed_file_guard(self, reservation, invariant):
+        from src.integration.migration_heads import REVIEWED_FILE_GUARDS
+
+        if invariant not in REVIEWED_FILE_GUARDS:
+            return
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, reservation["project_id"])
+            batch = (
+                (
+                    await conn.execute(
+                        select(integration_batches)
+                        .where(
+                            integration_batches.c.id == reservation["batch_id"],
+                            integration_batches.c.current_revision == reservation["revision"],
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            operation = (
+                (
+                    await conn.execute(
+                        select(integration_repair_operations)
+                        .where(
+                            integration_repair_operations.c.id == reservation["operation_id"],
+                            integration_repair_operations.c.active_stage
+                            == reservation["stage_ordinal"],
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            stage = (
+                (
+                    await conn.execute(
+                        select(integration_repair_stages)
+                        .where(
+                            integration_repair_stages.c.operation_id == reservation["operation_id"],
+                            integration_repair_stages.c.ordinal == reservation["stage_ordinal"],
+                        )
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if batch is None or operation is None or stage is None:
+                return
+            dossier = dict(stage["dossier"] or {})
+            dossier["reviewed_file_guard"] = {
+                "invariant": invariant,
+                "revision": reservation["revision"],
+                "reservation_id": reservation["id"],
+                "member_ordinal": reservation["member_ordinal"],
+                "at": self.clock(),
+            }
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == reservation["operation_id"],
+                    integration_repair_stages.c.ordinal == reservation["stage_ordinal"],
+                )
+                .values(dossier=dossier)
+            )
 
     async def _repair_lineage_failure(
         self, store: Path, lineage: CandidateRepairLineage

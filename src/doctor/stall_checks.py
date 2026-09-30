@@ -379,6 +379,7 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         _delivery_findings(ctx, active, tasks, now),
         _provider_findings(ctx, tasks),
         _unmaterialized_pr_findings(ctx, active),
+        _reviewed_file_guard_findings(ctx, active),
         asyncio.to_thread(_log_findings, ctx, active, tasks),
         _validation_findings(),
     )
@@ -397,6 +398,23 @@ async def _check_sweep(ctx: DoctorContext) -> CheckResult:
         data={"findings": findings, "count": len(findings),
               "vault_root": str(Path(ctx.config.vault_root).expanduser())},
     )
+
+
+async def _reviewed_file_guard_findings(ctx: DoctorContext, active: set[str]) -> list[dict]:
+    from src.doctor.integration_checks import _find_reviewed_file_blocked_batches
+
+    return [
+        _finding(
+            "reviewed_file_guard",
+            row["project_id"],
+            f"batch {row['batch_id']} repair blocked by {row['invariant']}; "
+            "detach the repair writer, recover pending resolutions, and eject the "
+            "conflicting member before rebuilding",
+            **{key: value for key, value in row.items() if key != "project_id"},
+        )
+        for row in await _find_reviewed_file_blocked_batches(ctx)
+        if row["project_id"] in active
+    ]
 
 
 async def _validation_findings() -> list[dict]:
