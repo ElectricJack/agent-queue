@@ -1824,10 +1824,36 @@ class RepairService:
             .mappings()
             .one()
         )
-        if stage["state"] != "active" or now >= float(stage["deadline_at"]):
+        if stage["state"] not in {"active", "awaiting_completion"}:
+            raise ValueError("batch repair stage is no longer active")
+        if stage["state"] == "active" and now >= float(stage["deadline_at"]):
             raise ValueError("batch repair stage is no longer active")
         if stage["current_subject"] != self._batch_subject(revision):
             raise ValueError("batch repair subject changed during close")
+        if stage["state"] == "awaiting_completion":
+            # CI can finish while its exact repair writer is still attached.
+            # Like expire's awaiting_promotion path, this unchanged green
+            # handoff may outlive the deadline; it grants no further repair.
+            evidence = (
+                await conn.execute(
+                    select(integration_check_evidence).where(
+                        integration_check_evidence.c.id == stage["success_evidence_id"]
+                    )
+                )
+            ).mappings().one_or_none()
+            if (
+                head_sha != revision["head_sha"]
+                or revision["state"] != "green"
+                or batch["lifecycle"] != "testing"
+                or batch["tested_candidate_sha"] != head_sha
+                or stage["success_subject"] != stage["current_subject"]
+                or stage["success_evidence_id"] != revision["ci_evidence_id"]
+                or stage["success_evidence_id"] != batch["ci_evidence_id"]
+                or not self._evidence_matches(operation, stage, evidence)
+                or evidence["conclusion"] != "success"
+                or evidence["classification"] != "conclusive"
+            ):
+                raise ValueError("batch repair completion requires the exact green candidate")
         stage_dossier = dict(stage["dossier"] or {})
         rebuild_conflict = stage_dossier.get("candidate_rebuild_conflict")
         construction_base_sha = revision["construction_base_sha"]
