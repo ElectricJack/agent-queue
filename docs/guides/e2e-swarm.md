@@ -76,8 +76,8 @@ forced back to this disposable data directory and database even when the
 caller is a worker carrying production-refusal sentinels.
 
 CI covers all 19 scenarios in four parallel `e2e-cli` jobs: `claims` (S1–S3,
-S6–S7, S19), `cli` (S5, S8–S9, S12, S17), `graphs` (S10, S15, S16b, S18), and
-`failover` (S4, S11, S13–S14, S16a). S16a covers outage detection/rerouting; S16b prepares a separate
+S7, S15, S19), `cli` (S5, S8–S9, S12, S17), `graphs` (S10, S16b, S18), and
+`failover` (S4, S6, S11, S13–S14, S16a). S16a covers outage detection/rerouting; S16b prepares a separate
 outage through public commands and covers recovery/undo/all-down. Both retain
 the original assertions; select `S16` to run the full serial transcript. Each job
 owns a fresh disposable world and an eight-minute job budget, including
