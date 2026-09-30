@@ -93,6 +93,8 @@ somehow declares none.
     "pr_merge",
     "prime",
     "review_list",
+    "review_attachment_add",
+    "review_attachment_list",
     "review_comment",
     "review_show",
     "review_submit",

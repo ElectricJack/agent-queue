@@ -546,9 +546,9 @@ class TestProjectDelegation:
 # ── migration a00000000014 ─────────────────────────────────────────────────
 
 
-def _load_migration():
-    path = REPO_ROOT / "migrations" / "versions" / "a00000000014_document_reviews.py"
-    spec = importlib.util.spec_from_file_location("a00000000014", path)
+def _load_migration(name="a00000000014_document_reviews"):
+    path = REPO_ROOT / "migrations" / "versions" / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -634,7 +634,10 @@ class TestMigration:
                 # Rewind to a00000000013: no review tables, no delegation
                 # column, and a gate-type CHECK without 'review'.
                 await conn.execute(
-                    text("DROP TABLE doc_review_comments, doc_review_revisions, doc_reviews")
+                    text(
+                        "DROP TABLE doc_review_attachments, doc_review_comments, "
+                        "doc_review_revisions, doc_reviews"
+                    )
                 )
                 await conn.execute(text("ALTER TABLE projects DROP COLUMN review_delegate_to"))
                 await conn.execute(text("ALTER TABLE gates DROP CONSTRAINT ck_gates_type"))
@@ -686,6 +689,10 @@ class TestMigration:
         async with db._engine.connect() as conn:
             trans = await conn.begin()
             try:
+                # Alembic downgrades the later attachment revision before
+                # revision 14; its foreign key must be removed in that order.
+                attachments = _load_migration("a00000000046_review_attachments")
+                await conn.run_sync(_run(attachments, "downgrade"))
                 await conn.run_sync(_run(migration, "downgrade"))
                 assert await _shape(conn) == _BEFORE
                 remaining = (

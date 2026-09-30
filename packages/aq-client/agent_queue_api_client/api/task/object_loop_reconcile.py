@@ -6,6 +6,7 @@ import httpx
 from ... import errors
 from ...client import AuthenticatedClient, Client
 from ...models.object_loop_reconcile_request import ObjectLoopReconcileRequest
+from ...models.object_loop_reconcile_response import ObjectLoopReconcileResponse
 from ...models.object_loop_reconcile_response_422 import ObjectLoopReconcileResponse422
 from ...types import Response
 
@@ -31,9 +32,10 @@ def _get_kwargs(
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Any | ObjectLoopReconcileResponse422 | None:
+) -> ObjectLoopReconcileResponse | ObjectLoopReconcileResponse422 | None:
     if response.status_code == 200:
-        response_200 = response.json()
+        response_200 = ObjectLoopReconcileResponse.from_dict(response.json())
+
         return response_200
 
     if response.status_code == 422:
@@ -49,7 +51,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[Any | ObjectLoopReconcileResponse422]:
+) -> Response[ObjectLoopReconcileResponse | ObjectLoopReconcileResponse422]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -62,7 +64,7 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ObjectLoopReconcileRequest,
-) -> Response[Any | ObjectLoopReconcileResponse422]:
+) -> Response[ObjectLoopReconcileResponse | ObjectLoopReconcileResponse422]:
     """Coordinate a bounded, durable object evaluation round.
 
      Coordinate a bounded, durable object evaluation round.
@@ -75,7 +77,7 @@ def sync_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | ObjectLoopReconcileResponse422]
+        Response[ObjectLoopReconcileResponse | ObjectLoopReconcileResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -93,7 +95,7 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     body: ObjectLoopReconcileRequest,
-) -> Any | ObjectLoopReconcileResponse422 | None:
+) -> ObjectLoopReconcileResponse | ObjectLoopReconcileResponse422 | None:
     """Coordinate a bounded, durable object evaluation round.
 
      Coordinate a bounded, durable object evaluation round.
@@ -106,7 +108,7 @@ def sync(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | ObjectLoopReconcileResponse422
+        ObjectLoopReconcileResponse | ObjectLoopReconcileResponse422
     """
 
     return sync_detailed(
@@ -119,7 +121,7 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     body: ObjectLoopReconcileRequest,
-) -> Response[Any | ObjectLoopReconcileResponse422]:
+) -> Response[ObjectLoopReconcileResponse | ObjectLoopReconcileResponse422]:
     """Coordinate a bounded, durable object evaluation round.
 
      Coordinate a bounded, durable object evaluation round.
@@ -132,7 +134,7 @@ async def asyncio_detailed(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[Any | ObjectLoopReconcileResponse422]
+        Response[ObjectLoopReconcileResponse | ObjectLoopReconcileResponse422]
     """
 
     kwargs = _get_kwargs(
@@ -148,7 +150,7 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     body: ObjectLoopReconcileRequest,
-) -> Any | ObjectLoopReconcileResponse422 | None:
+) -> ObjectLoopReconcileResponse | ObjectLoopReconcileResponse422 | None:
     """Coordinate a bounded, durable object evaluation round.
 
      Coordinate a bounded, durable object evaluation round.
@@ -161,7 +163,7 @@ async def asyncio(
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Any | ObjectLoopReconcileResponse422
+        ObjectLoopReconcileResponse | ObjectLoopReconcileResponse422
     """
 
     return (

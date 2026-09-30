@@ -741,18 +741,28 @@ from .node_overlay_dto_state import NodeOverlayDTOState
 from .node_response import NodeResponse
 from .note_summary import NoteSummary
 from .object_checkpoint_read_request import ObjectCheckpointReadRequest
+from .object_checkpoint_read_response import ObjectCheckpointReadResponse
 from .object_checkpoint_read_response_422 import ObjectCheckpointReadResponse422
+from .object_checkpoint_read_response_state import ObjectCheckpointReadResponseState
 from .object_loop_reconcile_request import ObjectLoopReconcileRequest
+from .object_loop_reconcile_response import ObjectLoopReconcileResponse
 from .object_loop_reconcile_response_422 import ObjectLoopReconcileResponse422
+from .object_loop_reconcile_response_outcome import ObjectLoopReconcileResponseOutcome
+from .object_loop_reconcile_response_state import ObjectLoopReconcileResponseState
 from .object_loop_start_request import ObjectLoopStartRequest
 from .object_loop_start_request_final_reserve import ObjectLoopStartRequestFinalReserve
 from .object_loop_start_request_incumbent_artifact_type_0 import ObjectLoopStartRequestIncumbentArtifactType0
 from .object_loop_start_request_limits import ObjectLoopStartRequestLimits
 from .object_loop_start_request_score_reservation import ObjectLoopStartRequestScoreReservation
+from .object_loop_start_response import ObjectLoopStartResponse
 from .object_loop_start_response_422 import ObjectLoopStartResponse422
+from .object_loop_start_response_state import ObjectLoopStartResponseState
 from .object_score_record_request import ObjectScoreRecordRequest
 from .object_score_record_request_spent_type_0 import ObjectScoreRecordRequestSpentType0
+from .object_score_record_response import ObjectScoreRecordResponse
 from .object_score_record_response_422 import ObjectScoreRecordResponse422
+from .object_score_record_response_outcome import ObjectScoreRecordResponseOutcome
+from .object_score_record_response_state import ObjectScoreRecordResponseState
 from .onboard_project_request import OnboardProjectRequest
 from .onboard_project_request_github_repository_type_0 import OnboardProjectRequestGithubRepositoryType0
 from .onboard_project_response import OnboardProjectResponse
@@ -1186,6 +1196,14 @@ from .resume_project_response_422 import ResumeProjectResponse422
 from .resume_task_request import ResumeTaskRequest
 from .resume_task_response_422 import ResumeTaskResponse422
 from .retry_policy_dto import RetryPolicyDTO
+from .review_attachment_add_request import ReviewAttachmentAddRequest
+from .review_attachment_add_response import ReviewAttachmentAddResponse
+from .review_attachment_add_response_422 import ReviewAttachmentAddResponse422
+from .review_attachment_add_response_attachment import ReviewAttachmentAddResponseAttachment
+from .review_attachment_list_request import ReviewAttachmentListRequest
+from .review_attachment_list_response import ReviewAttachmentListResponse
+from .review_attachment_list_response_422 import ReviewAttachmentListResponse422
+from .review_attachment_list_response_attachments_item import ReviewAttachmentListResponseAttachmentsItem
 from .review_comment_request import ReviewCommentRequest
 from .review_comment_response import ReviewCommentResponse
 from .review_comment_response_422 import ReviewCommentResponse422
@@ -1212,6 +1230,7 @@ from .review_response_route_class_summaries import ReviewResponseRouteClassSumma
 from .review_show_request import ReviewShowRequest
 from .review_show_response import ReviewShowResponse
 from .review_show_response_422 import ReviewShowResponse422
+from .review_show_response_attachments_item import ReviewShowResponseAttachmentsItem
 from .review_show_response_comments_type_0_item import ReviewShowResponseCommentsType0Item
 from .review_show_response_diff_type_0_item import ReviewShowResponseDiffType0Item
 from .review_show_response_dispatches_item import ReviewShowResponseDispatchesItem
@@ -2321,18 +2340,28 @@ __all__ = (
     "NodeResponse",
     "NoteSummary",
     "ObjectCheckpointReadRequest",
+    "ObjectCheckpointReadResponse",
     "ObjectCheckpointReadResponse422",
+    "ObjectCheckpointReadResponseState",
     "ObjectLoopReconcileRequest",
+    "ObjectLoopReconcileResponse",
     "ObjectLoopReconcileResponse422",
+    "ObjectLoopReconcileResponseOutcome",
+    "ObjectLoopReconcileResponseState",
     "ObjectLoopStartRequest",
     "ObjectLoopStartRequestFinalReserve",
     "ObjectLoopStartRequestIncumbentArtifactType0",
     "ObjectLoopStartRequestLimits",
     "ObjectLoopStartRequestScoreReservation",
+    "ObjectLoopStartResponse",
     "ObjectLoopStartResponse422",
+    "ObjectLoopStartResponseState",
     "ObjectScoreRecordRequest",
     "ObjectScoreRecordRequestSpentType0",
+    "ObjectScoreRecordResponse",
     "ObjectScoreRecordResponse422",
+    "ObjectScoreRecordResponseOutcome",
+    "ObjectScoreRecordResponseState",
     "OnboardingErrorInfo",
     "OnboardingErrorInfoDetails",
     "OnboardingErrorInfoFieldErrorsItem",
@@ -2762,6 +2791,14 @@ __all__ = (
     "ResumeTaskRequest",
     "ResumeTaskResponse422",
     "RetryPolicyDTO",
+    "ReviewAttachmentAddRequest",
+    "ReviewAttachmentAddResponse",
+    "ReviewAttachmentAddResponse422",
+    "ReviewAttachmentAddResponseAttachment",
+    "ReviewAttachmentListRequest",
+    "ReviewAttachmentListResponse",
+    "ReviewAttachmentListResponse422",
+    "ReviewAttachmentListResponseAttachmentsItem",
     "ReviewCommentRequest",
     "ReviewCommentResponse",
     "ReviewCommentResponse422",
@@ -2788,6 +2825,7 @@ __all__ = (
     "ReviewShowRequest",
     "ReviewShowResponse",
     "ReviewShowResponse422",
+    "ReviewShowResponseAttachmentsItem",
     "ReviewShowResponseCommentsType0Item",
     "ReviewShowResponseDiffType0Item",
     "ReviewShowResponseDispatchesItem",

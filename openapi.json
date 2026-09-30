@@ -999,6 +999,61 @@
         }
       }
     },
+    "/api/reviews/{review_id}/revisions/{revision}/attachments/{attachment_id}": {
+      "get": {
+        "summary": "Download Review Attachment",
+        "operationId": "download_review_attachment_api_reviews__review_id__revisions__revision__attachments__attachment_id__get",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Review Id"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Revision"
+            }
+          },
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/tasks/{task_id}/sessions": {
       "get": {
         "summary": "Task Sessions",
@@ -11819,6 +11874,100 @@
         }
       }
     },
+    "/api/review/attachment-add": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "Append an immutable screenshot to the current open review revision.",
+        "description": "Append an immutable screenshot to the current open review revision.",
+        "operationId": "review_attachment_add",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewAttachmentAddRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewAttachmentAddResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/review/attachment-list": {
+      "post": {
+        "tags": [
+          "review"
+        ],
+        "summary": "List immutable screenshots pinned to one review revision.",
+        "description": "List immutable screenshots pinned to one review revision.",
+        "operationId": "review_attachment_list",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewAttachmentListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewAttachmentListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/review/comment": {
       "post": {
         "tags": [
@@ -15499,7 +15648,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectCheckpointReadResponse"
+                }
               }
             }
           },
@@ -15544,7 +15695,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectLoopReconcileResponse"
+                }
               }
             }
           },
@@ -15589,7 +15742,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectLoopStartResponse"
+                }
               }
             }
           },
@@ -15634,7 +15789,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ObjectScoreRecordResponse"
+                }
               }
             }
           },
@@ -39071,6 +39228,40 @@
         ],
         "title": "ObjectCheckpointReadRequest"
       },
+      "ObjectCheckpointReadResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "object_id": {
+            "type": "string",
+            "title": "Object Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "state": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "State"
+          },
+          "approved": {
+            "type": "boolean",
+            "title": "Approved"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "version",
+          "state",
+          "approved"
+        ],
+        "title": "ObjectCheckpointReadResponse"
+      },
       "ObjectLoopReconcileRequest": {
         "properties": {
           "object_id": {
@@ -39127,6 +39318,49 @@
           "project_id"
         ],
         "title": "ObjectLoopReconcileRequest"
+      },
+      "ObjectLoopReconcileResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "object_id": {
+            "type": "string",
+            "title": "Object Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "state": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "State"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "brief_held",
+              "checkpoint_held",
+              "checkpoint_approved",
+              "waiting_for_wave",
+              "waiting_for_score",
+              "stopped",
+              "reconciled"
+            ],
+            "title": "Outcome"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "version",
+          "state",
+          "outcome"
+        ],
+        "title": "ObjectLoopReconcileResponse"
       },
       "ObjectLoopStartRequest": {
         "properties": {
@@ -39280,6 +39514,40 @@
         ],
         "title": "ObjectLoopStartRequest"
       },
+      "ObjectLoopStartResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "object_id": {
+            "type": "string",
+            "title": "Object Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "state": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "State"
+          },
+          "created": {
+            "type": "boolean",
+            "title": "Created"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "version",
+          "state",
+          "created"
+        ],
+        "title": "ObjectLoopStartResponse"
+      },
       "ObjectScoreRecordRequest": {
         "properties": {
           "object_id": {
@@ -39398,6 +39666,46 @@
           "action"
         ],
         "title": "ObjectScoreRecordRequest"
+      },
+      "ObjectScoreRecordResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "object_id": {
+            "type": "string",
+            "title": "Object Id"
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version"
+          },
+          "state": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "State"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "reused",
+              "continue",
+              "checkpoint",
+              "stop"
+            ],
+            "title": "Outcome"
+          }
+        },
+        "type": "object",
+        "required": [
+          "object_id",
+          "version",
+          "state",
+          "outcome"
+        ],
+        "title": "ObjectScoreRecordResponse"
       },
       "OnboardProjectRequest": {
         "properties": {
@@ -51742,6 +52050,115 @@
         "type": "object",
         "title": "RetryPolicyDTO"
       },
+      "ReviewAttachmentAddRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": ""
+          },
+          "data_base64": {
+            "type": "string",
+            "title": "Data Base64",
+            "description": ""
+          },
+          "content_type": {
+            "type": "string",
+            "title": "Content Type",
+            "description": ""
+          },
+          "caption": {
+            "type": "string",
+            "title": "Caption",
+            "description": ""
+          },
+          "view_id": {
+            "type": "string",
+            "title": "View Id",
+            "description": ""
+          },
+          "candidate_id": {
+            "type": "string",
+            "title": "Candidate Id",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "revision",
+          "data_base64",
+          "content_type",
+          "caption",
+          "view_id",
+          "candidate_id"
+        ],
+        "title": "ReviewAttachmentAddRequest"
+      },
+      "ReviewAttachmentAddResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "attachment": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Attachment"
+          }
+        },
+        "type": "object",
+        "required": [
+          "attachment"
+        ],
+        "title": "ReviewAttachmentAddResponse"
+      },
+      "ReviewAttachmentListRequest": {
+        "properties": {
+          "review_id": {
+            "type": "string",
+            "title": "Review Id",
+            "description": ""
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision",
+            "description": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "review_id",
+          "revision"
+        ],
+        "title": "ReviewAttachmentListRequest"
+      },
+      "ReviewAttachmentListResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "attachments": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ReviewAttachmentListResponse"
+      },
       "ReviewCommentRequest": {
         "properties": {
           "review_id": {
@@ -52441,6 +52858,15 @@
           },
           "response_route": {
             "$ref": "#/components/schemas/ReviewResponseRoute"
+          },
+          "attachments": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Attachments",
+            "default": []
           }
         },
         "additionalProperties": true,

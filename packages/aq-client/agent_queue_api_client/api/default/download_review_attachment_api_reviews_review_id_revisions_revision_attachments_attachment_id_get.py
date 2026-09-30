@@ -1,45 +1,42 @@
 from http import HTTPStatus
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
 from ... import errors
 from ...client import AuthenticatedClient, Client
-from ...models.object_checkpoint_read_request import ObjectCheckpointReadRequest
-from ...models.object_checkpoint_read_response import ObjectCheckpointReadResponse
-from ...models.object_checkpoint_read_response_422 import ObjectCheckpointReadResponse422
+from ...models.http_validation_error import HTTPValidationError
 from ...types import Response
 
 
 def _get_kwargs(
-    *,
-    body: ObjectCheckpointReadRequest,
+    review_id: str,
+    revision: int,
+    attachment_id: str,
 ) -> dict[str, Any]:
-    headers: dict[str, Any] = {}
 
     _kwargs: dict[str, Any] = {
-        "method": "post",
-        "url": "/api/task/object-checkpoint-read",
+        "method": "get",
+        "url": "/api/reviews/{review_id}/revisions/{revision}/attachments/{attachment_id}".format(
+            review_id=quote(str(review_id), safe=""),
+            revision=quote(str(revision), safe=""),
+            attachment_id=quote(str(attachment_id), safe=""),
+        ),
     }
 
-    _kwargs["json"] = body.to_dict()
-
-    headers["Content-Type"] = "application/json"
-
-    _kwargs["headers"] = headers
     return _kwargs
 
 
 def _parse_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422 | None:
+) -> Any | HTTPValidationError | None:
     if response.status_code == 200:
-        response_200 = ObjectCheckpointReadResponse.from_dict(response.json())
-
+        response_200 = response.json()
         return response_200
 
     if response.status_code == 422:
-        response_422 = ObjectCheckpointReadResponse422.from_dict(response.json())
+        response_422 = HTTPValidationError.from_dict(response.json())
 
         return response_422
 
@@ -51,7 +48,7 @@ def _parse_response(
 
 def _build_response(
     *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422]:
+) -> Response[Any | HTTPValidationError]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -61,27 +58,31 @@ def _build_response(
 
 
 def sync_detailed(
+    review_id: str,
+    revision: int,
+    attachment_id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ObjectCheckpointReadRequest,
-) -> Response[ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422]:
-    """Coordinate a bounded, durable object evaluation round.
-
-     Coordinate a bounded, durable object evaluation round.
+) -> Response[Any | HTTPValidationError]:
+    """Download Review Attachment
 
     Args:
-        body (ObjectCheckpointReadRequest):
+        review_id (str):
+        revision (int):
+        attachment_id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422]
+        Response[Any | HTTPValidationError]
     """
 
     kwargs = _get_kwargs(
-        body=body,
+        review_id=review_id,
+        revision=revision,
+        attachment_id=attachment_id,
     )
 
     response = client.get_httpx_client().request(
@@ -92,53 +93,61 @@ def sync_detailed(
 
 
 def sync(
+    review_id: str,
+    revision: int,
+    attachment_id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ObjectCheckpointReadRequest,
-) -> ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422 | None:
-    """Coordinate a bounded, durable object evaluation round.
-
-     Coordinate a bounded, durable object evaluation round.
+) -> Any | HTTPValidationError | None:
+    """Download Review Attachment
 
     Args:
-        body (ObjectCheckpointReadRequest):
+        review_id (str):
+        revision (int):
+        attachment_id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422
+        Any | HTTPValidationError
     """
 
     return sync_detailed(
+        review_id=review_id,
+        revision=revision,
+        attachment_id=attachment_id,
         client=client,
-        body=body,
     ).parsed
 
 
 async def asyncio_detailed(
+    review_id: str,
+    revision: int,
+    attachment_id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ObjectCheckpointReadRequest,
-) -> Response[ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422]:
-    """Coordinate a bounded, durable object evaluation round.
-
-     Coordinate a bounded, durable object evaluation round.
+) -> Response[Any | HTTPValidationError]:
+    """Download Review Attachment
 
     Args:
-        body (ObjectCheckpointReadRequest):
+        review_id (str):
+        revision (int):
+        attachment_id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        Response[ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422]
+        Response[Any | HTTPValidationError]
     """
 
     kwargs = _get_kwargs(
-        body=body,
+        review_id=review_id,
+        revision=revision,
+        attachment_id=attachment_id,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -147,28 +156,32 @@ async def asyncio_detailed(
 
 
 async def asyncio(
+    review_id: str,
+    revision: int,
+    attachment_id: str,
     *,
     client: AuthenticatedClient | Client,
-    body: ObjectCheckpointReadRequest,
-) -> ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422 | None:
-    """Coordinate a bounded, durable object evaluation round.
-
-     Coordinate a bounded, durable object evaluation round.
+) -> Any | HTTPValidationError | None:
+    """Download Review Attachment
 
     Args:
-        body (ObjectCheckpointReadRequest):
+        review_id (str):
+        revision (int):
+        attachment_id (str):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
         httpx.TimeoutException: If the request takes longer than Client.timeout.
 
     Returns:
-        ObjectCheckpointReadResponse | ObjectCheckpointReadResponse422
+        Any | HTTPValidationError
     """
 
     return (
         await asyncio_detailed(
+            review_id=review_id,
+            revision=revision,
+            attachment_id=attachment_id,
             client=client,
-            body=body,
         )
     ).parsed

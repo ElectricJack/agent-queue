@@ -107,6 +107,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "supervisor_inbox_history": "supervisor_inbox",
     # document reviews
     "review_submit": "review",
+    "review_attachment_add": "review",
+    "review_attachment_list": "review",
     "github_issue_triage": "github_issue",
     "github_issue_fix_approved": "github_issue",
     "github_issue_rejection": "github_issue",
@@ -6707,6 +6709,37 @@ _ALL_TOOL_DEFINITIONS.extend(
 # because the document bytes must be read locally, not by the daemon.
 _ALL_TOOL_DEFINITIONS.extend(
     [
+        {
+            "name": "review_attachment_add",
+            "description": "Append an immutable screenshot to the current open review revision.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                    "data_base64": {"type": "string"},
+                    "content_type": {"type": "string", "enum": ["image/png", "image/jpeg", "image/gif", "image/webp"]},
+                    "caption": {"type": "string"},
+                    "view_id": {"type": "string"},
+                    "candidate_id": {"type": "string"},
+                },
+                "required": ["review_id", "revision", "data_base64", "content_type", "caption", "view_id", "candidate_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "review_attachment_list",
+            "description": "List immutable screenshots pinned to one review revision.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "review_id": {"type": "string"},
+                    "revision": {"type": "integer", "minimum": 1},
+                },
+                "required": ["review_id", "revision"],
+                "additionalProperties": False,
+            },
+        },
         {
             "name": "review_submit",
             "description": (

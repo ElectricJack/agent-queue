@@ -1122,6 +1122,65 @@ document. Added by Alembic `a00000000014`.
 | `playbook` | JSON | nullable | A playbook review's pin: `playbook_id`, `artifact_sha256`, `source_sha256`, `source_path`, `contract_fingerprint`, `scope`, `scope_identifier`, `activate_on_approval`, diagnostic `counts`. Added by Alembic `a00000000036` |
 | `playbook_artifact` | TEXT | nullable | The pinned artifact's exact canonical bytes; approval stores them in the artifact store. Added by Alembic `a00000000036` |
 
+### Table: `doc_review_attachments`
+
+Immutable image evidence attached to one document review revision. Files live
+under the daemon's `review-attachments` directory and retain their content hash;
+later revisions cannot alter an earlier packet. Added by Alembic `a00000000046`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | Attachment identifier |
+| `review_id` | TEXT | NOT NULL | Review identity; composite revision FK |
+| `revision` | INTEGER | NOT NULL | Owning submitted revision |
+| `path` | TEXT | NOT NULL, UNIQUE | Stored image path |
+| `sha256` | TEXT | NOT NULL | SHA-256 of image bytes |
+| `content_type` | TEXT | NOT NULL | Verified PNG, JPEG, GIF, or WebP type |
+| `size` | INTEGER | NOT NULL, > 0 (`ck_doc_review_attachments_size`) | Image bytes |
+| `caption` | TEXT | NOT NULL | Human-readable evidence caption |
+| `view_id` | TEXT | NOT NULL | Stable view identifier |
+| `candidate_id` | TEXT | NOT NULL | Candidate shown in the image |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+Composite FK `fk_doc_review_attachments_revision` references
+`doc_review_revisions` (`review_id`, `revision`) ON DELETE CASCADE. Index:
+`idx_doc_review_attachments_revision` (`review_id`, `revision`). No task FK:
+archiving or deleting the source task preserves the review evidence.
+
+### Table: `object_loops`
+
+Durable object evaluation state. A row lock serializes loop transitions and
+sibling budget reservations. Images and logs live in the artifact store; this
+row retains identities, evidence references, budgets and the next task intent.
+Added by Alembic `a00000000045`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `object_id` | TEXT | PRIMARY KEY | Stable evaluated object identity |
+| `project_id` | TEXT | NOT NULL REFERENCES projects(id) | Owning project |
+| `epic_task_id` | TEXT | NOT NULL, UNIQUE (`uq_object_loops_epic_task_id`) | Soft reference to the root epic |
+| `finalization_task_id` | TEXT | NOT NULL | Soft reference to the finalizer |
+| `terminal_gate_id` | TEXT | NOT NULL | Soft reference to the terminal hold |
+| `version` | INTEGER | NOT NULL DEFAULT 1, >= 1 (`ck_object_loops_version`) | Compare-and-set version |
+| `state` | JSONB | NOT NULL | Loop identities, reservations, receipts, checkpoints and stop reason |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+| `updated_at` | REAL | NOT NULL | Latest transition timestamp |
+
+Index: `idx_object_loops_project` (`project_id`). Soft task and gate references
+preserve loop evidence through task archival and cleanup.
+
+### Table: `pull_request_inbox_snapshot`
+
+The Reviews tab's atomic durable projection of known pull requests. A failed
+GitHub refresh retains the last successful snapshot and timestamp across daemon
+restarts. Added by Alembic `a00000000044`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | INTEGER | PRIMARY KEY, = 1 (`ck_pull_request_inbox_snapshot_singleton`) | Singleton row |
+| `payload` | JSONB | NOT NULL | Last successful pull-request projection |
+| `updated_at` | REAL | NOT NULL | Last successful refresh timestamp |
+
 ### Table: `doc_review_comments`
 
 Anchored comments on a review revision. Added by Alembic `a00000000014`.

@@ -177,6 +177,11 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "collaboration_threads",
         "collaboration_members",
         "collaboration_messages",
+        # Revisions 44-46 were added after SQLite removal. Legacy files have
+        # neither PR snapshots, object evaluation state, nor review images.
+        "pull_request_inbox_snapshot",
+        "object_loops",
+        "doc_review_attachments",
     }
 )
 
