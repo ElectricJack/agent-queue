@@ -953,6 +953,9 @@ class CandidateService:
             return self._repair_result("rejected", reservation, invariant=evidence.get("invariant"))
         if reservation["state"] != "pushed":
             raise CandidateAuthorizationError("candidate repair reservation has not been pushed")
+        superseded = await self._retire_superseded_repair(reservation)
+        if superseded is not None:
+            return superseded
         repository = await self._repository(reservation["repository_id"])
         store = await self._ensure_store(repository)
         await self._fetch_oid(
@@ -977,6 +980,87 @@ class CandidateService:
                 return self._repair_result("stale", reservation)
             return await self.accept_repair(reservation_id)
         return await self._reject_pushed_repair(reservation, invariant)
+
+    async def _retire_superseded_repair(self, reservation) -> CandidateRepairResult | None:
+        """Preserve an old private push after its stopped writer was released.
+
+        This retires evidence, never accepts it into the candidate. The current
+        stage must resume normally and submit its own fenced reservation.
+        """
+        async with self.db._engine.connect() as conn:
+            active_stage = (await conn.execute(select(
+                integration_repair_operations.c.active_stage
+            ).where(integration_repair_operations.c.id == reservation["operation_id"]))).scalar()
+        if active_stage is None or int(active_stage) <= int(reservation["stage_ordinal"]):
+            return None
+        stale = self._repair_result("stale", reservation)
+        if reservation["target_kind"] == "legacy_integration":
+            return stale
+        if await self.app_client.exact_head_ref(
+            reservation["target_branch"].removeprefix("refs/heads/")
+        ) != reservation["resolved_head_sha"]:
+            return stale
+        if await self.app_client.exact_head_ref(
+            reservation["branch"].removeprefix("refs/heads/")
+        ) != reservation["partial_head_sha"]:
+            return stale
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, reservation["project_id"])
+            canonical = await self._resolution_on(conn, reservation["id"])
+            operation = (await conn.execute(select(integration_repair_operations).where(
+                integration_repair_operations.c.id == reservation["operation_id"]
+            ).with_for_update())).mappings().one_or_none()
+            batch = (await conn.execute(select(integration_batches).where(
+                integration_batches.c.id == reservation["batch_id"]
+            ).with_for_update())).mappings().one_or_none()
+            stages = (await conn.execute(select(integration_repair_stages).where(
+                integration_repair_stages.c.operation_id == reservation["operation_id"]
+            ).with_for_update())).mappings().all()
+            owner = (await conn.execute(select(integration_branch_owners).where(
+                integration_branch_owners.c.repository_id == reservation["repository_id"],
+                integration_branch_owners.c.ref == reservation["branch"],
+            ).with_for_update())).mappings().one_or_none()
+            session = (await conn.execute(select(sessions).where(
+                sessions.c.id == reservation["repair_session_id"]
+            ).with_for_update())).mappings().one_or_none()
+            mutations = (await conn.execute(select(integration_candidate_ref_mutations).where(
+                integration_candidate_ref_mutations.c.batch_id == reservation["batch_id"],
+                integration_candidate_ref_mutations.c.revision == reservation["revision"],
+            ).with_for_update())).mappings().all()
+            if (
+                canonical is None or canonical["state"] != "pushed"
+                or canonical["handoff_owner_id"] is not None
+                or operation is None or operation["state"] != "human_required"
+                or operation["episode_id"] != reservation["operation_episode_id"]
+                or int(operation["active_stage"]) <= int(reservation["stage_ordinal"])
+                or batch is None or batch["lifecycle"] != "human_blocked"
+                or int(batch["current_revision"]) != int(reservation["revision"])
+                or len(stages) != 2
+                or any(s["state"] not in {"expired", "failed", "cancelled"} for s in stages)
+                or owner is None or owner["handoff_state"] != "released"
+                or owner["owner_id"] != reservation["fence_owner_id"]
+                or owner["session_id"] is not None or owner["workspace_id"] is not None
+                or session is None or session["state"] != "stopped"
+                or session["desired_state"] != "stopped"
+                or session["instance_token"] != reservation["repair_session_instance_token"]
+                or any(m["state"] == "reserved" for m in mutations)
+                or any(m["purpose"] == "repair_handoff" for m in mutations)
+                or not any(m["resolution_id"] == reservation["id"]
+                           and m["purpose"] == "repair_resolution" and m["state"] == "applied"
+                           and m["remote_sha"] == reservation["resolved_head_sha"] for m in mutations)
+            ):
+                return stale
+            invariant = "superseded_repair_stage_preserved"
+            await conn.execute(update(integration_candidate_resolutions).where(
+                integration_candidate_resolutions.c.id == reservation["id"],
+                integration_candidate_resolutions.c.state == "pushed",
+            ).values(state="rejected", rejection_evidence={
+                "invariant": invariant, "rejected_at": self.clock(),
+                "preserved_ref": reservation["target_branch"],
+                "preserved_sha": reservation["resolved_head_sha"],
+                "successor_stage": operation["active_stage"],
+            }, updated_at=self.clock()))
+        return self._repair_result("rejected", reservation, invariant=invariant)
 
     async def _arm_terminal_recovery(self, reservation) -> bool:
         now = self.clock()

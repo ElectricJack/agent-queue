@@ -161,3 +161,14 @@ Outcomes: `would_rebind`, `rebound` and `nothing_to_rebind` succeed;
 `unproven` (any refusal or unproven SHA, each also listed in `unproven`),
 `blocked` (origin could not be inspected, or the development publisher holds
 the repository), `changed`, `invalid` and `not_found` fail.
+
+### Superseded private candidate repair evidence
+
+Operator recovery may retire a pushed private reservation from an earlier repair
+stage after both stages have expired and the operation is human-required. It
+must freshly prove that the private ref retains the exact repair SHA and that
+the integration ref still names the partial candidate. The original writer must
+be stopped and its branch owner released, with no pending mutation or handoff.
+Record the preserved ref/SHA and successor stage in rejection evidence. This
+does not accept code, move refs, reset a deadline, or grant a writer; ordinary
+resume and a new fenced reservation are still required.

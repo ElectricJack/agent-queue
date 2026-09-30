@@ -2158,6 +2158,7 @@ async def test_direct_caller_repair_lineage_is_not_authoritative(db, tmp_path):
         ("exact", "wait", 1, "operator_recovery_wait"),
         ("extra", "accepted", 1, "operator_recovery"),
         ("exact", "accepted", 0, "overlap"),
+        ("exact", "rejected", 0, "superseded_recovery"),
         ("exact", "accepted", 1, None),
         ("reserved", "stale", 0, None),
         ("extra", "accepted", 0, None),
@@ -2409,6 +2410,37 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
             )
         assert await service.push_repair(reservation_id, repair_fence) == reservation_id
     await db.update_session(session_id, state="stopped", desired_state="stopped")
+    if handoff_crash == "superseded_recovery":
+        await repair.expire("repair-batch-batch", 0, now=131.0)
+        await repair.expire("repair-batch-batch", 1, now=300.0)
+        recovery_clock[0] = 300.0
+        # An attached predecessor remains guarded even when its session stopped.
+        assert (await service.recover_repair(reservation_id)).outcome == "stale"
+        async with db.immediate() as conn:
+            await conn.execute(update(integration_branch_owners).where(
+                integration_branch_owners.c.repository_id == "repo"
+            ).values(handoff_state="released", session_id=None, workspace_id=None))
+        original_app = service.app_client
+        class ChangedRemoteApp(_AppClient):
+            async def exact_head_ref(self, branch):
+                return "f" * 40
+        service.app_client = ChangedRemoteApp(origin)
+        assert (await service.recover_repair(reservation_id)).outcome == "stale"
+        service.app_client = original_app
+        result = await service.recover_repair(reservation_id)
+        assert result.outcome == "rejected"
+        assert result.invariant == "superseded_repair_stage_preserved"
+        assert (await service.recover_repair(reservation_id)).outcome == "rejected"
+        assert await app.exact_head_ref(conflict.branch.removeprefix("refs/heads/")) == (
+            conflict.head_sha
+        )
+        async with db._engine.connect() as conn:
+            row = (await conn.execute(select(integration_candidate_resolutions).where(
+                integration_candidate_resolutions.c.id == reservation_id
+            ))).mappings().one()
+        assert await app.exact_head_ref(row["target_branch"].removeprefix("refs/heads/")) == resolved
+        assert row["rejection_evidence"]["preserved_sha"] == resolved
+        return
     if handoff_crash in {"operator_recovery", "operator_recovery_wait"}:
         expired = await repair.expire("repair-batch-batch", stage, now=300.0)
         assert expired["outcome"] == "expired"
