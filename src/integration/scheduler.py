@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Any, Literal
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, insert, or_, select, update
 
 from src.database.queries.integration_schedule_queries import INTEGRATION_LEASE_SECONDS
 from src.database.tables import (
@@ -729,10 +729,34 @@ class TrainService:
                     member["review"]["evidence"].get("policy_generation")
                     == project["hierarchical_integration_generation"]))]
         if policy is not None and policy.root.repair.source_ci:
+            member_ids = [member["task_id"] for member in members]
             records = (await conn.execute(select(integration_source_ci).where(
                 integration_source_ci.c.repository_id == repository_id,
-                integration_source_ci.c.task_id.in_([member["task_id"] for member in members]),
+                or_(integration_source_ci.c.task_id.in_(member_ids),
+                    integration_source_ci.c.repair_task_id.in_(member_ids)),
             ))).mappings().all()
+            # A repair cannot bypass a hold, rejected review or changed
+            # generation on any source in its chain. Require every linked
+            # source to remain an exact eligible member at sealing time.
+            eligible = {
+                (member["task_id"], member["source_base"], member["source_head"], member["generation"])
+                for member in members
+            }
+            while True:
+                blocked = {row["repair_task_id"] for row in records if (
+                    row["repair_task_id"] is not None and (
+                        row["policy_generation"] != project["hierarchical_integration_generation"]
+                        or (row["task_id"], row["source_base"], row["source_head"], row["generation"])
+                        not in eligible
+                    )
+                )}
+                retained = {key for key in eligible if key[0] not in blocked}
+                if retained == eligible:
+                    break
+                eligible = retained
+            members = [member for member in members if (
+                member["task_id"], member["source_base"], member["source_head"], member["generation"]
+            ) in eligible]
             exact = {(row["task_id"], row["source_base"], row["source_head"], row["generation"]): row
                      for row in records if row["policy_generation"] == project["hierarchical_integration_generation"]}
             green = {member["task_id"] for member in members if (

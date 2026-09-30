@@ -198,7 +198,10 @@ def test_cancelled_old_check_cannot_supersede_newer_run():
                                   head="a" * 40, required=required)[0] == "pending"
 
 
-async def test_green_repair_readmits_exact_failed_source_with_cleanup_coverage(case):
+@pytest.mark.parametrize("source_blocker", [
+    "hold", "repair_hold", "gate", "rejected", "generation", "policy",
+])
+async def test_green_repair_readmits_exact_failed_source_with_cleanup_coverage(case, source_blocker):
     await _continuous_policy(case)
     db = case["db"]
     branch = "aq/source-repair"
@@ -261,6 +264,25 @@ async def test_green_repair_readmits_exact_failed_source_with_cleanup_coverage(c
     assert await case["producer"].snapshot_authorized(
         "final-repair", reviewed_sha=third, policy_generation=0)
     assert {item["task_id"] for item in await members()} == {"e1", "repair-source", "final-repair"}
+    # Explicit gates and stale source identities bind every repair, including
+    # a second green repair whose own authorization evidence already exists.
+    if source_blocker == "rejected":
+        await case["producer"].snapshot_from_pull_request(
+            "e1", verdict="rejected", reviewer_login="reviewer", reviewed_sha=case["first"])
+    elif source_blocker == "gate":
+        await db.create_gate("p", "human", "Product decision", waiter_task_ids=["e1"])
+    else:
+        async with db.immediate() as conn:
+            if source_blocker in {"hold", "repair_hold"}:
+                held = "repair-source" if source_blocker == "repair_hold" else "e1"
+                await conn.execute(insert(task_labels).values(task_id=held, label="hold:product"))
+            elif source_blocker == "generation":
+                await conn.execute(update(task_integration_checkpoints).where(
+                    task_integration_checkpoints.c.task_id == "e1").values(generation=2))
+            else:
+                await conn.execute(update(integration_source_ci).where(
+                    integration_source_ci.c.task_id == "e1").values(policy_generation=1))
+    assert await members() == []
     # Revocation invalidates authorization and CI tied to the older policy generation.
     async with db.immediate() as conn:
         assert await db.cas_project_integration_control_on(

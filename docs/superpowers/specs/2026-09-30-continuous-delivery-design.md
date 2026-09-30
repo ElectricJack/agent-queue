@@ -130,3 +130,9 @@ Legacy PR #660 has a real completed repair child but no collection episode or
 parent verification. Deployment uses a fresh explicitly authorized repair root
 carrying source and repair-child ancestry, followed by proven supersession of
 covered legacy work; no parent receipt is fabricated.
+
+At sealing, every source in a CI repair chain must still be an exact eligible
+member under the current policy. A later product hold, rejected review or changed
+source generation withholds all downstream repairs, even if their own green CI
+and authorization evidence already exist. The train cannot route around that
+gate by seating the final repair on its own.
