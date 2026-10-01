@@ -128,6 +128,17 @@ one, could still hand back is not retired. The task stays unclosed and an attach
 owner keeps the stopped session's binding for owner recovery (design: hierarchical integration
 trains, pull-model writer handoff).
 
+The other wait with no end is a close that already committed. `aq task close` makes the task
+terminal before it hands the branch back, saves the completion record and releases the claim. A
+daemon restart in between leaves the worker bound to a finished task, and its attached branch owner
+keeps the displaced-claim release from detaching it. When the agent's own ack is recorded and
+`get_settled_pool_claim` proves the claim settled, the reconciler stops the worker through the same
+teardown. The proof has three parts: the task is `COMPLETED` or `FAILED` with no holder, under
+this session's own claim epoch; a completion record or a `code`/`noop` delivery receipt was written
+after this session's attempt began; and no running integration operation owns the task in any seat.
+The task's status and completion stay as they are. The owner keeps the stopped session's binding,
+and owner recovery releases it after preserving unpushed work.
+
 **Process exit with the task still IN_PROGRESS is a failure signal**, routed through the
 exit classifier:
 

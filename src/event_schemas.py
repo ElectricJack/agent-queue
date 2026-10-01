@@ -1113,6 +1113,17 @@ _SESSION_SCHEMAS: dict[str, EventSchema] = {
         "required": ["session_id"],
         "optional": ["task_id", "project_id"],
     },
+    # A drain-acked pool worker stopped while still bound to a task no close
+    # can change: a retired integration delegate, or a task whose close
+    # already committed and settled (session reconciler).
+    "session.retired_delegate_stopped": {
+        "required": ["session_id", "name", "task_id"],
+        "optional": ["project_id", "retirement"],
+    },
+    "session.settled_claim_stopped": {
+        "required": ["session_id", "name", "task_id"],
+        "optional": ["project_id", "settlement"],
+    },
     "session.claim_timeout": {
         "required": ["session_id"],
         "optional": ["task_id"],

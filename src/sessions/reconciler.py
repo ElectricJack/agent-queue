@@ -399,13 +399,14 @@ class SessionReconciler:
                     continue
                 if row.task_id is not None:
                     if not await self.db.release_displaced_pool_claim(row.id, now=now):
-                        # Still the holder: wait for the close -- unless the
-                        # held delegate is retired and no close can come.
+                        # Still bound to its task: wait for the close -- unless
+                        # no close can come, because the held delegate is
+                        # retired or the held task already closed and settled.
                         try:
-                            await self._stop_retired_delegate_writer(row)
+                            await self._stop_drain_acked_holder(row)
                         except Exception:
                             logger.exception(
-                                "Pool session %s: retired delegate stop failed", row.id
+                                "Pool session %s: drain-acked holder stop failed", row.id
                             )
                         continue
                     row = await self.db.get_session(row.id)
@@ -449,7 +450,27 @@ class SessionReconciler:
                 project_id=row.project_id,
             )
 
-    async def _stop_retired_delegate_writer(self, row: SessionRecord) -> bool:
+    async def _stop_drain_acked_holder(self, row: SessionRecord) -> bool:
+        """Stop a drain-acked pool worker whose held task no close can change.
+
+        Each row takes exactly one proof -- a retired delegate's, else a
+        settled claim's -- so an unconfirmed stop is retried next tick under
+        the same one rather than repeated under the other.  The indexed
+        database proofs come first: a worker drained over ordinary work
+        reaches this branch every tick, and the provider read is a subprocess
+        call.  Returns whether a stop was confirmed.
+        """
+        if self.orchestrator is None or row.task_id is None or row.desired_state != "stopped":
+            return False
+        retirement = await self.db.get_retired_integration_writer(row.task_id)
+        if retirement is not None:
+            return await self._stop_retired_delegate_writer(row, retirement)
+        settlement = await self.db.get_settled_pool_claim(row.id)
+        if settlement is not None and settlement["task_id"] == row.task_id:
+            return await self._stop_settled_claim_holder(row, settlement)
+        return False
+
+    async def _stop_retired_delegate_writer(self, row: SessionRecord, retirement: dict) -> bool:
         """Stop a drain-acked pool worker whose held delegate can never close.
 
         The pool branch tears a worker down only once its held task is
@@ -474,23 +495,7 @@ class SessionReconciler:
         here and no pass is manufactured.  Returns whether the stop was
         confirmed; an unconfirmed one releases nothing and retries next tick.
         """
-        if self.orchestrator is None or row.task_id is None or row.desired_state != "stopped":
-            return False
-        # The indexed database proof first: a worker drained over ordinary
-        # work reaches this branch every tick, and the provider read is a
-        # subprocess call.
-        retirement = await self.db.get_retired_integration_writer(row.task_id)
-        if retirement is None:
-            return False
-        provider = self._provider_for(row)
-        if provider is None:
-            return False
-        try:
-            ack = await provider.get_meta(self._handle(row), DRAIN_ACK_KEY)
-        except Exception:
-            logger.debug("get_meta failed for %s", row.id, exc_info=True)
-            return False
-        if ack != "1":
+        if not await self._agent_acked_drain(row):
             return False
         logger.warning(
             "Pool session %s drain-acked holding retired integration delegate %s (%s) "
@@ -499,13 +504,7 @@ class SessionReconciler:
             row.task_id,
             retirement["reason"],
         )
-        await self.orchestrator._terminate_pool_session(row, reason="retired_delegate")
-        current = await self.db.get_session(row.id)
-        if current is None or current.state != "stopped":
-            logger.warning(
-                "Pool session %s: stop of retired delegate writer unconfirmed; retrying",
-                row.id,
-            )
+        if not await self._confirmed_pool_stop(row, reason="retired_delegate"):
             return False
         try:
             await self.db.add_task_comment(
@@ -533,6 +532,96 @@ class SessionReconciler:
             project_id=row.project_id,
             retirement=retirement,
         )
+        return True
+
+    async def _stop_settled_claim_holder(self, row: SessionRecord, settlement: dict) -> bool:
+        """Stop a drain-acked pool worker still bound to a task that already closed.
+
+        ``aq task close`` commits the terminal transition before it hands the
+        branch back and releases the claim.  A daemon restart in between left
+        sound-orbit COMPLETED and delivered while its worker's attached branch
+        owner kept ``release_displaced_pool_claim`` from detaching it: the
+        worker acknowledged its drain and sat idle at its final summary, owner
+        recovery answered ``writer_live``, and a supervisor had to kill it
+        (wise-willow).  Both of these must hold before anything is stopped:
+
+        * the agent itself acknowledged its drain (the provider meta key); and
+        * ``get_settled_pool_claim`` proves from durable state that this
+          session's own claim ended in a terminal task whose close or delivery
+          is recorded, and that no running integration operation owns the task.
+
+        The teardown is the one ``_stop_retired_delegate_writer`` uses: a
+        confirmed stop first; an attached owner keeps the claim, checkout and
+        binding, so owner recovery can preserve unpushed work before it
+        releases the branch.  The task's terminal state and completion are
+        never touched.  Returns whether the stop was confirmed.
+        """
+        if not await self._agent_acked_drain(row):
+            return False
+        logger.warning(
+            "Pool session %s drain-acked still bound to settled task %s (%s) — stopping it",
+            row.id,
+            row.task_id,
+            settlement["reason"],
+        )
+        if not await self._confirmed_pool_stop(row, reason="settled_claim"):
+            return False
+        try:
+            await self.db.add_task_comment(
+                row.task_id,
+                (
+                    f"Session {row.id} ({row.name}) ran `aq session drain-ack` while "
+                    f"still bound to this task, and {settlement['reason']}: its close "
+                    "committed but the claim was never released, so no further close can "
+                    "come. The session reconciler stopped the session; the task's terminal "
+                    "state and completion were not changed. Its claim, checkout and branch "
+                    "binding stay for owner recovery (`aq integration release-owner`), "
+                    "which snapshots unpushed work to aq/preserved/<owner-row> before it "
+                    "releases the branch."
+                ),
+                author_kind="supervisor",
+                author_id="session-reconciler",
+            )
+        except Exception:
+            logger.debug("could not record settled claim stop for %s", row.task_id,
+                         exc_info=True)
+        await self._emit(
+            "session.settled_claim_stopped",
+            session_id=row.id,
+            name=row.name,
+            task_id=row.task_id,
+            project_id=row.project_id,
+            settlement=settlement,
+        )
+        return True
+
+    async def _agent_acked_drain(self, row: SessionRecord) -> bool:
+        """Whether the agent itself ran ``aq session drain-ack`` (the provider meta key).
+
+        An operator drain or a pool scale-down writes ``desired_state`` too,
+        but only the agent's own ack says its work is saved.
+        """
+        provider = self._provider_for(row)
+        if provider is None:
+            return False
+        try:
+            return await provider.get_meta(self._handle(row), DRAIN_ACK_KEY) == "1"
+        except Exception:
+            logger.debug("get_meta failed for %s", row.id, exc_info=True)
+            return False
+
+    async def _confirmed_pool_stop(self, row: SessionRecord, *, reason: str) -> bool:
+        """``_terminate_pool_session``, then whether the stop is confirmed.
+
+        An unconfirmed stop releases nothing and is retried next tick.
+        """
+        await self.orchestrator._terminate_pool_session(row, reason=reason)
+        current = await self.db.get_session(row.id)
+        if current is None or current.state != "stopped":
+            logger.warning(
+                "Pool session %s: %s stop unconfirmed; retrying", row.id, reason
+            )
+            return False
         return True
 
     async def _premature_drain(self, provider, row: SessionRecord, task, now: float) -> None:
