@@ -116,6 +116,18 @@ Those are reported as `unreadable` and `--fix` never presses Enter on them:
 attach, look, and submit or clear the line by hand. That is the state every idle
 Codex 0.157 pane sat in on 2026-09-27, when the check still reported OK.
 
+One unreadable shape is AQ's own and is marked `clearable`. A Claude composer
+shows AQ text either as `[Pasted text #N +M lines]` (over 800 characters) or as
+only its last rows (taller than the composer's window). For a `clearable` record,
+`--fix` clears the composer with the harness's `composer_clear_keys` and never
+presses Enter. The next nudge to that session does the same on its own. The
+message behind the cleared text stays queued and is redelivered, so a task
+comment can no longer strand a worker (2026-10-01, `clear-lantern-82`). Clearing
+needs `composer_clear_keys` in the session's harness. A vault copy of
+`harnesses/claude.md` that predates the key leaves sessions with an empty
+`AQ_CLEAR_KEYS`. Add `"composer_clear_keys": ["C-u"]` to that copy; sessions
+started after the change pick it up.
+
 Attaching a dashboard terminal and resizing the pane is the reliable way to
 *cause* this, because the resize repaints the composer under the Enter.
 

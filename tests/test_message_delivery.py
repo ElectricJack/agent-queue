@@ -218,24 +218,40 @@ class TestDeliveryPolicy:
         assert bus.events[0].payload["method"] == "nudge"
         assert bus.events[0].payload["project_id"] == "p1"
 
-    async def test_task_comment_nudge_includes_its_inline_body(self, db):
+    @pytest.mark.parametrize(
+        "comment", ["Use the frozen API.", "Handled the expiry. " * 40], ids=["short", "long"]
+    )
+    async def test_task_comment_nudge_is_a_one_line_pointer(self, db, comment):
+        """2026-10-01 (clear-lantern-82): the rendered comment -- a six-line
+        header plus its body -- was typed in whole.  Claude collapsed it to
+        ``[Pasted text #1 +6 lines]`` (over 800 characters) or showed only its
+        last rows (taller than the composer), so it was never submitted and
+        every later nudge to that worker deferred behind it."""
+        from src.commands.task_comment_commands import TaskCommentCommandsMixin
+
         sessions = FakeSessionManager(activity_map={("task", "task-1", "p1"): "idle"})
         engine = make_engine(db, sessions)
-        message = await _send(
-            db,
-            to_kind="task",
-            to_id="task-1",
-            body="[Task comment]\\ntask_id: task-1\\n\\nUse the frozen API.",
-            body_kind="task_comment",
+        body = TaskCommentCommandsMixin._render_comment_notification(
+            SimpleNamespace(id="task-1"),
+            {
+                "id": "comment-1",
+                "author_kind": "supervisor",
+                "author_id": "0b4a47c1-377f-4d41-bfa7-0cd0d7c10674",
+                "created_at": 1790840212.35,
+                "body": comment,
+            },
         )
+        message = await _send(db, to_kind="task", to_id="task-1", body=body, body_kind="task_comment")
 
         result = await engine.run_delivery_pass()
 
         assert result["delivered"] == 1
         assert sessions.nudges == [
-            ("task", "task-1", "p1", "[Task comment]\\ntask_id: task-1\\n\\nUse the frozen API.")
+            ("task", "task-1", "p1", f"Handle `aq message status {message.id} --json`.")
         ]
-        assert (await db.get_message(message.id)).via == "nudge"
+        stored = await db.get_message(message.id)
+        assert stored.body == body  # the durable body is untouched
+        assert stored.via == "nudge"
 
     async def test_busy_recipient_skipped(self, db):
         sessions = FakeSessionManager(activity_map={("session", "supervisor-p1", "p1"): "busy"})
