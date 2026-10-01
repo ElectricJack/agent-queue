@@ -9,7 +9,10 @@ from typing import Any, Literal
 
 from sqlalchemy import delete, insert, select, update
 
-from src.database.queries.integration_schedule_queries import INTEGRATION_LEASE_SECONDS
+from src.database.queries.integration_schedule_queries import (
+    INTEGRATION_LEASE_RENEW_WITHIN_SECONDS,
+    INTEGRATION_LEASE_SECONDS,
+)
 from src.database.tables import (
     integration_batch_members,
     integration_batches,
@@ -269,7 +272,8 @@ class IntegrationScheduler:
             .mappings()
             .one_or_none()
         )
-        if lease is None or float(lease["expires_at"]) > now + INTEGRATION_LEASE_SECONDS / 2:
+        renew_by = now + INTEGRATION_LEASE_RENEW_WITHIN_SECONDS
+        if lease is None or float(lease["expires_at"]) > renew_by:
             return
         batch = (
             (
