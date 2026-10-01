@@ -122,6 +122,7 @@ from .command_center_project_view import CommandCenterProjectView
 from .command_center_project_view_document import CommandCenterProjectViewDocument
 from .command_center_project_view_document_scope import CommandCenterProjectViewDocumentScope
 from .command_center_project_view_manual_positions import CommandCenterProjectViewManualPositions
+from .commit_author_note import CommitAuthorNote
 from .commit_changes_request import CommitChangesRequest
 from .commit_changes_response import CommitChangesResponse
 from .commit_changes_response_422 import CommitChangesResponse422
@@ -278,6 +279,8 @@ from .edit_workspace_response import EditWorkspaceResponse
 from .edit_workspace_response_422 import EditWorkspaceResponse422
 from .effect_clause_dto import EffectClauseDTO
 from .effect_clause_dto_kind import EffectClauseDTOKind
+from .effective_git_identity import EffectiveGitIdentity
+from .effective_git_identity_source import EffectiveGitIdentitySource
 from .ensure_task_request import EnsureTaskRequest
 from .ensure_task_response import EnsureTaskResponse
 from .ensure_task_response_422 import EnsureTaskResponse422
@@ -405,6 +408,9 @@ from .get_costs_response_422 import GetCostsResponse422
 from .get_downstream_tasks_request import GetDownstreamTasksRequest
 from .get_downstream_tasks_response import GetDownstreamTasksResponse
 from .get_downstream_tasks_response_422 import GetDownstreamTasksResponse422
+from .get_git_identity_request import GetGitIdentityRequest
+from .get_git_identity_response import GetGitIdentityResponse
+from .get_git_identity_response_422 import GetGitIdentityResponse422
 from .get_git_status_request import GetGitStatusRequest
 from .get_git_status_response import GetGitStatusResponse
 from .get_git_status_response_422 import GetGitStatusResponse422
@@ -494,6 +500,8 @@ from .git_hub_issue_close_rejected_response import GitHubIssueCloseRejectedRespo
 from .git_hub_issue_fix_approved_response import GitHubIssueFixApprovedResponse
 from .git_hub_issue_rejection_response import GitHubIssueRejectionResponse
 from .git_hub_issue_triage_response import GitHubIssueTriageResponse
+from .git_identity_pair import GitIdentityPair
+from .git_identity_value import GitIdentityValue
 from .git_log_request import GitLogRequest
 from .git_log_response import GitLogResponse
 from .git_log_response_422 import GitLogResponse422
@@ -1325,6 +1333,9 @@ from .session_wake_response_422 import SessionWakeResponse422
 from .set_default_branch_request import SetDefaultBranchRequest
 from .set_default_branch_response import SetDefaultBranchResponse
 from .set_default_branch_response_422 import SetDefaultBranchResponse422
+from .set_git_identity_request import SetGitIdentityRequest
+from .set_git_identity_response import SetGitIdentityResponse
+from .set_git_identity_response_422 import SetGitIdentityResponse422
 from .set_playbook_activation_response import SetPlaybookActivationResponse
 from .set_playbook_enabled_request import SetPlaybookEnabledRequest
 from .set_playbook_enabled_response import SetPlaybookEnabledResponse
@@ -1737,6 +1748,7 @@ __all__ = (
     "CommandCenterProjectViewDocument",
     "CommandCenterProjectViewDocumentScope",
     "CommandCenterProjectViewManualPositions",
+    "CommitAuthorNote",
     "CommitChangesRequest",
     "CommitChangesResponse",
     "CommitChangesResponse422",
@@ -1891,6 +1903,8 @@ __all__ = (
     "EditWorkspaceResponse422",
     "EffectClauseDTO",
     "EffectClauseDTOKind",
+    "EffectiveGitIdentity",
+    "EffectiveGitIdentitySource",
     "EnsureTaskRequest",
     "EnsureTaskResponse",
     "EnsureTaskResponse422",
@@ -2020,6 +2034,9 @@ __all__ = (
     "GetDownstreamTasksResponse422",
     "GetGithubAuthStatusRequest",
     "GetGithubAuthStatusResponse422",
+    "GetGitIdentityRequest",
+    "GetGitIdentityResponse",
+    "GetGitIdentityResponse422",
     "GetGitStatusRequest",
     "GetGitStatusResponse",
     "GetGitStatusResponse422",
@@ -2117,6 +2134,8 @@ __all__ = (
     "GithubOwnerKind",
     "GithubRepository",
     "GithubRepositoryVisibility",
+    "GitIdentityPair",
+    "GitIdentityValue",
     "GitLogRequest",
     "GitLogResponse",
     "GitLogResponse422",
@@ -2928,6 +2947,9 @@ __all__ = (
     "SetDefaultBranchRequest",
     "SetDefaultBranchResponse",
     "SetDefaultBranchResponse422",
+    "SetGitIdentityRequest",
+    "SetGitIdentityResponse",
+    "SetGitIdentityResponse422",
     "SetPlaybookActivationResponse",
     "SetPlaybookEnabledRequest",
     "SetPlaybookEnabledResponse",

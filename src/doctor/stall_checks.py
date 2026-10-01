@@ -268,6 +268,29 @@ def _log_findings(ctx: DoctorContext, active: set[str], tasks: list) -> list[dic
     return findings
 
 
+async def _aq_committer_filters(ctx: DoctorContext, project_id: str) -> list[str]:
+    """``--committer`` patterns matching commits AQ made for *project_id*.
+
+    AQ commits as the project's resolved Git identity (git-identity spec),
+    which may be a person's own address, so delivery is read from the
+    committer rather than guessed from an author name; earlier releases'
+    fixed identities still count.
+    """
+    from src.git.identity import resolve_git_identity
+
+    project = await ctx.db.get_project(project_id)
+    email = resolve_git_identity(ctx.config, project).identity.email
+    # Fixed strings: an address such as ``123+me@users.noreply.github.com``
+    # is not a regular expression.
+    return [
+        "--fixed-strings",
+        f"--committer=<{email}>",
+        "--committer=@agent-queue.local>",
+        "--committer=<aq@localhost>",
+        "--committer=<agent-queue@localhost>",
+    ]
+
+
 async def _delivery_findings(ctx: DoctorContext, active: set[str], tasks: list, now: float) -> list[dict]:
     repos = await ctx.db.list_repos()
     pending = Counter(t.project_id for t in tasks if t.status is TaskStatus.DEFINED)
@@ -283,7 +306,8 @@ async def _delivery_findings(ctx: DoctorContext, active: set[str], tasks: list, 
         async with limit:
             code, output = await _command(
                 "git", "-C", checkout, "log", f"origin/{repo.default_branch}", "-1",
-                "--format=%ct %h", "--author=Agent Queue", "--author=^aq ", timeout=5,
+                "--format=%ct %h", *await _aq_committer_filters(ctx, repo.project_id),
+                timeout=5,
             )
         return repo, checkout, code, output
 

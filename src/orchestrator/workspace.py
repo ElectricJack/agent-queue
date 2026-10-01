@@ -10,7 +10,7 @@ import os
 import time
 from dataclasses import dataclass, field
 
-from src.git.manager import GitError, GitManager, is_valid_git_oid
+from src.git.manager import GitError, GitManager, commit_identity, is_valid_git_oid
 
 # ``*_INTEGRATION_OWNER_ROLES`` live in that leaf module so this module and
 # ``workspace_attachments`` share one definition without an import cycle; see
@@ -529,9 +529,13 @@ class WorkspaceMixin:
         # This covers both archived plans (.claude/plans/) and primary plan files
         # (.claude/plan.md, plan.md, etc.).
         if integration_origin is None:
-            await self._cleanup_plan_files_before_task(
-                workspace, task.id, branch_name=branch_name, default_branch=default_branch
-            )
+            # Its plan-deletion commits land on the task branch, which the
+            # worker will publish: they carry the project's identity.
+            project = await self.db.get_project(task.project_id)
+            with commit_identity(self.git.resolve_commit_identity(project)):
+                await self._cleanup_plan_files_before_task(
+                    workspace, task.id, branch_name=branch_name, default_branch=default_branch
+                )
 
         return workspace
 

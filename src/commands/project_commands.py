@@ -377,13 +377,18 @@ class ProjectCommandsMixin:
             updates["repo_default_branch"] = args["repo_default_branch"]
         if "review_delegate_to" in args:
             updates["review_delegate_to"] = args["review_delegate_to"] or None
+        if "git_identity_name" in args or "git_identity_email" in args:
+            identity_updates = _git_identity_updates(project, args)
+            if "error" in identity_updates:
+                return identity_updates
+            updates.update(identity_updates)
         if not updates:
             return {
                 "error": (
                     "No fields to update. Provide name, credit_weight, "
                     "max_concurrent_agents, budget_limit, "
-                    "assignment_playbook_id, repo_default_branch, or "
-                    "review_delegate_to."
+                    "assignment_playbook_id, repo_default_branch, "
+                    "review_delegate_to, or git_identity_name/git_identity_email."
                 )
             }
         await self.db.update_project(pid, **updates)
@@ -549,6 +554,11 @@ class ProjectCommandsMixin:
             info["budget_limit"] = project.budget_limit
         if project.assignment_playbook_id:
             info["assignment_playbook_id"] = project.assignment_playbook_id
+        from src.git.identity import resolve_git_identity
+
+        info["git_identity_name"] = project.git_identity_name
+        info["git_identity_email"] = project.git_identity_email
+        info["git_identity"] = resolve_git_identity(self.config, project).as_dict()
         return info
 
     async def _cmd_delete_project(self, args: dict) -> dict:
@@ -589,3 +599,45 @@ class ProjectCommandsMixin:
                 }
             raise
         return {"deleted": pid, "name": project.name}
+
+
+def _git_identity_updates(project, args: dict) -> dict:
+    """``edit_project``'s identity override: set as a pair, or clear both to inherit.
+
+    A field not supplied keeps its stored value, so changing only the email of
+    an existing override works; the result must still be a full pair or none.
+    """
+    from src.commands.git_identity_commands import agent_identity_refusal
+    from src.git.identity import GitIdentityError, validate_git_email, validate_git_name
+
+    refusal = agent_identity_refusal()
+    if refusal is not None:
+        return refusal
+    def text(value):
+        return value.strip() if isinstance(value, str) else ("" if value is None else value)
+
+    name = text(args.get("git_identity_name", project.git_identity_name))
+    email = text(args.get("git_identity_email", project.git_identity_email))
+    if not name and not email:
+        return {"git_identity_name": None, "git_identity_email": None}
+    if not name or not email:
+        return {
+            "success": False,
+            "error_code": "invalid_git_identity",
+            "error": (
+                "A project Git identity override needs both git_identity_name and "
+                "git_identity_email; clear both to inherit the installation default."
+            ),
+        }
+    try:
+        return {
+            "git_identity_name": validate_git_name(name),
+            "git_identity_email": validate_git_email(email),
+        }
+    except GitIdentityError as exc:
+        return {
+            "success": False,
+            "error_code": "invalid_git_identity",
+            "field": f"git_identity_{exc.field}",
+            "error": str(exc),
+        }

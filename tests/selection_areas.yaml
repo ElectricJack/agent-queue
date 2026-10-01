@@ -432,6 +432,9 @@ areas:
     match: [tests/test_ci_*.py]
 
   # ------------------------------------------------------------ git and github
+  - id: git-identity
+    description: "Git commit identity: validating and resolving the project override, installation default and fallback, the get/set and project-settings surfaces, session env injection, retiring stale pool sessions at claim, the worker publishing check, and daemon-side commit attribution."
+    match: [tests/test_git_identity.py]
   - id: git-manager
     description: "GitManager and local git: the async API, event emission, mutex serialization, sync-and-merge, rebase before merge, force-with-lease pushes, merge slots, merge-conflict detection and git command handlers."
     match:

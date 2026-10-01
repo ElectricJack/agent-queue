@@ -73,7 +73,7 @@ from src.database.tables import (
     workspaces,
 )
 from src.git.github_contracts import GitHubAccessError
-from src.git.manager import GitError, GitManager, RemoteRefState
+from src.git.manager import GitError, GitManager, RemoteRefState, commit_identity
 from src.integration.finished_owners import (
     StopConfirmer,
     _live_task_session,
@@ -120,7 +120,6 @@ DEFAULT_QUIET_SECONDS = 600.0
 #: The daemon's lock-sentinel file, never part of a snapshot or a dirty verdict.
 _LOCK_SENTINEL = ".agent-queue-lock"
 
-_IDENTITY = ("Agent Queue", "agent-queue@localhost")
 
 #: Statuses of a task whose writer was still working when it stopped.
 _IN_FLIGHT_STATUSES = (TaskStatus.ASSIGNED, TaskStatus.IN_PROGRESS)
@@ -211,7 +210,9 @@ class OwnerRecovery:
                     f"{' or '.join(self.recoverable_states)} are recoverable",
                 )
             session = await self._prove_writer_gone(row, evidence)
-            plan = await self._secure_branch(row, evidence, dry_run=dry_run)
+            # Preservation commits carry the owning project's identity.
+            with commit_identity(await self._row_identity(row)):
+                plan = await self._secure_branch(row, evidence, dry_run=dry_run)
             outcome = PRESERVED_AND_RELEASED if plan.preserved else RELEASED
             if dry_run:
                 return RecoveryOutcome(row["id"], outcome, None, evidence, True)
@@ -273,6 +274,13 @@ class OwnerRecovery:
             return [dict(row) for row in rows]
 
     # -- step 1: the row ------------------------------------------------------
+
+    async def _row_identity(self, row: dict[str, Any]):
+        """The commit identity of the project that owns *row*'s branch."""
+        async with self.db._engine.connect() as conn:
+            project_id = await _project_for(conn, row)
+        project = await self.db.get_project(project_id) if project_id else None
+        return self.git.resolve_commit_identity(project)
 
     async def _load(self, owner_row_id: str) -> dict[str, Any] | None:
         async with self.db.immediate() as conn:
@@ -588,7 +596,8 @@ class OwnerRecovery:
         for parent in parents:
             args += ["-p", parent]
         args += ["-m", f"aq: preserved by owner recovery {owner_row_id}"]
-        name, email = _IDENTITY
+        identity = self.git.resolve_commit_identity()
+        name, email = identity.name, identity.email
         result = await self.git.arun_git_result(
             args,
             cwd=cwd,

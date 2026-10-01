@@ -93,6 +93,11 @@ projects = Table(
     # Who decides this project's new document reviews: 'user' | 'supervisor'
     # (NULL = 'user').  Document-review spec §6.
     Column("review_delegate_to", Text, nullable=True),
+    # This project's Git commit identity override (NULL pair = inherit the
+    # installation default ``git_identity``).  Set together or not at all;
+    # ``src/git/identity.py`` resolves and validates (git-identity spec).
+    Column("git_identity_name", Text, nullable=True),
+    Column("git_identity_email", Text, nullable=True),
     Column("created_at", Float, nullable=False),
     CheckConstraint(
         "hierarchical_integration_mode IN ('disabled', 'observe', 'hierarchy', 'train', 'development')",
@@ -109,6 +114,10 @@ projects = Table(
     CheckConstraint(
         "review_delegate_to IS NULL OR review_delegate_to IN ('user', 'supervisor')",
         name="ck_projects_review_delegate_to",
+    ),
+    CheckConstraint(
+        "(git_identity_name IS NULL) = (git_identity_email IS NULL)",
+        name="ck_projects_git_identity_pair",
     ),
 )
 
@@ -1383,6 +1392,12 @@ sessions = Table(
     # This is what lets ``subagent_counts`` say "complete" instead of
     # "unknown" -- and say "unknown" honestly for the sessions that lack it.
     Column("hooks_provisioned", Boolean, nullable=False, server_default=false()),
+    # Digest of the Git identity injected into this launch's environment
+    # (``src/git/identity.py``).  A pool claim compares it with the identity
+    # the project resolves to now and retires a session launched under a
+    # different one.  Migration a00000000048 stamps pre-existing rows
+    # ``legacy`` (always stale); NULL means no identity was recorded.
+    Column("git_identity_digest", Text, nullable=True),
     Index("idx_sessions_agent", "agent_id", "state"),
     Index("idx_sessions_task_id", "task_id"),
     Index("idx_sessions_state", "state"),

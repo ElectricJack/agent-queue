@@ -34,7 +34,7 @@ from src.database.tables import (
     events, projects, sessions, task_completion_records,
     task_metadata, tasks,
 )
-from src.git.manager import GitError, GitManager, is_valid_git_oid
+from src.git.manager import GitError, GitManager, commit_identity, is_valid_git_oid
 from src.integration import development_validation as validation_outcomes
 from src.jobs.policy import JobError, presets, validate_args
 from src.integration.delegate_release import release_delegates_on
@@ -560,7 +560,7 @@ class DevelopmentIntegration:
         tree as they were.
         """
         before = await self.run_git(store, "rev-parse", "HEAD")
-        identity = ["-c", "user.name=Agent Queue", "-c", "user.email=aq@localhost"]
+        identity = self.git.resolve_commit_identity().config_args()
         driver = list(GENERATED_MERGE_CONFIG) if policy.regenerate else []
         result = await self.git.arun_git_result(
             [*identity, *driver, "merge", "--no-edit", commit], cwd=str(store)
@@ -1513,10 +1513,20 @@ class DevelopmentIntegration:
         ``_moved`` is internal: the target this sweep's caller saw move before
         its publication applied. The caller still holds the exclusion, and a
         second movement is left to the next tick rather than chased.
+
+        Every merge the sweep commits carries the project's resolved Git
+        identity (git-identity spec); member authors are preserved.
         """
         project = await self.db.get_project(project_id)
         if project is None or project.hierarchical_integration_mode != "development":
             raise ValueError("project is not in development mode")
+        with commit_identity(self.git.resolve_commit_identity(project)):
+            return await self._sweep(
+                project, retry=retry, recover_child_id=recover_child_id, _moved=_moved
+            )
+
+    async def _sweep(self, project, *, retry, recover_child_id, _moved):
+        project_id = project.id
         policy = DevelopmentPolicy.model_validate(project.hierarchical_integration_policy).checked()
         repo = await self.db.get_repo(project.integration_repository_id)
         await self.rebind_foreign_repositories(project_id, repo)
@@ -2664,7 +2674,7 @@ class DevelopmentIntegration:
                 if alone:
                     continue
                 pair = await self.run_git(
-                    store, "-c", "user.name=Agent Queue", "-c", "user.email=aq@localhost",
+                    store, *self.git.resolve_commit_identity().config_args(),
                     "commit-tree", tree, "-p", base, "-p", member_source,
                     "-m", "development conflict attribution",
                 )

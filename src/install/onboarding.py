@@ -52,6 +52,7 @@ CAPABILITY_DAEMON = "daemon"
 
 STEP_CONFIG = "config.defaults"
 STEP_PROJECT_ROOT = "config.project-root"
+STEP_GIT_IDENTITY = "config.git-identity"
 STEP_CHECK = "config.check"
 STEP_DISCORD = "config.discord"
 STEP_DAEMON = "daemon.start"
@@ -607,6 +608,158 @@ def project_root_step(
         depends_on=depends_on,
         # Not consent-gated: the folder is the answer the person just gave, and
         # with no answer the step changes nothing.  A dry run writes nothing.
+        verify=verify,
+        owner="onboarding",
+    )
+
+
+# ---------------------------------------------------------------------------
+# config.git-identity — the name and email AQ's commits are attributed to
+# ---------------------------------------------------------------------------
+
+
+def git_identity_step(
+    *,
+    environ: Mapping[str, str] | None = None,
+    home: Path | None = None,
+    depends_on: tuple[str, ...] = (STEP_CONFIG,),
+) -> StepSpec:
+    """Record the installation's default Git commit identity (``git_identity:``).
+
+    The step writes only an *explicit* identity: the one a person confirmed in
+    the wizard, ``--git-name``/``--git-email``, or ``settings.git_identity`` in
+    the input file.  It never probes ``gh`` or ``git config`` itself -- the
+    suggestions belong to the wizard (:mod:`src.install.git_identity`), and an
+    unattended run must not persist a guess -- so with nothing explicit it is a
+    read-only report: the identity already configured, or the fallback AQ
+    commits as until ``aq system config git-identity`` sets one.
+
+    An explicit value replaces a configured one (it is the operator choosing);
+    the wizard never offers to, because it does not ask once one is set.  The
+    step is advisory: an identity is a preference AQ can run without, so
+    nothing about it may stop or fail an install.
+    """
+    from .git_identity import (
+        NOT_CONFIGURED_NOTE,
+        SETUP_COMMAND,
+        configured_identity,
+        configured_source,
+        parse_setting,
+    )
+
+    path = config_path_for(environ, home)
+
+    def _explicit(context: StepContext) -> Any:
+        return parse_setting(context.option("git_identity"))
+
+    def _report() -> StepResult:
+        from src.git.identity import FALLBACK_IDENTITY
+
+        raw = _read_config(path)
+        current = configured_identity(raw)
+        if current is None:
+            return StepResult.succeeded(
+                STEP_GIT_IDENTITY,
+                NOT_CONFIGURED_NOTE,
+                detail={
+                    "configured": False,
+                    "fallback": FALLBACK_IDENTITY.as_dict(),
+                    "setup_command": SETUP_COMMAND,
+                },
+            )
+        source = configured_source(raw)
+        return StepResult.succeeded(
+            STEP_GIT_IDENTITY,
+            f"AQ commits as {current.formatted()}" + (f" ({source})" if source else ""),
+            detail={"configured": True, **current.as_dict(), "source": source},
+        )
+
+    def run(context: StepContext) -> StepResult:
+        from src.config_editor import write_section
+
+        try:
+            wanted = _explicit(context)
+        except ValueError as error:
+            return StepResult.needs_user(
+                STEP_GIT_IDENTITY,
+                str(error),
+                (
+                    "Correct `settings.git_identity` (name and email) in the install input file, "
+                    f"or run `{SETUP_COMMAND}` once AQ is installed. AQ runs meanwhile."
+                ),
+                detail={"configured": configured_identity(_read_config(path)) is not None},
+            )
+        if wanted is None:
+            return _report()
+        current = configured_identity(_read_config(path))
+        if current == wanted.identity:
+            return _report()
+        if context.dry_run:
+            return StepResult.succeeded(
+                STEP_GIT_IDENTITY,
+                f"would commit as {wanted.formatted()}",
+                detail={
+                    "configured": current is not None,
+                    "dry_run": True,
+                    "would_set": wanted.as_setting(),
+                },
+            )
+        if not path.exists():
+            return StepResult.failed(
+                STEP_GIT_IDENTITY,
+                f"{path} does not exist, so the Git identity cannot be recorded",
+                f"Rerun `aq install` so `{STEP_CONFIG}` writes the configuration first.",
+            )
+        body = wanted.as_setting()
+        if not _introduces_no_error(path, "git_identity", body):
+            return StepResult.needs_user(
+                STEP_GIT_IDENTITY,
+                f"{wanted.formatted()} would not validate in {path}",
+                f"Run `{SETUP_COMMAND}` to choose another identity.",
+                detail={"configured": current is not None},
+            )
+        # A backup only when something is written, like every onboarding step.
+        backup_path_for(path).write_bytes(path.read_bytes())
+        write_section(str(path), "git_identity", body)
+        return StepResult.succeeded(
+            STEP_GIT_IDENTITY,
+            f"AQ commits as {wanted.formatted()} ({wanted.source})",
+            detail={
+                "configured": True,
+                **body,
+                "previous": current.as_dict() if current else None,
+                "config_path": str(path),
+            },
+        )
+
+    def verify(context: StepContext) -> bool | StepResult:
+        # With nothing explicit to write the step is a read-only report, so
+        # revalidating it *is* running it: a rerun's detail says what is
+        # configured now.  An explicit value the file does not hold yet --
+        # `--git-name/--git-email` on a later run -- is work, so it runs.
+        try:
+            wanted = _explicit(context)
+        except ValueError:
+            return False
+        if wanted is None or configured_identity(_read_config(path)) == wanted.identity:
+            return _report()
+        return False
+
+    return StepSpec(
+        id=STEP_GIT_IDENTITY,
+        title="Record the Git commit identity",
+        description=(
+            "Writes the name and email AQ's commits are attributed to (git_identity: in "
+            "config.yaml) when you confirmed one in the wizard or passed --git-name/--git-email "
+            "or settings.git_identity. Otherwise it reports the configured identity, or the "
+            "fallback AQ commits as until `aq system config git-identity` sets one."
+        ),
+        run=run,
+        depends_on=depends_on,
+        # Not consent-gated, like the projects folder: the identity is an answer
+        # the person just gave (or passed explicitly), and with none the step
+        # writes nothing.  A dry run writes nothing either.
+        advisory=True,
         verify=verify,
         owner="onboarding",
     )
@@ -1282,6 +1435,9 @@ def onboarding_steps(
     return (
         config_step(environ=environ, home=home, which=which, depends_on=depends_on),
         project_root_step(environ=environ, home=home),
+        # Advisory, so nothing may depend on it; registered here it still runs
+        # beside the projects folder, before config.check loads the result.
+        git_identity_step(environ=environ, home=home),
         # Checked after the projects folder is recorded, so the check loads the
         # configuration the daemon will actually start with.
         check_step(environ=environ, home=home, depends_on=(STEP_PROJECT_ROOT,)),
@@ -1346,6 +1502,7 @@ __all__ = [
     "STEP_DAEMON",
     "STEP_DASHBOARD",
     "STEP_DISCORD",
+    "STEP_GIT_IDENTITY",
     "STEP_PROJECT_ROOT",
     "DashboardInfo",
     "HttpProbe",
@@ -1364,6 +1521,7 @@ __all__ = [
     "data_locations",
     "describe_project_root",
     "discord_step",
+    "git_identity_step",
     "http_status",
     "inspect_dashboard",
     "onboarding_steps",

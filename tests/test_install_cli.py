@@ -42,6 +42,24 @@ def supported_host(monkeypatch):
     monkeypatch.setattr(install_cli, "describe_host", lambda: WSL2)
 
 
+@pytest.fixture(autouse=True)
+def quiet_git_identity(monkeypatch):
+    """Answer the wizard's commit-identity question with "later", without probing gh.
+
+    Every wizard test below scripts its answers line by line; the identity
+    question is exercised on its own (``-- the commit identity --``) with a
+    scripted discovery, so no test here ever asks a real ``gh``.
+    """
+    from types import SimpleNamespace
+
+    from src.cli import install as install_cli
+
+    asked: list[bool] = []
+    real = install_cli.ask_git_identity
+    monkeypatch.setattr(install_cli, "ask_git_identity", lambda: asked.append(True))
+    return SimpleNamespace(asked=asked, real=real)
+
+
 @pytest.fixture
 def install_home(tmp_path, monkeypatch):
     """Point the installer at a disposable data directory."""
@@ -709,6 +727,318 @@ def test_an_existing_project_root_is_not_asked_for_again(
     result = _invoke("--interactive", "--dry-run", input="\n\n")
 
     assert "Where do your code projects live?" not in result.output
+
+
+# -- the commit identity ------------------------------------------------------
+
+MONA = ("Mona Lisa Octocat", "mona@example.com")
+
+
+def _discovery(*suggestions, note=""):
+    from src.install.git_identity import Discovery
+
+    return Discovery(
+        suggestions=tuple(suggestions),
+        gh_status="authenticated" if suggestions else "missing",
+        gh_note=note,
+    )
+
+
+def _public_suggestion():
+    from src.install.git_identity import LABEL_PUBLIC, Suggestion
+
+    return Suggestion(*MONA, f"GitHub @octocat: {LABEL_PUBLIC}", "gh:octocat")
+
+
+@pytest.fixture
+def ask_identity(monkeypatch, quiet_git_identity):
+    """Put the real identity question back, over a scripted discovery.
+
+    Call the fixture with the :class:`~src.install.git_identity.Discovery` the
+    probes should report; ``None`` makes any probe fail the test.
+    """
+    from src.cli import install as install_cli
+
+    monkeypatch.setattr(install_cli, "ask_git_identity", quiet_git_identity.real)
+
+    def script(discovery):
+        def probe():
+            if discovery is None:
+                raise AssertionError("gh must not be probed in this test")
+            return discovery
+
+        monkeypatch.setattr(install_cli, "git_identity_discovery", probe)
+
+    return script
+
+
+@pytest.fixture
+def onboarding_registry(install_home, monkeypatch):
+    """Host, data directory, a no-op Codex step and the real onboarding steps."""
+    from src.cli import install as install_cli
+    from src.install import logins as logins_module
+    from src.install.onboarding import onboarding_steps
+    from src.install.prerequisites import data_directory_step, host_step
+    from src.install.results import StepResult
+    from src.install.steps import StepRegistry, StepSpec
+
+    def build(_support):
+        codex = StepSpec(
+            id="provider.codex-cli",
+            title="Install or reuse Codex CLI",
+            run=lambda context: StepResult.succeeded("provider.codex-cli", "reused"),
+            capability="provider.codex",
+        )
+        registry = StepRegistry((host_step(), data_directory_step(path=install_home), codex))
+        registry.extend(
+            onboarding_steps(
+                environ={"HOME": str(install_home)},
+                home=install_home,
+                runner=lambda argv, **kwargs: (_ for _ in ()).throw(AssertionError(argv)),
+                which=lambda name: f"/usr/bin/{name}",
+                probe=lambda url: None,
+                dashboard_root=install_home,
+            )
+        )
+        return registry
+
+    monkeypatch.setattr(install_cli, "build_registry", build)
+    # The post-run catalog refresh probes provider CLIs; none exist here.
+    monkeypatch.setattr(logins_module, "probe_all", lambda **kwargs: ())
+    return install_home
+
+
+def _stored_identity(home):
+    import yaml
+
+    raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
+    return raw.get("git_identity")
+
+
+def test_the_wizard_suggests_the_gh_account_and_enter_saves_it(
+    onboarding_registry, scripted_questions, ask_identity, tmp_path
+):
+    ask_identity(_discovery(_public_suggestion()))
+    folder = tmp_path / "code"
+
+    result = _invoke("--interactive", input=f"\n\n{folder}\n\ny\n")
+
+    assert "GitHub @octocat: public profile email" in result.output
+    assert "Commit as: Mona Lisa Octocat <mona@example.com>" in result.output
+    assert "OK Record the Git commit identity" in result.output
+    assert _stored_identity(onboarding_registry) == {
+        "name": MONA[0],
+        "email": MONA[1],
+        "source": "gh:octocat",
+    }
+
+
+def test_the_wizard_saves_an_edited_identity_and_re_asks_an_invalid_email(
+    onboarding_registry, scripted_questions, ask_identity, tmp_path
+):
+    ask_identity(_discovery(_public_suggestion()))
+    folder = tmp_path / "code"
+
+    result = _invoke(
+        "--interactive",
+        input=f"\n\n{folder}\ne\nAda Lovelace\nnot-an-email\nada@example.com\ny\n",
+    )
+
+    assert "name@domain" in result.output
+    assert result.output.count("Commit email") == 2
+    assert _stored_identity(onboarding_registry) == {
+        "name": "Ada Lovelace",
+        "email": "ada@example.com",
+        "source": "manual",
+    }
+
+
+def test_without_gh_the_wizard_offers_manual_entry_and_enter_skips_it(
+    install_home, wizard_registry, scripted_questions, ask_identity
+):
+    from src.install.git_identity import NOT_CONFIGURED_NOTE
+
+    ask_identity(_discovery(note="gh is not installed"))
+
+    result = _invoke("--interactive", "--dry-run", input="\n\n\n\n")
+
+    assert "gh is not installed" in result.output
+    assert "Commit name (Enter to set it up later)" in result.output
+    assert f"• {NOT_CONFIGURED_NOTE}" in result.output
+    # The closing note is printed through Rich, which wraps it to the console.
+    assert f"note: {NOT_CONFIGURED_NOTE}" in " ".join(result.output.split())
+    assert _plan_action(result.output, "provider.codex-cli") != "skip_not_selected"
+
+
+def test_a_configured_identity_is_never_asked_for_again(
+    install_home, wizard_registry, scripted_questions, ask_identity
+):
+    ask_identity(None)
+    config = install_home / "config.yaml"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + "git_identity:\n  name: Grace Hopper\n  email: grace@example.com\n",
+        encoding="utf-8",
+    )
+    before = config.read_bytes()
+
+    result = _invoke("--interactive", "--dry-run", input="\n\n\n")
+
+    assert "commits in your projects use this name" not in result.output
+    assert "looking up your GitHub account" not in result.output
+    assert not isinstance(result.exception, AssertionError), result.exception
+    assert config.read_bytes() == before
+
+
+@pytest.mark.parametrize("mode", ["--repair", "--upgrade"])
+def test_repair_and_upgrade_never_ask_for_an_identity(
+    install_home, wizard_registry, scripted_questions, ask_identity, mode
+):
+    ask_identity(None)
+
+    result = _invoke("--interactive", mode, "--dry-run", input="")
+
+    assert "commits in your projects use this name" not in result.output
+    assert "looking up your GitHub account" not in result.output
+    assert not isinstance(result.exception, AssertionError), result.exception
+
+
+def test_explicit_flags_answer_the_wizards_identity_question(
+    install_home, wizard_registry, scripted_questions, quiet_git_identity
+):
+    _invoke(
+        "--interactive",
+        "--dry-run",
+        "--git-name",
+        "Ada Lovelace",
+        "--git-email",
+        "ada@example.com",
+        input="\n\n\n",
+    )
+
+    assert quiet_git_identity.asked == []
+
+
+def test_unattended_flags_record_the_identity(onboarding_registry, quiet_git_identity):
+    result = _invoke(
+        "--non-interactive",
+        "--yes",
+        "--json",
+        "--git-name",
+        "Ada Lovelace",
+        "--git-email",
+        "ada@example.com",
+    )
+
+    payload = _payload(result)
+    row = next(row for row in payload["steps"] if row["step_id"] == "config.git-identity")
+    assert row["state"] == "succeeded"
+    assert _stored_identity(onboarding_registry) == {
+        "name": "Ada Lovelace",
+        "email": "ada@example.com",
+        "source": "manual",
+    }
+    assert quiet_git_identity.asked == []
+
+
+def test_an_unattended_run_with_nothing_explicit_never_guesses_or_prompts(
+    onboarding_registry, ask_identity
+):
+    from src.install.git_identity import NOT_CONFIGURED_NOTE
+
+    ask_identity(None)
+
+    result = _invoke("--non-interactive", "--yes", "--json", input="")
+
+    payload = _payload(result)
+    assert NOT_CONFIGURED_NOTE in payload["messages"]
+    assert _stored_identity(onboarding_registry) is None
+
+
+def test_the_input_file_supplies_the_identity(onboarding_registry, tmp_path):
+    path = tmp_path / "install.yaml"
+    path.write_text(
+        "settings:\n  git_identity:\n    name: Ada Lovelace\n    email: ada@example.com\n",
+        encoding="utf-8",
+    )
+
+    _invoke("--config", str(path), "--yes", "--json")
+
+    assert _stored_identity(onboarding_registry)["email"] == "ada@example.com"
+
+
+def test_explicit_flags_replace_a_configured_identity(onboarding_registry):
+    _invoke("--non-interactive", "--yes", "--json", "--git-name", "Grace", "--git-email", "g@x.io")
+
+    _invoke("--non-interactive", "--yes", "--json", "--git-name", "Ada", "--git-email", "a@x.io")
+
+    assert _stored_identity(onboarding_registry) == {
+        "name": "Ada",
+        "email": "a@x.io",
+        "source": "manual",
+    }
+
+
+@pytest.mark.parametrize(
+    ("args", "fragment"),
+    [
+        (("--git-name", "Ada", "--git-email", "not an email"), "invalid Git identity"),
+        (("--git-name", "Ada"), "must be given together"),
+        (("--git-email", "ada@example.com"), "must be given together"),
+        (("--git-name", "", "--git-email", ""), "must not be empty"),
+    ],
+)
+def test_an_unusable_identity_flag_is_invalid_input(install_home, args, fragment):
+    result = _invoke("--non-interactive", "--yes", *args)
+
+    assert result.exit_code == EXIT_CODES[InstallOutcome.INVALID_INPUT]
+    assert fragment in result.output
+    assert not (install_home / "install-state.json").exists()
+
+
+def test_a_misspelled_identity_setting_is_invalid_input(install_home, tmp_path):
+    path = tmp_path / "install.yaml"
+    path.write_text(
+        "settings:\n  git_identity:\n    name: Ada\n    emial: ada@example.com\n",
+        encoding="utf-8",
+    )
+
+    result = _invoke("--config", str(path), "--yes")
+
+    assert result.exit_code == EXIT_CODES[InstallOutcome.INVALID_INPUT]
+    assert "emial" in result.output
+
+
+def test_identity_flags_win_over_the_input_file(tmp_path):
+    from src.install import build_registry
+    from tests.installer_machine import WSL2
+
+    path = tmp_path / "install.yaml"
+    path.write_text(
+        "settings:\n  git_identity:\n    name: Grace\n    email: g@x.io\n    source: gh:g\n",
+        encoding="utf-8",
+    )
+    options = build_options(
+        build_registry(WSL2),
+        interactive=False,
+        dry_run=True,
+        resume=True,
+        fresh=False,
+        restart_from=None,
+        capabilities=(),
+        approve=(),
+        assume_yes=False,
+        config_path=path,
+        state_path=None,
+        git_name="Ada",
+        git_email="a@x.io",
+    )
+
+    assert options.settings["git_identity"] == {
+        "name": "Ada",
+        "email": "a@x.io",
+        "source": "manual",
+    }
 
 
 # -- repair and upgrade -----------------------------------------------------

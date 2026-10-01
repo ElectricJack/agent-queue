@@ -250,6 +250,8 @@ _TOOL_CATEGORIES: dict[str, str] = {
     "get_config": "system",
     "get_config_schema": "system",
     "update_config": "system",
+    "get_git_identity": "system",
+    "set_git_identity": "system",
     "preview_portable_config": "system",
     "export_portable_config": "system",
     "import_portable_config": "system",
@@ -841,7 +843,9 @@ _ALL_TOOL_DEFINITIONS = [
         "description": (
             "Edit a project's properties: name, credit_weight, max_concurrent_agents, "
             "budget_limit, assignment_playbook_id (LOCAL-only router binding), "
-            "repo_default_branch, or LOCAL-only hierarchical integration configuration. "
+            "repo_default_branch, the operator-only Git commit identity override "
+            "(git_identity_name/git_identity_email; empty on both inherits the installation "
+            "default), or LOCAL-only hierarchical integration configuration. "
             "Use this to rename projects, adjust scheduling weight, set token budgets, "
             "or change the default git branch. A project has no default profile: its "
             "router routes every task."
@@ -880,6 +884,21 @@ _ALL_TOOL_DEFINITIONS = [
                     "enum": ["", "user", "supervisor"],
                     "description": "LOCAL-only default document-review decider; empty clears it.",
                 },
+                "git_identity_name": {
+                    "type": "string",
+                    "description": (
+                        "Operator-only Git commit name override for this project. Set "
+                        "with git_identity_email; empty on both resets the project to "
+                        "inherit the installation default (see get_git_identity)."
+                    ),
+                },
+                "git_identity_email": {
+                    "type": "string",
+                    "description": (
+                        "Operator-only Git commit email override, paired with "
+                        "git_identity_name; empty on both resets to inheritance."
+                    ),
+                },
                 "integration_repository_id": {
                     "type": ["string", "null"],
                     "description": "LOCAL-only designated integration repository ID.",
@@ -899,6 +918,48 @@ _ALL_TOOL_DEFINITIONS = [
                 },
             },
             "required": ["project_id"],
+        },
+    },
+    {
+        "name": "get_git_identity",
+        "description": (
+            "Show the Git commit identity AQ writes with: the installation default "
+            "(config git_identity), whether it is configured, the documented fallback used "
+            "while it is unset, and, given project_id, that project's effective identity "
+            "and its source (project override, installation default or fallback)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "project_id": {
+                    "type": "string",
+                    "description": "Also resolve this project's effective identity (optional)",
+                },
+            },
+        },
+    },
+    {
+        "name": "set_git_identity",
+        "description": (
+            "Operator-only: set or clear the installation's default Git commit identity "
+            "(config git_identity). Every project without its own override commits as it. "
+            "Applies to sessions launched afterwards; running pool sessions launched under "
+            "another identity retire at their next claim. Never rewrites existing history."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Commit author/committer name"},
+                "email": {"type": "string", "description": "Commit author/committer email"},
+                "source": {
+                    "type": "string",
+                    "description": "Where the value came from, e.g. gh:<login> (informational)",
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "Clear the default (AQ commits as the fallback until set)",
+                },
+            },
         },
     },
     {

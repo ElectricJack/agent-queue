@@ -392,6 +392,12 @@
         "tests/test_generated_artifacts.py"
       ]
     },
+    "git-identity": {
+      "description": "Git commit identity: validating and resolving the project override, installation default and fallback, the get/set and project-settings surfaces, session env injection, retiring stale pool sessions at claim, the worker publishing check, and daemon-side commit attribution.",
+      "modules": [
+        "tests/test_git_identity.py"
+      ]
+    },
     "git-manager": {
       "description": "GitManager and local git: the async API, event emission, mutex serialization, sync-and-merge, rebase before merge, force-with-lease pushes, merge slots, merge-conflict detection and git command handlers.",
       "modules": [
@@ -471,6 +477,7 @@
         "tests/test_install_cli.py",
         "tests/test_install_dashboard.py",
         "tests/test_install_engine.py",
+        "tests/test_install_git_identity.py",
         "tests/test_install_graft.py",
         "tests/test_install_integration.py",
         "tests/test_install_lifecycle.py",
@@ -1303,7 +1310,7 @@
       ]
     }
   },
-  "digest": "sha256:1493c985aaba546a20852b52e58b233cc6d76f01d3023b3d9c4042963a6fabb6",
+  "digest": "sha256:d39769f0b6537a4ca1611fa3eabf4fb90a08dd0c85271f0f0441310f04dde929",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3360,9 +3367,15 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.cli.app"
+        "src.cli",
+        "src.cli.app",
+        "src.cli.system_config",
+        "src.install",
+        "src.install.git_identity"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Contract tests for the hand-crafted system-config CLI."
     },
     "tests/test_cli_task_comments.py": {
@@ -4600,7 +4613,9 @@
         "src.commands",
         "src.commands.git_commands",
         "src.commands.supervisor_authority",
+        "src.config",
         "src.database",
+        "src.git.identity",
         "src.git.manager",
         "src.integration.manual_delivery",
         "src.models"
@@ -5949,6 +5964,30 @@
       ],
       "summary": "Comprehensive tests for GitManager event emission."
     },
+    "tests/test_git_identity.py": {
+      "areas": [
+        "git-identity"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.git.identity",
+        "src.git.manager",
+        "src.intelligence_classes",
+        "src.models",
+        "src.orchestrator",
+        "src.orchestrator.task_checkpoint",
+        "src.sessions.harness_parser",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Deterministic Git commit identity (docs/specs/git-identity.md)."
+    },
     "tests/test_git_manager.py": {
       "areas": [
         "git-manager"
@@ -6457,8 +6496,11 @@
         "src.cli",
         "src.cli.app",
         "src.cli.install",
+        "src.install",
         "src.install.command",
+        "src.install.git_identity",
         "src.install.graft",
+        "src.install.logins",
         "src.install.onboarding",
         "src.install.prerequisites",
         "src.install.results",
@@ -6507,6 +6549,27 @@
       ],
       "markers": [],
       "summary": "The installer engine: ordering, idempotent reruns, resume and secrecy."
+    },
+    "tests/test_install_git_identity.py": {
+      "areas": [
+        "install"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.git.identity",
+        "src.install",
+        "src.install.command",
+        "src.install.git_identity",
+        "src.install.lifecycle",
+        "src.install.onboarding",
+        "src.install.prerequisites",
+        "src.install.results",
+        "src.install.steps"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The installation's Git commit identity: suggestions, the interview and ``config.git-identity``."
     },
     "tests/test_install_graft.py": {
       "areas": [
@@ -7358,9 +7421,11 @@
       "default_arm": true,
       "imports": [
         "src.commands.principal",
+        "src.config",
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.git.identity",
         "src.git.manager",
         "src.integration.hierarchy",
         "src.integration.models",
@@ -8236,6 +8301,7 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.git.identity",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.git_ops",
@@ -14226,6 +14292,7 @@
         "src.config",
         "src.database",
         "src.git.github_contracts",
+        "src.git.identity",
         "src.git.manager",
         "src.models",
         "src.plugins.internal.git",
