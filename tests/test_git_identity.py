@@ -340,6 +340,7 @@ from src.models import (
     AgentProfile,
     AgentState,
     Project,
+    RepoConfig,
     RepoSourceType,
     SessionRecord,
     Task,
@@ -747,6 +748,64 @@ async def test_already_published_commits_are_not_judged(push_env):
     _git(env.work, "push", "-q", "origin", "aq/t1")
     env.commit("new", JACK.env())
     assert (await env.push()).get("oid")
+
+
+async def _source_head(env, branch="aq/source"):
+    """A source branch committed by another session's identity, published on origin."""
+    _git(env.work, "checkout", "-q", "-b", branch, "origin/main")
+    env.commit("source-" + branch.rsplit("/", 1)[-1], CLAUDE)
+    _git(env.work, "push", "-q", "origin", branch)
+    head = _git(env.work, "rev-parse", "HEAD")
+    _git(env.work, "checkout", "-q", "aq/t1")
+    return head
+
+
+async def _authorize_source_repair(env, head):
+    from src.database.tables import integration_source_ci
+
+    await env.db.create_repo(RepoConfig(
+        id="r", project_id="p", source_type=RepoSourceType.LINK, source_path=str(env.work),
+    ))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(integration_source_ci.insert().values(
+            task_id="src-task", repository_id="r", source_base="b" * 40, source_head=head,
+            generation=1, policy_generation=1, state="red", evidence={},
+            repair_task_id="t1", repair_attempt=1, observed_at=time.time(),
+        ))
+
+
+async def test_an_authorized_source_ci_repair_head_is_not_judged(push_env):
+    env = push_env
+    await env.session(JACK.digest)
+    head = await _source_head(env)
+    await _authorize_source_repair(env, head)
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge source", head, env=JACK.env())
+    env.commit("fix", JACK.env())
+    result = await env.push()
+    assert result.get("oid") == _git(env.work, "rev-parse", "HEAD"), result
+    assert env.pushed()
+
+
+async def test_a_foreign_committer_beside_the_authorized_head_is_refused(push_env):
+    env = push_env
+    await env.session(JACK.digest)
+    head = await _source_head(env)
+    await _authorize_source_repair(env, head)
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge source", head, env=JACK.env())
+    env.commit("forged", CLAUDE)
+    result = await env.push()
+    assert "refusing to publish: 1 new commit(s)" in result["error"], result
+    assert not env.pushed()
+
+
+async def test_an_unauthorized_published_head_is_still_judged(push_env):
+    env = push_env
+    await env.session(JACK.digest)
+    head = await _source_head(env)  # published, but no daemon record names it
+    _git(env.work, "merge", "-q", "--no-ff", "-m", "merge source", head, env=JACK.env())
+    result = await env.push()
+    assert "refusing to publish: 1 new commit(s)" in result["error"], result
+    assert not env.pushed()
 
 
 # --- migration -----------------------------------------------------------------------

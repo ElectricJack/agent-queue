@@ -165,7 +165,13 @@ are those reachable from the tip and from none of these:
 
 - the delivery base;
 - this branch's last published head (`refs/remotes/origin/<branch>`);
-- the caller's lease OID.
+- the caller's lease OID;
+- every exact source head the daemon filed this task to merge: the
+  `source_head` of each `integration_source_ci` row whose `repair_task_id` is
+  the task (source CI repair, "merge the exact source head … preserving it
+  as an ancestor"). The head comes from the daemon's record, never from a
+  ref, and only that head's history is excluded; a foreign committer on any
+  other new commit is still refused.
 
 This is the same local evidence the reserved-path gate trusts. The check never
 uses every `refs/remotes/*`, because a checkout can write those. More than
