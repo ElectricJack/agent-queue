@@ -350,7 +350,11 @@ async def build_task_context_section(
     rows = await db.get_task_contexts(task.id)
     blocks: list[str] = []
     get_repair = getattr(db, "get_parent_repair_prime_context", None)
-    if task.created_by_kind == "integration_repair" and session_id and callable(get_repair):
+    if (
+        getattr(task, "created_by_kind", None) == "integration_repair"
+        and session_id
+        and callable(get_repair)
+    ):
         repair = await get_repair(task.id, session_id=session_id)
         if isinstance(repair, dict):
             blocks.append(
