@@ -341,6 +341,7 @@ describe("Tiled agent workspace", () => {
   it("opens the exact live session in the main Terminal tab by default", async () => {
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     expect(within(window).getByRole("tab", { name: "Terminal" })).toHaveAttribute("aria-selected", "true");
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     expect(TerminalSocketMock.instances.map((source) => new URL(source.url).pathname)).toEqual(["/ws/terminal/session-a"]);
@@ -407,6 +408,7 @@ describe("Tiled agent workspace", () => {
   it("stops streaming while Settings is visible and resumes on Terminal", async () => {
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     act(() => TerminalSocketMock.instances[0]!.open());
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
@@ -460,6 +462,7 @@ describe("Tiled agent workspace", () => {
   it("saves only individual configured overrides and refreshes the roster", async () => {
     renderFlock("/agents?agent=b", true);
     const window = await screen.findByRole("region", { name: "Builder agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
     expect(within(window).getByLabelText("Model override")).toHaveValue("");
     fireEvent.change(within(window).getByLabelText("Name"), { target: { value: "New Builder" } });
@@ -479,6 +482,7 @@ describe("Tiled agent workspace", () => {
     roster[1]!.settings.model = "existing-override";
     renderFlock("/agents?agent=b", true);
     const window = await screen.findByRole("region", { name: "Builder agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
     fireEvent.change(within(window).getByLabelText("Model override"), { target: { value: "" } });
     api.editAgent.mockRejectedValueOnce(new Error("Agent settings are read-only for this caller"));
@@ -493,6 +497,7 @@ describe("Tiled agent workspace", () => {
     roster[0]!.settings.model = "configured-for-next-run";
     renderFlock("/agents?agent=a", true);
     const window = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     expect(within(window).getByText(/model unknown/i)).toBeInTheDocument();
     expect(within(window).queryByText(/configured-for-next-run/)).not.toBeInTheDocument();
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
@@ -571,6 +576,7 @@ describe("Agents finishing current work", () => {
     renderFlock("/agents?agent=a", true);
     const sidebar = await screen.findByRole("button", { name: "Open Supervisor" });
     const window = screen.getByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1));
     expect(within(sidebar).getByText("busy")).toBeInTheDocument();
     expect(within(sidebar).getByText("New work disabled")).toBeInTheDocument();
@@ -588,6 +594,7 @@ describe("Deleting a defined worker", () => {
   async function builderSettings(initial = "/agents?agent=b") {
     renderFlock(initial, true);
     const window = await screen.findByRole("region", { name: "Builder agent window" });
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
     return window;
   }
@@ -665,6 +672,7 @@ describe("Deleting a defined worker", () => {
   it("protects the supervisor from deletion", async () => {
     renderFlock("/agents?agent=a", true);
     const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(supervisor).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(supervisor).getByRole("tab", { name: "Settings" }));
     expect(within(supervisor).queryByRole("button", { name: "Delete agent" })).not.toBeInTheDocument();
     expect(within(supervisor).getByText(/supervisor agents cannot be deleted/i)).toBeInTheDocument();
@@ -732,6 +740,7 @@ describe("Starting and using agent terminals", () => {
     await waitFor(() => expect(api.startAgentTerminal).toHaveBeenCalledWith({
       body: { agent_id: "b", project_id: "active" }, throwOnError: true,
     }));
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     expect(await within(window).findByText("Attached project: active")).toBeInTheDocument();
   });
 
@@ -821,6 +830,7 @@ describe("supervisor restart", () => {
   it("restarts fresh by default and reconnects the terminal to its replacement", async () => {
     renderFlock("/agents?agent=a", true);
     const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(supervisor).getByRole("button", { name: /^Details for / }));
     expect(within(supervisor).getByRole("combobox", { name: "Restart conversation" })).toHaveValue("fresh");
     fireEvent.click(within(supervisor).getByRole("button", { name: "Restart" }));
     await waitFor(() => expect(api.supervisorRestart).toHaveBeenCalledWith({
@@ -833,6 +843,7 @@ describe("supervisor restart", () => {
   it("lets the user resume the prior conversation", async () => {
     renderFlock("/agents?agent=a", true);
     const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(supervisor).getByRole("button", { name: /^Details for / }));
     fireEvent.change(within(supervisor).getByRole("combobox", { name: "Restart conversation" }), { target: { value: "resume" } });
     fireEvent.click(within(supervisor).getByRole("button", { name: "Restart" }));
     await waitFor(() => expect(api.supervisorRestart).toHaveBeenCalledWith({
@@ -846,6 +857,7 @@ describe("supervisor restart", () => {
     api.supervisorRestart.mockReturnValue(new Promise((_resolve, fail) => { reject = fail; }));
     renderFlock("/agents?agent=a", true);
     const supervisor = await screen.findByRole("region", { name: "Supervisor agent window" });
+    fireEvent.click(within(supervisor).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(supervisor).getByRole("button", { name: "Restart" }));
     expect(await within(supervisor).findByRole("button", { name: "Restarting…" })).toBeDisabled();
     expect(within(supervisor).getByRole("combobox", { name: "Restart conversation" })).toBeDisabled();
