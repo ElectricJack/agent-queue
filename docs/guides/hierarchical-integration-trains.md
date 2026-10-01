@@ -597,6 +597,16 @@ not command options: the daemon derives them from the authenticated live repair
 assignment, verifies the exact remote resolution, and then continues with later
 batch members under the collector's next fence.
 
+A repair may change any file the candidate needs to merge and pass CI, including
+reviewed code and files a reviewed member added. When an added Alembic migration's
+revision ID collides with a sibling already in the partial candidate, assign it a
+fresh revision ID and point `down_revision` (and the docstring's `Revision ID:` /
+`Revises:` headers) at the partial candidate's single migration head, then check
+`alembic heads`. Only the lineage stays exact: strict ancestry from the partial
+head, the frozen ordered commit list, and no merge commits. A refused admission
+includes `invariant` in both the initial and retry response; its reservation and
+private repair ref remain forensic evidence.
+
 ## 5. Human controls and rollback
 
 Status lists `repair`, `promotion`, `reconciliation`, and `cleanup_pending`

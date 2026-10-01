@@ -686,6 +686,16 @@ Successful or already-observed pushes enqueue the durable
 `integration.resolution_push_observed` lifecycle fact keyed by operation and intent; only trusted
 service/playbook reconciliation proves the remote tip and atomically finalizes the original receipt.
 
+Candidate-member admission does not restrict repair content. Parallel reviewed branches collide
+(for example two members adding the same Alembic revision ID), so a repair may edit any file,
+including reviewed code and files a reviewed member added, when that is what the candidate needs
+to merge and pass CI; rechaining a colliding migration onto the partial candidate's head is one
+such repair. Admission keeps the lineage exact instead: strict ancestry from the frozen partial
+head, the frozen ordered commit list, no merges, reserved-path checks, remote evidence, and writer
+fences. The immutable reservation still records the original source and exact repair; aggregate
+validation runs on the repaired candidate. Both initial and replay
+`integration_resolve_candidate_member` responses expose the admission `invariant` on refusal.
+
 The CI evidence contract is also the sole authority for attempt accounting. An attempt is consumed
 only when it records a conclusive result for the exact candidate SHA. Launch requests, cancelled
 runs, and superseded runs are not attempts.

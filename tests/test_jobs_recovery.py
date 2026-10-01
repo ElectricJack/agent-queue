@@ -5,13 +5,15 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import update
+
+from src.commands.job_commands import JobCommandsMixin
 from src.config import AppConfig
 from src.database.tables import jobs
 from src.jobs.artifacts import atomic_json, job_directory, read_json
 from src.jobs.policy import next_admission
 from src.jobs.service import JobService
-from src.commands.job_commands import JobCommandsMixin
-from tests.test_jobs_queries import values, db as jobs_db
+from tests.test_jobs_queries import db as jobs_db
+from tests.test_jobs_queries import values
 
 db = jobs_db
 
@@ -208,6 +210,7 @@ async def test_wrong_launch_identity_and_corrupt_receipt_never_release_pin(db, t
 async def test_service_launch_and_adoption_preserve_canonical_result(db, tmp_path, monkeypatch):
     import asyncio
     import sys
+
     from src.jobs.policy import Preset
 
     svc = service(db, tmp_path)

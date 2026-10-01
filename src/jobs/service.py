@@ -12,11 +12,18 @@ import sys
 import time
 import uuid
 from pathlib import Path
+
 from src.jobs.artifacts import OutputStore, atomic_json, job_directory, read_json
 from src.jobs.identity import processes, verified
 from src.jobs.policy import (
-    JobError, NODE_PRESETS, TERMINAL, next_admission, node_executable, presets,
-    request_hash, validate_args,
+    NODE_PRESETS,
+    TERMINAL,
+    JobError,
+    next_admission,
+    node_executable,
+    presets,
+    request_hash,
+    validate_args,
 )
 from src.jobs.result import build_result
 from src.resources import project_tests
@@ -157,7 +164,7 @@ class JobService:
         if test_setup:
             env = test_setup.child_env(env)
         if preset == "e2e":
-            from urllib.parse import urlsplit, unquote
+            from urllib.parse import unquote, urlsplit
 
             parsed = urlsplit(cfg.test_database_url)
             env.update(

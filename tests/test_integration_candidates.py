@@ -334,7 +334,21 @@ def _make_origin(tmp_path: Path):
     return origin, work, base, members
 
 
-def _make_conflicting_origin(tmp_path: Path, texts=("first\n", "second\n")):
+def _migration_text(revision, parent, table="attachments"):
+    return (
+        f'"""Create {table}.\n\nRevision ID: {revision}\nRevises: {parent}\n"""\n'
+        'from alembic import op\n'
+        f'revision: str = {revision!r}\n'
+        f'down_revision = {parent!r}\n'
+        'branch_labels = None\ndepends_on = None\n'
+        f'def upgrade():\n    op.create_table({table!r})\n'
+        f'def downgrade():\n    op.drop_table({table!r})\n'
+    )
+
+
+def _make_conflicting_origin(
+    tmp_path: Path, texts=("first\n", "second\n"), *, migrations=False
+):
     origin = tmp_path / "origin.git"
     work = tmp_path / "work"
     _git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
@@ -343,6 +357,13 @@ def _make_conflicting_origin(tmp_path: Path, texts=("first\n", "second\n")):
     _git(work, "config", "user.email", "candidate@example.test")
     (work / "shared.txt").write_text("base\n")
     _git(work, "add", "shared.txt")
+    if migrations:
+        versions = work / "migrations" / "versions"
+        versions.mkdir(parents=True)
+        (versions / "a00000000043_base.py").write_text(
+            _migration_text("a00000000043", None, "base")
+        )
+        _git(work, "add", "migrations")
     _git(work, "commit", "-m", "base")
     base = _git(work, "rev-parse", "HEAD")
     _git(work, "push", "origin", "main")
@@ -351,6 +372,12 @@ def _make_conflicting_origin(tmp_path: Path, texts=("first\n", "second\n")):
         _git(work, "switch", "-C", f"root-{ordinal}", base)
         (work / "shared.txt").write_text(text)
         _git(work, "add", "shared.txt")
+        if migrations:
+            name = "object_loops" if ordinal == 0 else "review_attachments"
+            (versions / f"a00000000044_{name}.py").write_text(
+                _migration_text("a00000000044", "a00000000043", name)
+            )
+            _git(work, "add", "migrations")
         _git(work, "commit", "-m", f"member {ordinal}")
         head = _git(work, "rev-parse", "HEAD")
         tree = _git(work, "rev-parse", f"{head}^{{tree}}")
@@ -2776,8 +2803,9 @@ async def test_instance_bound_repair_reservation_push_and_accept_once(
                 _git(origin, "merge-base", "--is-ancestor", head, rebuilt.head_sha)
 
 
+@pytest.mark.parametrize("migration_repair", [None, "rename", "in_place", "edited"])
 async def test_command_handler_resolves_exact_assigned_candidate_member_and_replays(
-    command_handler_factory, tmp_path
+    command_handler_factory, tmp_path, migration_repair
 ):
     """The public command derives authority, accepts once, then resumes later members."""
     from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
@@ -2794,7 +2822,9 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
     await db.create_profile(AgentProfile(id="repairer", name="Repairer"))
     await db.create_profile(AgentProfile(id="debugger", name="Debugger"))
     await db.create_project(Project(id="p", name="project"))
-    origin, work, base, members = _make_conflicting_origin(tmp_path)
+    origin, work, base, members = _make_conflicting_origin(
+        tmp_path, migrations=migration_repair is not None
+    )
     await db.create_repo(
         RepoConfig(
             id="repo",
@@ -2917,6 +2947,16 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
     _git(work, "switch", "--detach", "FETCH_HEAD")
     (work / "shared.txt").write_text("first and second\n")
     _git(work, "add", "shared.txt")
+    if migration_repair:
+        number = "a00000000044" if migration_repair == "in_place" else "a00000000045"
+        migration_path = f"migrations/versions/{number}_review_attachments.py"
+        text = _migration_text("a00000000045", "a00000000044", "review_attachments")
+        if migration_repair == "edited":
+            # Operator policy: a repair may change reviewed code when the batch
+            # needs it to merge and pass CI; only the lineage stays exact.
+            text = text.replace("op.create_table", "op.drop_table")
+        (work / migration_path).write_text(text)
+        _git(work, "add", "migrations")
     _git(work, "commit", "-m", "resolve exact command candidate conflict")
     resolved = _git(work, "rev-parse", "HEAD")
     tree = _git(work, "rev-parse", "HEAD^{tree}")
@@ -2977,6 +3017,7 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
     assert wrong_instance["outcome"] == "unauthorized"
     assert wrong_epoch["outcome"] == "stale"
     assert supplied_fence["outcome"] == "invariant_error"
+    assert accepted["invariant"] is None
     assert accepted["outcome"] == "accepted"
     assert replay["outcome"] == "already_accepted"
     assert old_claim_reuse["outcome"] == "unauthorized"
@@ -2995,6 +3036,15 @@ async def test_command_handler_resolves_exact_assigned_candidate_member_and_repl
             await conn.execute(select(integration_candidate_resolutions))
         ).mappings().one()
     assert resolution["state"] == "accepted"
+    assert resolution["source_head_sha"] == members[1][1]
+    assert resolution["resolved_head_sha"] == resolved
+    if migration_repair:
+        candidate = accepted["continuation"]["head_sha"]
+        assert _git(origin, "show", f"{candidate}:{migration_path}") == text.strip()
+        sibling_path = "migrations/versions/a00000000044_object_loops.py"
+        assert _git(origin, "rev-parse", f"{candidate}:{sibling_path}") == _git(
+            origin, "rev-parse", f"{conflict.head_sha}:{sibling_path}"
+        )
     assert resolution["repair_task_id"] == repair_task_id
     assert resolution["repair_session_id"] == session_id
     assert resolution["repair_session_instance_token"] == "instance-1"
