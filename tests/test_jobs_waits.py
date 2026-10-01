@@ -98,6 +98,57 @@ async def test_atomic_submit_replay_keeps_one_job_pin_and_wait(setup):
         assert await conn.scalar(select(workspaces.c.job_pin_count)) == 1
 
 
+async def test_managed_validation_uses_two_worker_calls_and_detects_failure_on_same_tick(
+    setup, tmp_path, monkeypatch
+):
+    """Representative 10-minute validation: no model calls while it runs.
+
+    Legacy 30-second monitoring needs submit + 20 polls + a result read.
+    The durable path needs submit/wait + consume; reconciliation is daemon work.
+    """
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    await setup.db.create_profile(AgentProfile(
+        id="worker-codex", name="Worker", aq_commands=["job_submit", "wait_get"],
+        harness_tools=[], plugin_tools=[],
+    ))
+    config = AppConfig(data_dir=str(tmp_path / "data"))
+    config.resources.jobs.enabled = True
+    orch = SimpleNamespace(db=setup.db, bus=SimpleNamespace(emit=AsyncMock()), plugin_registry=None)
+    handler = CommandHandler(orch, config)
+    scope = dict(
+        kind="session", session_id="s", session_instance_token="token", project_id="p",
+        task_id="owner",
+    )
+    worker_commands = []
+
+    async def worker_call(name, args):
+        worker_commands.append(name)
+        return await handler.execute(name, {**args, "_scope": scope})
+
+    submitted = await worker_call("job_submit", dict(
+        preset="lint", argv=["src"], wait=True, idempotency_key="validation", claim_epoch=1,
+    ))
+    assert submitted["success"], submitted
+    job, wait_id = submitted["job"], submitted["wait"]["id"]
+    started_at = submitted["wait"]["created_at"]
+    for elapsed in range(30, 600, 30):
+        await setup.db.reconcile_agent_waits(now=started_at + elapsed)
+        assert (await setup.db.get_agent_wait(wait_id))["state"] == "active"
+        assert await setup.db.get_pending_messages("task", "owner") == []
+    await finish(setup, job, ended_at=started_at + 600, exit_code=1)
+    await setup.db.reconcile_agent_waits(now=started_at + 600)
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 600)
+    consumed = await worker_call("wait_get", dict(wait_id=wait_id, consume=True, claim_epoch=1))
+    assert consumed["success"], consumed
+    assert consumed["wait"]["digest"]["outcome"] == "failed"
+    assert consumed["wait"]["digest"]["exit_code"] == 1
+    assert consumed["wait"]["resolved_at"] == started_at + 600
+    assert worker_commands == ["job_submit", "wait_get"]
+    assert len(worker_commands) == 2 < 1 + 600 // 30 + 1
+    assert await result_count(setup.db, wait_id) == 1
+    assert await setup.db.get_pending_messages("task", "owner") == []
+
+
 async def test_active_wait_rolls_back_new_job_pin_and_reservation(setup):
     await setup.db.register_agent_wait(
         identity=setup.identity,

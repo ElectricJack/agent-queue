@@ -1318,7 +1318,7 @@
       ]
     }
   },
-  "digest": "sha256:9d7d5c0c4c2a53fda16df3cdbcd6bf883c35db6b8140e45e3b05ad09b15aaa70",
+  "digest": "sha256:af0291fe1f0188b958330b2643c5d645187bf09187700cf45b2feafa53bb69fb",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -2146,6 +2146,7 @@
         "src.commands.contracts",
         "src.commands.principal",
         "src.config",
+        "src.database",
         "src.database.tables",
         "src.doctor",
         "src.doctor.models",
@@ -2153,6 +2154,7 @@
         "src.messages.session_lens",
         "src.models",
         "src.orchestrator.core",
+        "src.prime.sections",
         "src.profiles.capabilities",
         "src.profiles.parser",
         "src.sessions",

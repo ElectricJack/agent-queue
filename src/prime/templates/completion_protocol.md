@@ -93,8 +93,13 @@ The daemon holds a lease on this task and watches for activity. If it sees nothi
 then an interrupt, then a kill and a restart. That is deliberate: a genuinely hung agent has
 to be recoverable without a human noticing.
 
-So before anything that will run quiet for more than a few minutes — a full test suite, a
-long build, a large install, a big download — refresh the lease first:
+For supported long work, register one durable wait and end the turn. Managed tests
+use `aq test --aq-detach --aq-wait --aq-idempotency-key KEY TEST_ARGS` when job
+admission is enabled. Waits retain your lease without heartbeat turns; resume with
+`aq wait show WAIT_ID --consume --json` and handle its actual outcome or timeout.
+
+Before a foreground command that will run quiet for more than a few minutes,
+refresh the lease first:
 
     aq task heartbeat {task_id}
 

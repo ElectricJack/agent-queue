@@ -1002,7 +1002,7 @@ async def test_late_wait_result_reaches_next_prime_with_granted_pointer(db, conf
         body=json.dumps({"wait_id": wait_id, "state": "cancelled", "digest": {"reason": "claim_ended"}}),
     )
     section = await build_messages_section(db, task.id, config=config, mark_delivered=True)
-    assert f"aq wait show {wait_id} --json" in section.body
+    assert f"aq wait show {wait_id} --consume --json" in section.body
     assert "claim_ended" in section.body
     assert (await db.get_message(msg.id)).via == "prime"
     assert (await build_messages_section(db, task.id, config=config)).body == ""

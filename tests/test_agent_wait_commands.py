@@ -15,7 +15,7 @@ from src.commands import CommandHandler
 from src.commands.contracts import CONTRACTS
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.config import AppConfig
-from src.database.tables import tasks
+from src.database.tables import sessions, tasks
 from src.models import AgentProfile
 from src.profiles.capabilities import DENY_ALL
 from tests.test_agent_wait_queries import NOW, env as _wait_env
@@ -71,6 +71,168 @@ async def test_register_show_list_cancel_owner_is_derived(commands, env):
     assert cancelled["wait"]["state"] == "cancelled"
     again = await execute(commands, "wait_cancel", {"wait_id": row["id"], "claim_epoch": 1})
     assert again["wait"]["version"] == cancelled["wait"]["version"]
+
+
+async def test_result_read_is_explicit_and_consumption_is_claim_fenced(commands, env, monkeypatch):
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    registered = await execute(commands, "wait_register", dict(
+        kind="timer", due_at=NOW - 1, idempotency_key="done", claim_epoch=1,
+    ))
+    wait_id = registered["wait"]["id"]
+    message_id = registered["wait"]["result_message_id"]
+    plain = await execute(commands, "wait_get", {"wait_id": wait_id})
+    assert "--consume --json" in plain["next_step"]
+    assert (await env.db.get_message(message_id)).delivered_at is None
+    stale = await execute(commands, "wait_get", dict(wait_id=wait_id, consume=True, claim_epoch=0))
+    assert stale["error_code"] == "stale_claim"
+    assert (await env.db.get_message(message_id)).delivered_at is None
+    consumed = await execute(
+        commands, "wait_get", dict(wait_id=wait_id, consume=True, claim_epoch=1)
+    )
+    assert consumed["wait"] == plain["wait"]
+    assert "Use aq wait show" not in consumed["next_step"]
+    assert (await env.db.get_message(message_id)).via == "wait_consume"
+    assert await env.db.get_pending_messages("task", "owner") == []
+
+
+async def test_restart_recovers_consumed_wait_pointer_with_messaging_disabled(commands, env):
+    from src.prime.sections import build_messages_section
+    from src.database import Database
+    from tests.test_agent_wait_queries import register
+
+    row = await register(env, kind="timer", match={"due_at": NOW + 1})
+    await env.db.reconcile_agent_waits(now=NOW + 2)
+    await env.db.consume_agent_wait(row["id"], identity=env.identity, now=NOW + 3)
+    commands.config.messages.enabled = False
+    fresh = Database(env.db._dsn)
+    fresh._engine = env.db._engine
+    section = await build_messages_section(fresh, "owner", config=commands.config)
+    assert "Durable waits:" in section.body
+    assert f"aq wait show {row['id']} --consume --json" in section.body
+    assert '"state": "satisfied"' in section.body
+    assert '"claim": "current claim"' in section.body
+    assert await fresh.get_pending_messages("task", "owner") == []
+    assert (await fresh.get_agent_wait(row["id"]))["wait_resumed_at"] == NOW + 2
+
+
+@pytest.mark.parametrize("kind", ["task", "message", "timer"])
+async def test_supported_conditions_need_no_worker_monitoring_turns(
+    commands, env, monkeypatch, kind
+):
+    from tests.test_agent_wait_queries import complete
+
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    fields = {"ref": "source"} if kind == "task" else {"due_at": NOW + 600}
+    if kind == "message":
+        sent = await env.db.create_message(
+            project_id="p", from_kind="session", from_id="s", to_kind="user", to_id="dashboard",
+            thread_id="reply", body="Please reply here.",
+        )
+        fields = dict(ref="reply", after_seq=sent.created_seq)
+    worker_commands = []
+
+    async def worker_call(name, args):
+        worker_commands.append(name)
+        return await execute(commands, name, args)
+
+    registered = await worker_call("wait_register", dict(
+        kind=kind, timeout=900, idempotency_key="condition", claim_epoch=1, **fields,
+    ))
+    assert registered["success"], registered
+    wait_id = registered["wait"]["id"]
+    for elapsed in range(30, 600, 30):
+        await AgentWaitReconciler(commands).tick(now=NOW + elapsed)
+        assert (await env.db.get_agent_wait(wait_id))["state"] == "active"
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW + 600)
+    if kind == "task":
+        await complete(env.db, at=NOW + 600, status="FAILED", outcome="fail")
+    elif kind == "message":
+        reply = await env.db.create_message(
+            project_id="p", from_kind="user", from_id="dashboard", to_kind="task", to_id="owner",
+            thread_id="reply", body="Recheck the deployment; it failed.",
+        )
+    await AgentWaitReconciler(commands).tick(now=NOW + 600)
+    result = await worker_call("wait_get", dict(wait_id=wait_id, consume=True, claim_epoch=1))
+    assert result["success"], result
+    assert result["wait"]["resolved_at"] == NOW + 600
+    assert result["wait"]["state"] == "satisfied"
+    assert worker_commands == ["wait_register", "wait_get"]
+    assert len(worker_commands) < 1 + 600 // 30 + 1
+    pending = await env.db.get_pending_messages("task", "owner")
+    if kind == "task":
+        assert result["wait"]["digest"]["outcome"] == "fail"
+        assert pending == []
+    elif kind == "message":
+        # Actual feedback is retained for handling; consuming the completion
+        # pointer alone must not silently satisfy the close feedback gate.
+        assert result["wait"]["digest"]["message_id"] == reply.id
+        assert [msg.id for msg in pending] == [reply.id]
+    else:
+        assert result["wait"]["digest"]["due_at"] == NOW + 600
+        assert pending == []
+
+
+async def test_repeated_delivery_after_explicit_consumption_does_not_wake(
+    commands, env, monkeypatch
+):
+    from src.orchestrator.core import Orchestrator
+
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    provider, typed = _terminal("fake", env)
+    orch = await _wire_delivery(commands, env, monkeypatch, provider)
+    registered = await execute(commands, "wait_register", dict(
+        kind="timer", due_at=NOW - 1, idempotency_key="already-done", claim_epoch=1,
+    ))
+    consumed = await execute(commands, "wait_get", dict(
+        wait_id=registered["wait"]["id"], consume=True, claim_epoch=1,
+    ))
+    assert consumed["success"], consumed
+    for elapsed in (1, 30, 60):
+        monkeypatch.setattr(
+            "src.commands.wait_commands.time.time", lambda elapsed=elapsed: NOW + elapsed
+        )
+        orch._last_delivery_pass = 0
+        await Orchestrator._reconcile_sessions(orch)
+        await Orchestrator._deliver_messages(orch)
+    assert typed() == []
+
+
+async def test_prime_wait_history_is_bounded_and_does_not_exempt_old_instances(commands, env):
+    from src.prime.sections import build_messages_section
+    from src.database.tables import agent_waits
+    from tests.test_agent_wait_queries import register
+
+    row = await register(env)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(
+            update(sessions).where(sessions.c.id == "s").values(instance_token="next")
+        )
+    section = await build_messages_section(env.db, "owner", config=commands.config)
+    assert "previous claim; no inactivity exemption" in section.body
+    assert "End this turn" not in section.body
+    await env.db.reconcile_agent_waits(now=NOW + 1)
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(agent_waits).where(agent_waits.c.id == row["id"]).values(
+            digest={"detail": "é" * 10000},
+        ))
+    section = await build_messages_section(env.db, "owner", config=commands.config)
+    history = section.body.split("Durable waits:\n", 1)[1]
+    assert len(history.encode("utf-8")) <= 6000
+    assert f"aq wait show {row['id']} --consume --json" in history
+
+
+async def test_active_history_read_never_promises_a_stale_exemption(commands, env, monkeypatch):
+    monkeypatch.setattr("src.commands.wait_commands.time.time", lambda: NOW)
+    registered = await execute(commands, "wait_register", dict(
+        kind="timer", due_at=NOW + 10, idempotency_key="history", claim_epoch=1,
+    ))
+    async with env.db._engine.begin() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == "owner").values(claim_epoch=2))
+        await conn.execute(update(sessions).where(sessions.c.id == "s").values(last_claim_epoch=2))
+    shown = await execute(commands, "wait_get", {"wait_id": registered["wait"]["id"]})
+    assert shown["success"] and shown["wait"]["state"] == "active"
+    assert "no current inactivity exemption" in shown["next_step"]
+    assert "End this turn" not in shown["next_step"]
 
 
 @pytest.mark.parametrize(
@@ -239,7 +401,7 @@ async def test_task_wait_cascade_resolves_and_wakes_idle_pool_holder(
         orch._last_delivery_pass = 0
     await Orchestrator._deliver_messages(orch)
     assert fake.sent_nudges == [
-        (env.session.name, f"Handle `aq wait show {wait_id} --json`."),
+        (env.session.name, f"Handle `aq wait show {wait_id} --consume --json`."),
     ]
     message = await env.db.get_message(resolved["result_message_id"])
     assert message.delivered_at == NOW + 200
@@ -406,7 +568,7 @@ async def test_thread_wait_fires_on_reply_and_wakes_idle_holder(
     assert resolved["digest"]["thread_id"] == "owner:graph-filing"
 
     await Orchestrator._deliver_messages(orch)
-    assert f"Handle `aq wait show {wait_id} --json`." in typed()
+    assert f"Handle `aq wait show {wait_id} --consume --json`." in typed()
     assert (await env.db.get_message(resolved["result_message_id"])).delivered_at == NOW + 30
 
 
@@ -678,6 +840,9 @@ def test_wait_cli_reads_claim_epoch_and_emits_versioned_json(monkeypatch):
     shown = CliRunner().invoke(cli, ["wait", "show", "w", "--json"])
     assert shown.exit_code == 0
     assert calls[-1] == ("wait_get", {"wait_id": "w"})
+    consumed = CliRunner().invoke(cli, ["wait", "show", "w", "--consume", "--json"])
+    assert consumed.exit_code == 0, consumed.output
+    assert calls[-1] == ("wait_get", {"wait_id": "w", "consume": True, "claim_epoch": 7})
     cancelled = CliRunner().invoke(cli, ["wait", "cancel", "w", "--claim-epoch", "8", "--json"])
     assert cancelled.exit_code == 0
     assert calls[-1] == ("wait_cancel", {"wait_id": "w", "claim_epoch": 8})
