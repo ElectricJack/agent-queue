@@ -30,15 +30,25 @@ async def wait(env, thread, after=0, **extra):
 async def test_unseen_messages_return_immediately_with_thread_cursor(env):
     thread = await joined(env)
     await send(env, thread, "two")
-    started = time.monotonic()
-    result = await wait(env, thread)
+    with patch("src.event_bus.EventWaiter.wait", new_callable=AsyncMock) as park:
+        result = await wait(env, thread)
+    park.assert_not_awaited()
     assert result.get("state") == "satisfied", result
-    assert time.monotonic() - started < 1
     assert [m["seq"] for m in result["messages"]] == [1]
     assert result["next_cursor"] == 1
     assert result["wait"]["kind"] == "message"
     assert result["wait"]["match"] == {"thread_id": thread["id"], "after_seq": 0}
     assert result["wait"]["deadline_at"] == thread["deadline_at"]
+
+
+@pytest.mark.perf
+async def test_unseen_messages_latency_budget(env, perf_strict):
+    thread = await joined(env)
+    await send(env, thread, "two")
+    started = time.monotonic()
+    result = await wait(env, thread)
+    assert result.get("state") == "satisfied", result
+    assert time.monotonic() - started < 1
 
 
 async def test_concurrent_send_wakes_under_five_seconds(env):

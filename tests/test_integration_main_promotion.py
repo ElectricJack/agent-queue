@@ -1750,21 +1750,27 @@ async def test_expired_inflight_prewrite_is_blocked_until_remote_proves_result(p
             db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 10.0
         ).promote("batch", 0)
     )
-    await asyncio.wait_for(git.entered.wait(), timeout=1.0)
-    second_task = asyncio.create_task(
-        RootPromotionService(
-            db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 146.0
-        ).promote("batch", 0)
-    )
+    attempts = [first_task]
     try:
-        done, _pending = await asyncio.wait({second_task}, timeout=0.25)
-        assert second_task in done
-        blocked = second_task.result()
+        # These waits guard synchronization, not promotion latency. Real
+        # PostgreSQL preparation can exceed a second on a busy runner; the
+        # injected clocks below still determine claim expiry exactly.
+        await asyncio.wait_for(git.entered.wait(), timeout=30.0)
+        second_task = asyncio.create_task(
+            RootPromotionService(
+                db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 146.0
+            ).promote("batch", 0)
+        )
+        attempts.append(second_task)
+        # The first push remains gated until finally, so this still fails if
+        # the second attempt waits for it instead of returning blocked.
+        blocked = await asyncio.wait_for(second_task, timeout=30.0)
+        assert not first_task.done()
         assert blocked.outcome == "reconciliation_blocked"
         assert git.attempts == 1
     finally:
         git.release.set()
-        await asyncio.gather(first_task, second_task, return_exceptions=True)
+        await asyncio.gather(*attempts, return_exceptions=True)
 
     recovered = await first_task
     assert recovered.outcome == "promoted"
