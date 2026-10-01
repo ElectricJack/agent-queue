@@ -534,11 +534,40 @@ daemon restart cannot reset a budget.
 Stage deadlines are enforced independently of CI completion. Persist `started_at` and `deadline_at`
 when a stage is activated, and publish a durable timeout event at the deadline. The shipped policy
 counts agent queue time, local work, CI waiting, and infrastructure retries as elapsed time; a
-restart, retry, or candidate rebuild never resets the deadline. A missing, stuck, cancelled, or
+restart, retry, or candidate rebuild never resets the deadline. Outside the accepted-writer exception below, a missing, stuck, cancelled, or
 unavailable CI run cannot prevent escalation. Timeout and CI events race through one conditional
 stage transition; stale events cannot restart a finished stage or promote an obsolete candidate.
 Before handing ownership onward, stop and reconcile the old writer; inability to stop it blocks
 for human intervention rather than granting a second writer access.
+
+An accepted root candidate resolution is a completed writer handoff. While its exact accepted
+revision/head is awaiting CI under the recorded collector successor fence, expiry must defer
+without changing the stage ordinal, start, deadline or attempt budget. This exception requires
+the durable accepted reservation, exact member acceptance and both observed pushes; a mere push,
+changed subject/fence, failed candidate or human-blocked operation does not qualify. Green still
+requires the full configured exact-candidate evidence, and only guarded promotion passes the stage.
+Changed or failed evidence returns to the existing repair/deadline rules. Human gates remain gates.
+
+The original delegate can normally close its task after acceptance, independently of CI success.
+This is terminal bookkeeping, with no edit, filing, reattachment or publication authority. The
+close binds the accepted reservation to its task, session instance, uninterrupted claim epoch,
+workspace, operation/stage, revision/head and collector successor fence. Existing reservations
+without an explicit epoch bind through their creation time within the still-current claim, the
+same replay fence used by candidate submission. Completion retains a durable receipt atomically
+with the task transition, so a crash before claim release can retry that exact close. Claim release
+continues to use the ordinary guarded resource release; it never transfers the collector branch
+again or manufactures CI success. A restart reconstructs both timeout deferral and terminal-close
+authority from persisted evidence, without extending the repair budget.
+
+For rows left by the older timeout path, a stopped session may reconcile only its original
+unreleased accepted claim. A live session still closes through the normal command. If the old
+stage expired, the current repair successor must retain the same candidate subject and a newer
+repair fence; if that successor has closed, its exact-green handoff receipt must prove the current
+collector fence. A later successful promotion must have its committed exact-candidate intent.
+Neither recovery path changes successor ownership, resurrects the expired stage, or bypasses a
+human gate. Reconciliation retries the same durable completion receipt and guarded claim release,
+including removal of only the matching claim file. Continuous-policy dispatch cannot interpret
+accepted delegate bookkeeping as a request for another writer while the accepted candidate waits.
 
 A repair delegate's own successful close is one of those handoffs. The close proves the writer's
 exact pushed head, then stops it, detaches its checkout, and returns the branch to a `reserved`

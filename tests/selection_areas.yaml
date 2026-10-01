@@ -358,6 +358,7 @@ areas:
       - tests/test_integration_settling.py
       - tests/test_integration_sealing.py
       - tests/test_integration_candidates.py
+      - tests/test_integration_accepted_repair.py
       - tests/test_integration_outbox.py
       - tests/test_integration_contracts.py
       - tests/test_integration_mode.py
