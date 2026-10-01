@@ -23,6 +23,7 @@ areas:
       - tests/test_task_controls_api.py
       - tests/test_task_command_authorization.py
       - tests/test_task_close_summary_enforcement.py
+      - tests/test_task_close_completion_recovery.py
       - tests/test_reopen_with_feedback.py
       - tests/test_task_failed_event.py
       - tests/test_task_ready_event.py
