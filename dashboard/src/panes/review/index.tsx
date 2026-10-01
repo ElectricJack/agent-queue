@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from "react";
+import { createPortal } from "react-dom";
 import type { ExtraProps } from "react-markdown";
 
 import { useCommentReview, useDecideReview, useImportReviewEdits, useReview, type ReviewAttachment } from "../../api/reviews";
@@ -15,6 +16,7 @@ import { DecisionBar, type ResponseRoute, type ReviewDecision } from "./Decision
 import type { ReviewArgs } from "./manifest";
 import { RevisionHeader, type RevisionSummary } from "./RevisionHeader";
 import { ReviewAttachments } from "./ReviewAttachments";
+import { useCommentPosition, type CommentReference } from "./useCommentPosition";
 
 type ReviewRecord = {
   id: string;
@@ -36,7 +38,25 @@ type ReviewResponse = {
   response_route: ResponseRoute;
 };
 
-type SelectionPosition = { anchor: Anchor; left: number; top: number };
+type CommentTarget = {
+  anchor: Anchor;
+  reference: CommentReference;
+  returnFocus: HTMLElement;
+  revision: number;
+};
+
+function SelectionCommentButton({ target, onOpen }: { target: CommentTarget; onOpen: () => void }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const style = useCommentPosition(target.reference, ref);
+  return createPortal(
+    <button ref={ref} type="button" style={style}
+      onPointerDown={(event) => event.preventDefault()}
+      onClick={onOpen}
+      className="z-40 rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white shadow hover:bg-indigo-500">
+      Comment
+    </button>, document.body,
+  );
+}
 
 function textFromChildren(children: React.ReactNode): string {
   if (typeof children === "string" || typeof children === "number") return String(children);
@@ -78,8 +98,8 @@ function DiffBlocks({ blocks }: { blocks: ReviewResponse["diff"] }) {
 function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setShortcuts?: PaneViewProps<ReviewArgs>["setShortcuts"] }) {
   const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
   const [showDiff, setShowDiff] = useState(false);
-  const [selection, setSelection] = useState<SelectionPosition | null>(null);
-  const [commentAnchor, setCommentAnchor] = useState<Anchor | null>(null);
+  const [selection, setSelection] = useState<CommentTarget | null>(null);
+  const [commentTarget, setCommentTarget] = useState<CommentTarget | null>(null);
   const [revisedSinceOpen, setRevisedSinceOpen] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const tocRef = useRef<HTMLDivElement>(null);
@@ -126,28 +146,59 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
       setSelection(null);
       return;
     }
-    const range = browserSelection.getRangeAt(0);
-    const containerRect = container.getBoundingClientRect();
-    const rangeRect = typeof range.getBoundingClientRect === "function"
-      ? range.getBoundingClientRect()
-      : containerRect;
+    if (viewedRevision == null) return;
+    // A cloned Range keeps measuring the quote after clicking/focusing the editor.
+    const range = browserSelection.getRangeAt(0).cloneRange();
+    const element = range.startContainer.nodeType === Node.ELEMENT_NODE
+      ? range.startContainer as HTMLElement : range.startContainer.parentElement!;
+    const context = element.closest<HTMLElement>("p, li, pre, blockquote, h2, h3") ?? element;
+    const rect = () => typeof range.getBoundingClientRect === "function"
+      ? range.getBoundingClientRect() : element.getBoundingClientRect();
     setSelection({
-      anchor,
-      left: Math.max(0, rangeRect.left - containerRect.left),
-      top: Math.max(0, rangeRect.bottom - containerRect.top),
+      anchor, revision: viewedRevision, returnFocus: container,
+      reference: { container, element, rect, contextRect: () => context.getBoundingClientRect() },
     });
-  }, []);
+  }, [viewedRevision]);
 
-  const submitComment = useCallback(async (anchor: Anchor, body: string) => {
-    if (!response || viewedRevision == null) return;
+  const submitComment = useCallback(async (target: CommentTarget, body: string) => {
     await comment.mutateAsync({
-      review_id: response.review.id,
-      revision: viewedRevision,
-      quote: anchor.quote,
-      heading_path: anchor.heading_path,
+      review_id: reviewId,
+      revision: target.revision,
+      quote: target.anchor.quote,
+      heading_path: target.anchor.heading_path,
       body,
     });
-  }, [comment, response, viewedRevision]);
+  }, [comment, reviewId]);
+
+  const closeComment = useCallback(() => {
+    setCommentTarget(null);
+    setSelection(null);
+  }, []);
+
+  const openSectionComment = useCallback((anchor: Anchor, button: HTMLButtonElement) => {
+    const container = bodyRef.current;
+    const heading = button.closest<HTMLElement>("h2, h3");
+    if (!container || !heading || viewedRevision == null) return;
+    setCommentTarget({
+      anchor, revision: viewedRevision, returnFocus: button,
+      reference: {
+        container, element: heading, rect: () => heading.getBoundingClientRect(),
+        contextRect: () => {
+          const rect = heading.getBoundingClientRect();
+          let next = heading.nextElementSibling;
+          if (heading.tagName === "H2") {
+            while (next?.matches("h3")) next = next.nextElementSibling;
+          }
+          // Preserve the first paragraph too; a section is more than its title.
+          const paragraph = next?.matches("p") ? next.getBoundingClientRect() : rect;
+          return {
+            left: Math.min(rect.left, paragraph.left), right: Math.max(rect.right, paragraph.right),
+            top: rect.top, bottom: Math.max(rect.bottom, paragraph.bottom),
+          };
+        },
+      },
+    });
+  }, [viewedRevision]);
 
   const submitDecision = useCallback(async (
     decision: ReviewDecision, note: string, responderClass: string,
@@ -168,6 +219,44 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
     return () => setShortcuts([]);
   }, [setShortcuts, selectCurrentText]);
 
+  // Stable component identities keep the originating heading/control connected when opening.
+  const headingComponents = useMemo(() => ({
+    h2: ({ node, children, ...props }: ComponentProps<"h2"> & ExtraProps) => {
+      void node;
+      const heading = textFromChildren(children).trim();
+      const path = headingPathAt(renderedBody, headingOffset(renderedBody, 2, heading));
+      return (
+        <h2 {...props} className="group flex flex-wrap scroll-mt-4 items-center gap-2">
+          <span>{children}</span>
+          <button
+            type="button"
+            onClick={(event) => openSectionComment({ quote: null, heading_path: path }, event.currentTarget)}
+            className="invisible rounded border border-gray-700 px-1.5 py-0.5 text-xs font-normal text-gray-400 group-hover:visible focus:visible hover:bg-gray-800"
+          >
+            Comment on this section
+          </button>
+        </h2>
+      );
+    },
+    h3: ({ node, children, ...props }: ComponentProps<"h3"> & ExtraProps) => {
+      void node;
+      const heading = textFromChildren(children).trim();
+      const path = headingPathAt(renderedBody, headingOffset(renderedBody, 3, heading));
+      return (
+        <h3 {...props} className="group flex flex-wrap scroll-mt-4 items-center gap-2">
+          <span>{children}</span>
+          <button
+            type="button"
+            onClick={(event) => openSectionComment({ quote: null, heading_path: path }, event.currentTarget)}
+            className="invisible rounded border border-gray-700 px-1.5 py-0.5 text-xs font-normal text-gray-400 group-hover:visible focus:visible hover:bg-gray-800"
+          >
+            Comment on this section
+          </button>
+        </h3>
+      );
+    },
+  }), [renderedBody, openSectionComment]);
+
   if (query.isLoading || !response) {
     return <div className="p-5 text-sm text-gray-500">Loading review…</div>;
   }
@@ -185,45 +274,8 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
           ? "this review is closed"
           : null;
 
-  const headingComponents = {
-    h2: ({ node, children, ...props }: ComponentProps<"h2"> & ExtraProps) => {
-      void node;
-      const heading = textFromChildren(children).trim();
-      const path = headingPathAt(renderedBody, headingOffset(renderedBody, 2, heading));
-      return (
-        <h2 {...props} className="group flex scroll-mt-4 items-center gap-2">
-          <span>{children}</span>
-          <button
-            type="button"
-            onClick={() => setCommentAnchor({ quote: null, heading_path: path })}
-            className="invisible rounded border border-gray-700 px-1.5 py-0.5 text-xs font-normal text-gray-400 group-hover:visible focus:visible hover:bg-gray-800"
-          >
-            Comment on this section
-          </button>
-        </h2>
-      );
-    },
-    h3: ({ node, children, ...props }: ComponentProps<"h3"> & ExtraProps) => {
-      void node;
-      const heading = textFromChildren(children).trim();
-      const path = headingPathAt(renderedBody, headingOffset(renderedBody, 3, heading));
-      return (
-        <h3 {...props} className="group flex scroll-mt-4 items-center gap-2">
-          <span>{children}</span>
-          <button
-            type="button"
-            onClick={() => setCommentAnchor({ quote: null, heading_path: path })}
-            className="invisible rounded border border-gray-700 px-1.5 py-0.5 text-xs font-normal text-gray-400 group-hover:visible focus:visible hover:bg-gray-800"
-          >
-            Comment on this section
-          </button>
-        </h3>
-      );
-    },
-  };
-
   return (
-    <div className="flex h-full min-h-0 flex-col bg-gray-950 text-gray-100">
+    <div className="@container/review flex h-full min-h-0 flex-col bg-gray-950 text-gray-100">
       {revisedSinceOpen && (
         <div className="border-b border-amber-900 bg-amber-950/50 px-4 py-2 text-sm text-amber-200">
           Revised since you opened it — reload
@@ -261,7 +313,7 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
       {showDiff && <DiffBlocks blocks={response.diff} />}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {toc.length > 0 && (
-          <aside className="hidden w-48 shrink-0 overflow-y-auto border-r border-gray-800 p-3 min-[720px]:block">
+          <aside className="hidden w-48 shrink-0 overflow-y-auto border-r border-gray-800 p-3 @min-[800px]/review:block">
             <TocList
               toc={toc}
               activeId={null}
@@ -270,7 +322,7 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
             />
           </aside>
         )}
-        <div ref={bodyRef} onMouseUp={selectCurrentText} className="relative min-w-0 flex-1 overflow-y-auto p-5" data-review-body>
+        <div ref={bodyRef} tabIndex={-1} onMouseUp={selectCurrentText} className="relative min-w-0 flex-1 overflow-y-auto p-5" data-review-body>
           <MarkdownPreview source={renderedBody} headingComponents={headingComponents} />
           <ReviewAttachments
             reviewId={reviewId}
@@ -278,27 +330,17 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
             attachments={response.attachments ?? []}
             editable={response.review.state === "in_review" && viewedRevision === response.review.current_revision && !revisedSinceOpen}
           />
-          {selection && !commentAnchor && (
-            <button
-              type="button"
-              style={{ left: selection.left, top: selection.top }}
-              onClick={() => setCommentAnchor(selection.anchor)}
-              className="absolute z-10 rounded bg-indigo-600 px-2 py-1 text-xs font-medium text-white shadow hover:bg-indigo-500"
-            >
-              Comment
-            </button>
+          {selection && !commentTarget && (
+            <SelectionCommentButton target={selection} onOpen={() => setCommentTarget(selection)} />
           )}
-          {commentAnchor && (
-            <div className="absolute z-20 left-4 top-4">
-              <CommentPopover
-                anchor={commentAnchor}
-                onClose={() => {
-                  setCommentAnchor(null);
-                  setSelection(null);
-                }}
-                onSubmit={(body) => submitComment(commentAnchor, body)}
-              />
-            </div>
+          {commentTarget && (
+            <CommentPopover
+              anchor={commentTarget.anchor}
+              reference={commentTarget.reference}
+              returnFocus={commentTarget.returnFocus}
+              onClose={closeComment}
+              onSubmit={(body) => submitComment(commentTarget, body)}
+            />
           )}
         </div>
         <CommentMargin anchored={partitioned.anchored} earlier={partitioned.earlier} />

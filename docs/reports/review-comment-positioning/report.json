@@ -1,0 +1,35 @@
+{
+  "chrome": "Chrome/150.0.7871.46",
+  "results": [
+    {
+      "check": "review-comments",
+      "profile": "phone-320",
+      "ok": true,
+      "ms": 2485
+    },
+    {
+      "check": "review-comments",
+      "profile": "phone-390",
+      "ok": true,
+      "ms": 3156
+    },
+    {
+      "check": "review-comments",
+      "profile": "phone-landscape",
+      "ok": true,
+      "ms": 4046
+    },
+    {
+      "check": "review-comments",
+      "profile": "desktop",
+      "ok": true,
+      "ms": 3227
+    },
+    {
+      "check": "review-comments",
+      "profile": "desktop-zoom200",
+      "ok": true,
+      "ms": 2412
+    }
+  ]
+}
