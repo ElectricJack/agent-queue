@@ -384,12 +384,37 @@ class TaskSessionQueryMixin:
         the publishing check excludes their already-published history
         (git identity spec §5).
         """
-        query = select(integration_source_ci.c.source_head).where(
+        return await self.list_source_ci_inherited_oids(task_id)
+
+    async def list_source_ci_inherited_oids(
+        self, task_id: str, *, repository_id: str | None = None
+    ) -> list[str]:
+        """Source-CI source heads an authorized repair task may merge above.
+
+        ``integration_source_ci.repair_task_id`` records the worker that was
+        spawned to fix a red source-CI observation; the repair contract is to
+        merge the exact source head (recorded as ``source_head``) above it,
+        preserving it as an ancestor.  When that worker publishes, the source
+        head is *inherited history*, not a new commit: it is committed as the
+        source task's identity (which may be another profile's worker
+        identity, even pre-dating the identity feature) and the identity gate
+        must not judge it.  Return the distinct source-head OIDs, optionally
+        restricted to one repository.
+        """
+        stmt = select(integration_source_ci.c.source_head).where(
             integration_source_ci.c.repair_task_id == task_id
         )
+        if repository_id is not None:
+            stmt = stmt.where(
+                integration_source_ci.c.repository_id == repository_id
+            )
         async with self._engine.connect() as conn:
-            rows = (await conn.execute(query)).all()
-        return [row[0] for row in rows]
+            rows = (await conn.execute(stmt)).all()
+        seen: dict[str, bool] = {}
+        for (oid,) in rows:
+            if oid:
+                seen[oid] = True
+        return list(seen)
 
     async def finish_task_session_attempt(
         self,

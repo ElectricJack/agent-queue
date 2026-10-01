@@ -326,6 +326,8 @@ def test_task_spec_identity_beats_extra_env():
 
 # --- database-backed surfaces --------------------------------------------------
 
+from sqlalchemy import insert, text
+
 from src.commands.handler import CommandHandler
 from src.commands.principal import (
     DENY_ALL,
@@ -335,6 +337,7 @@ from src.commands.principal import (
 )
 from src.config import DatabaseConfig, DiscordConfig
 from src.database import Database
+from src.database.tables import integration_source_ci
 from src.models import (
     Agent,
     AgentProfile,
@@ -912,6 +915,104 @@ def test_legacy_task_launches_are_reported_not_refused():
     assert identity_digest(*legacy_pool_identity("coder")) in pool.allowed
     assert ACME.digest in pool.allowed
     assert not publish_policy(resolved, [("legacy", "task", "w")]).enforce
+
+
+def ACME_env():
+    return {"GIT_AUTHOR_NAME": "Acme Bot", "GIT_AUTHOR_EMAIL": "bot@acme.test",
+            "GIT_COMMITTER_NAME": "Acme Bot", "GIT_COMMITTER_EMAIL": "bot@acme.test"}
+
+
+async def _record_source_ci(db, task_id, repository_id, source_head):
+    """Insert a minimal projects/repos/integration_source_ci row for a repair task."""
+    await db.create_project(Project(id="p", name="p"))
+    async with db._engine.begin() as conn:
+        await conn.execute(
+            text(
+                "INSERT INTO repos (id, project_id, url, checkout_base_path) "
+                "VALUES (:rid, 'p', 'git@o/r', '/tmp/repo') "
+                "ON CONFLICT (id) DO NOTHING"
+            ),
+            {"rid": repository_id},
+        )
+        await conn.execute(
+            insert(integration_source_ci).values(
+                task_id="source", repository_id=repository_id, source_base="b",
+                source_head=source_head, generation=0, policy_generation=0,
+                state="red", evidence={}, repair_task_id=task_id,
+                repair_attempt=1, observed_at=1.0,
+            )
+        )
+
+
+async def test_source_ci_repair_branch_inherits_foreign_source_head(db, repo):
+    """A source-CI repair branch that contains a foreign-identity source head
+    (committed by another worker) publishes normally when that source head is
+    listed in ``inherited_oids``.
+
+    Regression: without the exclusion the ACME source head counts as a "new"
+    commit outside the repair task's publish policy and the gate refuses.
+    """
+    from src.git.identity import publish_policy
+
+    base = _git(repo, "rev-parse", "main")  # original main, before source-CI work
+
+    # Source head -- committed by ACME (not in the repair task's policy).
+    (repo / "src-head").write_text("upstream source")
+    _git(repo, "add", "src-head")
+    _git(repo, "commit", "-q", "-m", "source head", env=ACME_env())
+    source_head = _git(repo, "rev-parse", "HEAD")
+
+    # Repair commit -- committed by JACK (the project identity).
+    (repo / "fix").write_text("repair")
+    _git(repo, "add", "fix")
+    _git(repo, "commit", "-q", "-m", "repair", env=JACK.env())
+    tip = _git(repo, "rev-parse", "HEAD")
+
+    policy = publish_policy(resolve_git_identity(_config(JACK)))
+    await _record_source_ci(db, "repair-task", "repo", source_head)
+
+    # Bug scenario: without inherited_oids the ACME source head is refused.
+    with pytest.raises(Exception, match="refusing to publish"):
+        await GitManager().acheck_publish_identity(
+            str(repo), tip, base_ref=base, branch="main", policy=policy
+        )
+
+    # Fixed path: query the inherited heads from the DB and pass them to the gate.
+    inherited = await db.list_source_ci_inherited_oids("repair-task")
+    assert inherited == [source_head]
+    notes = await GitManager().acheck_publish_identity(
+        str(repo), tip, base_ref=base, branch="main", policy=policy, inherited_oids=inherited
+    )
+    # Only the repair commit (JACK) is "new"; no committer violation.
+    assert not any(n.get("committer") for n in notes)
+
+
+async def test_source_ci_inherited_oid_does_not_shield_a_new_foreign_commit(db, repo):
+    """Even with the source head excluded, a *new* commit with a foreign
+    committer above it is still refused."""
+    from src.git.identity import publish_policy
+
+    base = _git(repo, "rev-parse", "main")
+
+    (repo / "src-head").write_text("upstream source")
+    _git(repo, "add", "src-head")
+    _git(repo, "commit", "-q", "-m", "source head", env=ACME_env())
+    source_head = _git(repo, "rev-parse", "HEAD")
+
+    # New repair commit by a foreign committer (CLAUDE, not in policy).
+    (repo / "bad").write_text("bad")
+    _git(repo, "add", "bad")
+    _git(repo, "commit", "-q", "-m", "bad repair", env=CLAUDE)
+    tip = _git(repo, "rev-parse", "HEAD")
+
+    policy = publish_policy(resolve_git_identity(_config(JACK)))
+    await _record_source_ci(db, "repair-task", "repo", source_head)
+    inherited = await db.list_source_ci_inherited_oids("repair-task")
+
+    with pytest.raises(Exception, match="refusing to publish"):
+        await GitManager().acheck_publish_identity(
+            str(repo), tip, base_ref=base, branch="main", policy=policy, inherited_oids=inherited
+        )
 
 
 async def test_spawned_event_work_does_not_inherit_a_project_scope():
