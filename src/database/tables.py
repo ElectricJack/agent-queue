@@ -3351,6 +3351,9 @@ integration_candidate_revisions = Table(
     Column("batch_id", Text, primary_key=True),
     Column("revision", Integer, primary_key=True),
     Column("construction_base_sha", Text, nullable=False),
+    # Membership can change only through audited repair ejection. Each old
+    # revision keeps the exact source identities its results were built from.
+    Column("source_manifest", JSONB, nullable=True),
     Column("next_member_ordinal", Integer, nullable=False, server_default="0"),
     Column("repair_parent_revision", Integer, nullable=True),
     Column("head_sha", Text, nullable=True),
@@ -3412,11 +3415,8 @@ integration_candidate_member_results = Table(
         ["integration_candidate_revisions.batch_id", "integration_candidate_revisions.revision"],
         name="fk_integration_candidate_member_results_revision",
     ),
-    ForeignKeyConstraint(
-        ["batch_id", "member_ordinal"],
-        ["integration_batch_members.batch_id", "integration_batch_members.ordinal"],
-        name="fk_integration_candidate_member_results_member",
-    ),
+    # PostgreSQL validates current construction results with a trigger; a
+    # superseded result refers to its revision's frozen source_manifest.
 )
 
 integration_candidate_publications = Table(

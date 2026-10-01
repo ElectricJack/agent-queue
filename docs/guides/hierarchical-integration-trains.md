@@ -37,6 +37,7 @@ aq integration status PROJECT_ID
 aq integration onboard-train PROJECT_ID [--write-policy PATH] [--write-trust-manifest PATH] [--write-workflow PATH] [--write-audit-workflow PATH] [--write-ruleset PATH]
 aq integration app-verify PROJECT_ID [--policy FILE] [--repository-id ID]
 aq integration flush PROJECT_ID
+aq integration eject --batch-id BATCH_ID --task-id TASK_ID --reason REASON
 aq integration enable PROJECT_ID --mode observe --expected-generation GENERATION --reason REASON
 aq integration enable PROJECT_ID --mode train --interval-seconds SECONDS --expected-generation GENERATION --reason REASON
 aq integration reconcile-unmaterialized PROJECT_ID --expected-generation GENERATION --reason REASON
@@ -534,6 +535,21 @@ that exact capability. Worker sessions cannot invoke it.
 
 ### Candidate-member conflict repair
 
+Batch formation inspects added Alembic migrations at the exact reviewed heads.
+When two members reuse a revision ID or add sibling heads from the same parent,
+the first ordered member rides the train and the others wait for a later sweep.
+The supervisor receives a message naming the branches and declarations that need
+rechaining. Rechain the deferred branch after delivery and review its new head.
+
+`aq doctor --check integration.reviewed_file_guard` and `aq doctor --check
+stall.sweep` report repairs blocked by a reviewed-file invariant. Once the repair
+delegate has settled and detached, eject the conflicting member with
+`aq integration eject`. For a recorded reviewed-file rejection, AQ verifies the
+exact pushed SHA remotely and retains the rejected resolution. Other pending pushes
+must first pass the existing resolution recovery command. AQ preserves its approval and
+the old candidate evidence, invalidates the old CI result, and rebuilds a fresh
+revision from the remaining sources. Attached writers, unresolved writes and
+root promotion intents prevent ejection. An empty batch aborts and frees the sweep.
 The agent-queue continuous policy in `docs/config/agent-queue-train-policy.json`
 opts into root `admission: authorized`, `repair.source_ci: true`,
 `repair.conflict_scope: batch` and `repair.on_exhausted: continue`. Completed

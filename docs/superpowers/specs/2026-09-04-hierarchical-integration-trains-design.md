@@ -38,7 +38,7 @@ subtree and, at the project root, a periodically sealed integration train.
 7. Avoid a redundant post-promotion CI run on the identical `main` tree.
 8. Express cadence, routing, waits, retry budgets, and escalation policy in playbooks.
 9. Keep Git mutations deterministic, exact-OID fenced, idempotent, auditable, and restart-safe.
-10. Roll forward on aggregate failures rather than bisecting or ejecting batch members.
+10. Roll forward on aggregate failures; an explicit audited repair ejection may change membership.
 
 ## 3. Non-goals
 
@@ -363,12 +363,11 @@ after consumption may allocate the next request. The next sweep takes one fresh 
 snapshot; missed intervals never create a backlog of historical sweeps. Startup reconciles pending
 requests and outbox delivery, and zero-candidate sweeps use the same consumption protocol.
 
-There is no batch-size cap. A snapshot contains every eligible root PR at that instant.
+There is no batch-size cap. A snapshot contains every compatible eligible root PR at that instant.
 
-This is a deliberate throughput policy: the system does not build batch N+1 on candidate N's
-head, cap membership, or eject a member. One sealed roll-forward integration owns the project
-until promotion or explicit human abort. Those alternatives improve throughput under a poisoned
-batch but contradict the required single-integration and all-eligible-frontier semantics.
+One integration owns the project until promotion or explicit human disposition. The
+2026-09-29 repair-ejection amendment below permits an audited membership change without
+overlapping integrations or revoking a source review.
 
 ### 7.2 Eligibility
 
@@ -384,6 +383,43 @@ A root task is eligible only when:
 
 The eligibility query and lease acquisition must form one fenced operation so two playbook runs
 cannot snapshot the same frontier.
+
+Before sealing, inspect added Alembic migration files from the exact reviewed Git
+objects without executing their code. Duplicate revision IDs and distinct added
+revisions sharing a down_revision cannot ride the same train: keep the first member
+in deterministic dependency order and defer the others, including dependents whose
+prerequisite was deferred. Record the collision and notify the project supervisor
+transactionally with the batch. The deferred source retains its review; its branch
+must be rechained and its changed head reviewed before delivery. Recheck source
+identities under the project lock after Git inspection; a changed frontier is stale.
+
+### 7.2a Audited repair ejection (2026-09-29 amendment)
+
+A local operator or authorized supervisor may eject a member before construction,
+or during repair once its writer is detached and its delegate has settled. Retire
+an unclaimed, unassigned delegate as superseded during the same transaction. Refuse
+attached writers, unresolved ref writes, and batches with a root promotion intent.
+A pushed resolution rejected by a recorded reviewed-file invariant may be retained
+and marked rejected during ejection only after a fresh remote read matches its exact
+resolved SHA, its original session instance has stopped, its workspace is unlocked,
+and its ref mutation is recorded as applied. Other pushed resolutions require the
+existing exact lineage recovery command; never erase external write evidence.
+
+For repair ejection, freeze each candidate revision's ordered source manifest,
+supersede old candidates and preserve their construction results, resolutions and
+publication history. Remove the named live member, compact the remaining ordinals,
+and refresh the live manifest digest. Clear candidate/CI success and rebuild in a
+new revision from the old construction base, excluding all old repair commits.
+Transfer detached ownership to the collector with a fresh fence, invalidate the
+old subject and delegate binding, and retain attempts and active deadlines. An
+explicit eject from a human-held operation rearms a bounded deadline while retaining
+attempts. A later delegate receives a revision-specific identity. Ejecting the final
+member aborts the batch and releases its sweep request. Reviews are never revoked.
+
+Persist reviewed-file guard failures against the exact current revision in the
+repair dossier. Both `integration.reviewed_file_guard` and `stall.sweep` report the
+batch, blocked invariant and safe eject/rechain recovery path. Old revision failures
+and ended operations are excluded.
 
 ### 7.3 Zero candidates
 
@@ -762,8 +798,11 @@ the batch; sealed batches reject later inserts, updates, or deletes.
 
 `integration_candidate_revisions`, keyed by `(batch_id, revision)`, stores each construction base,
 ordered generated squash commits, repair lineage, candidate head, CI evidence, and construction
-state. Construction progress is mutable under the owner fence; superseded revisions retain their
-history. Final receipts reference a member and the promoted revision without updating membership.
+state, plus a frozen `source_manifest` for each revision superseded by ejection.
+Construction progress is mutable under the owner fence; superseded revisions retain their
+history. Current construction results require a current member; historical results refer
+to their revision's frozen manifest. Final receipts reference a member and the promoted
+revision without updating membership.
 
 ### 11.4 Repair stages
 
@@ -1004,7 +1043,7 @@ The design is implemented when:
    the same project.
 6. Every non-empty sweep uses a deleted-after-promotion ephemeral integration branch, including a
    sweep with one candidate.
-7. Aggregate failures roll forward without bisection or membership changes.
+7. Aggregate failures roll forward; only explicit audited repair ejection changes membership.
 8. Repair escalates once to a configurable higher intelligence class before human escalation.
 9. Both repair stages enforce configurable duration and full-CI-attempt limits.
 10. `main` advances only to the exact full-CI-tested candidate via expected-base fast-forward.
@@ -1031,8 +1070,9 @@ incorporated as follows:
   design decision; §6.7 adds attribution and explains why receipts replace main-history bisection.
 - B3 is adopted at the persistence boundary: repair stages are normalized and playbook-declared,
   while the shipped policy retains exactly one higher-intelligence escalation before a human.
-- B4's cap, ejection, and overlapping-train recommendations are intentionally not adopted. The
-  approved policy includes every eligible root, seals membership, rolls forward, and permits one
+- B4's cap and overlapping-train recommendations are intentionally not adopted. The
+  2026-09-29 amendment allows migration collision deferral and audited repair ejection.
+  The approved policy otherwise includes eligible roots, seals membership, rolls forward, and permits one
   integration per project.
 - B5–B6 are adopted: due work coalesces through events, and failure disposition plus branch
   retention are playbook inputs with safe shipped defaults.

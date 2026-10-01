@@ -6,8 +6,10 @@ import hashlib
 import json
 import logging
 from typing import Any, Literal
+from uuid import uuid4
 
 from sqlalchemy import delete, insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.queries.integration_schedule_queries import INTEGRATION_LEASE_SECONDS
 from src.database.tables import (
@@ -16,6 +18,7 @@ from src.database.tables import (
     integration_promotion_intents,
     integration_repair_operations,
     integration_source_ci,
+    messages,
     playbook_artifacts,
     project_integration_leases,
     project_integration_schedules,
@@ -355,7 +358,7 @@ class IntegrationScheduler:
 
 
 class TrainService:
-    """Seal one request's complete reviewed root frontier without Git I/O."""
+    """Inspect reviewed sources, then seal the compatible frontier atomically."""
 
     DEFAULT_PAGE_SIZE = 64
     LEASE_SECONDS = INTEGRATION_LEASE_SECONDS
@@ -366,16 +369,67 @@ class TrainService:
         *,
         default_mode: str = "pull_request",
         page_size: int = DEFAULT_PAGE_SIZE,
+        migration_inspector=None,
     ) -> None:
         if page_size <= 0:
             raise ValueError("integration train page size must be positive")
         self.db = db
         self.default_mode = default_mode
         self.page_size = page_size
+        self.migration_inspector = migration_inspector
 
     async def seal(self, project_id: str, request_id: str, now: float) -> dict[str, Any]:
+        # Keep the public sealed/empty/busy contract. A frontier that moved
+        # while Git was being read gets fresh inspection, never unchecked seal.
+        for _ in range(3):
+            result = await self._seal_once(project_id, request_id, now)
+            if result["outcome"] != "stale":
+                return result
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, project_id)
+            event_id = f"integration-seal-retry:{request_id}:{uuid4().hex}"
+            await enqueue_integration_event(
+                conn,
+                event_id=event_id,
+                dedup_key=event_id,
+                project_id=project_id,
+                event_type="integration.sweep_due",
+                available_at=now + 5,
+                payload={"operation_id": request_id},
+            )
+        return self._result("busy", project_id, request_id, None, None)
+
+    async def _seal_once(self, project_id: str, request_id: str, now: float) -> dict[str, Any]:
         if not project_id.strip() or not request_id.strip():
             raise ValueError("integration seal project and request are required")
+        inspected = None
+        if self.migration_inspector is not None:
+            # Git I/O must never hold the hierarchy lock. The transaction below
+            # reselects exact reviewed identities before using this observation.
+            async with self.db._engine.connect() as read_conn:
+                prior = await self._batch_for_request(read_conn, project_id, request_id)
+                if prior is not None and prior["lifecycle"] != "sealing":
+                    return await self._replay_result(read_conn, prior)
+                project = await self.db.get_project(project_id)
+                preview = (
+                    await self._eligible_members(
+                        read_conn,
+                        project_id=project_id,
+                        repository_id=project.integration_repository_id,
+                        project_mode=project.integration_mode,
+                    )
+                    if project is not None
+                    else []
+                )
+            inspected = {}
+            for member in preview:
+                key = (
+                    member["task_id"],
+                    member["repository_id"],
+                    member["source_base"],
+                    member["source_head"],
+                )
+                inspected[key] = await self.migration_inspector(member)
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
 
@@ -384,24 +438,30 @@ class TrainService:
                 return await self._replay_result(conn, request_batch)
 
             lease = (
-                await conn.execute(
-                    select(project_integration_leases)
-                    .where(project_integration_leases.c.project_id == project_id)
-                    .with_for_update()
+                (
+                    await conn.execute(
+                        select(project_integration_leases)
+                        .where(project_integration_leases.c.project_id == project_id)
+                        .with_for_update()
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if lease is not None and float(lease["expires_at"]) > now:
-                return self._result(
-                    "busy", project_id, request_id, lease["batch_id"], None
-                )
+                return self._result("busy", project_id, request_id, lease["batch_id"], None)
 
             schedule = (
-                await conn.execute(
-                    select(project_integration_schedules)
-                    .where(project_integration_schedules.c.project_id == project_id)
-                    .with_for_update()
+                (
+                    await conn.execute(
+                        select(project_integration_schedules)
+                        .where(project_integration_schedules.c.project_id == project_id)
+                        .with_for_update()
+                    )
                 )
-            ).mappings().one_or_none()
+                .mappings()
+                .one_or_none()
+            )
             if schedule is None or schedule["outstanding_request_id"] != request_id:
                 raise ValueError("integration seal request is not outstanding")
 
@@ -499,6 +559,42 @@ class TrainService:
                 repository_id=repository_id,
                 project_mode=project["integration_mode"],
             )
+            if inspected is not None:
+                from src.integration.migration_heads import select_members
+
+                if any(
+                    (
+                        member["task_id"],
+                        member["repository_id"],
+                        member["source_base"],
+                        member["source_head"],
+                    )
+                    not in inspected
+                    for member in members
+                ):
+                    return self._result("stale", project_id, request_id, None, None)
+                # A dependent cannot ride a batch whose prerequisite was just
+                # deferred for a collision, even if it adds no migrations.
+                edges = await dependencies_for(conn, [member["task_id"] for member in members])
+                delivered = await self.db.delivered_root_task_ids_on(
+                    conn,
+                    project_id=project_id,
+                    repository_id=repository_id,
+                )
+                members, deferred = select_members(
+                    members,
+                    inspected,
+                    dependencies=edges,
+                    delivered=delivered,
+                )
+                for finding in deferred:
+                    await self._record_migration_deferral_on(
+                        conn,
+                        project_id,
+                        request_id,
+                        finding,
+                        now,
+                    )
             policy_snapshot = policy.model_dump(mode="json")
             for member in members:
                 member["source_ref"] = self._source_ref(member["source_branch"])
@@ -663,9 +759,41 @@ class TrainService:
                 .values(lifecycle="sealed", updated_at=now)
             )
             await clear_settling_window(conn, project_id=project_id)
-            return self._result(
-                "sealed", project_id, request_id, batch_id, operation["id"]
-            )
+            return self._result("sealed", project_id, request_id, batch_id, operation["id"])
+
+    async def _record_migration_deferral_on(self, conn, project_id, request_id, finding, now):
+        identity = hashlib.sha256(
+            f"{request_id}:{finding['task_id']}:{finding['source_head']}".encode()
+        ).hexdigest()
+        body = (
+            f"Deferred {finding['task_id']} (branch {finding['source_branch']}, "
+            f"head {finding['source_head']}) from sweep {request_id}: Alembic head collision "
+            f"with {finding['conflicts_with']} ({finding['path']}, revision "
+            f"{finding['revision']}, down_revision {finding['down_revisions']}). "
+            "Rechain the deferred branch after the first member delivers and approve its new "
+            "head before the next sweep. The current review approval is preserved."
+        )
+        logger.warning("integration: %s", body)
+        await self.db.log_event(
+            "integration.migration_deferred",
+            project_id=project_id,
+            task_id=finding["task_id"],
+            payload=json.dumps({"request_id": request_id, **finding}),
+            conn=conn,
+        )
+        statement = pg_insert(messages).values(
+            id=f"migration-deferred-{identity}",
+            project_id=project_id,
+            from_kind="system",
+            from_id="integration_train",
+            to_kind="session",
+            to_id=f"supervisor-{project_id}",
+            subject="Integration migration needs rechaining",
+            body=body,
+            priority=100,
+            created_at=now,
+        )
+        await conn.execute(statement.on_conflict_do_nothing(index_elements=["id"]))
 
     async def _eligible_members(
         self,

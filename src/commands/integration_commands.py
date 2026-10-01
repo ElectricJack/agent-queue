@@ -680,8 +680,22 @@ class IntegrationCommandsMixin:
         operator_id, refusal = await self._integration_operator_for_batch(batch_id)
         if refusal is not None:
             return _failure("unauthorized", refusal)
+
+        async def observe_resolution(resolution):
+            batch = await self.db.get_integration_batch(resolution["batch_id"])
+            if batch is None:
+                return None
+            service = await self._integration_candidate_service(batch)
+            return await service.app_client.exact_head_ref(
+                resolution["target_branch"].removeprefix("refs/heads/"),
+            )
+
         return await self._integration_control_service().eject(
-            batch_id, task_id=task_id, reason=reason, operator_id=operator_id
+            batch_id,
+            task_id=task_id,
+            reason=reason,
+            operator_id=operator_id,
+            resolution_observer=observe_resolution,
         )
 
     async def _reconcile_integration_completion(self, project_id: str) -> None:
@@ -1191,10 +1205,12 @@ class IntegrationCommandsMixin:
         if service is not None:
             return service
         from src.integration.scheduler import TrainService
+        from src.integration.migration_heads import MigrationInspector
 
         return TrainService(
             self.db,
             default_mode=self.config.integration.default_mode,
+            migration_inspector=MigrationInspector(self._integration_promotion_service()),
         )
 
     def _integration_root_promotion_service(self):

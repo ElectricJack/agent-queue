@@ -1123,6 +1123,8 @@ class RepairService:
                         "configuration_blocked", operation_id, stage
                     )
                 repair_task_id = f"repair-{operation_id}-{stage}"
+                if (repair_stage["dossier"] or {}).get("membership_ejections"):
+                    repair_task_id += f"-r{repair_stage['current_subject']['revision']}"
                 collision = (
                     await conn.execute(
                         select(tasks).where(tasks.c.id == repair_task_id).with_for_update()
