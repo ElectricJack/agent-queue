@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, ValidationError
 from sqlalchemy import insert, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
+from src.database.integrity import integrity_violation
 from src.database.tables import (
     integration_batch_members,
     integration_attestation_publications,
@@ -78,6 +79,19 @@ class RootPromotionResult(BaseModel):
 
 class RootPromotionInvariantError(RuntimeError):
     """Durable root promotion state is internally inconsistent."""
+
+
+class RootPromotionConstraintError(RootPromotionInvariantError):
+    """The database refused the root reservation, and no canonical intent explains it.
+
+    Only a ``unique_violation`` answered by a readable canonical intent is a
+    lost race; every other refusal names its SQLSTATE and constraint.
+    """
+
+    def __init__(self, message: str, *, sqlstate: str | None, constraint: str | None):
+        super().__init__(message)
+        self.sqlstate = sqlstate
+        self.constraint = constraint
 
 
 class RootAttestationSubject(BaseModel):
@@ -340,12 +354,27 @@ class RootPromotionService:
                         raise RootPromotionInvariantError(
                             "root batch did not enter promotion atomically"
                         )
-            except IntegrityError:
-                canonical = await self._intent_on(conn, intent_id)
+            except IntegrityError as exc:
+                violation = integrity_violation(exc)
+                canonical = (
+                    await self._intent_on(conn, intent_id) if violation.is_unique else None
+                )
                 if canonical is None:
-                    raise RootPromotionInvariantError(
-                        "root promotion reservation raced without canonical state"
-                    ) from None
+                    message = (
+                        "root promotion reservation raced without canonical state "
+                        f"({violation.describe()})"
+                        if violation.is_unique
+                        else f"root promotion reservation refused by {violation.describe()}; "
+                        "the database rejected the row, not a concurrent reservation"
+                    )
+                    logger.error(
+                        "%s batch=%s revision=%s operation=%s stage=%s",
+                        message, batch_id, revision, locked["operation"]["id"],
+                        locked["operation"]["active_stage"],
+                    )
+                    raise RootPromotionConstraintError(
+                        message, sqlstate=violation.sqlstate, constraint=violation.constraint
+                    ) from exc
                 return await self._existing_result_on(
                     conn, canonical, batch_id, revision
                 )

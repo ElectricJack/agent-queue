@@ -3502,7 +3502,9 @@ integration_candidate_resolutions = Table(
     CheckConstraint(
         "member_ordinal >= 0", name="ck_integration_candidate_resolutions_member_ordinal"
     ),
-    CheckConstraint("stage_ordinal IN (0, 1)", name="ck_integration_candidate_resolutions_stage"),
+    # Any retained successor stage (a00000000050); the FK below binds the
+    # exact stage row.
+    CheckConstraint("stage_ordinal >= 0", name="ck_integration_candidate_resolutions_stage"),
     CheckConstraint("fence_token >= 0", name="ck_integration_candidate_resolutions_fence"),
     CheckConstraint(
         "(handoff_owner_id IS NULL AND handoff_fence_token IS NULL) OR "
@@ -3612,8 +3614,9 @@ integration_candidate_ref_mutations = Table(
         "'repair_handoff', 'root_main')",
         name="ck_integration_candidate_ref_mutations_purpose",
     ),
+    # Any retained successor stage (a00000000050), as for resolutions.
     CheckConstraint(
-        "operation_stage IN (0, 1)", name="ck_integration_candidate_ref_mutations_stage"
+        "operation_stage >= 0", name="ck_integration_candidate_ref_mutations_stage"
     ),
     CheckConstraint(
         "lease_fence_token >= 0 AND branch_fence_token >= 0",

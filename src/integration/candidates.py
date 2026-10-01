@@ -20,6 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.commands.principal import PrincipalKind, current_principal, matches_session_instance
+from src.database.integrity import integrity_violation
 from src.database.tables import (
     integration_batch_members,
     integration_attestation_publications,
@@ -112,6 +113,19 @@ class CandidateAuthorizationError(ValueError):
 
 class CandidateStaleAuthority(RuntimeError):
     """The snapshotted hierarchy, lease, revision, or branch fence changed."""
+
+
+class CandidateConstraintError(CandidateStaleAuthority):
+    """The database refused a candidate row itself, not because a writer won a race.
+
+    Callers keep treating it as stale authority; the message and attributes
+    name the SQLSTATE and constraint instead of reporting a race.
+    """
+
+    def __init__(self, message: str, *, sqlstate: str | None, constraint: str | None):
+        super().__init__(message)
+        self.sqlstate = sqlstate
+        self.constraint = constraint
 
 
 class CandidateRepairResult(BaseModel):
@@ -2515,7 +2529,14 @@ class CandidateService:
                             updated_at=now,
                         )
                     )
-            except IntegrityError:
+            except IntegrityError as exc:
+                violation = integrity_violation(exc)
+                if not violation.is_unique:
+                    raise CandidateConstraintError(
+                        f"candidate mutation reservation refused by {violation.describe()}",
+                        sqlstate=violation.sqlstate,
+                        constraint=violation.constraint,
+                    ) from exc
                 row = (
                     await conn.execute(
                         select(integration_candidate_ref_mutations)

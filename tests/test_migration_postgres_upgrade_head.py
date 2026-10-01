@@ -125,6 +125,150 @@ async def test_continuous_repair_upgrade_from_two_stage_schema():
         await conn.close()
 
 
+_STAGE_CHECKS = {
+    "ck_integration_candidate_resolutions_stage": ("integration_candidate_resolutions", "stage_ordinal"),
+    "ck_integration_candidate_ref_mutations_stage": (
+        "integration_candidate_ref_mutations",
+        "operation_stage",
+    ),
+}
+
+
+async def _stage_check_definitions(conn) -> dict[str, str]:
+    rows = await conn.fetch(
+        "SELECT conname, pg_get_constraintdef(oid) AS definition FROM pg_constraint "
+        "WHERE conname = ANY($1::text[])",
+        list(_STAGE_CHECKS),
+    )
+    return {row["conname"]: row["definition"] for row in rows}
+
+
+async def _insert_stage_rows(conn, stage: int, suffix: str) -> None:
+    """One resolution (for member *stage*) and one mutation at *stage*.
+
+    Only CHECK constraints are under test: ``session_replication_role =
+    replica`` suspends the FK and guard triggers (not CHECK constraints), so
+    the rows need no parent graph.
+    """
+    oid = "a" * 40
+    await conn.execute("SET session_replication_role = replica")
+    try:
+        await conn.execute(
+            "INSERT INTO integration_candidate_resolutions (id, batch_id, revision, "
+            "member_ordinal, operation_id, operation_episode_id, stage_ordinal, "
+            "stage_deadline_at, project_id, repair_task_id, repair_session_id, "
+            "repair_session_instance_token, repair_workspace_id, repair_workspace_path, "
+            "repository_id, branch, target_branch, target_kind, fence_owner_id, fence_token, "
+            "partial_head_sha, source_base_sha, source_head_sha, resolved_head_sha, "
+            "resolved_tree_sha, repair_commit_shas, state, created_at, updated_at) VALUES "
+            "($1, 'batch', 0, $2, 'op', 'batch', $2, 1.0, 'p', 'repair', 'session', 'token', "
+            "'workspace', '/w', 'repo', 'refs/heads/b', 'refs/heads/t', 'qualified', "
+            "'repair', 1, $3, $3, $3, $3, $3, '[]', 'reserved', 1.0, 1.0)",
+            f"resolution-{suffix}", stage, oid,
+        )
+        await conn.execute(
+            "INSERT INTO integration_candidate_ref_mutations (id, batch_id, revision, purpose, "
+            "repository_id, branch, target_branch, expected_old_sha, desired_sha, "
+            "operation_id, operation_episode_id, operation_stage, lease_owner_id, "
+            "lease_fence_token, branch_owner_id, branch_owner_role, branch_fence_token, "
+            "nonce, state, expires_at, created_at, updated_at) VALUES "
+            "($1, 'batch', 0, 'root_main', 'repo', 'refs/heads/b', 'refs/heads/main', $3, $3, "
+            "'op', 'batch', $2, 'lease', 1, 'op', 'collector', 1, 'nonce', 'reserved', "
+            "1.0, 1.0, 1.0)",
+            f"mutation-{suffix}", stage, oid,
+        )
+    finally:
+        await conn.execute("SET session_replication_role = DEFAULT")
+
+
+async def test_later_repair_stage_constraints_upgrade_from_two_stage_schema():
+    """a00000000050 admits stage 2+ resolutions/mutations and still rejects negatives."""
+    import asyncpg
+
+    dsn = await create_scratch_database("stages50")
+    before = _alembic_pg(dsn, "upgrade", "a00000000048")
+    assert before.returncode == 0, before.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # Simulate the deployed installation, not the live-metadata baseline.
+        for name, (table, column) in _STAGE_CHECKS.items():
+            await conn.execute(f"ALTER TABLE {table} DROP CONSTRAINT {name}")
+            await conn.execute(
+                f"ALTER TABLE {table} ADD CONSTRAINT {name} CHECK ({column} IN (0, 1))"
+            )
+        await _insert_stage_rows(conn, 1, "stage-1")
+        with pytest.raises(asyncpg.CheckViolationError) as refused:
+            await _insert_stage_rows(conn, 2, "stage-2-before")
+        assert refused.value.constraint_name == "ck_integration_candidate_resolutions_stage"
+    finally:
+        await conn.close()
+
+    upgraded = _alembic_pg(dsn, "upgrade", "a00000000050")
+    assert upgraded.returncode == 0, upgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        definitions = await _stage_check_definitions(conn)
+        assert definitions == {
+            name: f"CHECK (({column} >= 0))" for name, (_table, column) in _STAGE_CHECKS.items()
+        }
+        await _insert_stage_rows(conn, 2, "stage-2")
+        await _insert_stage_rows(conn, 7, "stage-7")
+        for table, column in _STAGE_CHECKS.values():
+            with pytest.raises(asyncpg.CheckViolationError) as negative:
+                await conn.execute("SET session_replication_role = replica")
+                try:
+                    await conn.execute(f"UPDATE {table} SET {column} = -1 WHERE {column} = 1")
+                finally:
+                    await conn.execute("SET session_replication_role = DEFAULT")
+            assert negative.value.constraint_name in _STAGE_CHECKS
+        # Rows recorded before the upgrade are untouched.
+        assert await conn.fetchval(
+            "SELECT stage_ordinal FROM integration_candidate_resolutions WHERE id = 'resolution-stage-1'"
+        ) == 1
+    finally:
+        await conn.close()
+
+    # Retained stage 2+ evidence cannot fit the old schema: downgrade refuses.
+    refused_downgrade = _alembic_pg(dsn, "downgrade", "a00000000048")
+    assert refused_downgrade.returncode != 0
+    assert "repair stage above 1" in refused_downgrade.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000050"
+        assert set((await _stage_check_definitions(conn)).values()) == {
+            "CHECK ((stage_ordinal >= 0))", "CHECK ((operation_stage >= 0))"
+        }
+        await conn.execute("SET session_replication_role = replica")
+        await conn.execute("DELETE FROM integration_candidate_resolutions WHERE stage_ordinal > 1")
+        await conn.execute("DELETE FROM integration_candidate_ref_mutations WHERE operation_stage > 1")
+        await conn.execute("SET session_replication_role = DEFAULT")
+    finally:
+        await conn.close()
+
+    downgraded = _alembic_pg(dsn, "downgrade", "a00000000048")
+    assert downgraded.returncode == 0, downgraded.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert await conn.fetchval("SELECT version_num FROM alembic_version") == "a00000000048"
+        definitions = await _stage_check_definitions(conn)
+        assert "ARRAY[0, 1]" in definitions["ck_integration_candidate_resolutions_stage"]
+        assert "ARRAY[0, 1]" in definitions["ck_integration_candidate_ref_mutations_stage"]
+    finally:
+        await conn.close()
+
+    # Re-upgrade, then re-run the revision over an already-relaxed schema.
+    for args in (("upgrade", "a00000000050"), ("stamp", "a00000000048"), ("upgrade", "a00000000050")):
+        rerun = _alembic_pg(dsn, *args)
+        assert rerun.returncode == 0, rerun.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert set((await _stage_check_definitions(conn)).values()) == {
+            "CHECK ((stage_ordinal >= 0))", "CHECK ((operation_stage >= 0))"
+        }
+    finally:
+        await conn.close()
+
+
 async def test_benchmark_attribution_upgrade_from_revision_46():
     """Revision 47 adds attribution after inbox, object loops and attachments."""
     dsn = await create_scratch_database("benchmark47")
