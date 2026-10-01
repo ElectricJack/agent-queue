@@ -1791,6 +1791,7 @@ class IntegrationCommandsMixin:
         if service is not None:
             return service
         from src.integration.repair import RepairService
+        from src.integration.owner_recovery import owner_recovery_for
 
         return RepairService(
             self.db,
@@ -1802,6 +1803,7 @@ class IntegrationCommandsMixin:
                 "aconfirm_integration_owner_stopped_for_repair",
                 None,
             ),
+            owner_recovery=owner_recovery_for(self.orchestrator),
         )
 
     async def _integration_operation_project_id(self, operation: dict) -> str | None:

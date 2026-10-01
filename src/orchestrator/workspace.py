@@ -579,7 +579,15 @@ class WorkspaceMixin:
                     "reserved": True,
                     "materialized": True,
                     "operation_id": repair["id"],
+                    "preserved_progress": (repair.get("stage_dossier") or {}).get(
+                        "preserved_progress"
+                    ),
                 }
+                if (
+                    origin["preserved_progress"]
+                    and origin["preserved_progress"]["subject"] != repair["stage_subject"]
+                ):
+                    origin["preserved_progress"] = None
             else:
                 raise ValueError("repair operation target kind is invalid")
             if (task.branch_name or "").removeprefix("refs/heads/") != branch.removeprefix("refs/heads/"):
@@ -687,6 +695,24 @@ class WorkspaceMixin:
         tracking = f"refs/remotes/origin/{branch}"
         await self.git.afetch_origin(workspace, repository_url=repository_url)
         head = (await self.git._arun(["rev-parse", "--verify", tracking], cwd=workspace)).strip()
+        progress = origin.get("preserved_progress")
+        if progress:
+            preserved = await self.git.als_remote_ref(workspace, progress["ref"])
+            from src.git.manager import RemoteRefState
+
+            if (
+                preserved.state is not RemoteRefState.PRESENT
+                or preserved.oid != progress["sha"]
+                or progress["sha"] != origin["base_sha"]
+                or await self.git.ais_ancestor(
+                    workspace, progress["base_sha"], progress["sha"], strict=True
+                ) is not True
+                or await self.git.ais_ancestor(
+                    workspace, head, progress["sha"], strict=True
+                ) is not True
+            ):
+                raise GitError("preserved repair tip or canonical branch lineage changed")
+            return progress["sha"]
         if not is_valid_git_oid(head) or await self.git.ais_ancestor(
             workspace, origin["base_sha"], head, strict=True
         ) is not True:
