@@ -533,6 +533,18 @@ receipt; a new no-op completion gets a new receipt revision. A playbook may
 invoke the contracted `integration_record_noop` command when its policy grants
 that exact capability. Worker sessions cannot invoke it.
 
+### Root delivery in `task show`
+
+A root task (one with no collection episode) is delivered by its train batch,
+not by a parent. `aq --json task show` projects that delivery from the durable
+root receipts: when the task's checkpoint has no episode, the projection lists
+the `code` receipts on the repository's default branch whose batch member is
+the task and whose `reviewed_head_sha` equals the current `checkpoint_sha` and
+whose review evidence row carries the checkpoint's current `generation`. With
+at least one such receipt the outcome is `delivered`; otherwise it stays
+`working` with no receipts. A receipt for an older head or generation is never
+counted, and the projection only reads; it never writes or rewrites receipts.
+
 ### Candidate-member conflict repair
 
 Batch formation inspects added Alembic migrations at the exact reviewed heads.

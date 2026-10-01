@@ -96,15 +96,16 @@ class SurfaceCommandsMixin:
             and checkpoint is not None
         ):
             if checkpoint.get("episode_id") is None:
+                receipts = await self._root_delivery_receipts(checkpoint)
                 info["integration_delivery"] = {
-                    "outcome": "working",
+                    "outcome": "delivered" if receipts else "working",
                     "task_id": task_id,
                     "generation": int(checkpoint["generation"]),
                     "checkpoint_sha": checkpoint.get("checkpoint_sha"),
                     "episode_id": None,
                     "operation_id": None,
                     "head_sha": checkpoint.get("checkpoint_sha"),
-                    "receipts": [],
+                    "receipts": receipts,
                     "blockers": [],
                 }
             else:
@@ -114,6 +115,53 @@ class SurfaceCommandsMixin:
                     task_id
                 )
         return info
+
+    async def _root_delivery_receipts(self, checkpoint: dict) -> list[dict]:
+        """Root train receipts that deliver the checkpoint's current reviewed identity.
+
+        A root task has no collection episode; its delivery is the batch
+        receipt on the default branch. Only ``code`` receipts for the exact
+        current head whose review evidence carries the current generation count.
+        """
+        repository_id = checkpoint.get("repository_id")
+        head = checkpoint.get("checkpoint_sha")
+        if not repository_id or not head:
+            return []
+        repo = await self.db.get_repo(repository_id)
+        default_branch = getattr(repo, "default_branch", None) if repo else None
+        if not default_branch:
+            return []
+        rows = await self.db.list_integration_delivery_receipts(
+            source_task_id=checkpoint["task_id"],
+            repository_id=repository_id,
+            target_branch=f"refs/heads/{default_branch}",
+        )
+        selected = []
+        for row in rows:
+            if (
+                row["disposition"] != "code"
+                or row["batch_id"] is None
+                or row["reviewed_head_sha"] != head
+            ):
+                continue
+            evidence = row["review_evidence"]
+            evidence_id = (
+                evidence.get("review_evidence_id") if isinstance(evidence, dict) else None
+            )
+            review = (
+                await self.db.get_integration_review_evidence(evidence_id)
+                if evidence_id
+                else None
+            )
+            if (
+                review is None
+                or review["source_task_id"] != checkpoint["task_id"]
+                or review["reviewed_head_sha"] != head
+                or int(review["generation"]) != int(checkpoint["generation"])
+            ):
+                continue
+            selected.append(row)
+        return selected
 
     async def _claimed_by(self, task_id: str) -> dict | None:
         """Who currently holds *task_id*, or ``None`` when nobody does.
