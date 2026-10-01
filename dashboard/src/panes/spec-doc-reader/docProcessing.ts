@@ -100,12 +100,15 @@ export function parseFrontmatter(raw: string): {
   return { data: Object.keys(fallback).length > 0 ? fallback : null, content };
 }
 
-const LEADING_H1 = /^\s*#[ \t]+.+?\n+/;
+// `.` never matches `\r`, so the heading line must end in any Markdown line
+// ending (LF, CRLF or a bare CR), or a CRLF document keeps its h1.
+const LEADING_H1 = /^\s*#[ \t]+.+?(?:\r\n?|\n)+/;
 
 /**
  * Strip a single leading `#` (h1) heading from `content`, if present as the
- * very first thing in the document. The resolved title (§5.4) already
- * renders above the meta card, so re-rendering the same h1 again inside
+ * very first thing in the document. Only the rendered body changes: raw,
+ * stored and downloaded Markdown keep their h1. The resolved title (§5.4)
+ * already renders above the meta card, so re-rendering the same h1 again inside
  * the markdown body would duplicate it visually and in the DOM. TOC
  * extraction deliberately does NOT use this — `extractToc` needs the
  * unstripped source so its slugger consumes the h1 in document order for

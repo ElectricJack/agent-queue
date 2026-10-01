@@ -195,6 +195,20 @@ describe("review pane", () => {
     expect(screen.getByText("Visible body")).toBeInTheDocument();
   });
 
+  it("renders the title once for CRLF content with YAML frontmatter", () => {
+    const content = "---\r\nstatus: draft\r\n---\r\n# Original plan\r\n\r\n## Goal\r\n\r\nVisible body\r\n";
+    hooks.useReview.mockImplementation(() => ({
+      data: { ...response, revision: { ...response.revision, content }, diff: undefined },
+      isLoading: false,
+      error: null,
+    }));
+    renderPane();
+    expect(screen.getAllByRole("heading", { name: "Original plan" })).toHaveLength(1);
+    expect(screen.getByText("draft")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Goal" })).toBeInTheDocument();
+    expect(screen.getByText("Visible body")).toBeInTheDocument();
+  });
+
   it("renders images for the selected revision with pinned metadata", () => {
     hooks.useReview.mockImplementation(() => ({
       data: { ...response, attachments: [{
