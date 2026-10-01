@@ -1317,7 +1317,7 @@
       ]
     }
   },
-  "digest": "sha256:a2eea819ceaa420edbcf2f0a9f24e7603a5d97a18376bd6c2a367d1011317273",
+  "digest": "sha256:0efa6f76680d3076d6a8be85270e6b485df2c4520a3ec4901ae1e15f8b97e39a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8733,13 +8733,14 @@
       "areas": [
         "database"
       ],
-      "default_arm": true,
+      "default_arm": false,
       "imports": [
         "src.database.adapters.postgresql",
         "src.database.legacy_sqlite_import",
         "src.database.tables"
       ],
       "markers": [
+        "migration",
         "parametrize",
         "skipif"
       ],
@@ -10324,13 +10325,14 @@
       "areas": [
         "test-substrate"
       ],
-      "default_arm": true,
+      "default_arm": false,
       "imports": [
         "src.database",
         "src.models"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "slow"
       ],
       "summary": "Parallel test workers must not destroy one another's databases."
     },
