@@ -684,6 +684,13 @@ def _launchable(
     return _Derived(AVAILABLE, "", "")
 
 
+def _holds_exhausted(account: UsageReading | None, config: Any) -> bool:
+    """The fresh, unreset account-wide reading still meets D3 rule (a)."""
+    return account is not None and account.used_percent >= _cfg(
+        config, "usage", "exhausted_percent", 99
+    )
+
+
 def _recovered(
     row: ProviderAvailability,
     evidence: Evidence | None,
@@ -699,6 +706,12 @@ def _recovered(
     grace = _cfg(config, "recovery", "reset_grace_seconds", 60)
     degraded_pct = _cfg(config, "usage", "degraded_percent", 85)
     if row.state == EXHAUSTED:
+        # The provider's own reading outranks a session's call and the clock:
+        # probation now would be tripped straight back by rule (a) on the next
+        # tick.  Only a fresher low reading, the window's reset or the reading
+        # going stale -- each of which drops it from ``account`` -- releases it.
+        if _holds_exhausted(account, config):
+            return None
         if row.until is not None and now >= row.until + grace:
             return "the usage window's reset time passed"
         if (
@@ -913,15 +926,18 @@ def reduce(
                 counters_reset_at=now,
             )
         elif (
-            # A structured reset clock beats a guessed backoff.
+            # A structured reset clock beats a guessed backoff, and a guess
+            # that passed while the reading still holds is guessed again.
             tripped is not None
             and tripped.state == row.state == EXHAUSTED
-            and account is not None
-            and account.resets_at is not None
-            and account.resets_at > now
-            and account.used_percent >= _cfg(config, "usage", "exhausted_percent", 99)
+            and _holds_exhausted(account, config)
+            and (
+                (account.resets_at is not None and account.resets_at > now)
+                or row.until is None
+                or row.until <= now
+            )
         ):
-            row = replace(row, until=account.resets_at)
+            row = replace(row, until=tripped.until)
         return _finish(before, row, now=now, actor=actor, evidence=evidence)
 
     if row.state == DEGRADED and row.reason_code == RECOVERING:
