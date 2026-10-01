@@ -514,6 +514,42 @@ def integration_materialize_root(
     _execute(ctx, "integration_materialize_root", args)
 
 
+@integration.command("authorize-root")
+@click.argument("task_id")
+@click.option("--apply", is_flag=True, help="Record the authorization; default is a dry run.")
+@click.option(
+    "--head",
+    "expected_head_sha",
+    help="The head the dry run reported; required with --apply.",
+)
+@click.option("--reason", help="Required audit reason when applying.")
+@click.pass_context
+@_handle_errors
+def integration_authorize_root(
+    ctx: click.Context, task_id: str, apply: bool,
+    expected_head_sha: str | None, reason: str | None,
+) -> None:
+    """Authorize completed train root TASK_ID's exact source for delivery.
+
+    Root `admission: authorized` admits feature and bugfix roots and the ids the
+    policy lists. This records an explicit authorization for one other root's
+    exact source (base, head and checkpoint generation) without changing the
+    policy, its generation or the task's type, so the train keeps running.
+    The dry run reports the source and answers `would_authorize`,
+    `already_authorized`, `blocked` or `not_eligible`. `--apply` needs the
+    reported head and a reason. Holds, open gates, a rejected review and source
+    CI still bind; a new head needs a new authorization.
+    """
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {"task_id": task_id, "dry_run": not apply}
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_authorize_root", args)
+
+
 @integration.command("redrive-child")
 @click.argument("task_id")
 @click.option(

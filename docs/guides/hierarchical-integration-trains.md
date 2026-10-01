@@ -50,6 +50,7 @@ aq integration retry-cleanup BATCH_ID
 aq integration clear-stale-request PROJECT_ID [--apply --request-id REQUEST_ID --reason REASON]
 aq integration redrive-root TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration materialize-root TASK_ID [--apply --head HEAD_SHA --reason REASON]
+aq integration authorize-root TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration redrive-child CHILD_TASK_ID [--apply --head HEAD_SHA --reason REASON]
 aq integration record-noop CHILD_TASK_ID --expected-head-sha CHECKPOINT_SHA
 aq project set PROJECT_ID integration-repository-id REPOSITORY_ID --expected-integration-generation GENERATION --reason REASON
@@ -573,7 +574,23 @@ feature/bugfix tasks receive exact remote-head/tree authorization evidence tagge
 with the project policy generation. `root.authorized_task_ids` explicitly admits
 additional authorized task types; the agent-queue policy names the `steady-delta`
 chore without changing its type or parent verification. It does not impersonate a human review or
-override a rejection, open gate or hold. Missing legacy root checkpoints still
+override a rejection, open gate or hold. Editing that list swaps the policy
+generation, which re-fences every pending source's authorization evidence and
+source CI, so `configure` only accepts it while the train is drained. To deliver
+one more explicitly user-authorized root while the train keeps running, record an
+exact authorization instead:
+
+```bash
+aq integration authorize-root TASK_ID                                     # dry run
+aq integration authorize-root TASK_ID --apply --head HEAD_SHA --reason "..."
+```
+
+The row in `integration_root_authorizations` pins the root's exact base, head and
+checkpoint generation and stands in for the kind allowlist only. Policy,
+generation, task type, active batches and their frozen snapshots are untouched.
+Holds, open gates, a rejected review, `reviewed` admission and source CI still
+bind, unrelated roots stay refused, and a moved head needs a new authorization.
+Missing legacy root checkpoints still
 require the audited `integration materialize-root` proof; branches without task
 provenance remain outside admission.
 

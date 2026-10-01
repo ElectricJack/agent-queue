@@ -2058,6 +2058,36 @@ history after archive and refuse hard deletion through the integration guard.
 | `repair_history` | JSONB | NOT NULL, default `[]` | Previous repair task/attempt identities |
 | `observed_at` | REAL | NOT NULL | Unix timestamp |
 
+### Table: `integration_root_authorizations`
+
+Append-only operator authorization of one exact train root source. Root
+`admission: authorized` admits a COMPLETED root whose kind the policy does not
+(not feature/bugfix, not in `root.authorized_task_ids`) only while a row matches
+its exact source; holds, open gates, rejected reviews, generation-pinned
+authorization evidence and source CI still bind. Written by `aq integration
+authorize-root`; there is no update or delete path. See
+`docs/superpowers/specs/2026-10-01-explicit-root-authorization-design.md`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | `root-authorization-<uuid5>` of the exact identity |
+| `project_id` | TEXT | NOT NULL | Project |
+| `task_id` | TEXT | NOT NULL, UNIQUE with the source identity | Authorized root task |
+| `repository_id` | TEXT | NOT NULL | Designated integration repository |
+| `source_base` | TEXT | NOT NULL | Branch-origin base of the source |
+| `source_head` | TEXT | NOT NULL | Exact authorized head |
+| `generation` | INTEGER | NOT NULL, `>= 0` | Source checkpoint generation |
+| `review_kind` | TEXT | NOT NULL | `leaf` or `parent` |
+| `pr_url` | TEXT | NOT NULL | Pull request of the source |
+| `task_type` | TEXT | nullable | Task kind when authorized (audit) |
+| `policy_generation` | INTEGER | NOT NULL, `>= 0` | Project generation when authorized (audit only; never a fence) |
+| `operator_id` | TEXT | NOT NULL | Operator or supervisor label |
+| `reason` | TEXT | NOT NULL | Audit reason |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+Unique constraint `uq_integration_root_authorizations_source` on `(task_id,
+repository_id, source_base, source_head, generation)`.
+
 ### Table: `integration_review_evidence`
 
 Immutable record that a reviewer approved (or rejected) an exact

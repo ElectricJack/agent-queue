@@ -186,6 +186,8 @@ _EXCLUDED_TABLES: frozenset[str] = frozenset(
         "benchmark_stage_spans",
         # Exact source-CI recovery shipped in PostgreSQL revision 48.
         "integration_source_ci",
+        # Exact per-root operator authorizations shipped in revision 54.
+        "integration_root_authorizations",
     }
 )
 

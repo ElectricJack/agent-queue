@@ -366,6 +366,49 @@ async def test_close_delivered_pr_requires_operator_and_exact_apply_head(db, mon
     run.assert_not_awaited()
 
 
+async def test_authorize_root_requires_operator_and_exact_apply_head(db, monkeypatch):
+    from src.models import Task
+
+    await db.create_task(Task(id="chore", project_id="p", title="root", description=""))
+    run = AsyncMock(return_value={"outcome": "would_authorize", "task_id": "chore"})
+
+    class _Authorize:
+        def __init__(self, database):
+            assert database is db
+            self.run = run
+
+    monkeypatch.setattr("src.integration.root_authorization.RootAuthorization", _Authorize)
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    local = await handler._cmd_integration_authorize_root({"task_id": "chore"})
+    assert (local["success"], local["outcome"], local["dry_run"]) == (
+        True, "would_authorize", True
+    )
+    assert run.await_args.kwargs["operator_id"] == "human:local-operator"
+    with principal_context(_session("super-p", "p")):
+        await handler._cmd_integration_authorize_root(
+            {"task_id": "chore", "dry_run": False, "expected_head_sha": "a" * 40,
+             "reason": "user authorized"}
+        )
+    assert run.await_args.kwargs == {
+        "dry_run": False, "expected_head_sha": "a" * 40, "reason": "user authorized",
+        "operator_id": "supervisor session:super-p",
+    }
+    run.reset_mock()
+    for invalid in (
+        {"task_id": "chore", "dry_run": False},
+        {"task_id": "chore", "dry_run": False, "expected_head_sha": "a" * 40},
+        {"task_id": "chore", "dry_run": False, "expected_head_sha": "HEAD", "reason": "r"},
+    ):
+        assert (await handler._cmd_integration_authorize_root(invalid))["outcome"] == "invalid"
+    for principal in (_session("worker", "p"), _session("super-other", "other"),
+                      _session("super-stopped", "p")):
+        with principal_context(principal):
+            refused = await handler._cmd_integration_authorize_root({"task_id": "chore"})
+        assert refused["outcome"] == "unauthorized"
+    run.assert_not_awaited()
+
+
 async def test_redrive_child_runs_under_the_derived_operator_label(db, monkeypatch):
     from src.models import Task
 

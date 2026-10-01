@@ -533,7 +533,7 @@
       ]
     },
     "integration-promotion": {
-      "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs.",
+      "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, explicit root authorization, parent CI publication and legacy deliveries.",
       "modules": [
         "tests/test_integration_child_delivery.py",
         "tests/test_integration_legacy_deliveries.py",
@@ -545,6 +545,7 @@
         "tests/test_integration_repair.py",
         "tests/test_integration_repair_rollover.py",
         "tests/test_integration_review_evidence.py",
+        "tests/test_integration_root_authorization.py",
         "tests/test_integration_root_pull_requests.py",
         "tests/test_parent_ci_publication.py",
         "tests/test_repair_checkout_refs.py"
@@ -1316,7 +1317,7 @@
       ]
     }
   },
-  "digest": "sha256:7c3ec0081e3556970c8754cb818e836728b135dd1b55c796c635a44c34b47934",
+  "digest": "sha256:a2eea819ceaa420edbcf2f0a9f24e7603a5d97a18376bd6c2a367d1011317273",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7669,6 +7670,21 @@
       ],
       "markers": [],
       "summary": "Trusted real-review verdict production for integration sources."
+    },
+    "tests/test_integration_root_authorization.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.integration.root_authorization",
+        "src.integration.scheduler"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "An operator authorizes one exact train root source while the train runs."
     },
     "tests/test_integration_root_pull_requests.py": {
       "areas": [

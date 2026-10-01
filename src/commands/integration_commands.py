@@ -1084,6 +1084,35 @@ class IntegrationCommandsMixin:
             "dry_run": request.dry_run, **result,
         }
 
+    async def _cmd_integration_authorize_root(self, args: dict) -> dict:
+        """Record an operator's authorization of one exact completed train root source."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationAuthorizeRootArgs
+        from src.integration.root_authorization import RootAuthorization
+
+        try:
+            request = IntegrationAuthorizeRootArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid root authorization request: {exc}")
+        task = await self.db.get_task(request.task_id)
+        principal, refusal = await integration_operator(
+            self.db, task.project_id if task is not None else None
+        )
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        result = await RootAuthorization(self.db).run(
+            request.task_id, dry_run=request.dry_run,
+            expected_head_sha=request.expected_head_sha, reason=request.reason,
+            operator_id=principal,
+        )
+        return {
+            "success": result["outcome"] in {
+                "would_authorize", "authorized", "already_authorized",
+            },
+            "dry_run": request.dry_run, **result,
+        }
+
     async def _cmd_integration_redrive_child(self, args: dict) -> dict:
         """Diagnose a completed child its parent never assembled; advance it for the head."""
         from pydantic import ValidationError

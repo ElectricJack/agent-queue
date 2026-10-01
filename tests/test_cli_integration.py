@@ -61,6 +61,12 @@ def _client(result):
           "--reason", "patch-equivalent on main"], "integration_close_delivered_pr",
          {"project_id": "p", "pr_number": 687, "dry_run": False,
           "expected_head_sha": "a" * 40, "reason": "patch-equivalent on main"}),
+        (["authorize-root", "chore"], "integration_authorize_root",
+         {"task_id": "chore", "dry_run": True}),
+        (["authorize-root", "chore", "--apply", "--head", "a" * 40,
+          "--reason", "user authorized PR 711"], "integration_authorize_root",
+         {"task_id": "chore", "dry_run": False, "expected_head_sha": "a" * 40,
+          "reason": "user authorized PR 711"}),
         (
             ["sweep", "p", "--recover-child", "child"],
             "integration_development_sweep",
