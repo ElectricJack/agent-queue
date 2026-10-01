@@ -1,0 +1,1403 @@
+{
+  "after_items": [
+    {
+      "item": "test_disposable_daemon_scenario[cli-S5]@cli",
+      "seconds": 31.591
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S4]@failover",
+      "seconds": 29.622
+    },
+    {
+      "item": "test_disposable_daemon_scenario[graphs-S10]@graphs",
+      "seconds": 31.962
+    },
+    {
+      "item": "test_disposable_daemon_scenario[claims-S1]@claims",
+      "seconds": 20.096
+    },
+    {
+      "item": "test_disposable_daemon_scenario[claims-S2]@claims",
+      "seconds": 12.079
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S11]@failover",
+      "seconds": 3.792
+    },
+    {
+      "item": "test_disposable_daemon_scenario[cli-S8]@cli",
+      "seconds": 3.264
+    },
+    {
+      "item": "test_disposable_daemon_scenario[graphs-S16b]@graphs",
+      "seconds": 36.076
+    },
+    {
+      "item": "test_disposable_daemon_scenario[claims-S3]@claims",
+      "seconds": 11.222
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S13]@failover",
+      "seconds": 8.413
+    },
+    {
+      "item": "test_disposable_daemon_scenario[cli-S9]@cli",
+      "seconds": 5.505
+    },
+    {
+      "item": "test_disposable_daemon_scenario[cli-S12]@cli",
+      "seconds": 3.752
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S14]@failover",
+      "seconds": 2.153
+    },
+    {
+      "item": "test_disposable_daemon_scenario[claims-S7]@claims",
+      "seconds": 11.038
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S15]@failover",
+      "seconds": 19.578
+    },
+    {
+      "item": "test_disposable_daemon_scenario[cli-S17]@cli",
+      "seconds": 36.129
+    },
+    {
+      "item": "test_disposable_daemon_scenario[claims-S19]@claims",
+      "seconds": 44.387
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S16a]@failover",
+      "seconds": 23.436
+    },
+    {
+      "item": "test_disposable_daemon_scenario[graphs-S18]@graphs",
+      "seconds": 9.72
+    },
+    {
+      "item": "test_disposable_daemon_scenario[graphs-S6]@graphs",
+      "seconds": 10.954
+    }
+  ],
+  "after_timings": [
+    {
+      "group": "claims",
+      "seconds": 2.1557760359719396,
+      "stage": "build"
+    },
+    {
+      "group": "claims",
+      "seconds": 10.915960793965496,
+      "stage": "start"
+    },
+    {
+      "group": "claims",
+      "seconds": 3.6707366540213116,
+      "stage": "cli_preload"
+    },
+    {
+      "condition_seconds": 0.9411597620346583,
+      "condition_waits": 1,
+      "group": "claims",
+      "scenario": "S1",
+      "seconds": 1.2863959859823808
+    },
+    {
+      "group": "claims",
+      "item": "S1",
+      "item_seconds": 2.0159412780194543
+    },
+    {
+      "cli_calls": 7,
+      "cli_seconds": 10.883428841014393,
+      "condition_seconds": 0.3384661080199294,
+      "condition_waits": 3,
+      "group": "claims",
+      "scenario": "S2",
+      "seconds": 11.319086922041606
+    },
+    {
+      "group": "claims",
+      "item": "S2",
+      "item_seconds": 12.076489780039992
+    },
+    {
+      "cli_calls": 5,
+      "cli_seconds": 6.909203156072181,
+      "condition_seconds": 0.010339627973735332,
+      "condition_waits": 1,
+      "group": "claims",
+      "scenario": "S3",
+      "seconds": 7.812167597992811
+    },
+    {
+      "group": "claims",
+      "item": "S3",
+      "item_seconds": 11.220785924000666
+    },
+    {
+      "cli_calls": 4,
+      "cli_seconds": 2.0165920349536464,
+      "condition_seconds": 0.9426275280420668,
+      "condition_waits": 3,
+      "group": "claims",
+      "scenario": "S7",
+      "seconds": 8.011210526979994
+    },
+    {
+      "group": "claims",
+      "item": "S7",
+      "item_seconds": 11.035744007967878
+    },
+    {
+      "cli_calls": 19,
+      "cli_seconds": 39.07549190201098,
+      "condition_seconds": 1.5872729330440052,
+      "condition_waits": 4,
+      "group": "claims",
+      "scenario": "S19",
+      "seconds": 41.38375773804728
+    },
+    {
+      "group": "claims",
+      "item": "S19",
+      "item_seconds": 43.070396055001765
+    },
+    {
+      "group": "claims",
+      "seconds": 1.1913995299837552,
+      "stage": "teardown"
+    },
+    {
+      "group": "cli",
+      "seconds": 2.029561635979917,
+      "stage": "build"
+    },
+    {
+      "group": "cli",
+      "seconds": 10.816940245975275,
+      "stage": "start"
+    },
+    {
+      "group": "cli",
+      "seconds": 3.570854269026313,
+      "stage": "cli_preload"
+    },
+    {
+      "cli_calls": 9,
+      "cli_seconds": 10.103783271100838,
+      "condition_seconds": 1.221997877000831,
+      "condition_waits": 2,
+      "group": "cli",
+      "scenario": "S5",
+      "seconds": 11.743536176974885
+    },
+    {
+      "group": "cli",
+      "item": "S5",
+      "item_seconds": 13.719127159041818
+    },
+    {
+      "cli_calls": 5,
+      "cli_seconds": 2.2865936961025,
+      "group": "cli",
+      "scenario": "S8",
+      "seconds": 2.3081141840084456
+    },
+    {
+      "group": "cli",
+      "item": "S8",
+      "item_seconds": 3.262064491980709
+    },
+    {
+      "cli_calls": 9,
+      "cli_seconds": 3.9079881169600412,
+      "group": "cli",
+      "scenario": "S9",
+      "seconds": 3.908511643006932
+    },
+    {
+      "group": "cli",
+      "item": "S9",
+      "item_seconds": 5.5039479859988205
+    },
+    {
+      "cli_calls": 6,
+      "cli_seconds": 2.623420126910787,
+      "group": "cli",
+      "scenario": "S12",
+      "seconds": 2.623736640030984
+    },
+    {
+      "group": "cli",
+      "item": "S12",
+      "item_seconds": 3.7508827860001475
+    },
+    {
+      "cli_calls": 28,
+      "cli_seconds": 30.161888327042107,
+      "condition_seconds": 3.8842658580397256,
+      "condition_waits": 10,
+      "group": "cli",
+      "scenario": "S17",
+      "seconds": 33.57076503103599
+    },
+    {
+      "group": "cli",
+      "item": "S17",
+      "item_seconds": 34.74961927201366
+    },
+    {
+      "group": "cli",
+      "seconds": 1.2289898929884657,
+      "stage": "teardown"
+    },
+    {
+      "group": "failover",
+      "seconds": 2.0654210390057415,
+      "stage": "build"
+    },
+    {
+      "group": "failover",
+      "seconds": 10.782860150036868,
+      "stage": "start"
+    },
+    {
+      "group": "failover",
+      "seconds": 3.7207028119591996,
+      "stage": "cli_preload"
+    },
+    {
+      "cli_calls": 14,
+      "cli_seconds": 9.816743731847964,
+      "condition_seconds": 2.013731361948885,
+      "condition_waits": 3,
+      "group": "failover",
+      "scenario": "S4",
+      "seconds": 10.136012833041605
+    },
+    {
+      "group": "failover",
+      "item": "S4",
+      "item_seconds": 11.581937329028733
+    },
+    {
+      "cli_calls": 7,
+      "cli_seconds": 2.602586384047754,
+      "group": "failover",
+      "scenario": "S11",
+      "seconds": 2.602985038945917
+    },
+    {
+      "group": "failover",
+      "item": "S11",
+      "item_seconds": 3.790405385021586
+    },
+    {
+      "cli_calls": 2,
+      "cli_seconds": 7.499313538020942,
+      "group": "failover",
+      "scenario": "S13",
+      "seconds": 7.499414595018607
+    },
+    {
+      "group": "failover",
+      "item": "S13",
+      "item_seconds": 8.41165230300976
+    },
+    {
+      "cli_calls": 4,
+      "cli_seconds": 1.225190072960686,
+      "group": "failover",
+      "scenario": "S14",
+      "seconds": 1.2253814850118943
+    },
+    {
+      "group": "failover",
+      "item": "S14",
+      "item_seconds": 2.151837555982638
+    },
+    {
+      "cli_calls": 16,
+      "cli_seconds": 15.637158744153567,
+      "condition_seconds": 1.5245951340184547,
+      "condition_waits": 1,
+      "group": "failover",
+      "scenario": "S15",
+      "seconds": 18.38624516001437
+    },
+    {
+      "group": "failover",
+      "item": "S15",
+      "item_seconds": 19.5764325580094
+    },
+    {
+      "cli_calls": 20,
+      "cli_seconds": 13.21330954192672,
+      "condition_seconds": 5.41243151499657,
+      "condition_waits": 8,
+      "group": "failover",
+      "scenario": "S16a",
+      "seconds": 19.50311030598823
+    },
+    {
+      "group": "failover",
+      "item": "S16a",
+      "item_seconds": 22.023173815978225
+    },
+    {
+      "group": "failover",
+      "seconds": 1.2392780259833671,
+      "stage": "teardown"
+    },
+    {
+      "group": "graphs",
+      "seconds": 2.172960397962015,
+      "stage": "build"
+    },
+    {
+      "group": "graphs",
+      "seconds": 10.80831216799561,
+      "stage": "start"
+    },
+    {
+      "group": "graphs",
+      "seconds": 3.673789011023473,
+      "stage": "cli_preload"
+    },
+    {
+      "cli_calls": 22,
+      "cli_seconds": 12.829153675935231,
+      "group": "graphs",
+      "scenario": "S10",
+      "seconds": 12.831726860022172
+    },
+    {
+      "group": "graphs",
+      "item": "S10",
+      "item_seconds": 13.887763371982146
+    },
+    {
+      "cli_calls": 28,
+      "cli_seconds": 28.53367591201095,
+      "condition_seconds": 5.475336176052224,
+      "condition_waits": 13,
+      "group": "graphs",
+      "provider_recovery_seconds": 28.928281049011275,
+      "scenario": "S16b",
+      "seconds": 33.99346268404042
+    },
+    {
+      "group": "graphs",
+      "item": "S16b",
+      "item_seconds": 36.074525526957586
+    },
+    {
+      "cli_calls": 6,
+      "cli_seconds": 6.1601162470760755,
+      "condition_seconds": 0.9562758820829913,
+      "condition_waits": 5,
+      "group": "graphs",
+      "scenario": "S18",
+      "seconds": 7.482798476004973
+    },
+    {
+      "group": "graphs",
+      "item": "S18",
+      "item_seconds": 9.718974010960665
+    },
+    {
+      "cli_calls": 5,
+      "cli_seconds": 8.13378462701803,
+      "condition_seconds": 4.808087194978725,
+      "condition_waits": 2,
+      "group": "graphs",
+      "scenario": "S6",
+      "seconds": 8.134999875968788
+    },
+    {
+      "group": "graphs",
+      "item": "S6",
+      "item_seconds": 9.571112115983851
+    },
+    {
+      "group": "graphs",
+      "seconds": 1.2270733439945616,
+      "stage": "teardown"
+    }
+  ],
+  "after_wall_seconds": 104.44,
+  "backend_after": {
+    "idle": {
+      "cpu_percent": 4.949980362186381,
+      "cpu_seconds": 0.9900000000000002,
+      "cycles": 4,
+      "seconds": 20.000079345016275,
+      "transactions": 684
+    },
+    "transitions": {
+      "provider_auto_to_worker_seconds": [
+        1.0882599780452438,
+        0.4046124389860779,
+        1.1165049989940599
+      ],
+      "routed_task_to_worker_seconds": [
+        0.3853815490147099,
+        0.5167498789960518,
+        0.7040734659531154
+      ]
+    }
+  },
+  "backend_after_initial": {
+    "idle": {
+      "cpu_percent": 5.699975718383044,
+      "cpu_seconds": 1.1400000000000006,
+      "cycles": 4,
+      "seconds": 20.00008519901894,
+      "transactions": 697
+    },
+    "transitions": {
+      "provider_auto_to_worker_seconds": [
+        1.040364133019466,
+        1.1098231910145842,
+        0.3359892010339536
+      ],
+      "routed_task_to_worker_seconds": [
+        0.7336185440071858,
+        0.4492377749993466,
+        0.5302426989655942
+      ]
+    }
+  },
+  "backend_before": {
+    "idle": {
+      "cpu_percent": 5.299972274517162,
+      "cpu_seconds": 1.0600000000000005,
+      "cycles": 4,
+      "seconds": 20.000104625010863,
+      "transactions": 690
+    },
+    "transitions": {
+      "provider_auto_to_worker_seconds": [
+        4.620599063986447,
+        4.567959328007419,
+        4.378376621985808
+      ],
+      "routed_task_to_worker_seconds": [
+        2.3639748510322534,
+        5.108863442961592,
+        4.856988570012618
+      ]
+    }
+  },
+  "baseline_items": [
+    {
+      "item": "test_disposable_daemon_stateful_cli_smoke[failover]",
+      "seconds": 220.476
+    },
+    {
+      "item": "test_disposable_daemon_stateful_cli_smoke[claims]",
+      "seconds": 170.959
+    },
+    {
+      "item": "test_disposable_daemon_stateful_cli_smoke[cli]",
+      "seconds": 208.035
+    },
+    {
+      "item": "test_disposable_daemon_stateful_cli_smoke[graphs]",
+      "seconds": 203.092
+    }
+  ],
+  "baseline_source": "bd35e46f0",
+  "baseline_wall_seconds": 225.18,
+  "shared_fixture_items": [
+    {
+      "item": "test_disposable_daemon_scenario[graphs-S10]@graphs",
+      "seconds": 27.307
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S4]@failover",
+      "seconds": 27.594
+    },
+    {
+      "item": "test_disposable_daemon_scenario[claims-S1]@claims",
+      "seconds": 18.926
+    },
+    {
+      "item": "test_disposable_daemon_scenario[cli-S5]@cli",
+      "seconds": 29.026
+    },
+    {
+      "item": "test_disposable_daemon_scenario[claims-S2]@claims",
+      "seconds": 10.806
+    },
+    {
+      "item": "test_disposable_daemon_scenario[graphs-S16b]@graphs",
+      "seconds": 34.727
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S11]@failover",
+      "seconds": 3.974
+    },
+    {
+      "item": "test_disposable_daemon_scenario[cli-S8]@cli",
+      "seconds": 3.534
+    },
+    {
+      "item": "test_disposable_daemon_scenario[claims-S3]@claims",
+      "seconds": 8.661
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S13]@failover",
+      "seconds": 7.5
+    },
+    {
+      "item": "test_disposable_daemon_scenario[cli-S9]@cli",
+      "seconds": 4.381
+    },
+    {
+      "item": "test_disposable_daemon_scenario[cli-S12]@cli",
+      "seconds": 3.03
+    },
+    {
+      "item": "test_disposable_daemon_scenario[claims-S7]@claims",
+      "seconds": 8.405
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S14]@failover",
+      "seconds": 2.108
+    },
+    {
+      "item": "test_disposable_daemon_scenario[cli-S17]@cli",
+      "seconds": 34.366
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S15]@failover",
+      "seconds": 16.2
+    },
+    {
+      "item": "test_disposable_daemon_scenario[claims-S19]@claims",
+      "seconds": 40.819
+    },
+    {
+      "item": "test_disposable_daemon_scenario[failover-S16a]@failover",
+      "seconds": 21.984
+    },
+    {
+      "item": "test_disposable_daemon_scenario[graphs-S18]@graphs",
+      "seconds": 10.755
+    },
+    {
+      "item": "test_disposable_daemon_scenario[graphs-S6]@graphs",
+      "seconds": 11.245
+    }
+  ],
+  "shared_fixture_timings": [
+    {
+      "group": "claims",
+      "seconds": 2.3269485519849695,
+      "stage": "build"
+    },
+    {
+      "group": "claims",
+      "seconds": 9.558420223009307,
+      "stage": "start"
+    },
+    {
+      "group": "claims",
+      "seconds": 3.0172030469984747,
+      "stage": "cli_preload"
+    },
+    {
+      "condition_seconds": 1.7473234190256335,
+      "condition_waits": 1,
+      "group": "claims",
+      "scenario": "S1",
+      "seconds": 2.287759255967103
+    },
+    {
+      "group": "claims",
+      "item": "S1",
+      "item_seconds": 2.9436060350271873
+    },
+    {
+      "cli_calls": 7,
+      "cli_seconds": 10.056778020982165,
+      "condition_seconds": 0.03615294408518821,
+      "condition_waits": 3,
+      "group": "claims",
+      "scenario": "S2",
+      "seconds": 10.194735853001475
+    },
+    {
+      "group": "claims",
+      "item": "S2",
+      "item_seconds": 10.804718077997677
+    },
+    {
+      "cli_calls": 5,
+      "cli_seconds": 6.154379751998931,
+      "condition_seconds": 0.009545209992211312,
+      "condition_waits": 1,
+      "group": "claims",
+      "scenario": "S3",
+      "seconds": 6.747570306004491
+    },
+    {
+      "group": "claims",
+      "item": "S3",
+      "item_seconds": 8.65943854599027
+    },
+    {
+      "cli_calls": 4,
+      "cli_seconds": 1.7031379470718093,
+      "condition_seconds": 0.4319331129663624,
+      "condition_waits": 3,
+      "group": "claims",
+      "scenario": "S7",
+      "seconds": 6.3096678929869086
+    },
+    {
+      "group": "claims",
+      "item": "S7",
+      "item_seconds": 8.40355934901163
+    },
+    {
+      "cli_calls": 19,
+      "cli_seconds": 36.15945504105184,
+      "condition_seconds": 1.757518639031332,
+      "condition_waits": 4,
+      "group": "claims",
+      "scenario": "S19",
+      "seconds": 37.87884723697789
+    },
+    {
+      "group": "claims",
+      "item": "S19",
+      "item_seconds": 39.49458387203049
+    },
+    {
+      "group": "claims",
+      "seconds": 1.1827803660416976,
+      "stage": "teardown"
+    },
+    {
+      "group": "cli",
+      "seconds": 2.2681924549979158,
+      "stage": "build"
+    },
+    {
+      "group": "cli",
+      "seconds": 9.703589860000648,
+      "stage": "start"
+    },
+    {
+      "group": "cli",
+      "seconds": 3.0156204100348987,
+      "stage": "cli_preload"
+    },
+    {
+      "cli_calls": 9,
+      "cli_seconds": 9.149520016100723,
+      "condition_seconds": 1.689552522962913,
+      "condition_waits": 2,
+      "group": "cli",
+      "scenario": "S5",
+      "seconds": 11.287937888992019
+    },
+    {
+      "group": "cli",
+      "item": "S5",
+      "item_seconds": 12.967428213974927
+    },
+    {
+      "cli_calls": 5,
+      "cli_seconds": 2.3108257609419525,
+      "group": "cli",
+      "scenario": "S8",
+      "seconds": 2.328252863022499
+    },
+    {
+      "group": "cli",
+      "item": "S8",
+      "item_seconds": 3.531709223985672
+    },
+    {
+      "cli_calls": 9,
+      "cli_seconds": 3.305839769891463,
+      "group": "cli",
+      "scenario": "S9",
+      "seconds": 3.3062701519811526
+    },
+    {
+      "group": "cli",
+      "item": "S9",
+      "item_seconds": 4.378941445029341
+    },
+    {
+      "cli_calls": 6,
+      "cli_seconds": 2.1994839230319485,
+      "group": "cli",
+      "scenario": "S12",
+      "seconds": 2.199777530040592
+    },
+    {
+      "group": "cli",
+      "item": "S12",
+      "item_seconds": 3.028350298991427
+    },
+    {
+      "cli_calls": 29,
+      "cli_seconds": 25.978004895849153,
+      "condition_seconds": 6.760638419014867,
+      "condition_waits": 10,
+      "group": "cli",
+      "scenario": "S17",
+      "seconds": 32.03273527597776
+    },
+    {
+      "group": "cli",
+      "item": "S17",
+      "item_seconds": 32.969145606970415
+    },
+    {
+      "group": "cli",
+      "seconds": 1.2423003580188379,
+      "stage": "teardown"
+    },
+    {
+      "group": "failover",
+      "seconds": 2.279134607000742,
+      "stage": "build"
+    },
+    {
+      "group": "failover",
+      "seconds": 9.57561411097413,
+      "stage": "start"
+    },
+    {
+      "group": "failover",
+      "seconds": 3.0171816509682685,
+      "stage": "cli_preload"
+    },
+    {
+      "cli_calls": 17,
+      "cli_seconds": 9.752340658917092,
+      "condition_seconds": 3.328120217018295,
+      "condition_waits": 3,
+      "group": "failover",
+      "scenario": "S4",
+      "seconds": 10.298787578009069
+    },
+    {
+      "group": "failover",
+      "item": "S4",
+      "item_seconds": 11.638156320957933
+    },
+    {
+      "cli_calls": 7,
+      "cli_seconds": 2.9722041630302556,
+      "group": "failover",
+      "scenario": "S11",
+      "seconds": 2.9727786669973284
+    },
+    {
+      "group": "failover",
+      "item": "S11",
+      "item_seconds": 3.9727184619987383
+    },
+    {
+      "cli_calls": 2,
+      "cli_seconds": 6.7040129459346645,
+      "group": "failover",
+      "scenario": "S13",
+      "seconds": 6.704118774039671
+    },
+    {
+      "group": "failover",
+      "item": "S13",
+      "item_seconds": 7.498356546042487
+    },
+    {
+      "cli_calls": 4,
+      "cli_seconds": 1.2571284719160758,
+      "group": "failover",
+      "scenario": "S14",
+      "seconds": 1.257329735031817
+    },
+    {
+      "group": "failover",
+      "item": "S14",
+      "item_seconds": 2.106265954033006
+    },
+    {
+      "cli_calls": 16,
+      "cli_seconds": 12.696903665259015,
+      "condition_seconds": 0.8291725979652256,
+      "condition_waits": 1,
+      "group": "failover",
+      "scenario": "S15",
+      "seconds": 15.263479144021403
+    },
+    {
+      "group": "failover",
+      "item": "S15",
+      "item_seconds": 16.19696481502615
+    },
+    {
+      "cli_calls": 20,
+      "cli_seconds": 11.159005463996436,
+      "condition_seconds": 6.57636637496762,
+      "condition_waits": 8,
+      "group": "failover",
+      "scenario": "S16a",
+      "seconds": 18.529672320990358
+    },
+    {
+      "group": "failover",
+      "item": "S16a",
+      "item_seconds": 20.53128054505214
+    },
+    {
+      "group": "failover",
+      "seconds": 1.3199707980384119,
+      "stage": "teardown"
+    },
+    {
+      "group": "graphs",
+      "seconds": 2.143216233002022,
+      "stage": "build"
+    },
+    {
+      "group": "graphs",
+      "seconds": 9.580787762999535,
+      "stage": "start"
+    },
+    {
+      "group": "graphs",
+      "seconds": 3.016399801010266,
+      "stage": "cli_preload"
+    },
+    {
+      "cli_calls": 22,
+      "cli_seconds": 10.559157386072911,
+      "group": "graphs",
+      "scenario": "S10",
+      "seconds": 10.561333443038166
+    },
+    {
+      "group": "graphs",
+      "item": "S10",
+      "item_seconds": 11.469291437009815
+    },
+    {
+      "cli_calls": 28,
+      "cli_seconds": 24.664147123810835,
+      "condition_seconds": 7.918037147086579,
+      "condition_waits": 13,
+      "group": "graphs",
+      "provider_recovery_seconds": 27.618910904973745,
+      "scenario": "S16b",
+      "seconds": 33.21115926495986
+    },
+    {
+      "group": "graphs",
+      "item": "S16b",
+      "item_seconds": 34.72518804698484
+    },
+    {
+      "cli_calls": 6,
+      "cli_seconds": 5.101379718980752,
+      "condition_seconds": 1.8395620269002393,
+      "condition_waits": 5,
+      "group": "graphs",
+      "scenario": "S18",
+      "seconds": 7.250107339001261
+    },
+    {
+      "group": "graphs",
+      "item": "S18",
+      "item_seconds": 10.753364593023434
+    },
+    {
+      "cli_calls": 5,
+      "cli_seconds": 7.314686260884628,
+      "condition_seconds": 4.456228516006377,
+      "condition_waits": 2,
+      "group": "graphs",
+      "scenario": "S6",
+      "seconds": 7.315982618019916
+    },
+    {
+      "group": "graphs",
+      "item": "S6",
+      "item_seconds": 9.906974913959857
+    },
+    {
+      "group": "graphs",
+      "seconds": 1.215764126041904,
+      "stage": "teardown"
+    }
+  ],
+  "shared_fixture_wall_seconds": 92.83,
+  "workers": 4,
+  "deployment_candidate": {
+    "base_source": "acab4674469be918bb894aff557909181a37ac33",
+    "wall_seconds": 131.83,
+    "items": [
+      {
+        "name": "test_disposable_daemon_scenario[claims-S1]@claims",
+        "seconds": 25.281
+      },
+      {
+        "name": "test_disposable_daemon_scenario[graphs-S10]@graphs",
+        "seconds": 41.018
+      },
+      {
+        "name": "test_disposable_daemon_scenario[cli-S5]@cli",
+        "seconds": 39.384
+      },
+      {
+        "name": "test_disposable_daemon_scenario[failover-S4]@failover",
+        "seconds": 38.331
+      },
+      {
+        "name": "test_disposable_daemon_scenario[claims-S2]@claims",
+        "seconds": 17.871
+      },
+      {
+        "name": "test_disposable_daemon_scenario[failover-S11]@failover",
+        "seconds": 5.409
+      },
+      {
+        "name": "test_disposable_daemon_scenario[cli-S8]@cli",
+        "seconds": 5.107
+      },
+      {
+        "name": "test_disposable_daemon_scenario[graphs-S16b]@graphs",
+        "seconds": 42.475
+      },
+      {
+        "name": "test_disposable_daemon_scenario[claims-S3]@claims",
+        "seconds": 13.498
+      },
+      {
+        "name": "test_disposable_daemon_scenario[failover-S13]@failover",
+        "seconds": 11.189
+      },
+      {
+        "name": "test_disposable_daemon_scenario[cli-S9]@cli",
+        "seconds": 7.99
+      },
+      {
+        "name": "test_disposable_daemon_scenario[cli-S12]@cli",
+        "seconds": 5.333
+      },
+      {
+        "name": "test_disposable_daemon_scenario[failover-S14]@failover",
+        "seconds": 3.417
+      },
+      {
+        "name": "test_disposable_daemon_scenario[claims-S7]@claims",
+        "seconds": 12.127
+      },
+      {
+        "name": "test_disposable_daemon_scenario[cli-S17]@cli",
+        "seconds": 43.572
+      },
+      {
+        "name": "test_disposable_daemon_scenario[failover-S15]@failover",
+        "seconds": 22.307
+      },
+      {
+        "name": "test_disposable_daemon_scenario[claims-S19]@claims",
+        "seconds": 56.185
+      },
+      {
+        "name": "test_disposable_daemon_scenario[failover-S16a]@failover",
+        "seconds": 30.841
+      },
+      {
+        "name": "test_disposable_daemon_scenario[graphs-S18]@graphs",
+        "seconds": 11.994
+      },
+      {
+        "name": "test_disposable_daemon_scenario[graphs-S6]@graphs",
+        "seconds": 15.153
+      }
+    ],
+    "junit_item_seconds": 448.482,
+    "timings": [
+      {
+        "group": "claims",
+        "stage": "build",
+        "seconds": 3.0277556530199945
+      },
+      {
+        "group": "claims",
+        "stage": "start",
+        "seconds": 13.622675348015036
+      },
+      {
+        "group": "claims",
+        "stage": "cli_preload",
+        "seconds": 4.361216260003857
+      },
+      {
+        "group": "claims",
+        "scenario": "S1",
+        "seconds": 1.4852069080225192,
+        "condition_seconds": 0.6246555740362965,
+        "condition_waits": 1
+      },
+      {
+        "group": "claims",
+        "item": "S1",
+        "item_seconds": 2.4695665760082193
+      },
+      {
+        "group": "claims",
+        "scenario": "S2",
+        "seconds": 16.91491995099932,
+        "condition_seconds": 0.07231120800133795,
+        "condition_waits": 3,
+        "cli_seconds": 16.548247800965328,
+        "cli_calls": 7
+      },
+      {
+        "group": "claims",
+        "item": "S2",
+        "item_seconds": 17.86896070902003
+      },
+      {
+        "group": "claims",
+        "scenario": "S3",
+        "seconds": 10.556315700989217,
+        "condition_seconds": 0.01970177295152098,
+        "condition_waits": 1,
+        "cli_seconds": 9.31510586105287,
+        "cli_calls": 5
+      },
+      {
+        "group": "claims",
+        "item": "S3",
+        "item_seconds": 13.495031716010999
+      },
+      {
+        "group": "claims",
+        "scenario": "S7",
+        "seconds": 8.906388413975947,
+        "condition_seconds": 0.5112860669614747,
+        "condition_waits": 3,
+        "cli_seconds": 2.5281986259506084,
+        "cli_calls": 4
+      },
+      {
+        "group": "claims",
+        "item": "S7",
+        "item_seconds": 12.124997686012648
+      },
+      {
+        "group": "claims",
+        "scenario": "S19",
+        "seconds": 52.964010787021834,
+        "condition_seconds": 1.7854999959818088,
+        "condition_waits": 4,
+        "cli_seconds": 51.59134639502736,
+        "cli_calls": 19
+      },
+      {
+        "group": "claims",
+        "item": "S19",
+        "item_seconds": 54.801129977975506
+      },
+      {
+        "group": "claims",
+        "stage": "teardown",
+        "seconds": 1.2418186090071686
+      },
+      {
+        "group": "cli",
+        "stage": "build",
+        "seconds": 2.9512641559704207
+      },
+      {
+        "group": "cli",
+        "stage": "start",
+        "seconds": 13.781964324007276
+      },
+      {
+        "group": "cli",
+        "stage": "cli_preload",
+        "seconds": 4.3105674459948204
+      },
+      {
+        "group": "cli",
+        "scenario": "S5",
+        "seconds": 13.973570351023227,
+        "condition_seconds": 0.7107796929194592,
+        "condition_waits": 2,
+        "cli_seconds": 12.477445999043994,
+        "cli_calls": 9
+      },
+      {
+        "group": "cli",
+        "item": "S5",
+        "item_seconds": 16.254667228029575
+      },
+      {
+        "group": "cli",
+        "scenario": "S8",
+        "seconds": 3.618115007993765,
+        "cli_seconds": 3.5739294509985484,
+        "cli_calls": 5
+      },
+      {
+        "group": "cli",
+        "item": "S8",
+        "item_seconds": 5.104628378991038
+      },
+      {
+        "group": "cli",
+        "scenario": "S9",
+        "seconds": 5.491912997968029,
+        "cli_seconds": 5.491170420136768,
+        "cli_calls": 9
+      },
+      {
+        "group": "cli",
+        "item": "S9",
+        "item_seconds": 7.980591383995488
+      },
+      {
+        "group": "cli",
+        "scenario": "S12",
+        "seconds": 3.6192678089719266,
+        "cli_seconds": 3.6188237310852855,
+        "cli_calls": 6
+      },
+      {
+        "group": "cli",
+        "item": "S12",
+        "item_seconds": 5.330973535019439
+      },
+      {
+        "group": "cli",
+        "scenario": "S17",
+        "seconds": 40.30910984100774,
+        "cli_seconds": 37.644216099055484,
+        "cli_calls": 28,
+        "condition_seconds": 3.4840545459883288,
+        "condition_waits": 10
+      },
+      {
+        "group": "cli",
+        "item": "S17",
+        "item_seconds": 41.95180983701721
+      },
+      {
+        "group": "cli",
+        "stage": "teardown",
+        "seconds": 1.4064151410129853
+      },
+      {
+        "group": "failover",
+        "stage": "build",
+        "seconds": 3.010349949996453
+      },
+      {
+        "group": "failover",
+        "stage": "start",
+        "seconds": 13.85843230097089
+      },
+      {
+        "group": "failover",
+        "stage": "cli_preload",
+        "seconds": 4.255535402975511
+      },
+      {
+        "group": "failover",
+        "scenario": "S4",
+        "seconds": 13.339670779998414,
+        "cli_seconds": 12.738244420092087,
+        "cli_calls": 14,
+        "condition_seconds": 2.5159912120434456,
+        "condition_waits": 3
+      },
+      {
+        "group": "failover",
+        "item": "S4",
+        "item_seconds": 15.201881435001269
+      },
+      {
+        "group": "failover",
+        "scenario": "S11",
+        "seconds": 4.058649499027524,
+        "cli_seconds": 4.0579159070621245,
+        "cli_calls": 7
+      },
+      {
+        "group": "failover",
+        "item": "S11",
+        "item_seconds": 5.406448127992917
+      },
+      {
+        "group": "failover",
+        "scenario": "S13",
+        "seconds": 9.88402286998462,
+        "cli_seconds": 9.883848474943079,
+        "cli_calls": 2
+      },
+      {
+        "group": "failover",
+        "item": "S13",
+        "item_seconds": 11.186826051038224
+      },
+      {
+        "group": "failover",
+        "scenario": "S14",
+        "seconds": 2.1356058249948546,
+        "cli_seconds": 2.1353394839679822,
+        "cli_calls": 4
+      },
+      {
+        "group": "failover",
+        "item": "S14",
+        "item_seconds": 3.415079477999825
+      },
+      {
+        "group": "failover",
+        "scenario": "S15",
+        "seconds": 20.441160018963274,
+        "cli_seconds": 16.45186612487305,
+        "cli_calls": 16,
+        "condition_seconds": 1.2781305369571783,
+        "condition_waits": 1
+      },
+      {
+        "group": "failover",
+        "item": "S15",
+        "item_seconds": 22.305041073996108
+      },
+      {
+        "group": "failover",
+        "scenario": "S16a",
+        "seconds": 26.951645113003906,
+        "cli_seconds": 19.3009567350382,
+        "cli_calls": 20,
+        "condition_seconds": 6.081104482873343,
+        "condition_waits": 8
+      },
+      {
+        "group": "failover",
+        "item": "S16a",
+        "item_seconds": 29.334790508029982
+      },
+      {
+        "group": "failover",
+        "stage": "teardown",
+        "seconds": 1.2791087559890002
+      },
+      {
+        "group": "graphs",
+        "stage": "build",
+        "seconds": 2.898902910994366
+      },
+      {
+        "group": "graphs",
+        "stage": "start",
+        "seconds": 13.902834917011205
+      },
+      {
+        "group": "graphs",
+        "stage": "cli_preload",
+        "seconds": 4.309849821031094
+      },
+      {
+        "group": "graphs",
+        "scenario": "S10",
+        "seconds": 16.25172110600397,
+        "cli_seconds": 16.247768763045315,
+        "cli_calls": 22
+      },
+      {
+        "group": "graphs",
+        "item": "S10",
+        "item_seconds": 17.889919589972124
+      },
+      {
+        "group": "graphs",
+        "scenario": "S16b",
+        "seconds": 40.02169538201997,
+        "cli_seconds": 34.15056252316572,
+        "cli_calls": 28,
+        "condition_seconds": 5.189022067119367,
+        "condition_waits": 13,
+        "provider_recovery_seconds": 33.39615257899277
+      },
+      {
+        "group": "graphs",
+        "item": "S16b",
+        "item_seconds": 42.4727648239932
+      },
+      {
+        "group": "graphs",
+        "scenario": "S18",
+        "seconds": 10.030431714025326,
+        "condition_seconds": 0.9910833778558299,
+        "condition_waits": 5,
+        "cli_seconds": 8.519622840045486,
+        "cli_calls": 6
+      },
+      {
+        "group": "graphs",
+        "item": "S18",
+        "item_seconds": 11.991842187009752
+      },
+      {
+        "group": "graphs",
+        "scenario": "S6",
+        "seconds": 11.798578815010842,
+        "cli_seconds": 11.797174174920656,
+        "cli_calls": 5,
+        "condition_seconds": 6.622991289012134,
+        "condition_waits": 2
+      },
+      {
+        "group": "graphs",
+        "item": "S6",
+        "item_seconds": 13.668160267989151
+      },
+      {
+        "group": "graphs",
+        "stage": "teardown",
+        "seconds": 1.2793181980377994
+      }
+    ],
+    "area_passed": 671,
+    "area_seconds": 145.47,
+    "backend": {
+      "idle": {
+        "seconds": 20.00004162301775,
+        "cpu_seconds": 1.1900000000000004,
+        "transactions": 701,
+        "cycles": 4,
+        "cpu_percent": 5.9499876171779915
+      },
+      "transitions": {
+        "routed_task_to_worker_seconds": [
+          0.4967222750419751,
+          0.5705587029806338,
+          0.865948757971637
+        ],
+        "provider_auto_to_worker_seconds": [
+          0.3535987659706734,
+          0.3027872739476152,
+          1.0631910979864188
+        ]
+      }
+    }
+  }
+}

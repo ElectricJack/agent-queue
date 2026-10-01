@@ -10,6 +10,7 @@ from sqlalchemy import and_, select
 from src.database.tables import projects, repos, tasks
 from src.git.github import GitHubAccess
 from src.git.github_contracts import GitHubAccessError
+from src.integration.source_ancestry import SourceAncestryInvalid, SourceAncestryObservation
 from src.models import TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ class GitHubReviewPoller:
         self, db: Any, evidence_producer: Any, git_manager: Any, *,
         interval_seconds: float = 30.0, page_size: int = 20,
         source_ci_handler=None,
+        ancestry_handler=None,
     ) -> None:
         if interval_seconds <= 0 or page_size <= 0:
             raise ValueError("review poll interval and page size must be positive")
@@ -33,6 +35,7 @@ class GitHubReviewPoller:
         self.next_due_at = 0.0
         self.after_id: str | None = None
         self.source_ci_handler = source_ci_handler
+        self.ancestry_handler = ancestry_handler
 
     async def tick(self, now: float) -> None:
         if now < self.next_due_at:
@@ -83,8 +86,11 @@ class GitHubReviewPoller:
             return [dict(row) for row in (await conn.execute(statement)).mappings()]
 
     async def _poll(self, row: dict[str, Any]) -> None:
+        withdrawn = None
         async with self.db._engine.connect() as conn:
             source = await self.producer._pull_request_source_on(conn, row["id"])
+            if source is not None:
+                withdrawn = await self.producer.ancestry_rejection_on(conn, row["id"], source)
         if source is None:
             logger.warning(
                 "Completed train root %s has PR %s but no eligible review source; "
@@ -92,6 +98,31 @@ class GitHubReviewPoller:
                 row["id"], row["pr_url"], row["id"],
             )
             return
+        if withdrawn is not None:
+            # Withdrawn at construction, or a repair that did not finish: the
+            # exact identity is still the completed source, so route it again.
+            await self._repair_ancestry(
+                SourceAncestryObservation.from_evidence(row["id"], source, withdrawn)
+            )
+            return
+        try:
+            await self._observe(row, source)
+        except SourceAncestryInvalid as exc:
+            await self._repair_ancestry(exc.observation)
+
+    async def _repair_ancestry(self, observation: SourceAncestryObservation) -> None:
+        if self.ancestry_handler is None:
+            logger.warning("Train root %s cannot be admitted: %s", observation.task_id,
+                           observation.reason)
+            return
+        result = await self.ancestry_handler(observation)
+        if not (result or {}).get("success", False):
+            logger.warning(
+                "Source ancestry repair for %s did not complete: %s",
+                observation.task_id, (result or {}).get("error") or result,
+            )
+
+    async def _observe(self, row: dict[str, Any], source: dict[str, Any]) -> None:
         binding = await self.git.bind_github_repository(row["url"])
         number = GitHubAccess.validate_pr_url(binding, source["pr_url"])
         client = self.git._github_client(binding)

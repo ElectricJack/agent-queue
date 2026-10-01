@@ -65,6 +65,13 @@ _frontier_child = tasks.alias("frontier_child")
 #: Task statuses a pool claim can end in that no further close changes.
 SETTLED_POOL_CLAIM_STATUSES = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
 
+#: ``task_metadata`` key of the identity ``{completion_id, session_id,
+#: claim_epoch}`` that the terminal transition accepting an ``aq task close``
+#: records in its own transaction (smart-cascade).  Unlike
+#: ``close_session_id``, which the close writes before it is accepted and a
+#: refused close leaves behind, it exists only once that close committed.
+ACCEPTED_CLOSE_KEY = "accepted_close"
+
 
 def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
     """Named acceptance predicates shared by claiming and diagnostics."""
@@ -1355,7 +1362,14 @@ class ClaimQueryMixin:
         * the task is ``COMPLETED`` or ``FAILED`` and no agent holds it;
         * the close was recorded after this session's attempt on the task
           began: a completion record, or a ``code``/``noop`` delivery receipt
-          (the restart can lose the first; delivery writes the second);
+          (the restart can lose the first; delivery writes the second).
+          Before either exists -- the record was never saved and delivery
+          has not run (bold-impact-53) -- the close's accepted-close marker
+          (``ACCEPTED_CLOSE_KEY``) counts when it names this session and its
+          last claim epoch, because the transition that accepted the close
+          wrote it in the same transaction.  ``close_session_id`` never
+          counts: it is written before the close is accepted, so it outlives
+          a refused close and proves nothing about who ended the claim;
         * no running integration operation owns the task in any seat
           (``live_integration_owner``) -- such a seat can still hand work back.
 
@@ -1441,6 +1455,32 @@ class ClaimQueryMixin:
                     "kind": "delivery_receipt",
                     "id": receipt["id"],
                     "detail": f"{receipt['disposition']} delivery receipt {receipt['id']}",
+                }
+        if evidence is None:
+            marker = (
+                await conn.execute(
+                    select(task_metadata.c.value).where(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == ACCEPTED_CLOSE_KEY,
+                    )
+                )
+            ).scalar_one_or_none()
+            try:
+                accepted = json.loads(marker) if marker is not None else None
+            except ValueError:
+                accepted = None
+            if (
+                isinstance(accepted, dict)
+                and accepted.get("session_id") == session_id
+                and accepted.get("claim_epoch") == session["last_claim_epoch"]
+            ):
+                evidence = {
+                    "kind": "accepted_close",
+                    "id": accepted.get("completion_id"),
+                    "detail": (
+                        f"accepted close {accepted.get('completion_id')} by session "
+                        f"{session_id} (claim epoch {accepted['claim_epoch']})"
+                    ),
                 }
         if evidence is None:
             return None

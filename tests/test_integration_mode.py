@@ -747,6 +747,7 @@ class TestPhaseVerifyByMode:
             event_bus=orch.bus,
             project_id="p-1",
             identity_policy=ANY,  # held to the project's Git identity
+            inherited_oids=[],  # no source-CI repair head on this branch
         )
 
     async def test_pr_close_does_not_recreate_deleted_branch_after_merge(self, orch):
@@ -943,6 +944,7 @@ class TestTaskBranchPublication:
             event_bus=orch.bus,
             project_id="p-1",
             identity_policy=ANY,
+            inherited_oids=[],  # no source-CI repair head on this branch
         )
         orch.git.apush_branch.assert_not_awaited()
 

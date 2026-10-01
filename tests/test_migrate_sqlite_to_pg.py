@@ -98,6 +98,10 @@ _DURABLE_ROWS = {
     },
 }
 
+# The legacy import still ships, but creating and copying a source schema is
+# migration work, not part of the default developer/CI run.
+pytestmark = pytest.mark.migration
+
 
 def test_ordered_tables_covers_every_table() -> None:
     """Every schema table is imported or has a documented exclusion."""
@@ -178,10 +182,10 @@ async def _empty_pg_adapter():
 
 
 async def _seeded_source(tmp_path) -> str:
-    """A legacy SQLite source with rows across the deferred-FK tables:
+    """A synthetic legacy SQLite source with rows across the deferred-FK tables:
     a self-FK parent pointer (tasks) and the agents⇄tasks circular FK."""
     from sqlalchemy import JSON, MetaData, insert, text
-
+    from sqlalchemy.dialects.postgresql import JSONB
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from src.database.tables import supervisor_report_requests
@@ -193,9 +197,13 @@ async def _seeded_source(tmp_path) -> str:
         if table.name not in _EXCLUDED_TABLES:
             table.to_metadata(source_metadata)
     source_metadata.tables["task_context"].c.created_at.server_default = None
-    # Revision 40 changed the PostgreSQL route column to JSONB. Legacy
-    # SQLite stored JSON; preserve SQL NULL rather than a JSON null value.
-    source_metadata.tables["tasks"].c.route.type = JSON(none_as_null=True)
+    # PostgreSQL columns such as tasks.route (revision 40) became JSONB;
+    # legacy SQLite stored JSON, and SQLAlchemy 2.0 cannot render JSONB on
+    # SQLite. Keep each column's SQL NULL versus JSON null semantics.
+    for table in source_metadata.tables.values():
+        for column in table.columns:
+            if isinstance(column.type, JSONB):
+                column.type = JSON(none_as_null=column.type.none_as_null)
     # Archived route provenance was introduced by PostgreSQL revision 47;
     # legacy sources lack it and the importer must leave the new column NULL.
     archived = source_metadata.tables["archived_tasks"]

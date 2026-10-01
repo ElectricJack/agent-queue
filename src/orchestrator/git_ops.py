@@ -504,6 +504,7 @@ class GitOpsMixin:
                 event_bus=self.bus,
                 project_id=task.project_id,
                 identity_policy=await self._publish_policy(task),
+                inherited_oids=await self.db.list_source_ci_inherited_oids(task.id),
             )
         except Exception as e:
             await self._emit_notify(
@@ -1442,6 +1443,9 @@ class GitOpsMixin:
                             event_bus=self.bus,
                             project_id=task.project_id,
                             identity_policy=await self._publish_policy(task),
+                            inherited_oids=await self.db.list_source_ci_inherited_oids(
+                                task.id
+                            ),
                         )
                         logger.info(
                             "Task %s: auto-pushed delivery on branch '%s'",
@@ -2323,6 +2327,9 @@ class GitOpsMixin:
                         event_bus=self.bus,
                         project_id=task.project_id,
                         identity_policy=await self._publish_policy(task),
+                        inherited_oids=await self.db.list_source_ci_inherited_oids(
+                            task.id
+                        ),
                     )
                 except Exception as e:
                     logger.warning("Task %s: push %s failed: %s", task.id, branch, e)
@@ -2375,6 +2382,9 @@ class GitOpsMixin:
                         event_bus=self.bus,
                         project_id=task.project_id,
                         identity_policy=await self._publish_policy(task),
+                        inherited_oids=await self.db.list_source_ci_inherited_oids(
+                            task.id
+                        ),
                     )
                 except Exception as e:
                     logger.warning(

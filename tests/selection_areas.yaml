@@ -359,6 +359,7 @@ areas:
       - tests/test_integration_settling.py
       - tests/test_integration_sealing.py
       - tests/test_integration_candidates.py
+      - tests/test_integration_source_ancestry.py
       - tests/test_integration_accepted_repair.py
       - tests/test_integration_outbox.py
       - tests/test_integration_contracts.py
@@ -387,8 +388,8 @@ areas:
       - tests/test_integration_eject.py
       - tests/test_doctor_stranded_fences_fix.py
   - id: integration-promotion
-    description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, explicit root authorization, parent CI publication and legacy deliveries."
     description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs."
+    description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, explicit root authorization, parent CI publication and legacy deliveries."
     match:
       - tests/test_integration_promotion.py
       - tests/test_integration_child_delivery.py

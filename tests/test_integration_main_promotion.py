@@ -1505,19 +1505,39 @@ async def test_non_green_ci_keeps_deadline_delegate_reserved(prepared_db, outcom
                     integration_repair_stages.c.ordinal == 1,
                 )
             )
-        ).scalar_one()
+        ).scalar_one() or {}
+        failed_ids = set(
+            (
+                await conn.execute(
+                    select(integration_check_evidence.c.id).where(
+                        integration_check_evidence.c.operation_id == "root-op",
+                        integration_check_evidence.c.conclusion == "failure",
+                    )
+                )
+            ).scalars()
+        )
 
-    assert observed["outcome"] == ("red" if outcome in {"red", "missing"} else "not_green")
+    red = outcome in {"red", "missing"}
+    assert observed["outcome"] == ("red" if red else "not_green")
     assert owner == delegate_id
     assert candidate_state != "green"
-    # The reserved delegate is dispatched without evidence arguments, so an
-    # absent required check must reach it through the stage dossier.
+    # The reserved delegate is dispatched without evidence arguments, so the
+    # red candidate's failing evidence -- a failed run or an absent required
+    # check -- must reach it through the stage dossier, with the run to read.
+    assert bool(failed_ids) is red
+    assert {item["evidence_id"] for item in dossier.get("failed_checks", [])} == failed_ids
+    assert {item["evidence_id"] for item in dossier.get("logs", [])} == failed_ids
     recorded = {
         name: conclusion
-        for item in (dossier or {}).get("failed_checks", [])
+        for item in dossier.get("failed_checks", [])
         for name, conclusion in item["checks"].items()
     }
-    assert recorded == ({"unit": "missing", "postgres": "missing"} if outcome == "missing" else {})
+    # "red" fails the unit workflow run while its jobs pass, so the evidence's
+    # required checks read as they were observed.
+    assert recorded == {
+        "red": {"unit": "success", "postgres": "success"},
+        "missing": {"unit": "missing", "postgres": "missing"},
+    }.get(outcome, {})
 
 
 @pytest.mark.asyncio

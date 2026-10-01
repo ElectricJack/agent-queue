@@ -1201,6 +1201,15 @@ class Orchestrator(
         with principal_context(ExecutionPrincipal.service("integration-source-ci")):
             return await self._command_handler._cmd_observe_integration_source_ci(observation)
 
+    async def _repair_integration_source_ancestry(self, observation):
+        from src.commands.principal import ExecutionPrincipal, principal_context
+        if self._command_handler is None:
+            return {"success": False, "outcome": "not_ready"}
+        with principal_context(ExecutionPrincipal.service("integration-source-ancestry")):
+            return await self._command_handler.repair_integration_source_ancestry(
+                observation
+            )
+
     async def _dispatch_pending_integration_repairs(self, _now):
         from src.commands.principal import ExecutionPrincipal, principal_context
         if self._command_handler is None:
@@ -1925,6 +1934,7 @@ class Orchestrator(
             review_handler=GitHubReviewPoller(
                 self.db, ReviewEvidenceProducer(self.db, self.promotion_service), self.git,
                 source_ci_handler=self._observe_integration_source_ci,
+                ancestry_handler=self._repair_integration_source_ancestry,
             ).tick,
             root_pull_request_handler=RootPullRequestReconciler(self.db, self.git).tick,
             repair_dispatch_handler=self._dispatch_pending_integration_repairs,
@@ -2133,6 +2143,7 @@ class Orchestrator(
                 config_path=self.config._config_path,
                 event_bus=self.bus,
                 current_config=self.config,
+                poll_interval=self.config.scheduling.config_poll_interval_seconds,
             )
             self.bus.subscribe("config.reloaded", self._on_config_reloaded)
             self._config_watcher.start()
@@ -3568,6 +3579,8 @@ class Orchestrator(
         previous_aspect = getattr(getattr(previous, "graph_layout", None), "row_aspect", None)
         current_aspect = getattr(getattr(config, "graph_layout", None), "row_aspect", None)
         self.config = config
+        if self._config_watcher is not None:
+            self._config_watcher._poll_interval = config.scheduling.config_poll_interval_seconds
         # Propagate the global budget to the manager ``_schedule`` reads it
         # back out of.  Assign unconditionally: ``None`` means "no global
         # cap", and skipping it would leave a cleared budget enforced until

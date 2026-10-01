@@ -715,28 +715,47 @@ class IntegrationAttestationService:
                     return False
                 identities = tuple(sorted(evidence_ids))
                 # The red event dispatches a repair delegate without evidence
-                # arguments. Put absent snapshot checks in its durable dossier
-                # before enqueueing the event so the delegate can see them.
-                missing_rows = [
-                    row for row in rows if "missing" in (row["checks"] or {}).values()
-                ]
-                if missing_rows:
-                    dossier = dict(stage["dossier"] or {})
-                    failed_checks = list(dossier.get("failed_checks", []))
-                    recorded_ids = {item.get("evidence_id") for item in failed_checks}
-                    for row in missing_rows:
-                        if row["id"] not in recorded_ids:
-                            failed_checks.append(
-                                {"evidence_id": row["id"], "checks": row["checks"]}
-                            )
-                    dossier["failed_checks"] = failed_checks
+                # arguments.  Fold every terminal evidence row into the active
+                # stage's durable dossier before enqueueing so the delegate can
+                # see the failing checks, logs, hypothesis and attempt count.
+                # This mirrors the accounting ``record_result`` would apply had
+                # the root-train playbook called ``integration_record_repair``.
+                # ``record_result`` dedups via ``integration_repair_stage_evidence``;
+                # we instead dedup on the dossier itself so a repeated observation
+                # of the same evidence id does not inflate the budget.
+                dossier = dict(stage["dossier"] or {})
+                attempts = int(stage["attempts"])
+                seen_ids: set[str] = {
+                    item.get("evidence_id")
+                    for item in (dossier.get("failed_checks") or [])
+                }
+                seen_ids.update(
+                    item.get("evidence_id") for item in (dossier.get("logs") or [])
+                )
+                changed = False
+                for row in rows:
+                    if row["id"] in seen_ids:
+                        continue
+                    seen_ids.add(row["id"])
+                    evidence = dict(row)
+                    counted = (
+                        evidence["classification"] != "infrastructure"
+                        and evidence["conclusion"] in {"success", "failure"}
+                    )
+                    if counted:
+                        attempts += 1
+                    dossier = RepairService._dossier_with_evidence(
+                        dossier, evidence, attempts=attempts
+                    )
+                    changed = True
+                if changed:
                     await conn.execute(
                         update(integration_repair_stages)
                         .where(
                             integration_repair_stages.c.operation_id == subject.operation_id,
                             integration_repair_stages.c.ordinal == stage["ordinal"],
                         )
-                        .values(dossier=dossier)
+                        .values(attempts=attempts, dossier=dossier)
                     )
 
             identity = json.dumps(

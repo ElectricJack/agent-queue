@@ -275,6 +275,8 @@ class _FakeOrchestrator:
         self.git = git
         self.bus = MagicMock()
         self._notifications: list[str] = []
+        self.db = MagicMock()
+        self.db.list_source_ci_inherited_oids = AsyncMock(return_value=[])
 
     async def _notify_channel(self, message: str, *, project_id: str | None = None):
         self._notifications.append(message)

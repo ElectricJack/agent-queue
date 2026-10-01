@@ -588,6 +588,22 @@ class IntegrationMaterializeRootValue(CommandValue):
     reason: str | None = None
 
 
+class IntegrationCloseDeliveredPrValue(CommandValue):
+    """Git's proof that an open PR's work is on the default branch."""
+
+    project_id: str | None = None
+    pr_number: int | None = None
+    pr_url: str | None = None
+    branch: str | None = None
+    head_sha: str | None = None
+    target_sha: str | None = None
+    state: str | None = None
+    task_ids: list[str] = Field(default_factory=list)
+    proof: dict[str, Any] | None = None
+    undelivered: dict[str, Any] | None = None
+    reason: str | None = None
+
+
 class IntegrationAuthorizeRootValue(CommandValue):
     """The exact source an operator authorized (``integration_authorize_root``)."""
 
@@ -603,22 +619,6 @@ class IntegrationAuthorizeRootValue(CommandValue):
     policy_generation: int | None = None
     authorization_id: str | None = None
     authorized_by: Literal["grant", "policy_kind", "policy_allowlist"] | None = None
-    reason: str | None = None
-
-
-class IntegrationCloseDeliveredPrValue(CommandValue):
-    """Git's proof that an open PR's work is on the default branch."""
-
-    project_id: str | None = None
-    pr_number: int | None = None
-    pr_url: str | None = None
-    branch: str | None = None
-    head_sha: str | None = None
-    target_sha: str | None = None
-    state: str | None = None
-    task_ids: list[str] = Field(default_factory=list)
-    proof: dict[str, Any] | None = None
-    undelivered: dict[str, Any] | None = None
     reason: str | None = None
 
 

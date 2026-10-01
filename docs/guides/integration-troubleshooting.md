@@ -60,6 +60,7 @@ aq doctor --check git.stale_branches
 | A task sits `READY` in a hierarchy project and is never claimed | Its branch origin was never cut | [A branch origin was never materialized](#a-branch-origin-was-never-materialized) |
 | A deleted task's branch is still on the remote | A parked branch discard | [A branch discard is parked](#a-branch-discard-is-parked) |
 | A train's `aq integration flush` answers `coalesced` every time and no sweep runs | Its outstanding request's batch ended without releasing it | [A train never sweeps](#a-train-never-sweeps) |
+| A root batch stays `building` after `construct-and-test` ended `source_moved` | A member's head does not descend from its recorded base | [A batch stops at `source_moved`](#a-batch-stops-at-source_moved) |
 | A root batch is green but `main` never moves; `promote-green-candidate` runs end on `wait` | Its stage-zero repair writer held the branch when CI went green | [A green batch never promotes](#a-green-batch-never-promotes) |
 | A train root is `COMPLETED` with no PR; its checkpoint stays `working` | The root was never given, or never took, its pull request | [A completed root has no pull request](#a-completed-root-has-no-pull-request) |
 | A child is `COMPLETED`, its parent stays `PAUSED`, and siblings sit `READY` but are never claimed | The parent never assembled the child: no approved evidence pins its head | [A completed child is never assembled](#a-completed-child-is-never-assembled) |
@@ -564,8 +565,14 @@ The stop needs the agent's own drain-ack and all of this durable proof:
 - the task is `COMPLETED` or `FAILED`, holds no agent, and its claim epoch is the
   session's;
 - a completion record or a `code`/`noop` delivery receipt was written after the
-  session's attempt on the task began;
-- no running integration operation owns the task in any seat.
+  session's attempt on the task began, or, before either exists, the task's
+  `accepted_close` marker names this session and its claim epoch. The transition
+  that accepts a close writes that marker in its own transaction.
+  `close_session_id` never counts: the close writes it before it is accepted, so
+  a refused close leaves it behind;
+- no running integration operation owns the task in any seat;
+- no completion of the task is still running in this daemon (its control lock is
+  free), so an ack after a timed-out close never stops a worker mid-handoff.
 
 Nothing about the task changes. The stopped session keeps its claim, checkout and
 binding, so this owner recovery, run by hand or by the sweep below, passes the
@@ -723,6 +730,53 @@ The latched `next_due_at` in the past is not part of the fault. A periodic
 sweep also waits for the approval-armed settling window, so with no new
 approval `next_due_at` stays at the missed boundary, and the sweep runs as soon
 as an approval arms the window. `aq integration flush` bypasses that window.
+
+## A batch stops at `source_moved`
+
+A train member merges `recorded base..reviewed head` onto the candidate, so its
+recorded origin base must be an ancestor of its reviewed head. A worker that
+stacks its branch on another line, or resets it, can drop that base while the
+tree stays correct. On 2026-10-01 `fresh-flare-12` (base `f736edeb`, head
+`82ae322c`, merge-base `82b19024`) was admitted and sealed. Construction answered
+`source_moved` after stage 0 had started, the `root-train` run ended `failed`,
+and the batch sat `building` with no delegate while the scheduler renewed its
+lease. The operator recovered with `integration cancel-preserving` and
+`reopen-with-feedback`.
+
+The train now does this itself:
+
+- **Admission refuses the identity.** No approval is recorded for a head that
+  does not descend from its recorded base (`invalid_ancestry`), whether it comes
+  from GitHub, task authorization or a reviewer task.
+- **Construction withdraws it.** Before applying any member, the build proves
+  every member's ancestry and tree. A Git-proven failure records rejected review
+  evidence (`reviewer_identity: integration:source-ancestry`, `decision_path:
+  source_ancestry_invalid`, with base, head, merge-base and feedback). It then
+  cancels the operation and its stages, ends the batch `aborted` with members,
+  revisions, refs and evidence intact, and frees its lease and request. The
+  sweep's own trigger becomes the catch-up, so the valid members reseal at once
+  on observed main. An `integration.batch_source_withdrawn` event lists what was
+  withdrawn. Nothing is withdrawn while a writer, ref mutation, resolution,
+  attestation or promotion intent is unresolved; the build retries instead.
+- **The source is repaired on its own branch.** On its next pass the review
+  poller finds the withdrawn identity still `COMPLETED`. Under
+  `root.repair.source_ci` it reopens the task with feedback: merge the recorded
+  base (never rebase or force-push), re-run checks, publish and close. The new
+  head is a new identity and is admitted normally. The source is reopened at
+  most once per identity. Without that authorization, for a tree mismatch, or
+  when the same head comes back, the supervisor gets one message naming the
+  identity, the reason and the `aq task reopen-with-feedback` command.
+- **Construction is never left without a next step.** `base_moved`, and a
+  `source_moved` that does not withdraw, schedule `integration.sealed` again after
+  60 s while the batch is still `sealed` or `building`, keeping at most one
+  undelivered retry per batch revision. A stage-0 deadline that finds the batch still `building` with no
+  writer re-drives construction once and escalates only if it is still unfinished
+  ten minutes after that re-drive was delivered (or enqueued, if nothing took it).
+
+The batch's `human_abort_reason`, the rejected evidence row and the
+`integration.batch_source_withdrawn` event all name the exact identity and its
+merge-base. Design:
+[invalid source ancestry recovery](../superpowers/specs/2026-10-01-invalid-source-ancestry-recovery-design.md).
 
 ## A green batch never promotes
 

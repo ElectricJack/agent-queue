@@ -650,8 +650,12 @@ That attachment is what refuses the displaced-claim release, and owner recovery 
 drain-acknowledged worker through the same teardown, again only on the agent's own
 acknowledgement and durable proof (`get_settled_pool_claim`). The task must be `COMPLETED` or
 `FAILED` with no holder under the session's own claim epoch. A completion record or a
-`code`/`noop` delivery receipt must postdate the session's attempt. No running operation may own
-the task in any seat. The terminal record is not rewritten. Owner recovery, by hand or by its
+`code`/`noop` delivery receipt must postdate the session's attempt. Before either exists, the
+`accepted_close` marker counts when it names the session and its claim epoch, because the
+transition that accepted the close wrote it in the same transaction. The `close_session_id`
+metadata never counts, because a refused close leaves it behind. No running operation
+may own the task in any seat, and no completion of it may still hold the task's control lock in
+this daemon. The terminal record is not rewritten. Owner recovery, by hand or by its
 opt-in sweep, then proves the stopped writer gone and preserves before it releases.
 
 A close that returns the task to the frontier is the same handoff, not a lesser one. Git
