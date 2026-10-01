@@ -10,6 +10,7 @@ profiles on two harnesses, so a re-run can be routed again by the real
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import pytest
@@ -380,10 +381,14 @@ async def test_explain_names_awaiting_route_with_the_last_emission(handler, orch
     orch._route_needed_emitted = {}
     reason = _route_reason(await _explain(handler, "t"))
     assert reason["code"] == "awaiting_route" and "once the task" in reason["detail"]
-    orch._route_needed_emitted = {"t": time.time() - 30}
+    emitted_at = time.time() - 30
+    orch._route_needed_emitted = {"t": emitted_at}
     reason = _route_reason(await _explain(handler, "t"))
+    # Explain reads its own clock, so a slow runner can tick past the 30s mark.
+    elapsed = int(time.time() - emitted_at)
     assert reason["code"] == "awaiting_route"
-    assert "last emitted 30s ago" in reason["detail"]
+    ago = re.search(r"last emitted (\d+)s ago", reason["detail"])
+    assert ago is not None and 30 <= int(ago.group(1)) <= elapsed, reason["detail"]
 
 
 async def _seed_run(db, run_id: str, task_id: str, *, lifecycle: str, started_at: float,
