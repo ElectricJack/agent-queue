@@ -831,8 +831,26 @@ class GitPlugin(InternalPlugin):
             event_bus=self._ctx._bus,
             project_id=args.get("project_id"),
             identity_policy=policy,
+            inherited_oids=await self._source_ci_inherited_oids(publication.task_id),
         )
         return publication.branch, oid, list(policy.notes)
+
+    async def _source_ci_inherited_oids(self, task_id: str) -> list[str]:
+        """Source-CI source heads an authorized repair task may merge above.
+
+        The repair contract for a red source-CI observation is to merge the
+        exact source head above it, preserving it as an ancestor
+        (``src.integration.source_ci.repair_description``).  The source head
+        is committed as the source task's worker identity — which may be a
+        different profile's identity, even pre-dating the identity feature
+        itself — and the identity gate must not judge it as a new commit.
+        Query ``integration_source_ci`` for the rows this repair task owns
+        and return their ``source_head`` OIDs.  Empty when the task holds no
+        such repair; the gate then degrades to the pre-feature behaviour.
+        """
+        if not task_id:
+            return []
+        return await self._db._db.list_source_ci_inherited_oids(task_id)
 
     async def _publish_policy(self, principal, project, task_id: str):
         """The identity a worker's publication of *task_id* is held to.

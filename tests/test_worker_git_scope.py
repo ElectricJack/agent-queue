@@ -183,6 +183,7 @@ async def test_worker_push_uses_claimed_worktree_and_task_branch(
         w.work_dir, "refs/remotes/origin/main", "aq/calm-ember-48", "aq/calm-ember-48",
         expected_remote_oid=None, repository_url=_REPOSITORY,
         event_bus=w.handler._bus, project_id="p", identity_policy=ANY,
+        inherited_oids=[],  # no source-CI repair head on this branch
     )
     # The worker's publication is held to the project's Git identity.
     policy = w.git.apush_validated_delivery.await_args.kwargs["identity_policy"]

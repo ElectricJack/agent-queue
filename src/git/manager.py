@@ -3209,21 +3209,22 @@ class GitManager:
         branch: str,
         policy: PublishPolicy,
         expected_remote_oid: str | None = None,
+        inherited_oids: Sequence[str] = (),
     ) -> list[dict]:
         """Refuse new commits of *tip* not committed as *policy* allows; report authors.
 
         "New" is reachable from the exact *tip* OID and from none of: the
         delivery base, this branch's last published head
-        (``refs/remotes/origin/<branch>``), and the caller's lease OID -- the
-        same local evidence the reserved-path gate trusts, never every
-        ``refs/remotes/*`` a checkout can write.  A committer outside
-        ``policy.allowed`` means the worker replaced AQ's identity itself:
+        (``refs/remotes/origin/<branch>``), the caller's lease OID, and any
+        *inherited_oids* (e.g. a source-CI source head that an authorised
+        repair branch merges above).  A committer outside ``policy.allowed``
+        in a *new* commit means the worker replaced AQ's identity itself:
         refused with the exact fix.  An author outside it is reported (rebase,
         cherry-pick and ``am`` keep upstream authors).  A root delivery
         (``base_ref=None``) cannot tell new commits from inherited history,
         so it reports committers instead of refusing (git identity spec §5).
         """
-        exclusions = [base_ref] if base_ref else []
+        exclusions: list[str] = [base_ref] if base_ref else []
         published = f"refs/remotes/origin/{_validate_ref(branch)}"
         if await self.aref_exists(checkout_path, published):
             exclusions.append(published)
@@ -3232,6 +3233,15 @@ class GitManager:
             try:
                 await self._arun(["cat-file", "-e", f"{lease}^{{commit}}"], cwd=checkout_path)
                 exclusions.append(lease)
+            except GitError:
+                pass
+        for oid in inherited_oids:
+            lo = oid.lower()
+            if not _OID_RE.fullmatch(lo) or set(lo) == {"0"}:
+                continue
+            try:
+                await self._arun(["cat-file", "-e", f"{lo}^{{commit}}"], cwd=checkout_path)
+                exclusions.append(lo)
             except GitError:
                 pass
         out = await self._arun(
@@ -3852,6 +3862,7 @@ class GitManager:
         event_bus: EventBus | None = None,
         project_id: str | None = None,
         identity_policy: PublishPolicy | None = None,
+        inherited_oids: Sequence[str] = (),
     ) -> str:
         """Inspect and push one immutable delivery tip without a ref-name race.
 
@@ -3892,6 +3903,7 @@ class GitManager:
             identity_policy.notes.extend(await self.acheck_publish_identity(
                 checkout_path, tip, base_ref=base_ref, branch=branch,
                 policy=identity_policy, expected_remote_oid=expected_remote_oid,
+                inherited_oids=inherited_oids,
             ))
         remote_ref_before = await self._apush_oid(
             checkout_path,
