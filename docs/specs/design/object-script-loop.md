@@ -41,12 +41,31 @@ continue decision reserves every sibling and retry allowance together in the
 same loop-row update as the score decision. Eight rounds, repair and plateau
 caps are enforced.
 
+An exhausted FAILED or BLOCKED scorer may instead record a defect stop with
+the exact loop version, `action=stop`, an explicit nonblank reason and no
+receipts, next variants or checkpoint review. The wave must already be settled;
+a FAILED scorer with retries remaining cannot stop the loop. This path charges
+the full wave reservation, records the scorer failure, preserves the incumbent
+and its metrics, and admits no more candidates. It requires no asset approval
+and never records successful scoring or resolves an approval gate. Replaying
+the same decision is idempotent. Terminal reconciliation rechecks candidate and
+scorer settlement before releasing only the loop's terminal gate, and does not
+advance the loop version on a replay, including after restart. Reopened work
+keeps that gate held until it settles again. Failed children retain their status.
+
 `object_checkpoint_read` checks the recorded review ID, exact current
 revision and document hash, approved state, decision timestamp, project and
 candidate hash. Review events only wake reconciliation; they are never proof
 of approval. A checkpoint continuation must name the expected loop version
-and either a finite next wave or an explicit stop reason. Reconciliation files
-no continuation task while the checkpoint is unresolved or stale. A stop can
+and a finite next wave. A terminal stop instead requires the current loop version
+and an explicit reason, independently of brief or candidate approval. It retains
+the checkpoint and verified incumbent without changing any review decision,
+clears pending creation intent, and never creates another wave or scorer. An
+exact retry of the stop version and reason is idempotent; conflicting stops and
+continuations after a stop are refused. The finalization gate remains held until
+all existing object candidate/scorer children settle. Reconciliation after restart
+retries gate release without changing the recorded stop or loop version.
+Reconciliation files no continuation task while the checkpoint is unresolved or stale. A stop can
 release the finalizer for a defect report without approving product code.
 The brief gate and the approved checkpoint gate are attached to their
 respective candidate tasks in the creation transaction; the exact revision is
