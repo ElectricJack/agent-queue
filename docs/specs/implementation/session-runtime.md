@@ -312,7 +312,11 @@ class SessionReconciler:
 2. **Drain-ack handling** — sessions with meta `AQ_DRAIN_ACK=1` (set by
    `_cmd_session_drain_ack`): verify task closed → `stop()` (fenced) → state `stopped` →
    `session.drain_acked`. Task still open → treat as premature drain: nudge once, then
-   exit-classify.
+   exit-classify. A pool row tears down by `desired_state` instead and waits for its held
+   task's close; one still bound to a task no close can change is stopped only on the
+   agent's own ack plus durable proof (`get_retired_integration_writer` →
+   `session.retired_delegate_stopped`, `get_settled_pool_claim` →
+   `session.settled_claim_stopped`), through `_terminate_pool_session`.
 3. **Exit classifier** — rows in `running`/`starting` whose process is dead:
    `classify_exit(session, task, last_peek) -> ExitVerdict` (`src/sessions/exit_classifier.py`;
    verdicts `RATE_LIMIT | RAPID_CRASH | PRODUCTIVE_DEATH | DRAINED`), then apply: PAUSED +

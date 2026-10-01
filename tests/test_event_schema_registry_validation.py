@@ -1046,6 +1046,16 @@ _CANONICAL_PAYLOADS.update(
         "session.premature_drain": {
             "session_id": "sess-1",
         },
+        "session.retired_delegate_stopped": {
+            "session_id": "sess-1",
+            "name": "s-t-1",
+            "task_id": "t-1",
+        },
+        "session.settled_claim_stopped": {
+            "session_id": "sess-1",
+            "name": "s-t-1",
+            "task_id": "t-1",
+        },
         "session.claim_timeout": {
             "session_id": "sess-1",
         },

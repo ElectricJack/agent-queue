@@ -543,12 +543,32 @@ as the doctor check's report. Dry runs do not write an audit row.
 
 | Refusal | Meaning | Fix |
 |---|---|---|
-| `writer_live` | The provider probe says the writer is still running, or a newer live session names the task. | Wait for the writer to exit, or confirm the task is truly cancelled/archived, then retry. A drain-acked pool worker holding a retired repair delegate is stopped automatically (see the repair-delegate section). |
+| `writer_live` | The provider probe says the writer is still running, or a newer live session names the task. | Wait for the writer to exit, or confirm the task is truly cancelled/archived, then retry. A drain-acked pool worker holding a retired repair delegate, or still bound to a task whose close already committed, is stopped automatically (see the repair-delegate section and the paragraph below this table). |
 | `checkout_in_use` | A live session holds the worktree the branch is checked out in. | Close that session or hand it off, then retry. |
 | `origin_unreachable` | `git fetch` or the preservation push failed (network, auth, rate limit). | Fix connectivity or auth, then retry. |
 | `stale_fence` | The row changed between the check and the release — a new writer attached, or the fence was bumped by another recovery attempt. | Re-run; the new writer will be the one the check evaluates. |
 | `not_found` | The owner row id is wrong, or the row was already released by the time the command ran. | Look up the current row id: `aq doctor --check integration.stranded_fences`. |
 | `not_recoverable_state` | The row's `owner_role` is `collector`, or its `handoff_state` is `released`. Only `worker`/`repair` rows in `attached` or `handoff_pending` are recoverable. | Do nothing — the row is in a correct state. |
+
+**A worker still bound to a closed task.** A daemon restart during
+`aq task close` can commit the terminal transition and lose everything after
+it: the branch handoff, the completion record and the claim release. The task
+reads `COMPLETED`, but the worker's session still names it, the owner row stays
+`attached` to that session, and `release-owner` answers `writer_live` while the
+worker sits idle at its final summary. Once the worker runs
+`aq session drain-ack`, the session reconciler stops it on its next tick
+(`session.settled_claim_stopped`, plus a task comment from `session-reconciler`).
+The stop needs the agent's own drain-ack and all of this durable proof:
+
+- the task is `COMPLETED` or `FAILED`, holds no agent, and its claim epoch is the
+  session's;
+- a completion record or a `code`/`noop` delivery receipt was written after the
+  session's attempt on the task began;
+- no running integration operation owns the task in any seat.
+
+Nothing about the task changes. The stopped session keeps its claim, checkout and
+binding, so this owner recovery, run by hand or by the sweep below, passes the
+writer check, snapshots unpushed work and then releases the branch.
 
 **Automatic sweep.** Set `integration.owner_recovery_sweep: true` in
 `config.yaml` to have the daemon run this same guarded recovery every 300 s
