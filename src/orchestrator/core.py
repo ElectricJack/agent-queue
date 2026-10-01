@@ -1883,9 +1883,7 @@ class Orchestrator(
             self.integration_scheduler,
             RepairService(
                 self.db,
-                owner_recovery=(
-                    owner_recovery if self.config.integration.owner_recovery_sweep else None
-                ),
+                owner_recovery=owner_recovery,
             ),
             self.integration_outbox,
             candidate_ci_handler=candidate_ci.handle,

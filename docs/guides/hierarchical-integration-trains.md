@@ -569,6 +569,16 @@ Incomplete handoffs are retried by the reconciler. Old counters and history stay
 visible. Periodic sweeps continue after the settling window is cleared, so a
 released batch does not need another review event to schedule the next batch.
 
+When a batch repair stage expires with unpublished work, its successor waits for
+the old writer's confirmed stop. Dispatch then uses guarded owner recovery to
+preserve committed or dirty progress at `aq/preserved/<owner-row-id>` before
+releasing the old ownership. This targeted recovery does not wait for the optional
+quiet-owner sweep. The successor's dossier records the exact tip, completed frozen
+member merges, repair range, and recovery evidence; its checkout resumes that tip.
+Changed preservation refs or frozen lineage block admission. Stage budgets and
+the original candidate subject stay intact, and the resulting candidate still
+requires exact CI before promotion.
+
 For existing frozen policies using the default `conflict_scope: member` and
 `on_exhausted: human`, the original protocol remains:
 
