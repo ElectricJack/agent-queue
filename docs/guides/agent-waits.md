@@ -9,6 +9,31 @@ keeps the task `IN_PROGRESS` and retains its claim, workspace and pool seat.
 Registration returns immediately. Job, task, message and timer adapters are available.
 Managed job admission remains opt-in with `resources.jobs.enabled: true`.
 
+Matter capture jobs use the same atomic wait and result delivery. The operator
+configures `resources.jobs.matter_python` (native Windows Python's `/mnt/.../python.exe`
+path on WSL), `matter_capture_script` (the trusted ME-1 `tools/object_eval.py`),
+`matter_editor` (a compatible editor binary) and `matter_gpu_id` (the same physical
+device identity for every author). Native Windows descendants are owned by a
+kill-on-close Job Object and a device mutex. GPU admission uses separate locks
+from pytest; render jobs neither occupy nor bypass test slots. Admission remains
+disabled until the operator supplies these paths and enables jobs.
+
+Freeze the candidate with ME-1, then submit its bundle directory relative to the
+held workspace:
+
+```bash
+aq job submit --preset matter_render --wait --idempotency-key capture-round-1 -- out/candidate
+aq job result JOB_ID --json
+```
+
+The server chooses a fresh capture directory and verifies the candidate, rig,
+editor and view artifact hashes. `result.capture` contains the ME-1 receipt and
+the retained files' relative paths, sizes and hashes under `<data_dir>/runs/JOB_ID/`.
+Capture evidence follows result retention (90 days by default), independently of
+the 14-day log lifetime and worker slot cleanup. A timeout, cancelled run or
+unproven native cleanup cannot produce a successful capture result. This command
+captures evidence; ME-1's separate scorer determines image metrics.
+
 ```bash
 aq job submit --preset test --wait --idempotency-key validation -- tests/test_agent_waits.py
 aq test --aq-detach --aq-wait --aq-idempotency-key validation-tests tests/test_agent_waits.py

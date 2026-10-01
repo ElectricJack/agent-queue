@@ -628,6 +628,7 @@
       "description": "Managed jobs: detached execution, crash receipts, idempotency, workspace pins, bounded output and immutable results.",
       "modules": [
         "tests/test_jobs_attachments.py",
+        "tests/test_jobs_matter.py",
         "tests/test_jobs_output.py",
         "tests/test_jobs_queries.py",
         "tests/test_jobs_recovery.py",
@@ -1313,7 +1314,7 @@
       ]
     }
   },
-  "digest": "sha256:13303768bd7be8e14c69450a87d180d19d7ce73f3de16b97a7168f49712a7d1d",
+  "digest": "sha256:eb22ebde286a572a645039257ecd1d76ec67eb500240aeb10f125ee6baf8b17e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7983,6 +7984,28 @@
         "parametrize"
       ],
       "summary": "Retained byte cursors, CLI follow/attach and finite command adapters."
+    },
+    "tests/test_jobs_matter.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database.tables",
+        "src.jobs.artifacts",
+        "src.jobs.identity",
+        "src.jobs.matter",
+        "src.jobs.policy",
+        "src.jobs.service",
+        "src.resources.box_lock",
+        "src.resources.semaphore"
+      ],
+      "markers": [
+        "integration",
+        "parametrize"
+      ],
+      "summary": "Finite captures, independent device leases, recovery and native ownership."
     },
     "tests/test_jobs_output.py": {
       "areas": [

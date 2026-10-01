@@ -439,6 +439,12 @@ RULES: list[tuple[str, str, str, str, str]] = [
      PRODUCTION, "Managed-job result v1 rendering."),
     ("src/jobs/workspace.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
      PRODUCTION, "Serializes workspace mutation with pin creation on the workspace row."),
+    ("src/jobs/matter.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Finite Matter capture admission, native ownership and retained evidence."),
+    ("src/jobs/matter_capture.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Runs the pinned ME-1 capture adapter against the author's source tree."),
+    ("src/jobs/windows_owner.py", "scheduler", "docs/specs/implementation/managed-jobs.md",
+     PRODUCTION, "Standalone Windows Job Object tree owner fenced by a device mutex."),
 
     ("src/profiles/mcp_registry.py", "plugins", "docs/guides/plugins-and-mcp.md",
      PRODUCTION, "In-memory MCP server registry backed by the vault."),
