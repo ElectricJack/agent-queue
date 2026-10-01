@@ -38,7 +38,6 @@ Scenario map — see docs/guides/e2e-swarm.md for what each one proves:
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import subprocess
@@ -46,6 +45,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -1716,6 +1717,16 @@ def _seed_development_validation(source: Path) -> None:
     )
 
 
+@contextmanager
+def _paused_project(project_id: str):
+    """Keep operator fixture transitions out of the push scheduler's frontier."""
+    api_checked("pause_project", {"project_id": project_id})
+    try:
+        yield
+    finally:
+        api_checked("resume_project", {"project_id": project_id})
+
+
 def s15_development_delivery(state: dict) -> str:
     """Operator configure → real published branch → AQ validation/promotion → adoption."""
     from pathlib import Path
@@ -1742,12 +1753,15 @@ def s15_development_delivery(state: dict) -> str:
     _git_text(str(source), "commit", "-m", "feature")
     head = _git_text(str(source), "rev-parse", "HEAD")
     _git_text(str(source), "push", "origin", "fixture-feature")
-    task = api("create_task", {"project_id": "e2e-development", "repo_id": configured["repository_id"],
-        "title": "development delivery", "description": "real Git fixture"})
-    task_id = task.get("task_id") or task.get("created")
-    check(bool(task_id), str(task))
-    aq("task", "set", task_id, "--branch", "fixture-feature")
-    aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
+    # The task-lifecycle scheduler also used by S4 can claim this READY
+    # operator fixture. Withhold it until terminal to preserve its branch.
+    with _paused_project("e2e-development"):
+        task = api("create_task", {"project_id": "e2e-development", "repo_id": configured["repository_id"],
+            "title": "development delivery", "description": "real Git fixture"})
+        task_id = task.get("task_id") or task.get("created")
+        check(bool(task_id), str(task))
+        aq("task", "set", task_id, "--branch", "fixture-feature")
+        aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
     successor = api("create_task", {
         "project_id": "e2e-development", "title": "wait for delivered code",
         "description": "must not start before the prerequisite reaches main",
@@ -1789,8 +1803,10 @@ def s15_development_delivery(state: dict) -> str:
                  "--reason", "unlabelled legacy generation", check_ok=False)
     check("provenance migration" in str(refused.get("_error")),
           f"adoption invented legacy completion identity: {refused}")
-    aq("task", "set-status", "--task-id", task_id, "--status", "READY")
-    api("pause_task", {"task_id": task_id})
+    # Likewise, keep READY from becoming claimable before its manual pause.
+    with _paused_project("e2e-development"):
+        aq("task", "set-status", "--task-id", task_id, "--status", "READY")
+        api_checked("pause_task", {"task_id": task_id})
     adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
                  "--target-ref", feature_ref, "--head-sha", head,
                  "--reason", "operator creates an exact completion generation")

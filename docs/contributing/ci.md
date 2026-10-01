@@ -93,8 +93,11 @@ thread stacks; `-rfE` keeps failed/error node IDs in the final summary, and
 `--durations=50` reports the 50 slowest setup, call and teardown phases.
 
 Known slow tests may use a bounded `@pytest.mark.timeout(seconds)` override.
-Each stateful CLI group has a 540-second local test limit covering its
-setup (180s), smoke subprocess (270s) and cleanup (90s) deadlines. This does not extend the job deadline.
+Each stateful CLI group has a 600-second local test limit covering its
+setup, smoke subprocess including daemon shutdown, and fallback cleanup.
+Setup is limited to 180 seconds; the smoke subprocess gets the remaining
+time with 90 seconds reserved for fallback cleanup. Unused setup time stays
+available to the scenarios. This does not extend the job deadline.
 See [pytest-timeout's documentation](https://github.com/pytest-dev/pytest-timeout)
 for marker precedence and timeout behavior.
 
