@@ -571,6 +571,7 @@
         "tests/test_integration_sealing.py",
         "tests/test_integration_service.py",
         "tests/test_integration_settling.py",
+        "tests/test_integration_source_ancestry.py",
         "tests/test_integration_stale_schedule.py",
         "tests/test_integration_state.py"
       ]
@@ -1317,7 +1318,7 @@
       ]
     }
   },
-  "digest": "sha256:1c94cf3bbd262cbf1b1f34f13f9a701925c69b0cf51ad0a9acdffa12c9b4e389",
+  "digest": "sha256:974d6c9bde721c0174f9a9d4c5f021b24be0965e615e6b907a57f2ddac884358",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7783,6 +7784,33 @@
       ],
       "markers": [],
       "summary": "Approvals share a bounded project integration settling window."
+    },
+    "tests/test_integration_source_ancestry.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database.tables",
+        "src.git.github_app",
+        "src.git.manager",
+        "src.integration.candidates",
+        "src.integration.github_review_poll",
+        "src.integration.promotion",
+        "src.integration.repair",
+        "src.integration.review_evidence",
+        "src.integration.scheduler",
+        "src.integration.source_ancestry",
+        "src.models",
+        "src.orchestrator",
+        "src.vault"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "A train source whose recorded base is not its ancestor never strands a batch."
     },
     "tests/test_integration_stale_owners.py": {
       "areas": [

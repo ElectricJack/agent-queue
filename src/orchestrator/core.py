@@ -1201,6 +1201,15 @@ class Orchestrator(
         with principal_context(ExecutionPrincipal.service("integration-source-ci")):
             return await self._command_handler._cmd_observe_integration_source_ci(observation)
 
+    async def _repair_integration_source_ancestry(self, observation):
+        from src.commands.principal import ExecutionPrincipal, principal_context
+        if self._command_handler is None:
+            return {"success": False, "outcome": "not_ready"}
+        with principal_context(ExecutionPrincipal.service("integration-source-ancestry")):
+            return await self._command_handler.repair_integration_source_ancestry(
+                observation
+            )
+
     async def _dispatch_pending_integration_repairs(self, _now):
         from src.commands.principal import ExecutionPrincipal, principal_context
         if self._command_handler is None:
@@ -1925,6 +1934,7 @@ class Orchestrator(
             review_handler=GitHubReviewPoller(
                 self.db, ReviewEvidenceProducer(self.db, self.promotion_service), self.git,
                 source_ci_handler=self._observe_integration_source_ci,
+                ancestry_handler=self._repair_integration_source_ancestry,
             ).tick,
             root_pull_request_handler=RootPullRequestReconciler(self.db, self.git).tick,
             repair_dispatch_handler=self._dispatch_pending_integration_repairs,

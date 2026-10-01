@@ -29,6 +29,17 @@ from src.integration.epic_dependencies import dependents_of
 from src.integration.settling import note_approval
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.root_authorization import POLICY_KINDS, exact_root_authorization_on
+from src.integration.source_ancestry import (
+    ANCESTRY_DECISION_PATH,
+    ANCESTRY_REVIEWER,
+    PROVEN_REASONS,
+    SourceAncestryInvalid,
+    SourceAncestryObservation,
+    describe,
+    merge_base_of,
+    rejection_evidence_id,
+    repair_feedback,
+)
 from src.models import TaskStatus
 
 
@@ -159,6 +170,10 @@ class ReviewEvidenceProducer:
                     str(resolved.retained_git_dir), source_head, reviewed_sha, strict=True
                 ) is not True:
                     raise HierarchyError("stale_head", "repair does not preserve its source ancestry")
+            if verdict == "approved":
+                await self._prove_base_ancestry(
+                    resolved.retained_git_dir, epic_task_id, source, tree
+                )
 
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, source["project_id"])
@@ -251,6 +266,127 @@ class ReviewEvidenceProducer:
                 for dependent_id in sorted(await dependents_of(conn, epic_task_id)):
                     await self.db.add_task_label(dependent_id, "needs-rebase", conn=conn)
             return evidence
+
+    async def _prove_base_ancestry(self, store, task_id: str, source: dict, tree: str) -> None:
+        """Refuse approval unless Git proves the recorded base is an ancestor.
+
+        Proven non-ancestry is an actionable :class:`SourceAncestryInvalid`; an
+        unknown probe fails closed as an ordinary retryable refusal.
+        """
+        ancestor = await self.promotion.git.ais_ancestor(
+            str(store), source["base"], source["head"], strict=True
+        )
+        if ancestor is None:
+            raise HierarchyError("stale_head", "source base ancestry could not be proven")
+        if ancestor:
+            return
+        raise SourceAncestryInvalid(
+            SourceAncestryObservation(
+                task_id=task_id,
+                source=dict(source),
+                reviewed_tree_sha=tree,
+                reason="source_base_not_ancestor",
+                merge_base=await merge_base_of(
+                    self.promotion.git, str(store), source["base"], source["head"]
+                ),
+            )
+        )
+
+    async def record_ancestry_rejection_on(
+        self, conn, observation: SourceAncestryObservation
+    ) -> dict[str, Any]:
+        """Append the exact rejection that withdraws an unbuildable identity.
+
+        The caller holds the project lock.  The id is deterministic, so a replay
+        from either admission or construction returns the first row unchanged.
+        Its ``created_at`` follows the identity's latest evidence, which makes it
+        the verdict every later seal and authorization reads.
+        """
+        if observation.reason not in PROVEN_REASONS:
+            raise ValueError(f"unproven source ancestry reason: {observation.reason}")
+        evidence_id = rejection_evidence_id(observation)
+        existing = (
+            await conn.execute(
+                select(integration_review_evidence).where(
+                    integration_review_evidence.c.id == evidence_id
+                )
+            )
+        ).mappings().one_or_none()
+        if existing is not None:
+            return dict(existing)
+        task_id, repository_id, base, head, generation = observation.identity()
+        latest_created_at = (
+            await conn.execute(
+                select(func.max(integration_review_evidence.c.created_at)).where(
+                    integration_review_evidence.c.source_task_id == task_id,
+                    integration_review_evidence.c.repository_id == repository_id,
+                    integration_review_evidence.c.source_base == base,
+                    integration_review_evidence.c.reviewed_head_sha == head,
+                    integration_review_evidence.c.generation == generation,
+                )
+            )
+        ).scalar_one()
+        created_at = self.clock()
+        if latest_created_at is not None:
+            created_at = max(created_at, math.nextafter(latest_created_at, math.inf))
+        source = observation.source
+        evidence = {
+            "id": evidence_id,
+            "source_task_id": task_id,
+            "repository_id": repository_id,
+            "source_base": base,
+            "reviewed_head_sha": head,
+            "reviewed_tree_sha": observation.reviewed_tree_sha,
+            "reviewer_task_id": None,
+            "reviewer_session_attempt_id": None,
+            "reviewer_identity": ANCESTRY_REVIEWER,
+            "review_kind": source["review_kind"],
+            "generation": generation,
+            "verdict": "rejected",
+            "evidence": {
+                "decision_path": ANCESTRY_DECISION_PATH,
+                "reason": observation.reason,
+                "merge_base": observation.merge_base,
+                "claimed_tree_sha": observation.claimed_tree_sha,
+                "detected_by": observation.detected_by,
+                "batch_id": observation.batch_id,
+                "branch": source.get("branch"),
+                "pr_url": source.get("pr_url"),
+                "verification_id": source.get("verification_id"),
+                "summary": describe(observation),
+                "feedback": repair_feedback(observation),
+            },
+            "created_at": created_at,
+        }
+        await conn.execute(insert(integration_review_evidence).values(**evidence))
+        return evidence
+
+    async def ancestry_rejection_on(self, conn, task_id: str, source: dict) -> dict | None:
+        """The ancestry rejection that is the exact identity's latest verdict, if any."""
+        latest = (
+            await conn.execute(
+                select(integration_review_evidence)
+                .where(
+                    integration_review_evidence.c.source_task_id == task_id,
+                    integration_review_evidence.c.repository_id == source["repository_id"],
+                    integration_review_evidence.c.source_base == source["base"],
+                    integration_review_evidence.c.reviewed_head_sha == source["head"],
+                    integration_review_evidence.c.generation == source["generation"],
+                )
+                .order_by(
+                    integration_review_evidence.c.created_at.desc(),
+                    integration_review_evidence.c.id.desc(),
+                )
+                .limit(1)
+            )
+        ).mappings().one_or_none()
+        if (
+            latest is None
+            or latest["verdict"] != "rejected"
+            or latest["reviewer_identity"] != ANCESTRY_REVIEWER
+        ):
+            return None
+        return dict(latest)
 
     async def _pull_request_source_on(self, conn, epic_task_id: str) -> dict[str, Any] | None:
         checkpoint = task_integration_checkpoints
@@ -448,6 +584,29 @@ class ReviewEvidenceProducer:
             if remote.state is not RemoteRefState.PRESENT or remote.oid != head:
                 raise HierarchyError("stale_head", "reviewed remote ref is not the exact head")
             tree = await self.promotion._tree_oid(resolved.retained_git_dir, head)
+            # A train root's approval admits it to a batch that merges
+            # ``base..head``; refuse it here rather than at construction.
+            if (
+                verdict == "approved"
+                and project.hierarchical_integration_mode == "train"
+                and subject.parent_task_id is None
+            ):
+                await self._prove_base_ancestry(
+                    resolved.retained_git_dir,
+                    subject.id,
+                    {
+                        "project_id": subject.project_id,
+                        "repository_id": repository_id,
+                        "branch": subject.branch_name,
+                        "pr_url": subject.pr_url,
+                        "base": origin["base_sha"],
+                        "head": head,
+                        "generation": generation,
+                        "verification_id": verification_id,
+                        "review_kind": review_kind,
+                    },
+                    tree,
+                )
 
         identity = ":".join(
             (

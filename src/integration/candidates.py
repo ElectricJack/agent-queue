@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import hashlib
 import inspect
+import json
 import re
 import tempfile
 import time
@@ -31,15 +32,18 @@ from src.database.tables import (
     integration_candidate_ref_mutations,
     integration_candidate_resolutions,
     integration_candidate_revisions,
+    integration_outbox,
     integration_repair_operations,
     integration_repair_stages,
+    integration_review_evidence,
     project_integration_leases,
+    project_integration_schedules,
     projects,
     sessions,
     tasks,
     workspaces,
 )
-from src.git.manager import GitManager, is_valid_git_oid
+from src.git.manager import GitError, GitManager, is_valid_git_oid
 from src.integration.development import GENERATED_MERGE_CONFIG
 from src.integration.models import BranchKey, Fence, RepairPolicy
 from src.integration.ownership import BranchBusy, BranchOwnership, StaleFence
@@ -48,7 +52,14 @@ from src.integration.regeneration import (
     _remove_worktree,
     regenerated_tree,
 )
+from src.integration.outbox import enqueue_integration_event
 from src.integration.repair import RepairService
+from src.integration.source_ancestry import (
+    PROVEN_REASONS,
+    SourceAncestryObservation,
+    describe,
+    prove_member_identity,
+)
 
 _CANDIDATE_MUTATION_PURPOSES = frozenset(
     {"candidate_partial", "candidate_final", "repair_resolution", "repair_handoff"}
@@ -202,6 +213,10 @@ _MUTATION_TRANSPORT_SECONDS = 120.0
 _MUTATION_SAFETY_MARGIN_SECONDS = 15.0
 _MUTATION_PREPUSH_MARGIN_SECONDS = 5.0
 _MUTATION_CLAIM_SECONDS = _MUTATION_TRANSPORT_SECONDS + _MUTATION_SAFETY_MARGIN_SECONDS
+#: Delay before a live batch whose construction ended ``base_moved`` (or an
+#: unproven ``source_moved``) re-enters ``integration.sealed``; at most one
+#: undelivered retry exists per batch revision, and one is written per window.
+CONSTRUCTION_RETRY_SECONDS = 60.0
 
 
 @dataclass(frozen=True)
@@ -260,6 +275,9 @@ class CandidateService:
         self.clock = clock
 
     async def build(self, batch_id: str) -> CandidateBuildResult:
+        return await self._continued(await self._build(batch_id))
+
+    async def _build(self, batch_id: str) -> CandidateBuildResult:
         state = await self._locked_state(batch_id)
         observed_mutation = _MutationObservation()
         if self.app_client is not None:
@@ -340,6 +358,12 @@ class CandidateService:
                 self._recovery_ref(batch_id, int(revision["revision"])),
             )
         if revision["state"] not in {"built", "green"}:
+            await self._fetch_construction_base(store, state, revision)
+            withdrawn = await self._withdraw_invalid_sources(
+                state, revision, store, operation_id=operation_id
+            )
+            if withdrawn is not None:
+                return withdrawn
             try:
                 revision = await self._construct(state, revision, store, operation_id=operation_id)
             except (CandidateStaleAuthority, StaleFence, BranchBusy) as exc:
@@ -359,7 +383,7 @@ class CandidateService:
             new_base = await self.app_client.exact_head_ref(repository.default_branch)
             if new_base is None:
                 return self._result("base_moved", state, revision, operation_id)
-            return await self.rebuild(batch_id, revision_number, new_base)
+            return await self._rebuild(batch_id, revision_number, new_base)
         outcome = "already_built" if was_built or batch["pr_url"] else "built"
         pushed = await self._publish(state, revision, store)
         if pushed.get("publication_wait"):
@@ -367,6 +391,241 @@ class CandidateService:
                 update={"reason": "the candidate pull request publication is reconciling"}
             )
         return self._result(outcome, state, pushed, operation_id)
+
+    async def _fetch_construction_base(self, store: Path, state, revision) -> None:
+        """Retain the observed-main construction base of a continuous candidate.
+
+        ``_fetch_inputs`` retains only the sealed base.  A store that never saw
+        observed main would otherwise report ``base_moved`` for an exact OID the
+        App client has just read; an object the remote no longer has still does.
+        """
+        base = revision["construction_base_sha"]
+        if base == state["batch"]["base_sha"] or await self._commit_exists(store, base):
+            return
+        digest = hashlib.sha256(state["batch"]["id"].encode()).hexdigest()
+        try:
+            await self._fetch_oid(
+                store, base,
+                f"refs/aq/integration-construction-bases/{digest}/{int(revision['revision'])}",
+            )
+        except (GitError, RuntimeError):
+            return
+
+    async def _withdraw_invalid_sources(
+        self, state, revision, store: Path, *, operation_id: str
+    ) -> CandidateBuildResult | None:
+        """End a batch whose frozen manifest holds a Git-proven unbuildable source.
+
+        Runs before construction applies another member.  Identity is a fixed
+        property of the frozen manifest, so retrying cannot help: each invalid
+        identity is withdrawn by an exact rejection, the batch is ended with its
+        manifest, revisions, refs and evidence intact, and its request is
+        released with a catch-up so the valid members reseal at once.  The
+        source itself is reopened for repair by the review poller
+        (``repair_integration_source_ancestry``).
+        """
+        invalid = []
+        for member in state["members"]:
+            reason, merge_base, tree = await prove_member_identity(self.git, str(store), member)
+            if reason in PROVEN_REASONS:
+                invalid.append((member, reason, merge_base, tree))
+        if not invalid:
+            return None
+        from src.integration.delegate_release import release_delegates_on
+        from src.integration.review_evidence import ReviewEvidenceProducer
+        from src.integration.stale_schedule import (
+            _write_blockers_on,
+            release_ended_batch_request,
+        )
+
+        batch_id = state["batch"]["id"]
+        revision_number = int(revision["revision"])
+        first_ordinal = int(invalid[0][0]["ordinal"])
+        now = self.clock()
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, state["project"]["id"])
+            try:
+                await self._validate_authority_on(conn, state, revision=revision_number)
+            except CandidateStaleAuthority as exc:
+                return CandidateBuildResult(
+                    outcome="wait", batch_id=batch_id, revision=revision_number,
+                    operation_id=operation_id,
+                    reason=f"source withdrawal lost authority: {exc}",
+                )
+            observations = [
+                await self._ancestry_observation_on(conn, state, *item) for item in invalid
+            ]
+            reason = "; ".join(describe(observation) for observation in observations)
+            blockers = [
+                blocker["code"] for blocker in await _write_blockers_on(conn, batch_id)
+                if blocker["code"] != "live_operation"
+            ]
+            blockers += await self._live_delegates_on(conn, operation_id)
+            if blockers:
+                # Nothing is ended under a possible remote write; the retry
+                # continuation re-enters construction once it settles.
+                return CandidateBuildResult(
+                    outcome="source_moved", batch_id=batch_id, revision=revision_number,
+                    operation_id=operation_id, member_ordinal=first_ordinal,
+                    reason=f"{reason}; withdrawal waits on: {', '.join(sorted(set(blockers)))}",
+                )
+            producer = ReviewEvidenceProducer(self.db, None, clock=self.clock)
+            evidence_ids = [
+                (await producer.record_ancestry_rejection_on(conn, observation))["id"]
+                for observation in observations
+            ]
+            delegates = list((await conn.execute(
+                select(integration_repair_stages.c.repair_task_id).where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.repair_task_id.is_not(None),
+                )
+            )).scalars())
+            await conn.execute(
+                update(integration_repair_stages)
+                .where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.state.not_in(["passed", "cancelled"]),
+                )
+                .values(state="cancelled", completed_at=now)
+            )
+            await conn.execute(
+                update(integration_repair_operations)
+                .where(integration_repair_operations.c.id == operation_id)
+                .values(state="cancelled", updated_at=now)
+            )
+            # As ``cancel_preserving``: only a detached reservation is released.
+            await conn.execute(
+                update(integration_branch_owners)
+                .where(
+                    integration_branch_owners.c.owner_id.in_([operation_id, *delegates]),
+                    integration_branch_owners.c.handoff_state == "reserved",
+                    integration_branch_owners.c.session_id.is_(None),
+                    integration_branch_owners.c.workspace_id.is_(None),
+                )
+                .values(handoff_state="released", updated_at=now)
+            )
+            await conn.execute(
+                update(integration_batches)
+                .where(integration_batches.c.id == batch_id)
+                .values(
+                    lifecycle="aborted",
+                    human_abort_reason=f"integration withdrew unbuildable source: {reason}",
+                    updated_at=now,
+                )
+            )
+            # The sweep that sealed this batch still owes its valid members.
+            await conn.execute(
+                update(project_integration_schedules)
+                .where(
+                    project_integration_schedules.c.project_id == state["project"]["id"],
+                    project_integration_schedules.c.outstanding_request_id
+                    == state["batch"]["request_id"],
+                    project_integration_schedules.c.catchup_trigger.is_(None),
+                )
+                .values(
+                    catchup_trigger=state["batch"]["trigger"],
+                    catchup_requested_at=now,
+                    catchup_after_sequence=project_integration_schedules.c.request_sequence,
+                    updated_at=now,
+                )
+            )
+            await self.db.log_event(
+                "integration.batch_source_withdrawn",
+                project_id=state["project"]["id"],
+                task_id=observations[0].task_id,
+                payload=json.dumps({
+                    "batch_id": batch_id,
+                    "revision": revision_number,
+                    "operation_id": operation_id,
+                    "members": [
+                        {
+                            "task_id": observation.task_id,
+                            "source_base": observation.source["base"],
+                            "source_head": observation.source["head"],
+                            "generation": int(observation.source["generation"]),
+                            "reason": observation.reason,
+                            "merge_base": observation.merge_base,
+                            "evidence_id": evidence_id,
+                        }
+                        for observation, evidence_id in zip(observations, evidence_ids)
+                    ],
+                    "at": now,
+                }),
+                conn=conn,
+            )
+            _releases, transitions = await release_delegates_on(
+                self.db, conn, now=now, released_by="integration_source_withdrawal",
+                operation_ids=[operation_id],
+            )
+        for transition in transitions:
+            await self.db.log_blocked_flips(transition.flipped)
+            await self.db._notify_settled(transition.settled)
+            await self.db._notify_ready(transition.ready)
+        await release_ended_batch_request(
+            self.db, batch_id, now=now, released_by="integration_source_withdrawal",
+            reason=reason,
+        )
+        return CandidateBuildResult(
+            outcome="source_moved", batch_id=batch_id, revision=revision_number,
+            operation_id=operation_id, head_sha=revision.get("head_sha"),
+            branch=state["batch"]["integration_branch"], member_ordinal=first_ordinal,
+            reason=f"withdrew unbuildable source(s): {reason}",
+        )
+
+    async def _ancestry_observation_on(self, conn, state, member, reason, merge_base, tree):
+        review = (await conn.execute(
+            select(integration_review_evidence).where(
+                integration_review_evidence.c.id == member["review_evidence_id"]
+            )
+        )).mappings().one()
+        branch = str(member["source_ref"] or "").removeprefix("refs/heads/") or None
+        return SourceAncestryObservation(
+            task_id=member["task_id"],
+            source={
+                "project_id": state["project"]["id"],
+                "repository_id": member["repository_id"],
+                "branch": branch,
+                "pr_url": member["pr_url"],
+                "base": member["source_base_sha"],
+                "head": member["reviewed_head_sha"],
+                "generation": int(review["generation"]),
+                "review_kind": review["review_kind"],
+                "verification_id": (review["evidence"] or {}).get("verification_id"),
+            },
+            reviewed_tree_sha=tree or member["reviewed_tree_sha"],
+            reason=reason,
+            merge_base=merge_base,
+            detected_by="construction",
+            batch_id=state["batch"]["id"],
+            claimed_tree_sha=(
+                member["reviewed_tree_sha"] if reason == "reviewed_tree_mismatch" else None
+            ),
+        )
+
+    @staticmethod
+    async def _live_delegates_on(conn, operation_id: str) -> list[str]:
+        from src.database.queries.integration_state_queries import session_attached_clause
+
+        delegates = list((await conn.execute(
+            select(integration_repair_stages.c.repair_task_id).where(
+                integration_repair_stages.c.operation_id == operation_id,
+                integration_repair_stages.c.repair_task_id.is_not(None),
+            )
+        )).scalars())
+        if not delegates:
+            return []
+        live = (await conn.execute(
+            select(tasks.c.id).where(
+                tasks.c.id.in_(delegates),
+                tasks.c.status.in_(("ASSIGNED", "IN_PROGRESS")),
+            ).limit(1)
+        )).scalar_one_or_none()
+        attached = (await conn.execute(
+            select(sessions.c.id).where(
+                sessions.c.task_id.in_(delegates), session_attached_clause(),
+            ).limit(1)
+        )).scalar_one_or_none()
+        return ["writer"] if live is not None or attached is not None else []
 
     async def _has_reviewed_ancestry(self, store, state, revision) -> bool:
         for member in state["members"]:
@@ -381,6 +640,67 @@ class CandidateService:
         return True
 
     async def rebuild(
+        self, batch_id: str, expected_revision: int, new_base_sha: str
+    ) -> CandidateBuildResult:
+        return await self._continued(
+            await self._rebuild(batch_id, expected_revision, new_base_sha)
+        )
+
+    async def _continued(self, result: CandidateBuildResult) -> CandidateBuildResult:
+        """Never end a live batch's construction without a durable next step.
+
+        The reviewed graph routes ``base_moved`` and ``source_moved`` to a failed
+        terminal and no other fact re-enters construction, so a batch left
+        ``sealed``/``building`` here would hold its lease forever.  A withdrawal
+        has already ended the batch, which the retry guard observes.
+        """
+        if result.outcome in {"base_moved", "source_moved"}:
+            await self._schedule_construction_retry(result.batch_id, result.revision)
+        return result
+
+    async def _schedule_construction_retry(self, batch_id: str, revision: int) -> str | None:
+        now = self.clock()
+        async with self.db._engine.connect() as read_conn:
+            project_id = (await read_conn.execute(
+                select(integration_batches.c.project_id).where(integration_batches.c.id == batch_id)
+            )).scalar_one_or_none()
+        if project_id is None:
+            return None
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, project_id)
+            batch = (await conn.execute(
+                select(integration_batches).where(integration_batches.c.id == batch_id)
+                .with_for_update()
+            )).mappings().one_or_none()
+            operation = (await conn.execute(
+                select(integration_repair_operations)
+                .where(integration_repair_operations.c.batch_id == batch_id)
+                .with_for_update()
+            )).mappings().one_or_none()
+            if (batch is None or operation is None
+                    or batch["lifecycle"] not in {"sealed", "building"}
+                    or int(batch["current_revision"]) != revision
+                    or operation["state"] not in {"active", "escalated"}):
+                return None
+            prefix = f"integration-construction-retry:{batch_id}:{revision}:"
+            pending = (await conn.execute(
+                select(integration_outbox.c.id).where(
+                    integration_outbox.c.id.startswith(prefix, autoescape=True),
+                    integration_outbox.c.delivered_at.is_(None),
+                ).limit(1)
+            )).scalar_one_or_none()
+            if pending is not None:
+                return pending
+            event_id = f"{prefix}{int(now // CONSTRUCTION_RETRY_SECONDS)}"
+            await enqueue_integration_event(
+                conn, event_id=event_id, dedup_key=event_id, project_id=project_id,
+                event_type="integration.sealed",
+                payload={"batch_id": batch_id, "operation_id": operation["id"]},
+                available_at=now + CONSTRUCTION_RETRY_SECONDS,
+            )
+            return event_id
+
+    async def _rebuild(
         self, batch_id: str, expected_revision: int, new_base_sha: str
     ) -> CandidateBuildResult:
         if not is_valid_git_oid(new_base_sha):
