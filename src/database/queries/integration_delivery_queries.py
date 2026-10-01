@@ -202,6 +202,14 @@ class IntegrationDeliveryQueriesMixin:
             return None
         return result
 
+    async def get_integration_review_evidence(self, evidence_id: str) -> dict | None:
+        statement = select(integration_review_evidence).where(
+            integration_review_evidence.c.id == evidence_id
+        )
+        async with self._engine.connect() as conn:
+            row = (await conn.execute(statement)).mappings().one_or_none()
+        return dict(row) if row is not None else None
+
     async def get_task_branch_origin_for_promotion(
         self, task_id: str, repository_id: str
     ) -> dict | None:
