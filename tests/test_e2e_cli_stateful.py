@@ -71,8 +71,8 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
             capture_output=True,
             check=False,
             text=True,
-            # CI gives each group its own runner and a five-minute job budget.
-            # Leave thirty seconds for environment setup and cleanup; daemon
+            # CI gives each group its own runner. With setup (180 s) and
+            # cleanup (90 s) this fills the 540-second test limit; daemon
             # startup is part of this subprocess, alongside the scenarios.
             timeout=270,
         )

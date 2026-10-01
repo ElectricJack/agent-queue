@@ -100,12 +100,16 @@ setup (180s), smoke subprocess (270s) and cleanup (90s) deadlines. This does not
 See [pytest-timeout's documentation](https://github.com/pytest-dev/pytest-timeout)
 for marker precedence and timeout behavior.
 
-`fail-fast: false`, so one red arm does not hide the others; each job times out
-at 10 minutes, including installation and migrations. These limits bound
-failures and improve diagnostics. Profiling on 2026-09-26 measured the
+`fail-fast: false`, so one red arm does not hide the others. A cache-miss
+dependency install has a 12-minute step deadline and the test step a 10-minute
+one; each job times out at 25 minutes, their sum plus checkout, PostgreSQL,
+migrations and cleanup. A shared 10-minute total let a slow PyPI spend the
+tests' time: in the 40 runs up to 36831813696, eight jobs were cancelled after
+installs of 306–600 seconds, while no test or scenario step took over 332
+seconds. These limits bound failures and improve diagnostics. Profiling on 2026-09-26 measured the
 unsharded default suite at about 21 minutes; it now runs in eight shards as
 described below. The original stateful CLI smoke measured 11–16 minutes; its scenarios now
-run in four separate jobs with five-minute caps, as described below. Hosted
+run in four separate jobs with 10-minute scenario steps, as described below. Hosted
 runner timings must confirm that the groups finish within those caps. A longer test marker does not make that job fit within its cap.
 
 Worker counts are explicit: four for the broad suite arms, matching the
@@ -217,7 +221,7 @@ test time measured on hosted runners after any performance changes.
 
 The `e2e-cli` job runs the [Tier 1 end-to-end kit](../guides/e2e-swarm.md) on
 the same PR, candidate and parent events. Its four matrix entries run in
-parallel, with a five-minute budget per job and `fail-fast: false`:
+parallel, each with a 10-minute scenario step and `fail-fast: false`:
 
 | Group | Scenarios |
 |---|---|
