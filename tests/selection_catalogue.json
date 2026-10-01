@@ -1306,7 +1306,7 @@
       ]
     }
   },
-  "digest": "sha256:789b4f2c86b520d41ac1f8bea31e522e1fed3c1086e98e25cd4319675eb25783",
+  "digest": "sha256:da33a1c4592e565f574cda1b93ddcc71dd2d52ca43f859baa93ed02929bb14b7",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -13660,6 +13660,7 @@
         "src.commands.task_comment_commands",
         "src.sessions",
         "src.sessions.provider",
+        "src.sessions.questions",
         "src.sessions.tmux"
       ],
       "markers": [
