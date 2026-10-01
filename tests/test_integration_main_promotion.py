@@ -989,6 +989,242 @@ async def test_root_command_constructs_exact_repository_bound_app_client(prepare
     assert len(git.pushes) == 1
 
 
+async def _advance_root_operation_to_stage(
+    db, ordinal: int, *, state="awaiting_completion", completed_writer=False
+):
+    """Retain every exhausted predecessor and make *ordinal* the active stage.
+
+    Mirrors the live successor-stage shape: earlier stages stay as expired
+    history with their own deadline events, and the operation's active stage
+    is the latest ordinal (docs/superpowers/specs/
+    2026-10-01-later-repair-stage-constraints-design.md).  With
+    *completed_writer* the active stage keeps its closed repair delegate while
+    the collector holds the reserved branch, as on the live batch.
+    """
+    writer = f"repair-root-op-{ordinal}" if completed_writer else None
+    async with db.immediate() as conn:
+        if writer is not None:
+            await db.create_task(
+                Task(
+                    id=writer, project_id="p", repo_id="repo", title="Stage delegate",
+                    description="closed successor-stage repair delegate",
+                    status=TaskStatus.COMPLETED,
+                ),
+                conn=conn,
+            )
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "root-op",
+                integration_repair_stages.c.ordinal == 0,
+            )
+            .values(state="expired")
+        )
+        for later in range(1, ordinal + 1):
+            await conn.execute(
+                insert(integration_repair_stages).values(
+                    operation_id="root-op", ordinal=later, intelligence_class="primary",
+                    policy={"seconds": 60, "attempts": 1}, starting_sha=HEAD, attempts=1,
+                    deadline_at=9_999_999_999.0, deadline_event_id=f"deadline-{later}",
+                    state=state if later == ordinal else "expired",
+                    repair_task_id=writer if later == ordinal else None,
+                    writer_kind="repair_delegate" if writer and later == ordinal else None,
+                )
+            )
+        await conn.execute(
+            update(integration_repair_operations)
+            .where(integration_repair_operations.c.id == "root-op")
+            .values(active_stage=ordinal)
+        )
+        await conn.execute(update(project_integration_leases).values(expires_at=9_999_999_999.0))
+
+
+def _root_promotion_handler(db, data_dir, git, app, resolver=None):
+    class Handler(IntegrationCommandsMixin):
+        pass
+
+    def factory(binding):
+        app.repository = binding
+        return app
+
+    handler = Handler()
+    handler.db = db
+    handler.config = SimpleNamespace(data_dir=data_dir)
+    handler.orchestrator = SimpleNamespace(
+        git=git,
+        github_client_factory=factory,
+        integration_attestation_resolver=resolver or ExactAttestationResolver(),
+    )
+    return handler
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ordinal", [2, 3])
+async def test_public_root_promotion_from_later_repair_stage_writes_exact_receipts_and_main(
+    prepared_db, ordinal
+):
+    """A green candidate whose operation reached a successor stage promotes.
+
+    Live 2026-10-01: stage 2 was ``awaiting_completion`` with exact green CI,
+    and the ``root_main`` mutation insert hit the two-stage
+    ``ck_integration_candidate_ref_mutations_stage`` check, which the
+    service reported as a reservation race.
+    """
+    db, data_dir = prepared_db
+    await _advance_root_operation_to_stage(db, ordinal, completed_writer=True)
+    app = FakeAppClient()
+    git = PushGit(app)
+    handler = _root_promotion_handler(db, data_dir, git, app)
+
+    with principal_context(ExecutionPrincipal.service("root-playbook")):
+        result = await handler._cmd_integration_promote_main(
+            {"batch_id": "batch", "revision": 0}
+        )
+
+    assert result["success"] is True, result
+    assert result["outcome"] == "promoted"
+    assert result["head_sha"] == HEAD
+    assert app.remote == HEAD and len(git.pushes) == 1
+    expected_receipts = [RootPromotionService._receipt_id("batch", 0, n) for n in range(2)]
+    assert list(result["receipt_ids"]) == expected_receipts
+    async with db._engine.connect() as conn:
+        intent = (await conn.execute(select(integration_promotion_intents))).mappings().one()
+        mutation = (await conn.execute(select(integration_candidate_ref_mutations))).mappings().one()
+        batch = (await conn.execute(select(integration_batches))).mappings().one()
+        operation = (await conn.execute(select(integration_repair_operations))).mappings().one()
+        stages = (
+            await conn.execute(
+                select(integration_repair_stages).order_by(integration_repair_stages.c.ordinal)
+            )
+        ).mappings().all()
+        receipts = (
+            await conn.execute(
+                select(task_delivery_receipts).order_by(task_delivery_receipts.c.member_ordinal)
+            )
+        ).mappings().all()
+        members = (
+            await conn.execute(
+                select(integration_root_intent_members).order_by(
+                    integration_root_intent_members.c.member_ordinal
+                )
+            )
+        ).mappings().all()
+    assert (mutation["purpose"], mutation["state"]) == ("root_main", "applied")
+    assert mutation["operation_id"] == "root-op"
+    assert mutation["operation_stage"] == ordinal
+    assert (mutation["expected_old_sha"], mutation["desired_sha"]) == (BASE, HEAD)
+    assert mutation["remote_sha"] == HEAD
+    assert intent["state"] == "committed" and intent["prepared_sha"] == HEAD
+    assert batch["lifecycle"] == "promoted" and batch["final_main_sha"] == HEAD
+    assert operation["state"] == "completed" and operation["active_stage"] == ordinal
+    assert [(row["ordinal"], row["state"]) for row in stages] == [
+        *((earlier, "expired") for earlier in range(ordinal)),
+        (ordinal, "passed"),
+    ]
+    assert [row["id"] for row in receipts] == expected_receipts
+    assert [row["receipt_id"] for row in members] == expected_receipts
+    assert [row["reviewed_head_sha"] for row in members] == ["c" * 40, "d" * 40]
+    assert [row["generated_squash_sha"] for row in members] == ["7" * 40, "8" * 40]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case", ["stage_not_green", "stage_row_missing", "session_principal", "crossed_attestation"]
+)
+async def test_public_root_promotion_at_later_stage_still_refuses_stale_authority(
+    prepared_db, case
+):
+    db, data_dir = prepared_db
+    await _advance_root_operation_to_stage(
+        db, 2, state="active" if case == "stage_not_green" else "awaiting_completion"
+    )
+    if case == "stage_row_missing":
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(integration_repair_operations)
+                .where(integration_repair_operations.c.id == "root-op")
+                .values(active_stage=3)
+            )
+    app = FakeAppClient()
+    git = PushGit(app)
+    resolver = ExactAttestationResolver()
+    if case == "crossed_attestation":
+        resolver.override = {"operation_id": "another-operation"}
+    handler = _root_promotion_handler(db, data_dir, git, app, resolver)
+    principal = (
+        ExecutionPrincipal(
+            kind=PrincipalKind.SESSION, policy=DENY_ALL, session_id="worker", project_id="p"
+        )
+        if case == "session_principal"
+        else ExecutionPrincipal.service("root-playbook")
+    )
+
+    with principal_context(principal):
+        result = await handler._cmd_integration_promote_main(
+            {"batch_id": "batch", "revision": 0}
+        )
+
+    assert result["success"] is False
+    assert result["outcome"] == {
+        "stage_not_green": "wait",
+        "stage_row_missing": "wait",
+        "session_principal": "unauthorized",
+        "crossed_attestation": "configuration_blocked",
+    }[case]
+    assert git.pushes == [] and app.remote == BASE
+    async with db._engine.connect() as conn:
+        for table in (
+            integration_promotion_intents,
+            integration_candidate_ref_mutations,
+            integration_root_intent_members,
+            task_delivery_receipts,
+        ):
+            assert await conn.scalar(select(func.count()).select_from(table)) == 0
+        assert await conn.scalar(select(integration_batches.c.lifecycle)) == "testing"
+
+
+@pytest.mark.asyncio
+async def test_root_reservation_reports_the_violated_constraint_not_a_race(prepared_db):
+    """Only a duplicate of the canonical intent is a race; a check is a typed cause."""
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+    handler = _root_promotion_handler(db, data_dir, git, app)
+    await _advance_root_operation_to_stage(db, 2)
+
+    async with injected_trigger(
+        db,
+        name="test_root_mutation_check",
+        table="integration_candidate_ref_mutations",
+        event="INSERT",
+        condition="NEW.purpose = 'root_main'",
+        body=(
+            "RAISE EXCEPTION 'injected stage check' USING ERRCODE = 'check_violation', "
+            "CONSTRAINT = 'ck_integration_candidate_ref_mutations_stage';"
+        ),
+    ):
+        with principal_context(ExecutionPrincipal.service("root-playbook")):
+            result = await handler._cmd_integration_promote_main(
+                {"batch_id": "batch", "revision": 0}
+            )
+        with pytest.raises(main_promotion_module.RootPromotionConstraintError) as raised:
+            await RootPromotionService(
+                db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 10.0
+            ).promote("batch", 0)
+
+    assert result["success"] is False and result["outcome"] == "runtime_error"
+    assert "ck_integration_candidate_ref_mutations_stage" in result["error"]
+    assert "23514" in result["error"]
+    assert "raced" not in result["error"]
+    assert raised.value.constraint == "ck_integration_candidate_ref_mutations_stage"
+    assert raised.value.sqlstate == "23514"
+    assert isinstance(raised.value, RootPromotionInvariantError)
+    assert git.pushes == [] and app.remote == BASE
+    async with db._engine.connect() as conn:
+        assert await conn.scalar(select(func.count()).select_from(integration_promotion_intents)) == 0
+        assert await conn.scalar(select(integration_batches.c.lifecycle)) == "testing"
+
+
 @pytest.mark.asyncio
 async def test_gh_live_candidate_receipt_allows_exact_oid_main_promotion(prepared_db):
     db, data_dir = prepared_db
