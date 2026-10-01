@@ -69,6 +69,9 @@ class RootPromotionResult(BaseModel):
     intent_id: str | None = None
     receipt_ids: tuple[str, ...] = ()
     head_sha: str | None = None
+    #: Safe operator-facing explanation of a refusal; never part of the
+    #: command contract's result fields.
+    reason: str | None = None
 
 
 class RootPromotionInvariantError(RuntimeError):
@@ -157,20 +160,34 @@ class RootPromotionService:
 
         project_id = await self._project_id(batch_id)
         if project_id is None:
-            return RootPromotionResult(outcome="stale", batch_id=batch_id, revision=revision)
+            return RootPromotionResult(
+                outcome="stale", batch_id=batch_id, revision=revision,
+                reason="root batch does not exist",
+            )
+        # Reload authority: a closed repair writer's detached reservation on
+        # this exact green candidate is the one ownership gap promotion may
+        # close itself, through the same guard the train continuation uses.
+        from src.integration.repair import RepairService
+
+        await RepairService(self.db, clock=self.clock).return_green_delegate_branch(
+            batch_id, emit_continuation=False
+        )
         snapshot = await self._snapshot(project_id, batch_id, revision)
         if snapshot["batch"]["lifecycle"] == "empty":
             return RootPromotionResult(
                 outcome="already_promoted", batch_id=batch_id, revision=revision
             )
-        failure = self._validate_snapshot(snapshot, revision)
-        if failure is not None:
-            return RootPromotionResult(outcome=failure, batch_id=batch_id, revision=revision)
+        blocker = self._snapshot_blocker(snapshot, revision)
+        if blocker is not None:
+            return RootPromotionResult(
+                outcome=blocker[0], batch_id=batch_id, revision=revision, reason=blocker[1]
+            )
         attestation_subject = self._attestation_subject(snapshot)
         attestation = await self._resolve_attestation(attestation_subject)
         if attestation is None:
             return RootPromotionResult(
-                outcome="configuration_blocked", batch_id=batch_id, revision=revision
+                outcome="configuration_blocked", batch_id=batch_id, revision=revision,
+                reason="no exact server CI attestation resolves for this candidate",
             )
 
         repository = await self._repository(snapshot["batch"]["repository_id"])
@@ -182,49 +199,30 @@ class RootPromotionService:
         async with self.db.immediate() as conn:
             await self.db.lock_hierarchy_project(conn, project_id)
             locked = await self._snapshot_on(conn, project_id, batch_id, revision)
-            failure = self._validate_snapshot(locked, revision)
-            if failure is not None or not self._proof_matches_state(attestation, locked):
+            blocker = self._snapshot_blocker(locked, revision)
+            if blocker is not None or not self._proof_matches_state(attestation, locked):
                 return RootPromotionResult(
-                    outcome=failure or "configuration_blocked",
+                    outcome=blocker[0] if blocker is not None else "configuration_blocked",
                     batch_id=batch_id,
                     revision=revision,
+                    reason=(
+                        blocker[1]
+                        if blocker is not None
+                        else "CI attestation no longer matches the locked candidate"
+                    ),
                 )
             existing = await self._intent_on(conn, intent_id)
             if existing is not None:
                 return await self._existing_result_on(conn, existing, batch_id, revision)
-            unresolved_attestation = (
-                await conn.execute(
-                    select(integration_attestation_publications.c.id).where(
-                        integration_attestation_publications.c.batch_id == batch_id,
-                        integration_attestation_publications.c.revision == revision,
-                        integration_attestation_publications.c.state == "reserved",
-                    )
-                )
-            ).scalar_one_or_none()
-            if unresolved_attestation is not None:
+            reconciling = await self._reconciliation_blocker_on(
+                conn, locked, revision, repository.default_branch
+            )
+            if reconciling is not None:
                 return RootPromotionResult(
-                    outcome="reconciliation_blocked",
+                    outcome=reconciling[0],
                     batch_id=batch_id,
                     revision=revision,
-                )
-            unresolved = (
-                await conn.execute(
-                    select(integration_promotion_intents.c.id).where(
-                        integration_promotion_intents.c.repository_id
-                        == locked["batch"]["repository_id"],
-                        integration_promotion_intents.c.target_branch
-                        == f"refs/heads/{repository.default_branch}",
-                        integration_promotion_intents.c.state.not_in(
-                            ("committed", "conflict", "superseded")
-                        ),
-                    )
-                )
-            ).scalar_one_or_none()
-            if unresolved is not None:
-                return RootPromotionResult(
-                    outcome="reconciliation_blocked",
-                    batch_id=batch_id,
-                    revision=revision,
+                    reason=reconciling[1],
                 )
             receipt_ids = tuple(
                 self._receipt_id(batch_id, revision, int(member["ordinal"]))
@@ -359,6 +357,85 @@ class RootPromotionService:
             receipt_ids=receipt_ids,
             head_sha=snapshot["revision"]["head_sha"],
         )
+
+    async def readiness_on(self, conn: Any, project_id: str, batch_id: str) -> dict[str, Any]:
+        """Whether the current revision is promotable now; reserves nothing.
+
+        The caller holds the project hierarchy lock.  Used by the bounded
+        green continuation so it re-emits only for a promotable candidate.
+        """
+        current = (
+            await conn.execute(
+                select(integration_batches.c.current_revision).where(
+                    integration_batches.c.id == batch_id
+                )
+            )
+        ).scalar_one_or_none()
+        if current is None:
+            return {
+                "revision": None,
+                "intent_exists": False,
+                "blocker": ("stale", "root batch does not exist"),
+                "state": None,
+            }
+        revision = int(current)
+        intent = await self._intent_on(conn, self._identity(batch_id, revision)["intent_id"])
+        state = await self._snapshot_on(conn, project_id, batch_id, revision)
+        blocker = self._snapshot_blocker(state, revision)
+        if blocker is None and intent is None and state["batch"]["lifecycle"] != "empty":
+            try:
+                repository = await self._repository(state["batch"]["repository_id"])
+            except RootPromotionInvariantError as exc:
+                blocker = ("configuration_blocked", str(exc))
+            else:
+                blocker = await self._reconciliation_blocker_on(
+                    conn, state, revision, repository.default_branch
+                )
+        return {
+            "revision": revision,
+            "intent_exists": intent is not None,
+            "blocker": blocker,
+            "state": state,
+        }
+
+    @staticmethod
+    async def _reconciliation_blocker_on(
+        conn: Any, state: dict[str, Any], revision: int, default_branch: str
+    ) -> tuple[str, str] | None:
+        """An in-flight attestation or main intent that must settle first."""
+        batch = state["batch"]
+        unresolved_attestation = (
+            await conn.execute(
+                select(integration_attestation_publications.c.id).where(
+                    integration_attestation_publications.c.batch_id == batch["id"],
+                    integration_attestation_publications.c.revision == revision,
+                    integration_attestation_publications.c.state == "reserved",
+                )
+            )
+        ).scalar_one_or_none()
+        if unresolved_attestation is not None:
+            return (
+                "reconciliation_blocked",
+                f"attestation publication {unresolved_attestation} is reconciling",
+            )
+        unresolved = (
+            await conn.execute(
+                select(integration_promotion_intents.c.id).where(
+                    integration_promotion_intents.c.repository_id == batch["repository_id"],
+                    integration_promotion_intents.c.target_branch
+                    == f"refs/heads/{default_branch}",
+                    integration_promotion_intents.c.state.not_in(
+                        ("committed", "conflict", "superseded")
+                    ),
+                )
+            )
+        ).scalar_one_or_none()
+        if unresolved is not None:
+            return (
+                "reconciliation_blocked",
+                f"promotion intent {unresolved} on the target branch is unresolved",
+            )
+        return None
 
     async def promote(self, batch_id: str, revision: int) -> RootPromotionResult:
         prepared = await self.prepare(batch_id, revision)
@@ -1429,11 +1506,29 @@ class RootPromotionService:
         *,
         minimum_lease_expires_at: float | None = None,
     ) -> str | None:
+        blocker = self._snapshot_blocker(
+            state, revision, minimum_lease_expires_at=minimum_lease_expires_at
+        )
+        return blocker[0] if blocker is not None else None
+
+    def _snapshot_blocker(
+        self,
+        state: dict[str, Any],
+        revision: int,
+        *,
+        minimum_lease_expires_at: float | None = None,
+    ) -> tuple[str, str] | None:
+        """``(outcome, reason)`` refusing promotion now, or ``None`` when promotable.
+
+        Reasons name only durable identities and states, so a wait can be
+        acted on without reading tables: the attached writer, the short
+        lease, the missing publication.
+        """
         project = state["project"]
         batch = state["batch"]
         candidate = state["revision"]
         if project is None or batch is None:
-            return "stale"
+            return "stale", "root batch or its project no longer exists"
         if batch["lifecycle"] == "empty":
             return None
         evidence = state["evidence"]
@@ -1443,9 +1538,15 @@ class RootPromotionService:
             project["hierarchical_integration_mode"] != "train"
             or project["integration_repository_id"] != batch["repository_id"]
             or batch["project_id"] != project["id"]
-            or int(batch["current_revision"]) != revision
-            or candidate is None
-            or candidate["state"] != "green"
+        ):
+            return "ci_missing", "project is no longer the train authority for this batch"
+        if int(batch["current_revision"]) != revision or candidate is None:
+            return "ci_missing", (
+                f"revision {revision} is not the batch's current revision "
+                f"{batch['current_revision']}"
+            )
+        if (
+            candidate["state"] != "green"
             or candidate["head_sha"] != batch["tested_candidate_sha"]
             or candidate["ci_evidence_id"] != batch["ci_evidence_id"]
             or evidence is None
@@ -1462,7 +1563,10 @@ class RootPromotionService:
             or list(evidence["checks"].keys()) != exact_checks
             or any(value != "success" for value in evidence["checks"].values())
         ):
-            return "ci_missing"
+            return "ci_missing", (
+                f"revision {revision} (state {candidate['state']}) has no exact conclusive "
+                "green CI evidence bound to the batch and its required checks"
+            )
         operation = state["operation"]
         stage = state["stage"]
         lease = state["lease"]
@@ -1470,28 +1574,65 @@ class RootPromotionService:
         publication = state["publication"]
         if minimum_lease_expires_at is None:
             minimum_lease_expires_at = self.clock() + _CLAIM_SECONDS
+        if batch["lifecycle"] not in {"testing", "promoting"}:
+            return "wait", f"batch lifecycle is {batch['lifecycle']}, not testing"
         if (
-            batch["lifecycle"] not in {"testing", "promoting"}
-            or operation is None
+            operation is None
             or operation["target_kind"] != "batch"
             or operation["episode_id"] != batch["id"]
             or operation["state"] not in {"active", "escalated"}
-            or stage is None
-            or stage["state"] != "awaiting_completion"
-            or lease is None
+        ):
+            return "wait", (
+                "batch repair operation is "
+                f"{operation['state'] if operation is not None else 'missing'}, not active"
+            )
+        if stage is None or stage["state"] != "awaiting_completion":
+            return "wait", (
+                f"repair stage {operation['active_stage']} is "
+                f"{stage['state'] if stage is not None else 'missing'}, "
+                "not awaiting_completion"
+            )
+        if (
+            lease is None
             or lease["batch_id"] != batch["id"]
             or lease["repository_id"] != batch["repository_id"]
-            or float(lease["expires_at"]) < minimum_lease_expires_at
-            or owner is None
+        ):
+            return "wait", "the project integration lease is not held for this batch"
+        if float(lease["expires_at"]) < minimum_lease_expires_at:
+            return "wait", (
+                f"project integration lease {lease['owner_id']} expires at "
+                f"{float(lease['expires_at']):.0f}, inside the {_CLAIM_SECONDS:.0f}s "
+                "promotion claim; the scheduler renews it"
+            )
+        if (
+            owner is None
             or owner["owner_id"] != operation["id"]
             or owner["owner_role"] != "collector"
             or owner["handoff_state"] != "reserved"
-            or publication is None
+        ):
+            if owner is None:
+                return "wait", "the integration branch has no owner row"
+            attached = (
+                f", attached to session {owner['session_id']}"
+                if owner.get("session_id")
+                else ""
+            )
+            return "wait", (
+                f"integration branch is held by {owner['owner_role']} {owner['owner_id']} "
+                f"({owner['handoff_state']}, fence {owner['fence_token']}{attached}); "
+                "promotion needs the batch collector"
+            )
+        if (
+            publication is None
             or publication["state"] != "pr_published"
             or publication["head_sha"] != candidate["head_sha"]
             or publication["repository_id"] != batch["repository_id"]
         ):
-            return "wait"
+            return "wait", (
+                "candidate pull request is "
+                f"{publication['state'] if publication is not None else 'unpublished'} "
+                "for this exact head"
+            )
         ordinals = [int(member["ordinal"]) for member in state["members"]]
         result_ordinals = [int(result["member_ordinal"]) for result in state["results"]]
         if (
@@ -1503,7 +1644,7 @@ class RootPromotionService:
             or not is_valid_git_oid(candidate["head_sha"])
             or not is_valid_git_oid(candidate["construction_base_sha"])
         ):
-            return "stale"
+            return "stale", "candidate member results are incomplete or not exact"
         return None
 
     @staticmethod
