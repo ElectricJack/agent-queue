@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 471,
+    "leaf_commands": 472,
     "registration": {
       "generated": 302,
-      "handwritten": 169
+      "handwritten": 170
     },
     "ownership": {
-      "core": 432,
+      "core": 433,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 470
+      "supported": 471
     },
     "evidence_level": {
       "behavioral": 14,
       "dispatch": 302,
-      "registration": 155
+      "registration": 156
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 411
+      "untested": 412
     }
   },
   "commands": [
