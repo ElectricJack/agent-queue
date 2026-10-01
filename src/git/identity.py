@@ -286,18 +286,24 @@ class PublishPolicy:
     operator edit mid-task must not strand finished work).  ``enforce`` is
     false only when a session from an earlier release launched without an
     identity AQ can name; then mismatches are reported, not refused.  The
-    publication records its findings in ``notes``.
+    publication records its findings in ``notes``.  ``authorized_heads``
+    are exact published OIDs the daemon told the task to merge (a source CI
+    repair's source head): their history is already published, so it is
+    never judged.
     """
 
     identity: GitIdentity
     source: IdentitySource
     allowed: frozenset[str]
     enforce: bool = True
+    authorized_heads: frozenset[str] = frozenset()
     notes: list = field(default_factory=list, compare=False)
 
 
 def publish_policy(
-    resolved: ResolvedGitIdentity, launches: Iterable[tuple[str | None, str, str]] = ()
+    resolved: ResolvedGitIdentity,
+    launches: Iterable[tuple[str | None, str, str]] = (),
+    authorized_heads: Iterable[str] = (),
 ) -> PublishPolicy:
     """The policy for *resolved* and the ``(digest, lifecycle, profile_id)`` launches.
 
@@ -315,7 +321,10 @@ def publish_policy(
                 enforce = False
         elif digest:
             allowed.add(digest)
-    return PublishPolicy(resolved.identity, resolved.source, frozenset(allowed), enforce)
+    return PublishPolicy(
+        resolved.identity, resolved.source, frozenset(allowed), enforce,
+        frozenset(head.lower() for head in authorized_heads if head),
+    )
 
 
 def resolve_git_identity(config: Any, project: Any = None) -> ResolvedGitIdentity:

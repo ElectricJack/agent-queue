@@ -7,7 +7,13 @@ from uuid import uuid4
 
 from sqlalchemy import and_, exists, func, insert, literal, or_, select, update
 
-from src.database.tables import agents, sessions, task_session_attempts, tasks
+from src.database.tables import (
+    agents,
+    integration_source_ci,
+    sessions,
+    task_session_attempts,
+    tasks,
+)
 
 LIVE_ATTEMPT_STATES = ("starting", "running", "draining")
 TERMINAL_SESSION_STATES = ("stopped", "quarantined", "sleeping")
@@ -370,6 +376,20 @@ class TaskSessionQueryMixin:
         async with self._engine.connect() as conn:
             rows = (await conn.execute(query)).all()
         return [(row[0], row[1], row[2]) for row in rows]
+
+    async def list_authorized_source_heads(self, task_id: str) -> list[str]:
+        """Exact source heads the daemon filed *task_id* to merge (source CI repair).
+
+        Read from the daemon's own record, never from worker-writable refs:
+        the publishing check excludes their already-published history
+        (git identity spec §5).
+        """
+        query = select(integration_source_ci.c.source_head).where(
+            integration_source_ci.c.repair_task_id == task_id
+        )
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(query)).all()
+        return [row[0] for row in rows]
 
     async def finish_task_session_attempt(
         self,

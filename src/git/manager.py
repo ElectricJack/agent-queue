@@ -3214,7 +3214,8 @@ class GitManager:
 
         "New" is reachable from the exact *tip* OID and from none of: the
         delivery base, this branch's last published head
-        (``refs/remotes/origin/<branch>``), and the caller's lease OID -- the
+        (``refs/remotes/origin/<branch>``), the caller's lease OID and the
+        daemon-recorded ``policy.authorized_heads`` -- the
         same local evidence the reserved-path gate trusts, never every
         ``refs/remotes/*`` a checkout can write.  A committer outside
         ``policy.allowed`` means the worker replaced AQ's identity itself:
@@ -3227,11 +3228,15 @@ class GitManager:
         published = f"refs/remotes/origin/{_validate_ref(branch)}"
         if await self.aref_exists(checkout_path, published):
             exclusions.append(published)
-        lease = (expected_remote_oid or "").lower()
-        if _OID_RE.fullmatch(lease) and set(lease) != {"0"}:
+        # The lease, and heads the daemon authorized this task to merge (a
+        # source CI repair's exact source head): both are published already.
+        candidates = [(expected_remote_oid or "").lower(), *sorted(policy.authorized_heads)]
+        for oid in candidates:
+            if not (_OID_RE.fullmatch(oid) and set(oid) != {"0"}):
+                continue
             try:
-                await self._arun(["cat-file", "-e", f"{lease}^{{commit}}"], cwd=checkout_path)
-                exclusions.append(lease)
+                await self._arun(["cat-file", "-e", f"{oid}^{{commit}}"], cwd=checkout_path)
+                exclusions.append(oid)
             except GitError:
                 pass
         out = await self._arun(
