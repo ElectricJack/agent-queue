@@ -138,6 +138,7 @@ its outbox; transport failures never need a new author turn.
     "integration_redrive_child",
     "integration_redrive_root",
     "integration_materialize_root",
+    "integration_authorize_root",
     "integration_release_delegates",
     "integration_release_owner",
     "integration_reserve_owner",
@@ -367,6 +368,16 @@ its outbox; transport failures never need a new author turn.
   `would_materialize` can be applied with `--apply --head <head_sha> --reason ...`;
   then flush the project. A root with children needs its original parent
   verification evidence and must be reported for separate recovery.
+- **A user-authorized root the train policy does not admit.** Root
+  `admission: authorized` admits completed feature/bugfix roots and the ids in
+  `root.authorized_task_ids`; changing that list needs a drained train. When
+  the user has explicitly authorized delivery of another root (a chore, test or
+  art task), run `aq integration authorize-root <task>` (dry run), then
+  `--apply --head <head_sha> --reason ...` naming the user's authorization. It
+  records that exact source only, keeps the train running and changes no
+  policy, generation or task type. `blocked` (hold, open gate, rejected review,
+  `reviewed` admission) and `not_eligible` are reported, never worked around;
+  never apply it without the user's explicit authorization.
 - **A completed child its parent never assembled.** A collecting parent
   assembles a COMPLETED child only once approved evidence pins the child's
   exact head; the collector records that evidence on its own once the child's

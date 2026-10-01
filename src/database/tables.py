@@ -3035,6 +3035,43 @@ integration_review_evidence = Table(
     ),
 )
 
+# An operator's explicit authorization of one exact train root source.  It
+# admits a root whose kind the policy does not, without editing the policy or
+# its generation; holds, gates, rejections and source CI still bind.
+integration_root_authorizations = Table(
+    "integration_root_authorizations",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("project_id", Text, nullable=False),
+    Column("task_id", Text, nullable=False),
+    Column("repository_id", Text, nullable=False),
+    Column("source_base", Text, nullable=False),
+    Column("source_head", Text, nullable=False),
+    Column("generation", Integer, nullable=False),
+    Column("review_kind", Text, nullable=False),
+    Column("pr_url", Text, nullable=False),
+    Column("task_type", Text, nullable=True),
+    Column("policy_generation", Integer, nullable=False),
+    Column("operator_id", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("created_at", Float, nullable=False),
+    CheckConstraint("generation >= 0", name="ck_integration_root_authorizations_generation"),
+    CheckConstraint(
+        "policy_generation >= 0", name="ck_integration_root_authorizations_policy_generation"
+    ),
+    CheckConstraint(
+        "review_kind IN ('leaf', 'parent')", name="ck_integration_root_authorizations_kind"
+    ),
+    UniqueConstraint(
+        "task_id",
+        "repository_id",
+        "source_base",
+        "source_head",
+        "generation",
+        name="uq_integration_root_authorizations_source",
+    ),
+)
+
 integration_promotion_intents = Table(
     "integration_promotion_intents",
     metadata,
