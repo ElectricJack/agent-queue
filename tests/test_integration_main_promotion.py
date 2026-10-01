@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import itertools
 import json
 import os
 import subprocess
@@ -19,6 +20,7 @@ from src.commands.integration_commands import IntegrationCommandsMixin
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, principal_context
 from src.database import Database
 from src.database.tables import (
+    integration_attestation_publications,
     integration_batch_members,
     integration_batches,
     integration_branch_owners,
@@ -2500,3 +2502,328 @@ async def test_real_git_ancestry_proof_uses_exact_candidate_graph(tmp_path):
     service = RootPromotionService(None, data_dir=tmp_path, git_manager=GitManager())
     assert await service._is_ancestor(store, base, head) is True
     assert await service._is_ancestor(store, head, base) is False
+
+
+async def _closed_green_writer(db, *, deadline_at=500.0, lease_expires_at=1000.0):
+    """The live 2026-09-30 shape: exact green, stage-zero writer closed and detached."""
+    writer = "repair-root-op-0"
+    async with db.immediate() as conn:
+        await db.create_task(
+            Task(
+                id=writer, project_id="p", repo_id="repo", title="Repair integration stage 0",
+                description="stage-zero delegate", status=TaskStatus.COMPLETED,
+                branch_name=BRANCH.removeprefix("refs/heads/"),
+                created_by_kind="integration_repair", created_by_id="root-op",
+            ),
+            conn=conn,
+        )
+        subject = {"kind": "batch", "revision": 0, "candidate_sha": HEAD}
+        await conn.execute(
+            update(integration_repair_stages)
+            .where(
+                integration_repair_stages.c.operation_id == "root-op",
+                integration_repair_stages.c.ordinal == 0,
+            )
+            .values(
+                repair_task_id=writer, writer_kind="repair_delegate", current_subject=subject,
+                success_subject=subject, success_evidence_id="ci-green", deadline_at=deadline_at,
+            )
+        )
+        await conn.execute(
+            update(integration_branch_owners)
+            .where(integration_branch_owners.c.id == "branch-owner-row")
+            .values(
+                owner_id=writer, owner_role="repair", fence_token=8, handoff_state="reserved",
+                confirmed_workspace_id="writer-workspace",
+            )
+        )
+        await conn.execute(update(project_integration_leases).values(expires_at=lease_expires_at))
+    return writer
+
+
+async def _rows(db, table, *conditions):
+    async with db._engine.connect() as conn:
+        return [
+            dict(row)
+            for row in (await conn.execute(select(table).where(*conditions))).mappings().all()
+        ]
+
+
+def _promoter(db, data_dir, clock, *, app=None):
+    app = app or FakeAppClient()
+    return RootPromotionService(
+        db, data_dir=data_dir, git_manager=PushGit(app), app_client=app, clock=clock
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_reconciler_hands_off_expired_green_stage_and_promotes_once(prepared_db):
+    """A lost close continuation after a restart is recovered from durable state."""
+    from src.integration.green_continuation import GreenPromotionReconciler
+
+    db, data_dir = prepared_db
+    writer = await _closed_green_writer(db, deadline_at=50.0)
+    # The deadline ladder keeps the exact green stage instead of escalating.
+    expired = await RepairService(db).expire("root-op", 0, now=100.0)
+    assert (expired["outcome"], expired["action"]) == ("not_due", "awaiting_promotion")
+    before = await _rows(db, integration_outbox)
+
+    first = await GreenPromotionReconciler(
+        db, promotion=_promoter(db, data_dir, lambda: 100.0)
+    ).reconcile("batch", now=100.0)
+    # A second process (restart) and a duplicated tick find nothing to add.
+    second = await GreenPromotionReconciler(
+        db, promotion=_promoter(db, data_dir, lambda: 101.0)
+    ).reconcile("batch", now=101.0)
+
+    owner = (await _rows(db, integration_branch_owners))[0]
+    events = [
+        row for row in await _rows(db, integration_outbox) if row not in before
+    ]
+    stage = (await _rows(
+        db, integration_repair_stages, integration_repair_stages.c.ordinal == 0
+    ))[0]
+    assert first["outcome"] == "handed_off"
+    assert second["outcome"] == "pending"
+    assert (owner["owner_id"], owner["owner_role"], owner["fence_token"]) == (
+        "root-op", "collector", 9
+    )
+    assert owner["handoff_state"] == "reserved"
+    assert [event["event_type"] for event in events] == ["integration.candidate_green"]
+    assert events[0]["id"].startswith("integration-green-continuation-")
+    assert events[0]["payload"] == {
+        "operation_id": "root-op", "batch_id": "batch", "revision": 0, "head_sha": HEAD,
+        "project_id": "p", "event_id": events[0]["id"],
+    }
+    assert stage["state"] == "awaiting_completion" and stage["attempts"] == 0
+    assert stage["dossier"]["green_handoffs"] == [{
+        "task_id": writer, "from_fence": 8, "to_owner_id": "root-op", "to_fence": 9,
+        "candidate_sha": HEAD, "revision": 0, "evidence_id": "ci-green", "at": 100.0,
+    }]
+
+    result = await _promoter(db, data_dir, lambda: 110.0).promote("batch", 0)
+    replay = await _promoter(db, data_dir, lambda: 111.0).promote("batch", 0)
+    assert result.outcome == "promoted"
+    assert replay.outcome in {"promoted", "already_promoted"}
+    reconciler = GreenPromotionReconciler(db, promotion=_promoter(db, data_dir, lambda: 200.0))
+    assert await reconciler.candidate_batches(limit=10) == []
+
+
+@pytest.mark.asyncio
+async def test_supervisor_redrive_promote_reloads_and_hands_off_closed_writer(prepared_db):
+    """Direct promotion closes the same exact ownership gap; no continuation is needed."""
+    db, data_dir = prepared_db
+    await _closed_green_writer(db)
+    before = await _rows(db, integration_outbox)
+
+    result = await _promoter(db, data_dir, lambda: 10.0).promote("batch", 0)
+
+    owner = (await _rows(db, integration_branch_owners))[0]
+    new_events = [row for row in await _rows(db, integration_outbox) if row not in before]
+    assert result.outcome == "promoted"
+    assert owner["owner_role"] == "collector"
+    assert not [e for e in new_events if e["event_type"] == "integration.candidate_green"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "blocker",
+    [
+        "writer_unfinished", "writer_attached", "writer_assigned", "other_owner",
+        "candidate_red", "evidence_moved", "subject_moved", "stage_active",
+        "live_mutation", "batch_human_blocked", "operation_human_required",
+        "foreign_writer",
+    ],
+)
+async def test_green_handoff_refuses_every_inexact_or_live_writer(prepared_db, blocker):
+    """The handoff never takes writer authority or adopts changed evidence."""
+    from src.integration.green_continuation import GreenPromotionReconciler
+
+    db, data_dir = prepared_db
+    writer = await _closed_green_writer(db)
+    if blocker == "writer_assigned":
+        await db.create_agent(Agent(id="assigned-agent", name="Assigned", profile_id="debug"))
+    from src.database.tables import tasks as tasks_table
+
+    stage = integration_repair_stages
+
+    async with db.immediate() as conn:
+        if blocker == "writer_unfinished":
+            await conn.execute(update(tasks_table).where(tasks_table.c.id == writer)
+                               .values(status="IN_PROGRESS"))
+        elif blocker == "writer_attached":
+            await conn.execute(update(integration_branch_owners).values(
+                handoff_state="attached", session_id="writer-session",
+                workspace_id="writer-workspace",
+            ))
+        elif blocker == "writer_assigned":
+            await conn.execute(update(tasks_table).where(tasks_table.c.id == writer)
+                               .values(assigned_agent_id="assigned-agent"))
+        elif blocker == "other_owner":
+            await conn.execute(update(integration_branch_owners).values(owner_id="someone-else"))
+        elif blocker == "candidate_red":
+            await conn.execute(update(integration_candidate_revisions).values(state="red"))
+        elif blocker == "evidence_moved":
+            await conn.execute(update(stage).values(success_evidence_id="ci-other"))
+        elif blocker == "subject_moved":
+            await conn.execute(update(stage).values(current_subject={
+                "kind": "batch", "revision": 0, "candidate_sha": "f" * 40,
+            }))
+        elif blocker == "stage_active":
+            await conn.execute(update(stage).values(state="active"))
+        elif blocker == "live_mutation":
+            await conn.execute(insert(integration_candidate_ref_mutations).values(
+                id="live-mutation", batch_id="batch", revision=0, purpose="candidate_final",
+                repository_id="repo", branch=BRANCH, target_branch=BRANCH,
+                expected_old_sha=BASE, desired_sha=HEAD,
+                operation_id="root-op", operation_episode_id="batch", operation_stage=0,
+                lease_owner_id="lease-owner", lease_fence_token=3, branch_owner_id=writer,
+                branch_owner_role="repair", branch_fence_token=8, nonce="n", state="reserved",
+                expires_at=10_000.0, created_at=1.0, updated_at=1.0,
+            ))
+        elif blocker == "batch_human_blocked":
+            await conn.execute(update(integration_batches).values(lifecycle="human_blocked"))
+        elif blocker == "operation_human_required":
+            await conn.execute(update(integration_repair_operations).values(state="human_required"))
+        elif blocker == "foreign_writer":
+            await conn.execute(update(tasks_table).where(tasks_table.c.id == writer)
+                               .values(created_by_id="another-operation"))
+    owners_before = await _rows(db, integration_branch_owners)
+    outbox_before = await _rows(db, integration_outbox)
+
+    handed = await RepairService(db).return_green_delegate_branch("batch", now=100.0)
+    reconciled = await GreenPromotionReconciler(
+        db, promotion=_promoter(db, data_dir, lambda: 100.0)
+    ).reconcile("batch", now=100.0)
+
+    assert handed is None
+    assert reconciled["outcome"] in {"blocked", "not_green", "stale"}
+    assert reconciled["reason"]
+    assert await _rows(db, integration_branch_owners) == owners_before
+    assert await _rows(db, integration_outbox) == outbox_before
+
+
+@pytest.mark.asyncio
+async def test_promotable_green_batch_retries_with_bounded_backoff(prepared_db, monkeypatch):
+    """A spent wakeup is re-emitted with backoff, never more than the cap."""
+    import src.integration.green_continuation as continuation
+
+    db, data_dir = prepared_db
+    await _closed_green_writer(db, lease_expires_at=1_000_000.0)
+    # Promotion keeps refusing after its snapshot validates (here: no
+    # attestation), so every continuation is consumed without an intent.
+    promoter = RootPromotionService(
+        db, data_dir=data_dir, git_manager=PinningGit(), clock=lambda: 0.0,
+        attestation_resolver=lambda _subject: None,
+    )
+    reconciler = continuation.GreenPromotionReconciler(db, promotion=promoter)
+    emitted = []
+    now = 100.0
+    outcomes = []
+    for _ in range(200):
+        result = await reconciler.reconcile("batch", now=now)
+        outcomes.append(result["outcome"])
+        if result["outcome"] in {"handed_off", "continued"}:
+            assert (await promoter.promote("batch", 0)).outcome == "configuration_blocked"
+            async with db.immediate() as conn:
+                await conn.execute(
+                    update(integration_outbox)
+                    .where(integration_outbox.c.delivered_at.is_(None))
+                    .values(delivered_at=now)
+                )
+            emitted.append(now)
+        if result["outcome"] == "exhausted":
+            break
+        now += 30.0
+    assert outcomes[0] == "handed_off"
+    assert outcomes[-1] == "exhausted"
+    assert len(emitted) == continuation.MAX_GENERATIONS
+    gaps = [later - earlier for earlier, later in itertools.pairwise(emitted)]
+    assert gaps == sorted(gaps) and gaps[0] >= continuation.RETRY_BASE_SECONDS
+    events = [
+        row for row in await _rows(db, integration_outbox)
+        if row["id"].startswith("integration-green-continuation-")
+    ]
+    assert len(events) == continuation.MAX_GENERATIONS
+    # A stale revision ends the series at once.
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_batches).values(current_revision=1))
+    assert await reconciler.candidate_batches(limit=10) == []
+
+
+@pytest.mark.asyncio
+async def test_wait_results_name_the_blocker_without_contract_fields(prepared_db):
+    db, data_dir = prepared_db
+    writer = await _closed_green_writer(db)
+    from src.database.tables import tasks as tasks_table
+
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks_table).where(tasks_table.c.id == writer)
+                           .values(status="IN_PROGRESS"))
+        await conn.execute(update(integration_branch_owners).values(
+            handoff_state="attached", session_id="writer-session", workspace_id="writer-ws",
+        ))
+
+    class Handler(IntegrationCommandsMixin):
+        pass
+
+    handler = Handler()
+    handler.db = db
+    handler.orchestrator = SimpleNamespace(
+        root_promotion_service=_promoter(db, data_dir, lambda: 10.0)
+    )
+    with principal_context(ExecutionPrincipal.service("root-playbook")):
+        waiting = await handler._cmd_integration_promote_main({"batch_id": "batch", "revision": 0})
+    assert waiting["outcome"] == "wait"
+    assert "reason" not in waiting
+    assert writer in waiting["error"] and "writer-session" in waiting["error"]
+
+
+@pytest.mark.asyncio
+async def test_reconciler_leaves_the_first_wakeup_to_the_ci_publisher(prepared_db):
+    """No continuation before CI's own green fact, nor while one is reconciling."""
+    from src.integration.green_continuation import GreenPromotionReconciler
+    from src.integration.outbox import enqueue_integration_event
+
+    db, data_dir = prepared_db
+    async with db.immediate() as conn:
+        await conn.execute(update(project_integration_leases).values(expires_at=1_000_000.0))
+    reconciler = GreenPromotionReconciler(db, promotion=_promoter(db, data_dir, lambda: 100.0))
+
+    # Green persisted, attestation not yet published: the publisher emits.
+    unpublished = await reconciler.reconcile("batch", now=100.0)
+    async with db.immediate() as conn:
+        await enqueue_integration_event(
+            conn, event_id="ci-green-fact", dedup_key="ci-green-fact", project_id="p",
+            event_type="integration.candidate_green",
+            payload={"operation_id": "root-op", "batch_id": "batch", "revision": 0,
+                     "head_sha": HEAD},
+            available_at=100.0,
+        )
+        await conn.execute(update(integration_outbox).values(delivered_at=100.0))
+    within_grace = await reconciler.reconcile("batch", now=150.0)
+    async with db.immediate() as conn:
+        await conn.execute(insert(integration_attestation_publications).values(
+            id="attestation-reserved", project_id="p", batch_id="batch", revision=0,
+            operation_id="root-op", head_sha=HEAD, ci_evidence_id="ci-green",
+            external_id="aq-attestation-v1:" + "8" * 64, execution_nonce="nonce",
+            state="reserved", expires_at=10_000.0, created_at=150.0, updated_at=150.0,
+        ))
+    reconciling = await reconciler.reconcile("batch", now=200.0)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_attestation_publications).values(
+            state="published", prewrite_at=160.0, check_run_id=7001, updated_at=160.0,
+        ))
+    lost = await reconciler.reconcile("batch", now=200.0)
+
+    assert unpublished["outcome"] == "pending"
+    assert within_grace["outcome"] == "pending"
+    assert (reconciling["outcome"], reconciling["promotion_outcome"]) == (
+        "blocked", "reconciliation_blocked",
+    )
+    assert lost["outcome"] == "continued" and lost["generation"] == 0
+    continuations = [
+        row for row in await _rows(db, integration_outbox)
+        if row["id"].startswith("integration-green-continuation-")
+    ]
+    assert [row["id"] for row in continuations] == [lost["event_id"]]

@@ -346,6 +346,10 @@ through the managed `test` preset before publishing. The scenario verifies the
 delivery journal contains a passing job receipt and result hash for the exact
 snapshot SHA published to the remote, then checks dependency release and operator
 adoption. S17 uses the same supported validation command in its development policy.
+S15 pauses its disposable project during the legacy task's creation and its
+READY-to-paused transition, then resumes it for the integration checks. This
+prevents the push scheduler used by S4 from assigning the operator fixture and
+replacing its published branch between CLI calls.
 
 **S16 — provider failover.** The end-to-end check of
 [provider failover](../specs/provider-failover.md) (D23), against the fake

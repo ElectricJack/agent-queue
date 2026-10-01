@@ -70,6 +70,8 @@ class CandidateBuildResult(BaseModel):
     branch: str | None = None
     pr_url: str | None = None
     member_ordinal: int | None = None
+    #: Safe operator-facing explanation of a wait; not a contract result field.
+    reason: str | None = None
 
 
 class AuditPullRequest(BaseModel):
@@ -178,6 +180,13 @@ class _MutationObservation:
         return bool(self.blocker_ids or self.recoverable_ids)
 
 
+def _mutation_reason(mutation_ids: tuple[str, ...]) -> str:
+    return (
+        "unresolved candidate ref mutation(s) "
+        f"{', '.join(mutation_ids) or '(unknown)'} must reconcile before building"
+    )
+
+
 class CandidateService:
     """Build every immutable member into one candidate revision."""
 
@@ -220,11 +229,15 @@ class CandidateService:
             )
         if state.get("authority_wait"):
             return CandidateBuildResult(
-                outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"])
+                outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"]),
+                operation_id=state["operation"]["id"] if state["operation"] else None,
+                reason=state.get("authority_reason"),
             )
         if observed_mutation.blocks_build:
             return CandidateBuildResult(
-                outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"])
+                outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"]),
+                operation_id=state["operation"]["id"] if state["operation"] else None,
+                reason=_mutation_reason(observed_mutation.blocker_ids),
             )
         if self.app_client is None or self.forge_provider is None:
             return CandidateBuildResult(
@@ -232,6 +245,7 @@ class CandidateService:
                 batch_id=batch_id,
                 revision=int(batch["current_revision"]),
                 operation_id=state["operation"]["id"] if state["operation"] else None,
+                reason="the candidate builder has no repository-bound App client",
             )
         revision_number = int(batch["current_revision"])
         construction_base = batch["base_sha"]
@@ -247,8 +261,11 @@ class CandidateService:
         # must also retain main from the preceding batch, before spending CI.
         try:
             revision = await self._ensure_revision(state, revision_number, construction_base)
-        except CandidateStaleAuthority:
-            return CandidateBuildResult(outcome="wait", batch_id=batch_id, revision=revision_number)
+        except CandidateStaleAuthority as exc:
+            return CandidateBuildResult(
+                outcome="wait", batch_id=batch_id, revision=revision_number,
+                operation_id=state["operation"]["id"], reason=str(exc),
+            )
         was_built = revision["state"] in {"built", "green"}
         operation_id = state["operation"]["id"]
         # Only stage zero is activated from the construction base. An escalated
@@ -281,12 +298,13 @@ class CandidateService:
         if revision["state"] not in {"built", "green"}:
             try:
                 revision = await self._construct(state, revision, store, operation_id=operation_id)
-            except (CandidateStaleAuthority, StaleFence, BranchBusy):
+            except (CandidateStaleAuthority, StaleFence, BranchBusy) as exc:
                 return CandidateBuildResult(
                     outcome="wait",
                     batch_id=batch_id,
                     revision=revision_number,
                     operation_id=operation_id,
+                    reason=f"candidate construction lost authority: {exc}",
                 )
         if revision["state"] in {"conflict", "source_moved", "base_moved"}:
             return self._result(revision["state"], state, revision, operation_id)
@@ -301,7 +319,9 @@ class CandidateService:
         outcome = "already_built" if was_built or batch["pr_url"] else "built"
         pushed = await self._publish(state, revision, store)
         if pushed.get("publication_wait"):
-            return self._result("wait", state, pushed, operation_id)
+            return self._result("wait", state, pushed, operation_id).model_copy(
+                update={"reason": "the candidate pull request publication is reconciling"}
+            )
         return self._result(outcome, state, pushed, operation_id)
 
     async def _has_reviewed_ancestry(self, store, state, revision) -> bool:
@@ -328,7 +348,9 @@ class CandidateService:
         batch = state["batch"]
         if state.get("authority_wait"):
             return CandidateBuildResult(
-                outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"])
+                outcome="wait", batch_id=batch_id, revision=int(batch["current_revision"]),
+                operation_id=state["operation"]["id"] if state["operation"] else None,
+                reason=state.get("authority_reason"),
             )
         if observed_mutation.has_unresolved:
             return CandidateBuildResult(
@@ -336,6 +358,9 @@ class CandidateService:
                 batch_id=batch_id,
                 revision=int(batch["current_revision"]),
                 operation_id=state["operation"]["id"],
+                reason=_mutation_reason(
+                    observed_mutation.blocker_ids + observed_mutation.recoverable_ids
+                ),
             )
         if self.app_client is None or self.forge_provider is None:
             return CandidateBuildResult(
@@ -1690,6 +1715,13 @@ class CandidateService:
                     "members": [dict(row) for row in members],
                     "operation": None,
                     "authority_wait": True,
+                    "authority_reason": (
+                        "the project integration lease is not held for this batch"
+                        if lease is None
+                        or lease["batch_id"] != batch_id
+                        or lease["repository_id"] != batch["repository_id"]
+                        else "the project integration lease expired; the scheduler renews it"
+                    ),
                 }
             operation = (
                 (
@@ -1714,7 +1746,7 @@ class CandidateService:
                     fence = await self.ownership.acquire(
                         target, operation["id"], "collector", conn=conn
                     )
-                except BranchBusy:
+                except BranchBusy as exc:
                     return {
                         "batch": dict(batch),
                         "project": dict(project),
@@ -1722,6 +1754,7 @@ class CandidateService:
                         "operation": dict(operation),
                         "lease": dict(lease),
                         "authority_wait": True,
+                        "authority_reason": await self._owner_reason_on(conn, target, exc),
                     }
             return {
                 "batch": dict(batch),
@@ -1732,8 +1765,36 @@ class CandidateService:
                 "fence": fence,
             }
 
+    async def _owner_reason_on(self, conn, target: BranchKey, exc: Exception) -> str:
+        owner = (await conn.execute(select(integration_branch_owners).where(
+            integration_branch_owners.c.repository_id == target.repository_id,
+            integration_branch_owners.c.ref == target.branch,
+        ))).mappings().one_or_none()
+        if owner is None:
+            return f"integration branch is busy: {exc}"
+        attached = f", session {owner['session_id']}" if owner["session_id"] else ""
+        return (
+            f"integration branch is held by {owner['owner_role']} {owner['owner_id']} "
+            f"({owner['handoff_state']}, fence {owner['fence_token']}{attached}): {exc}"
+        )
+
     async def _return_completed_repair_on(self, conn, batch, operation, target):
-        """Recover a closed delegate's detached branch after exact repair adoption."""
+        """Recover a closed delegate's detached branch for the collector.
+
+        Two shapes are exact: an adopted repair revision still awaiting its CI,
+        and an unchanged candidate that turned green while the writer was
+        attached.  The second hands off through the repair service's guard,
+        which also enqueues the promotion continuation its CI fact can no
+        longer provide.
+        """
+        if await self.repair.return_green_delegate_branch_on(
+            conn,
+            batch=dict(batch),
+            operation=dict(operation),
+            emit_continuation=True,
+            now=self.clock(),
+        ) is not None:
+            return
         if (operation["state"] not in {"active", "escalated"}
                 or int(batch["current_revision"]) == 0):
             return

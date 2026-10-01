@@ -33,6 +33,7 @@ from src.jobs.adapters import finite_command
 from src.jobs.policy import presets, validate_args
 from src.profiles.parser import parse_profile
 from src.routing.planner import ProfileFacts, Snapshot, TaskFacts, plan_route, worker_classes
+from tests import test_e2e_cli_stateful as stateful_cli
 from tests.test_e2e_cli_stateful import SCENARIO_GROUPS
 from tests.test_routing_planner import DIGEST as ROUTING_DIGEST
 from tests.test_routing_planner import POLICY as ROUTING_POLICY
@@ -198,12 +199,16 @@ def test_development_validation_preset_checks_the_committed_readme(tmp_path):
     preset, args = finite_command(smoke.DEVELOPMENT_VALIDATION_COMMAND)
     command = validate_args(presets(REPO_ROOT)[preset], args, tmp_path, worker_cap=1)
 
-    passed = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    passed = subprocess.run(
+        command, cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False,
+    )
     assert passed.returncode == 0, passed.stdout + passed.stderr
     assert "1 passed" in passed.stdout
 
     readme.unlink()
-    failed = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    failed = subprocess.run(
+        command, cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False,
+    )
     assert failed.returncode == 1, failed.stdout + failed.stderr
     assert "test_readme_exists" in failed.stdout and "1 failed" in failed.stdout
 
@@ -699,6 +704,46 @@ def test_ci_scenario_groups_cover_every_scenario_once():
         {scenario.key for scenario in smoke.SCENARIOS} - {"S16"}
     ) | {phase.key for phase in smoke.FAILOVER_PHASES}
     assert {phase.key for phase in smoke.FAILOVER_PHASES} == {"S16a", "S16b"}
+
+
+@pytest.mark.parametrize('setup_seconds, smoke_budget', [(10, 500), (180, 330)])
+@pytest.mark.parametrize('smoke_expires', [False, True])
+def test_stateful_budget_reuses_setup_time_and_preserves_timeout_cleanup(
+    monkeypatch, tmp_path, setup_seconds, smoke_budget, smoke_expires,
+):
+    clock = SimpleNamespace(now=1000.0)
+    calls = []
+    scenarios = SCENARIO_GROUPS['claims']
+    stdout = '\n'.join([
+        *(f'PASS {key} fixture' for key in scenarios),
+        f'{len(scenarios)}/{len(scenarios)} scenarios passed',
+        'passed unsupported dependency-unavailable explicitly-untested',
+    ])
+
+    def run(args, **kwargs):
+        script = Path(args[0]).name
+        calls.append((script, kwargs['timeout']))
+        if script == 'e2e-env.sh':
+            Path(kwargs['env']['AQ_E2E_HOME']).mkdir()
+            clock.now += setup_seconds
+        elif script == 'e2e-smoke.sh' and smoke_expires:
+            clock.now += kwargs['timeout']
+            raise subprocess.TimeoutExpired(args, kwargs['timeout'], output=b'partial output')
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr='')
+
+    monkeypatch.setattr(stateful_cli, 'time', SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(stateful_cli, 'subprocess', SimpleNamespace(
+        run=run, TimeoutExpired=subprocess.TimeoutExpired,
+    ))
+    if smoke_expires:
+        with pytest.raises(subprocess.TimeoutExpired):
+            stateful_cli.test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios)
+    else:
+        stateful_cli.test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios)
+
+    assert calls == [
+        ('e2e-env.sh', 180), ('e2e-smoke.sh', smoke_budget), ('e2e-clean.sh', 90),
+    ]
 
 
 def test_s16_pauses_automatic_failover_while_it_drives_manual_sweeps(monkeypatch):
