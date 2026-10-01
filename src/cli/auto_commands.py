@@ -145,6 +145,7 @@ HANDCRAFTED_COVERAGE = {
     "integration_rebind_repair",
     "integration_adopt_legacy_deliveries",
     "integration_bind_legacy_repositories",
+    "integration_close_delivered_pr",
     "integration_release_delegates",
     "integration_resolve_candidate_member",
     "integration_recover_candidate_member",

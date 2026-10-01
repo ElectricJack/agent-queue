@@ -1111,6 +1111,9 @@ class TestEndToEndOnFakeProvider:
         assert close["success"] and close["status"] == "COMPLETED"
         first = await db.get_task_completion("t1")
         assert first.commits == [final]
+        # Written with COMPLETED next to the provenance generation id.
+        assert (await db.get_task_meta("t1", "accepted_close"))["completion_id"] == first.id
+        assert await db.get_task_meta("t1", "development_completion_id") == first.id
         repo = await db.get_repo("repo")
         store = GitProvenance(git, wd, repository_url=repo.url)
         identity = CompletionIdentity("p1", "repo", "t1", first.id)
@@ -1999,6 +2002,121 @@ class TestEndToEndOnFakeProvider:
         assert close["status"] == "BLOCKED"
         assert (await db.get_task("t1")).status is TaskStatus.BLOCKED
 
+    @pytest.mark.parametrize(
+        "close_args,pipeline_ok,status",
+        [
+            ({"outcome": "pass"}, True, TaskStatus.COMPLETED),
+            ({"outcome": "pass"}, False, TaskStatus.BLOCKED),
+            ({"outcome": "fail", "failure_class": "transient"}, True, TaskStatus.READY),
+            ({"outcome": "fail", "failure_class": "hard"}, True, TaskStatus.BLOCKED),
+        ],
+        ids=["completed", "pipeline-stop", "retry", "hard-failure"],
+    )
+    async def test_restart_before_the_record_recovers_the_accepted_close_once(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch,
+        close_args, pipeline_ok, status,
+    ):
+        """smart-cascade: every accepted leg of the real close records the
+        close's identity in its transition, so a restart before
+        ``save_task_completion`` recovers exactly the submitted record, once."""
+        from src.database.queries.result_queries import PENDING_COMPLETION_KEY
+        from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+
+        class _Restart(BaseException):
+            pass
+
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        session = await db.get_session_for_task("t1")
+        real_orch.pipeline_result = (None, pipeline_ok)
+        seen: list = []
+        pipeline = real_orch._run_completion_pipeline
+
+        async def run_pipeline(ctx):
+            seen.append(ctx.accepted_close)
+            return await pipeline(ctx)
+
+        monkeypatch.setattr(real_orch, "_run_completion_pipeline", run_pipeline)
+        save = db.save_task_completion
+
+        async def die(*_args, **_kwargs):
+            raise _Restart()
+
+        monkeypatch.setattr(db, "save_task_completion", die)
+        with pytest.raises(_Restart):
+            await real_handler.execute(
+                "task_close",
+                {
+                    "task_id": "t1",
+                    "session_id": session.id,
+                    "summary": "exact account",
+                    "tests": ["aq test tests/test_x.py"],
+                    "commands": ["ruff check src/x.py"],
+                    **close_args,
+                },
+            )
+        monkeypatch.setattr(db, "save_task_completion", save)
+
+        task = await db.get_task("t1")
+        assert task.status is status
+        assert await db.get_task_completion("t1") is None
+        draft = await db.get_task_meta("t1", PENDING_COMPLETION_KEY)
+        accepted = await db.get_task_meta("t1", ACCEPTED_CLOSE_KEY)
+        assert accepted == draft["identity"] == {
+            "completion_id": draft["completion"]["id"],
+            "session_id": session.id,
+            "claim_epoch": task.claim_epoch,
+        }
+        if close_args["outcome"] == "pass":
+            assert seen == [accepted]
+
+        assert await db.recover_pending_completions() == ["t1"]
+        record = await db.get_task_completion("t1")
+        assert record.id == accepted["completion_id"]
+        assert (record.outcome, record.summary, record.tests, record.commands) == (
+            close_args["outcome"],
+            "exact account",
+            ["aq test tests/test_x.py"],
+            ["ruff check src/x.py"],
+        )
+        assert await db.recover_pending_completions() == []
+        assert len(await db.get_task_completions("t1")) == 1
+
+    async def test_restart_before_the_transition_is_never_recovered_after_requeue(
+        self, db, real_orch, real_handler, provider, tmp_path, monkeypatch
+    ):
+        """The supervisor's reproduction: a pass submitted, the daemon died
+        before the transition, the restart requeued the task READY.  READY
+        is not acceptance -- no record is invented."""
+        from src.database.queries.result_queries import PENDING_COMPLETION_KEY
+        from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
+
+        class _Restart(BaseException):
+            pass
+
+        await self._launch_via_execute_task(db, real_orch, monkeypatch, tmp_path)
+        session = await db.get_session_for_task("t1")
+
+        async def die(_ctx):
+            raise _Restart()
+
+        monkeypatch.setattr(real_orch, "_run_completion_pipeline", die)
+        with pytest.raises(_Restart):
+            await real_handler.execute(
+                "task_close",
+                {"task_id": "t1", "session_id": session.id, "outcome": "pass",
+                 "summary": "submitted, never accepted"},
+            )
+        assert (await db.get_task("t1")).status is TaskStatus.IN_PROGRESS
+        assert await db.get_task_meta("t1", PENDING_COMPLETION_KEY) is not None
+        assert await db.get_task_meta("t1", ACCEPTED_CLOSE_KEY) is None
+        await db.transition_task(
+            "t1", TaskStatus.READY, context="restart_requeue", assigned_agent_id=None
+        )
+
+        assert await db.recover_pending_completions() == []
+        assert await db.get_task_completions("t1") == []
+        assert await db.get_task_meta("t1", PENDING_COMPLETION_KEY) is None
+
     async def test_old_task_cleanup_preserves_reused_worker_and_adapter(
         self, db, real_orch, tmp_path
     ):
@@ -2610,6 +2728,12 @@ class TestEndToEndOnFakeProvider:
         assert close["success"] is True
         assert close["status"] == "PAUSED"
         assert checkpoint["checkpoint_sha"] == head
+        # The suspension transition recorded this close's identity (smart-cascade).
+        assert await db.get_task_meta("t1", "accepted_close") == {
+            "completion_id": (await db.get_task_completion("t1")).id,
+            "session_id": session.id,
+            "claim_epoch": (await db.get_task("t1")).claim_epoch,
+        }
         assert checkpoint["episode_id"] == operation["episode_id"]
         assert operation["state"] == "active"
         assert (await db.get_task_branch_origin_for_promotion("t1", "repo"))["base_sha"] == (
@@ -2736,6 +2860,12 @@ class TestEndToEndOnFakeProvider:
             "state"
         ] == "completed"
         real_orch._phase_integrate.assert_not_awaited()
+        # The guarded parent completion recorded this close's identity.
+        assert await db.get_task_meta("t1", "accepted_close") == {
+            "completion_id": (await db.get_task_completion("t1")).id,
+            "session_id": session.id,
+            "claim_epoch": (await db.get_task("t1")).claim_epoch,
+        }
 
     @pytest.mark.parametrize("manual_hold", [False, True])
     async def test_branchless_verifier_close_proves_aggregate_without_pr_to_main(

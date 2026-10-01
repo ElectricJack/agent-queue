@@ -1263,6 +1263,36 @@ class IntegrationCommandsMixin:
         )
         return {"success": result["outcome"] in {"bound", "nothing_to_bind"}, **result}
 
+    async def _cmd_integration_close_delivered_pr(self, args: dict) -> dict:
+        """Close one open PR only once Git proves its work is on the default branch."""
+        from pydantic import ValidationError
+
+        from src.commands.contracts.integration import IntegrationCloseDeliveredPrArgs
+        from src.integration.pr_delivery import DeliveredPullRequestClosure
+
+        try:
+            request = IntegrationCloseDeliveredPrArgs.model_validate(args)
+        except ValidationError as exc:
+            return _failure("invalid", f"invalid delivered-PR close request: {exc}")
+        principal, refusal = await integration_operator(self.db, request.project_id)
+        if refusal is not None:
+            return _failure("unauthorized", refusal)
+        result = await DeliveredPullRequestClosure(
+            self.db, self._integration_promotion_service()
+        ).run(
+            request.project_id,
+            request.pr_number,
+            dry_run=request.dry_run,
+            expected_head_sha=request.expected_head_sha,
+            reason=request.reason,
+            operator_id=principal,
+        )
+        return {
+            "success": result["outcome"] in {"would_close", "closed", "nothing_to_close"},
+            "dry_run": request.dry_run,
+            **result,
+        }
+
     def _integration_train_service(self):
         service = getattr(self.orchestrator, "integration_train_service", None)
         if service is not None:

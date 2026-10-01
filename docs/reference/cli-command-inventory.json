@@ -3823,6 +3823,40 @@
       }
     },
     {
+      "path": "aq integration close-delivered-pr",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.integration.integration_close_delivered_pr",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [
+          "project_id",
+          "pr_number"
+        ],
+        "optional": [
+          "--apply",
+          "--head",
+          "--reason",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq integration develop",
       "registration": "handwritten",
       "owner_kind": "core",

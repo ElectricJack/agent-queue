@@ -1473,6 +1473,19 @@ class Orchestrator(
         # restart must be re-bound before the blanket reset would otherwise
         # yank its task out from under it.  Harnesses are loaded first
         # because adoption reads process_names off them.
+        # Before anything moves a task: a close interrupted between its
+        # terminal transition and its completion record is finished from the
+        # drafted record when that transition recorded the draft's exact
+        # identity (``accepted_close``); every other draft is dropped.
+        try:
+            recovered = await self.db.recover_pending_completions()
+            if recovered:
+                logger.warning(
+                    "Recovered completion records interrupted by restart: %s",
+                    ", ".join(recovered),
+                )
+        except Exception:
+            logger.exception("Pending completion recovery on start failed")
         adopted_task_ids: set[str] = set()
         if self.config.sessions.enabled:
             try:

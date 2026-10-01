@@ -139,6 +139,18 @@ after this session's attempt began; and no running integration operation owns th
 The task's status and completion stay as they are. The owner keeps the stopped session's binding,
 and owner recovery releases it after preserving unpushed work.
 
+The completion record itself survives that window. Before the transition, `aq task close` drafts
+the record as `pending_completion` task metadata, bound to the attempt's identity: completion id,
+closing session and claim epoch. Every status write that accepts the close stores the same identity
+as `accepted_close` metadata in its own transaction. That covers the plain terminal and retry
+transitions, the verification reopen, review approval, repair-delegate completion and managed-parent
+suspension or completion. At daemon start, before stale-state recovery moves any task, a draft is
+saved under its own id (idempotently) only when `accepted_close` names it exactly and the task is
+still on that claim epoch. Every other draft is dropped. The task's status is never evidence: a task
+requeued `READY`, redefined, failed or cancelled by another path has no matching identity, so no
+record or pass is invented. A refused or failed close deletes its own draft unless its transition
+had committed.
+
 **Process exit with the task still IN_PROGRESS is a failure signal**, routed through the
 exit classifier:
 

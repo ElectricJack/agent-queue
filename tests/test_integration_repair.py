@@ -5333,14 +5333,17 @@ async def test_parent_delegate_close_requires_recorded_resolution(db, monkeypatc
     service = RepairService(db)
     bind = AsyncMock()
     monkeypatch.setattr(service, "bind_current_parent_subject_on", bind)
+    identity = {"completion_id": "close", "session_id": "session", "claim_epoch": 1}
     result = await service.complete_delegate(
         "parent", operation_id="operation", stage=0, session_id="session",
         instance_token="instance", workspace_id="workspace", fence_token=2,
-        head_sha=head, now=110.0,
+        head_sha=head, now=110.0, accepted_close=identity,
     )
     if resolution in {"observed", "none"}:
         assert result["outcome"] == "completed"
         transition.assert_awaited_once()
+        # The delegate's close identity rides on its COMPLETED transition.
+        assert transition.await_args.kwargs["accepted_close"] == identity
         bind.assert_awaited_once()
     else:
         assert result["outcome"] == "resolution_required"

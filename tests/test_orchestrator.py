@@ -2738,9 +2738,13 @@ class TestVerificationReopen:
         await orch.db.create_task(task)
 
         failures = [("You left uncommitted changes.", True)]
-        result = await orch._reopen_with_verification_feedback(task, failures)
+        identity = {"completion_id": "c-1", "session_id": None, "claim_epoch": 0}
+        result = await orch._reopen_with_verification_feedback(
+            task, failures, accepted_close=identity
+        )
 
         assert result is True
+        assert await orch.db.get_task_meta("t-1", "accepted_close") == identity
 
         # Task should be READY
         updated = await orch.db.get_task("t-1")
@@ -2783,9 +2787,13 @@ class TestVerificationReopen:
         )
 
         failures = [("Still has uncommitted changes.", True)]
-        result = await orch._reopen_with_verification_feedback(task, failures)
+        result = await orch._reopen_with_verification_feedback(
+            task, failures,
+            accepted_close={"completion_id": "c-2", "session_id": None, "claim_epoch": 0},
+        )
 
         assert result is False
+        assert await orch.db.get_task_meta("t-2", "accepted_close") is None
 
         # Task should NOT have been transitioned to READY
         updated = await orch.db.get_task("t-2")
