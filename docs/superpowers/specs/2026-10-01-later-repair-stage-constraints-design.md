@@ -76,12 +76,39 @@ SQLite importer copies stage values without validating them.
 
 The live candidate (`a15aca37…` revision 0, head `4601bf42`) already carries
 `a00000000049_repair_ejection` (down `a00000000048`). This fix therefore takes
-`a00000000050`, never a second `a00000000049`. The operator applies
-`a00000000050` from the deployed baseline before loading this code. When `4601`
-reaches main, the two branches meet at a **merge revision** whose
-`down_revision` is `("a00000000049", "a00000000050")`. Do **not** re-chain
-`a00000000050` onto `a00000000049`: a database already stamped `a00000000050`
-would then treat `a00000000049` as applied and never run it.
+`a00000000050`, never a second `a00000000049`, and stays independently
+deployable on the deployed baseline: the operator applies `a00000000050` before
+loading this code, and the green candidate is not changed.
+
+Combining the two later:
+
+1. Promoting `4601` writes main; it does not replace the operator's runtime
+   checkout. Until a checkout carrying **both** revisions is deployed, the
+   operator keeps running this fix: a checkout without `a00000000050` cannot
+   read a database stamped with it (`aq doctor --check db.alembic_orphan`).
+2. The first branch that holds both revisions adds one no-op merge revision:
+
+   ```python
+   revision = "a00000000051"  # or the next free id
+   down_revision = ("a00000000049", "a00000000050")
+   ```
+
+   `tests/test_migration_single_head.py` fails until it exists, so the train
+   cannot carry two heads to main.
+3. **Never re-chain** `a00000000050` onto `a00000000049`: a database already
+   stamped `a00000000050` would then treat `a00000000049` as applied and never
+   run it. `test_deployed_revisions_keep_their_parent` (default suite) refuses
+   that edit and names the merge instead.
+4. With the merge, `alembic upgrade head` from a database at `a00000000050`
+   applies `a00000000049` and the merge; from one at `a00000000049` it applies
+   `a00000000050` and the merge. Downgrades stay per revision.
+
+`test_deployed_050_and_sibling_049_join_through_a_merge_revision` proves both
+orders on real PostgreSQL. Until `a00000000049` is in this tree it uses a
+stand-in with the real revision's parent and first schema effect plus the merge
+above; afterwards it runs against the real tree unchanged. The same test passed
+locally with the candidate's real `a00000000049` file substituted for the
+stand-in.
 
 ## Verification
 
@@ -95,3 +122,6 @@ would then treat `a00000000049` as applied and never run it.
 - An injected `check_violation` surfaces the constraint, not a race.
 - Public candidate repair reservation and acceptance at stage 2 record the
   stage on the resolution and its mutations.
+- The combined `a00000000049` + `a00000000050` graph reaches one head through a
+  merge revision from either deployed revision, and `a00000000050` keeps its
+  deployed parent.

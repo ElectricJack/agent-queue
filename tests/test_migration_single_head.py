@@ -46,3 +46,24 @@ def test_alembic_chain_is_single_headed():
         f'`alembic merge -m "<why>" {" ".join(sorted(heads))}` and commit the '
         "generated revision."
     )
+
+
+#: Revisions an operator database may already be stamped with, and the parent
+#: each was deployed on.  A sibling that later lands on the same parent joins
+#: it through a merge revision (``alembic merge``); re-chaining a deployed
+#: revision onto the sibling would make every database stamped with it skip
+#: the sibling for good.  ``a00000000050`` was deployed on ``a00000000048``
+#: while the live candidate carried its own ``a00000000049``
+#: (docs/superpowers/specs/2026-10-01-later-repair-stage-constraints-design.md).
+DEPLOYED_PARENTS = {"a00000000050": "a00000000048"}
+
+
+def test_deployed_revisions_keep_their_parent():
+    script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+    for revision, parent in DEPLOYED_PARENTS.items():
+        down = script.get_revision(revision).down_revision
+        assert down == parent, (
+            f"{revision} is deployed on {parent} but now revises {down!r}. Restore "
+            f"down_revision = {parent!r} and join the heads with "
+            '`alembic merge -m "<why>" <head-a> <head-b>` instead of re-chaining.'
+        )

@@ -269,6 +269,156 @@ async def test_later_repair_stage_constraints_upgrade_from_two_stage_schema():
         await conn.close()
 
 
+_SIBLING_STANDIN = '''"""Stand-in for the live candidate's repair-ejection revision (test only).
+
+Revision ID: a00000000049
+Revises: a00000000048
+"""
+
+import sqlalchemy as sa
+from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
+
+revision = "a00000000049"
+down_revision = "a00000000048"
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    columns = sa.inspect(op.get_bind()).get_columns("integration_candidate_revisions")
+    if "source_manifest" not in {column["name"] for column in columns}:
+        op.add_column(
+            "integration_candidate_revisions", sa.Column("source_manifest", JSONB())
+        )
+
+
+def downgrade() -> None:
+    op.drop_column("integration_candidate_revisions", "source_manifest")
+'''
+
+_MERGE_STANDIN = '''"""Join the repair-ejection and later-repair-stage revisions (test only).
+
+Revision ID: a00000000051
+Revises: a00000000049, a00000000050
+"""
+
+revision = "a00000000051"
+down_revision = ("a00000000049", "a00000000050")
+branch_labels = None
+depends_on = None
+
+
+def upgrade() -> None:
+    pass
+
+
+def downgrade() -> None:
+    pass
+'''
+
+
+def _combined_script_directory(tmp_path) -> str:
+    """The migration tree as it looks once a00000000049 and a00000000050 both land.
+
+    Until the live candidate's ``a00000000049`` reaches this tree, a stand-in
+    with its parent and its first schema effect, plus the merge revision the
+    spec prescribes, are added to a private copy.  Afterwards the real tree is
+    used unchanged, so the same assertions guard the real merge.
+    """
+    import shutil
+
+    copy = tmp_path / "migrations"
+    shutil.copytree(
+        os.path.join(ROOT, "migrations"), copy, ignore=shutil.ignore_patterns("__pycache__")
+    )
+    versions = copy / "versions"
+    if not list(versions.glob("a00000000049_*.py")):
+        (versions / "a00000000049_sibling_standin.py").write_text(_SIBLING_STANDIN)
+        (versions / "a00000000051_join_standin.py").write_text(_MERGE_STANDIN)
+    ini = tmp_path / "alembic.ini"
+    with open(os.path.join(ROOT, "alembic.ini")) as handle:
+        original = handle.read()
+    ini.write_text(
+        original.replace("script_location = %(here)s/migrations", f"script_location = {copy}")
+        .replace("prepend_sys_path = .", f"prepend_sys_path = {ROOT}")
+    )
+    return str(ini)
+
+
+def _alembic_combined(ini: str, dsn: str, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", ini, *args],
+        cwd=ROOT,
+        env=dict(os.environ, AGENT_QUEUE_DB_URL=_async_dsn(dsn)),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("deployed_first", ["a00000000050", "a00000000049"])
+async def test_deployed_050_and_sibling_049_join_through_a_merge_revision(
+    tmp_path, deployed_first
+):
+    """Either deploy order reaches one head with both revisions applied.
+
+    The operator database is stamped ``a00000000050`` before the live
+    candidate's ``a00000000049`` lands (the reverse order is covered too).
+    A merge revision makes ``upgrade head`` apply the missing sibling; a
+    re-chain of ``a00000000050`` onto ``a00000000049`` would instead make a
+    database stamped ``a00000000050`` skip ``a00000000049`` forever.
+    """
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+
+    ini = _combined_script_directory(tmp_path)
+    script = ScriptDirectory.from_config(Config(ini))
+    heads = script.get_heads()
+    assert len(heads) == 1, heads
+    assert script.get_revision("a00000000050").down_revision == "a00000000048"
+    assert script.get_revision("a00000000049").down_revision == "a00000000048"
+    ancestors = {rev.revision for rev in script.walk_revisions("base", heads[0])}
+    assert {"a00000000049", "a00000000050"} <= ancestors
+
+    dsn = await create_scratch_database("join4950")
+    first = _alembic_combined(ini, dsn, "upgrade", deployed_first)
+    assert first.returncode == 0, first.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        # The baseline is built from current metadata, so remove the effect of
+        # the revision that has not run yet: only that revision can restore it.
+        if deployed_first == "a00000000050":
+            await conn.execute(
+                "ALTER TABLE integration_candidate_revisions DROP COLUMN IF EXISTS source_manifest"
+            )
+        else:
+            for name, (table, column) in _STAGE_CHECKS.items():
+                await conn.execute(f"ALTER TABLE {table} DROP CONSTRAINT {name}")
+                await conn.execute(
+                    f"ALTER TABLE {table} ADD CONSTRAINT {name} CHECK ({column} IN (0, 1))"
+                )
+    finally:
+        await conn.close()
+    joined = _alembic_combined(ini, dsn, "upgrade", "head")
+    assert joined.returncode == 0, joined.stderr
+    conn = await _pg_conn(dsn)
+    try:
+        assert [row["version_num"] for row in await conn.fetch(
+            "SELECT version_num FROM alembic_version"
+        )] == [heads[0]]
+        assert set((await _stage_check_definitions(conn)).values()) == {
+            "CHECK ((stage_ordinal >= 0))", "CHECK ((operation_stage >= 0))"
+        }
+        assert await conn.fetchval(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_name = 'integration_candidate_revisions' "
+            "AND column_name = 'source_manifest'"
+        ) == "jsonb"
+    finally:
+        await conn.close()
+
+
 _JOIN_REVISION = "a00000000051"
 _EJECTION_TRIGGERS = {
     ("integration_result_current_member", "integration_candidate_member_results"),
