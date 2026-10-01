@@ -1761,13 +1761,15 @@ def s15_development_delivery(state: dict) -> str:
     _git_text(str(source), "commit", "-m", "feature")
     head = _git_text(str(source), "rev-parse", "HEAD")
     _git_text(str(source), "push", "origin", "fixture-feature")
+    # This source is completed/adopted by the scenario, never by a worker.
+    # Hold it atomically at filing: Tier 1 runs the routing playbook, and a
+    # scheduler tick between these CLI calls (including the reopen -> pause below)
+    # can otherwise prepare a workspace and replace its fixture branch.
     task = api("create_task", {"project_id": "e2e-development", "repo_id": configured["repository_id"],
         "title": "development delivery", "description": "real Git fixture",
-        "labels": ["hold:e2e-git-fixture"]})
+        "labels": ["hold:e2e-adoption"]})
     task_id = task.get("task_id") or task.get("created")
     check(bool(task_id), str(task))
-    # This source models operator-managed legacy work. Keep pool workers from
-    # claiming it during setup or the later READY -> PAUSED adoption transition.
     aq("task", "set", task_id, "--branch", "fixture-feature")
     aq("task", "set-status", "--task-id", task_id, "--status", "COMPLETED")
     check(task_show(task_id)["branch_name"] == "fixture-feature",
