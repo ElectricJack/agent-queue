@@ -341,7 +341,11 @@ pytest check that its README is a file. Development validation runs that check
 through the managed `test` preset before publishing. The scenario verifies the
 delivery journal contains a passing job receipt and result hash for the exact
 snapshot SHA published to the remote, then checks dependency release and operator
-adoption. S17 uses the same supported validation command in its development policy.
+adoption. The source task is filed with `hold:e2e-adoption` so the live routing
+playbook and scheduler cannot prepare a worker workspace and replace its branch
+between the scenario's status and adoption commands. Its successor remains
+schedulable to exercise delivery admission. S17 uses the same supported validation
+command in its development policy.
 
 **S16 — provider failover.** The end-to-end check of
 [provider failover](../specs/provider-failover.md) (D23), against the fake
