@@ -1,8 +1,11 @@
 """Full CI runs on pull requests and integration boundaries, and on `main` only unattested."""
 import json
 import math
+import os
 import re
 import shlex
+import subprocess
+import sys
 from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
@@ -269,6 +272,71 @@ def test_committed_shard_timings_are_valid_pytest_split_data():
         assert nodeid.startswith("tests/") and "::" in nodeid
         assert isinstance(duration, (int, float)) and not isinstance(duration, bool)
         assert math.isfinite(duration) and duration >= 0
+
+
+@pytest.mark.parametrize('job', ['test', 'e2e-cli'])
+@pytest.mark.parametrize('failures', [0, 1, 2, 3])
+def test_dependency_install_recovers_but_persistent_failure_is_fatal(tmp_path, job, failures):
+    install = next(
+        step for step in workflow()['jobs'][job]['steps']
+        if step['name'] == 'Install dependencies on cache miss'
+    )
+    assert install['if'] == "steps.venv.outputs.cache-hit != 'true'"
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    # Execute the workflow's actual shell with stand-ins for venv/pip and
+    # sleep. A wheel timeout exits 2; successful installs must stop retrying.
+    python_stub = bin_dir / 'python'
+    python_stub.write_text(f'#!{sys.executable}\n' + '''
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+if sys.argv[1:] == ['-m', 'venv', '.venv']:
+    target = Path('.venv/bin/python')
+    target.parent.mkdir(parents=True)
+    shutil.copyfile(__file__, target)
+    target.chmod(0o755)
+    sys.exit(0)
+assert sys.argv[1:4] == ['-m', 'pip', 'install'], sys.argv
+assert sys.argv[4:] == [
+    '--timeout', '60', '-e', '.[dev,cli]', 'poetry-core>=2.0.0,<3.0.0'
+], sys.argv
+trace = Path('install-attempts.json')
+attempts = json.loads(trace.read_text()) if trace.exists() else []
+attempts.append(sys.argv[1:])
+trace.write_text(json.dumps(attempts))
+sys.exit(2 if len(attempts) <= int(os.environ['CI_INSTALL_FAILURES']) else 0)
+''')
+    python_stub.chmod(0o755)
+    sleep_stub = bin_dir / 'sleep'
+    sleep_stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> retry-delays\n')
+    sleep_stub.chmod(0o755)
+
+    result = subprocess.run(
+        ['bash', '--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', install['run']],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}',
+            'CI_INSTALL_FAILURES': str(failures),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    attempts = json.loads((tmp_path / 'install-attempts.json').read_text())
+    assert len(attempts) == min(failures + 1, 3)
+    assert result.returncode == (2 if failures == 3 else 0), result.stderr
+    delays = tmp_path / 'retry-delays'
+    assert (delays.read_text().splitlines() if delays.exists() else []) == (
+        ['5'] * min(failures, 2)
+    )
+    assert ('::error::' in result.stdout) is (failures == 3)
 
 
 def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():

@@ -184,7 +184,12 @@ OS, architecture, the resolved Python patch version, and both Python package
 manifests (plus Python lockfiles when present). There are no fallback restore
 keys: a dependency or interpreter change creates a fresh environment. On a
 miss, CI creates the venv and installs `.[dev,cli]` and the generated client's
-build backend, `poetry-core`.
+build backend, `poetry-core`. Both the suite and E2E jobs allow a 60-second
+pip socket timeout and at most three complete installation attempts, separated
+by five seconds. This lets an interrupted wheel download recover even when
+pip's connection retries do not restart it. Success ends the retry loop;
+exhausting all three attempts fails the job with pip's exit code. The existing
+ten-minute job deadline still bounds setup, test execution and cleanup.
 
 Every run adds `.venv/bin` to `PATH` and reinstalls both local packages as
 editable with `--no-deps --no-build-isolation`. This keeps the current source,
