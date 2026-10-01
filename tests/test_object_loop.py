@@ -350,3 +350,334 @@ async def test_artifact_only_child_refuses_hierarchy_promotion(tmp_path):
     )
     with pytest.raises(PromotionSourceMoved, match="artifact-only"):
         await service._validated_route(request)
+
+
+@pytest.mark.parametrize("verdict", ["rejected", "withdrawn", "changes_requested"])
+async def test_unapproved_promoted_checkpoint_can_record_defect_stop(
+    command_handler_factory, verdict,
+):
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_task(Task(id="epic", project_id="p", title="Epic", description="Epic",
+                              status=TaskStatus.READY))
+    await approved_brief(db)
+    await handler._cmd_object_loop_start(start_args())
+    args = {"project_id": "p", "object_id": "rock"}
+    wave = await handler._cmd_object_loop_reconcile(args)
+    candidate_id = wave["state"]["wave"][0]["task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == candidate_id).values(status="COMPLETED"))
+    scored = await handler._cmd_object_loop_reconcile(args)
+    score_id = scored["state"]["score_task_id"]
+    gate_id, _ = await db.create_gate("p", "review", "Review rock", await_id="review-1")
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == score_id).values(status="COMPLETED"))
+        await conn.execute(insert(doc_reviews).values(
+            id="review-1", project_id="p", kind="other", title="Rock",
+            vault_path="projects/p/review-rock.md", current_revision=1,
+            state="approved", gate_id=gate_id, decider="user", decided_by="Jack",
+            decided_at=1, created_at=1, updated_at=1,
+        ))
+        await conn.execute(insert(doc_review_revisions).values(
+            review_id="review-1", revision=1, content="packet", content_sha256=C,
+            submitted_by="agent", submitted_at=1,
+        ))
+    checkpoint = await handler._cmd_object_score_record({
+        **args, "expected_version": scored["version"], "score_task_id": score_id,
+        "receipts": [receipt(task_id=candidate_id)], "action": "checkpoint",
+        "review_id": "review-1", "review_revision": 1, "review_sha256": C,
+    })
+    assert checkpoint["success"], checkpoint
+    assert checkpoint["state"]["incumbent_sha256"] == B
+    async with db.immediate() as conn:
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "review-1")
+                           .values(state=verdict))
+        loop = (await conn.execute(select(object_loops))).mappings().one()
+    held = await handler._cmd_object_loop_reconcile(args)
+    assert held["outcome"] == "checkpoint_held"
+    assert (await db.get_task(loop.finalization_task_id)).is_blocked
+    stop = {**args, "expected_version": checkpoint["version"], "stop_reason": "terminal defect"}
+    stale = await handler._cmd_object_loop_reconcile(dict(stop, expected_version=0))
+    assert not stale["success"]
+    # Simulate a crash between committing the stop and releasing its hold.
+    resolve = db.resolve_gate
+    db.resolve_gate = AsyncMock(side_effect=RuntimeError("interrupted gate release"))
+    with pytest.raises(RuntimeError, match="interrupted gate release"):
+        await handler._cmd_object_loop_reconcile(stop)
+    db.resolve_gate = resolve
+    assert (await db.get_task(loop.finalization_task_id)).is_blocked
+    recovered = await handler._cmd_object_loop_reconcile(args)
+    assert recovered["outcome"] == "stopped"
+    assert recovered["version"] == checkpoint["version"] + 1
+    repeated = await handler._cmd_object_loop_reconcile(stop)
+    assert repeated == recovered
+    assert repeated["state"]["checkpoint"] == checkpoint["state"]["checkpoint"]
+    assert repeated["state"]["incumbent_sha256"] == B
+    assert repeated["state"]["incumbent_artifact"] == checkpoint["state"]["incumbent_artifact"]
+    assert repeated["state"]["stop_reason"] == "terminal defect"
+    assert "last_approved_checkpoint" not in repeated["state"]
+    assert not (await db.get_task(loop.finalization_task_id)).is_blocked
+    conflict = await handler._cmd_object_loop_reconcile(dict(stop, stop_reason="different"))
+    assert not conflict["success"]
+    continued = await handler._cmd_object_loop_reconcile({
+        **args, "expected_version": repeated["version"],
+        "next_variants": [variant("forbidden").model_dump()],
+    })
+    assert not continued["success"]
+    async with db.immediate() as conn:
+        assert (await conn.execute(select(doc_reviews.c.state).where(
+            doc_reviews.c.id == "review-1"))).scalar_one() == verdict
+        children = (await conn.execute(select(tasks.c.id).where(
+            tasks.c.created_by_id == "rock"))).scalars().all()
+        assert len(children) == 3
+        assert not (await conn.execute(select(tasks.c.id).where(
+            tasks.c.id.in_(children), _publishable_object_task(tasks)))).scalars().all()
+    await db.close()
+
+
+@pytest.mark.parametrize("stage", ["intent", "candidate", "scorer"])
+async def test_terminal_stop_waits_for_existing_work_without_creating_more(
+    command_handler_factory, stage,
+):
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_task(Task(id="epic", project_id="p", title="Epic", description="Epic",
+                              status=TaskStatus.READY))
+    await approved_brief(db)
+    current = await handler._cmd_object_loop_start(start_args())
+    args = {"project_id": "p", "object_id": "rock"}
+    work_id = None
+    if stage != "intent":
+        current = await handler._cmd_object_loop_reconcile(args)
+        work_id = current["state"]["wave"][0]["task_id"]
+    if stage == "scorer":
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == work_id).values(status="COMPLETED"))
+        current = await handler._cmd_object_loop_reconcile(args)
+        work_id = current["state"]["score_task_id"]
+    async with db.immediate() as conn:
+        # Revoked brief must not prevent a terminal deadline report either.
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "brief-review")
+                           .values(state="withdrawn"))
+        loop = (await conn.execute(select(object_loops))).mappings().one()
+        before = (await conn.execute(select(tasks.c.id))).scalars().all()
+    stop = {**args, "expected_version": current["version"], "stop_reason": "deadline reached"}
+    stopped = await handler._cmd_object_loop_reconcile(stop)
+    assert stopped["success"], stopped
+    assert stopped["state"]["intent"] is None
+    assert stopped["state"]["incumbent_sha256"] == H
+    if work_id:
+        assert stopped["outcome"] == "waiting_for_settlement"
+        assert (await db.get_task(loop.finalization_task_id)).is_blocked
+        assert await handler._cmd_object_loop_reconcile(stop) == stopped
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == work_id)
+                               .values(status="FAILED", retry_count=3, max_retries=3))
+    settled = await handler._cmd_object_loop_reconcile(args)
+    assert settled["outcome"] == "stopped"
+    assert settled["version"] == stopped["version"]
+    assert not (await db.get_task(loop.finalization_task_id)).is_blocked
+    async with db.immediate() as conn:
+        assert set((await conn.execute(select(tasks.c.id))).scalars().all()) == set(before)
+    await db.close()
+
+
+async def failed_scorer_round(command_handler_factory, *, scorer_status="FAILED",
+                              retry_count=3, candidate_status="BLOCKED"):
+    handler = await command_handler_factory()
+    db = handler.db
+    await db.create_project(Project(id="p", name="Project"))
+    await db.create_task(Task(id="epic", project_id="p", title="Epic", description="Epic",
+                              status=TaskStatus.READY))
+    await approved_brief(db)
+    args = start_args()
+    args["score_reservation"] = {"usd": 0.5, "calls": 1, "bakes": 0, "active_seconds": 2}
+    args["incumbent_artifact"] = {"uri": "artifact://incumbent", "sha256": H}
+    assert (await handler._cmd_object_loop_start(args))["success"]
+    wave = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    candidate_id = wave["state"]["wave"][0]["task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == candidate_id).values(
+            status=candidate_status, retry_count=3, max_retries=3,
+        ))
+    fan_in = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    assert fan_in["success"] and fan_in["state"]["score_task_id"], fan_in
+    score_id = fan_in["state"]["score_task_id"]
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == score_id).values(
+            status=scorer_status, retry_count=retry_count, max_retries=3,
+        ))
+        loop = (await conn.execute(select(object_loops).where(
+            object_loops.c.object_id == "rock",
+        ))).mappings().one()
+    request = {
+        "project_id": "p", "object_id": "rock", "expected_version": fan_in["version"],
+        "score_task_id": score_id, "receipts": [], "action": "stop",
+        "stop_reason": "Scorer provider outage; retain incumbent and report defect",
+        "spent": {"usd": 0, "calls": 0, "bakes": 0, "active_seconds": 0},
+    }
+    return handler, loop, request
+
+
+@pytest.mark.parametrize("scorer_status", ["FAILED", "BLOCKED"])
+@pytest.mark.parametrize("candidate_status", ["FAILED", "COMPLETED"])
+async def test_exhausted_scorer_defect_stop_retains_incumbent_and_charges_reservation(
+    command_handler_factory, scorer_status, candidate_status,
+):
+    handler, loop, request = await failed_scorer_round(
+        command_handler_factory, scorer_status=scorer_status, candidate_status=candidate_status,
+    )
+    db = handler.db
+    candidate_id = loop.state["wave"][0]["task_id"]
+    assert (await db.get_task(loop.finalization_task_id)).is_blocked
+    # Stale approval must not prevent a defect report or become an approval itself.
+    async with db.immediate() as conn:
+        await conn.execute(update(doc_reviews).where(doc_reviews.c.id == "brief-review")
+                           .values(state="rejected", current_revision=2))
+    stopped = await handler._cmd_object_score_record(request)
+    assert stopped["success"] and stopped["outcome"] == "stop", stopped
+    assert stopped["version"] == loop.version + 1
+    state = stopped["state"]
+    assert state["status"] == "stopped" and state["stop_reason"] == request["stop_reason"]
+    for key in ("incumbent_sha256", "incumbent_artifact", "incumbent_loss", "round_id",
+                "repair_count", "plateau_count", "checkpoint", "final_reserve", "wave"):
+        assert state[key] == loop.state[key]
+    assert state["spent"] == loop.state["reserved"]
+    assert state["reserved"] == {"usd": 0, "calls": 0, "bakes": 0, "active_seconds": 0}
+    assert state["intent"] is None
+    assert state["defect_stop"]["status"] == scorer_status
+    assert (await db.get_task(loop.finalization_task_id)).is_blocked
+    assert (await handler._cmd_object_checkpoint_read({
+        "project_id": "p", "object_id": "rock",
+    }))["approved"] is False
+
+    # Simulate daemon loss after committing the stop but before releasing the gate.
+    original_resolve = db.resolve_gate
+    db.resolve_gate = AsyncMock(side_effect=RuntimeError("restart before release"))
+    with pytest.raises(RuntimeError, match="restart"):
+        await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    assert (await db.get_gate(loop.terminal_gate_id))["status"] == "open"
+    db.resolve_gate = original_resolve
+    for _ in range(2):
+        replay = await handler._cmd_object_score_record(request)
+        assert replay["success"] and replay["outcome"] == "reused"
+        assert replay["version"] == stopped["version"]
+        released = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+        assert released["outcome"] == "stopped"
+        assert released["version"] == stopped["version"]
+        assert released["state"]["spent"] == state["spent"]
+    assert (await db.get_gate(loop.terminal_gate_id))["status"] == "resolved"
+    assert not (await db.get_task(loop.finalization_task_id)).is_blocked
+    assert (await db.get_task(candidate_id)).status.value == candidate_status
+    assert (await db.get_task(request["score_task_id"])).status.value == scorer_status
+    async with db.immediate() as conn:
+        children = (await conn.execute(select(tasks.c.id).where(
+            tasks.c.created_by_kind == "object_loop", tasks.c.created_by_id == "rock",
+        ))).scalars().all()
+        review = (await conn.execute(select(doc_reviews).where(
+            doc_reviews.c.id == "brief-review",
+        ))).mappings().one()
+    assert len(children) == 3
+    assert review.state == "rejected" and review.current_revision == 2
+    await db.close()
+
+
+@pytest.mark.parametrize("scorer_status,retry_count", [
+    ("FAILED", 2), ("IN_PROGRESS", 3), ("PAUSED", 3),
+])
+async def test_unsettled_scorer_cannot_stop(command_handler_factory, scorer_status, retry_count):
+    handler, loop, request = await failed_scorer_round(
+        command_handler_factory, scorer_status=scorer_status, retry_count=retry_count,
+    )
+    result = await handler._cmd_object_score_record(request)
+    assert not result["success"] and "has not completed" in result["error"]
+    held = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    assert held["outcome"] == "waiting_for_score"
+    assert held["version"] == loop.version and held["state"] == loop.state
+    assert (await handler.db.get_task(loop.finalization_task_id)).is_blocked
+    await handler.db.close()
+
+
+async def test_failed_scorer_stop_rejects_scores_continuations_and_stale_versions(
+    command_handler_factory,
+):
+    handler, loop, request = await failed_scorer_round(
+        command_handler_factory, candidate_status="COMPLETED",
+    )
+    candidate_id = loop.state["wave"][0]["task_id"]
+    invalid = [
+        {"action": "continue", "next_variants": [variant("extra").model_dump()]},
+        {"action": "checkpoint", "review_id": "brief-review"},
+        {"receipts": [receipt(task_id=candidate_id)]},
+        {"next_variants": [variant("extra").model_dump()]},
+        {"review_id": "brief-review", "review_revision": 1, "review_sha256": C},
+        {"stop_reason": None}, {"stop_reason": "   "},
+        {"score_task_id": candidate_id}, {"expected_version": loop.version - 1},
+    ]
+    for change in invalid:
+        result = await handler._cmd_object_score_record(dict(request, **change))
+        assert not result["success"], (change, result)
+    held = await handler._cmd_object_checkpoint_read({"project_id": "p", "object_id": "rock"})
+    assert held["version"] == loop.version and held["state"] == loop.state
+    assert (await handler.db.get_task(loop.finalization_task_id)).is_blocked
+    await handler.db.close()
+
+
+@pytest.mark.parametrize("reopened", ["candidate", "scorer"])
+async def test_defect_stop_waits_for_reopened_work_and_releases_only_terminal_gate(
+    command_handler_factory, reopened,
+):
+    handler, loop, request = await failed_scorer_round(command_handler_factory)
+    db = handler.db
+    candidate_id = loop.state["wave"][0]["task_id"]
+    task_id = candidate_id if reopened == "candidate" else request["score_task_id"]
+    # A retrying candidate prevents recording the stop in the first place.
+    if reopened == "candidate":
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == task_id)
+                               .values(status="FAILED", retry_count=2))
+        refused = await handler._cmd_object_score_record(request)
+        assert not refused["success"] and "unsettled candidates" in refused["error"]
+        async with db.immediate() as conn:
+            await conn.execute(update(tasks).where(tasks.c.id == task_id)
+                               .values(status="BLOCKED", retry_count=3))
+    stopped = await handler._cmd_object_score_record(request)
+    assert stopped["success"], stopped
+    approval_gate, _ = await db.create_gate(
+        "p", "review", "Separate final approval", await_id="final-approval",
+        waiter_task_ids=[loop.finalization_task_id],
+    )
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id)
+                           .values(status="FAILED", retry_count=2))
+    held = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+    assert held["outcome"] == "waiting_for_settlement"
+    assert held["version"] == stopped["version"]
+    assert (await db.get_gate(loop.terminal_gate_id))["status"] == "open"
+    assert (await db.get_task(loop.finalization_task_id)).is_blocked
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == task_id)
+                           .values(status="FAILED", retry_count=3))
+    releases = []
+    original_resolve = db.resolve_gate
+
+    async def track_release(gate_id, **kwargs):
+        prior = await db.get_gate(gate_id)
+        flipped = await original_resolve(gate_id, **kwargs)
+        if prior["status"] != "resolved":
+            releases.append(gate_id)
+        return flipped
+
+    db.resolve_gate = AsyncMock(side_effect=track_release)
+    for _ in range(2):
+        reconciled = await handler._cmd_object_loop_reconcile({"project_id": "p", "object_id": "rock"})
+        assert reconciled["outcome"] == "stopped"
+        assert reconciled["version"] == stopped["version"]
+    assert (await db.get_gate(loop.terminal_gate_id))["status"] == "resolved"
+    assert releases == [loop.terminal_gate_id]
+    assert (await db.get_gate(approval_gate))["status"] == "open"
+    assert (await db.get_task(loop.finalization_task_id)).is_blocked
+    assert (await db.get_task(task_id)).status.value == "FAILED"
+    await db.close()

@@ -116,6 +116,27 @@ def validate_args(
 
 def next_admission(rows: list[dict], now: float, capacity: int, per_owner_active: int):
     """One ordered launch per tick; an exclusive frontier drains shared work."""
+    # Device jobs do not reserve pytest capacity, nor does an exclusive pytest
+    # frontier stop a renderer on an independently reserved device.
+    candidates = []
+    domains = {r.get("contract", {}).get("gpu_id") for r in rows}
+    if any(r.get("contract", {}).get("gpu_id") for r in rows):
+        counts = {}
+        for row in rows:
+            if row["state"] not in TERMINAL and row["state"] != "queued":
+                counts[row["owner_id"]] = counts.get(row["owner_id"], 0) + 1
+        for domain in domains:
+            group = [r for r in rows if r.get("contract", {}).get("gpu_id") == domain and (
+                r["state"] != "queued" or counts.get(r["owner_id"], 0) < per_owner_active
+            )]
+            candidate = _next_admission(group, now, 1 if domain else capacity, per_owner_active)
+            if candidate:
+                candidates.append(candidate)
+        return min(candidates, key=lambda r: queue_key(r, now)) if candidates else None
+    return _next_admission(rows, now, capacity, per_owner_active)
+
+
+def _next_admission(rows: list[dict], now: float, capacity: int, per_owner_active: int):
     active = [r for r in rows if r["state"] not in TERMINAL and r["state"] != "queued"]
     if any(r["job_class"] == "exclusive" for r in active):
         return None

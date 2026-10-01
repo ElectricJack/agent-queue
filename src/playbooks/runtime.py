@@ -255,9 +255,14 @@ class V2PlaybookRuntime:
     def _on_event(self, event: dict[str, Any]) -> None:
         payload = dict(event)
         payload.setdefault("_received_at", time.time())
+        # A run triggered by an event emitted inside a project's commit
+        # identity scope must not keep that identity (git identity spec §4).
+        from src.git.manager import detached_commit_context
+
         task = asyncio.create_task(
             self._dispatch(payload),
             name=f"playbook-v2:{payload.get('_event_type', 'event')}",
+            context=detached_commit_context(),
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)

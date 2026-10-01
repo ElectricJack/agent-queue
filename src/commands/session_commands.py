@@ -25,9 +25,11 @@ import asyncio
 import logging
 import time
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 
 from src.claim_file import remove_claim_file, remove_claim_file_if_matches
+from src.database.queries.result_queries import PENDING_COMPLETION_KEY
 from src.database.queries.task_queries import StaleClaim
 from src.database.queries.task_subtask_queries import OPEN_SUBTASK_STATUSES, SubtasksOpenError
 from src.models import TaskCompletion, TaskStatus
@@ -1195,9 +1197,41 @@ class SessionCommandsMixin:
                     "result": exc.code,
                     "error": f"integration review evidence refused: {exc}",
                 }
+        completion_id = str(uuid.uuid4())
+        # The terminal transition commits inside ``complete_session_task`` and
+        # the completion record is saved only after it returns.  Draft the
+        # agent's account first so a restart in that window cannot lose it:
+        # ``recover_pending_completions`` saves the draft at daemon start when
+        # the transition committed (fair-ridge-26).  Fields computed after the
+        # transition (auto-captured commit, unmerged-work note) are absent
+        # from a recovered record rather than guessed.
+        explicit_commit = str(args.get("commit") or "").strip()
+        await self.db.set_task_meta(
+            task_id,
+            PENDING_COMPLETION_KEY,
+            asdict(
+                TaskCompletion(
+                    id=completion_id,
+                    task_id=task_id,
+                    outcome=outcome,
+                    work_outcome=work_outcome or None,
+                    failure_class=failure_class or None,
+                    changes=str(args.get("changes") or summary).strip(),
+                    verification=str(args.get("verification") or "").strip(),
+                    tests=_string_list(args.get("tests")),
+                    commands=_string_list(args.get("commands")),
+                    branch=task.branch_name,
+                    commits=[explicit_commit] if explicit_commit else [],
+                    pr_url=task.pr_url,
+                    summary=summary,
+                    notes=str(args.get("notes") or "").strip(),
+                    deliverables=deliverable_results,
+                    completed_at=time.time(),
+                )
+            ),
+        )
         try:
             expect_claim_epoch = int(claim_epoch) if claim_epoch is not None else None
-            completion_id = str(uuid.uuid4())
             result = await self.orchestrator.complete_session_task(
                 task,
                 outcome=outcome,
@@ -1215,6 +1249,7 @@ class SessionCommandsMixin:
             )
             retry_in_session = bool(result.get("verification_retry"))
         except SubtasksOpenError as exc:
+            await self.db.delete_task_meta(task_id, PENDING_COMPLETION_KEY)
             return {
                 "success": False,
                 "code": "subtasks.open",
@@ -1232,6 +1267,7 @@ class SessionCommandsMixin:
             # this call reaches it. The session is still live and holds
             # nothing to clean up, so it keeps its token.
             stale = True
+            await self.db.delete_task_meta(task_id, PENDING_COMPLETION_KEY)
             return {"success": False, "result": "stale_claim", "error": str(exc)}
         finally:
             # Pool sessions keep their instance token — the workflow keeps
@@ -1248,6 +1284,7 @@ class SessionCommandsMixin:
                         pass
 
         if retry_in_session:
+            await self.db.delete_task_meta(task_id, PENDING_COMPLETION_KEY)
             # Not a close: the task is still IN_PROGRESS under this session's
             # claim, and the agent has to fix the listed git issues and call
             # ``aq task close`` again.  No completion record, no claim
@@ -1352,7 +1389,6 @@ class SessionCommandsMixin:
             summary = f"{summary}\n\n{note}" if summary else note
             await self.db.set_task_meta(task_id, "summary", summary)
 
-        explicit_commit = str(args.get("commit") or "").strip()
         auto_commit = await self.db.get_task_meta(task_id, "work_commit_auto")
         commit = explicit_commit or str(auto_commit or "").strip()
         if "completion_source" in result:
@@ -1391,6 +1427,7 @@ class SessionCommandsMixin:
             ),
             **({"idempotent": True} if completion_record_id else {}),
         )
+        await self.db.delete_task_meta(task_id, PENDING_COMPLETION_KEY)
 
         await self.db.record_task_session_outcome(
             task_id, outcome, session_id=session.id if session is not None else None,

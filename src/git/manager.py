@@ -64,21 +64,24 @@ See specs/git/git.md for the full behavioral specification.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import math
 import os
 import random
 import re
+import shlex
 import signal
 import subprocess
 import tempfile
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from src.git.askpass_broker import (
     GitCredentialTopology,
@@ -94,6 +97,7 @@ from src.git.github_contracts import (
     GitHubCredentialMode,
     GitHubRepositoryBinding,
 )
+from src.git.identity import FALLBACK_IDENTITY, GitIdentity, PublishPolicy, identity_digest
 
 if TYPE_CHECKING:
     from src.event_bus import EventBus
@@ -129,6 +133,67 @@ def _safe_authenticated_git_detail(value: str, token: str | None, *, limit: int 
 
 class GitError(Exception):
     pass
+
+
+# ---------------------------------------------------------------------------
+# Commit identity (docs/specs/git-identity.md)
+# ---------------------------------------------------------------------------
+
+#: Subcommands that write a commit, tag or note and therefore need an
+#: identity.  Only these receive the resolved ``GIT_AUTHOR_*`` /
+#: ``GIT_COMMITTER_*``; author env never displaces the preserved author of a
+#: rebase, cherry-pick or amend (Git keeps it and sets only the committer).
+_COMMIT_SUBCOMMANDS = frozenset(
+    {"am", "cherry-pick", "commit", "commit-tree", "merge", "notes", "pull", "rebase",
+     "revert", "stash", "tag"}
+)
+#: Global options that take a separate value before the subcommand.
+_GLOBAL_OPTIONS_WITH_VALUE = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
+
+_COMMIT_IDENTITY: ContextVar[GitIdentity | None] = ContextVar(
+    "aq_git_commit_identity", default=None
+)
+
+
+@contextmanager
+def commit_identity(identity: GitIdentity | None):
+    """Commit as *identity* for every :class:`GitManager` call in this context.
+
+    The daemon wraps project-scoped work (a task's completion pipeline, a
+    worker's ``aq git commit``) so its commits carry the project's resolved
+    identity rather than the daemon's own Git configuration.
+    """
+    token = _COMMIT_IDENTITY.set(identity)
+    try:
+        yield identity
+    finally:
+        _COMMIT_IDENTITY.reset(token)
+
+
+def detached_commit_context() -> contextvars.Context:
+    """A copy of the current context with no :func:`commit_identity` scope.
+
+    For work spawned from inside a project's scope that must not inherit it
+    -- an event subscriber's task outlives the scope it was emitted in.
+    """
+    context = contextvars.copy_context()
+    context.run(_COMMIT_IDENTITY.set, None)
+    return context
+
+
+def _git_subcommand(args: Sequence[str]) -> str | None:
+    skip = False
+    for arg in args:
+        if skip:
+            skip = False
+            continue
+        if arg in _GLOBAL_OPTIONS_WITH_VALUE:
+            skip = True
+            continue
+        if arg.startswith("-"):
+            continue
+        return arg
+    return None
 
 
 class _AuthenticatedGitTimeout(GitError):
@@ -502,6 +567,52 @@ class GitManager:
         self._pr_diff_cache_locks: dict[str, asyncio.Lock] = {}
         self._repository_operation_locks: dict[str, asyncio.Lock] = {}
         self.github_access = github_access
+        # The daemon installs ``project -> resolved identity`` here
+        # (``src.git.identity.resolve_git_identity`` over its live config), so
+        # integration code holding only this manager can resolve a project's
+        # identity, and a commit outside any :func:`commit_identity` scope
+        # still never falls through to the daemon user's own ``git config``.
+        # ``None`` (a standalone manager) leaves Git's own resolution alone.
+        self._identity_resolver: Callable[[Any], GitIdentity] | None = None
+
+    def set_identity_resolver(self, resolver: Callable[[Any], GitIdentity] | None) -> None:
+        """Install ``resolver(project_or_None) -> GitIdentity`` for daemon commits."""
+        self._identity_resolver = resolver
+
+    def resolve_commit_identity(self, project: Any = None, *, scoped: bool = True) -> GitIdentity:
+        """*project*'s commit identity; the documented fallback when unresolvable.
+
+        For a deterministic plumbing commit that sets its identity explicitly.
+        Without a project the active :func:`commit_identity` scope, if any,
+        wins over the installation default -- unless *scoped* is false, for a
+        caller that means the installation identity itself.
+        """
+        if project is None and scoped:
+            scoped = _COMMIT_IDENTITY.get()
+            if scoped is not None:
+                return scoped
+        if self._identity_resolver is not None:
+            return self._identity_resolver(project)
+        return FALLBACK_IDENTITY
+
+    def commit_identity_env(self, args: Sequence[str]) -> dict[str, str]:
+        """``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*`` for *args*, or ``{}``.
+
+        Only commit-writing subcommands get an identity.  A caller's own
+        per-call env is merged over it, so an explicit identity (a
+        deterministic integration commit) is never replaced, and an explicit
+        author alone still gets the resolved committer.
+        """
+        if _git_subcommand(args) not in _COMMIT_SUBCOMMANDS:
+            return {}
+        identity = _COMMIT_IDENTITY.get()
+        if identity is None and self._identity_resolver is not None:
+            identity = self._identity_resolver(None)
+        return identity.env() if identity is not None else {}
+
+    def _env_for(self, args: Sequence[str]) -> dict[str, str]:
+        identity = self.commit_identity_env(args)
+        return {**self._SUBPROCESS_ENV, **identity} if identity else self._SUBPROCESS_ENV
 
     async def bind_github_repository(self, repository_url: str) -> GitHubRepositoryBinding:
         if self.github_access is None:
@@ -542,7 +653,7 @@ class GitManager:
                 cwd=cwd,
                 capture_output=True,
                 text=True,
-                env=self._SUBPROCESS_ENV,
+                env=self._env_for(args),
                 timeout=timeout or self._GIT_TIMEOUT,
             )
         except subprocess.TimeoutExpired:
@@ -596,7 +707,7 @@ class GitManager:
                 cwd=cwd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=self._SUBPROCESS_ENV,
+                env=self._env_for(args),
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -683,7 +794,7 @@ class GitManager:
                 stdin=asyncio.subprocess.PIPE if stdin is not None else None,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env={**self._SUBPROCESS_ENV, **env},
+                env={**self._SUBPROCESS_ENV, **self.commit_identity_env(args), **env},
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -3085,6 +3196,85 @@ class GitManager:
         except ValueError:
             return None
 
+    #: New commits one publication may carry before the identity check
+    #: refuses to judge them (and the push) rather than sample.
+    PUBLISH_IDENTITY_LIMIT = 2000
+
+    async def acheck_publish_identity(
+        self,
+        checkout_path: str,
+        tip: str,
+        *,
+        base_ref: str | None,
+        branch: str,
+        policy: PublishPolicy,
+        expected_remote_oid: str | None = None,
+    ) -> list[dict]:
+        """Refuse new commits of *tip* not committed as *policy* allows; report authors.
+
+        "New" is reachable from the exact *tip* OID and from none of: the
+        delivery base, this branch's last published head
+        (``refs/remotes/origin/<branch>``), and the caller's lease OID -- the
+        same local evidence the reserved-path gate trusts, never every
+        ``refs/remotes/*`` a checkout can write.  A committer outside
+        ``policy.allowed`` means the worker replaced AQ's identity itself:
+        refused with the exact fix.  An author outside it is reported (rebase,
+        cherry-pick and ``am`` keep upstream authors).  A root delivery
+        (``base_ref=None``) cannot tell new commits from inherited history,
+        so it reports committers instead of refusing (git identity spec §5).
+        """
+        exclusions = [base_ref] if base_ref else []
+        published = f"refs/remotes/origin/{_validate_ref(branch)}"
+        if await self.aref_exists(checkout_path, published):
+            exclusions.append(published)
+        lease = (expected_remote_oid or "").lower()
+        if _OID_RE.fullmatch(lease) and set(lease) != {"0"}:
+            try:
+                await self._arun(["cat-file", "-e", f"{lease}^{{commit}}"], cwd=checkout_path)
+                exclusions.append(lease)
+            except GitError:
+                pass
+        out = await self._arun(
+            ["log", f"--max-count={self.PUBLISH_IDENTITY_LIMIT + 1}",
+             "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce", tip, "--not", *exclusions, "--"],
+            cwd=checkout_path,
+        )
+        rows = [line.split("\x1f") for line in out.splitlines()]
+        rows = [row for row in rows if len(row) == 5]
+        if len(rows) > self.PUBLISH_IDENTITY_LIMIT:
+            raise GitError(
+                f"refusing to publish: more than {self.PUBLISH_IDENTITY_LIMIT} new commits "
+                "to verify against this project's Git identity"
+            )
+        wrong: list[tuple[str, str]] = []
+        notes: list[dict] = []
+        for sha, author, author_email, committer, committer_email in rows:
+            note = {}
+            if identity_digest(author, author_email) not in policy.allowed:
+                note["author"] = f"{author} <{author_email}>"
+            if identity_digest(committer, committer_email) not in policy.allowed:
+                wrong.append((sha, f"{committer} <{committer_email}>"))
+                note["committer"] = f"{committer} <{committer_email}>"
+            if note:
+                notes.append({"commit": sha, **note})
+        if wrong and policy.enforce and base_ref is not None:
+            base = await self.amerge_base(checkout_path, tip, base_ref) or "<base-commit>"
+            shown = ", ".join(f"{sha[:12]} ({who})" for sha, who in wrong[:5])
+            more = f" and {len(wrong) - 5} more" if len(wrong) > 5 else ""
+            identity = policy.identity
+            raise GitError(
+                f"refusing to publish: {len(wrong)} new commit(s) are not committed as this "
+                f"project's Git identity {identity.formatted()} ({policy.source}): "
+                f"{shown}{more}. Re-commit them as that identity, keeping authors and "
+                f"content: GIT_COMMITTER_NAME={shlex.quote(identity.name)} "
+                f"GIT_COMMITTER_EMAIL={shlex.quote(identity.email)} "
+                f"git rebase --force-rebase --rebase-merges {base}; then push again (with "
+                "--expected-remote-oid <published-oid> if this branch was already pushed). "
+                "Do not set GIT_AUTHOR_*/GIT_COMMITTER_* or --author yourself; AQ supplies "
+                "the identity."
+            )
+        return notes
+
     async def als_remote_sha(self, checkout_path: str, branch: str) -> str | None:
         """SHA of ``origin/<branch>`` **as the remote has it right now**.
 
@@ -3661,6 +3851,7 @@ class GitManager:
         repository_url: str | None = None,
         event_bus: EventBus | None = None,
         project_id: str | None = None,
+        identity_policy: PublishPolicy | None = None,
     ) -> str:
         """Inspect and push one immutable delivery tip without a ref-name race.
 
@@ -3680,6 +3871,10 @@ class GitManager:
         branch must still be absent. Without it an existing remote head must
         be an ancestor of the tip. ``repository_url`` confines the push to
         that authorized repository (see :meth:`_apush_destination`).
+
+        ``identity_policy`` holds the tip's new commits to the project's Git
+        identity (:meth:`acheck_publish_identity`) on the same resolved OID
+        the push publishes; its ``notes`` receive the kept-author report.
         """
         source_ref = _validate_rev(source_ref, field="delivery source")
         if base_ref is not None:
@@ -3693,6 +3888,11 @@ class GitManager:
             paths = await self.areserved_paths_in_diff(checkout_path, base_ref, tip)
         if paths:
             raise GitError("reserved delivery paths: " + ", ".join(paths))
+        if identity_policy is not None:
+            identity_policy.notes.extend(await self.acheck_publish_identity(
+                checkout_path, tip, base_ref=base_ref, branch=branch,
+                policy=identity_policy, expected_remote_oid=expected_remote_oid,
+            ))
         remote_ref_before = await self._apush_oid(
             checkout_path,
             tip,

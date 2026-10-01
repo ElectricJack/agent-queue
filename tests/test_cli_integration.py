@@ -55,6 +55,12 @@ def _client(result):
           "--reason", "recover legacy PR"], "integration_materialize_root",
          {"task_id": "legacy", "dry_run": False, "expected_head_sha": "a" * 40,
           "reason": "recover legacy PR"}),
+        (["close-delivered-pr", "p", "687"], "integration_close_delivered_pr",
+         {"project_id": "p", "pr_number": 687, "dry_run": True}),
+        (["close-delivered-pr", "p", "687", "--apply", "--head", "a" * 40,
+          "--reason", "patch-equivalent on main"], "integration_close_delivered_pr",
+         {"project_id": "p", "pr_number": 687, "dry_run": False,
+          "expected_head_sha": "a" * 40, "reason": "patch-equivalent on main"}),
         (
             ["sweep", "p", "--recover-child", "child"],
             "integration_development_sweep",

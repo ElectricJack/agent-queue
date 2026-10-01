@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -18,6 +18,28 @@ class ProjectSummary(BaseModel):
     assignment_playbook_id: str | None = None
 
 
+class GitIdentityPair(BaseModel):
+    name: str
+    email: str
+
+
+class EffectiveGitIdentity(BaseModel):
+    """The identity a project's AQ-authored commits use, and where it came from.
+
+    ``source`` is ``project`` (its override), ``installation`` (the
+    ``git_identity`` default) or ``fallback`` (no default chosen yet;
+    ``configured`` is then false).
+    """
+
+    name: str
+    email: str
+    source: Literal["project", "installation", "fallback"]
+    configured: bool
+    installation: GitIdentityPair | None = None
+    project_override: GitIdentityPair | None = None
+    fallback: GitIdentityPair
+
+
 class GetProjectResponse(BaseModel):
     id: str
     name: str
@@ -31,6 +53,10 @@ class GetProjectResponse(BaseModel):
     tokens_used_recent: int = 0
     budget_limit: int | None = None
     assignment_playbook_id: str | None = None
+    #: The project's own override (both null = inherits the installation default).
+    git_identity_name: str | None = None
+    git_identity_email: str | None = None
+    git_identity: EffectiveGitIdentity | None = None
 
 
 class WorkspaceSummary(BaseModel):

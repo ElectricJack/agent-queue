@@ -40,6 +40,7 @@ from src.install.onboarding import (
     STEP_DAEMON,
     STEP_DASHBOARD,
     STEP_DISCORD,
+    STEP_GIT_IDENTITY,
     api_base_url,
     data_locations,
     inspect_dashboard,
@@ -897,13 +898,21 @@ def test_the_documented_onboarding_steps_and_capabilities_match_the_registry():
         Path(__file__).resolve().parent.parent / "docs" / "reference" / "cli" / "install.md"
     ).read_text(encoding="utf-8")
     registry = build_registry(WSL2)
-    for step_id in (STEP_CONFIG, STEP_CHECK, STEP_DISCORD, STEP_DAEMON, STEP_DASHBOARD):
+    for step_id in (
+        STEP_CONFIG,
+        STEP_GIT_IDENTITY,
+        STEP_CHECK,
+        STEP_DISCORD,
+        STEP_DAEMON,
+        STEP_DASHBOARD,
+    ):
         assert step_id in registry, f"{step_id} is not registered by build_registry"
         assert step_id in doc, f"{step_id} is not documented"
     assert CAPABILITY_DISCORD in registry.capabilities()
     assert CAPABILITY_DAEMON in registry.capabilities()
     assert "--with discord" in doc
     assert "--advanced" in doc
+    assert "--git-name" in doc and "settings.git_identity" in doc
 
 
 def test_an_unknown_discord_setting_is_refused_by_name(tmp_path):

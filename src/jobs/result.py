@@ -109,6 +109,8 @@ def build_result(job: dict, completion: dict | None, tail: bytes = b"") -> dict:
         "parser_source": report.source,
         "artifact_status": report.artifact_status,
     }
+    if job["preset"] == "matter_render":
+        result["capture"] = receipt.get("capture")
     result["result_hash"] = hashlib.sha256(
         json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

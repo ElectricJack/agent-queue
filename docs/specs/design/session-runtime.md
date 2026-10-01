@@ -235,8 +235,15 @@ commands). A lease TTL of ~8 minutes without either marks the task **stalled** �
 
 Stalled tasks climb a ladder, each rung a typed event:
 
-1. **Nudge** (`task.stalled` → `task.nudged`): inject *"no progress for N min: report
-   status, finish, or `aq ask`"* via the provider's nudge pipeline.
+1. **Nudge** (`task.stalled` → `task.nudged`): inject *"No progress for N min on task
+   `<id>`: `aq task close`, or keep working."* via the provider's nudge pipeline
+   (`stall_reminder` in `src/sessions/reconciler.py`). The reminder names the task id once
+   and stays within two rows of an 80-column pane: a submit is confirmed only by finding
+   the exact text in the composer, and Claude Code 2.1.286 in an 80x24 pool pane shows only
+   the last 7 rows of taller input. The previous wording (four inline commands, the id
+   three times) ran to 9 rows for a 72-character repair id and could never be delivered.
+   Agent-question replay treats every wording the daemon has typed as machine input
+   (`_MACHINE_STALL` in `src/sessions/questions.py`), not a reply.
 2. **Backoff and repeat** up to 3 nudges.
 3. **Interrupt + restart** (`task.restarted`): C-c, kill, relaunch with `--resume` so
    conversation context survives.

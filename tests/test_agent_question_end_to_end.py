@@ -168,6 +168,10 @@ async def flow(tmp_path, request):
 
 
 async def answer_request(flow, scope, args):
+    return await execute_request(flow, scope, "question_answer", args)
+
+
+async def execute_request(flow, scope, command, args):
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_command_handler] = lambda: flow.handler
@@ -180,7 +184,7 @@ async def answer_request(flow, scope, args):
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        return await client.post("/api/execute", json={"command": "question_answer", "args": args})
+        return await client.post("/api/execute", json={"command": command, "args": args})
 
 
 async def capture(flow):
@@ -252,7 +256,19 @@ async def test_codex_question_survives_restart_and_answer_waits_for_draft(flow):
     assert len(flow.terminal.submissions) == 1
     handle, text = flow.terminal.submissions[0]
     assert handle.name == "s-task" and handle.instance_token == "original-instance"
-    assert "Keep projectless runs projectless." in text
+    # One line naming the durable answer, which the asking worker reads through
+    # the same scope gate as every other command it runs.
+    message_id = f"question:{q['id']}:answer"
+    assert text == f"[aq question answered] Handle `aq message status {message_id} --json`."
+    worker_scope = RequestScope(
+        kind="session", session_id=flow.session.id, task_id="task", project_id="p"
+    )
+    response = await execute_request(
+        flow, worker_scope, "message_status", {"message_id": message_id}
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()["result"]["message"]["body"]
+    assert "Keep projectless runs projectless." in body
     task = await flow.db.get_task("task")
     assert task.status == TaskStatus.IN_PROGRESS
     assert task.assigned_agent_id == "worker" and task.claim_epoch == 7

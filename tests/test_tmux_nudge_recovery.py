@@ -29,6 +29,7 @@ if os.name != "posix":
 
 from src.sessions import tmux as tmux_module
 from src.sessions.provider import NotSubmitted, NudgeDeferred, SessionHandle
+from src.sessions.reconciler import stall_reminder
 from src.sessions.tmux import _marker_for, _marker_on_input_line, _submit_pending
 from tests.test_tmux_nudge_drafts import CODEX_PLACEHOLDER, Composer, handle, provider_for
 
@@ -419,8 +420,8 @@ async def test_recovery_refuses_human_text_surrounding_injection(fast_polls, edi
 # Input the harness wraps itself (steady-cascade reopen, 2026-09-27)
 # ---------------------------------------------------------------------------
 
-#: The stall reminder as the reconciler words it; ~430 characters, so every
-#: pane narrower than that shows it on several rows.
+#: The stall reminder as the reconciler worded it until 2026-10-01; ~430
+#: characters, so every pane narrower than that shows it on several rows.
 LONG_REMINDER = (
     "No progress for 12 min on task wise-ember.17. Close or continue: if the work is "
     'done run `aq task close wise-ember.17 --outcome pass|fail --summary "..."` then '
@@ -444,15 +445,23 @@ CODEX_TYPED_FOOTERS = {
     ],
 }
 CLAUDE_BORDER = "─" * 80
+#: Rows of input Claude Code 2.1.286 shows in an 80x24 pool pane.
+CLAUDE_WINDOW = 7
+#: The live task whose stall reminder could not be delivered (2026-10-01).
+REPAIR_TASK_ID = "repair-repair-batch-integration-batch-a15aca37ba71d0ed81b96d73a8f624b7-1"
 CLAUDE_FOOTER = [CLAUDE_BORDER, "  ⏵⏵ bypass permissions on (shift+tab to cycle)"]
 
 
 class WrappingComposer(Composer):
     """Paints input the way Codex and Claude do: word-wrapped onto rows of its
     own with a two-space continuation indent -- explicit rows, which
-    ``capture-pane -J`` cannot join -- then the harness footer."""
+    ``capture-pane -J`` cannot join -- then the harness footer.
 
-    def __init__(self, *, width=80, idle_footer, typed_footer, above=None, **kw):
+    With ``window`` set, input taller than that many rows shows only its last
+    rows, the prompt drawn on the first visible one: Claude Code 2.1.286 in an
+    80x24 pool pane keeps a 7-row window (measured 2026-10-01)."""
+
+    def __init__(self, *, width=80, idle_footer, typed_footer, above=None, window=None, **kw):
         above = above if above is not None else ["prior output"] * 3
         super().__init__(
             above=above,
@@ -462,12 +471,19 @@ class WrappingComposer(Composer):
             **kw,
         )
         self.width = width
+        self.window = window
         self.typed_footer = typed_footer
         self.idle_row = self.row
 
+    def rows(self):
+        return textwrap.wrap(self.prefix + self.draft, self.width, subsequent_indent="  ")
+
     async def tmux(self, *args, stdin=None, **kwargs):
         if args[0] == "capture-pane" and self.draft:
-            rows = textwrap.wrap(self.prefix + self.draft, self.width, subsequent_indent="  ")
+            rows = self.rows()
+            if self.window and len(rows) > self.window:
+                rows = rows[-self.window :]
+                rows[0] = self.prefix + rows[0].removeprefix("  ")
             return "\n".join(self.above + rows + self.typed_footer) + "\n"
         result = await super().tmux(*args, stdin=stdin, **kwargs)
         if not self.draft:
@@ -484,11 +500,12 @@ def codex_composer(width=80, typed="erased-hint"):
     )
 
 
-def claude_composer(width=80):
+def claude_composer(width=80, window=None):
     return WrappingComposer(
         prefix="❯ ",
         row="❯\N{NO-BREAK SPACE}",
         width=width,
+        window=window,
         above=["older output", CLAUDE_BORDER],
         idle_footer=CLAUDE_FOOTER,
         typed_footer=CLAUDE_FOOTER,
@@ -520,6 +537,53 @@ class TestHarnessWrappedInput:
         composer = claude_composer(width)
         await provider_for(composer).nudge(handle(), LONG_REMINDER)
         assert composer.submitted == [LONG_REMINDER]
+
+    async def test_the_stall_reminder_for_a_long_task_id_fits_claudes_window(self, fast_polls):
+        """fresh-journey-72: the reminder named a 72-character repair id three
+        times -- 9 rows at 80 columns, more than Claude's 7-row window -- so the
+        exact-text submit check could never pass and the rung never landed."""
+        reminder = stall_reminder(REPAIR_TASK_ID, 12)
+        composer = claude_composer(80, window=CLAUDE_WINDOW)
+        composer.draft = reminder
+        assert len(composer.rows()) <= 2
+
+        composer.draft = ""
+        await provider_for(composer).nudge(handle(), reminder)
+        assert composer.submitted == [reminder]
+
+    async def test_the_window_hides_the_reminder_this_replaced(self, fast_polls):
+        """The fixture reproduces the live shape: the pre-2026-10-01 wording,
+        with the same id, overflows the window, so the composer never shows
+        the text as typed and the provider cannot confirm the submit."""
+        reminder = (
+            f"No progress for 12 min on task {REPAIR_TASK_ID}. Close or continue: if the work "
+            f'is done run `aq task close {REPAIR_TASK_ID} --outcome pass|fail --summary "..."` '
+            "then `aq session drain-ack`; if it is not done, keep working and run "
+            f"`aq task heartbeat {REPAIR_TASK_ID}`; if you are blocked, say so with "
+            '`aq message send --to user:dashboard --project "$AQ_PROJECT_ID" '
+            '--body "Blocked: <question>"`.'
+        )
+        composer = claude_composer(80, window=CLAUDE_WINDOW)
+        with pytest.raises(NotSubmitted):
+            await provider_for(composer).nudge(handle(), reminder)
+        assert composer.submitted == []
+
+    @pytest.mark.parametrize("make", [codex_composer, claude_composer], ids=["codex", "claude"])
+    async def test_an_agent_question_answer_is_a_pointer_the_composer_shows(
+        self, fast_polls, make
+    ):
+        """bold-bridge: the answer used to be typed whole.  Claude Code 2.1.286
+        collapses a burst over 800 characters to ``[Pasted text #N +M lines]``
+        and shows only the last 7 rows of taller input, so a 16000-character
+        answer could never be confirmed; the pointer is one short line."""
+        from src.sessions.questions import _answer_nudge
+
+        text = _answer_nudge("aq-" + "0123456789abcdef" * 2)
+        assert "\n" not in text and len(text) <= 800
+        assert len(textwrap.wrap("❯ " + text, 80, subsequent_indent="  ")) <= 7
+        composer = make()
+        await provider_for(composer).nudge(handle(), text)
+        assert composer.submitted == [text]
 
     @pytest.mark.parametrize("make", [codex_composer, claude_composer], ids=["codex", "claude"])
     async def test_a_stale_injection_is_submitted_then_the_new_wake_typed(self, fast_polls, make):

@@ -402,6 +402,29 @@ class ClaimCommandsMixin:
             return None
         return f"provider {provider} is {availability.effective_state(provider)}"
 
+    def _stale_git_identity(self, session, project) -> str | None:
+        """Why *session* may not take a new task under its launch identity, if so.
+
+        Pool sessions carry the project's Git identity in their environment
+        from launch (``SessionSpecBuilder.build_pool_spec``).  A session whose
+        recorded digest differs from what the project resolves to now --
+        an operator edit, or a launch from before the digest existed (stamped
+        ``legacy`` by migration ``a00000000053``) -- is retired instead of
+        claiming.  A row with no digest recorded is not judged here; the
+        publishing check still holds its commits to the resolved identity.
+        """
+        from src.git.identity import resolve_git_identity
+
+        if getattr(session, "lifecycle", "pool") != "pool" or not session.git_identity_digest:
+            return None
+        current = resolve_git_identity(self.config, project).identity
+        if session.git_identity_digest == current.digest:
+            return None
+        return (
+            "git identity changed since this session launched; a fresh session "
+            f"will commit as {current.formatted()}"
+        )
+
     def _pool_context_claim_cap(self, profile):
         # A reused global worker must not carry a previous task's conversation.
         # Same-task active/preparing claims remain idempotent in take_claim_slot.
@@ -587,6 +610,16 @@ class ClaimCommandsMixin:
             elif kind != "slot":
                 return self._simple(ClaimResult.OUT_OF_SCOPE, kind, row, cap)
             else:
+                stale_identity = self._stale_git_identity(session, project)
+                if stale_identity is not None:
+                    # A new claim never inherits a stale or foreign identity:
+                    # the env is fixed at launch, so the session drains and
+                    # the pool relaunches it under the current resolution.
+                    await self.db.release_claim_slot(conn, session.id)
+                    await self.db.update_session(session.id, conn=conn, desired_state="stopped")
+                    return self._simple(
+                        ClaimResult.SESSION_EXHAUSTED, stale_identity, row, cap
+                    )
                 if admission is not None and admission.changed and not admission.allowed:
                     await self.db.release_claim_slot(conn, session.id)
                     return self._simple(

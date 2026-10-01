@@ -182,6 +182,7 @@ OPERATOR_INTEGRATION_CONTROLS = frozenset(
         "integration_rebind_reused_identity",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
+        "integration_close_delivered_pr",
         "integration_flush",
         "integration_eject",
         "integration_transfer_owner",

@@ -920,6 +920,9 @@ class ExecutionMixin:
             },
         )
 
+        from src.git.identity import resolve_git_identity
+
+        project = await self.db.get_project(task.project_id)
         spec = self.session_spec_builder.build_task_spec(
             task=task,
             profile=profile,
@@ -932,6 +935,7 @@ class ExecutionMixin:
             resume_key=resume_key,
             workspace_source_type=source_type,
             extra_env={"AQ_CLAIM_EPOCH": str(claim_epoch)},
+            git_identity=resolve_git_identity(self.config, project).identity,
         )
 
         launched_at = time.time()
@@ -949,9 +953,9 @@ class ExecutionMixin:
             work_dir=work_dir, epoch=self.daemon_epoch, instance_token=instance_token,
             started_at=launched_at, last_activity=launched_at,
             hooks_provisioned=spec.hooks_provisioned,
+            git_identity_digest=spec.git_identity_digest,
         )
 
-        project = await self.db.get_project(task.project_id)
         hierarchy_enabled = getattr(
             project, "hierarchical_integration_mode", "disabled"
         ) in {"hierarchy", "train"}

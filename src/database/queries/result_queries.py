@@ -9,8 +9,17 @@ import uuid
 from sqlalchemy import insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from src.database.tables import task_completion_records, task_results
+from src.database.tables import task_completion_records, task_metadata, task_results, tasks
 from src.models import TaskCompletion
+
+#: ``task_metadata`` key holding the completion record an accepted close is
+#: about to commit.  ``task close`` writes it before the terminal transition
+#: and deletes it once the record is saved, so a restart in between leaves the
+#: agent-supplied account (tests, commands, summary) recoverable.
+PENDING_COMPLETION_KEY = "pending_completion"
+
+#: Statuses a task still holds while its close has not committed a transition.
+_UNCLOSED_STATUSES = ("ASSIGNED", "IN_PROGRESS", "PAUSED", "WAITING_INPUT")
 
 
 class ResultQueryMixin:
@@ -105,6 +114,52 @@ class ResultQueryMixin:
             await conn.execute(statement)
             flipped = await self.recompute_blocked({completion.task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
+
+    async def recover_pending_completions(self) -> list[str]:
+        """Save the drafted completion of every close a restart interrupted.
+
+        Runs once at daemon start, before stale-state recovery moves any task.
+        A draft whose task left its claimed statuses was accepted: the terminal
+        transition committed and only ``save_task_completion`` was lost, so the
+        draft is saved under its own id (idempotent) unless a record already
+        landed since the close began.  A draft on a task still claimed belongs
+        to a close that never committed and is dropped.  Nothing is invented:
+        the record carries exactly what the agent submitted.
+        """
+        async with self._engine.begin() as conn:
+            rows = (
+                await conn.execute(
+                    select(task_metadata.c.task_id, task_metadata.c.value, tasks.c.status)
+                    .join(tasks, tasks.c.id == task_metadata.c.task_id)
+                    .where(task_metadata.c.key == PENDING_COMPLETION_KEY)
+                )
+            ).mappings().all()
+        recovered: list[str] = []
+        for row in rows:
+            task_id = row["task_id"]
+            try:
+                draft = json.loads(row["value"])
+                completion = TaskCompletion(**draft)
+            except (TypeError, ValueError):
+                completion = None
+            if completion is not None and row["status"] not in _UNCLOSED_STATUSES:
+                async with self._engine.begin() as conn:
+                    newer = (
+                        await conn.execute(
+                            select(task_completion_records.c.id)
+                            .where(
+                                task_completion_records.c.task_id == task_id,
+                                task_completion_records.c.completed_at
+                                >= completion.completed_at,
+                            )
+                            .limit(1)
+                        )
+                    ).first()
+                if newer is None:
+                    await self.save_task_completion(completion, idempotent=True)
+                    recovered.append(task_id)
+            await self.delete_task_meta(task_id, PENDING_COMPLETION_KEY)
+        return recovered
 
     async def get_task_completion(self, task_id: str) -> TaskCompletion | None:
         """Return the latest completion record for *task_id*."""

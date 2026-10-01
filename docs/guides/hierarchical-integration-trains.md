@@ -42,6 +42,7 @@ aq integration enable PROJECT_ID --mode observe --expected-generation GENERATION
 aq integration enable PROJECT_ID --mode train --interval-seconds SECONDS --expected-generation GENERATION --reason REASON
 aq integration reconcile-unmaterialized PROJECT_ID --expected-generation GENERATION --reason REASON
 aq integration bind-legacy-repositories PROJECT_ID [--apply --reason REASON]
+aq integration close-delivered-pr PROJECT_ID PR_NUMBER [--apply --head HEAD_SHA --reason REASON]
 aq integration waive-history PROJECT_ID --reason REASON --blocker-digest BLOCKER_DIGEST
 aq integration resume OPERATION_ID
 aq integration abort OPERATION_ID --reason REASON
@@ -142,7 +143,10 @@ aq integration flush PROJECT_ID
 The control rechecks the PR head and the task under the project lock before
 recording the branch origin and leaf checkpoint. A root with children needs its
 original parent verification evidence and is refused; the control does not
-manufacture that evidence.
+manufacture that evidence. Such a root, and any legacy PR the train has no
+identity for, is delivered by a fresh root that merges its exact head; an
+open PR whose work already landed is closed only on Git proof with `aq
+integration close-delivered-pr` ([troubleshooting](integration-troubleshooting.md#a-legacy-pr-stays-open)).
 
 Do not import another database during this release. PostgreSQL is the only
 backend; the one-way carry-over importer
@@ -575,7 +579,10 @@ provenance remain outside admission.
 
 Failed and terminally cancelled source checks file deduplicated repair roots with
 exact source identity and actionable check links. A newer pending/successful
-rerun supersedes an old cancellation. Repair branches preserve source ancestry;
+rerun supersedes an old cancellation. A PR GitHub reports as conflicting runs no
+`pull_request` CI; with no required check on its head it is recorded as
+`conflict`, and under `repair.conflict_scope: batch` it enters the train so the
+batch repair resolves the conflict and the candidate's CI gates it. Repair branches preserve source ancestry;
 when a repaired source is green, both it and its covered original source can
 enter the train and receive normal delivery/cleanup receipts. Every final
 candidate still requires its own exact authenticated green CI.

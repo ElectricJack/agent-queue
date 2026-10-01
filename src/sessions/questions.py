@@ -11,6 +11,9 @@ concurrent submitters, while a per-session lock orders transcript observation
 and delivery within this daemon. A crash after provider submission but before
 recording its receipt can cause a repeated submission after lease expiry:
 terminal providers offer no transactional/idempotent input API.
+
+The answer is stored as a message addressed to the asking session; the
+terminal receives only a one-line pointer to it, never the answer text.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import shlex
 import time
 import uuid
 import weakref
@@ -48,8 +52,11 @@ _FACTUAL_SUBJECT = re.compile(
     r"formatter|lint\w*|convention\w*|version|directory|directories|documentation)\b",
     re.I,
 )
+#: The stall ladder's reminder (``src.sessions.reconciler.stall_reminder``),
+#: plus the wording older daemons typed, which a replayed transcript can hold.
 _MACHINE_STALL = re.compile(
-    r"^No progress for \d+ min\. Report status, finish the task, or report a blocker with "
+    r"^No progress for \d+ min(?:\. Report status, finish the task, or report a blocker with "
+    r"| on task \S+(?:\. Close or continue: |: `aq task close`, or keep working\.$))"
 )
 
 
@@ -70,6 +77,24 @@ def _machine_input(text):
     # Exact machine framing; generic 'user' role alone is not proof of a
     # human reply because harnesses echo all terminal nudges as user turns.
     return bool(_MACHINE_STALL.match(text.strip()) or text.startswith("[aq question "))
+
+
+def _answer_message_id(question_id):
+    return f"question:{question_id}:answer"
+
+
+def _answer_body(q):
+    return f"[aq question {q['id']} answer from {q['answered_by']}]\n{q['answer']}"
+
+
+def _answer_nudge(question_id):
+    # One short line, never the answer itself: a harness composer does not
+    # show long or multi-line input verbatim (Claude Code collapses it to a
+    # paste placeholder or windows it to its last rows), so a typed answer
+    # could never be confirmed as submitted.  The worker reads the durable
+    # body through ``message_status``, which every worker profile is granted.
+    message_id = shlex.quote(_answer_message_id(question_id))
+    return f"[aq question answered] Handle `aq message status {message_id} --json`."
 
 
 class AgentQuestionService:
@@ -417,6 +442,10 @@ class AgentQuestionService:
             return {**q, "escalation_id": incident["id"]}
 
     async def _deliver(self, q, now):
+        if not getattr(self.config.messages, "enabled", False):
+            # The nudge points at ``aq message status``, which refuses while
+            # messages are disabled; keep the answer until it can be read.
+            return
         token = uuid.uuid4().hex
         if not await self.db.claim_agent_question_delivery(q["id"], token, now):
             return
@@ -436,6 +465,11 @@ class AgentQuestionService:
                     q, reason="provider cannot accept guarded input; answer was not delivered"
                 )
                 return
+            # Committed before the nudge, so the pointer resolves as soon as
+            # the worker reads it.
+            await self.db.ensure_agent_question_answer_message(
+                q, _answer_message_id(q["id"]), _answer_body(q), now
+            )
             # Hold the actual claim/session rows across bounded terminal I/O.
             # A concurrent claim release cannot swap the pool's task between
             # validation and provider submission, even from another daemon.
@@ -445,10 +479,7 @@ class AgentQuestionService:
                     stale = True
                 else:
                     async with asyncio.timeout(30):
-                        await provider.nudge(
-                            handle,
-                            f"[aq question {q['id']} answer from {q['answered_by']}]\n{q['answer']}",
-                        )
+                        await provider.nudge(handle, _answer_nudge(q["id"]))
                     delivered = True
                     await self.db.record_agent_question_delivery(conn, q["id"], token, row.id, now)
             if stale:

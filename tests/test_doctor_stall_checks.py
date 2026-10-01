@@ -71,6 +71,9 @@ class DB:
     async def list_repos(self):
         return self.repos
 
+    async def get_project(self, project_id):
+        return SimpleNamespace(id=project_id, git_identity_name=None, git_identity_email=None)
+
     async def list_provider_availability(self):
         return self.providers
 
@@ -206,6 +209,11 @@ async def test_delivery_uses_configured_repo_checkout(context, monkeypatch):
     )
     assert findings[0]["kind"] == "delivery_stale"
     assert seen[0][:4] == ("git", "-C", "/checkout/two", "log")
+    # AQ deliveries are read from the committer: the project's resolved
+    # identity (here the unset install's fallback) and earlier fixed ones.
+    assert "--fixed-strings" in seen[0]
+    assert "--committer=<agent-queue@localhost>" in seen[0]
+    assert "--committer=@agent-queue.local>" in seen[0]
 
 
 async def test_disabled_provider_with_queued_task(context):

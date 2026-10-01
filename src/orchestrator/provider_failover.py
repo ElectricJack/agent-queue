@@ -85,13 +85,17 @@ class ProviderFailoverMixin:
                 workspace=workspace,
                 branch=getattr(task, "branch_name", None),
             )
-        checkpoint = await inflight.checkpoint_workspace(
-            self.git,
-            workspace,
-            task.id,
-            event_bus=getattr(self, "bus", None),
-            project_id=task.project_id,
-        )
+        from src.git.manager import commit_identity
+
+        # The WIP commit is the project's AQ-authored commit (git identity).
+        with commit_identity(self.git.resolve_commit_identity(project)):
+            checkpoint = await inflight.checkpoint_workspace(
+                self.git,
+                workspace,
+                task.id,
+                event_bus=getattr(self, "bus", None),
+                project_id=task.project_id,
+            )
         branch = checkpoint.pushed_branch or (checkpoint.branch if checkpoint.at_risk else None)
         if branch and checkpoint.commits:
             # The contract a retry, the dashboard and the next agent already

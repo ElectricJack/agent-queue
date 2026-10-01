@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { CheckIcon, ArrowUturnLeftIcon, ArrowTopRightOnSquareIcon } from "@heroicons/react/24/outline";
 import { useNavigate } from "react-router-dom";
 import { useProject, useEditProject } from "../../../api/hooks";
@@ -8,6 +8,16 @@ import {
   parseOptionalFloat,
   projectToForm,
 } from "../../../pages/project/Config";
+import GitIdentitySection from "../../../pages/project/GitIdentitySection";
+import {
+  type GitIdentityFieldErrors,
+  type GitIdentityFormFields,
+  GIT_IDENTITY_SECTION_HINT,
+  gitIdentityErrors,
+  gitIdentityPayload,
+  gitIdentitySaveError,
+  hasGitIdentityErrors,
+} from "../../../pages/project/gitIdentity";
 import { Section, Field } from "../../../components/profile/FormSection";
 import { useDirtyForm } from "../useDirtyForm";
 import { fullSettingsRoute } from "../fullSettingsRoute";
@@ -23,6 +33,9 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
   const { value: form, setValue: setForm, dirty, resetBaseline } = useDirtyForm<FormState>(
     projectToForm(project ?? {}),
   );
+  const [identityServerErrors, setIdentityServerErrors] = useState<GitIdentityFieldErrors>({});
+  const identityClientErrors = gitIdentityErrors(form);
+  const identityInvalid = hasGitIdentityErrors(identityClientErrors);
 
   useEffect(() => {
     if (project) resetBaseline(projectToForm(project));
@@ -32,26 +45,46 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
   }, [project]);
 
   const save = async () => {
-    if (!project) return;
-    await editProject.mutateAsync({
-      project_id: project.id,
-      name: form.name.trim() || null,
-      repo_default_branch: form.repo_default_branch.trim() || null,
-      max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
-      credit_weight: parseOptionalFloat(form.credit_weight),
-      budget_limit: parseOptionalFloat(form.budget_limit),
-    });
+    if (!project || identityInvalid) return;
+    setIdentityServerErrors({});
+    const identity = gitIdentityPayload(projectToForm(project), form);
+    try {
+      await editProject.mutateAsync({
+        project_id: project.id,
+        name: form.name.trim() || null,
+        repo_default_branch: form.repo_default_branch.trim() || null,
+        max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
+        credit_weight: parseOptionalFloat(form.credit_weight),
+        budget_limit: parseOptionalFloat(form.budget_limit),
+        ...identity,
+      });
+    } catch (err) {
+      // The mutation's own error state renders below; an identity refusal
+      // is shown on its field instead.
+      const identityError = "git_identity_name" in identity ? gitIdentitySaveError(err) : null;
+      if (identityError) setIdentityServerErrors(identityError);
+      return;
+    }
     resetBaseline(form);
   };
 
   useEffect(() => {
     setToolbar([
-      { id: "save", label: "Save", icon: CheckIcon, onClick: save, disabled: !dirty || editProject.isPending },
+      {
+        id: "save",
+        label: "Save",
+        icon: CheckIcon,
+        onClick: save,
+        disabled: !dirty || editProject.isPending || identityInvalid,
+      },
       {
         id: "discard",
         label: "Discard changes",
         icon: ArrowUturnLeftIcon,
-        onClick: () => project && resetBaseline(projectToForm(project)),
+        onClick: () => {
+          setIdentityServerErrors({});
+          if (project) resetBaseline(projectToForm(project));
+        },
         disabled: !dirty,
       },
       {
@@ -70,6 +103,13 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
+  const changeIdentity = (next: GitIdentityFormFields) => {
+    setIdentityServerErrors({});
+    setForm((prev) => ({ ...prev, ...next }));
+  };
+  const identityRefused = Boolean(
+    identityServerErrors.name || identityServerErrors.email || identityServerErrors.general,
+  );
 
   return (
     <div className="space-y-6 text-sm">
@@ -140,7 +180,17 @@ export default function ProjectSubject({ args, setToolbar }: PaneViewProps<Args>
         </Field>
       </Section>
 
-      {editProject.isError && (
+      <Section title="Git commit identity" hint={GIT_IDENTITY_SECTION_HINT}>
+        <GitIdentitySection
+          identity={project.git_identity}
+          value={form}
+          onChange={changeIdentity}
+          editing
+          errors={{ ...identityServerErrors, ...identityClientErrors }}
+        />
+      </Section>
+
+      {editProject.isError && !identityRefused && (
         <p className="text-sm text-red-400">
           {(editProject.error as Error)?.message ?? "Save failed."}
         </p>

@@ -23,6 +23,7 @@ areas:
       - tests/test_task_controls_api.py
       - tests/test_task_command_authorization.py
       - tests/test_task_close_summary_enforcement.py
+      - tests/test_task_close_completion_recovery.py
       - tests/test_reopen_with_feedback.py
       - tests/test_task_failed_event.py
       - tests/test_task_ready_event.py
@@ -386,7 +387,7 @@ areas:
       - tests/test_integration_eject.py
       - tests/test_doctor_stranded_fences_fix.py
   - id: integration-promotion
-    description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication and legacy deliveries."
+    description: "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs."
     match:
       - tests/test_integration_promotion.py
       - tests/test_integration_child_delivery.py
@@ -397,6 +398,7 @@ areas:
       - tests/test_integration_repair_rollover.py
       - tests/test_integration_review_evidence.py
       - tests/test_integration_legacy_*.py
+      - tests/test_integration_pr_delivery.py
       - tests/test_parent_ci_publication.py
       - tests/test_repair_checkout_refs.py
       - tests/test_integration_child_delivery.py
@@ -435,6 +437,9 @@ areas:
     match: [tests/test_ci_*.py]
 
   # ------------------------------------------------------------ git and github
+  - id: git-identity
+    description: "Git commit identity: validating and resolving the project override, installation default and fallback, the get/set and project-settings surfaces, session env injection, retiring stale pool sessions at claim, the worker publishing check, and daemon-side commit attribution."
+    match: [tests/test_git_identity.py]
   - id: git-manager
     description: "GitManager and local git: the async API, event emission, mutex serialization, sync-and-merge, rebase before merge, force-with-lease pushes, merge slots, merge-conflict detection and git command handlers."
     match:

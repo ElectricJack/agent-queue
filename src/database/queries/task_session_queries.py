@@ -349,6 +349,28 @@ class TaskSessionQueryMixin:
             )
         return [dict(row) for row in rows]
 
+    async def list_task_launch_identities(
+        self, task_id: str, *, extra_session_id: str | None = None
+    ) -> list[tuple[str | None, str, str]]:
+        """``(git_identity_digest, lifecycle, profile_id)`` of every session that worked *task_id*.
+
+        The publishing check accepts commits committed as any of these launch
+        identities (git identity spec §5); *extra_session_id* adds the caller's
+        own session even before its attempt row exists.
+        """
+        holders = select(task_session_attempts.c.session_id).where(
+            task_session_attempts.c.task_id == task_id
+        )
+        condition = sessions.c.id.in_(holders)
+        if extra_session_id:
+            condition = or_(condition, sessions.c.id == extra_session_id)
+        query = select(
+            sessions.c.git_identity_digest, sessions.c.lifecycle, sessions.c.profile_id
+        ).where(condition)
+        async with self._engine.connect() as conn:
+            rows = (await conn.execute(query)).all()
+        return [(row[0], row[1], row[2]) for row in rows]
+
     async def finish_task_session_attempt(
         self,
         session_id,

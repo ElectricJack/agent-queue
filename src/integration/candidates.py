@@ -636,14 +636,12 @@ class CandidateService:
         if tree.returncode != 0:
             raise RuntimeError(tree.stderr or "CI repair preservation merge failed")
         authored_at = f"@{int(state['batch']['created_at'])} +0000"
+        integrator = await self._integrator(state)
         commit = await self.git.arun_git_result(
             ["commit-tree", tree.stdout.splitlines()[0].strip(), "-p", new_base_sha,
              "-p", revision["head_sha"], "-m", "Preserve accepted integration CI repairs on new main"],
             cwd=str(store), env={
-                "GIT_AUTHOR_NAME": "Agent Queue Integration",
-                "GIT_AUTHOR_EMAIL": "integration@agent-queue.local",
-                "GIT_COMMITTER_NAME": "Agent Queue Integration",
-                "GIT_COMMITTER_EMAIL": "integration@agent-queue.local",
+                **integrator.env(),
                 "GIT_AUTHOR_DATE": authored_at, "GIT_COMMITTER_DATE": authored_at,
             })
         if commit.returncode != 0:
@@ -2038,14 +2036,10 @@ class CandidateService:
                 store, member["source_base_sha"], member["reviewed_head_sha"]
             )
             message = self._message(state, member, authors, parent_repair)
-            primary = (
-                authors[0]
-                if authors
-                else {
-                    "name": "Agent Queue Integration",
-                    "email": "integration@agent-queue.local",
-                }
-            )
+            # The member's own authors are preserved; the candidate merge is
+            # committed as the project's resolved identity.
+            integrator = await self._integrator(state)
+            primary = authors[0] if authors else integrator.as_dict()
             authored_at = f"@{int(state['batch']['created_at'])} +0000"
             parent_heads = [member["reviewed_head_sha"]]
             if parent_repair is not None:
@@ -2062,8 +2056,7 @@ class CandidateService:
                 env={
                     "GIT_AUTHOR_NAME": primary["name"],
                     "GIT_AUTHOR_EMAIL": primary["email"],
-                    "GIT_COMMITTER_NAME": "Agent Queue Integration",
-                    "GIT_COMMITTER_EMAIL": "integration@agent-queue.local",
+                    **integrator.committer_env(),
                     "GIT_AUTHOR_DATE": authored_at,
                     "GIT_COMMITTER_DATE": authored_at,
                 },
@@ -3725,6 +3718,11 @@ class CandidateService:
                 member["reviewed_head_sha"],
                 f"refs/aq/integration-sources/{digest}/{ordinal}/head",
             )
+
+    async def _integrator(self, state):
+        """The batch project's resolved commit identity (git-identity spec)."""
+        project = await self.db.get_project(state["batch"]["project_id"])
+        return self.git.resolve_commit_identity(project)
 
     async def _pin(self, store, ref, head):
         result = await self.git.arun_git_result(["update-ref", ref, head], cwd=str(store))

@@ -392,6 +392,12 @@
         "tests/test_generated_artifacts.py"
       ]
     },
+    "git-identity": {
+      "description": "Git commit identity: validating and resolving the project override, installation default and fallback, the get/set and project-settings surfaces, session env injection, retiring stale pool sessions at claim, the worker publishing check, and daemon-side commit attribution.",
+      "modules": [
+        "tests/test_git_identity.py"
+      ]
+    },
     "git-manager": {
       "description": "GitManager and local git: the async API, event emission, mutex serialization, sync-and-merge, rebase before merge, force-with-lease pushes, merge slots, merge-conflict detection and git command handlers.",
       "modules": [
@@ -471,6 +477,7 @@
         "tests/test_install_cli.py",
         "tests/test_install_dashboard.py",
         "tests/test_install_engine.py",
+        "tests/test_install_git_identity.py",
         "tests/test_install_graft.py",
         "tests/test_install_integration.py",
         "tests/test_install_lifecycle.py",
@@ -526,13 +533,14 @@
       ]
     },
     "integration-promotion": {
-      "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication and legacy deliveries.",
+      "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs.",
       "modules": [
         "tests/test_integration_child_delivery.py",
         "tests/test_integration_legacy_deliveries.py",
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
+        "tests/test_integration_pr_delivery.py",
         "tests/test_integration_promotion.py",
         "tests/test_integration_repair.py",
         "tests/test_integration_repair_rollover.py",
@@ -621,6 +629,7 @@
       "description": "Managed jobs: detached execution, crash receipts, idempotency, workspace pins, bounded output and immutable results.",
       "modules": [
         "tests/test_jobs_attachments.py",
+        "tests/test_jobs_matter.py",
         "tests/test_jobs_output.py",
         "tests/test_jobs_queries.py",
         "tests/test_jobs_recovery.py",
@@ -1097,6 +1106,7 @@
         "tests/test_models.py",
         "tests/test_reopen_with_feedback.py",
         "tests/test_state_machine.py",
+        "tests/test_task_close_completion_recovery.py",
         "tests/test_task_close_summary_enforcement.py",
         "tests/test_task_command_authorization.py",
         "tests/test_task_context.py",
@@ -1306,7 +1316,7 @@
       ]
     }
   },
-  "digest": "sha256:320056d761f8547b4998b58807e341aaf66570fad4c1e4b1478ec99411e2c010",
+  "digest": "sha256:7c3ec0081e3556970c8754cb818e836728b135dd1b55c796c635a44c34b47934",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3363,9 +3373,15 @@
       ],
       "default_arm": true,
       "imports": [
-        "src.cli.app"
+        "src.cli",
+        "src.cli.app",
+        "src.cli.system_config",
+        "src.install",
+        "src.install.git_identity"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Contract tests for the hand-crafted system-config CLI."
     },
     "tests/test_cli_task_comments.py": {
@@ -4604,7 +4620,9 @@
         "src.commands",
         "src.commands.git_commands",
         "src.commands.supervisor_authority",
+        "src.config",
         "src.database",
+        "src.git.identity",
         "src.git.manager",
         "src.integration.manual_delivery",
         "src.models"
@@ -5974,6 +5992,30 @@
       ],
       "summary": "Comprehensive tests for GitManager event emission."
     },
+    "tests/test_git_identity.py": {
+      "areas": [
+        "git-identity"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.commands.principal",
+        "src.config",
+        "src.database",
+        "src.git.identity",
+        "src.git.manager",
+        "src.intelligence_classes",
+        "src.models",
+        "src.orchestrator",
+        "src.orchestrator.task_checkpoint",
+        "src.sessions.harness_parser",
+        "src.sessions.spec"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Deterministic Git commit identity (docs/specs/git-identity.md)."
+    },
     "tests/test_git_manager.py": {
       "areas": [
         "git-manager"
@@ -6482,8 +6524,11 @@
         "src.cli",
         "src.cli.app",
         "src.cli.install",
+        "src.install",
         "src.install.command",
+        "src.install.git_identity",
         "src.install.graft",
+        "src.install.logins",
         "src.install.onboarding",
         "src.install.prerequisites",
         "src.install.results",
@@ -6532,6 +6577,27 @@
       ],
       "markers": [],
       "summary": "The installer engine: ordering, idempotent reruns, resume and secrecy."
+    },
+    "tests/test_install_git_identity.py": {
+      "areas": [
+        "install"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.git.identity",
+        "src.install",
+        "src.install.command",
+        "src.install.git_identity",
+        "src.install.lifecycle",
+        "src.install.onboarding",
+        "src.install.prerequisites",
+        "src.install.results",
+        "src.install.steps"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "The installation's Git commit identity: suggestions, the interview and ``config.git-identity``."
     },
     "tests/test_install_graft.py": {
       "areas": [
@@ -7427,6 +7493,23 @@
       ],
       "summary": "Receipt-driven parent collection and guarded completion."
     },
+    "tests/test_integration_pr_delivery.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.pr_delivery",
+        "src.integration.promotion",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "An open PR closes only once Git proves its work is on the default branch."
+    },
     "tests/test_integration_promotion.py": {
       "areas": [
         "integration-promotion"
@@ -7434,9 +7517,11 @@
       "default_arm": true,
       "imports": [
         "src.commands.principal",
+        "src.config",
         "src.database.tables",
         "src.doctor.integration_checks",
         "src.doctor.models",
+        "src.git.identity",
         "src.git.manager",
         "src.integration.hierarchy",
         "src.integration.models",
@@ -7919,6 +8004,28 @@
       ],
       "summary": "Retained byte cursors, CLI follow/attach and finite command adapters."
     },
+    "tests/test_jobs_matter.py": {
+      "areas": [
+        "managed-jobs"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.config",
+        "src.database.tables",
+        "src.jobs.artifacts",
+        "src.jobs.identity",
+        "src.jobs.matter",
+        "src.jobs.policy",
+        "src.jobs.service",
+        "src.resources.box_lock",
+        "src.resources.semaphore"
+      ],
+      "markers": [
+        "integration",
+        "parametrize"
+      ],
+      "summary": "Finite captures, independent device leases, recovery and native ownership."
+    },
     "tests/test_jobs_output.py": {
       "areas": [
         "managed-jobs"
@@ -8366,6 +8473,7 @@
         "src.config",
         "src.database",
         "src.database.tables",
+        "src.git.identity",
         "src.models",
         "src.orchestrator",
         "src.orchestrator.git_ops",
@@ -9275,7 +9383,9 @@
         "src.models",
         "src.object_loop.contracts"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "AQ-2 object-loop identity, budget and crash recovery contracts."
     },
     "tests/test_onboarding_queries.py": {
@@ -13022,6 +13132,21 @@
       ],
       "summary": "Creation stores hints, never a resolved route (mandatory-routing spec §1, §5.3)."
     },
+    "tests/test_task_close_completion_recovery.py": {
+      "areas": [
+        "task-lifecycle"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.handler",
+        "src.config",
+        "src.database",
+        "src.database.queries.result_queries",
+        "src.models"
+      ],
+      "markers": [],
+      "summary": "A restart between task close's terminal transition and its completion"
+    },
     "tests/test_task_close_summary_enforcement.py": {
       "areas": [
         "task-lifecycle"
@@ -13672,6 +13797,8 @@
         "src.commands.task_comment_commands",
         "src.sessions",
         "src.sessions.provider",
+        "src.sessions.questions",
+        "src.sessions.reconciler",
         "src.sessions.tmux"
       ],
       "markers": [
@@ -14368,6 +14495,7 @@
         "src.config",
         "src.database",
         "src.git.github_contracts",
+        "src.git.identity",
         "src.git.manager",
         "src.models",
         "src.plugins.internal.git",
