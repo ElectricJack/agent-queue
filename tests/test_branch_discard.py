@@ -10,6 +10,7 @@ it out.  See
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from datetime import UTC, datetime
@@ -20,7 +21,7 @@ from sqlalchemy import insert, select, update
 from src.database import Database
 from src.database.tables import integration_branch_owners, repos, task_branch_origins
 from src.git.github_app import GitHubRepositoryBinding
-from src.git.manager import GitError
+from src.git.manager import GitError, GitManager
 from src.integration.branch_discard import MAX_ATTEMPTS, BranchDiscardService
 from src.models import Project, RepoConfig, RepoSourceType
 from tests.db_fixtures import lease_dsn
@@ -507,3 +508,33 @@ async def test_an_absent_default_head_leaves_the_branch_undeleted(db, tmp_path):
     backup_root = tmp_path / "backups" / "branch-deletions"
     existing = list(backup_root.glob("*.tsv")) + list(backup_root.glob("*.bundle")) if backup_root.exists() else []
     assert existing == []
+
+
+async def test_concurrent_store_initializers_never_share_a_git_init_directory(tmp_path):
+    """Discard passes that both find the retained store missing must not
+    ``git init`` one directory: the two inits race on its config lock and one
+    fails."""
+    real = GitManager()
+    initialized: list[str] = []
+    both_arrived = asyncio.Event()
+
+    class GatedGit:
+        async def arun_git_result(self, args, **kwargs):
+            if args[:2] == ["init", "--bare"]:
+                initialized.append(args[-1])
+                if len(initialized) == 2:
+                    both_arrived.set()
+                await asyncio.wait_for(both_arrived.wait(), timeout=5)
+            return await real.arun_git_result(args, **kwargs)
+
+    services = [
+        BranchDiscardService(None, data_dir=tmp_path, git_manager=GatedGit())
+        for _ in range(2)
+    ]
+    store = services[0].retained_store("repo")
+
+    await asyncio.gather(*(service._ensure_store(store) for service in services))
+
+    assert len(set(initialized)) == 2
+    assert (store / "HEAD").is_file()
+    assert list(store.parent.iterdir()) == [store]
