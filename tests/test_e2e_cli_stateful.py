@@ -20,13 +20,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Keep S1-S3 together: the claim and filing cases use the pool S1 creates.
 # Provider outage and recovery prepare independent fixtures in separate groups.
-# Place the shorter scenarios with claims/graphs so development validation and
-# outage detection fit the failover runner's five-minute job budget.
+# Place message/plugin/graph-vault scenarios with graphs, leaving room for
+# development validation and outage detection on the failover runner.
 SCENARIO_GROUPS = {
-    "claims": ("S1", "S2", "S3", "S4", "S6", "S7", "S19"),
+    "claims": ("S1", "S2", "S3", "S6", "S7", "S19"),
     "cli": ("S5", "S8", "S9", "S12", "S17"),
     "graphs": ("S10", "S11", "S13", "S14", "S16b", "S18"),
-    "failover": ("S15", "S16a"),
+    "failover": ("S4", "S15", "S16a"),
 }
 
 
