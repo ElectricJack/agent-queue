@@ -29,11 +29,19 @@ export default function ProjectOverview() {
   const { projectId = "" } = useParams();
   const location = useLocation();
   const { data: project } = useProject(projectId);
-  const { data: tasks } = useTasks(projectId);
+  const tasksQuery = useTasks(projectId);
+  const { data: tasks, isPending: tasksPending, isError: tasksError } = tasksQuery;
   const { data: agents } = useAgents(projectId);
   const { data: workspaces } = useWorkspaces(projectId);
 
-  const taskList: Task[] = tasks ?? [];
+  if (tasksPending) {
+    return <p className="text-sm text-gray-500">Loading…</p>;
+  }
+  if (tasksError) {
+    return <p className="text-sm text-red-400">Task summary unavailable.</p>;
+  }
+
+  const taskList: Task[] = tasks?.tasks ?? [];
   const agentList = agents ?? [];
   const workspaceList = workspaces ?? [];
 
@@ -41,12 +49,21 @@ export default function ProjectOverview() {
   const activeTasks = taskList.filter(
     (t) => !TERMINAL.has((t.status ?? "").toUpperCase()),
   );
-  const completed = statusCounts.COMPLETED ?? 0;
+  // The backend hides completed tasks from the returned array in default (active)
+  // mode and reports the authoritative whole-project numbers in the response:
+  //   total            = active (non-completed) tasks
+  //   hidden_completed = completed tasks (never capped)
+  const hiddenCompleted = tasks?.hidden_completed ?? 0;
+  const completed = hiddenCompleted;
   const failed = statusCounts.FAILED ?? 0;
   const inProgress = statusCounts.IN_PROGRESS ?? 0;
   const ready = statusCounts.READY ?? 0;
-  const total = taskList.length;
-  const completedPct = total ? Math.round((completed / total) * 100) : 0;
+  const total = tasks?.total ?? 0;
+  const projectTotal = total + hiddenCompleted;
+  const completedPct = projectTotal ? Math.round((completed / projectTotal) * 100) : 0;
+
+  // Show the completed count in the per-status breakdown (the array omits it).
+  if (hiddenCompleted > 0) statusCounts.COMPLETED = hiddenCompleted;
 
   const busyAgents = agentList.filter((a) => a.state === "busy").length;
   const lockedWorkspaces = workspaceList.filter((w) => w.locked_by_task_id).length;
@@ -71,7 +88,7 @@ export default function ProjectOverview() {
         <StatCard
           icon={<ClipboardDocumentListIcon className="h-5 w-5 text-blue-400" />}
           label="Tasks"
-          value={String(total)}
+          value={String(projectTotal)}
           hint={`${completed} done · ${completedPct}%`}
         />
         <StatCard
