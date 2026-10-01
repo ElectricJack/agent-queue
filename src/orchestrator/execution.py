@@ -77,6 +77,11 @@ class ExecutionMixin:
             finally:
                 owners.pop(task_id, None)
 
+    def _task_control_held(self, task_id: str) -> bool:
+        """Whether a completion, preparation or pause holds *task_id*'s control lock."""
+        lock = (getattr(self, "_task_control_locks", None) or {}).get(task_id)
+        return lock is not None and lock.locked()
+
     async def _execute_task_safe(self, action: AssignAction) -> None:
         """Top-level wrapper for background task execution (layer 1 of 3).
 
