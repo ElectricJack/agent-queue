@@ -266,6 +266,18 @@ command. Local callers and elevated supervisor tokens are unrestricted.
 surface because the idle-session nudge names `aq message status <id>`, and
 by then the row is delivered, so `message_inbox` no longer lists it.
 
+**Supervisor addresses** (`_supervisor_mailbox`): `message_send` stores a
+`session:supervisor-<suffix>` recipient only as a mailbox a supervisor reads.
+A suffix naming a project is kept even when the message belongs to another
+project (CHAT-1), and `supervisor-global` is kept. A suffix naming no project
+(agents wrote `supervisor-aq` for `agent-queue`) is stored as
+`supervisor-<project_id>` of the message's own, already validated project, because
+a supervisor's `message_inbox` expands only its session name and
+`supervisor-<its project>`. A projectless message to such a suffix is refused with
+an error naming `supervisor-<project-id>` and `supervisor-global`. Rows stored
+before this rule are not rewritten; the delivery engine resolves them
+([design §5](../design/supervisor-agent.md)).
+
 ### 6.2 Relay API (`src/api/messages.py`)
 
 Explicit router (path parameters don't fit the codegen pattern), registered in

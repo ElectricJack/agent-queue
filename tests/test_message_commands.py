@@ -246,6 +246,80 @@ class TestSendRecipientProject:
         assert result["message"]["project_id"] is None, result
 
 
+class TestSendSupervisorAddress:
+    """A ``supervisor-<suffix>`` naming no project is stored as a real mailbox.
+
+    2026-10-01 amber-bridge-26: five rows to ``session:supervisor-aq`` (project
+    ``agent-queue``) were stored verbatim, so the agent-queue supervisor's own
+    ``message_inbox`` — which expands only its name and
+    ``supervisor-<own project>`` — never listed them.
+    """
+
+    @pytest.mark.parametrize("alias", ["supervisor-aq", "supervisor-"])
+    async def test_alias_is_stored_as_the_supervisor_of_the_message_project(
+        self, setup, alias
+    ):
+        handler, db, bus = setup
+        result = await handler._cmd_message_send(_send_args(to_id=alias))
+        assert result["message"]["to_id"] == "supervisor-p1", result
+        assert (await db.get_message(result["message_id"])).to_id == "supervisor-p1"
+        assert bus.of_type("message.sent")[0]["to_id"] == "supervisor-p1"
+
+    async def test_alias_resolves_through_the_active_project(self, setup):
+        handler, _db, _bus = setup
+        handler._active_project_id = "p1"
+        args = _send_args(to_id="supervisor-aq")
+        args.pop("project_id")
+        result = await handler._cmd_message_send(args)
+        assert result["message"]["to_id"] == "supervisor-p1", result
+
+    async def test_supervisor_inbox_lists_a_row_sent_to_an_alias(self, setup):
+        handler, db, _bus = setup
+        await db.create_session(SessionRecord(
+            id="sess-sup", project_id="p1", profile_id="supervisor", harness="codex",
+            provider="tmux", name="n-supervisor--p1", lifecycle="named", work_dir="/tmp",
+            epoch="e", instance_token="token", started_at=1, state="running",
+        ))
+        sent = await handler._cmd_message_send(_send_args(to_id="supervisor-aq"))
+        inbox = await handler._cmd_message_inbox({"to_kind": "session", "to_id": "sess-sup"})
+        assert [m["id"] for m in inbox["messages"]] == [sent["message_id"]]
+
+    @pytest.mark.parametrize(
+        ("to_id", "project_id"),
+        [
+            ("supervisor-p1", "p1"),
+            # CHAT-1: a suffix naming a project wins over the message's project.
+            ("supervisor-p2", "p1"),
+        ],
+    )
+    async def test_suffix_naming_a_project_is_kept(self, setup, to_id, project_id):
+        handler, db, _bus = setup
+        await db.create_project(Project(id="p2", name="other"))
+        result = await handler._cmd_message_send(
+            _send_args(to_id=to_id, project_id=project_id)
+        )
+        assert result["message"]["to_id"] == to_id, result
+        assert result["message"]["project_id"] == project_id
+
+    async def test_global_supervisor_address_is_kept(self, setup):
+        handler, _db, _bus = setup
+        args = _send_args(to_id="supervisor-global")
+        args.pop("project_id")
+        result = await handler._cmd_message_send(args)
+        assert result["message"]["to_id"] == "supervisor-global", result
+        assert result["message"]["project_id"] is None
+
+    async def test_alias_without_a_project_is_refused_and_not_stored(self, setup):
+        handler, db, _bus = setup
+        args = _send_args(to_id="supervisor-aq")
+        args.pop("project_id")
+        result = await handler.execute("message_send", {**args, "_scope": _GLOBAL_SUPERVISOR_SCOPE})
+        assert "session:supervisor-aq names no project" in result["error"], result
+        assert "supervisor-<project-id>" in result["error"]
+        assert "supervisor-global" in result["error"]
+        assert await db.list_messages() == []
+
+
 class TestSupervisorAgentMessage:
     async def test_task_target_resolves_live_session_and_mirrors_comment(self, setup):
         """A supervisor targets the current worker, never a stale session name."""
