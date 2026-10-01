@@ -838,7 +838,8 @@ class GitPlugin(InternalPlugin):
         """The identity a worker's publication of *task_id* is held to.
 
         The project's resolved identity, plus the launch identity of every
-        session that worked the task, the pushing one included
+        session that worked the task, the pushing one included; the exact
+        source heads a daemon-filed repair told it to merge are not judged
         (:meth:`GitManager.acheck_publish_identity`, git identity spec §5).
         """
         from src.git.identity import publish_policy, resolve_git_identity
@@ -847,7 +848,8 @@ class GitPlugin(InternalPlugin):
         launches = await self._db._db.list_task_launch_identities(
             task_id, extra_session_id=principal.session_id
         )
-        return publish_policy(resolved, launches)
+        heads = await self._db._db.list_authorized_source_heads(task_id)
+        return publish_policy(resolved, launches, heads)
 
     async def _warn_if_in_progress(self, project_id: str) -> str | None:
         from src.models import TaskStatus
