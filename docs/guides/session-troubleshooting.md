@@ -136,7 +136,7 @@ Code's prompt suggestion, which renders as uncoloured ghost text under
 `promptSuggestionEnabled: false`; sessions started before that change keep
 their suggestions until they restart.
 
-A third failure followed the first fix: the stall reminder is ~430 characters,
+A third failure followed the first fix: the stall reminder was ~430 characters,
 and Codex and Claude wrap it onto several rows of their own. The row-by-row
 marker check could not see it, so the reminder was typed and never submitted,
 and every later nudge — a supervisor message, a resolved wait — deferred
@@ -191,8 +191,16 @@ on every tick:
   reads the box again. A real draft survives the repaint and still defers.
 
 OpenCode also renders typed text keystroke by keystroke (about two seconds for
-the ~430-character stall reminder), so the check that the typed text landed
-now keeps waiting while the screen is still changing, up to six seconds.
+the ~430-character stall reminder of the time), so the check that the typed
+text landed now keeps waiting while the screen is still changing, up to six
+seconds.
+
+On 2026-10-01 that reminder could not reach Claude workers holding long task
+ids at all: with a 72-character repair id it was 562 characters, 9 rows at 80
+columns, and Claude Code 2.1.286 shows only the last 7 rows of taller input, so
+the exact-text submit check never passed and the ladder climbed towards a
+restart. The reminder now names the id once and fits two 80-column rows
+(`stall_reminder` in `src/sessions/reconciler.py`).
 
 **Diagnose.**
 

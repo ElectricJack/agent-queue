@@ -44,6 +44,7 @@ from src.sessions.reconciler import (
     META_STALL_LAST_ACTION,
     META_STALL_NUDGES,
     SessionReconciler,
+    stall_reminder,
 )
 from tests.db_fixtures import lease_dsn
 from src.config import DatabaseConfig
@@ -1186,7 +1187,7 @@ class TestStallLadder:
         await reconciler.tick(now=NOW)
         assert "task.stalled" in bus.types()
         assert "task.nudged" in bus.types()
-        assert provider.sent_nudges
+        assert [text for _, text in provider.sent_nudges] == [stall_reminder("t1", 16)]
         assert await db.get_task_meta("t1", META_STALL_NUDGES) == "1"
 
     async def test_within_the_lease_nothing_happens(self, db, provider, reconciler, bus):
