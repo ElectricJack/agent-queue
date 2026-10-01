@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:cc982543b4593b611d4693da9f4c5b39bf07e3ae1ed0a6fa1ecd65dcaeb71009",
+  "digest": "sha256:d0a06a4b39146c7c0eebee3d560caccd014db29992b8e4a4a6f866c42479f4ee",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -8308,6 +8308,7 @@
       "imports": [
         "src.api.auth",
         "src.api.scope",
+        "src.commands.task_comment_commands",
         "src.config",
         "src.database",
         "src.database.tables",
@@ -13568,6 +13569,7 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.task_comment_commands",
         "src.sessions",
         "src.sessions.provider",
         "src.sessions.tmux"
