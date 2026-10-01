@@ -630,8 +630,11 @@ def build_l2_context_section(config: Any) -> PrimeSection:
 # ---------------------------------------------------------------------------
 
 
-def build_tool_guidance_section() -> PrimeSection:
+def build_tool_guidance_section(config=None, session=None, observation=None) -> PrimeSection:
     body = _load_template("tool_guidance.md")
+    from src.sessions.context import context_guidance
+
+    body += "\n\n" + context_guidance(config, session, observation)
     return PrimeSection(key="tool_guidance", title=SECTION_TITLES["tool_guidance"], body=body)
 
 

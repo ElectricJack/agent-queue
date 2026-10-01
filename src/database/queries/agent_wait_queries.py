@@ -596,8 +596,18 @@ class AgentWaitQueriesMixin:
         owner_id: str | None = None,
         limit=100,
         offset=0,
+        continuation: bool = False,
     ) -> list[dict]:
+        """List scoped waits, optionally retaining active waits and result pointers.
+
+        wait_resumed_at marks producer resolution, not agent consumption. A
+        continuation must retain resolved result pointers as well as active IDs.
+        """
         stmt = select(waits)
+        if continuation:
+            stmt = stmt.where(
+                (waits.c.state == "active") | waits.c.result_ref.is_not(None)
+            )
         for key, value in (
             ("project_id", project_id),
             ("owner_kind", owner_kind),

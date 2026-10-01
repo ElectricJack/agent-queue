@@ -1495,6 +1495,11 @@ class SessionsConfig:
     #: Maximum historical usage entries an uncheckpointed watcher may see
     #: before treating the batch as restart replay rather than fresh work.
     transcript_startup_replay_limit: int = 100
+    #: Native compaction at future worker launches only; 0 inherits harness defaults.
+    worker_context_compact_tokens: int = 160000
+    worker_context_checkpoint_tokens: int = 120000
+    #: Tool-turn cadence when fresh context measurements are unavailable, not a token estimate.
+    worker_context_unknown_checkpoint_turns: int = 40
     adopt_on_start: bool = True
     #: Live pane stream (dashboard).  Polling happens only while a
     #: subscriber is attached, so an unwatched daemon pays nothing.
@@ -1565,6 +1570,21 @@ class SessionsConfig:
         ):
             if getattr(self, name) <= 0:
                 errors.append(ConfigError("sessions", name, "must be > 0"))
+        compact = self.worker_context_compact_tokens
+        checkpoint = self.worker_context_checkpoint_tokens
+        if compact != 0 and not 100000 <= compact <= 1000000:
+            errors.append(ConfigError(
+                "sessions", "worker_context_compact_tokens", "must be 0 or 100000..1000000"
+            ))
+        if checkpoint < 0 or (compact > 0 and checkpoint > compact):
+            errors.append(ConfigError(
+                "sessions", "worker_context_checkpoint_tokens",
+                "must be >= 0 and <= an enabled compact window",
+            ))
+        if self.worker_context_unknown_checkpoint_turns <= 0:
+            errors.append(ConfigError(
+                "sessions", "worker_context_unknown_checkpoint_turns", "must be > 0"
+            ))
         return errors
 
 
@@ -4732,6 +4752,9 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
                     "state_cache_ttl_seconds": int,
                     "transcript_poll_seconds": int,
                     "transcript_startup_replay_limit": int,
+                    "worker_context_compact_tokens": int,
+                    "worker_context_checkpoint_tokens": int,
+                    "worker_context_unknown_checkpoint_turns": int,
                     "adopt_on_start": bool,
                     "pane_stream_interval_seconds": float,
                     "pane_stream_max_sessions": int,

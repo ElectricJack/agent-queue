@@ -1318,7 +1318,7 @@
       ]
     }
   },
-  "digest": "sha256:9d7d5c0c4c2a53fda16df3cdbcd6bf883c35db6b8140e45e3b05ad09b15aaa70",
+  "digest": "sha256:f0f555b3ab8c59b949b039b2c91ad5b07fbc592d5950dfe3af63010c8a05ac40",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6247,8 +6247,11 @@
         "src.api.scope",
         "src.commands.contracts",
         "src.commands.contracts.handoff",
+        "src.config",
         "src.handoffs",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.sessions.context",
+        "src.sessions.transcripts.base"
       ],
       "markers": [
         "parametrize"
@@ -8178,13 +8181,16 @@
         "src.commands.contracts.job",
         "src.config",
         "src.database.tables",
+        "src.event_bus",
+        "src.handoffs",
         "src.jobs.result",
         "src.jobs.service",
         "src.mcp_registration",
         "src.messages.delivery",
         "src.models",
         "src.prime.sections",
-        "src.profiles.parser"
+        "src.profiles.parser",
+        "src.sessions.context"
       ],
       "markers": [
         "parametrize"
@@ -12565,6 +12571,7 @@
       "imports": [
         "src.cli",
         "src.cli.agent_surface",
+        "src.config",
         "src.intelligence_classes",
         "src.models",
         "src.sessions",
