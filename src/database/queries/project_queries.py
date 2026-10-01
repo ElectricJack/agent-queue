@@ -74,6 +74,8 @@ class ProjectQueryMixin:
                         project.hierarchical_integration_generation
                     ),
                     review_delegate_to=project.review_delegate_to,
+                    git_identity_name=project.git_identity_name,
+                    git_identity_email=project.git_identity_email,
                     created_at=time.time(),
                 )
             )
@@ -366,4 +368,6 @@ class ProjectQueryMixin:
                 row.get("hierarchical_integration_generation", 0)
             ),
             review_delegate_to=row.get("review_delegate_to"),
+            git_identity_name=row.get("git_identity_name"),
+            git_identity_email=row.get("git_identity_email"),
         )

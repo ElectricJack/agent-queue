@@ -644,16 +644,11 @@ class ProjectOnboardingService:
             if await self.git.arev_parse(str(staging), "HEAD") is None:
                 try:
                     await self.git._arun(["add", "--", "README.md"], cwd=str(staging))
+                    # A new project has no override yet: the installation
+                    # identity (or the documented fallback) authors it.
+                    identity = self.git.resolve_commit_identity(scoped=False)
                     await self.git._arun(
-                        [
-                            "-c",
-                            "user.name=Agent Queue",
-                            "-c",
-                            "user.email=agent-queue@localhost",
-                            "commit",
-                            "-m",
-                            "Initial commit",
-                        ],
+                        [*identity.config_args(), "commit", "-m", "Initial commit"],
                         cwd=str(staging),
                     )
                 except GitError as exc:

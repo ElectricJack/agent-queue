@@ -6,13 +6,13 @@ The largest internal plugin — 19 commands covering all git operations.
 
 from __future__ import annotations
 
+import functools
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from src.commands.principal import ExecutionPrincipal, PrincipalKind, current_principal
 from src.plugins.base import InternalPlugin, PluginContext
-
 
 # ---------------------------------------------------------------------------
 # Tool definitions — loaded lazily to avoid a huge module-level constant.
@@ -562,6 +562,29 @@ def _worker_principal() -> ExecutionPrincipal | None:
     return None
 
 
+def _author_notes(notes: list[dict]) -> dict:
+    """The push reply's report of published commits under another identity, if any."""
+    if not notes:
+        return {}
+    if any("committer" in note for note in notes):
+        detail = (
+            "committers could not be held to it for this publication (a root delivery, "
+            "or a session from an earlier release)"
+        )
+    else:
+        detail = (
+            "they keep upstream/third-party authorship or an --author the worker "
+            "supplied; committers were verified"
+        )
+    return {
+        "identity_notes": notes,
+        "identity_warning": (
+            f"{len(notes)} published commit(s) carry an identity other than this "
+            f"project's Git identity: {detail}."
+        ),
+    }
+
+
 def _is_github_repository(repository_url: str) -> bool:
     """Whether a recorded repository is one the GitHub client can address."""
     from src.projects.github import GitHubError, parse_github_repository
@@ -588,6 +611,7 @@ class _WorkerPublication:
     branch: str
     repository_url: str
     default_branch: str
+    task_id: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -628,8 +652,17 @@ class GitPlugin(InternalPlugin):
             ("generate_readme", self.cmd_generate_readme),
             ("git_remote_url", self.cmd_git_remote_url),
         ]
+        # Commands that can write a commit run inside the project's resolved
+        # identity, so a worker's ``aq git commit`` and an operator's merge
+        # attribute exactly as the worker's own ``git commit`` does.
+        committing = {
+            "git_commit", "git_pull", "git_merge", "commit_changes", "merge_branch",
+            "generate_readme",
+        }
         for name, handler in cmds:
-            ctx.register_command(name, handler)
+            ctx.register_command(
+                name, self._identity_scoped(handler) if name in committing else handler
+            )
 
         for tool_def in _build_tool_definitions():
             ctx.register_tool(dict(tool_def), category="git")
@@ -638,6 +671,25 @@ class GitPlugin(InternalPlugin):
         pass
 
     # --- Helpers ---
+
+    def _identity_scoped(self, handler):
+        """Run *handler* with the commit identity its project resolves to."""
+        from src.git.identity import resolve_git_identity
+        from src.git.manager import commit_identity
+
+        @functools.wraps(handler)
+        async def scoped(args: dict) -> dict:
+            principal = _worker_principal()
+            project_id = (
+                principal.project_id if principal is not None
+                else args.get("project_id") or self._ctx.active_project_id
+            )
+            project = await self._db._db.get_project(project_id) if project_id else None
+            config = self._ctx.get_service("config")
+            with commit_identity(resolve_git_identity(config, project).identity):
+                return await handler(args)
+
+        return scoped
 
     async def _resolve(self, args: dict):
         """Resolve repo path with active project fallback."""
@@ -696,6 +748,7 @@ class GitPlugin(InternalPlugin):
             branch=branch,
             repository_url=await self._task_repository_url(task, project, checkout_path),
             default_branch=(project.repo_default_branch if project else None) or "main",
+            task_id=task.id,
         )
 
     async def _task_repository_url(self, task, project, checkout_path: str) -> str:
@@ -729,8 +782,8 @@ class GitPlugin(InternalPlugin):
         project,
         args: dict,
         requested_branch: str | None,
-    ) -> tuple[str, str | None]:
-        """Publish one branch and return ``(branch, pushed OID)``.
+    ) -> tuple[str, str | None, list[dict]]:
+        """Publish one branch and return ``(branch, pushed OID, author notes)``.
 
         An operator or supervisor pushes the named (or current) branch of the
         selected workspace.  A worker session publishes only its held task's
@@ -754,7 +807,7 @@ class GitPlugin(InternalPlugin):
                 event_bus=self._ctx._bus,
                 project_id=args.get("project_id"),
             )
-            return branch, oid
+            return branch, oid, []
 
         publication = await self._worker_publication(
             principal, checkout_path, project, requested_branch
@@ -767,6 +820,7 @@ class GitPlugin(InternalPlugin):
             raise GitError("could not inspect the delivery base")
         if not base_exists:
             base_ref = None
+        policy = await self._publish_policy(principal, project, publication.task_id)
         oid = await git.apush_validated_delivery(
             checkout_path,
             base_ref,
@@ -776,8 +830,24 @@ class GitPlugin(InternalPlugin):
             repository_url=publication.repository_url,
             event_bus=self._ctx._bus,
             project_id=args.get("project_id"),
+            identity_policy=policy,
         )
-        return publication.branch, oid
+        return publication.branch, oid, list(policy.notes)
+
+    async def _publish_policy(self, principal, project, task_id: str):
+        """The identity a worker's publication of *task_id* is held to.
+
+        The project's resolved identity, plus the launch identity of every
+        session that worked the task, the pushing one included
+        (:meth:`GitManager.acheck_publish_identity`, git identity spec §5).
+        """
+        from src.git.identity import publish_policy, resolve_git_identity
+
+        resolved = resolve_git_identity(self._ctx.get_service("config"), project)
+        launches = await self._db._db.list_task_launch_identities(
+            task_id, extra_session_id=principal.session_id
+        )
+        return publish_policy(resolved, launches)
 
     async def _warn_if_in_progress(self, project_id: str) -> str | None:
         from src.models import TaskStatus
@@ -998,10 +1068,15 @@ class GitPlugin(InternalPlugin):
         if err:
             return err
         try:
-            branch, oid = await self._push(checkout_path, project, args, args.get("branch"))
+            branch, oid, notes = await self._push(
+                checkout_path, project, args, args.get("branch")
+            )
         except GitError as e:
             return {"error": str(e)}
-        return {"project_id": args.get("project_id", ""), "pushed": branch, "oid": oid}
+        return {
+            "project_id": args.get("project_id", ""), "pushed": branch, "oid": oid,
+            **_author_notes(notes),
+        }
 
     async def cmd_git_create_branch(self, args: dict) -> dict:
         from src.git.manager import GitError
@@ -1299,7 +1374,7 @@ class GitPlugin(InternalPlugin):
         if err:
             return err
         try:
-            branch_name, oid = await self._push(
+            branch_name, oid, notes = await self._push(
                 checkout_path, project, args, args.get("branch_name")
             )
         except GitError as e:
@@ -1309,6 +1384,7 @@ class GitPlugin(InternalPlugin):
             "branch": branch_name,
             "status": "pushed",
             "oid": oid,
+            **_author_notes(notes),
         }
 
     async def cmd_merge_branch(self, args: dict) -> dict:
@@ -1351,8 +1427,8 @@ class GitPlugin(InternalPlugin):
         return result
 
     async def cmd_create_github_repo(self, args: dict) -> dict:
-        from src.git.manager import GitError
         from src.git.github_contracts import GitHubAccessError
+        from src.git.manager import GitError
 
         name = args.get("name")
         if not name:

@@ -29,7 +29,8 @@ async def capture_checkpoint(db, git, task_id: str, workspace: str) -> None:
         return  # Non-Git workspaces have no destructive Git preparation.
     head = await git._arun(["rev-parse", "--verify", "HEAD"], cwd=workspace)
     branch = await git._arun(["symbolic-ref", "--quiet", "--short", "HEAD"], cwd=workspace)
-    identity = ["-c", "user.name=Agent Queue", "-c", "user.email=agent-queue@localhost"]
+    # The caller scopes the task's project identity (``commit_identity``).
+    identity = git.resolve_commit_identity().config_args()
     with tempfile.TemporaryDirectory(prefix="aq-pause-index-") as temp:
         isolated = GitManager()
         index = Path(temp) / "index"

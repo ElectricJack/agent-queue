@@ -204,6 +204,9 @@ class SessionSpec:
     #: session" is a launch fact, not a re-derivation from a harness file
     #: that may have been edited since.
     hooks_provisioned: bool = False
+    #: Digest of the Git identity this launch's env carries
+    #: (``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*``), recorded on the session row.
+    git_identity_digest: str | None = None
 
 
 @dataclass(frozen=True)

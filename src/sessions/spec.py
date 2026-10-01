@@ -31,6 +31,7 @@ import logging
 import re
 from pathlib import Path
 
+from src.git.identity import GitIdentity, resolve_git_identity
 from src.profiles.capabilities import HARNESS_TOOL_NAMES
 from src.resources.limits import session_env_caps, wrap_session_argv
 from src.sessions.env import build_session_env
@@ -319,6 +320,7 @@ class SessionSpecBuilder:
         prompt: str | None = None,
         workspace_source_type=None,
         extra_env: dict[str, str] | None = None,
+        git_identity: GitIdentity | None = None,
     ) -> SessionSpec:
         """Spec for a one-task session (``lifecycle="task"``).
 
@@ -332,6 +334,10 @@ class SessionSpecBuilder:
         ``AQ_CLAIM_EPOCH`` for a push launch that joins the claim fence
         (swarm-work-model §10).  :data:`WORKER_TOOL_ENV` fills in underneath
         it.
+
+        *git_identity* is the project's resolved commit identity
+        (:func:`src.git.identity.resolve_git_identity`); it is injected as
+        ``GIT_AUTHOR_*`` / ``GIT_COMMITTER_*`` and its digest recorded.
         """
         name = task_session_name(task.id)
         bootstrap = prompt if prompt is not None else BOOTSTRAP_PROMPT.format(
@@ -358,6 +364,7 @@ class SessionSpecBuilder:
             ),
             task_intelligence_class=getattr(task, "intelligence_class", None),
             extra_env=extra_env,
+            git_identity=git_identity,
         )
 
     def build_named_spec(
@@ -446,6 +453,7 @@ class SessionSpecBuilder:
         resume_key: str | None = None,
         prompt: str | None = None,
         workspace_source_type=None,
+        git_identity: GitIdentity | None = None,
     ) -> SessionSpec:
         """Spec for a pool worker session (``lifecycle="pool"``, §11).
 
@@ -455,6 +463,11 @@ class SessionSpecBuilder:
         identify the launch as a pool worker rather than a one-task or
         persistent session, per §11.2/§11.3.  Like a task launch it also
         carries :data:`WORKER_TOOL_ENV`.
+
+        Its commits use *git_identity*, defaulting to what *project* resolves
+        to now (:func:`src.git.identity.resolve_git_identity`) -- never a
+        per-profile address.  The pool records the digest so a claim can
+        retire the session once the project's identity changes.
         """
         profile_id = getattr(profile, "id", "") or ""
         project_id = getattr(project, "id", "") or ""
@@ -466,11 +479,9 @@ class SessionSpecBuilder:
             "AQ_SESSION_KIND": "pool",
             "AQ_AGENT_ID": agent_id,
             "AQ_PROFILE_ID": profile_id,
-            "GIT_AUTHOR_NAME": f"aq {profile_id}",
-            "GIT_COMMITTER_NAME": f"aq {profile_id}",
-            "GIT_AUTHOR_EMAIL": f"{profile_id}@agent-queue.local",
-            "GIT_COMMITTER_EMAIL": f"{profile_id}@agent-queue.local",
         }
+        if git_identity is None:
+            git_identity = resolve_git_identity(self.config, project).identity
         return self._build(
             harness=harness,
             profile=profile,
@@ -491,6 +502,7 @@ class SessionSpecBuilder:
                 profile, workspace_source_type, harness=harness
             ),
             extra_env=extra_env,
+            git_identity=git_identity,
         )
 
     # -- internals ---------------------------------------------------------
@@ -516,6 +528,7 @@ class SessionSpecBuilder:
         allow_skip_permissions: bool = False,
         task_intelligence_class: str | None = None,
         extra_env: dict[str, str] | None = None,
+        git_identity: GitIdentity | None = None,
     ) -> SessionSpec:
         files: list[tuple[str, str]] = []
 
@@ -552,6 +565,10 @@ class SessionSpecBuilder:
         )
 
         launch_env = dict(extra_env or {})
+        if git_identity is not None:
+            # Policy, not a default: applied over *extra_env* so no caller-
+            # supplied GIT_* can quietly replace the resolved identity.
+            launch_env.update(git_identity.env())
         if lifecycle in _WORKER_LIFECYCLES:
             harness_env = getattr(harness, "env_map", None) or {}
             for key, value in WORKER_TOOL_ENV.items():
@@ -631,6 +648,7 @@ class SessionSpecBuilder:
             files=tuple(files),
             instance_token=instance_token,
             hooks_provisioned=hooks_provisioned,
+            git_identity_digest=git_identity.digest if git_identity is not None else None,
         )
 
     def _compose_argv(

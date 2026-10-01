@@ -1679,6 +1679,32 @@ async def test_resolution_receipt_drives_parent_readiness_verification_and_compl
     assert original["parent_episode_id"] == "resolution-episode"
 
 
+async def test_promotion_commits_as_the_project_identity_and_keeps_authors(
+    db, promotion_case
+):
+    """Git identity spec §4: the merge is committed as the project's resolved
+    identity, pinned in the intent; the source's authors are preserved."""
+    from src.config import AppConfig, GitIdentityConfig
+    from src.git.identity import resolve_git_identity
+    from src.integration.promotion import PromotionService
+
+    case = promotion_case
+    config = AppConfig()
+    config.git_identity = GitIdentityConfig("Install Default", "default@aq.test")
+    await db.update_project(
+        "project", git_identity_name="Project Bot", git_identity_email="bot@project.test"
+    )
+    git = GitManager()
+    git.set_identity_resolver(lambda project: resolve_git_identity(config, project).identity)
+    service = PromotionService(db, data_dir=case["data_dir"], git_manager=git)
+
+    prepared = await service.prepare(case["request"])
+    retained = next((case["data_dir"] / "integration-repositories").glob("*.git"))
+    assert _git(["show", "-s", "--format=%ae|%cn <%ce>", prepared.prepared_sha], retained) == (
+        "alice@example.test|Project Bot <bot@project.test>"
+    )
+
+
 async def test_clean_promotion_preserves_independent_parent_changes(db, promotion_case):
     from src.integration.promotion import PromotionService
 

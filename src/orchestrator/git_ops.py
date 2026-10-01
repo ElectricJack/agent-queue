@@ -503,6 +503,7 @@ class GitOpsMixin:
                 force_with_lease=True,
                 event_bus=self.bus,
                 project_id=task.project_id,
+                identity_policy=await self._publish_policy(task),
             )
         except Exception as e:
             await self._emit_notify(
@@ -976,11 +977,25 @@ class GitOpsMixin:
     async def _run_completion_pipeline(self, ctx: PipelineContext) -> tuple[str | None, bool]:
         """Run the post-completion pipeline. Returns (pr_url, completed_ok).
 
+        Every commit the pipeline makes (auto-remediation, merges, rebases)
+        carries the task's project identity (git-identity spec).
+        """
+        from src.git.identity import resolve_git_identity
+        from src.git.manager import commit_identity
+
+        project = await self.db.get_project(ctx.task.project_id)
+        with commit_identity(resolve_git_identity(self.config, project).identity):
+            return await self._run_completion_phases(ctx, project)
+
+    async def _run_completion_phases(
+        self, ctx: PipelineContext, project
+    ) -> tuple[str | None, bool]:
+        """The pipeline body.
+
         Phase execution strategy:
         - **verify**: Critical — if it crashes or returns STOP, the task
           cannot be marked completed.
         """
-        project = await self.db.get_project(ctx.task.project_id)
         if getattr(project, "hierarchical_integration_mode", "disabled") == "development":
             # Published work is complete; aggregate/root delivery is asynchronous.
             if await self._vault_only_delivery(ctx):
@@ -1426,6 +1441,7 @@ class GitOpsMixin:
                             **({"repository_url": repository_url} if repository_url else {}),
                             event_bus=self.bus,
                             project_id=task.project_id,
+                            identity_policy=await self._publish_policy(task),
                         )
                         logger.info(
                             "Task %s: auto-pushed delivery on branch '%s'",
@@ -2298,6 +2314,7 @@ class GitOpsMixin:
                         force_with_lease=False,
                         event_bus=self.bus,
                         project_id=task.project_id,
+                        identity_policy=await self._publish_policy(task),
                     )
                 except Exception as e:
                     logger.warning("Task %s: push %s failed: %s", task.id, branch, e)
@@ -2349,6 +2366,7 @@ class GitOpsMixin:
                         default_branch,
                         event_bus=self.bus,
                         project_id=task.project_id,
+                        identity_policy=await self._publish_policy(task),
                     )
                 except Exception as e:
                     logger.warning(
@@ -2451,6 +2469,21 @@ class GitOpsMixin:
                     task.project_id,
                     e,
                 )
+
+    async def _publish_policy(self, task: Task):
+        """The Git identity a publication of *task*'s work is held to.
+
+        The same rule the worker's ``aq git push`` applies (git identity spec
+        §5): new commits must be committed as the project's resolved identity
+        or a launch identity of a session that worked the task, so a worker
+        that skipped ``aq git push`` cannot have the close publish commits it
+        attributed itself.
+        """
+        from src.git.identity import publish_policy, resolve_git_identity
+
+        project = await self.db.get_project(task.project_id)
+        launches = await self.db.list_task_launch_identities(task.id)
+        return publish_policy(resolve_git_identity(self.config, project), launches)
 
     async def _emit_bus(self, event_type: str, payload: dict) -> None:
         """Best-effort event emission — never fail the pipeline on a bus hiccup."""
