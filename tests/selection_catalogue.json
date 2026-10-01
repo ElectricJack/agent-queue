@@ -1317,7 +1317,7 @@
       ]
     }
   },
-  "digest": "sha256:96290db2c813699eb123fb9077955e7b1214f9c24ccf3ea70b79d22d9a0f76fe",
+  "digest": "sha256:1c94cf3bbd262cbf1b1f34f13f9a701925c69b0cf51ad0a9acdffa12c9b4e389",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7414,6 +7414,7 @@
       "imports": [
         "src.commands.handler",
         "src.config",
+        "src.database.queries.claim_queries",
         "src.database.tables",
         "src.git.manager",
         "src.integration.delegate_release",
@@ -10282,6 +10283,7 @@
         "src.commands.claim_commands",
         "src.config",
         "src.database",
+        "src.database.queries.claim_queries",
         "src.database.tables",
         "src.doctor.models",
         "src.doctor.pool_checks",
