@@ -144,6 +144,11 @@ class RepairService:
             )
         return [row["task_id"] for row in released]
 
+    async def reconcile_accepted_delegates(self, now: float, *, limit: int = 100) -> list[str]:
+        from src.integration.accepted_repair import reconcile_stopped_accepted_delegates
+
+        return await reconcile_stopped_accepted_delegates(self.db, now, limit=limit)
+
     async def reserve_batch_operation_on(
         self, conn, batch_id: str, *, now: float | None = None
     ) -> dict[str, Any]:
@@ -1076,6 +1081,31 @@ class RepairService:
         """Create and safely hand off to the exact current repair writer."""
         if stage < 0:
             return self._dispatch_value("stale", operation_id, stage)
+        async with self.db.immediate() as conn:
+            project_id = (await conn.execute(
+                select(integration_batches.c.project_id)
+                .join(integration_repair_operations,
+                      integration_repair_operations.c.batch_id == integration_batches.c.id)
+                .where(integration_repair_operations.c.id == operation_id)
+            )).scalar_one_or_none()
+            if project_id is not None:
+                from src.integration.accepted_repair import accepted_candidate_on
+
+                await self.db.lock_hierarchy_project(conn, project_id)
+                operation = (await conn.execute(select(integration_repair_operations).where(
+                    integration_repair_operations.c.id == operation_id,
+                ).with_for_update())).mappings().one()
+                current = (await conn.execute(select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == operation_id,
+                    integration_repair_stages.c.ordinal == operation["active_stage"],
+                ).with_for_update())).mappings().one_or_none()
+                if current is not None and await accepted_candidate_on(conn, operation, current):
+                    # Continuous repair policies must not interpret the original
+                    # delegate's terminal bookkeeping as demand for another writer.
+                    return self._dispatch_value(
+                        "already_dispatched", operation_id, int(current["ordinal"]),
+                        repair_task_id=current["repair_task_id"], writer_kind="repair_delegate",
+                    )
         stage = await self._successor_for_closed_writer(operation_id, stage)
 
         # The durable relationship and paused task are committed before the
@@ -1599,6 +1629,16 @@ class RepairService:
         if stage < 0:
             return self._timeout_value("stale", "ignore", operation_id, stage)
         async with self.db.immediate() as conn:
+            # Candidate/CI writers lock hierarchy before operation and stage.
+            # The acceptance proof below reads those same candidate rows.
+            project_id = (await conn.execute(
+                select(integration_batches.c.project_id)
+                .join(integration_repair_operations,
+                      integration_repair_operations.c.batch_id == integration_batches.c.id)
+                .where(integration_repair_operations.c.id == operation_id)
+            )).scalar_one_or_none()
+            if project_id is not None:
+                await self.db.lock_hierarchy_project(conn, project_id)
             operation = (
                 await conn.execute(
                     select(integration_repair_operations)
@@ -1671,6 +1711,11 @@ class RepairService:
                 return self._timeout_value(
                     "not_due", "awaiting_promotion", operation_id, stage
                 )
+            if operation["target_kind"] == "batch":
+                from src.integration.accepted_repair import accepted_candidate_on
+
+                if await accepted_candidate_on(conn, operation, row) is not None:
+                    return self._timeout_value("not_due", "wait", operation_id, stage)
             if stage == 0 or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue":
                 await self._activate_debug_on(
                     conn,

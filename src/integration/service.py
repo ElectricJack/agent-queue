@@ -107,6 +107,9 @@ class IntegrationService:
     async def _reconcile(self) -> None:
         """One bounded page per remote source, preserving CI/deadline ordering."""
         try:
+            accepted = getattr(self._repair, "reconcile_accepted_delegates", None)
+            if callable(accepted):
+                await self._source("accepted repair delegates", accepted, self._clock())
             retire = getattr(self._repair, "retire_terminal_delegates", None)
             if callable(retire):
                 await self._source("terminal repair delegates", retire, self._clock())

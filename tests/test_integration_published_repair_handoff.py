@@ -80,9 +80,11 @@ async def repair(command_handler_factory, tmp_path, request):
     policy = _policy()
     policy["root"]["repair"]["primary_seconds"] = 600
     policy["root"]["repair"]["debug_seconds"] = 600
-    aggregate = getattr(request, "param", "member") == "batch_debug"
+    aggregate = getattr(request, "param", "member") in {"batch_debug", "batch_continuous"}
     if aggregate:
         policy["root"]["repair"]["conflict_scope"] = "batch"
+    if getattr(request, "param", "member") == "batch_continuous":
+        policy["root"]["repair"]["on_exhausted"] = "continue"
     await db.update_project(
         "p",
         hierarchical_integration_mode="train",
@@ -102,7 +104,9 @@ async def repair(command_handler_factory, tmp_path, request):
                 created_at=1.0,
             )
         )
-    await _seed_batch(db, members=members, base_sha=base_sha, policy=policy)
+    await _seed_batch(
+        db, members=members, base_sha=base_sha, policy=policy, full_review_snapshot=True
+    )
     async with db.immediate() as conn:
         await conn.execute(update(project_integration_leases).values(expires_at=time.time() + 3600))
     app = LocalForge(origin)

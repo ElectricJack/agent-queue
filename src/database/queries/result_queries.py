@@ -7,6 +7,7 @@ import time
 import uuid
 
 from sqlalchemy import insert, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.database.tables import task_completion_records, task_results
 from src.models import TaskCompletion
@@ -76,29 +77,32 @@ class ResultQueryMixin:
             "created_at": row["created_at"],
         }
 
-    async def save_task_completion(self, completion: TaskCompletion) -> None:
-        """Append one durable task-close record."""
+    async def save_task_completion(
+        self, completion: TaskCompletion, *, idempotent: bool = False
+    ) -> None:
+        """Append a close record; a fenced replay may reuse its durable identity."""
         async with self._engine.begin() as conn:
-            await conn.execute(
-                insert(task_completion_records).values(
-                    id=completion.id,
-                    task_id=completion.task_id,
-                    outcome=completion.outcome,
-                    work_outcome=completion.work_outcome,
-                    failure_class=completion.failure_class,
-                    changes=completion.changes,
-                    verification=completion.verification,
-                    tests=json.dumps(completion.tests),
-                    commands=json.dumps(completion.commands),
-                    branch=completion.branch,
-                    commits=json.dumps(completion.commits),
-                    pr_url=completion.pr_url,
-                    summary=completion.summary,
-                    notes=completion.notes,
-                    deliverables=json.dumps(completion.deliverables),
-                    completed_at=completion.completed_at,
-                )
+            statement = pg_insert(task_completion_records).values(
+                id=completion.id,
+                task_id=completion.task_id,
+                outcome=completion.outcome,
+                work_outcome=completion.work_outcome,
+                failure_class=completion.failure_class,
+                changes=completion.changes,
+                verification=completion.verification,
+                tests=json.dumps(completion.tests),
+                commands=json.dumps(completion.commands),
+                branch=completion.branch,
+                commits=json.dumps(completion.commits),
+                pr_url=completion.pr_url,
+                summary=completion.summary,
+                notes=completion.notes,
+                deliverables=json.dumps(completion.deliverables),
+                completed_at=completion.completed_at,
             )
+            if idempotent:
+                statement = statement.on_conflict_do_nothing(index_elements=["id"])
+            await conn.execute(statement)
             flipped = await self.recompute_blocked({completion.task_id}, conn=conn)
         await self.log_blocked_flips(flipped)
 
