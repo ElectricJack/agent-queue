@@ -1318,7 +1318,7 @@
       ]
     }
   },
-  "digest": "sha256:974d6c9bde721c0174f9a9d4c5f021b24be0965e615e6b907a57f2ddac884358",
+  "digest": "sha256:9d7d5c0c4c2a53fda16df3cdbcd6bf883c35db6b8140e45e3b05ad09b15aaa70",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -4169,9 +4169,11 @@
         "src.config",
         "src.config_editor",
         "src.database",
+        "src.database.tables",
         "src.models",
         "src.profiles.capabilities",
         "src.routing.sources",
+        "src.sessions.transcripts.base",
         "src.tools"
       ],
       "markers": [
@@ -13970,6 +13972,7 @@
       "default_arm": true,
       "imports": [
         "src.database",
+        "src.database.tables",
         "src.models"
       ],
       "markers": [],
@@ -14027,10 +14030,12 @@
         "src.sessions.transcripts",
         "src.sessions.transcripts.base",
         "src.sessions.transcripts.claude",
-        "src.sessions.transcripts.codex"
+        "src.sessions.transcripts.codex",
+        "src.sessions.transcripts.reconciliation"
       ],
       "markers": [
-        "asyncio"
+        "asyncio",
+        "parametrize"
       ],
       "summary": "Transcript reader tests (S3, Task B1)."
     },
