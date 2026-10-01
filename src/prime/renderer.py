@@ -133,7 +133,9 @@ class PrimeRenderer:
                     self.db, task, allow_updates=allow_subtask_updates
                 ),
             ),
-            await _sections.build_task_context_section(self.db, self.config, task),
+            await _sections.build_task_context_section(
+                self.db, self.config, task, session_id=session_id
+            ),
             await _sections.build_workspaces_section(self.db, task, effective_work_dir),
             await _sections.build_messages_section(
                 self.db,
