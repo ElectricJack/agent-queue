@@ -7,8 +7,9 @@ from sqlalchemy import and_, func, or_, select
 from src.database.tables import (
     integration_batches,
     integration_branch_owners,
-    integration_parent_episodes,
+    integration_candidate_resolutions,
     integration_operation_artifact_pins,
+    integration_parent_episodes,
     integration_repair_operations,
     integration_repair_stages,
     repos,
@@ -35,6 +36,17 @@ def session_attached_clause():
     return or_(sessions.c.state != "stopped", sessions.c.desired_state != "stopped")
 
 
+#: Operation states in which an operation still runs and owns its delegates.
+_LIVE_OPERATION_STATES = ("active", "escalated", "human_required")
+
+#: Stage states no transition leaves while the operation is ``active`` or
+#: ``escalated``: every write that sets a stage ``active`` is guarded on
+#: ``active``/``awaiting_completion``.  The one way back is a human
+#: ``integration resume`` of a ``human_required`` operation's current stage,
+#: which is why that state never proves a retirement.
+_RETIRED_STAGE_STATES = ("passed", "failed", "expired", "cancelled")
+
+
 class IntegrationStateQueriesMixin:
     """Integration-state reads; state mutations stay caller-transaction owned."""
 
@@ -55,6 +67,131 @@ class IntegrationStateQueriesMixin:
                 return await self.get_terminal_integration_delegate_operation(task_id, conn=owned)
         row = (await conn.execute(statement)).mappings().one_or_none()
         return dict(row) if row else None
+
+    async def get_retired_integration_writer(self, task_id: str, *, conn=None) -> dict | None:
+        """Prove that every integration writer seat *task_id* held is gone for good.
+
+        A seat is a repair stage naming the task as its writer, or an operation
+        naming it as verifier.  A seat is retired when its operation ended
+        (``completed``/``cancelled``), or -- for a stage -- when the stage is
+        terminal and its ``active``/``escalated`` operation has moved its
+        ``active_stage`` past it.  A close of such a delegate can never be
+        accepted again, so a worker that acknowledged its drain over the claim
+        has nothing left to do (bold-impact-53).
+
+        Anything a running operation could still hand back answers ``None``: a
+        pending, active or awaiting-completion stage; any stage of a
+        ``human_required`` operation, whose resume may revive it with this
+        same writer; a terminal stage that is still the operation's current
+        one; the verifier, parent or candidate-resolution seat of a running
+        operation; and a task that never held a seat.  So does an ``accepted``
+        candidate repair, whatever its operation's state: its pass close --
+        or ``reconcile_stopped_accepted_delegates`` for a stopped writer that
+        kept its claim -- still completes it truthfully, and treating it as
+        retired would trade that completion for a ``superseded`` failure.  The
+        proof is read from durable state only -- never from the task row or
+        its status.
+        """
+        if conn is None:
+            async with self._engine.connect() as owned:
+                return await self.get_retired_integration_writer(task_id, conn=owned)
+        operation = integration_repair_operations
+        stage = integration_repair_stages
+        resolution = integration_candidate_resolutions
+        accepted = (
+            await conn.execute(
+                select(resolution.c.id).where(
+                    resolution.c.repair_task_id == task_id,
+                    resolution.c.state == "accepted",
+                ).limit(1)
+            )
+        ).first()
+        if accepted is not None:
+            return None
+        live_seat = (
+            await conn.execute(
+                select(operation.c.id).where(
+                    operation.c.state.in_(_LIVE_OPERATION_STATES),
+                    or_(
+                        operation.c.parent_task_id == task_id,
+                        operation.c.verifier_task_id == task_id,
+                        select(resolution.c.id).where(
+                            resolution.c.operation_id == operation.c.id,
+                            resolution.c.repair_task_id == task_id,
+                        ).correlate(operation).exists(),
+                    ),
+                ).limit(1)
+            )
+        ).first()
+        if live_seat is not None:
+            return None
+        seats: list[dict] = [
+            {**dict(row), "role": "repair_stage"}
+            for row in (
+                await conn.execute(
+                    select(
+                        operation.c.id.label("operation_id"),
+                        operation.c.state.label("operation_state"),
+                        operation.c.active_stage,
+                        operation.c.updated_at,
+                        stage.c.ordinal.label("stage"),
+                        stage.c.state.label("stage_state"),
+                    )
+                    .select_from(stage.join(operation, operation.c.id == stage.c.operation_id))
+                    .where(
+                        stage.c.repair_task_id == task_id,
+                        stage.c.writer_kind.in_(("repair_delegate", "existing_verifier")),
+                    )
+                )
+            ).mappings()
+        ]
+        seats.extend(
+            {**dict(row), "role": "verifier", "stage": None, "stage_state": None}
+            for row in (
+                await conn.execute(
+                    select(
+                        operation.c.id.label("operation_id"),
+                        operation.c.state.label("operation_state"),
+                        operation.c.active_stage,
+                        operation.c.updated_at,
+                    ).where(operation.c.verifier_task_id == task_id)
+                )
+            ).mappings()
+        )
+        retired = []
+        for seat in seats:
+            ended = seat["operation_state"] in ("completed", "cancelled")
+            superseded_stage = (
+                seat["role"] == "repair_stage"
+                and seat["operation_state"] in ("active", "escalated")
+                and seat["stage_state"] in _RETIRED_STAGE_STATES
+                and int(seat["active_stage"]) != int(seat["stage"])
+            )
+            if not ended and not superseded_stage:
+                return None
+            retired.append(seat)
+        if not retired:
+            return None
+        seat = max(retired, key=lambda item: (float(item["updated_at"]), item["operation_id"]))
+        if seat["operation_state"] in ("completed", "cancelled"):
+            reason = f"integration operation {seat['operation_id']} is {seat['operation_state']}"
+        else:
+            reason = (
+                f"repair stage {seat['stage']} of integration operation "
+                f"{seat['operation_id']} is {seat['stage_state']}; the operation moved on "
+                f"to stage {seat['active_stage']}"
+            )
+        cancelled = "cancelled" in (seat["operation_state"], seat["stage_state"])
+        return {
+            "operation_id": seat["operation_id"],
+            "operation_state": seat["operation_state"],
+            "role": seat["role"],
+            "stage": seat["stage"],
+            "stage_state": seat["stage_state"],
+            "active_stage": int(seat["active_stage"]),
+            "disposition": "cancelled" if cancelled else "superseded",
+            "reason": reason,
+        }
 
     async def get_integration_delegate_cleanup(self, task_id: str, *, conn=None) -> list[dict]:
         """Name what a delegate still holds, without releasing any of it.

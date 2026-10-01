@@ -1306,7 +1306,7 @@
       ]
     }
   },
-  "digest": "sha256:da33a1c4592e565f574cda1b93ddcc71dd2d52ca43f859baa93ed02929bb14b7",
+  "digest": "sha256:f490e28bbf6777e9abf2e6b6dd519757067f9397967f504d9b01a7165124a4bb",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7339,10 +7339,20 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.handler",
+        "src.config",
         "src.database.tables",
         "src.git.manager",
+        "src.integration.delegate_release",
+        "src.integration.models",
         "src.integration.owner_recovery",
-        "src.models"
+        "src.integration.ownership",
+        "src.models",
+        "src.orchestrator",
+        "src.sessions",
+        "src.sessions.fake",
+        "src.sessions.provider",
+        "src.sessions.reconciler"
       ],
       "markers": [
         "parametrize"
@@ -10142,11 +10152,13 @@
         "src.database.tables",
         "src.doctor.models",
         "src.doctor.pool_checks",
+        "src.integration.delegate_release",
         "src.models",
         "src.orchestrator",
         "src.sessions",
         "src.sessions.exit_classifier",
         "src.sessions.fake",
+        "src.sessions.provider",
         "src.sessions.reconciler"
       ],
       "markers": [

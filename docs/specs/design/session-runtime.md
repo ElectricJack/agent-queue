@@ -117,6 +117,17 @@ worktree, prepared before launch per [worktree-execution](worktree-execution.md)
 2. Agent runs `aq session drain-ack`. The reconciler sees the ack, kills the session
    (instance-token-fenced), and marks the row `stopped`.
 
+A pool worker's ack also writes `desired_state=stopped`, and its teardown waits until the held
+task is closed. One task can never be closed: a delegate of an integration operation that no
+longer needs it (the operation ended, or the delegate's stage expired and the operation moved on).
+Its close is refused with a retirement record and `next_step: aq session drain-ack`. When the
+agent's own ack is recorded and durable integration state proves that retirement, the reconciler
+stops the worker through the ordinary pool teardown instead of waiting. The proof follows
+`get_retired_integration_writer`, and any seat a running operation, including a `human_required`
+one, could still hand back is not retired. The task stays unclosed and an attached integration
+owner keeps the stopped session's binding for owner recovery (design: hierarchical integration
+trains, pull-model writer handoff).
+
 **Process exit with the task still IN_PROGRESS is a failure signal**, routed through the
 exit classifier:
 

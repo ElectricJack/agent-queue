@@ -740,3 +740,200 @@ async def test_the_audit_table_migration_downgrades_and_upgrades_idempotently(en
             assert await _audit_shape(conn) == (True, True, True)
         finally:
             await trans.rollback()
+
+
+# ---------------------------------------------------------------------------
+# A retired repair delegate: close refusal -> drain-ack -> stop -> preserve
+# (bold-impact-53)
+# ---------------------------------------------------------------------------
+
+
+async def _retired_delegate_worker(env, tmp_path, *, operation_state: str, active_stage: int):
+    """A pool worker holding a delegate whose operation no longer needs it.
+
+    Its checkout carries the pushed repair plus progress it never committed --
+    the shape the supervisor had to kill by hand twice on 2026-09-30.
+    """
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig, DatabaseConfig, DiscordConfig
+    from src.database.tables import (
+        integration_parent_episodes,
+        integration_repair_operations,
+        integration_repair_stages,
+    )
+    from src.orchestrator import Orchestrator
+    from src.sessions import SessionProviderRegistry
+    from src.sessions.fake import FakeProvider
+    from src.sessions.provider import SessionSpec
+    from tests.db_fixtures import lease_dsn
+
+    head = env.branch("aq/parent")
+    for task_id in ("parent", "delegate"):
+        await env.db.create_task(Task(
+            id=task_id, project_id="p", title=task_id, description="",
+            status=TaskStatus.IN_PROGRESS, repo_id="r", branch_name="aq/parent",
+        ))
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(agents).values(
+            id="a1", name="worker", profile_id="worker", state="BUSY",
+            current_task_id="delegate", created_at=1.0,
+        ))
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "delegate").values(assigned_agent_id="a1",
+                                                                  claim_epoch=1)
+        )
+        await conn.execute(insert(integration_parent_episodes).values(
+            id="episode", parent_task_id="parent", repository_id="r", generation=1,
+            pre_collection_checkpoint_sha=head, created_at=1.0,
+        ))
+        await conn.execute(insert(integration_repair_operations).values(
+            id="operation", target_kind="parent", parent_task_id="parent",
+            episode_id="episode", active_stage=active_stage, state=operation_state,
+            policy_snapshot={}, artifact_snapshot={}, required_check_version="checks-v1",
+            created_at=1.0, updated_at=1.0,
+        ))
+        await conn.execute(insert(integration_repair_stages).values(
+            operation_id="operation", ordinal=0, policy={}, starting_sha=head,
+            repair_task_id="delegate", writer_kind="repair_delegate", attempts=1,
+            state="passed" if operation_state == "completed" else "expired",
+        ))
+        if active_stage:
+            await conn.execute(insert(integration_repair_stages).values(
+                operation_id="operation", ordinal=1, policy={}, starting_sha=head,
+                attempts=0, state="active",
+            ))
+    slot = await env.slot(
+        "slot", "aq/parent", locked_by_agent_id="a1", locked_by_task_id="delegate"
+    )
+    (slot / "progress.txt").write_text("unsaved repair progress\n")
+    await env.session(
+        "writer", work_dir=slot, state="running", desired_state="running",
+        task_id="delegate", agent_id="a1", claim_phase="active", last_claim_epoch=1,
+    )
+    await env.owner(
+        "owner", "aq/parent", "delegate", role="repair", session_id="writer",
+        workspace_id="ws-slot",
+    )
+
+    provider = FakeProvider()
+    await provider.start(SessionSpec(
+        session_name="n-writer", work_dir=str(slot), command=("claude",),
+        instance_token="tok-writer",
+    ))
+
+    class Registry(SessionProviderRegistry):
+        def create(self, name, config=None):
+            return provider
+
+    registry = Registry({"fake": FakeProvider})
+    cfg = AppConfig(
+        discord=DiscordConfig(bot_token="t", guild_id="1"),
+        workspace_dir=str(tmp_path / "ws"),
+        database=DatabaseConfig(url=lease_dsn("owner-recovery.db")),
+        data_dir=str(tmp_path / "data"),
+    )
+    cfg.sessions.enabled = True
+    cfg.sessions.provider = "fake"
+    cfg.swarm.enabled = True
+    orchestrator = Orchestrator(cfg)
+    orchestrator.db = env.db
+    orchestrator._agent_reconciler._db = env.db
+    orchestrator.agent_questions.db = env.db
+    orchestrator.bus.emit = AsyncMock()
+    orchestrator.session_providers = registry
+    orchestrator._get_default_branch = AsyncMock(return_value="main")
+    handler = CommandHandler(orchestrator, cfg)
+    orchestrator.set_command_handler(handler)
+    return slot, provider, registry, orchestrator, handler, cfg
+
+
+@pytest.mark.parametrize(
+    ("operation_state", "active_stage", "origin_reachable"),
+    [("completed", 0, True), ("escalated", 1, True), ("completed", 0, False)],
+    ids=["completed-operation", "expired-stage-successor", "unsaved-work-unpreservable"],
+)
+async def test_a_retired_delegates_drain_ack_stops_it_and_its_work_is_preserved(
+    env, tmp_path, operation_state, active_stage, origin_reachable
+):
+    from src.integration.delegate_release import release_delegates
+    from src.integration.models import BranchKey
+    from src.integration.ownership import BranchBusy, BranchOwnership
+    from src.sessions.provider import SessionHandle
+    from src.sessions.reconciler import SessionReconciler
+
+    slot, provider, registry, orchestrator, handler, cfg = await _retired_delegate_worker(
+        env, tmp_path, operation_state=operation_state, active_stage=active_stage
+    )
+    target = BranchKey(repository_id="r", branch="aq/parent")
+    with pytest.raises(BranchBusy):
+        await BranchOwnership(env.db).acquire(target, "debug-delegate", "repair")
+
+    # 1. The public close is refused, and says why and what to do instead.
+    refused = await handler.execute("task_close", {
+        "task_id": "delegate", "session_id": "writer", "outcome": "pass",
+        "summary": "Repair pushed.", "claim_epoch": 1,
+    })
+    assert (refused["success"], refused["result"]) == (False, "verification_failed")
+    assert refused["retired"]["operation_id"] == "operation"
+    assert "Do not retry the close" in refused["error"]
+    assert "aq session drain-ack" in refused["error"]
+    assert (await env.db.get_task("delegate")).status == TaskStatus.IN_PROGRESS
+
+    # 2. The worker obeys: drain-ack, with its claim still open.
+    acked = await handler.execute("session_drain_ack", {"session_id": "writer"})
+    assert acked["success"] is True
+
+    # 3. The reconciler stops it -- no supervisor kill -- keeping every binding.
+    reconciler = SessionReconciler(
+        env.db, cfg, registry, bus=orchestrator.bus, orchestrator=orchestrator, epoch="e"
+    )
+    now = time.time()
+    await reconciler._step_drain_ack(await reconciler._step_observe(now), now)
+    writer = await env.db.get_session("writer")
+    assert (writer.state, writer.desired_state, writer.task_id) == (
+        "stopped", "stopped", "delegate"
+    )
+    assert await provider.confirm_stopped(SessionHandle("n-writer", "fake", "tok-writer"))
+    assert (await env.row("owner"))["handoff_state"] == "attached"
+    assert (slot / "progress.txt").read_text() == "unsaved repair progress\n"
+
+    # 4. Owner recovery preserves the progress before it releases anything.
+    async def confirm_stopped(session):
+        return await provider.confirm_stopped(
+            SessionHandle(session["name"], session["provider"], session["instance_token"])
+        )
+
+    if not origin_reachable:
+        git(env.base, "remote", "set-url", "origin", str(env.tmp / "missing.git"))
+    outcome = await env.service(confirm_stopped=confirm_stopped).recover(
+        "owner", principal="delegate_retirement"
+    )
+    if not origin_reachable:
+        # Unsaved work that cannot be preserved keeps the owner, claim and lock.
+        assert (outcome.outcome, outcome.reason) == ("not_eligible", "origin_unreachable")
+        assert (await env.row("owner"))["handoff_state"] == "attached"
+        task = await env.db.get_task("delegate")
+        assert (task.status, task.assigned_agent_id) == (TaskStatus.IN_PROGRESS, "a1")
+        assert (await env.db.get_workspace("ws-slot")).locked_by_task_id == "delegate"
+        assert (slot / "progress.txt").read_text() == "unsaved repair progress\n"
+        assert await release_delegates(env.db, now=now, released_by="integration_service") == []
+        return
+    assert outcome.outcome == "preserved_and_released"
+    preserved = remote_sha(env.origin, "aq/preserved/owner")
+    assert git(env.origin, "show", f"{preserved}:progress.txt") == "unsaved repair progress"
+    assert (slot / "progress.txt").read_text() == "unsaved repair progress\n"
+    assert (await env.row("owner"))["handoff_state"] == "released"
+    task = await env.db.get_task("delegate")
+    assert (task.status, task.assigned_agent_id) == (TaskStatus.READY, None)
+
+    # 5. Then the successor takes the branch, or the ticket settles terminally.
+    if operation_state == "completed":
+        released = await release_delegates(env.db, now=now, released_by="integration_service")
+        assert [row["task_id"] for row in released] == ["delegate"]
+        assert (await env.db.get_task("delegate")).status == TaskStatus.FAILED
+        record = await env.db.get_task_meta("delegate", "integration_retirement")
+        assert record["disposition"] == "superseded"
+    else:
+        fence = await BranchOwnership(env.db).acquire(target, "debug-delegate", "repair")
+        assert fence.owner_id == "debug-delegate"
+        assert await release_delegates(env.db, now=now, released_by="integration_service") == []

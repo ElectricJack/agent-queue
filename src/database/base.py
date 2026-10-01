@@ -712,6 +712,9 @@ class DatabaseBackend(Protocol):
         session_id: str | None = None,
         conn=None,
     ) -> dict | None: ...
+    async def get_retired_integration_writer(
+        self, task_id: str, *, conn=None
+    ) -> dict | None: ...
     async def append_integration_review_evidence(self, evidence: dict) -> dict: ...
     async def get_applicable_integration_review_evidence(
         self,
