@@ -820,7 +820,10 @@ class GitPlugin(InternalPlugin):
             raise GitError("could not inspect the delivery base")
         if not base_exists:
             base_ref = None
-        policy = await self._publish_policy(principal, project, publication.task_id)
+        policy = await self._publish_policy(
+            principal, project, publication.task_id,
+            checkout_path=checkout_path, repository_url=publication.repository_url,
+        )
         oid = await git.apush_validated_delivery(
             checkout_path,
             base_ref,
@@ -852,7 +855,9 @@ class GitPlugin(InternalPlugin):
             return []
         return await self._db._db.list_source_ci_inherited_oids(task_id)
 
-    async def _publish_policy(self, principal, project, task_id: str):
+    async def _publish_policy(
+        self, principal, project, task_id: str, *, checkout_path: str, repository_url: str
+    ):
         """The identity a worker's publication of *task_id* is held to.
 
         The project's resolved identity, plus the launch identity of every
@@ -860,14 +865,13 @@ class GitPlugin(InternalPlugin):
         source heads a daemon-filed repair told it to merge are not judged
         (:meth:`GitManager.acheck_publish_identity`, git identity spec §5).
         """
-        from src.git.identity import publish_policy, resolve_git_identity
+        from src.git.identity import task_publish_policy
 
-        resolved = resolve_git_identity(self._ctx.get_service("config"), project)
-        launches = await self._db._db.list_task_launch_identities(
-            task_id, extra_session_id=principal.session_id
+        return await task_publish_policy(
+            self._ctx.get_service("config"), project, self._db._db, self._git, task_id,
+            checkout_path=checkout_path, repository_url=repository_url,
+            extra_session_id=principal.session_id,
         )
-        heads = await self._db._db.list_authorized_source_heads(task_id)
-        return publish_policy(resolved, launches, heads)
 
     async def _warn_if_in_progress(self, project_id: str) -> str | None:
         from src.models import TaskStatus

@@ -11,6 +11,7 @@ from src.database.tables import (
     agents,
     integration_source_ci,
     sessions,
+    task_dependencies,
     task_session_attempts,
     tasks,
 )
@@ -385,6 +386,35 @@ class TaskSessionQueryMixin:
         (git identity spec §5).
         """
         return await self.list_source_ci_inherited_oids(task_id)
+
+    async def list_publish_prerequisite_branches(self, task_id: str) -> list[str]:
+        """Direct stacked prerequisites in the held task's project/repository.
+
+        These persisted branch names locate potential published history;
+        they are not proof of publication. The identity policy observes exact
+        remote heads in the authorized repository before excluding any OID.
+        Prose, metadata, and non-``blocks`` associations confer no authority.
+        """
+        prerequisite = tasks.alias("publish_prerequisite")
+        statement = (
+            select(prerequisite.c.branch_name)
+            .select_from(
+                tasks.join(task_dependencies, task_dependencies.c.task_id == tasks.c.id)
+                .join(prerequisite, prerequisite.c.id == task_dependencies.c.depends_on_task_id)
+            )
+            .where(
+                tasks.c.id == task_id,
+                task_dependencies.c.dep_type == "blocks",
+                prerequisite.c.project_id == tasks.c.project_id,
+                prerequisite.c.repo_id.is_not_distinct_from(tasks.c.repo_id),
+                prerequisite.c.branch_name.is_not(None),
+                prerequisite.c.branch_name != "",
+            )
+            .distinct()
+            .order_by(prerequisite.c.branch_name)
+        )
+        async with self._engine.connect() as conn:
+            return list((await conn.execute(statement)).scalars())
 
     async def list_source_ci_inherited_oids(
         self, task_id: str, *, repository_id: str | None = None

@@ -503,7 +503,7 @@ class GitOpsMixin:
                 force_with_lease=True,
                 event_bus=self.bus,
                 project_id=task.project_id,
-                identity_policy=await self._publish_policy(task),
+                identity_policy=await self._publish_policy(task, workspace),
                 inherited_oids=await self.db.list_source_ci_inherited_oids(task.id),
             )
         except Exception as e:
@@ -1442,7 +1442,7 @@ class GitOpsMixin:
                             **({"repository_url": repository_url} if repository_url else {}),
                             event_bus=self.bus,
                             project_id=task.project_id,
-                            identity_policy=await self._publish_policy(task),
+                            identity_policy=await self._publish_policy(task, workspace),
                             inherited_oids=await self.db.list_source_ci_inherited_oids(
                                 task.id
                             ),
@@ -2326,7 +2326,7 @@ class GitOpsMixin:
                         force_with_lease=False,
                         event_bus=self.bus,
                         project_id=task.project_id,
-                        identity_policy=await self._publish_policy(task),
+                        identity_policy=await self._publish_policy(task, workspace),
                         inherited_oids=await self.db.list_source_ci_inherited_oids(
                             task.id
                         ),
@@ -2381,7 +2381,7 @@ class GitOpsMixin:
                         default_branch,
                         event_bus=self.bus,
                         project_id=task.project_id,
-                        identity_policy=await self._publish_policy(task),
+                        identity_policy=await self._publish_policy(task, workspace),
                         inherited_oids=await self.db.list_source_ci_inherited_oids(
                             task.id
                         ),
@@ -2488,7 +2488,7 @@ class GitOpsMixin:
                     e,
                 )
 
-    async def _publish_policy(self, task: Task):
+    async def _publish_policy(self, task: Task, workspace: str):
         """The Git identity a publication of *task*'s work is held to.
 
         The same rule the worker's ``aq git push`` applies (git identity spec
@@ -2497,11 +2497,18 @@ class GitOpsMixin:
         that skipped ``aq git push`` cannot have the close publish commits it
         attributed itself.
         """
-        from src.git.identity import publish_policy, resolve_git_identity
+        from src.git.identity import task_publish_policy
 
         project = await self.db.get_project(task.project_id)
-        launches = await self.db.list_task_launch_identities(task.id)
-        return publish_policy(resolve_git_identity(self.config, project), launches)
+        if task.repo_id:
+            repo = await self.db.get_repo(task.repo_id)
+            repository_url = repo.url if repo and repo.project_id == task.project_id else None
+        else:
+            repository_url = project.repo_url if project else None
+        return await task_publish_policy(
+            self.config, project, self.db, self.git, task.id,
+            checkout_path=workspace, repository_url=repository_url,
+        )
 
     async def _emit_bus(self, event_type: str, payload: dict) -> None:
         """Best-effort event emission — never fail the pipeline on a bus hiccup."""
