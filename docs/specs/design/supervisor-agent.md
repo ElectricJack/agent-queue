@@ -194,6 +194,16 @@ tmux). All name resolution and sanitization is owned by session-runtime; this sp
 uses the logical name. The session carries `AQ_PROJECT_ID` in its environment; every `aq` command it runs defaults to
 that project, and its slim MCP surface is scoped the same way.
 
+A logical name only addresses a supervisor that can exist. The suffix is authoritative
+whenever it names a project; `supervisor-global` is the global supervisor, which has no
+project. A suffix that names no project (agents have written `supervisor-aq` for
+`agent-queue`) is delivered to the supervisor of the message's own `project_id`, which was
+validated at send time, when that project exists. Otherwise the address is undeliverable:
+nothing is ever started for it (a cold start would fail the `sessions.project_id` foreign
+key after launching a harness, then repeat on every pass), its rows stay pending and park
+to their sender after `park_after` (24 h, [implementation](../implementation/supervisor-agent.md)),
+and the daemon logs the address once.
+
 Routing rules — all inbound chat becomes a `messages` row (§6), never a direct call:
 
 | Source | Route |
