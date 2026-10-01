@@ -23,6 +23,7 @@ from src.database.tables import (
     integration_candidate_revisions,
     integration_check_evidence,
     integration_operation_artifact_pins,
+    integration_outbox,
     integration_promotion_intents,
     integration_repair_operations,
     integration_repair_stage_evidence,
@@ -69,6 +70,9 @@ def repair_subject_sha(subject: dict[str, Any] | None) -> str:
 _ATTACHED_PRIMARY_STATES = frozenset({"attached"})
 _TRANSFERABLE_PRIMARY_STATES = frozenset({"reserved", "released", "handoff_pending"})
 STUCK_BATCH_ATTEMPTS = 3
+#: How long a delivered construction re-drive may run before a stage-0 deadline
+#: that still finds no candidate escalates (``_redrive_unfinished_construction_on``).
+CONSTRUCTION_REDRIVE_GRACE_SECONDS = 600.0
 
 
 class _RepairInvariant(ValueError):
@@ -1718,6 +1722,10 @@ class RepairService:
 
                 if await accepted_candidate_on(conn, operation, row) is not None:
                     return self._timeout_value("not_due", "wait", operation_id, stage)
+                if await self._redrive_unfinished_construction_on(
+                    conn, dict(operation), dict(row), now=observed_at
+                ):
+                    return self._timeout_value("not_due", "wait", operation_id, stage)
             if stage == 0 or RepairPolicy.model_validate(row["policy"]).on_exhausted == "continue":
                 await self._activate_debug_on(
                     conn,
@@ -1746,6 +1754,64 @@ class RepairService:
             await self.db._notify_settled(transition.settled)
             await self.db._notify_ready(transition.ready)
         return result
+
+    async def _redrive_unfinished_construction_on(
+        self, conn, operation: dict[str, Any], stage: dict[str, Any], *, now: float
+    ) -> bool:
+        """Re-enter construction once before escalating a stage with nothing to repair.
+
+        Stage 0 starts before the candidate is built.  If its deadline finds the
+        batch still ``building`` with a ``constructing`` revision and no writer ever
+        assigned, construction stopped without a continuation (a failed
+        construct-and-test run).  A debug writer cannot change the frozen
+        manifest, so the operation's route first rebuilds; the ladder escalates
+        as before only once that re-drive was delivered and the grace passed.
+        Attempts, deadlines and budgets are untouched.
+        """
+        if (
+            int(stage["ordinal"]) != 0
+            or stage["repair_task_id"] is not None
+            or stage["writer_kind"] is not None
+            or operation["batch_id"] is None
+        ):
+            return False
+        batch = (await conn.execute(
+            select(integration_batches)
+            .where(integration_batches.c.id == operation["batch_id"])
+            .with_for_update()
+        )).mappings().one_or_none()
+        if batch is None or batch["lifecycle"] != "building":
+            return False
+        revision = (await conn.execute(
+            select(integration_candidate_revisions.c.state).where(
+                integration_candidate_revisions.c.batch_id == batch["id"],
+                integration_candidate_revisions.c.revision == batch["current_revision"],
+            )
+        )).scalar_one_or_none()
+        if revision != "constructing":
+            return False
+        event_id = (
+            f"integration-construction-redrive:{operation['id']}:0:"
+            f"{int(batch['current_revision'])}"
+        )
+        redrive = (await conn.execute(
+            select(integration_outbox.c.available_at, integration_outbox.c.delivered_at)
+            .where(integration_outbox.c.id == event_id)
+        )).mappings().one_or_none()
+        if redrive is None:
+            await enqueue_integration_event(
+                conn, event_id=event_id, dedup_key=event_id,
+                project_id=batch["project_id"], event_type="integration.sealed",
+                payload={"batch_id": batch["id"], "operation_id": operation["id"]},
+                available_at=now,
+            )
+            return True
+        # An undelivered re-drive (no route accepts it) must not hold the ladder
+        # forever either: the grace runs from delivery, or else from enqueue.
+        started = redrive["delivered_at"]
+        if started is None:
+            started = redrive["available_at"]
+        return now - float(started) < CONSTRUCTION_REDRIVE_GRACE_SECONDS
 
     async def due_stages(
         self,

@@ -26040,6 +26040,13 @@
       "purpose": "Source completion, validation, publication and recovery.",
       "catalog": "docs/reference/modules/integration.md"
     },
+    "src/integration/source_ancestry.py": {
+      "shard": "integration",
+      "component": "docs/concepts/integration.md",
+      "category": "production",
+      "purpose": "Source completion, validation, publication and recovery.",
+      "catalog": "docs/reference/modules/integration.md"
+    },
     "src/integration/stale_owners.py": {
       "shard": "integration",
       "component": "docs/concepts/integration.md",

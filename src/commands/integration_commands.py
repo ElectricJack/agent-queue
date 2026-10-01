@@ -160,6 +160,122 @@ class IntegrationCommandsMixin:
                 repair_task_id=created["task_id"], repair_attempt=attempt, repair_history=history))
         return {"success": True, "outcome": "repair_created", "repair_task_id": created["task_id"]}
 
+    async def repair_integration_source_ancestry(self, observation) -> dict:
+        """Withdraw one exact source whose recorded base is not its ancestor.
+
+        Records the exact rejection, then routes the repair: under the operator's
+        ``root.repair.source_ci`` authorization the source is reopened on its own
+        branch with feedback; otherwise the project supervisor is told once.  It
+        takes a server-observed proof, so it is deliberately not a ``_cmd_``
+        command that an agent, the CLI or MCP could reach.
+        """
+        from sqlalchemy import text
+
+        from src.integration.source_ancestry import SourceAncestryObservation
+
+        if not isinstance(observation, SourceAncestryObservation):
+            return _failure("invalid", "source ancestry must be server-observed")
+        identity = "source-ancestry:" + ":".join(str(part) for part in observation.identity())
+        async with self.db._engine.begin() as conn:
+            await conn.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+                               {"key": identity})
+            return await self._repair_integration_source_ancestry(observation)
+
+    async def _repair_integration_source_ancestry(self, observation) -> dict:
+        from sqlalchemy import select
+        from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+        from src.database.tables import messages, projects, task_context
+        from src.integration.models import HierarchicalIntegrationPolicy
+        from src.integration.review_evidence import ReviewEvidenceProducer
+        from src.integration.source_ancestry import describe, repair_feedback
+
+        producer = ReviewEvidenceProducer(self.db, None)
+        source = observation.source
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, source["project_id"])
+            current = await producer._pull_request_source_on(conn, observation.task_id)
+            if not observation.matches(current):
+                return {"success": True, "outcome": "stale",
+                        "task_id": observation.task_id}
+            evidence = await producer.record_ancestry_rejection_on(conn, observation)
+            project = (await conn.execute(select(projects).where(
+                projects.c.id == source["project_id"]))).mappings().one()
+            policy_data = project["hierarchical_integration_policy"]
+            policy = (HierarchicalIntegrationPolicy.model_validate(policy_data)
+                      if policy_data else None)
+            # One automatic reopen per exact identity: the same head coming back
+            # means the repair did not happen, and reopening again would loop.
+            reopened_before = (await conn.execute(
+                select(task_context.c.id).where(
+                    task_context.c.task_id == observation.task_id,
+                    task_context.c.type == "reopen_feedback",
+                    task_context.c.content.contains(evidence["id"]),
+                ).limit(1)
+            )).scalar_one_or_none() is not None
+            if policy is None or not policy.root.repair.source_ci:
+                why = "Automatic source repair is not authorized for this project."
+            elif observation.reason != "source_base_not_ancestor":
+                why = ("The recorded review tree does not match the head; that is a record "
+                       "integrity fault no worker merge can repair.")
+            elif reopened_before:
+                why = ("The source was already reopened once for this exact identity and "
+                       "closed again without a new head.")
+            else:
+                why = None
+            if why is not None:
+                await conn.execute(pg_insert(messages).values(
+                    id=f"msg-source-ancestry-{evidence['id']}",
+                    project_id=source["project_id"],
+                    from_kind="system",
+                    from_id="integration-admission",
+                    to_kind="session",
+                    to_id=f"supervisor-{source['project_id']}",
+                    subject=f"Train source {observation.task_id} cannot be integrated",
+                    body=(
+                        f"{describe(observation)}. The train withdrew this exact identity "
+                        f"(review evidence {evidence['id']}); valid sources keep moving. "
+                        f"{why} Route the repair yourself, for example:\n"
+                        f"aq task reopen-with-feedback --task-id {observation.task_id} "
+                        "--feedback \"Merge the recorded base into the branch, preserving "
+                        "history, then publish and close.\"\n\n"
+                        + repair_feedback(observation)
+                    ),
+                    created_at=time.time(),
+                    priority=50,
+                    archive_after_inject=1,
+                    body_kind="integration_source_ancestry",
+                ).on_conflict_do_nothing(index_elements=[messages.c.id]))
+                return {"success": True, "outcome": "supervisor_notified",
+                        "task_id": observation.task_id, "evidence_id": evidence["id"]}
+        # Reopen through the ordinary command: same task, branch and recorded
+        # origin, so the repaired head is a new identity of the same source.
+        # Re-read first: the reopen is its own transaction.
+        async with self.db._engine.connect() as conn:
+            if not observation.matches(
+                await producer._pull_request_source_on(conn, observation.task_id)
+            ):
+                return {"success": True, "outcome": "stale",
+                        "task_id": observation.task_id}
+        reopened = await self._cmd_reopen_with_feedback({
+            "task_id": observation.task_id, "feedback": repair_feedback(observation),
+        })
+        if reopened.get("error"):
+            return _failure("runtime_error", reopened["error"])
+        await self.db.log_event(
+            "integration.source_ancestry_withdrawn",
+            project_id=source["project_id"],
+            task_id=observation.task_id,
+            payload=json.dumps({
+                "evidence_id": evidence["id"], "reason": observation.reason,
+                "source_base": source["base"], "source_head": source["head"],
+                "generation": int(source["generation"]), "merge_base": observation.merge_base,
+                "detected_by": observation.detected_by, "batch_id": observation.batch_id,
+            }),
+        )
+        return {"success": True, "outcome": "reopened", "task_id": observation.task_id,
+                "evidence_id": evidence["id"]}
+
     async def _integration_task_matches_target(
         self, task_id: str, target: BranchKey, project_id: str
     ) -> bool:
