@@ -535,6 +535,15 @@ option: the same close releases the workspace lock and the session/task binding 
 stop-and-detach proof reads, so an attached row at that point can never be confirmed again and
 permanently blocks every subsequent transfer of the branch.
 
+For a root batch, CI may mark the stage `awaiting_completion` while its repair delegate
+is still attached. That delegate may close on the unchanged candidate only when the current
+revision is green, the batch names that tested SHA and evidence, and the stage's current and
+successful subjects and conclusive success evidence all match that revision. The exact writer
+fence and pushed ancestry proof are still required. This handoff preserves the candidate,
+evidence, attempts, and absolute deadline; like awaiting promotion, it may finish after the
+deadline. It cannot revive an expired stage or adopt a changed head using old green evidence.
+Active repairs and candidate rebuilds retain their existing deadline and fresh-CI requirements.
+
 A pull-model (pool) writer proves the same handoff differently, because stopping it is not
 available: the session is the worker loop itself and survives the close it is running inside.
 Its proof is the claim protocol plus the checkout — the task-hold the close is about to release,
