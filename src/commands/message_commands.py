@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 #: match on this — do not reword.
 MESSAGES_DISABLED_ERROR = "messages are disabled (messages.enabled=false)"
 
+#: A supervisor's messaging address is ``supervisor-<project_id>``, or
+#: ``supervisor-global`` for the global supervisor (supervisor-agent §5).
+_SUPERVISOR_ADDRESS_PREFIX = "supervisor-"
+_GLOBAL_SUPERVISOR_ADDRESS = "supervisor-global"
+
 
 def message_to_dict(msg: Message) -> dict:
     """Render a :class:`~src.models.Message` for the command envelope.
@@ -150,6 +155,25 @@ class MessageCommandsMixin:
             return session.project_id if session else None
         return None
 
+    async def _supervisor_mailbox(self, to_id: str, project_id: str | None) -> str | None:
+        """The supervisor address to store for *to_id*, or None if it names none.
+
+        The suffix of ``supervisor-<suffix>`` is authoritative when it names a
+        project (CHAT-1), and ``supervisor-global`` is the global supervisor.
+        A suffix naming no project (agents wrote ``supervisor-aq`` for
+        ``agent-queue``) is stored as the supervisor of the message's own,
+        already validated project: that supervisor's ``message_inbox`` lists
+        only its name and ``supervisor-<its project>``, so the alias would
+        otherwise reach it through the delivery nudge alone. A projectless
+        message has no supervisor to resolve an alias to.
+        """
+        suffix = to_id.removeprefix(_SUPERVISOR_ADDRESS_PREFIX)
+        if to_id == _GLOBAL_SUPERVISOR_ADDRESS or (
+            suffix and await self.db.get_project(suffix) is not None
+        ):
+            return to_id
+        return _SUPERVISOR_ADDRESS_PREFIX + project_id if project_id else None
+
     async def _emit_message_event(self, event_type: str, payload: dict) -> None:
         """Emit a ``message.*`` event without letting it fail the command."""
         try:
@@ -226,6 +250,19 @@ class MessageCommandsMixin:
             project = await self.db.get_project(project_id)
             if not project:
                 return {"error": f"Project '{project_id}' not found"}
+
+        if to_kind == "session" and to_id.startswith(_SUPERVISOR_ADDRESS_PREFIX):
+            mailbox = await self._supervisor_mailbox(to_id, project_id)
+            if mailbox is None:
+                return {
+                    "error": (
+                        f"session:{to_id} names no project and the message has no "
+                        f"project to resolve it to; send to "
+                        f"session:{_SUPERVISOR_ADDRESS_PREFIX}<project-id> or "
+                        f"session:{_GLOBAL_SUPERVISOR_ADDRESS}"
+                    )
+                }
+            to_id = mailbox
 
         body = args.get("body")
         if not body or not str(body).strip():
