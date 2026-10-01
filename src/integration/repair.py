@@ -1480,8 +1480,13 @@ class RepairService:
         head_sha: str,
         commit_proof: dict[str, Any] | None = None,
         now: float | None = None,
+        accepted_close: dict | None = None,
     ) -> dict[str, Any]:
-        """Atomically close one exact attached repair writer and enqueue its fact."""
+        """Atomically close one exact attached repair writer and enqueue its fact.
+
+        ``accepted_close`` is the delegate's ``task close`` identity, recorded
+        with the COMPLETED transition (``_apply_transition``).
+        """
         completed_at = self.clock() if now is None else now
         transition = None
         async with self.db.immediate() as conn:
@@ -1573,6 +1578,7 @@ class RepairService:
                 TaskStatus.COMPLETED,
                 context="integration_repair_delegate_closed",
                 assigned_agent_id=None,
+                accepted_close=accepted_close,
             )
             project_id = str(scope["project_id"])
             event_id = (f"repair-delegate-closed-{operation_id}-{stage}-{repair_task_id}"

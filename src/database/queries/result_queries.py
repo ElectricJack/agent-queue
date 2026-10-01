@@ -5,21 +5,74 @@ from __future__ import annotations
 import json
 import time
 import uuid
+from dataclasses import asdict
 
-from sqlalchemy import insert, select
+from sqlalchemy import and_, delete, insert, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from src.database.queries.task_queries import ACCEPTED_CLOSE_KEY
 from src.database.tables import task_completion_records, task_metadata, task_results, tasks
 from src.models import TaskCompletion
 
-#: ``task_metadata`` key holding the completion record an accepted close is
-#: about to commit.  ``task close`` writes it before the terminal transition
-#: and deletes it once the record is saved, so a restart in between leaves the
+#: ``task_metadata`` key holding the completion record a close is about to
+#: commit, bound to that close's identity (``completion_draft``).  ``task
+#: close`` writes it before the terminal transition and deletes it once the
+#: record is saved or the close is refused, so a restart in between leaves the
 #: agent-supplied account (tests, commands, summary) recoverable.
 PENDING_COMPLETION_KEY = "pending_completion"
 
-#: Statuses a task still holds while its close has not committed a transition.
-_UNCLOSED_STATUSES = ("ASSIGNED", "IN_PROGRESS", "PAUSED", "WAITING_INPUT")
+
+def close_identity(completion_id: str, *, session_id: str | None, claim_epoch: int) -> dict:
+    """The identity one ``task close`` attempt drafts and its transition records.
+
+    The close passes it to its terminal transition as ``accepted_close``, which
+    stores it as ``ACCEPTED_CLOSE_KEY`` in the status write's transaction.
+    """
+    return {
+        "completion_id": completion_id,
+        "session_id": session_id,
+        "claim_epoch": int(claim_epoch),
+    }
+
+
+def completion_draft(completion: TaskCompletion, identity: dict) -> dict:
+    """The ``PENDING_COMPLETION_KEY`` value: the record bound to its close."""
+    return {"identity": identity, "completion": asdict(completion)}
+
+
+def _draft_completion_id(draft) -> str | None:
+    try:
+        return draft["identity"]["completion_id"]
+    except (KeyError, TypeError):
+        return None
+
+
+def _accepted_completion(
+    task_id: str, draft_value: str, accepted_value: str | None, claim_epoch: int
+) -> TaskCompletion | None:
+    """The draft's record when its own transition provably committed, else None.
+
+    Proof is positive and exact: the task's ``ACCEPTED_CLOSE_KEY`` names the
+    draft's completion id, session and claim epoch, and the task is still on
+    that claim epoch.  Status is never consulted -- READY, DEFINED, FAILED or
+    CANCELLED reached any other way proves nothing about this close.
+    """
+    try:
+        draft = json.loads(draft_value)
+        accepted = json.loads(accepted_value) if accepted_value is not None else None
+        identity = draft["identity"]
+        completion = TaskCompletion(**draft["completion"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (
+        not isinstance(identity, dict)
+        or identity != accepted
+        or identity.get("completion_id") != completion.id
+        or identity.get("claim_epoch") != claim_epoch
+        or completion.task_id != task_id
+    ):
+        return None
+    return completion
 
 
 class ResultQueryMixin:
@@ -116,50 +169,109 @@ class ResultQueryMixin:
         await self.log_blocked_flips(flipped)
 
     async def recover_pending_completions(self) -> list[str]:
-        """Save the drafted completion of every close a restart interrupted.
+        """Save the drafted completion of every accepted close a restart interrupted.
 
         Runs once at daemon start, before stale-state recovery moves any task.
-        A draft whose task left its claimed statuses was accepted: the terminal
-        transition committed and only ``save_task_completion`` was lost, so the
-        draft is saved under its own id (idempotent) unless a record already
-        landed since the close began.  A draft on a task still claimed belongs
-        to a close that never committed and is dropped.  Nothing is invented:
-        the record carries exactly what the agent submitted.
+        A draft is recovered only when its close's own terminal transition
+        recorded the draft's identity (``ACCEPTED_CLOSE_KEY``) and the task is
+        still on that claim epoch: then only ``save_task_completion`` was
+        lost, and the draft is saved under its own id (idempotent, so a replay
+        never duplicates it).  Every other draft -- a close that never
+        committed, was refused, or was overtaken by a later claim, whatever
+        status the task reached since -- is dropped.  Nothing is invented: the
+        record carries exactly what the agent submitted.
         """
+        accepted = task_metadata.alias("accepted_close")
         async with self._engine.begin() as conn:
             rows = (
                 await conn.execute(
-                    select(task_metadata.c.task_id, task_metadata.c.value, tasks.c.status)
+                    select(
+                        task_metadata.c.task_id,
+                        task_metadata.c.value.label("draft"),
+                        accepted.c.value.label("accepted"),
+                        tasks.c.claim_epoch,
+                    )
                     .join(tasks, tasks.c.id == task_metadata.c.task_id)
+                    .outerjoin(
+                        accepted,
+                        and_(
+                            accepted.c.task_id == task_metadata.c.task_id,
+                            accepted.c.key == ACCEPTED_CLOSE_KEY,
+                        ),
+                    )
                     .where(task_metadata.c.key == PENDING_COMPLETION_KEY)
                 )
             ).mappings().all()
         recovered: list[str] = []
         for row in rows:
             task_id = row["task_id"]
-            try:
-                draft = json.loads(row["value"])
-                completion = TaskCompletion(**draft)
-            except (TypeError, ValueError):
-                completion = None
-            if completion is not None and row["status"] not in _UNCLOSED_STATUSES:
-                async with self._engine.begin() as conn:
-                    newer = (
-                        await conn.execute(
-                            select(task_completion_records.c.id)
-                            .where(
-                                task_completion_records.c.task_id == task_id,
-                                task_completion_records.c.completed_at
-                                >= completion.completed_at,
-                            )
-                            .limit(1)
-                        )
-                    ).first()
-                if newer is None:
-                    await self.save_task_completion(completion, idempotent=True)
-                    recovered.append(task_id)
-            await self.delete_task_meta(task_id, PENDING_COMPLETION_KEY)
+            completion = _accepted_completion(
+                task_id, row["draft"], row["accepted"], row["claim_epoch"]
+            )
+            if completion is not None:
+                await self.save_task_completion(completion, idempotent=True)
+                recovered.append(task_id)
+            async with self._engine.begin() as conn:
+                await conn.execute(
+                    delete(task_metadata).where(
+                        task_metadata.c.task_id == task_id,
+                        task_metadata.c.key == PENDING_COMPLETION_KEY,
+                        task_metadata.c.value == row["draft"],
+                    )
+                )
         return recovered
+
+    async def discard_pending_completion(
+        self, task_id: str, completion_id: str, *, keep_accepted: bool = True
+    ) -> bool:
+        """Delete the draft of close *completion_id*; True when it was removed.
+
+        A refused or failed close calls this with ``keep_accepted=True``: a
+        draft whose transition did commit (``ACCEPTED_CLOSE_KEY`` names it)
+        stays for ``recover_pending_completions``, because only its record
+        was lost.  After the record is saved, ``keep_accepted=False`` clears
+        it.  A draft belonging to another close attempt is never touched.
+        """
+        async with self._engine.begin() as conn:
+            rows = {
+                row.key: row.value
+                for row in (
+                    await conn.execute(
+                        select(task_metadata.c.key, task_metadata.c.value)
+                        .where(
+                            task_metadata.c.task_id == task_id,
+                            task_metadata.c.key.in_(
+                                (PENDING_COMPLETION_KEY, ACCEPTED_CLOSE_KEY)
+                            ),
+                        )
+                        .with_for_update()
+                    )
+                ).all()
+            }
+            draft_value = rows.get(PENDING_COMPLETION_KEY)
+            if draft_value is None:
+                return False
+            try:
+                draft_id = _draft_completion_id(json.loads(draft_value))
+                accepted = json.loads(rows.get(ACCEPTED_CLOSE_KEY) or "null")
+            except ValueError:
+                return False
+            if draft_id != completion_id:
+                return False
+            if (
+                keep_accepted
+                and isinstance(accepted, dict)
+                and accepted.get("completion_id") == completion_id
+            ):
+                return False
+            await conn.execute(
+                delete(task_metadata).where(
+                    task_metadata.c.task_id == task_id,
+                    task_metadata.c.key == PENDING_COMPLETION_KEY,
+                    task_metadata.c.value == draft_value,
+                )
+            )
+        return True
 
     async def get_task_completion(self, task_id: str) -> TaskCompletion | None:
         """Return the latest completion record for *task_id*."""

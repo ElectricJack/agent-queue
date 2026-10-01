@@ -669,6 +669,8 @@ async def test_approval_transaction_crash_rolls_back_evidence_and_transition(rev
     evidence = await producer.snapshot(
         await db.get_task("review"), case["session"], verdict="approved"
     )
+    # The reviewer's ``task close`` identity commits with the approval or not at all.
+    identity = {"completion_id": "review-close", "session_id": "session", "claim_epoch": 4}
 
     with pytest.raises(RuntimeError, match="crash after writes"):
         async with db.immediate() as conn:
@@ -679,10 +681,12 @@ async def test_approval_transaction_crash_rolls_back_evidence_and_transition(rev
                 context="session_close",
                 assigned_agent_id=None,
                 expect_claim_epoch=4,
+                accepted_close=identity,
             )
             raise RuntimeError("crash after writes")
 
     assert (await db.get_task("review")).status is TaskStatus.IN_PROGRESS
+    assert await db.get_task_meta("review", "accepted_close") is None
     async with db._engine.connect() as conn:
         assert (
             await conn.execute(
@@ -699,8 +703,10 @@ async def test_approval_transaction_crash_rolls_back_evidence_and_transition(rev
             context="session_close",
             assigned_agent_id=None,
             expect_claim_epoch=4,
+            accepted_close=identity,
         )
     assert (await db.get_task("review")).status is TaskStatus.COMPLETED
+    assert await db.get_task_meta("review", "accepted_close") == identity
 
 
 async def test_rejection_transaction_crash_rolls_back_evidence_and_reopen(review_case):

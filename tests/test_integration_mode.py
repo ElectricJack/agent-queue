@@ -1354,8 +1354,11 @@ class TestVerificationRetryKeepsTheSessionAlive:
     async def test_live_session_keeps_the_task_in_progress(self, orch):
         task, ctx = await self._pr_missing_ctx(orch, "t-pr-live", "feature-live")
         ctx.close_session_live = True
+        ctx.accepted_close = {"completion_id": "c", "session_id": "s", "claim_epoch": 0}
 
         assert await orch._phase_verify(ctx) == PhaseResult.STOP
+        # A refused close accepts nothing.
+        assert await orch.db.get_task_meta(task.id, "accepted_close") is None
         assert ctx.verification_retry_in_session is True
         assert ctx.verification_reopened is False
         assert any("No open PR" in msg for msg in ctx.verification_issues)
@@ -1371,11 +1374,14 @@ class TestVerificationRetryKeepsTheSessionAlive:
         """A local/elevated close has no agent to hand the issues to."""
         task, ctx = await self._pr_missing_ctx(orch, "t-pr-nolive", "feature-nolive")
         ctx.close_session_live = False
+        ctx.accepted_close = {"completion_id": "c", "session_id": None, "claim_epoch": 0}
 
         assert await orch._phase_verify(ctx) == PhaseResult.STOP
         assert ctx.verification_reopened is True
         assert ctx.verification_retry_in_session is False
         assert (await orch.db.get_task(task.id)).status is TaskStatus.READY
+        # The reopen is the status write that accepts the close (smart-cascade).
+        assert await orch.db.get_task_meta(task.id, "accepted_close") == ctx.accepted_close
 
     async def test_in_session_retries_are_bounded_by_the_same_budget(self, orch):
         """Exhausting the budget still ends in the terminal (blocking) branch."""
