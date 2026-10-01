@@ -176,16 +176,21 @@ jobs:
         timeout-minutes: 12
         run: |
           python -m venv .venv
-          for attempt in 1 2 3; do
-            if .venv/bin/python -m pip install --timeout 60 \
-              -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"; then
-              exit 0
+          # Retry the complete install: an interrupted wheel download can
+          # escape pip's connection retries before any tests have run.
+          for install_attempt in 1 2 3; do
+            if .venv/bin/python -m pip install --timeout 60 -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"; then
+              break
+            else
+              install_status=$?
             fi
-            echo "::warning::pip install attempt $attempt of 3 failed"
-            if [ "$attempt" -lt 3 ]; then sleep 10; fi
+            if (( install_attempt == 3 )); then
+              echo "::error::Dependency installation failed after $install_attempt attempts"
+              exit "$install_status"
+            fi
+            echo "::warning::Dependency installation failed (attempt $install_attempt/3); retrying in 5s"
+            sleep 5
           done
-          echo "::error::pip install failed after 3 attempts"
-          exit 1
 
       - name: Use virtual environment
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
@@ -327,16 +332,21 @@ jobs:
         timeout-minutes: 12
         run: |
           python -m venv .venv
-          for attempt in 1 2 3; do
-            if .venv/bin/python -m pip install --timeout 60 \
-              -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"; then
-              exit 0
+          # Retry the complete install: an interrupted wheel download can
+          # escape pip's connection retries before any tests have run.
+          for install_attempt in 1 2 3; do
+            if .venv/bin/python -m pip install --timeout 60 -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"; then
+              break
+            else
+              install_status=$?
             fi
-            echo "::warning::pip install attempt $attempt of 3 failed"
-            if [ "$attempt" -lt 3 ]; then sleep 10; fi
+            if (( install_attempt == 3 )); then
+              echo "::error::Dependency installation failed after $install_attempt attempts"
+              exit "$install_status"
+            fi
+            echo "::warning::Dependency installation failed (attempt $install_attempt/3); retrying in 5s"
+            sleep 5
           done
-          echo "::error::pip install failed after 3 attempts"
-          exit 1
 
       - name: Use virtual environment
         run: echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
