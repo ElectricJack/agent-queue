@@ -523,6 +523,136 @@ async def test_candidate_observation_emits_only_durable_terminal_ci_continuation
 
 
 @pytest.mark.asyncio
+async def test_red_candidate_regular_failure_folds_dossier_dedup(
+    attestation_db, tmp_path
+):
+    """A regular CI failure (no missing checks) folds failed_checks and logs
+    into the stage dossier before the red event is enqueued."""
+    await _reset_candidate_for_observation(attestation_db)
+    client = ProviderClient()
+    client.workflow_offset = 1000
+
+    original = client.paged_items
+
+    async def red(path, *, key):
+        rows = await original(path, key=key)
+        if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
+            rows[0] = {**rows[0], "conclusion": "failure"}
+        return rows
+
+    client.paged_items = red
+    service = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        github_client_factory=lambda binding: client,
+        clock=lambda: 10.0,
+    )
+    row = {
+        "operation_id": "root-op",
+        "batch_id": "batch",
+        "revision": 0,
+        "candidate_sha": SHA,
+    }
+    result = await service.handle_candidate_ci(row, 10.0)
+    assert result["outcome"] == "red"
+
+    async with attestation_db._engine.connect() as conn:
+        events = (await conn.execute(select(integration_outbox))).mappings().all()
+        evidence = (await conn.execute(select(integration_check_evidence))).mappings().all()
+        stage = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == "root-op",
+                    integration_repair_stages.c.ordinal == 0,
+                )
+            )
+        ).mappings().one()
+
+    assert len(events) == 1
+    assert events[0]["event_type"] == "integration.candidate_red"
+
+    # Both workflow suites produce a conclusive "failure" row for the red
+    # observation; neither is the pre-existing "ci-aggregate" seed.
+    red_evidence = [row for row in evidence if row["id"] != "ci-aggregate"]
+    assert len(red_evidence) >= 1
+    assert all(row["conclusion"] == "failure" for row in red_evidence)
+    red_ids = {row["id"] for row in red_evidence}
+
+    dossier = stage["dossier"]
+    # failed_checks contains exactly the red evidence ids (deduped, no seed)
+    assert {item["evidence_id"] for item in dossier["failed_checks"]} == red_ids
+    # logs contains one entry per red evidence row
+    assert {item["evidence_id"] for item in dossier["logs"]} == red_ids
+    # attempts reflects the counted failures (1 per conclusive failure row)
+    assert stage["attempts"] == len(red_evidence)
+
+
+@pytest.mark.asyncio
+async def test_red_candidate_double_observation_dedup_dossier(
+    attestation_db, tmp_path
+):
+    """Two red observations of the same evidence must not double-fold the dossier."""
+    await _reset_candidate_for_observation(attestation_db)
+    client = ProviderClient()
+    client.workflow_offset = 1000
+
+    original = client.paged_items
+
+    async def red(path, *, key):
+        rows = await original(path, key=key)
+        if key == "check_runs" and "check_name=Tests%20%28default%29" in path:
+            rows[0] = {**rows[0], "conclusion": "failure"}
+        return rows
+
+    client.paged_items = red
+    service = IntegrationAttestationService(
+        attestation_db,
+        data_dir=tmp_path,
+        git_manager=ExactTreeGit(trust_document()),
+        github_client_factory=lambda binding: client,
+        clock=lambda: 10.0,
+    )
+    row = {
+        "operation_id": "root-op",
+        "batch_id": "batch",
+        "revision": 0,
+        "candidate_sha": SHA,
+    }
+    first = await service.handle_candidate_ci(row, 10.0)
+    assert first["outcome"] == "red"
+
+    async with attestation_db._engine.connect() as conn:
+        stage = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == "root-op",
+                    integration_repair_stages.c.ordinal == 0,
+                )
+            )
+        ).mappings().one()
+    first_attempts = stage["attempts"]
+    first_fc = [item["evidence_id"] for item in stage["dossier"]["failed_checks"]]
+    first_lg = [item["evidence_id"] for item in stage["dossier"]["logs"]]
+
+    # Second observation: the stage is no longer "active", so the guard should
+    # return stale_subject and NOT re-fold the dossier.
+    await service.handle_candidate_ci(row, 10.0)
+    async with attestation_db._engine.connect() as conn:
+        stage2 = (
+            await conn.execute(
+                select(integration_repair_stages).where(
+                    integration_repair_stages.c.operation_id == "root-op",
+                    integration_repair_stages.c.ordinal == 0,
+                )
+            )
+        ).mappings().one()
+    assert stage2["attempts"] == first_attempts
+    assert [item["evidence_id"] for item in stage2["dossier"]["failed_checks"]] == first_fc
+    assert [item["evidence_id"] for item in stage2["dossier"]["logs"]] == first_lg
+
+
+@pytest.mark.asyncio
 async def test_existing_login_candidate_missing_check_emits_red_continuation(
     attestation_db, tmp_path
 ):
