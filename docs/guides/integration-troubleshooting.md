@@ -64,6 +64,7 @@ aq doctor --check git.stale_branches
 | A train root is `COMPLETED` with no PR; its checkpoint stays `working` | The root was never given, or never took, its pull request | [A completed root has no pull request](#a-completed-root-has-no-pull-request) |
 | A child is `COMPLETED`, its parent stays `PAUSED`, and siblings sit `READY` but are never claimed | The parent never assembled the child: no approved evidence pins its head | [A completed child is never assembled](#a-completed-child-is-never-assembled) |
 | `integration status` shows `draining: true` and the drain never finishes | Stale owners, leases or cleanup from an old train run | [A drain never completes](#a-drain-never-completes) |
+| An open PR the train will never seat (untracked branch, child with no repository, parent with no verification), or one whose work already landed under other commits | Legacy delivery the train has no identity for | [A legacy PR stays open](#a-legacy-pr-stays-open) |
 | Observe status lists `missing_receipt` with cause `no_parent_collection` | Children of parents that finished before the train | [Legacy children block observe readiness](#legacy-children-block-observe-readiness) |
 | A delivered branch is kept because `integration owner … is reserved` | An ownership row a finished task never let go | [A finished task still owns its branch](#a-finished-task-still-owns-its-branch) |
 | Stale `aq/…` branches pile up on the remote | Held, older than cleanup, or cleanup exhausted | [Delivered branches are still on the remote](#delivered-branches-are-still-on-the-remote) |
@@ -873,6 +874,49 @@ takes one decision per run, and every decision needs `--reason`.
 create --graph`, or while the project was in observe mode, are not bound to
 it), `task_repository_mismatch`, or `project_repository_unset`.
 
+## A legacy PR stays open
+
+The train seats only completed roots with an integration checkpoint, so some
+legacy PRs have no route at all: an operator branch with no task, a child
+filed before its project was bound (`repository_not_designated`), or a parent
+root with no aggregate verification. `materialize-root`, `redrive-root`,
+`redrive-child` and `bind-legacy-repositories` refuse them correctly; never
+forge a checkpoint, receipt, verification or approval to get past them.
+
+Deliver the work through a fresh *carrier*: an ordinary root task whose branch
+merges each legacy head exactly (`git merge --no-ff <sha>`; never rebase,
+squash, cherry-pick or amend). It takes the normal path — source CI, authorized
+admission (a type other than feature/bugfix needs its id in
+`root.authorized_task_ids`), batch conflict repair, candidate CI, promotion.
+GitHub marks a PR merged once its exact head is reachable from the default
+branch, so every carried PR closes by itself when main fast-forwards. Then
+prove the legacy tasks with
+[`bind-legacy-repositories`](#legacy-children-block-observe-readiness) and
+`adopt-legacy-deliveries`.
+
+A PR whose work landed under other commits stays open. Close it only on Git
+proof:
+
+```bash
+aq integration close-delivered-pr <project> <number>        # dry run
+aq integration close-delivered-pr <project> <number> --apply --head <head_sha> --reason '<why>'
+```
+
+| Outcome | Meaning | Next step |
+|---|---|---|
+| `would_close` | `proof.kind` is `ancestor` (the head is on the default branch), `patch_equivalent` (a linear series whose every commit has a patch-identical commit on the default branch, listed in `equivalent_commits`) or `content_equivalent` (merging the head changes nothing). | Apply with the reported `head_sha`. |
+| `undelivered` | No proof reaches it. `undelivered` lists the commits and the conflict or the files merging would still change. | Deliver the work (a carrier root); never close it by hand. |
+| `nothing_to_close` | The PR is already closed or merged. | Nothing. |
+| `changed` | The PR head moved, the remote branch is not the PR head, or `--head` is not the reported head. | Run the dry run again. |
+| `not_eligible` | The PR does not target the default branch, its head is not a branch of the designated repository, or the project has none. | Nothing this control can do. |
+
+Applying re-proves under the retained repository's lock, posts one marked
+proof comment (`aq-delivered-pr:<number>:<head>`), re-reads the head, closes
+the PR and records `integration.pr_closed_delivered` with the proof, the
+operator and the reason. It never changes a task, completion, receipt or
+branch; tasks whose `pr_url` names the PR are listed in `task_ids`. Design:
+[legacy open PR recovery](../superpowers/specs/2026-10-01-legacy-open-pr-recovery-design.md).
+
 ## A task will not delete, archive, resume or restart
 
 ```text
@@ -1222,9 +1266,11 @@ refused.
 [`src/doctor/git_checks.py`](../../src/doctor/git_checks.py),
 [`src/commands/claim_commands.py`](../../src/commands/claim_commands.py),
 [`src/integration/delivery_path.py`](../../src/integration/delivery_path.py),
-[`src/integration/manual_delivery.py`](../../src/integration/manual_delivery.py).
+[`src/integration/manual_delivery.py`](../../src/integration/manual_delivery.py),
+[`src/integration/pr_delivery.py`](../../src/integration/pr_delivery.py).
 
 ```bash
 aq test tests/test_development_integration.py tests/test_doctor_integration_checks.py tests/test_branch_discard.py tests/test_archive.py
 aq test tests/test_delivery_manual.py tests/test_integration_mode.py tests/test_merge_slot.py
+aq test tests/test_integration_pr_delivery.py
 ```

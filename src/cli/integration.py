@@ -385,6 +385,39 @@ def integration_bind_legacy_repositories(
     })
 
 
+@integration.command("close-delivered-pr")
+@click.argument("project_id")
+@click.argument("pr_number", type=click.IntRange(min=1))
+@click.option("--apply", is_flag=True, help="Close the proven PR; default is a dry run.")
+@click.option("--head", "expected_head_sha", help="Exact head reported by the dry run.")
+@click.option("--reason", help="Audit reason required when applying.")
+@click.pass_context
+@_handle_errors
+def integration_close_delivered_pr(
+    ctx: click.Context, project_id: str, pr_number: int, apply: bool,
+    expected_head_sha: str | None, reason: str | None,
+) -> None:
+    """Close open PR PR_NUMBER only once Git proves its work is on the default branch.
+
+    GitHub closes a PR as merged when its exact head lands; this covers work
+    delivered under other commits and untracked branches. The dry run reports
+    `would_close` with the proof (`ancestor`, `patch_equivalent`,
+    `content_equivalent`), `undelivered` with what merging would still change,
+    or `nothing_to_close`. `--apply` needs that head and a reason; it posts one
+    proof comment and closes the PR. Tasks and branches are never changed.
+    """
+    if apply and not (expected_head_sha and reason):
+        raise click.UsageError("--apply requires --head and --reason")
+    args: dict[str, Any] = {
+        "project_id": project_id, "pr_number": pr_number, "dry_run": not apply,
+    }
+    if expected_head_sha is not None:
+        args["expected_head_sha"] = expected_head_sha
+    if reason is not None:
+        args["reason"] = reason
+    _execute(ctx, "integration_close_delivered_pr", args)
+
+
 @integration.command("clear-stale-request")
 @click.argument("project_id")
 @click.option("--apply", is_flag=True, help="Release the request; default is a dry run.")
