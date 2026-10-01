@@ -50,7 +50,10 @@ jobs:
        !(github.event.pull_request.head.repo.full_name == github.repository &&
          startsWith(github.event.pull_request.head.ref, 'aq/integration/')))
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The cache-miss install and the tests each have their own step deadline;
+    # this total is their sum plus setup and cleanup, so a slow PyPI cannot
+    # spend the tests' time (eight jobs in runs up to 36831813696 did).
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -165,8 +168,10 @@ jobs:
       # pip retries a refused connection but not a download that stalls
       # mid-body (run 36828686954: ReadTimeoutError at 68 kB/s). Retry the
       # install; pip's HTTP cache keeps each wheel an earlier attempt finished.
+      # A completed slow install has taken 571 s.
       - name: Install dependencies on cache miss
         if: steps.venv.outputs.cache-hit != 'true'
+        timeout-minutes: 12
         run: |
           python -m venv .venv
           for attempt in 1 2 3; do
@@ -207,6 +212,7 @@ jobs:
 
       - name: Run tests
         id: tests
+        timeout-minutes: 10
         # Include fixture setup/teardown in the per-test deadline. Keep the
         # failed/error node IDs and the slowest phases visible in every arm.
         run: ${{ matrix.suite.command }} --timeout=120 --durations=50 -rfE
@@ -247,7 +253,10 @@ jobs:
     runs-on: ubuntu-latest
     # Include setup and post-job cleanup around the real daemon scenarios.
     # A passing graphs group consumed 261 seconds before its cleanup steps.
-    timeout-minutes: 10
+    # Run 36830122857's cache-miss install took 439 s of a shared 10-minute
+    # total and cancelled the passing cli group, so the install and the
+    # scenarios each have a step deadline and this total covers both.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -306,8 +315,10 @@ jobs:
       # pip retries a refused connection but not a download that stalls
       # mid-body (run 36828686954: ReadTimeoutError at 68 kB/s). Retry the
       # install; pip's HTTP cache keeps each wheel an earlier attempt finished.
+      # A completed slow install has taken 571 s.
       - name: Install dependencies on cache miss
         if: steps.venv.outputs.cache-hit != 'true'
+        timeout-minutes: 12
         run: |
           python -m venv .venv
           for attempt in 1 2 3; do
@@ -332,5 +343,7 @@ jobs:
 
       # The smoke setup migrates its own unique disposable database. Run only
       # this group's node, with no xdist workers or other suites competing.
+      # The node's own 540-second pytest-timeout fires before this deadline.
       - name: Run scenario group
+        timeout-minutes: 10
         run: pytest 'tests/test_e2e_cli_stateful.py::test_disposable_daemon_stateful_cli_smoke[${{ matrix.group }}]' -m integration -s --durations=0

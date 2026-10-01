@@ -279,7 +279,6 @@ def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
     assert e2e['if'] == jobs['test']['if']
     assert e2e['strategy']['matrix']['group'] == list(SCENARIO_GROUPS)
     assert e2e['strategy']['fail-fast'] == 'false'
-    assert e2e['timeout-minutes'] == '10'
     run = e2e['steps'][-1]['run']
     assert run == (
         "pytest 'tests/test_e2e_cli_stateful.py::"
@@ -291,6 +290,31 @@ def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
     checkout = e2e['steps'][0]
     assert checkout['uses'] == 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
     assert checkout['with']['ref'] == '${{ github.sha }}'
+
+
+@pytest.mark.parametrize(
+    ('job', 'run_step', 'run_seconds'),
+    [
+        # The slowest passing default shard in the 40 runs up to 36831813696.
+        ('test', 'Run tests', 332),
+        # tests/test_e2e_cli_stateful.py gives each group 540 s; let it fire first.
+        ('e2e-cli', 'Run scenario group', 540),
+    ],
+)
+def test_a_slow_cache_miss_install_cannot_spend_the_run_budget(job, run_step, run_seconds):
+    # Run 36830122857 spent 439 s of E2E CLI (cli)'s shared 10-minute job
+    # budget installing from PyPI at 40-300 kB/s, then cancelled the passing
+    # group 158 s into its scenarios. Eight jobs in 40 runs died that way, with
+    # installs of 306-600 s and run steps no longer than 332 s.
+    spec = workflow()['jobs'][job]
+    steps = {step['name']: step for step in spec['steps']}
+    install = int(steps['Install dependencies on cache miss']['timeout-minutes'])
+    run = int(steps[run_step]['timeout-minutes'])
+    assert install * 60 > 600
+    assert run * 60 > run_seconds
+    # Checkout, PostgreSQL, interpreter, cache restore and save, the editable
+    # refresh, migrations and artifact upload take well under three minutes.
+    assert int(spec['timeout-minutes']) >= install + run + 3
 
 
 def _install_steps():
