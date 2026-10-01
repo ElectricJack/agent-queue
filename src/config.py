@@ -2372,11 +2372,22 @@ class JobsConfig:
     log_budget_bytes: int = 2 * 1024**3
     log_days: int = 14
     result_days: int = 90
+    matter_python: str = ""
+    matter_capture_script: str = ""
+    matter_editor: str = ""
+    matter_gpu_id: str = "default"
+    matter_artifact_bytes: int = 256 * 1024**2
 
     def validate(self) -> list[ConfigError]:
         errors = []
         if not isinstance(self.enabled, bool):
             errors.append(ConfigError("resources.jobs", "enabled", "must be a boolean"))
+        for name in ("matter_python", "matter_capture_script", "matter_editor", "matter_gpu_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or "\0" in value or (
+                name == "matter_gpu_id" and not value.strip()
+            ):
+                errors.append(ConfigError("resources.jobs", name, "must be a valid string"))
         if not isinstance(self.test_database_url, str) or (
             self.test_database_url and not is_postgres_url(self.test_database_url)
         ):
@@ -2397,6 +2408,7 @@ class JobsConfig:
             "log_budget_bytes",
             "log_days",
             "result_days",
+            "matter_artifact_bytes",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
