@@ -754,18 +754,11 @@ async def _retired_delegate_worker(env, tmp_path, *, operation_state: str, activ
     Its checkout carries the pushed repair plus progress it never committed --
     the shape the supervisor had to kill by hand twice on 2026-09-30.
     """
-    from src.commands.handler import CommandHandler
-    from src.config import AppConfig, DatabaseConfig, DiscordConfig
     from src.database.tables import (
         integration_parent_episodes,
         integration_repair_operations,
         integration_repair_stages,
     )
-    from src.orchestrator import Orchestrator
-    from src.sessions import SessionProviderRegistry
-    from src.sessions.fake import FakeProvider
-    from src.sessions.provider import SessionSpec
-    from tests.db_fixtures import lease_dsn
 
     head = env.branch("aq/parent")
     for task_id in ("parent", "delegate"):
@@ -815,6 +808,19 @@ async def _retired_delegate_worker(env, tmp_path, *, operation_state: str, activ
         workspace_id="ws-slot",
     )
 
+    return (slot, *await _pool_daemon(env, tmp_path, slot))
+
+
+async def _pool_daemon(env, tmp_path, slot):
+    """A daemon over *env*'s database whose fake provider runs the ``writer`` session."""
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig, DatabaseConfig, DiscordConfig
+    from src.orchestrator import Orchestrator
+    from src.sessions import SessionProviderRegistry
+    from src.sessions.fake import FakeProvider
+    from src.sessions.provider import SessionSpec
+    from tests.db_fixtures import lease_dsn
+
     provider = FakeProvider()
     await provider.start(SessionSpec(
         session_name="n-writer", work_dir=str(slot), command=("claude",),
@@ -844,7 +850,7 @@ async def _retired_delegate_worker(env, tmp_path, *, operation_state: str, activ
     orchestrator._get_default_branch = AsyncMock(return_value="main")
     handler = CommandHandler(orchestrator, cfg)
     orchestrator.set_command_handler(handler)
-    return slot, provider, registry, orchestrator, handler, cfg
+    return provider, registry, orchestrator, handler, cfg
 
 
 @pytest.mark.parametrize(
@@ -937,3 +943,131 @@ async def test_a_retired_delegates_drain_ack_stops_it_and_its_work_is_preserved(
         fence = await BranchOwnership(env.db).acquire(target, "debug-delegate", "repair")
         assert fence.owner_id == "debug-delegate"
         assert await release_delegates(env.db, now=now, released_by="integration_service") == []
+
+
+# ---------------------------------------------------------------------------
+# A close that committed but never finished: terminal transition -> drain-ack
+# -> stop -> owner recovery (wise-willow)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("unsaved", [False, True], ids=["clean-checkout", "unsaved-notes"])
+async def test_an_ambiguous_close_drain_ack_stops_the_writer_and_its_owner_is_recovered(
+    env, tmp_path, unsaved
+):
+    """sound-orbit: COMPLETED and delivered, but its worker stayed bound to the claim.
+
+    A daemon restart fell between ``complete_session_task``'s terminal
+    transition and the branch handoff, completion record and claim release
+    that follow it.  The attached owner kept the claim; the drained worker sat
+    idle; owner recovery answered ``writer_live`` until a supervisor killed it.
+    """
+    from src.database.tables import task_delivery_receipts, task_session_attempts
+    from src.sessions.provider import SessionHandle
+    from src.sessions.reconciler import SessionReconciler
+
+    env.branch("aq/leaf")
+    await env.db.create_task(Task(
+        id="leaf", project_id="p", title="leaf", description="",
+        status=TaskStatus.IN_PROGRESS, repo_id="r", branch_name="aq/leaf",
+    ))
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(agents).values(
+            id="a1", name="worker", profile_id="worker", state="BUSY",
+            current_task_id="leaf", created_at=1.0,
+        ))
+        await conn.execute(
+            update(tasks).where(tasks.c.id == "leaf").values(assigned_agent_id="a1",
+                                                              claim_epoch=1)
+        )
+    slot = await env.slot("slot", "aq/leaf", locked_by_agent_id="a1", locked_by_task_id="leaf")
+    if unsaved:
+        (slot / "notes.txt").write_text("notes written after the close\n")
+    claimed_at = time.time() - 600
+    await env.session(
+        "writer", work_dir=slot, state="running", desired_state="running",
+        task_id="leaf", agent_id="a1", claim_phase="active", last_claim_epoch=1,
+    )
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(task_session_attempts).values(
+            id="attempt", session_id="writer", task_id="leaf", project_id="p",
+            agent_id="a1", profile_id="worker", name="n-writer", lifecycle="pool",
+            harness="claude", provider="fake", state="running", work_dir=str(slot),
+            started_at=claimed_at, session_started_at=1.0,
+        ))
+    await env.owner("owner", "aq/leaf", "leaf", session_id="writer", workspace_id="ws-slot")
+    provider, registry, orchestrator, handler, cfg = await _pool_daemon(env, tmp_path, slot)
+
+    # 1. The close's terminal transition commits -- the same write
+    #    ``complete_session_task`` makes -- and the daemon restarts before the
+    #    handoff, the completion record and the claim release.  Delivery then
+    #    lands the work with a code receipt.
+    await env.db.transition_task(
+        "leaf", TaskStatus.COMPLETED, context="session_close", assigned_agent_id=None,
+        expect_claim_epoch=1,
+    )
+    async with env.db.immediate() as conn:
+        await conn.execute(insert(task_delivery_receipts).values(
+            id="receipt", domain_key="delivery:leaf", source_task_id="leaf",
+            repository_id="r", target_branch="main", disposition="code",
+            created_at=time.time(),
+        ))
+    assert await env.db.get_task_completion("leaf") is None
+    assert (await env.db.get_session("writer")).task_id == "leaf"
+    assert (await env.row("owner"))["handoff_state"] == "attached"
+
+    # 2. The worker acknowledges its drain.  Owner recovery cannot act yet:
+    #    the writer is still running.
+    acked = await handler.execute("session_drain_ack", {"session_id": "writer"})
+    assert acked["success"] is True
+
+    async def confirm_stopped(session):
+        return await provider.confirm_stopped(
+            SessionHandle(session["name"], session["provider"], session["instance_token"])
+        )
+
+    blocked = await env.service(confirm_stopped=confirm_stopped).recover(
+        "owner", principal="sweep", dry_run=True
+    )
+    assert (blocked.outcome, blocked.reason) == ("not_eligible", "writer_live")
+
+    # 3. The reconciler stops it -- no supervisor kill -- keeping every binding
+    #    the owner holds, and the task's terminal record untouched.
+    reconciler = SessionReconciler(
+        env.db, cfg, registry, bus=orchestrator.bus, orchestrator=orchestrator, epoch="e"
+    )
+    now = time.time()
+    await reconciler._step_drain_ack(await reconciler._step_observe(now), now)
+    writer = await env.db.get_session("writer")
+    assert (writer.state, writer.desired_state, writer.end_reason, writer.task_id) == (
+        "stopped", "stopped", "settled_claim", "leaf"
+    )
+    assert await provider.confirm_stopped(SessionHandle("n-writer", "fake", "tok-writer"))
+    assert (await env.row("owner"))["handoff_state"] == "attached"
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id == "leaf"
+    task = await env.db.get_task("leaf")
+    assert (task.status, task.assigned_agent_id, task.claim_epoch) == (
+        TaskStatus.COMPLETED, None, 1
+    )
+
+    # 4. Owner recovery now proves the writer gone, preserves anything origin
+    #    lacks, and releases the owner, the workspace and the claim.
+    outcome = await env.service(confirm_stopped=confirm_stopped).recover(
+        "owner", principal="sweep"
+    )
+    assert outcome.outcome == ("preserved_and_released" if unsaved else "released")
+    if unsaved:
+        preserved = remote_sha(env.origin, "aq/preserved/owner")
+        assert git(env.origin, "show", f"{preserved}:notes.txt") == (
+            "notes written after the close"
+        )
+        assert (slot / "notes.txt").read_text() == "notes written after the close\n"
+    assert (await env.row("owner"))["handoff_state"] == "released"
+    writer = await env.db.get_session("writer")
+    assert (writer.task_id, writer.claim_phase) == (None, None)
+    assert (await env.db.get_workspace("ws-slot")).locked_by_task_id is None
+    task = await env.db.get_task("leaf")
+    assert (task.status, task.assigned_agent_id, task.claim_epoch) == (
+        TaskStatus.COMPLETED, None, 1
+    )
+    assert await env.db.get_task_completion("leaf") is None

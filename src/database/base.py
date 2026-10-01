@@ -842,6 +842,7 @@ class DatabaseBackend(Protocol):
         release_workspace_lock: bool = False,
         conn=None,
     ) -> TransitionResult: ...
+    async def get_settled_pool_claim(self, session_id: str, *, conn=None) -> dict | None: ...
     async def release_historical_pool_claim(
         self,
         conn,

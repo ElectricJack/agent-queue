@@ -48,7 +48,10 @@ from src.database.tables import (
     integration_branch_owners,
     integration_repair_stages,
     sessions,
+    task_completion_records,
+    task_delivery_receipts,
     task_metadata,
+    task_session_attempts,
     task_workspace_requirements,
     tasks,
     workspaces,
@@ -58,6 +61,9 @@ from src.routing.sources import CLAIMABLE_SOURCES, LEGACY, claimable_sources
 
 
 _frontier_child = tasks.alias("frontier_child")
+
+#: Task statuses a pool claim can end in that no further close changes.
+SETTLED_POOL_CLAIM_STATUSES = (TaskStatus.COMPLETED.value, TaskStatus.FAILED.value)
 
 
 def _frontier_predicates(hierarchy_mode: ProjectIntegrationMode | None = None):
@@ -1331,6 +1337,124 @@ class ClaimQueryMixin:
                     .values(locked_by_task_id=None)
                 )
             return True
+
+    async def get_settled_pool_claim(self, session_id: str, *, conn=None) -> dict | None:
+        """Prove a draining pool session's held task is terminal and truthfully settled.
+
+        ``aq task close`` commits the terminal transition first and only then
+        hands the branch back, saves the completion record and releases the
+        claim.  A daemon restart in between leaves the session bound to a
+        finished task while its attached branch owner keeps
+        :meth:`release_displaced_pool_claim` from detaching it, so the drained
+        worker sat idle until a supervisor killed it (wise-willow).  All of
+        these must hold:
+
+        * the session is a pool row wanting ``stopped`` that still names the
+          task, and its last claim epoch is the task's: the claim that went
+          terminal is this session's, not a pointer at requeued work;
+        * the task is ``COMPLETED`` or ``FAILED`` and no agent holds it;
+        * the close was recorded after this session's attempt on the task
+          began: a completion record, or a ``code``/``noop`` delivery receipt
+          (the restart can lose the first; delivery writes the second);
+        * no running integration operation owns the task in any seat
+          (``live_integration_owner``) -- such a seat can still hand work back.
+
+        Returns the proof, or ``None``.  It never reads or changes the branch
+        owner: stopping the session leaves that to owner recovery.
+        """
+        if conn is None:
+            async with self._engine.connect() as owned:
+                return await self.get_settled_pool_claim(session_id, conn=owned)
+        session = (
+            await conn.execute(
+                select(
+                    sessions.c.task_id, sessions.c.lifecycle, sessions.c.desired_state,
+                    sessions.c.last_claim_epoch,
+                ).where(sessions.c.id == session_id)
+            )
+        ).mappings().one_or_none()
+        if (
+            session is None
+            or session["lifecycle"] != "pool"
+            or session["desired_state"] != "stopped"
+            or session["task_id"] is None
+            or session["last_claim_epoch"] is None
+        ):
+            return None
+        task_id = session["task_id"]
+        task = (
+            await conn.execute(
+                select(tasks.c.status, tasks.c.assigned_agent_id, tasks.c.claim_epoch)
+                .where(tasks.c.id == task_id)
+            )
+        ).mappings().one_or_none()
+        if (
+            task is None
+            or task["status"] not in SETTLED_POOL_CLAIM_STATUSES
+            or task["assigned_agent_id"] is not None
+            or task["claim_epoch"] != session["last_claim_epoch"]
+        ):
+            return None
+        attempt_started = (
+            await conn.execute(
+                select(func.max(task_session_attempts.c.started_at)).where(
+                    task_session_attempts.c.session_id == session_id,
+                    task_session_attempts.c.task_id == task_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if attempt_started is None:
+            return None
+        evidence = None
+        record = (
+            await conn.execute(
+                select(task_completion_records.c.id, task_completion_records.c.outcome)
+                .where(
+                    task_completion_records.c.task_id == task_id,
+                    task_completion_records.c.completed_at >= attempt_started,
+                )
+                .order_by(task_completion_records.c.completed_at.desc())
+                .limit(1)
+            )
+        ).mappings().first()
+        if record is not None:
+            evidence = {
+                "kind": "completion_record",
+                "id": record["id"],
+                "detail": f"completion record {record['id']} (outcome {record['outcome']})",
+            }
+        else:
+            receipt = (
+                await conn.execute(
+                    select(task_delivery_receipts.c.id, task_delivery_receipts.c.disposition)
+                    .where(
+                        task_delivery_receipts.c.source_task_id == task_id,
+                        task_delivery_receipts.c.disposition.in_(("code", "noop")),
+                        task_delivery_receipts.c.created_at >= attempt_started,
+                    )
+                    .order_by(task_delivery_receipts.c.created_at.desc())
+                    .limit(1)
+                )
+            ).mappings().first()
+            if receipt is not None:
+                evidence = {
+                    "kind": "delivery_receipt",
+                    "id": receipt["id"],
+                    "detail": f"{receipt['disposition']} delivery receipt {receipt['id']}",
+                }
+        if evidence is None:
+            return None
+        from src.integration.delegate_release import live_integration_owner
+
+        if await live_integration_owner(conn, [task_id]) is not None:
+            return None
+        return {
+            "task_id": task_id,
+            "status": task["status"],
+            "claim_epoch": int(task["claim_epoch"]),
+            "evidence": evidence,
+            "reason": f"task {task_id} is {task['status']} with {evidence['detail']}",
+        }
 
     async def release_historical_pool_claim(
         self,

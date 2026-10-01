@@ -642,6 +642,18 @@ unpushed work before the release that lets the successor stage reserve the branc
 the terminal `superseded`/`cancelled` retirement. The task is never closed and no pass is
 manufactured. Deadlines, attempts and human gates are untouched.
 
+The same wait has no end when the close itself was interrupted. The terminal transition commits
+before the in-close release above, so a daemon restart between them leaves the task `COMPLETED`
+(often delivered) while its owner row stays attached to a pool session that still names the task.
+That attachment is what refuses the displaced-claim release, and owner recovery answers
+`writer_live` for as long as the idle worker runs. The session reconciler stops such a
+drain-acknowledged worker through the same teardown, again only on the agent's own
+acknowledgement and durable proof (`get_settled_pool_claim`). The task must be `COMPLETED` or
+`FAILED` with no holder under the session's own claim epoch. A completion record or a
+`code`/`noop` delivery receipt must postdate the session's attempt. No running operation may own
+the task in any seat. The terminal record is not rewritten. Owner recovery, by hand or by its
+opt-in sweep, then proves the stopped writer gone and preserves before it releases.
+
 A close that returns the task to the frontier is the same handoff, not a lesser one. Git
 verification that finds only fixable issues and no live session to hand them back to, and a
 transient failure still inside the retry budget, both re-queue the task READY while its ownership
