@@ -1,4 +1,4 @@
-"""Single-loop bounded reconciliation for durable integration work."""
+"""Bounded control and remote reconciliation for durable integration work."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ class IntegrationService:
         review_handler: DrainHandler | None = None,
         root_pull_request_handler: DrainHandler | None = None,
         repair_dispatch_handler: DrainHandler | None = None,
+        green_promotion_handler: DrainHandler | None = None,
         page_size: int = 100,
         interval_seconds: float = 5.0,
         clock: Callable[[], float] = time.time,
@@ -47,6 +48,7 @@ class IntegrationService:
             raise ValueError("integration service interval must be positive")
         self._development_handler = development_handler
         self._development_task = None
+        self._reconciliation_task: asyncio.Task[None] | None = None
         self._db = db
         self._scheduler = scheduler
         self._repair = repair
@@ -63,6 +65,7 @@ class IntegrationService:
         self._review_handler = review_handler
         self._root_pull_request_handler = root_pull_request_handler
         self._repair_dispatch_handler = repair_dispatch_handler
+        self._green_promotion_handler = green_promotion_handler
         self._page_size = page_size
         self._interval_seconds = interval_seconds
         self._clock = clock
@@ -77,59 +80,81 @@ class IntegrationService:
             "cleanup": None,
         }
 
-    async def tick(self, now: float) -> None:
+    async def tick(self, now: float, *, background: bool = False) -> None:
+        """Run one control page; the live loop owns at most one remote pass."""
         if self._tick_lock.locked():
             return
         await self._tick_lock.acquire()
         try:
+            if (
+                not self._stop_event.is_set()
+                and (self._reconciliation_task is None or self._reconciliation_task.done())
+            ):
+                self._reconciliation_task = asyncio.create_task(
+                    self._reconcile(), name="integration-remote-reconciliation"
+                )
+            if not background and self._reconciliation_task is not None:
+                await self._reconciliation_task
+            await self._source("schedule", self._tick_schedules, self._clock())
+            if self._green_promotion_handler is not None:
+                await self._source(
+                    "green promotion continuation", self._green_promotion_handler, self._clock()
+                )
+            await self._source("integration outbox", self._outbox.dispatch_due, self._clock())
+        finally:
+            self._tick_lock.release()
+
+    async def _reconcile(self) -> None:
+        """One bounded page per remote source, preserving CI/deadline ordering."""
+        try:
             retire = getattr(self._repair, "retire_terminal_delegates", None)
             if callable(retire):
-                await self._source("terminal repair delegates", retire, now)
+                await self._source("terminal repair delegates", retire, self._clock())
             if self._owner_recovery_handler is not None:
-                await self._source("owner recovery", self._owner_recovery_handler, now)
+                await self._source("owner recovery", self._owner_recovery_handler, self._clock())
             if self._development_handler is not None and (
                 self._development_task is None or self._development_task.done()
             ):
                 self._development_task = asyncio.create_task(
-                    self._source("development", self._development_handler, now)
+                    self._source("development", self._development_handler, self._clock())
                 )
             if self._branch_materialization_handler is not None:
                 await self._source(
-                    "branch materialization", self._branch_materialization_handler, now
+                    "branch materialization", self._branch_materialization_handler, self._clock()
                 )
             if self._root_pull_request_handler is not None:
                 await self._source(
-                    "train root pull requests", self._root_pull_request_handler, now
+                    "train root pull requests", self._root_pull_request_handler, self._clock()
                 )
             if self._review_handler is not None:
-                await self._source("GitHub PR reviews", self._review_handler, now)
-            await self._source("schedule", self._tick_schedules, now)
+                await self._source("GitHub PR reviews", self._review_handler, self._clock())
             if self._collection_handler is not None:
-                await self._source("child collection", self._collection_handler, now)
+                await self._source("child collection", self._collection_handler, self._clock())
             # A candidate may have completed its exact CI run at the same time
             # its repair-stage clock becomes due.  Observe it before advancing
             # the deadline ladder: a conclusive result is still evidence, while
             # pending, unknown, and failed observations leave the finite clock
             # to the repair-deadline pass below.
-            await self._source("candidate CI", self._tick_candidate_ci, now)
-            await self._source("repair deadline", self._tick_repair_stages, now)
+            await self._source("candidate CI", self._tick_candidate_ci, self._clock())
+            await self._source("repair deadline", self._tick_repair_stages, self._clock())
             if self._repair_dispatch_handler is not None:
-                await self._source("repair dispatch", self._repair_dispatch_handler, now)
+                await self._source("repair dispatch", self._repair_dispatch_handler, self._clock())
             reconcile = getattr(self._repair, "reconcile_delegate_reservations", None)
             if callable(reconcile):
-                await self._source("repair reservations", reconcile, now)
+                await self._source("repair reservations", reconcile, self._clock())
             if self._parent_ci_handler is not None:
-                await self._source("parent CI", self._parent_ci_handler, now)
-            await self._source("integration intent", self._tick_intents, now)
+                await self._source("parent CI", self._parent_ci_handler, self._clock())
+            await self._source("integration intent", self._tick_intents, self._clock())
             if self._cleanup_handler is not None:
-                await self._source("integration cleanup", self._tick_cleanup, now)
+                await self._source("integration cleanup", self._tick_cleanup, self._clock())
             if self._drain_handler is not None:
-                await self._source("integration drain", self._drain_handler, now)
+                await self._source("integration drain", self._drain_handler, self._clock())
             if self._branch_discard_handler is not None:
-                await self._source("branch discard", self._branch_discard_handler, now)
-            await self._source("integration outbox", self._outbox.dispatch_due, now)
-        finally:
-            self._tick_lock.release()
+                await self._source("branch discard", self._branch_discard_handler, self._clock())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("unexpected integration remote reconciliation failure")
 
     async def _tick_schedules(self, now: float) -> None:
         rows = await self._page(
@@ -144,7 +169,7 @@ class IntegrationService:
                 row,
                 self._scheduler.mark_due,
                 row["project_id"],
-                now,
+                self._clock(),
                 "periodic",
             )
 
@@ -162,7 +187,7 @@ class IntegrationService:
                 self._repair.expire,
                 row["operation_id"],
                 int(row["stage"]),
-                now=now,
+                now=self._clock(),
             )
 
     async def _tick_candidate_ci(self, now: float) -> None:
@@ -210,8 +235,8 @@ class IntegrationService:
             self._cursors[source] = cursor_for(rows[-1])
         return rows
 
-    @staticmethod
-    async def _source(name: str, callback: Callable, *args, **kwargs) -> Any:
+    async def _source(self, name: str, callback: Callable, *args, **kwargs) -> Any:
+        started = self._clock()
         try:
             return await callback(*args, **kwargs)
         except asyncio.CancelledError:
@@ -219,6 +244,10 @@ class IntegrationService:
         except Exception:
             logger.exception("integration %s source failed and remains retryable", name)
             return None
+        finally:
+            elapsed = self._clock() - started
+            if elapsed > self._interval_seconds:
+                logger.warning("integration slow source=%s elapsed=%.3fs", name, elapsed)
 
     async def _run_optional(
         self,
@@ -231,7 +260,7 @@ class IntegrationService:
             if handler is None:
                 logger.warning("%s remains pending: later-phase handler is unavailable", name)
                 continue
-            await self._isolated(name, row, handler, row, now)
+            await self._isolated(name, row, handler, row, self._clock())
 
     @staticmethod
     async def _isolated(name: str, row: dict[str, Any], callback: Callable, *args, **kwargs):
@@ -253,20 +282,23 @@ class IntegrationService:
 
     async def stop(self) -> None:
         task = self._task
-        if task is None:
-            return
         self._stop_event.set()
+        if self._reconciliation_task is not None:
+            self._reconciliation_task.cancel()
+            await asyncio.gather(self._reconciliation_task, return_exceptions=True)
+            self._reconciliation_task = None
         if self._development_task is not None:
             self._development_task.cancel()
             await asyncio.gather(self._development_task, return_exceptions=True)
             self._development_task = None
-        await task
+        if task is not None:
+            await task
         self._task = None
 
     async def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
-                await self.tick(self._clock())
+                await self.tick(self._clock(), background=True)
             except asyncio.CancelledError:
                 raise
             except Exception:

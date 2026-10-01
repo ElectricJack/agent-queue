@@ -657,3 +657,96 @@ async def test_default_build_command_constructs_repository_bound_candidate_servi
     resolver.assert_awaited_once()
     factory.assert_awaited_once_with(binding)
     await handler.db.close()
+
+
+async def test_live_supervisor_manual_green_run_reaches_guarded_promotion(
+    command_handler_factory,
+):
+    """``aq playbook run`` by the live supervisor executes as its session.
+
+    Live 2026-09-30 run b06c8acb: the genuine green event answered
+    ``unauthorized`` because every session principal was refused.  The
+    supervisor now reaches the same guarded promotion service a playbook
+    does; a worker session running the same rule still cannot.
+    """
+    import time
+
+    from src.models import AgentProfile, SessionRecord
+
+    handler = await command_handler_factory()
+    await handler.db.create_project(Project(id="p", name="project"))
+    await handler.db.create_repo(
+        RepoConfig(
+            id="repo", project_id="p", source_type=RepoSourceType.CLONE,
+            url="https://github.com/acme/widgets.git", default_branch="main",
+        )
+    )
+    await handler.db.create_profile(
+        AgentProfile(id="supervisor", name="Supervisor", lifecycle="named")
+    )
+    await handler.db.create_session(
+        SessionRecord(
+            id="super-global", project_id=None, profile_id="supervisor", harness="codex",
+            provider="fake", name="supervisor", lifecycle="named", work_dir="/tmp/super",
+            epoch="epoch", instance_token="token", started_at=time.time(), state="running",
+            desired_state="running",
+        )
+    )
+    async with handler.db.immediate() as conn:
+        await conn.execute(
+            insert(integration_batches),
+            {
+                "id": "green-batch", "project_id": "p", "repository_id": "repo",
+                "request_id": "request-1", "source_manifest_digest": "digest",
+                "base_sha": "a" * 40, "lifecycle": "testing", "current_revision": 0,
+                "integration_branch": "refs/heads/aq/integration/green",
+                "policy_snapshot": {}, "artifact_snapshot": {}, "cleanup_state": "pending",
+                "created_at": 1.0, "updated_at": 1.0,
+            },
+        )
+    promotion = AsyncMock()
+    promotion.promote.return_value = RootPromotionResult(
+        outcome="promoted", batch_id="green-batch", revision=0, intent_id="intent",
+        receipt_ids=("receipt",), head_sha="b" * 40,
+    )
+    handler.orchestrator.root_promotion_service = promotion
+    artifact = load_definition_json(CURRENT_FIXTURE.read_text(encoding="utf-8"))
+    runs = RecordingRunRepository()
+    engine = PlaybookEngine(
+        services=EngineServices(
+            contracts=CONTRACTS, clock=lambda: 123.0,
+            artifact_store=InMemoryArtifactStore({artifact.id: artifact}),
+            handler=handler, db=handler.db,
+        ),
+        runs=runs, waits=runs, activations=StubActivations([artifact_ref_for(artifact)]),
+    )
+    policy = CapabilityPolicy.from_namespaces(aq_commands=["integration_promote_main"])
+    event = {
+        "event_type": "integration.candidate_green", "project_id": "p",
+        "operation_id": "root-op", "batch_id": "green-batch", "revision": 0,
+        "head_sha": "b" * 40,
+    }
+    set_handler_provider(lambda: handler)
+    try:
+        worker = await engine.dispatch_event(
+            {**event, "event_id": "worker-redrive"},
+            ExecutionPrincipal(
+                kind=PrincipalKind.SESSION, project_id="p", session_id="worker",
+                profile_id="worker", policy=policy,
+            ),
+        )
+        supervisor = await engine.dispatch_event(
+            {**event, "event_id": "supervisor-redrive"},
+            ExecutionPrincipal(
+                kind=PrincipalKind.SESSION, project_id=None, session_id="super-global",
+                profile_id="supervisor", elevated=True, policy=policy,
+            ),
+        )
+    finally:
+        set_handler_provider(None)
+    assert worker.rules_selected == supervisor.rules_selected == ("promote-green-candidate",)
+    promotion.promote.assert_awaited_once_with("green-batch", 0)
+    assert [snapshot.lifecycle.value for snapshot in runs.snapshots.values()] == [
+        "failed", "completed",
+    ]
+    await handler.db.close()

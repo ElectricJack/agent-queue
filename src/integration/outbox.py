@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import delete, insert, or_, select, update
+from sqlalchemy import delete, insert, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +17,7 @@ from src.database.tables import integration_outbox, integration_outbox_artifact_
 
 
 AcceptIntegrationEvent = Callable[[str, dict[str, Any], str], Awaitable[bool]]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +187,8 @@ class IntegrationOutbox:
         page_size: int = 100,
         retry_base_seconds: float = 1.0,
         retry_max_seconds: float = 300.0,
+        clock: Callable[[], float] = time.time,
+        before_dispatch: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         if page_size <= 0:
             raise ValueError("page_size must be positive")
@@ -195,47 +199,81 @@ class IntegrationOutbox:
         self._page_size = page_size
         self._retry_base_seconds = retry_base_seconds
         self._retry_max_seconds = retry_max_seconds
+        self._clock = clock
+        self._before_dispatch = before_dispatch
+        self._cursor: tuple[float, str] | None = None
+        self._cycle_end: tuple[float, str] | None = None
 
     async def dispatch_due(self, now: float) -> int:
         """Try at most one page of due events and return the acknowledged count."""
-        async with self._db._engine.connect() as conn:
-            rows = (
-                (
-                    await conn.execute(
-                        select(integration_outbox)
-                        .where(
-                            integration_outbox.c.delivered_at.is_(None),
-                            integration_outbox.c.available_at <= now,
-                        )
-                        .order_by(
-                            integration_outbox.c.available_at,
-                            integration_outbox.c.id,
-                        )
-                        .limit(self._page_size)
-                    )
-                )
-                .mappings()
-                .all()
-            )
+        rows = await self._page(now)
+        if rows:
+            self._cursor = (float(rows[-1]["available_at"]), rows[-1]["id"])
 
         delivered = 0
         for row in rows:
+            started = self._clock()
             try:
+                if self._before_dispatch is not None:
+                    await self._before_dispatch(row["project_id"])
                 accepted = await self._accept_event(
                     row["event_type"], dict(row["payload"]), row["id"]
                 )
                 if not accepted:
                     await self._retry(
                         row,
-                        now=now,
+                        now=self._clock(),
                         error="no enabled matching playbook durably accepted the event",
                     )
                     continue
-                if await self._acknowledge(row["id"], now=now):
+                if await self._acknowledge(row["id"], now=self._clock()):
                     delivered += 1
             except Exception as exc:  # retryable I/O/consumer failure; process exits still escape
-                await self._retry(row, now=now, error=f"{type(exc).__name__}: {exc}")
+                await self._retry(row, now=self._clock(), error=f"{type(exc).__name__}: {exc}")
+            finally:
+                elapsed = self._clock() - started
+                if elapsed > 5.0:
+                    logger.warning(
+                        "integration slow outbox event=%s type=%s project=%s elapsed=%.3fs",
+                        row["id"], row["event_type"], row["project_id"], elapsed,
+                    )
         return delivered
+
+    async def _page(self, now: float) -> list[Any]:
+        """Freeze a scan boundary so retrying rows cannot monopolize later pages."""
+        key = tuple_(integration_outbox.c.available_at, integration_outbox.c.id)
+        due = select(integration_outbox).where(
+            integration_outbox.c.delivered_at.is_(None),
+            integration_outbox.c.available_at <= now,
+        )
+        async with self._db._engine.connect() as conn:
+            for _ in range(2):
+                if self._cycle_end is None:
+                    end = (await conn.execute(
+                        select(integration_outbox.c.available_at, integration_outbox.c.id)
+                        .where(
+                            integration_outbox.c.delivered_at.is_(None),
+                            integration_outbox.c.available_at <= now,
+                        )
+                        .order_by(
+                            integration_outbox.c.available_at.desc(), integration_outbox.c.id.desc()
+                        )
+                        .limit(1)
+                    )).first()
+                    if end is None:
+                        return []
+                    self._cycle_end = (float(end[0]), end[1])
+                statement = due.where(key <= self._cycle_end)
+                if self._cursor is not None:
+                    statement = statement.where(key > self._cursor)
+                rows = (await conn.execute(
+                    statement.order_by(integration_outbox.c.available_at, integration_outbox.c.id)
+                    .limit(self._page_size)
+                )).mappings().all()
+                if rows:
+                    return rows
+                self._cursor = self._cycle_end = None
+        return []
 
     async def _acknowledge(self, event_id: str, *, now: float) -> bool:
         async with self._db.immediate() as conn:
@@ -262,6 +300,12 @@ class IntegrationOutbox:
         attempts = int(row["attempts"]) + 1
         exponent = min(max(attempts - 1, 0), 62)
         delay = min(self._retry_max_seconds, self._retry_base_seconds * (2**exponent))
+        if attempts == 1 or attempts & (attempts - 1) == 0:
+            logger.warning(
+                "integration outbox retry event=%s type=%s project=%s attempts=%s "
+                "retry_at=%.3f reason=%s",
+                row["id"], row["event_type"], row["project_id"], attempts, now + delay, error,
+            )
         async with self._db.immediate() as conn:
             await conn.execute(
                 update(integration_outbox)
