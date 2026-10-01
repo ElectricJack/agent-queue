@@ -621,6 +621,27 @@ release that follows; only the ownership row moves. The ordering is the load-bea
 release must run inside the close, while the session/task binding and the workspace's task-hold
 still exist, because the claim release erases precisely the evidence any proof reads.
 
+A pool writer whose delegate is retired never reaches that close. Its operation ended, or its
+stage expired or failed and the `active`/`escalated` operation moved `active_stage` past it. The
+close is refused permanently with the retirement record and `next_step: aq session drain-ack`.
+The acknowledgement writes the pool session's `desired_state=stopped`, and the pool teardown
+waits for a close of the held task, so the worker and its branch would wait on each other
+forever. Stopping the old writer must not depend on a supervisor kill. The session reconciler
+stops a drain-acknowledged pool worker that still holds its task only when two facts hold. First,
+the agent's own acknowledgement is recorded on the provider session; an operator drain or pool
+scale-down is not it. Second, durable state proves every writer seat of the task retired. A seat
+in a running operation is never proven retired: a pending, active or awaiting-completion stage;
+any stage of a `human_required` operation, because a human resume may revive it with the same
+writer; a terminal stage that is still the current one; and the verifier, parent or
+candidate-resolution seat. An accepted candidate repair is never retired by this rule, whatever
+its operation's state. Its close, or the stopped-writer reconciliation of an unreleased accepted
+claim, still completes it truthfully. The stop is the ordinary pool teardown a kill reaches. The provider
+stop is confirmed first, and an unconfirmed stop releases nothing and retries. An attached
+owner keeps the stopped session's claim, checkout and binding. Owner recovery then preserves
+unpushed work before the release that lets the successor stage reserve the branch, or before
+the terminal `superseded`/`cancelled` retirement. The task is never closed and no pass is
+manufactured. Deadlines, attempts and human gates are untouched.
+
 A close that returns the task to the frontier is the same handoff, not a lesser one. Git
 verification that finds only fixable issues and no live session to hand them back to, and a
 transient failure still inside the retry budget, both re-queue the task READY while its ownership

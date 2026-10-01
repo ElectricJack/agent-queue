@@ -1254,8 +1254,21 @@ class SessionCommandsMixin:
             # release, no token revoke — nothing about the run ended.
             issues = result.get("issues") or []
             escalated = bool(result.get("escalated"))
+            retired = result.get("retired")
             bullets = "\n".join(f"- {msg}" for msg in issues)
-            if escalated:
+            if retired:
+                # The integration operation no longer needs this delegate:
+                # nothing in this workspace can make the close acceptable,
+                # and "fix these and close again" is what kept a worker
+                # retrying (bold-impact-53).
+                lead = "close refused: this integration delegate is retired"
+                tail = (
+                    "Do not retry the close and do not close --outcome fail. Run "
+                    "`aq session drain-ack`: the session reconciler stops this "
+                    "session, and owner recovery preserves its checkout before "
+                    "releasing the branch."
+                )
+            elif escalated:
                 # A precondition no agent command can satisfy.  Saying "you
                 # can still fix this from this workspace" here is what sends
                 # a worker into a retry loop or into closing --outcome fail
@@ -1290,6 +1303,7 @@ class SessionCommandsMixin:
                 "issues": issues,
                 "feedback": result.get("feedback") or "",
                 "unmerged": result.get("unmerged"),
+                **({"retired": retired, "next_step": "aq session drain-ack"} if retired else {}),
                 "error": f"{lead}:\n{bullets}\n{tail}",
             }
 
