@@ -330,6 +330,131 @@ async def test_a_sessions_first_authenticated_call_is_launch_success_once(env):
     assert env.service.row("codex").last_success_at == T0
 
 
+async def _running_session(env, sid: str, *, started_at: float) -> None:
+    await env.db.create_session(SessionRecord(
+        id=sid, project_id="p1", profile_id="std-codex", harness="codex",
+        provider="fake", name=sid, lifecycle="pool", state="running",
+        work_dir="/tmp", epoch="e", instance_token="i", started_at=started_at,
+    ))
+
+
+async def _codex_usage(env, percent: float, *, resets_at: float | None) -> None:
+    await env.db.record_provider_usage([
+        ProviderUsageSnapshot(
+            provider="codex", window="primary", used_percent=percent,
+            observed_at=env.clock.now, source="transcript", resets_at=resets_at,
+        )
+    ])
+
+
+async def _restarted(env) -> ProviderAvailabilityService:
+    """A new daemon run: a fresh service on the same database, initialised."""
+    env.clock.tick(60)
+    fresh = ProviderAvailabilityService(
+        db=env.db, config_getter=lambda: env.config, harness_registry=registry(),
+        probe=env.probe, clock=env.clock,
+    )
+    await fresh.initialize()
+    await fresh.wait_for_probes()
+    return fresh
+
+
+def _launch_successes(service, session_id: str) -> int:
+    return sum(
+        1 for e in service.row("codex").evidence
+        if e["kind"] == LAUNCH_SUCCESS and e.get("session_id") == session_id
+    )
+
+
+async def test_restarts_do_not_flap_an_exhausted_provider_through_adopted_sessions(env):
+    """The 2026-10-01 replay: codex at 100 %, two restarts, two adopted sessions."""
+    await env.db.create_project(Project(id="p1", name="p1"))
+    for sid in ("supervisor", "worker"):
+        await _running_session(env, sid, started_at=env.clock.now)
+        await env.service.note_session_authenticated(sid)
+    reset = T0 + 200_000
+    await _codex_usage(env, 100.0, resets_at=reset)
+    await env.service.tick()
+    assert env.service.effective_state("codex") == EXHAUSTED
+    trips = len(await env.db.list_provider_transitions("codex"))
+    generation = env.service.row("codex").generation
+
+    service = env.service
+    for _ in range(2):
+        service = await _restarted(env)
+        for sid in ("supervisor", "worker"):
+            await service.note_session_authenticated(sid)
+            await service.tick()
+            assert service.effective_state("codex") == EXHAUSTED
+            # Adopted across the restart: an existing session's call, not a launch.
+            assert _launch_successes(service, sid) == 1
+        await _codex_usage(env, 100.0, resets_at=reset)
+        await service.tick()
+
+    assert len(await env.db.list_provider_transitions("codex")) == trips
+    row = service.row("codex")
+    assert (row.state, row.generation, row.until) == (EXHAUSTED, generation, reset)
+
+
+async def test_a_launch_after_a_restart_still_counts_and_recovers_on_a_fresher_reading(env):
+    await env.db.create_project(Project(id="p1", name="p1"))
+    await _codex_usage(env, 100.0, resets_at=T0 + 200_000)
+    await env.service.tick()
+    service = await _restarted(env)
+
+    # A session this run launched: its first call counts, but cannot outrank
+    # the provider's own fresh reading.
+    await _running_session(env, "late", started_at=env.clock.now)
+    await service.note_session_authenticated("late")
+    assert _launch_successes(service, "late") == 1
+    assert service.effective_state("codex") == EXHAUSTED
+
+    env.clock.tick(30)
+    await _codex_usage(env, 10.0, resets_at=T0 + 200_000)
+    await service.tick()
+    row = service.row("codex")
+    assert (row.state, row.reason_code) == (DEGRADED, RECOVERING)
+    await _running_session(env, "canary", started_at=env.clock.now)
+    await service.note_session_authenticated("canary")
+    assert service.effective_state("codex") == AVAILABLE
+
+
+async def test_a_stale_exhausted_reading_lets_a_launch_start_probation(env):
+    await env.db.create_project(Project(id="p1", name="p1"))
+    await _codex_usage(env, 100.0, resets_at=T0 + 200_000)
+    await env.service.tick()
+    assert env.service.effective_state("codex") == EXHAUSTED
+
+    env.clock.tick(env.config.providers.codex_stale_after_seconds + 60)
+    await env.service.tick()
+    assert env.service.effective_state("codex") == EXHAUSTED  # recovers on the clock...
+    await _running_session(env, "s-new", started_at=env.clock.now)
+    await env.service.note_session_authenticated("s-new")
+    row = env.service.row("codex")  # ...or on a launch, once the number is stale
+    assert (row.state, row.reason_code) == (DEGRADED, RECOVERING)
+
+
+async def test_an_override_over_a_held_exhaustion_is_honoured_then_rederived(env):
+    await env.db.create_project(Project(id="p1", name="p1"))
+    await _codex_usage(env, 100.0, resets_at=T0 + 200_000)
+    await env.service.tick()
+    await env.service.set_state(
+        "codex", "available", by="human:cli", reason="false positive", until=T0 + 600
+    )
+    assert env.service.effective_state("codex") == AVAILABLE
+    await _running_session(env, "s-1", started_at=env.clock.now)
+    await env.service.note_session_authenticated("s-1")
+    assert env.service.row("codex").state == EXHAUSTED  # derived underneath
+    transitions = len(await env.db.list_provider_transitions("codex"))
+
+    result = await env.service.set_state("codex", "auto", by="human:cli")
+    assert result.transition is not None
+    assert (result.transition.from_state, result.transition.to_state) == (AVAILABLE, EXHAUSTED)
+    await env.service.tick()
+    assert env.service.effective_state("codex") == EXHAUSTED
+    assert len(await env.db.list_provider_transitions("codex")) == transitions + 1
+
+
 async def test_the_token_store_hook_reports_each_validated_session(env):
     from src.api.auth import SessionTokenStore
 

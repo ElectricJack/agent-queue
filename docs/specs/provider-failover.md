@@ -146,13 +146,27 @@ the digest layer; every rule in D3–D5 is a unit test with a fake clock.
 | `startup_dialog` | `SessionDiedDuringStartup.detail` names the quarantine dialog; the rule's new `signal` field says what it means | `auth` / `usage` | **Strong** — a typed match during startup |
 | `exit_rate_limit` | `classify_exit` → `Verdict.RATE_LIMIT`; also the stall ladder's usage-limit screen, and an idle pool worker recycled on that screen (D13) | `usage` | **Medium** — pane text. `RATE_LIMIT_PATTERNS` includes a bare `429` and `resets at`, so one match proves little. The usage-limit screen's pattern set is far stricter, but it is still pane text and records the same kind. |
 | `launch_failure` | Any other `SessionDiedDuringStartup` (`end_reason = startup_exit`) | — | **Weak** — may be the repository, not the provider |
-| `launch_success` | The session's first authenticated API call with its session token (`prime`, `claim`, `heartbeat`), or its first transcript usage line, whichever is first | — | **Structured** |
+| `launch_success` | The session's first authenticated API call with its session token (`prime`, `claim`, `heartbeat`), or its first transcript usage line, whichever is first — counted once per launch, and only for a launch this daemon run witnessed (below) | — | **Structured** |
 | `llm_call` | Direct path only: adapter outcome mapped to `ok` / `auth` (401/403) / `usage` (429 with a quota body, `insufficient_quota`) / `error` | as named | **Structured** |
 
 Only a startup death counts as `launch_failure`. The other callers of
 `_fail_session_launch` — routing mismatch, missing harness file, no `work_dir`,
 base-checkout refusal, integration attachment, workspace acquisition — are AQ's
 own faults and are never provider evidence.
+
+**`launch_success` is evidence about a launch, not about a call.** A session's
+later token calls — heartbeats, claims, durable-wait polls, hook-driven `aq`
+commands — prove only that the session process is still alive; none of them
+says the provider can serve a new launch, and some reach the daemon without a
+model turn at all. So a session is counted once, and only when this daemon run
+witnessed the launch: a session whose `started_at` predates the run (one adopted
+across a restart) has already launched, and its calls after the restart are
+existing-session daemon calls, never `launch_success`. The once-per-session
+memory need not outlive the process, because the `started_at` gate is durable.
+The cost is that a session launched just before a restart that makes its first
+call just after it goes uncounted; the next launch counts, and since the
+canary's slot (D4) is not durable either, a recovering provider admits a fresh
+canary after the restart.
 
 **The dialog signal lives in the harness file.** `DialogRule` gains an optional
 `signal: "auth" | "usage"`. Shipped values: `codex`/`login-required` → `auth`,
@@ -216,7 +230,7 @@ An unavailable provider never jumps straight to `available`. It becomes
 
 | From | Moves to probation when |
 |---|---|
-| `exhausted` | `until + recovery.reset_grace_seconds` passes; or earlier, when a fresh snapshot shows the blocking window below `usage.degraded_percent` (an early reset, an upgraded plan). Claude's `/usage` probe keeps running every ten minutes whatever the state, so Claude recovers on evidence; Codex snapshots only arrive while a Codex session runs, so Codex recovers on the clock. |
+| `exhausted` | `until + recovery.reset_grace_seconds` passes; or earlier, when a fresh snapshot shows the blocking window below `usage.degraded_percent` (an early reset, an upgraded plan). Claude's `/usage` probe keeps running every ten minutes whatever the state, so Claude recovers on evidence; Codex snapshots only arrive while a Codex session runs, so Codex recovers on the clock. Neither path, nor a `launch_success`, applies while a fresh account-wide reading still at or above `usage.exhausted_percent` covers the window (below). |
 | `unauthenticated` | the auth probe, run every `recovery.auth_probe_interval_seconds` while in this state, answers `authenticated`. `aq provider recheck <provider>` runs it now. |
 | `failing` | `until` passes. |
 | `disabled` | the override expires or is cleared; the state is then **re-derived from evidence**, which may well be another unavailable state. |
@@ -240,9 +254,36 @@ simply stays `recovering` — launchable, harmless — until real work arrives. 
 pool with `min_active > 0` supplies the canary by itself.
 
 A `launch_success` observed while a provider is `exhausted` or `failing` (a
-session that was already running and is still making turns) is recovery
-evidence and moves it to probation early. It does not clear `unauthenticated` or
-`disabled`.
+session this run launched before the trip, whose first call lands after it) is
+recovery evidence and moves it to probation early. It does not clear
+`unauthenticated` or `disabled`.
+
+**A still-valid exhausted reading outranks every positive signal.** While the
+fullest fresh account-wide window (the `usage_view` the trip reads: not older
+than its `stale_after` horizon, `resets_at` not yet passed) stands at or above
+`usage.exhausted_percent`, an `exhausted` provider stays `exhausted`: no
+`launch_success`, `llm_call ok`, `authenticated` probe or passed `until` moves
+it to probation, because D3 rule (a) would trip it straight back on the next
+tick, and each round trip is two transitions, two notifications and a canary
+slot for a launch that will die on the usage screen. What releases it is the
+evidence that withdraws the reading:
+
+* a fresher snapshot below `usage.degraded_percent` (the early-recovery row
+  above);
+* the window's `resets_at` passing, which drops the reading from the view, and
+  then `until + recovery.reset_grace_seconds` or a `launch_success`;
+* the reading going stale (no snapshot inside `stale_after`, the normal case
+  for Codex once its sessions stop), after which the D4 rules apply as written
+  and a `launch_success` may start probation — a stale number is not a
+  statement about now;
+* an operator: `available` forces the launchable half until it expires (the
+  derived state stays `exhausted` underneath and returns with one transition at
+  expiry); `auto` clears the override and re-derives, which re-trips at once on
+  the same reading rather than flapping.
+
+A reading between `usage.degraded_percent` and `usage.exhausted_percent` does
+not hold the state: it no longer meets rule (a), so the D4 rules apply and
+probation completes into `degraded` (`usage_high`).
 
 ### D5 — the auth probe runs in the daemon, carefully
 
@@ -1319,7 +1360,10 @@ snapshots never trip; a model-scoped window never trips; attribution (one projec
 and no other provider ⇒ `degraded`); probation admits one launch, re-trips on one
 failure with `level + 1`, completes on one success; backoff doubling and its cap;
 level decay; override precedence, expiry, `auto` resetting counters; percent
-hysteresis; `generation` increments only on effective change.
+hysteresis; `generation` increments only on effective change; a still-valid
+exhausted reading holds `exhausted` against a success, an `authenticated` probe
+and a passed `until`, and releases on a fresher low reading, its reset or its
+staleness, with no transition in between.
 
 **Collectors and mechanism** (`tests/test_provider_evidence.py`,
 `test_provider_suppression.py`): the dialog `signal` field and the name-map
@@ -1329,7 +1373,10 @@ are `launch_failure`; **the 2026-09-20 replay** — `login-required` on every
 `startup_exit` session rows then stops growing; attributed startup deaths arm no
 key quarantine and bump no `sessions.restarts`; pools size to zero and idle
 sessions drain while busy ones are left alone; the push scheduler skips the
-provider; state survives a daemon restart; the auth probe never blocks the loop.
+provider; state survives a daemon restart; the auth probe never blocks the loop;
+**the 2026-10-01 replay** — a provider exhausted at 100 % across two daemon
+restarts records no `launch_success` for its adopted sessions and makes no
+transition, while a session launched after the restart still counts.
 
 **Intent and migration** (`tests/test_provider_intent.py`, on PostgreSQL): every
 row of D9; pin refusal for a worker token and for an inline graph; a vault
