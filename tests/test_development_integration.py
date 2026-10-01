@@ -1803,6 +1803,26 @@ async def test_publishing_row_the_target_moved_past_settles_as_not_delivered(set
     assert git(remote, "merge-base", "--is-ancestor", concurrent, "main") == ""
     assert git(remote, "merge-base", "--is-ancestor", member, "main") == ""
 
+@pytest.mark.parametrize("accept_equivalent", [False, True])
+async def test_adopt_rejects_completed_task_without_a_generation(setup, accept_equivalent):
+    db, service, _source, remote, _repo = setup
+    head = await feature(setup, "legacy", retain=False)
+    before_refs = git(remote, "show-ref")
+    before_operations = await service.rows("p")
+
+    with pytest.raises(ValueError, match="completion generation requires provenance migration"):
+        await service.adopt(
+            project_id="p", task_ids=["legacy"], target_ref="refs/heads/legacy",
+            head_sha=head, reason="unlabelled legacy generation", operator_id="local",
+            accept_equivalent=accept_equivalent,
+        )
+
+    assert await db.get_task_completion("legacy") is None
+    assert (await db.get_task("legacy")).status == TaskStatus.COMPLETED
+    assert await service.rows("p") == before_operations
+    assert git(remote, "show-ref") == before_refs
+
+
 async def test_adopt_requires_ancestry_or_explicit_operator_equivalence(setup):
     db, service, source, remote, _repo = setup
     await feature(setup, "one")

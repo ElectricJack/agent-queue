@@ -482,7 +482,7 @@ def _write_regenerator(tmp_path: Path, *, fail: bool = False) -> Path:
         f"touch '{tmp_path / 'regen-ran'}'\n"
         + ("printf 'rebuilt\\n' > generated.txt\n" if not fail else "")
         + f"echo {'regenerator failed' if fail else 'regenerating'}\n"
-        + (f"exit 1\n" if fail else "exit 0\n")
+        + ("exit 1\n" if fail else "exit 0\n")
     )
     stub.chmod(0o755)
     return stub
@@ -948,6 +948,41 @@ async def test_conflict_partial_is_published_before_repair_handoff(db, tmp_path)
     conflict = await service.build("batch")
     assert conflict.head_sha
     assert _git(origin, "rev-parse", conflict.branch) == conflict.head_sha
+
+
+async def test_concurrent_store_initialization_publishes_only_complete_repository(db, tmp_path):
+    from src.integration.candidates import CandidateService
+
+    initializing = []
+    both_started = asyncio.Event()
+    release = asyncio.Event()
+
+    class GatedInitGit(GitManager):
+        async def arun_git_result(self, args, **kwargs):
+            if args[0] == "init":
+                initializing.append(Path(args[-1]))
+                if len(initializing) == 2:
+                    both_started.set()
+                await release.wait()
+            return await super().arun_git_result(args, **kwargs)
+
+    data_dir = tmp_path / "data"
+    services = [
+        CandidateService(db, data_dir=data_dir, git_manager=GatedInitGit()) for _ in range(2)
+    ]
+    repository = await db.get_repo("repo")
+    operations = [asyncio.create_task(service._ensure_store(repository)) for service in services]
+    try:
+        await asyncio.wait_for(both_started.wait(), timeout=5)
+        assert len(set(initializing)) == 2
+        assert list((data_dir / "integration-repositories").glob("*.git")) == []
+    finally:
+        release.set()
+        stores = await asyncio.gather(*operations)
+
+    assert stores[0] == stores[1]
+    assert _git(stores[0], "rev-parse", "--is-bare-repository") == "true"
+    assert list(stores[0].parent.iterdir()) == [stores[0]]
 
 
 async def test_same_owner_concurrent_builds_never_duplicate_external_mutation(db, tmp_path):

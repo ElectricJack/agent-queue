@@ -30,9 +30,9 @@ async def wait(env, thread, after=0, **extra):
 async def test_unseen_messages_return_immediately_with_thread_cursor(env):
     thread = await joined(env)
     await send(env, thread, "two")
-    with patch("src.event_bus.EventWaiter.wait", new_callable=AsyncMock) as park:
+    with patch("src.event_bus.EventWaiter.wait", new_callable=AsyncMock) as blocking_wait:
         result = await wait(env, thread)
-    park.assert_not_awaited()
+    blocking_wait.assert_not_awaited()
     assert result.get("state") == "satisfied", result
     assert [m["seq"] for m in result["messages"]] == [1]
     assert result["next_cursor"] == 1
@@ -42,7 +42,7 @@ async def test_unseen_messages_return_immediately_with_thread_cursor(env):
 
 
 @pytest.mark.perf
-async def test_unseen_messages_latency_budget(env, perf_strict):
+async def test_unseen_messages_return_under_one_second(perf_strict, env):
     thread = await joined(env)
     await send(env, thread, "two")
     started = time.monotonic()
@@ -51,7 +51,7 @@ async def test_unseen_messages_latency_budget(env, perf_strict):
     assert time.monotonic() - started < 1
 
 
-async def test_concurrent_send_wakes_under_five_seconds(env):
+async def _concurrent_send(env):
     thread = await joined(env)
     task = asyncio.create_task(wait(env, thread, timeout=5))
     try:
@@ -63,12 +63,22 @@ async def test_concurrent_send_wakes_under_five_seconds(env):
         await send(env, thread, "two")
         result = await asyncio.wait_for(task, timeout=4.5)
         assert result["state"] == "satisfied", result
-        assert time.monotonic() - started < 5
+        elapsed = time.monotonic() - started
         assert result["next_cursor"] == 1
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
     assert env.bus.subscriber_count("message.sent") == 0
+    return elapsed
+
+
+async def test_concurrent_send_wakes_and_cleans_subscription(env):
+    await _concurrent_send(env)
+
+
+@pytest.mark.perf
+async def test_concurrent_send_wakes_under_five_seconds(perf_strict, env):
+    assert await _concurrent_send(env) < 5
 
 
 async def test_timeout_keeps_wait_active_and_cursor_then_reconnect_reuses_it(env):

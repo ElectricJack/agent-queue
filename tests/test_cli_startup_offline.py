@@ -148,6 +148,26 @@ def test_discovery_commands_are_offline_and_never_initialize_database(
     assert not marker.exists()
 
 
+def test_cli_command_discovery_does_not_import_daemon_runtime():
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import sys
+from src.cli.app import cli
+from src.mcp_registration import _discover_all_commands
+
+commands = _discover_all_commands()
+assert "task_claim" in commands
+assert commands["integration_development_sweep"]["input_schema"]["properties"]
+assert "task" in cli.commands
+assert not any(name == "mcp" or name.startswith("mcp.") for name in sys.modules)
+assert not any(name == "src.orchestrator" or name.startswith("src.orchestrator.")
+               for name in sys.modules)
+"""],
+        cwd=ROOT, capture_output=True, text=True, timeout=15, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 @pytest.mark.parametrize(
     ("worker", "database_url", "warning"),
     [

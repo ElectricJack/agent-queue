@@ -1288,6 +1288,8 @@ class DevelopmentIntegration:
                 None, repo.id,
             }:
                 raise ValueError(f"task {task_id} does not belong to the repository project")
+            if row["status"] == "COMPLETED" and task_id not in generations:
+                raise ValueError(f"{task_id}: completion generation requires provenance migration")
         identities = {
             task_id: self._adoption_fence(rows[task_id], generations) for task_id in task_ids
         }
