@@ -105,6 +105,77 @@ def test_only_the_attestation_audit_runs_on_a_push_to_main():
     assert pushed == {'main-attestation.yml'}
 
 
+def _venv_steps(name, job):
+    """The steps that build a job's `.venv`, by name."""
+    steps = {step.get('name'): step for step in workflow(name)['jobs'][job]['steps']}
+    return {
+        key: steps[key]
+        for key in ('Set up Python', 'Cache virtual environment', 'Install dependencies on cache miss')
+    }
+
+
+def _pip_installs(script):
+    """What each ``pip install`` in a step script installs, ignoring network options."""
+    installs = []
+    for match in re.finditer(r'-m pip install ([^;\n]+)', script.replace('\\\n', ' ')):
+        args = shlex.split(match.group(1))
+        requirements = []
+        while args:
+            arg = args.pop(0)
+            if arg in ('--timeout', '--retries'):
+                args.pop(0)
+            else:
+                requirements.append(arg)
+        installs.append(requirements)
+    return installs
+
+
+def test_the_venv_cache_is_warmed_on_main_without_running_tests():
+    # A run restores caches saved on its own ref or on `main`, and tests.yml
+    # never runs on `main` (run 36828502487 cold-installed in all 15 jobs).
+    warm = workflow('venv-cache.yml')
+    # No push or pull_request trigger: train onboarding would count it as a
+    # gate, and every run it starts is on `main`, the scope all refs can read.
+    assert list(warm['on']) == ['workflow_run', 'schedule', 'workflow_dispatch']
+    assert warm['on']['workflow_run'] == {
+        'workflows': [workflow('main-attestation.yml')['name']],
+        'types': ['completed'],
+        'branches': ['main'],
+    }
+    assert len(warm['on']['schedule']) == 1
+    assert warm['permissions'] == {'contents': 'read'}
+    assert warm['concurrency']['cancel-in-progress'] == 'false'
+    assert list(warm['jobs']) == ['warm']
+    steps = warm['jobs']['warm']['steps']
+    assert [step['name'] for step in steps] == [
+        'Checkout repository',
+        'Set up Python',
+        'Cache virtual environment',
+        'Install dependencies on cache miss',
+    ]
+    assert steps[0]['uses'] == _checkout_action()
+
+
+@pytest.mark.parametrize('job', ['test', 'e2e-cli'])
+def test_the_warmed_venv_is_the_entry_each_tests_job_restores(job):
+    warm = _venv_steps('venv-cache.yml', 'warm')
+    tests = _venv_steps('tests.yml', job)
+    # The resolved Python patch version is part of the key.
+    assert warm['Set up Python'] == tests['Set up Python']
+    # Only an identical path and key restore; a hit needs no download here.
+    cache = tests['Cache virtual environment']
+    assert warm['Cache virtual environment'] == {
+        **cache, 'with': {**cache['with'], 'lookup-only': 'true'}
+    }
+    warm_install = warm['Install dependencies on cache miss']
+    tests_install = tests['Install dependencies on cache miss']
+    assert warm_install['if'] == tests_install['if'] == "steps.venv.outputs.cache-hit != 'true'"
+    assert warm_install['run'].splitlines()[0] == tests_install['run'].splitlines()[0]
+    installs = _pip_installs(tests_install['run'])
+    assert len(installs) == 1 and '.[dev,cli]' in installs[0]
+    assert _pip_installs(warm_install['run']) == installs
+
+
 def test_pull_requests_into_main_run_ci():
     pull_request = workflow()['on']['pull_request']
     assert pull_request['branches'] == ['main']
