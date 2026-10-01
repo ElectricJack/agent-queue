@@ -2020,12 +2020,44 @@ async def test_two_concurrent_root_activations_make_one_main_write(prepared_db):
     )
 
     assert len(git.pushes) == 1
+    # The loser may land inside the winner's prewrite window; see
+    # test_activation_inside_a_peer_prewrite_window_defers_to_reconciliation.
     assert {result.outcome for result in results} <= {
         "promoted",
         "already_promoted",
         "wait",
+        "reconciliation_blocked",
     }
     assert any(result.outcome == "promoted" for result in results)
+
+
+@pytest.mark.asyncio
+async def test_activation_inside_a_peer_prewrite_window_defers_to_reconciliation(prepared_db):
+    """A durable prewrite it did not write may be a live push or a crashed one;
+    the second activation cannot tell, so it never pushes and defers."""
+    db, data_dir = prepared_db
+    app = FakeAppClient()
+    git = PushGit(app)
+    second = RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=lambda: 10.0
+    )
+    inside_window = []
+
+    async def activate_second(phase):
+        if phase == "after_prewrite_marker":
+            inside_window.append(await second.promote("batch", 0))
+
+    first = RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app,
+        crash_hook=activate_second, clock=lambda: 10.0,
+    )
+
+    result = await first.promote("batch", 0)
+
+    assert [peer.outcome for peer in inside_window] == ["reconciliation_blocked"]
+    assert result.outcome == "promoted"
+    assert len(git.pushes) == 1
+    assert app.remote == HEAD
 
 
 @pytest.mark.asyncio
