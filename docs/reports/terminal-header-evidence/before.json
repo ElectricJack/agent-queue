@@ -1,0 +1,62 @@
+{
+  "desktop": [
+    {
+      "name": "Builder — Ünïcödé 長いタスク名の折り返し試験 — ｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗ 🚀🧪🔁 no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break- agent window",
+      "pane": 404,
+      "header": 107,
+      "terminal": 249
+    },
+    {
+      "name": "Supervisor agent window",
+      "pane": 404,
+      "header": 142,
+      "terminal": 214
+    },
+    {
+      "name": "deep-high-claude pool agent window",
+      "pane": 404,
+      "header": 186,
+      "terminal": 170
+    }
+  ],
+  "small": [
+    {
+      "name": "Builder — Ünïcödé 長いタスク名の折り返し試験 — ｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗ 🚀🧪🔁 no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break- agent window",
+      "pane": 304,
+      "header": 137,
+      "terminal": 119
+    },
+    {
+      "name": "Supervisor agent window",
+      "pane": 304,
+      "header": 189,
+      "terminal": 58
+    },
+    {
+      "name": "deep-high-claude pool agent window",
+      "pane": 304,
+      "header": 237,
+      "terminal": 19
+    }
+  ],
+  "phone": [
+    {
+      "name": "Builder — Ünïcödé 長いタスク名の折り返し試験 — ｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗｗ 🚀🧪🔁 no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break-no-break- agent window",
+      "pane": 320,
+      "header": 152,
+      "terminal": 69
+    },
+    {
+      "name": "Supervisor agent window",
+      "pane": 320,
+      "header": 204,
+      "terminal": 39
+    },
+    {
+      "name": "deep-high-claude pool agent window",
+      "pane": 320,
+      "header": 269,
+      "terminal": 39
+    }
+  ]
+}

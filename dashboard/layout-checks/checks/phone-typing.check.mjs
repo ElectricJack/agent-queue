@@ -14,7 +14,7 @@ export const profiles = PHONES;
 const SCREEN_TEXT = "claimed: fixture-task-1";
 const INPUT = 'textarea[aria-label="worker-a terminal input"]';
 const TYPE = "xpath/.//button[normalize-space()='Type']";
-const WATCH = "xpath/.//button[normalize-space()='Watch only']";
+const WATCH = 'button[aria-label="Watch only"]';
 const STRIP = '[aria-label="worker-a terminal keys"]';
 const SEND = '[aria-label="Send to worker-a"]';
 const INPUT_PATH = `/ws/terminal/${SESSION}/input`;
@@ -26,7 +26,7 @@ async function until(predicate, timeout, message) {
   }
 }
 const focused = (t) => t.page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? null);
-const pressed = (t, selector) => t.page.$eval(selector, (el) => el.getAttribute("aria-pressed"));
+const modeHint = (t, selector) => t.page.$eval(selector, (el) => el.getAttribute("aria-description"));
 
 export async function run(t) {
   await t.page.goto(t.url(`/focus/sessions/${SESSION}`), { waitUntil: "domcontentloaded" });
@@ -34,8 +34,8 @@ export async function run(t) {
   const vp = t.page.viewport();
 
   // Every visit starts watch only: a tap on the screen types nothing and opens nothing.
-  assert.equal(await pressed(t, WATCH), "true");
-  assert.equal(await pressed(t, TYPE), "false");
+  assert.equal(await t.page.$(WATCH), null);
+  assert.equal(await modeHint(t, TYPE), "Watch only. Enable typing.");
   await t.page.tap("[data-allow-overflow-x] pre");
   await new Promise((done) => setTimeout(done, 300));
   assert.equal(await t.page.$(INPUT), null, "watch only shows an input bar");
@@ -46,8 +46,8 @@ export async function run(t) {
   await t.page.waitForSelector(`${STRIP} button:not([disabled])`);
   await until(() => t.stub.terminalInputs.length === 1, 5_000, "Type opened no input socket");
   assert.equal(t.stub.terminalInputs[0].url, INPUT_PATH, "the input socket carries a query (a size?)");
-  assert.equal(await pressed(t, TYPE), "true");
-  await expectLayout(t, { primary: [TYPE, WATCH, `${STRIP} button`, SEND] });
+  assert.equal(await modeHint(t, WATCH), "Typing is active. Switch to watch only.");
+  await expectLayout(t, { primary: [WATCH, `${STRIP} button`, SEND] });
   const strip = await rect(t.page, STRIP);
   assert.ok(strip.left >= -1 && strip.right <= vp.width + 1, `the key strip leaves the viewport (${strip.left}–${strip.right})`);
   const bar = await rect(t.page, INPUT);
@@ -95,6 +95,6 @@ export async function run(t) {
   await t.page.waitForFunction((selector) => !document.querySelector(selector), {}, INPUT);
   await until(() => !t.stub.terminalInputs[0].open, 5_000, "Watch only left the input socket open");
   assert.equal(t.stub.terminalInputs.length, 1, "the socket reconnected after Watch only");
-  await expectLayout(t, { primary: [TYPE, WATCH] });
+  await expectLayout(t, { primary: [TYPE] });
   assert.deepEqual(t.stub.statePuts(), [], "typing wrote roaming preferences");
 }

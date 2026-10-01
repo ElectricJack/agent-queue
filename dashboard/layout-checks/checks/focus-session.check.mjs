@@ -10,7 +10,8 @@ import { ENDED_SESSION, SESSIONS, STARTED, showSession } from "../fixtures/sessi
 export const name = "focus-session";
 
 const HEADER = ['header [aria-label="Back"]', 'header [aria-label="Focus home"]', 'header [aria-label="Open in full dashboard"]'];
-const TOOLS = ['[aria-label="Smaller text"]', '[aria-label="Larger text"]', '[aria-label="Full screen"]'];
+const TOOLS = ['[aria-label^="Details for "]', '[aria-label="Full screen"]'];
+const FONTS = ['[aria-label="Smaller text"]', '[aria-label="Larger text"]'];
 const RETRY = "xpath/.//button[normalize-space()='Retry']";
 const SCREEN_TEXT = "claimed: fixture-task-1";
 const terminalFrames = (t) => t.sockets.sent.filter((s) => s.url?.includes("/ws/terminal"));
@@ -35,6 +36,8 @@ export async function run(t) {
   assert.ok(console_.left <= 1 && console_.right >= vp.width - 1, `the pane is not edge to edge (${console_.left}–${console_.right})`);
 
   // Font: rendering only — no request, no socket, no new stream.
+  await t.page.click('[aria-label^="Details for "]');
+  await expectLayout(t, { primary: FONTS });
   const before = t.stub.requests.length;
   const fontBefore = await t.page.$eval("[data-allow-overflow-x]", (el) => getComputedStyle(el).fontSize);
   await t.page.click('[aria-label="Larger text"]');
@@ -44,6 +47,8 @@ export async function run(t) {
   assert.equal(fontBefore, "12px");
   assert.deepEqual(t.stub.requests.slice(before), [], "a font change sent a request");
   await expectLayout(t, { primary: TOOLS });
+  await t.shot("font-details");
+  await t.page.keyboard.press("Escape");
   await t.shot("watch");
 
   // Full screen: covers the viewport, traps focus, survives rotation, Back closes it.
@@ -88,9 +93,9 @@ export async function run(t) {
   t.stub.dropPane(SESSION);
   await statusMatches(t, /^Reconnecting · screen from /);
   await waitForText(t.page, SCREEN_TEXT);
+  await t.page.click('[aria-label^="Details for "]');
   await expectLayout(t, { primary: [RETRY] });
-  const status = await rect(t.page, '[aria-label$="terminal status"]');
-  assert.ok(status.width >= 120, `the controls squeeze the stream status to ${status.width}px`);
+  assert.ok(await t.page.$eval("[data-terminal-details]", (el) => el.innerText.includes("screen from")), "the details omit the age of the stale screen");
   await t.shot("reconnecting");
   // After three refusals the next automatic attempt is seconds away (≥3.2 s).
   await until(() => paneRequests(t) >= refusedFrom + 3, 20_000, "the stream stopped retrying a refused reconnect");
@@ -98,6 +103,7 @@ export async function run(t) {
   await t.page.click(RETRY);
   await statusMatches(t, /^Live$/, 1_500);
   assert.equal(await t.page.$(RETRY), null, "Retry stayed after the stream came back");
+  await t.page.keyboard.press("Escape");
 
   // A restart is never followed silently.
   t.stub.override("POST /api/system/session-show", (body) => body.session_id === SESSION

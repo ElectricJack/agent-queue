@@ -117,3 +117,11 @@
     min-width: 44px;
   }
 }
+/* A rotated tablet/phone still needs touch targets in its compact terminal row. */
+@media (any-pointer: coarse) {
+  [data-terminal-header] [data-primary-control],
+  [data-terminal-details] [data-primary-control] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}

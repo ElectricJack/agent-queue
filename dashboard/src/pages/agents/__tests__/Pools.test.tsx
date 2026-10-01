@@ -580,6 +580,7 @@ describe("pool instance selection", () => {
     renderAgents("/");
     fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
     const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     // Oldest instance first, so the first live session is bound by default.
     await waitFor(() => expect(TerminalSocketMock.instances).toHaveLength(1), SLOW);
     expect(TerminalSocketMock.instances[0]!.url).toContain("p-worker-standard--agent-queue--aaa");
@@ -613,6 +614,7 @@ describe("pool instance selection", () => {
     api.sessionList.mockResolvedValue({ data: { success: true, sessions: [], count: 0 } });
     renderAgents("/");
     fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
+    fireEvent.click(await screen.findByRole("button", { name: "Details for worker-standard pool" }, SLOW));
     expect(await screen.findByText("No live instances.", undefined, SLOW)).toBeInTheDocument();
     expect(await screen.findByText("No live pool instance", undefined, SLOW)).toBeInTheDocument();
     expect(TerminalSocketMock.instances).toHaveLength(0);
@@ -624,6 +626,7 @@ describe("pool settings", () => {
     renderAgents("/");
     fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
     const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
 
     const min = await within(window).findByLabelText("Minimum active workers", undefined, SLOW);
@@ -652,6 +655,7 @@ describe("pool settings", () => {
     renderAgents("/");
     fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
     const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
 
     const table = within(await within(window).findByRole("region", { name: "Workers by project" }, SLOW)).getByRole("table");
@@ -668,6 +672,7 @@ describe("pool settings", () => {
     renderAgents("/");
     fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
     const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
 
     fireEvent.change(await within(window).findByLabelText("Minimum active workers", undefined, SLOW), { target: { value: "9" } });
@@ -680,6 +685,7 @@ describe("pool settings", () => {
     renderAgents("/");
     fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
     const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
 
     fireEvent.change(await within(window).findByLabelText("Maximum active workers", undefined, SLOW), {
@@ -699,6 +705,7 @@ describe("pool settings", () => {
     renderAgents("/");
     fireEvent.click(await screen.findByRole("button", { name: "Open worker-standard pool" }, SLOW));
     const window = await screen.findByRole("region", { name: "worker-standard pool agent window" }, SLOW);
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
     fireEvent.change(await within(window).findByLabelText("Minimum active workers", undefined, SLOW), { target: { value: "2" } });
     fireEvent.click(within(window).getByRole("button", { name: "Save pool bounds" }));
@@ -713,6 +720,7 @@ describe("pool settings", () => {
     // A pool worker is only reachable by URL once the flock hides its row.
     renderAgents("/agents?agent=pooled");
     const window = await screen.findByRole("region", { name: "worker-standard-9f2a agent window" }, SLOW);
+    fireEvent.click(within(window).getByRole("button", { name: /^Details for / }));
     fireEvent.click(within(window).getByRole("tab", { name: "Settings" }));
     const section = await within(window).findByRole("region", { name: "Worker pool settings" }, SLOW);
     // Bounds are fleet-wide, so there is exactly one pair of fields now.
