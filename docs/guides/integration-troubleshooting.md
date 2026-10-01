@@ -564,8 +564,14 @@ The stop needs the agent's own drain-ack and all of this durable proof:
 - the task is `COMPLETED` or `FAILED`, holds no agent, and its claim epoch is the
   session's;
 - a completion record or a `code`/`noop` delivery receipt was written after the
-  session's attempt on the task began;
-- no running integration operation owns the task in any seat.
+  session's attempt on the task began, or, before either exists, the task's
+  `accepted_close` marker names this session and its claim epoch. The transition
+  that accepts a close writes that marker in its own transaction.
+  `close_session_id` never counts: the close writes it before it is accepted, so
+  a refused close leaves it behind;
+- no running integration operation owns the task in any seat;
+- no completion of the task is still running in this daemon (its control lock is
+  free), so an ack after a timed-out close never stops a worker mid-handoff.
 
 Nothing about the task changes. The stopped session keeps its claim, checkout and
 binding, so this owner recovery, run by hand or by the sweep below, passes the
