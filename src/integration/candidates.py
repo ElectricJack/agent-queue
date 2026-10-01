@@ -161,6 +161,7 @@ class AuditForgeProvider(Protocol):
 
 CrashHook = Callable[[str], Awaitable[None] | None]
 RepositoryResolver = Callable[[str], Awaitable[Any] | Any]
+PublishedRepairConfirmation = Callable[[dict[str, Any], str], Awaitable[bool]]
 _COAUTHOR_RE = re.compile(r"(?im)^co-authored-by:\s*(?P<name>[^<\n]+?)\s*<(?P<email>[^>\n]+)>\s*$")
 _MUTATION_TRANSPORT_SECONDS = 120.0
 _MUTATION_SAFETY_MARGIN_SECONDS = 15.0
@@ -204,6 +205,7 @@ class CandidateService:
         crash_hook: CrashHook | None = None,
         repair_service: RepairService | None = None,
         branch_ownership: BranchOwnership | None = None,
+        confirm_published_repair: PublishedRepairConfirmation | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.db = db
@@ -215,6 +217,7 @@ class CandidateService:
         self.crash_hook = crash_hook
         self.repair = repair_service or RepairService(db, clock=clock)
         self.ownership = branch_ownership or BranchOwnership(db, clock=clock)
+        self.confirm_published_repair = confirm_published_repair
         self.clock = clock
 
     async def build(self, batch_id: str) -> CandidateBuildResult:
@@ -889,7 +892,12 @@ class CandidateService:
             return self._repair_result("already_accepted", reservation)
         if reservation["state"] != "pushed":
             raise CandidateAuthorizationError("candidate repair reservation has not been pushed")
-        state = await self._locked_state(reservation["batch_id"])
+        # Acceptance consumes the exact release in _reserve_repair_handoff.
+        # A restart after detach/release must not acquire the collector here
+        # before that transaction records the reservation's successor fence.
+        state = await self._locked_state(reservation["batch_id"], acquire_owner=False)
+        if state.get("operation") is None:
+            return self._repair_result("wait", reservation)
         if int(state["batch"]["current_revision"]) != int(reservation["revision"]) or int(
             state["operation"]["active_stage"]
         ) != int(reservation["stage_ordinal"]):
@@ -938,7 +946,18 @@ class CandidateService:
         confirmation = None
         if current_owner and current_owner["owner_id"] == repair_fence.owner_id:
             try:
-                confirmation = await self.ownership.confirm_transfer(repair_fence)
+                ownership = self.ownership
+                if reservation["target_kind"] == "qualified" and self.confirm_published_repair:
+                    # This callback is scoped to the server reservation whose
+                    # remote head, tree and frozen lineage were just verified.
+                    # Ordinary close-time handoffs keep their canonical proof.
+                    async def confirm_published(owner):
+                        return await self.confirm_published_repair(owner, reservation["id"])
+
+                    ownership = BranchOwnership(
+                        self.db, confirm_handoff=confirm_published, clock=self.clock
+                    )
+                confirmation = await ownership.confirm_transfer(repair_fence)
             except BranchBusy:
                 return self._repair_result("wait", reservation)
         try:
@@ -1633,7 +1652,7 @@ class CandidateService:
             raise CandidateAuthorizationError("candidate repair workspace path is not a directory")
         return str(resolved)
 
-    async def _locked_state(self, batch_id: str) -> dict[str, Any]:
+    async def _locked_state(self, batch_id: str, *, acquire_owner: bool = True) -> dict[str, Any]:
         # Resolve only the lock key before entering the canonical hierarchy-first
         # transaction.  No authority decision is made from this first read.
         async with self.db._engine.connect() as read_conn:
@@ -1739,7 +1758,7 @@ class CandidateService:
             if batch["lifecycle"] != "empty" and operation is None:
                 raise ValueError("integration batch operation is missing")
             fence = None
-            if operation is not None:
+            if operation is not None and acquire_owner:
                 target = BranchKey(
                     repository_id=batch["repository_id"], branch=batch["integration_branch"]
                 )

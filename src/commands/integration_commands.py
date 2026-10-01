@@ -1293,6 +1293,7 @@ class IntegrationCommandsMixin:
                 if inspect.isawaitable(app_client):
                     app_client = await app_client
         branch_ownership = None
+        confirm_published_repair = None
         if repair_session is not None:
             callback_name = (
                 "aconfirm_integration_pool_owner_handoff"
@@ -1303,6 +1304,15 @@ class IntegrationCommandsMixin:
                 self.db,
                 confirm_handoff=getattr(self.orchestrator, callback_name, None),
             )
+            if repair_session.lifecycle == "pool" and app_client is not None:
+                callback = getattr(
+                    self.orchestrator, "aconfirm_integration_pool_published_repair_handoff", None
+                )
+                if callback is not None:
+                    async def confirm_published_repair(owner, reservation_id):
+                        return await callback(
+                            owner, reservation_id, remote_head_reader=app_client.exact_head_ref
+                        )
         return CandidateService(
             self.db,
             data_dir=self.config.data_dir,
@@ -1311,6 +1321,7 @@ class IntegrationCommandsMixin:
             forge_provider=app_client,
             repair_service=self._integration_repair_service(),
             branch_ownership=branch_ownership,
+            confirm_published_repair=confirm_published_repair,
         )
 
     def _integration_release_service(self):

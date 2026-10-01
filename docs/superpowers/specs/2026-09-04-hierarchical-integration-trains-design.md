@@ -571,6 +571,34 @@ ASSIGNED/IN_PROGRESS task may be rebound as a repair stage's existing writer. A 
 is none of those things. `collector` remains excluded everywhere: its owner is an operation, not a
 task, so it has no claim for the proof to read.
 
+Qualified candidate conflict repairs have one additional publication proof, evaluated only by
+`integration_resolve_candidate_member` during acceptance of its server-owned pushed reservation.
+The canonical integration ref still names the partial candidate until the collector's
+`repair_handoff` mutation, so it cannot prove publication of the repair checkout. Instead:
+
+- Revalidate the exact pushed `qualified` reservation, its applied publication mutation, and its
+  current task, pool claim epoch, session instance, agent/workspace locks, repository and repair
+  owner fence. The active operation episode, stage, unchanged deadline, candidate revision,
+  conflicted member, frozen manifest and source/partial lineage must still match. Acceptance
+  verifies the reserved repair commit lineage and tree before requesting this proof.
+- Under the slot base repository's Git mutex (or the standalone checkout's mutex), freshly read
+  the exact server-reserved `refs/heads/aq/integration-repairs/<reservation-id>` from the bound
+  repository. It must name the reserved resolved SHA. The checkout must be clean at that exact
+  SHA and tree, on the owned canonical branch or already detached. Detach that immutable HEAD;
+  do not reset, clean, salvage, or change any branch ref.
+- Revalidate the same authority snapshot under the hierarchy and row locks while the Git mutex
+  is still held, then CAS only that owner's `handoff_pending` attachment to `released`, retaining
+  the confirmed workspace. Preserve the claim, session, workspace and agent locks for ordinary
+  claim release. Consume the proof through the existing fenced collector transfer, leased
+  canonical ref mutation, repair acceptance and candidate CI continuation.
+
+Dirty or different checkouts, stale/missing private refs, unpublished reservations, successor
+claims/sessions/fences, changed manifests or expired stages retain ownership. A retry after
+detachment repeats the exact publication and authority checks; a durable release or collector
+transfer is consumed by the existing idempotent acceptance protocol. No deadline is reset.
+Ordinary worker, verifier, close-time and stopped-writer handoffs retain their existing
+canonical pushed-tip proof; a qualified push is never general authority to release a workspace.
+
 Rows already stranded by an earlier close are a recovery question, not a doctor one.
 `integration.stranded_fences` names them, and stops there: a database snapshot showing no
 session, no workspace lock and no running task is not the proof this section requires — it

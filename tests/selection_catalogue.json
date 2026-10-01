@@ -519,6 +519,7 @@
         "tests/test_integration_owner_recovery_sweep.py",
         "tests/test_integration_owner_retry_recovery.py",
         "tests/test_integration_ownership.py",
+        "tests/test_integration_published_repair_handoff.py",
         "tests/test_integration_stale_owners.py",
         "tests/test_integration_transfer_commands.py",
         "tests/test_integration_workspace_handoff.py"
@@ -1304,7 +1305,7 @@
       ]
     }
   },
-  "digest": "sha256:06afdb7365e09afa88e31f3728cfdf0709b0d29bf4c5884e81eaf6dd2a6ad178",
+  "digest": "sha256:dfb112cfe8f62eb055a02646b664507e754db0c5a80c71d0fdba1419062b64cd",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7426,6 +7427,29 @@
         "parametrize"
       ],
       "summary": "The default branch's protection, classified for the App (App-mode spec §8.2-8.3)."
+    },
+    "tests/test_integration_published_repair_handoff.py": {
+      "areas": [
+        "integration-ownership"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.commands.principal",
+        "src.database.tables",
+        "src.git.github_app",
+        "src.integration",
+        "src.integration.candidate_ci",
+        "src.integration.models",
+        "src.integration.ownership",
+        "src.integration.published_repair_handoff",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "asyncio",
+        "parametrize"
+      ],
+      "summary": "Public pool candidate submission uses exact qualified publication as detach proof."
     },
     "tests/test_integration_repair.py": {
       "areas": [
