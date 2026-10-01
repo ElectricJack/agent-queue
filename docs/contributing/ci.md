@@ -103,8 +103,9 @@ at 10 minutes, including installation and migrations. These limits bound
 failures and improve diagnostics. Profiling on 2026-09-26 measured the
 unsharded default suite at about 21 minutes; it now runs in eight shards as
 described below. The original stateful CLI smoke measured 11–16 minutes; its scenarios now
-run in four separate jobs with eight-minute caps, as described below. Hosted
-runner timings must confirm that the groups finish within those caps. A longer test marker does not make that job fit within its cap.
+run in four separate jobs with ten-minute caps, as described below. The job
+budget includes dependency installation and action/container cleanup as well
+as the 540-second local test limit. A longer test marker does not extend it.
 
 Worker counts are explicit: four for the broad suite arms, matching the
 profiled hosted runner, and two for the two CLI test files. Local `aq test`
@@ -200,7 +201,7 @@ test time measured on hosted runners after any performance changes.
 
 The `e2e-cli` job runs the [Tier 1 end-to-end kit](../guides/e2e-swarm.md) on
 the same PR, candidate and parent events. Its four matrix entries run in
-parallel, with an eight-minute budget per job and `fail-fast: false`:
+parallel, with a ten-minute budget per job and `fail-fast: false`:
 
 | Group | Scenarios |
 |---|---|
@@ -245,6 +246,12 @@ seconds and S6 at 18.8 seconds. Moving those independent scenarios leaves
 headroom within the unchanged smoke deadline in all four groups.
 `--durations=0` also reports the complete group call, including environment
 setup and cleanup, alongside pytest fixture setup and teardown.
+The earlier five-minute job cap cancelled healthy groups on a cold cache:
+[run 36787814561](https://github.com/ElectricJack/agent-queue/actions/runs/36787814561)
+logged every `cli` and `failover` scenario passing, but cancelled the jobs
+before they could finish pytest or action cleanup. The ten-minute cap leaves
+room for the existing 540-second test deadline and runner overhead; setup,
+smoke and cleanup subprocess limits remain 180, 270 and 90 seconds.
 Fixture registration/cleanup and background state inspection use the public
 command API to avoid repeated Python CLI startup. Scenario mutations, scope
 refusals and explicit CLI output assertions still run through the CLI.

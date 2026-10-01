@@ -80,11 +80,10 @@ S7, S15, S19), `cli` (S5, S8–S9, S12, S17), `graphs` (S10, S16b, S18), and
 `failover` (S4, S6, S11, S13–S14, S16a). S16a covers outage detection/rerouting; S16b prepares a separate
 outage through public commands and covers recovery/undo/all-down. Both retain
 the original assertions; select `S16` to run the full serial transcript. Each job
-owns a fresh disposable world and a ten-minute job budget, including dependency
-setup and post-job cleanup. The graph group's scenarios alone took 261 seconds
-on a hosted runner; a five-minute total cancelled that passing run during
-cleanup. The finite job budget covers the full lifecycle while retaining all
-scenario assertions. To reproduce one
+owns a fresh disposable world and a ten-minute job budget, including cold
+dependency installation and action/container cleanup. The test retains its
+540-second limit and separate setup (180s), smoke (270s) and cleanup (90s)
+deadlines. To reproduce one
 group locally through the same acceptance test:
 
 ```bash

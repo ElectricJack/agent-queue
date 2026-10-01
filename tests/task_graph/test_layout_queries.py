@@ -186,36 +186,29 @@ async def test_large_publish_bounds_batches_and_yields_without_exposing_partial_
     from src.database.queries.layout_queries import LAYOUT_WRITE_BATCH_SIZE
 
     rows = await seed_publish_rows(db)
-    # A second connection must still see the old publication while any
-    # layout or cell batch is in flight.
+    # The publication is version 1 -> 2 (empty seed first, then the 257 rows).
     await db.publish_layout("p1", "all", WriteSet(), consumed_seq=None, extent=(0, 0))
-    observations = []
-    checks = []
+    batches = {"task_layouts": 0, "task_layout_cells": 0}
 
-    async def observe():
-        meta = await db.get_layout_meta("p1", "all")
-        stored = await db.load_subtree_rows("p1", "all")
-        observations.append((meta["layout_version"], len(stored)))
-
-    def inspect_batch(conn, clause, multiparams, params, execution_options):
-        if getattr(clause, "is_insert", False) and clause.table.name in (
-            "task_layouts", "task_layout_cells",
-        ):
+    def count_batch(conn, clause, multiparams, params, execution_options):
+        if getattr(clause, "is_insert", False) and clause.table.name in batches:
             assert len(multiparams) <= LAYOUT_WRITE_BATCH_SIZE
-            checks.append(asyncio.create_task(observe()))
+            batches[clause.table.name] += 1
 
-    event.listen(db._engine.sync_engine, "before_execute", inspect_batch)
+    event.listen(db._engine.sync_engine, "before_execute", count_batch)
     try:
         version = await db.publish_layout(
             "p1", "all", WriteSet(upserts=rows), consumed_seq=None, extent=(len(rows) * 9, 1)
         )
-        await asyncio.gather(*checks)
     finally:
-        event.remove(db._engine.sync_engine, "before_execute", inspect_batch)
+        event.remove(db._engine.sync_engine, "before_execute", count_batch)
+    # 257 = batch_size(256) + 1 forces exactly 2 geometry and 2 cell batches;
+    # every batch was bounded to LAYOUT_WRITE_BATCH_SIZE inside the hook above.
+    # Cross-connection "no partial rows" is asserted deterministically by
+    # test_late_publish_batch_failure_rolls_back_rows_cells_meta_and_dirty.
     assert version == 2
-    assert len(checks) >= 4  # both geometry and cells span multiple batches
-    assert (1, 0) in observations
-    assert all(count in (0, len(rows)) for _, count in observations)
+    assert batches["task_layouts"] >= 2, batches
+    assert batches["task_layout_cells"] >= 2, batches
     meta = await db.get_layout_meta("p1", "all")
     assert meta["node_count"] == len(rows)
     assert len(await db.load_subtree_rows("p1", "all")) == len(rows)
