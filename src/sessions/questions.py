@@ -52,8 +52,11 @@ _FACTUAL_SUBJECT = re.compile(
     r"formatter|lint\w*|convention\w*|version|directory|directories|documentation)\b",
     re.I,
 )
+#: The stall ladder's reminder (``src.sessions.reconciler.stall_reminder``),
+#: plus the wording older daemons typed, which a replayed transcript can hold.
 _MACHINE_STALL = re.compile(
-    r"^No progress for \d+ min\. Report status, finish the task, or report a blocker with "
+    r"^No progress for \d+ min(?:\. Report status, finish the task, or report a blocker with "
+    r"| on task \S+(?:\. Close or continue: |: `aq task close`, or keep working\.$))"
 )
 
 

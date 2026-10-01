@@ -16,6 +16,8 @@ from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStat
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.provider import NudgeDeferred, SessionSpec
+from src.sessions.questions import _machine_input
+from src.sessions.reconciler import stall_reminder
 from src.sessions.transcripts.base import TranscriptEntry
 from tests.db_fixtures import lease_dsn
 
@@ -241,11 +243,7 @@ async def test_terminal_reply_resolves_but_machine_stall_nudge_does_not(env):
     await svc.observe(
         env.row,
         [
-            entry(
-                'No progress for 8 min. Report status, finish the task, or report a blocker with `aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: <question>"`.',
-                role="user",
-                ident="nudge",
-            )
+            entry(stall_reminder("t1", 8), role="user", ident="nudge")
         ],
     )
     assert (await env.db.get_agent_question(q["id"]))["state"] == "supervisor"
@@ -253,6 +251,37 @@ async def test_terminal_reply_resolves_but_machine_stall_nudge_does_not(env):
     assert (await env.db.get_agent_question(q["id"]))["state"] == "resolved"
     await svc.observe(env.row, [entry()])
     assert await env.db.list_agent_questions() == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        stall_reminder("repair-repair-batch-integration-batch-a15aca37ba71d0ed81b96d73a8f624b7-1", 12),
+        (
+            "No progress for 12 min on task wise-ember.17. Close or continue: if the work is "
+            'done run `aq task close wise-ember.17 --outcome pass|fail --summary "..."` then ...'
+        ),
+        (
+            "No progress for 8 min. Report status, finish the task, or report a blocker with "
+            "`aq message send --to user:dashboard`."
+        ),
+    ],
+    ids=["current", "close-or-continue", "report-status"],
+)
+def test_every_stall_reminder_wording_is_machine_input(text):
+    """A transcript can replay a reminder typed by an older daemon."""
+    assert _machine_input(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "No progress for 12 min on task t1: `aq task close`, or keep working. Also use staging.",
+        "No progress on the flaky test yet -- keep the staging database?",
+    ],
+)
+def test_a_reply_that_merely_starts_like_a_reminder_is_not_machine_input(text):
+    assert not _machine_input(text)
 
 
 async def test_routine_routes_once_to_logical_project_supervisor_without_timeout(env):
