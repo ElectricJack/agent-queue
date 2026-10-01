@@ -1355,7 +1355,13 @@ class ClaimQueryMixin:
         * the task is ``COMPLETED`` or ``FAILED`` and no agent holds it;
         * the close was recorded after this session's attempt on the task
           began: a completion record, or a ``code``/``noop`` delivery receipt
-          (the restart can lose the first; delivery writes the second);
+          (the restart can lose the first; delivery writes the second).
+          Before either exists -- the restart lost the record and delivery
+          has not run (bold-impact-53) -- the ``close_session_id`` task
+          metadata ``_cmd_task_close`` writes ahead of the pipeline counts
+          when it names this session and this is the session's only attempt
+          on the task: the metadata has no timestamp, so a second claim of
+          the same task could not tell its own close from the first one's;
         * no running integration operation owns the task in any seat
           (``live_integration_owner``) -- such a seat can still hand work back.
 
@@ -1395,14 +1401,14 @@ class ClaimQueryMixin:
             or task["claim_epoch"] != session["last_claim_epoch"]
         ):
             return None
-        attempt_started = (
+        attempt_started, attempt_count = (
             await conn.execute(
-                select(func.max(task_session_attempts.c.started_at)).where(
+                select(func.max(task_session_attempts.c.started_at), func.count()).where(
                     task_session_attempts.c.session_id == session_id,
                     task_session_attempts.c.task_id == task_id,
                 )
             )
-        ).scalar_one_or_none()
+        ).one()
         if attempt_started is None:
             return None
         evidence = None
@@ -1441,6 +1447,28 @@ class ClaimQueryMixin:
                     "kind": "delivery_receipt",
                     "id": receipt["id"],
                     "detail": f"{receipt['disposition']} delivery receipt {receipt['id']}",
+                }
+        if evidence is None and attempt_count == 1:
+            meta = dict(
+                (
+                    await conn.execute(
+                        select(task_metadata.c.key, task_metadata.c.value).where(
+                            task_metadata.c.task_id == task_id,
+                            task_metadata.c.key.in_(("close_session_id", "outcome")),
+                        )
+                    )
+                ).all()
+            )
+            closer = meta.get("close_session_id")
+            if closer is not None and json.loads(closer) == session_id:
+                outcome = json.loads(meta["outcome"]) if "outcome" in meta else None
+                evidence = {
+                    "kind": "close_metadata",
+                    "id": session_id,
+                    "detail": (
+                        f"a close by session {session_id} recorded in task metadata "
+                        f"(outcome {outcome})"
+                    ),
                 }
         if evidence is None:
             return None

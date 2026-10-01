@@ -563,8 +563,12 @@ The stop needs the agent's own drain-ack and all of this durable proof:
 - the task is `COMPLETED` or `FAILED`, holds no agent, and its claim epoch is the
   session's;
 - a completion record or a `code`/`noop` delivery receipt was written after the
-  session's attempt on the task began;
-- no running integration operation owns the task in any seat.
+  session's attempt on the task began, or, when the restart lost the record and
+  delivery has not written a receipt yet, the task's `close_session_id` metadata
+  names this session and it is the session's only attempt on the task;
+- no running integration operation owns the task in any seat;
+- no completion of the task is still running in this daemon (its control lock is
+  free), so an ack after a timed-out close never stops a worker mid-handoff.
 
 Nothing about the task changes. The stopped session keeps its claim, checkout and
 binding, so this owner recovery, run by hand or by the sweep below, passes the

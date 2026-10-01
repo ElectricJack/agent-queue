@@ -876,6 +876,8 @@ class TestSettledClaimDrain:
         # sound-orbit: the restart lost the completion record; delivery wrote a receipt.
         (TaskStatus.COMPLETED, "delivery_receipt"),
         (TaskStatus.FAILED, "completion_record"),
+        # bold-impact-53: no record and no receipt yet; only the close metadata survived.
+        (TaskStatus.COMPLETED, "close_metadata"),
     ])
     async def test_acked_worker_of_a_settled_task_is_stopped(
         self, db, reconciler, provider, orch, bound, status, evidence
@@ -883,8 +885,10 @@ class TestSettledClaimDrain:
         await self._close_committed(db, status)
         if evidence == "completion_record":
             await _completion(db, outcome="pass" if status == TaskStatus.COMPLETED else "fail")
-        else:
+        elif evidence == "delivery_receipt":
             await _code_receipt(db)
+        else:
+            await db.set_task_meta("t1", "close_session_id", bound)
         completions = await db.get_task_completions("t1")
 
         live, now = await observe(reconciler)
@@ -918,6 +922,7 @@ class TestSettledClaimDrain:
 
     @pytest.mark.parametrize("shape", [
         "active", "blocked", "no_evidence", "earlier_close", "requeued_epoch", "live_seat",
+        "closed_elsewhere", "reclaimed_close_metadata",
     ])
     async def test_an_open_or_unsettled_task_keeps_waiting(
         self, db, reconciler, provider, bound, shape
@@ -938,6 +943,17 @@ class TestSettledClaimDrain:
             await self._close_committed(db)
             attempt_start = (await db.get_session(bound)).started_at
             await _completion(db, completed_at=attempt_start - 100)
+        elif shape == "closed_elsewhere":
+            # Close metadata only speaks for the session it names.
+            await self._close_committed(db)
+            await db.set_task_meta("t1", "close_session_id", "another-session")
+        elif shape == "reclaimed_close_metadata":
+            # The session let go of the task and claimed it again: its
+            # untimestamped close metadata may be the first claim's.
+            await db.update_session(bound, task_id=None)
+            await db.update_session(bound, task_id="t1")
+            await self._close_committed(db)
+            await db.set_task_meta("t1", "close_session_id", bound)
         elif shape == "requeued_epoch":
             await self._close_committed(db)
             await db.update_task("t1", claim_epoch=2)
@@ -967,6 +983,27 @@ class TestSettledClaimDrain:
         await reconciler._step_drain_ack(live, now)
 
         await self._assert_still_bound(db, provider, bound, TaskStatus.COMPLETED)
+
+    async def test_a_close_still_running_here_is_not_stopped_mid_handoff(
+        self, db, reconciler, provider, orch, bound
+    ):
+        """The worker acked after its close timed out client-side; the pipeline runs on.
+
+        The close metadata and the terminal transition are already committed,
+        so only the task's control lock says the handoff has not finished.
+        """
+        await db.set_task_meta("t1", "close_session_id", bound)
+        await self._close_committed(db)
+
+        async with orch._task_control_lock("t1"):
+            live, now = await observe(reconciler)
+            await reconciler._step_drain_ack(live, now)
+            await self._assert_still_bound(db, provider, bound, TaskStatus.COMPLETED)
+
+        live, now = await observe(reconciler)
+        await reconciler._step_drain_ack(live, now)
+        assert bound not in provider.sessions
+        assert (await db.get_session(bound)).end_reason == "settled_claim"
 
     async def test_an_unconfirmed_stop_releases_nothing_and_retries(
         self, db, reconciler, provider, bound
