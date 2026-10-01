@@ -5831,3 +5831,73 @@ async def test_pending_primary_release_recovers_stranded_debug_delegate(db, reco
     for field in ("started_at", "deadline_at", "attempts", "policy"):
         assert after[field] == before[field]
     assert (await service.reserve_delegate(primary["repair_task_id"]))["outcome"] == "not_eligible"
+
+
+@pytest.mark.parametrize("invalid", [
+    None, "session", "detached", "epoch", "claim", "intent", "subject", "resolved",
+])
+async def test_parent_repair_prime_reads_only_current_attached_conflict(db, invalid):
+    from src.integration.repair import RepairService
+    from src.prime.sections import build_task_context_section
+
+    current_head = await _seed_repeated_parent_conflict(db)
+    await RepairService(db).start("operation", current_head, "operation", now=150.0)
+    repair_id = "repair-operation-1"
+    async with db.immediate() as conn:
+        await conn.execute(update(tasks).where(tasks.c.id == repair_id).values(
+            status="IN_PROGRESS", claim_epoch=4,
+        ))
+        await conn.execute(insert(workspaces).values(
+            id="prime-workspace", project_id="p", workspace_path="/tmp/prime-repair",
+            source_type="link", locked_by_task_id=repair_id, enabled=True, created_at=2.0,
+        ))
+    await db.create_session(SessionRecord(
+        id="prime-session", task_id=repair_id, project_id="p", profile_id="debugger",
+        harness="fake", provider="fake", name="prime-repair", lifecycle="pool",
+        state="running", work_dir="/tmp/prime-repair", epoch="epoch",
+        instance_token="token", started_at=2.0, claim_phase="active", last_claim_epoch=4,
+    ))
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(
+            owner_id=repair_id, owner_role="repair", fence_token=8,
+            handoff_state="attached", session_id="prime-session", workspace_id="prime-workspace",
+        ))
+        if invalid == "detached":
+            await conn.execute(update(integration_branch_owners).values(handoff_state="reserved"))
+        elif invalid == "epoch":
+            await conn.execute(update(sessions).values(last_claim_epoch=3))
+        elif invalid == "claim":
+            await conn.execute(update(sessions).values(claim_phase="preparing"))
+        elif invalid == "intent":
+            await conn.execute(update(integration_promotion_intents).values(operation_key="other"))
+        elif invalid == "subject":
+            await conn.execute(update(integration_repair_stages).values(
+                current_subject={"kind": "parent", "head_sha": "f" * 40},
+            ))
+        elif invalid == "resolved":
+            await conn.execute(update(integration_promotion_intents).values(state="superseded"))
+    session_id = "other-session" if invalid == "session" else "prime-session"
+    context = await db.get_parent_repair_prime_context(repair_id, session_id=session_id)
+    task = await db.get_task(repair_id)
+    section = await build_task_context_section(db, SimpleNamespace(), task, session_id=session_id)
+    if invalid:
+        assert context is None
+        assert "Current parent conflict repair" not in section.body
+        return
+    assert context["intent_id"] == "second-conflict"
+    assert context["source_task_id"] == "second-child"
+    assert context["source_base"] == "b" * 40
+    assert context["source_head"] == "e" * 40
+    assert context["expected_target"] == current_head
+    assert context["conflict_diagnostics"] == {"paths": ["shared.py"]}
+    assert context["fence"] == {
+        "target": {"repository_id": "repo", "branch": "aq/parent"},
+        "owner_id": repair_id, "token": 8,
+    }
+    assert '"token": 8' in section.body
+    assert '"intent_id": "second-conflict"' in section.body
+    # Refresh reads the new attachment, never the original collector's token 7.
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_branch_owners).values(fence_token=9))
+    refreshed = await db.get_parent_repair_prime_context(repair_id, session_id=session_id)
+    assert refreshed["fence"]["token"] == 9

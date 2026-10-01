@@ -292,6 +292,14 @@ needs neither the daemon nor a database. The enum values themselves are owned by
 
 ## 5. `aq prime` — Context Delivery
 
+Parent merge-conflict repair delegates receive a live Task Context projection of
+their current stage's promotion intent (source task, base/head, expected target,
+diagnostics) and attached repair fence. Resolve it from the authenticated session
+and current pool claim, not historical task text or caller-selected sessions.
+Omit the projection for detached, stale, or mismatched assignments. Refresh prime
+after an attachment or intent change; resolution commands still enforce their
+immutable conflict identity and current fence independently.
+
 ### 5.1 One renderer, two consumers
 
 The full startup context is produced by a single renderer module, **`src/prime/`**, with two
