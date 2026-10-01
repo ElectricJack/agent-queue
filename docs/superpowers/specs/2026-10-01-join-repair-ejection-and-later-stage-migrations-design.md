@@ -29,17 +29,27 @@ raises `MultipleHeads`, every database fixture fails, and
 
 ## Decision
 
-1. **One merge commit, both parents.** The task branch is a true merge of
-   `origin/main` (first parent) with `1c60a2a0f` (second parent). Nothing is
-   cherry-picked or rebased, so every deployed runtime commit stays an ancestor
-   of the result, and later merges of either line reduce to fast-forward-
-   compatible history. Later work that has not been validated, such as the
-   accepted-delegate lifecycle branch `76e8e262` of `crisp-harbor-59` (based on
-   `6a1a76ae1`), is **not** included. That task owns
-   `src/integration/accepted_repair.py` and its edits to `repair.py`,
-   `service.py`, `session_commands.py` and `result_queries.py`. This merge changes
-   none of those files beyond what the two parents already contain, so that
-   branch can rebase onto the join with no concurrent owned edits.
+1. **Merge commits, never cherry-picks.** The task branch is a chain of true
+   merges, each preserving its source's ancestry:
+   1. `origin/main` (first parent) with `1c60a2a0f`: the join itself, carrying the
+      conflict resolutions and merge revision below.
+   2. `ec5a124385` (`grand-ember-16` final, PR 738). It supersedes the deployed
+      `dc2ab8ee3` with spec text and tests only; its runtime and `a00000000050`
+      are byte-identical to dc2. The result keeps the join's tree and adds
+      exactly the dc2..ec5a delta: the later-stage spec's combination steps,
+      `test_deployed_050_and_sibling_049_join_through_a_merge_revision` (with the
+      real `a00000000049` present it runs against the real tree and this merge
+      revision, with no stand-ins), and `test_deployed_revisions_keep_their_parent`.
+   3. `76e8e262` (`crisp-harbor-59`, completed and validated, based on
+      `6a1a76ae1`): accepted repair delegates close independently of CI
+      (`src/integration/accepted_repair.py` plus its edits to `repair.py`,
+      `service.py`, `execution.py`, `session_commands.py` and `result_queries.py`).
+      It merges cleanly. Its diff onto the join is exactly its own commit, with
+      the selection catalogue regenerated.
+
+   Every deployed runtime commit (`dc2ab8ee3` and `1c60a2a0f` included) stays an
+   ancestor, so later merges of any input are already contained. Nothing beyond
+   these four inputs is included.
 2. **Merge revision `a00000000051`** with
    `down_revision = ("a00000000049", "a00000000050")`, an empty `upgrade()`, and a
    `downgrade()` that only moves the stamp back to the two parents. Before
@@ -122,7 +132,8 @@ migrate the live database or restart the daemon.
   backfilled, immutable and ejection-ready, the FK is dropped, stage 2 rows are
   accepted, and the stamp is `a00000000051`. The same check runs from
   `a00000000049` with the old two-stage checks in place, and from empty.
-- `tests/test_migration_single_head.py`, the 049/050 migration tests and the
-  integration candidate, repair, promotion, sealing, ejection and handoff suites
-  pass on the merged tree.
+- `tests/test_migration_single_head.py` (single head; `a00000000050` keeps its
+  deployed parent), the 049/050 migration tests and the integration area
+  (candidate, repair, accepted-repair, promotion, sealing, ejection and handoff
+  suites) pass on the merged tree.
 - `scripts/regenerate-generated.sh --check` reports no drift.

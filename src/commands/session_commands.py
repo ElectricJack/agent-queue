@@ -845,7 +845,24 @@ class SessionCommandsMixin:
         task = await self.db.get_task(str(task_id))
         if task is None:
             return {"success": False, "error": f"No task '{task_id}'"}
-        if task.status not in _CLOSEABLE:
+        # A crash may commit accepted repair bookkeeping before releasing its
+        # original claim. The completion service revalidates its durable receipt
+        # and exact held claim; this is not generic permission to re-close tasks.
+        accepted_repair_retry = (
+            task.status == TaskStatus.COMPLETED and outcome == "pass"
+            and task.created_by_kind == "integration_repair"
+            and bool((self._current_scope or {}).get("session_id"))
+        )
+        if accepted_repair_retry:
+            retry_scope = await self.db.get_repair_filing_scope(
+                task.id, session_id=self._current_scope["session_id"]
+            )
+            accepted_repair_retry = bool(
+                retry_scope is not None and retry_scope["target_kind"] == "batch"
+                and retry_scope.get("writer_kind") == "repair_delegate"
+                and not retry_scope["active"]
+            )
+        if task.status not in _CLOSEABLE and not accepted_repair_retry:
             status = getattr(task.status, "value", task.status)
             return {
                 "success": False,
@@ -1327,6 +1344,12 @@ class SessionCommandsMixin:
         if "completion_source" in result:
             commit = result["completion_source"] or ""
 
+        # Accepted repair retries reuse the reservation's durable close identity.
+        # A crash after the task transition but before claim release must not
+        # append a second completion record or rewrite terminal transition timing.
+        completion_record_id = result.get("completion_record_id")
+        if completion_record_id:
+            completion_id = completion_record_id
         # Append only: a reopened task may be closed again, and both accounts
         # remain available while task detail shows the latest one.
         await self.db.save_task_completion(
@@ -1351,7 +1374,8 @@ class SessionCommandsMixin:
                 notes=str(args.get("notes") or "").strip(),
                 deliverables=deliverable_results,
                 completed_at=time.time(),
-            )
+            ),
+            **({"idempotent": True} if completion_record_id else {}),
         )
 
         await self.db.record_task_session_outcome(
@@ -1404,6 +1428,7 @@ class SessionCommandsMixin:
                 expected_task_id=task_id,
                 expected_claim_epoch=expect_claim_epoch,
                 drain_after_release=self.config.swarm.fresh_context_per_task,
+                **({"preserve_terminal_task": True} if result.get("preserve_terminal_task") else {}),
             )
             if release.released:
                 remove_claim_file_if_matches(session.work_dir, task_id, expect_claim_epoch)

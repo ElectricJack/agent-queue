@@ -218,7 +218,9 @@ async def db(tmp_path, reuse_database):
     yield database
 
 
-async def _seed_batch(db, *, lifecycle="sealed", members=(), base_sha=BASE, policy=None):
+async def _seed_batch(
+    db, *, lifecycle="sealed", members=(), base_sha=BASE, policy=None, full_review_snapshot=False
+):
     policy = policy or _policy()
     async with db.immediate() as conn:
         await conn.execute(
@@ -262,6 +264,16 @@ async def _seed_batch(db, *, lifecycle="sealed", members=(), base_sha=BASE, poli
                     created_at=1.0,
                 )
             )
+            snapshot = {
+                "id": f"review-{ordinal}",
+                "authors": [f"Author {ordinal} <a{ordinal}@example.test>"],
+            }
+            if full_review_snapshot:
+                snapshot = dict((await conn.execute(
+                    select(integration_review_evidence).where(
+                        integration_review_evidence.c.id == f"review-{ordinal}",
+                    )
+                )).mappings().one())
             await conn.execute(
                 insert(integration_batch_members).values(
                     batch_id="batch",
@@ -273,10 +285,7 @@ async def _seed_batch(db, *, lifecycle="sealed", members=(), base_sha=BASE, poli
                     reviewed_head_sha=member[1],
                     reviewed_tree_sha=member[2],
                     review_evidence_id=f"review-{ordinal}",
-                    review_evidence={
-                        "id": f"review-{ordinal}",
-                        "authors": [f"Author {ordinal} <a{ordinal}@example.test>"],
-                    },
+                    review_evidence=snapshot,
                 )
             )
         if lifecycle != "empty":

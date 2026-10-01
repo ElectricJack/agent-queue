@@ -547,6 +547,7 @@
       "modules": [
         "tests/test_attestation_check_run_id.py",
         "tests/test_hosted_attestation.py",
+        "tests/test_integration_accepted_repair.py",
         "tests/test_integration_attestation.py",
         "tests/test_integration_candidates.py",
         "tests/test_integration_ci.py",
@@ -1305,7 +1306,7 @@
       ]
     }
   },
-  "digest": "sha256:1c729c6b2ae3ce8763a16388f8ffc25ddae983ee99eafda754ac33cb679474ad",
+  "digest": "sha256:789b4f2c86b520d41ac1f8bea31e522e1fed3c1086e98e25cd4319675eb25783",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6801,6 +6802,27 @@
       ],
       "markers": [],
       "summary": "``aq install`` — the WSL2 platform adapter (``src/install/wsl.py``)."
+    },
+    "tests/test_integration_accepted_repair.py": {
+      "areas": [
+        "integration-trains"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.claim_file",
+        "src.commands.principal",
+        "src.database.tables",
+        "src.integration.accepted_repair",
+        "src.integration.ci",
+        "src.integration.main_promotion",
+        "src.integration.repair",
+        "src.models",
+        "src.profiles.capabilities"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "Accepted root repairs finish their original claims independently of candidate CI."
     },
     "tests/test_integration_app_mode.py": {
       "areas": [

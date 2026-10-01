@@ -1348,6 +1348,31 @@ class ExecutionMixin:
             and repair_scope.get("writer_kind") == "repair_delegate"
         )
         if repair_delegate and not repair_scope["active"]:
+            if outcome == "pass" and repair_scope["target_kind"] == "batch":
+                from src.integration.accepted_repair import complete_accepted_delegate
+
+                accepted = await complete_accepted_delegate(
+                    self.db, task.id, session_id=session_id,
+                    claim_epoch=expect_claim_epoch, commit=commit,
+                    skip_open_subtasks=skip_open_subtasks,
+                )
+                if accepted is not None:
+                    # Acceptance already detached the checkout and transferred
+                    # the branch. Only the ordinary claim/resource release is
+                    # left; never run the attached-writer pipeline a second time.
+                    if not pool:
+                        await self.release_session_task_resources(
+                            task.id, agent_id=task.assigned_agent_id,
+                            workspace_path=workspace_path,
+                            expect_claim_epoch=expect_claim_epoch,
+                        )
+                    return {
+                        "status": TaskStatus.COMPLETED.value, "pr_url": None,
+                        "pipeline_ok": True, "retry_count": None,
+                        "completion_source": accepted["head_sha"],
+                        "completion_record_id": accepted["completion_id"],
+                        "preserve_terminal_task": True,
+                    }
             terminal = await self.db.get_terminal_integration_delegate_operation(task.id)
             if terminal is not None:
                 # Not a stale race the writer can fix by retrying: the
