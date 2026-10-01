@@ -27,6 +27,8 @@ import inspect
 import logging
 import os
 import re
+import shutil
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -402,12 +404,27 @@ class BranchDiscardService:
 
     async def _ensure_store(self, store: Path) -> None:
         store.parent.mkdir(parents=True, exist_ok=True)
-        if not store.exists():
+        if store.exists():
+            return
+        # Concurrent discard passes can all find the store missing, and two
+        # ``git init`` runs on one directory race on its config lock.  Each
+        # initializes a private directory; the first rename publishes the store
+        # and a later one fails against the non-empty store and is discarded.
+        staging = Path(tempfile.mkdtemp(prefix=f".{store.stem}.", dir=store.parent))
+        try:
             result = await self.git.arun_git_result(
-                ["init", "--bare", "--template=", str(store)], cwd=str(store.parent)
+                ["init", "--bare", "--template=", str(staging)], cwd=str(store.parent)
             )
             if result.returncode != 0:
                 raise GitError(result.stderr or "retained store initialization failed")
+            try:
+                staging.rename(store)
+            except OSError:
+                if not store.exists():
+                    raise
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
 
     # -- bookkeeping ----------------------------------------------------
 
