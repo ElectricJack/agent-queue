@@ -1318,7 +1318,7 @@
       ]
     }
   },
-  "digest": "sha256:974d6c9bde721c0174f9a9d4c5f021b24be0965e615e6b907a57f2ddac884358",
+  "digest": "sha256:2b8b3360073085ca019fee3f0474469e8e5a6b145b90bc08a0582b3edd4c7699",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7612,6 +7612,7 @@
         "src.intelligence_classes",
         "src.models",
         "src.orchestrator.workspace",
+        "src.prime.sections",
         "src.profiles.capabilities",
         "src.scheduler"
       ],
