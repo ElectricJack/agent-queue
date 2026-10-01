@@ -201,6 +201,10 @@ class ProviderAvailabilityService:
         self._logins = logins
         self._probe_impl = probe
         self._clock = clock
+        #: When this daemon run began: a session started before it was
+        #: adopted across a restart and launched under the previous run, so
+        #: its calls are never ``launch_success`` here (D2).
+        self._run_started_at = self.now()
         self._rows: dict[str, ProviderAvailability] = {}
         self._persisted: set[str] = set()
         self._locks: dict[str, asyncio.Lock] = {}
@@ -653,7 +657,11 @@ class ProviderAvailabilityService:
         """A session made its first authenticated API call: ``launch_success``.
 
         Called on every session-token validation; only the first per session
-        does any work, so the hot path is one dict lookup.
+        does any work, so the hot path is one dict lookup.  The memory of
+        which sessions were seen dies with the process, so the launch time is
+        what keeps a restart from re-counting them: a session started before
+        this run is an adopted one, and its next heartbeat proves nothing
+        about a launch (D2).
         """
         if not session_id or not self.tracking or session_id in self._seen_sessions:
             return
@@ -667,6 +675,14 @@ class ProviderAvailabilityService:
             logger.debug("provider availability: session %s unreadable", session_id, exc_info=True)
             return
         if session is None or not getattr(session, "harness", None):
+            return
+        started_at = getattr(session, "started_at", None)
+        if started_at is not None and float(started_at) < self._run_started_at:
+            logger.debug(
+                "provider availability: session %s launched before this run; "
+                "its calls are not launch evidence",
+                session_id,
+            )
             return
         provider = self.provider_for_harness(session.harness, session.project_id)
         await self.record(
