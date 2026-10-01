@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import socket
 import subprocess
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -17,7 +18,7 @@ from urllib.parse import urlsplit
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-E2E_TEST_TIMEOUT_SECONDS = 540
+E2E_TEST_TIMEOUT_SECONDS = 600
 
 # Keep S1-S3 together: the claim and filing cases use the pool S1 creates.
 # Provider outage and recovery prepare independent fixtures in separate groups.
@@ -64,6 +65,7 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
     smoke = REPO_ROOT / "scripts" / "e2e-smoke.sh"
     cleanup = REPO_ROOT / "scripts" / "e2e-clean.sh"
 
+    deadline = time.monotonic() + E2E_TEST_TIMEOUT_SECONDS
     try:
         subprocess.run([str(setup), "--reset"], cwd=REPO_ROOT, env=env, check=True, timeout=180)
         result = subprocess.run(
@@ -73,10 +75,10 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
             capture_output=True,
             check=False,
             text=True,
-            # Keep the scenario deadline below the overall test/job budgets;
-            # daemon startup is part of this subprocess. Setup and cleanup
-            # retain their own deadlines of 180 and 90 seconds respectively.
-            timeout=270,
+            # Reserve fallback cleanup within the shared ten-minute budget.
+            # Fast setup leaves its unused time for daemon startup, scenarios
+            # and shutdown instead of cutting a passing run short.
+            timeout=max(1, deadline - time.monotonic() - 90),
         )
         # Keep the scenario durations visible on successful CI runs too;
         # a slow tail can otherwise only be diagnosed after a failure.

@@ -1,0 +1,84 @@
+name: Dependency cache
+
+# Saves tests.yml's `.venv` cache entry on `main`, installing dependencies and
+# running no tests.
+#
+# A run can restore an Actions cache saved on its own ref or on the default
+# branch, never one saved on another PR or branch. tests.yml does not run on
+# `main`, so before this workflow existed every PR, integration candidate and
+# parent snapshot cold-installed from PyPI in all fifteen jobs, and one slow
+# mirror cancelled a shard at its 10-minute deadline (run 36828502487).
+#
+# * `workflow_run` follows `Main attestation`, which runs on every push to
+#   `main`, so a dependency change is cached minutes after it lands. A run it
+#   starts uses `main`'s workflow file and tip, and saves to `main`'s scope.
+# * The hourly schedule (always on `main`) re-creates the entry after a runner
+#   image changes the resolved Python patch version, or after GitHub evicts it.
+# * `workflow_dispatch` warms it by hand. Run it on `main`: an entry saved on
+#   any other branch is readable only there.
+#
+# None of these triggers is a push or pull_request event, so this workflow
+# never gates a train ref and never adds a check to a PR.
+on:
+  workflow_run:
+    workflows: [Main attestation]
+    types: [completed]
+    branches: [main]
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+# Queue rather than cancel: a waiting run then finds the key already saved.
+concurrency:
+  group: venv-cache-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  warm:
+    name: Warm venv cache
+    runs-on: ubuntu-latest
+    # No suite shares this deadline, so a slow mirror can still finish.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The same path and key as both tests.yml jobs, or nothing restores it
+      # (tests/test_ci_trigger_policy.py pins them). On a hit, skip the
+      # download; on a miss, the post step saves the venv built below.
+      - name: Cache virtual environment
+        id: venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'packages/aq-client/pyproject.toml', 'uv.lock', 'poetry.lock', 'packages/aq-client/poetry.lock') }}
+          lookup-only: true
+
+      # Installs exactly what a tests.yml cache miss installs. pip retries a
+      # refused connection but not a download that stalls mid-body (run
+      # 36828686954); its HTTP cache keeps each wheel an earlier attempt finished.
+      - name: Install dependencies on cache miss
+        if: steps.venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          for attempt in 1 2 3; do
+            if .venv/bin/python -m pip install --timeout 60 \
+              -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"; then
+              exit 0
+            fi
+            echo "::warning::pip install attempt $attempt of 3 failed"
+            if [ "$attempt" -lt 3 ]; then sleep 10; fi
+          done
+          echo "::error::pip install failed after 3 attempts"
+          exit 1

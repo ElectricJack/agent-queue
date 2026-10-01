@@ -1,8 +1,11 @@
 """Full CI runs on pull requests and integration boundaries, and on `main` only unattested."""
 import json
 import math
+import os
 import re
 import shlex
+import subprocess
+import sys
 from fnmatch import fnmatchcase
 from pathlib import Path
 from types import SimpleNamespace
@@ -101,6 +104,77 @@ def test_only_the_attestation_audit_runs_on_a_push_to_main():
     assert files
     pushed = {path.name for path in files if _pushed(workflow(path.name)['on'], 'main')}
     assert pushed == {'main-attestation.yml'}
+
+
+def _venv_steps(name, job):
+    """The steps that build a job's `.venv`, by name."""
+    steps = {step.get('name'): step for step in workflow(name)['jobs'][job]['steps']}
+    return {
+        key: steps[key]
+        for key in ('Set up Python', 'Cache virtual environment', 'Install dependencies on cache miss')
+    }
+
+
+def _pip_installs(script):
+    """What each ``pip install`` in a step script installs, ignoring network options."""
+    installs = []
+    for match in re.finditer(r'-m pip install ([^;\n]+)', script.replace('\\\n', ' ')):
+        args = shlex.split(match.group(1))
+        requirements = []
+        while args:
+            arg = args.pop(0)
+            if arg in ('--timeout', '--retries'):
+                args.pop(0)
+            else:
+                requirements.append(arg)
+        installs.append(requirements)
+    return installs
+
+
+def test_the_venv_cache_is_warmed_on_main_without_running_tests():
+    # A run restores caches saved on its own ref or on `main`, and tests.yml
+    # never runs on `main` (run 36828502487 cold-installed in all 15 jobs).
+    warm = workflow('venv-cache.yml')
+    # No push or pull_request trigger: train onboarding would count it as a
+    # gate, and every run it starts is on `main`, the scope all refs can read.
+    assert list(warm['on']) == ['workflow_run', 'schedule', 'workflow_dispatch']
+    assert warm['on']['workflow_run'] == {
+        'workflows': [workflow('main-attestation.yml')['name']],
+        'types': ['completed'],
+        'branches': ['main'],
+    }
+    assert len(warm['on']['schedule']) == 1
+    assert warm['permissions'] == {'contents': 'read'}
+    assert warm['concurrency']['cancel-in-progress'] == 'false'
+    assert list(warm['jobs']) == ['warm']
+    steps = warm['jobs']['warm']['steps']
+    assert [step['name'] for step in steps] == [
+        'Checkout repository',
+        'Set up Python',
+        'Cache virtual environment',
+        'Install dependencies on cache miss',
+    ]
+    assert steps[0]['uses'] == _checkout_action()
+
+
+@pytest.mark.parametrize('job', ['test', 'e2e-cli'])
+def test_the_warmed_venv_is_the_entry_each_tests_job_restores(job):
+    warm = _venv_steps('venv-cache.yml', 'warm')
+    tests = _venv_steps('tests.yml', job)
+    # The resolved Python patch version is part of the key.
+    assert warm['Set up Python'] == tests['Set up Python']
+    # Only an identical path and key restore; a hit needs no download here.
+    cache = tests['Cache virtual environment']
+    assert warm['Cache virtual environment'] == {
+        **cache, 'with': {**cache['with'], 'lookup-only': 'true'}
+    }
+    warm_install = warm['Install dependencies on cache miss']
+    tests_install = tests['Install dependencies on cache miss']
+    assert warm_install['if'] == tests_install['if'] == "steps.venv.outputs.cache-hit != 'true'"
+    assert warm_install['run'].splitlines()[0] == tests_install['run'].splitlines()[0]
+    installs = _pip_installs(tests_install['run'])
+    assert len(installs) == 1 and '.[dev,cli]' in installs[0]
+    assert _pip_installs(warm_install['run']) == installs
 
 
 def test_pull_requests_into_main_run_ci():
@@ -271,17 +345,82 @@ def test_committed_shard_timings_are_valid_pytest_split_data():
         assert math.isfinite(duration) and duration >= 0
 
 
+@pytest.mark.parametrize('job', ['test', 'e2e-cli'])
+@pytest.mark.parametrize('failures', [0, 1, 2, 3])
+def test_dependency_install_recovers_but_persistent_failure_is_fatal(tmp_path, job, failures):
+    install = next(
+        step for step in workflow()['jobs'][job]['steps']
+        if step['name'] == 'Install dependencies on cache miss'
+    )
+    assert install['if'] == "steps.venv.outputs.cache-hit != 'true'"
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    # Execute the workflow's actual shell with stand-ins for venv/pip and
+    # sleep. A wheel timeout exits 2; successful installs must stop retrying.
+    python_stub = bin_dir / 'python'
+    python_stub.write_text(f'#!{sys.executable}\n' + '''
+import json
+import os
+import shutil
+import sys
+from pathlib import Path
+
+if sys.argv[1:] == ['-m', 'venv', '.venv']:
+    target = Path('.venv/bin/python')
+    target.parent.mkdir(parents=True)
+    shutil.copyfile(__file__, target)
+    target.chmod(0o755)
+    sys.exit(0)
+assert sys.argv[1:4] == ['-m', 'pip', 'install'], sys.argv
+assert sys.argv[4:] == [
+    '--timeout', '60', '-e', '.[dev,cli]', 'poetry-core>=2.0.0,<3.0.0'
+], sys.argv
+trace = Path('install-attempts.json')
+attempts = json.loads(trace.read_text()) if trace.exists() else []
+attempts.append(sys.argv[1:])
+trace.write_text(json.dumps(attempts))
+sys.exit(2 if len(attempts) <= int(os.environ['CI_INSTALL_FAILURES']) else 0)
+''')
+    python_stub.chmod(0o755)
+    sleep_stub = bin_dir / 'sleep'
+    sleep_stub.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> retry-delays\n')
+    sleep_stub.chmod(0o755)
+
+    result = subprocess.run(
+        ['bash', '--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', install['run']],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            'PATH': f'{bin_dir}{os.pathsep}{os.environ["PATH"]}',
+            'CI_INSTALL_FAILURES': str(failures),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    attempts = json.loads((tmp_path / 'install-attempts.json').read_text())
+    assert len(attempts) == min(failures + 1, 3)
+    assert result.returncode == (2 if failures == 3 else 0), result.stderr
+    delays = tmp_path / 'retry-delays'
+    assert (delays.read_text().splitlines() if delays.exists() else []) == (
+        ['5'] * min(failures, 2)
+    )
+    assert ('::error::' in result.stdout) is (failures == 3)
+
+
 def test_e2e_matrix_keeps_smoke_on_prs_and_off_the_postgres_suite():
     jobs = workflow()['jobs']
     e2e = jobs['e2e-cli']
     assert e2e['if'] == jobs['test']['if']
     assert e2e['strategy']['matrix']['group'] == list(SCENARIO_GROUPS)
     assert e2e['strategy']['fail-fast'] == 'false'
-    # A passing smoke test must have time to finish before action cleanup.
-    # Reserve a minute beyond the local test deadline for runner overhead,
-    # while retaining the same bounded job cap as the suite arms.
+    # The cap covers a cold dependency install (up to 7m30s observed on
+    # hosted runners) on top of the group's own pytest limit, so pytest's
+    # timeout, with its diagnostics, fires before the job is cancelled.
     job_timeout_seconds = int(e2e['timeout-minutes']) * 60
-    assert E2E_TEST_TIMEOUT_SECONDS + 60 <= job_timeout_seconds <= 600
+    assert job_timeout_seconds - E2E_TEST_TIMEOUT_SECONDS >= 450
     run = e2e['steps'][-1]['run']
     assert run == (
         "pytest 'tests/test_e2e_cli_stateful.py::"
@@ -301,3 +440,86 @@ def test_e2e_groups_cover_every_scenario_once_and_keep_claim_dependencies_togeth
     assert set(scenarios) == expected
     assert len(scenarios) == len(expected)
     assert SCENARIO_GROUPS['claims'][:3] == ('S1', 'S2', 'S3')
+
+
+@pytest.mark.parametrize(
+    ('job', 'run_step', 'run_seconds'),
+    [
+        # The slowest passing default shard in the 40 runs up to 36831813696.
+        ('test', 'Run tests', 332),
+        # tests/test_e2e_cli_stateful.py gives each group its own limit; let it
+        # fire first, with a minute for its diagnostics and runner overhead.
+        ('e2e-cli', 'Run scenario group', E2E_TEST_TIMEOUT_SECONDS + 59),
+    ],
+)
+def test_a_slow_cache_miss_install_cannot_spend_the_run_budget(job, run_step, run_seconds):
+    # Run 36830122857 spent 439 s of E2E CLI (cli)'s shared 10-minute job
+    # budget installing from PyPI at 40-300 kB/s, then cancelled the passing
+    # group 158 s into its scenarios. Eight jobs in 40 runs died that way, with
+    # installs of 306-600 s and run steps no longer than 332 s.
+    spec = workflow()['jobs'][job]
+    steps = {step['name']: step for step in spec['steps']}
+    install = int(steps['Install dependencies on cache miss']['timeout-minutes'])
+    run = int(steps[run_step]['timeout-minutes'])
+    assert install * 60 > 600
+    assert run * 60 > run_seconds
+    # Checkout, PostgreSQL, interpreter, cache restore and save, the editable
+    # refresh, migrations and artifact upload take well under three minutes.
+    assert int(spec['timeout-minutes']) >= install + run + 3
+
+
+def _install_steps():
+    jobs = workflow()['jobs']
+    return {
+        job: next(step for step in jobs[job]['steps'] if step['name'] == 'Install dependencies on cache miss')
+        for job in ('test', 'e2e-cli')
+    }
+
+
+def _run_install(tmp_path, script, fail_times):
+    """Run a cache-miss install script as Actions does, with pip failing *fail_times* times."""
+    stubs = tmp_path / 'stubs'
+    stubs.mkdir()
+    for name, body in {'python': 'exit 0', 'sleep': 'exit 0'}.items():
+        (stubs / name).write_text(f'#!/bin/sh\n{body}\n')
+        (stubs / name).chmod(0o755)
+    venv_python = tmp_path / '.venv' / 'bin' / 'python'
+    venv_python.parent.mkdir(parents=True)
+    venv_python.write_text(
+        '#!/bin/sh\n'
+        'echo "$*" >> calls.log\n'
+        'test "$(wc -l < calls.log)" -gt "$FAIL_TIMES"\n'
+    )
+    venv_python.chmod(0o755)
+    result = subprocess.run(
+        ['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', script],
+        cwd=tmp_path,
+        env={'PATH': f'{stubs}:{os.environ["PATH"]}', 'FAIL_TIMES': str(fail_times)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result, (tmp_path / 'calls.log').read_text().splitlines()
+
+
+def test_cache_miss_installs_retry_a_stalled_pypi_download(tmp_path):
+    # Run 36828686954 lost its failover E2E group to one ReadTimeoutError
+    # mid-download; pip retries a refused connection, never a stalled body.
+    steps = _install_steps()
+    assert steps['test'] == steps['e2e-cli']
+    assert steps['test']['if'] == "steps.venv.outputs.cache-hit != 'true'"
+    result, calls = _run_install(tmp_path, steps['test']['run'], fail_times=2)
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 3
+    for call in calls:
+        args = shlex.split(call)
+        assert args[:2] == ['-m', 'pip'] and args[2] == 'install'
+        assert args[args.index('--timeout') + 1] == '60'
+        assert {'-e', '.[dev,cli]', 'poetry-core>=2.0.0,<3.0.0'} <= set(args)
+
+
+def test_cache_miss_install_gives_up_after_bounded_attempts(tmp_path):
+    result, calls = _run_install(tmp_path, _install_steps()['test']['run'], fail_times=99)
+    assert result.returncode != 0
+    assert len(calls) == 3
+    assert '::error::' in result.stdout

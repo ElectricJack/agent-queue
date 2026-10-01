@@ -533,6 +533,18 @@ receipt; a new no-op completion gets a new receipt revision. A playbook may
 invoke the contracted `integration_record_noop` command when its policy grants
 that exact capability. Worker sessions cannot invoke it.
 
+### Root delivery in `task show`
+
+A root task (one with no collection episode) is delivered by its train batch,
+not by a parent. `aq --json task show` projects that delivery from the durable
+root receipts: when the task's checkpoint has no episode, the projection lists
+the `code` receipts on the repository's default branch whose batch member is
+the task and whose `reviewed_head_sha` equals the current `checkpoint_sha` and
+whose review evidence row carries the checkpoint's current `generation`. With
+at least one such receipt the outcome is `delivered`; otherwise it stays
+`working` with no receipts. A receipt for an older head or generation is never
+counted, and the projection only reads; it never writes or rewrites receipts.
+
 ### Candidate-member conflict repair
 
 Batch formation inspects added Alembic migrations at the exact reviewed heads.
@@ -563,7 +575,10 @@ provenance remain outside admission.
 
 Failed and terminally cancelled source checks file deduplicated repair roots with
 exact source identity and actionable check links. A newer pending/successful
-rerun supersedes an old cancellation. Repair branches preserve source ancestry;
+rerun supersedes an old cancellation. A PR GitHub reports as conflicting runs no
+`pull_request` CI; with no required check on its head it is recorded as
+`conflict`, and under `repair.conflict_scope: batch` it enters the train so the
+batch repair resolves the conflict and the candidate's CI gates it. Repair branches preserve source ancestry;
 when a repaired source is green, both it and its covered original source can
 enter the train and receive normal delivery/cleanup receipts. Every final
 candidate still requires its own exact authenticated green CI.

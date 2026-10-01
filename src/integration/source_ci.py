@@ -17,11 +17,14 @@ class SourceCIObservation:
     evidence: dict[str, Any]
 
 
-def classify_source_checks(entries, *, head, required):
+def classify_source_checks(entries, *, head, required, conflicting=False):
     """Judge the latest trusted run of each required check, including cancellation.
 
     A cancelled old run cannot supersede a newer pending/successful rerun.
     Missing, foreign-producer and mismatched-head checks never establish green.
+    *conflicting* says GitHub reports the PR unmergeable; with no required
+    check run on *head* the state is ``conflict``, because GitHub never runs
+    ``pull_request`` CI for such a PR and it would otherwise stay pending.
     """
     latest = {}
     for entry in entries:
@@ -58,6 +61,8 @@ def classify_source_checks(entries, *, head, required):
         state = "red"
     elif cancelled and not pending:
         state = "cancelled"
+    elif conflicting and not latest:
+        state = "conflict"
     elif len(latest) == len(required.names) and all(
         item.get("status") == "completed" and item.get("conclusion") == "success" for item in checks
     ):
@@ -85,7 +90,16 @@ def classify_source_checks(entries, *, head, required):
     return state, evidence
 
 
-async def observe_source_ci(*, row, source, client, handler):
+def pull_request_conflicts(pull) -> bool:
+    """Whether GitHub reports *pull* as unmergeable because of a conflict."""
+    return (
+        isinstance(pull, dict)
+        and pull.get("mergeable") is False
+        and pull.get("mergeable_state") == "dirty"
+    )
+
+
+async def observe_source_ci(*, row, source, client, handler, pull=None):
     policy_data = row.get("hierarchical_integration_policy")
     if not policy_data:
         return
@@ -96,6 +110,7 @@ async def observe_source_ci(*, row, source, client, handler):
         await client.commit_check_runs(source["head"]),
         head=source["head"],
         required=policy.root.required_checks,
+        conflicting=pull_request_conflicts(pull),
     )
     await handler(
         SourceCIObservation(

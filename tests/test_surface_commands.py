@@ -209,6 +209,122 @@ class TestTaskShow:
             "blockers": [],
         }
 
+    async def _root_delivery_fixture(self, db, task, monkeypatch, *, receipts, reviews):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from sqlalchemy import update
+        from src.database.tables import projects
+
+        async with db.immediate() as conn:
+            await conn.execute(
+                update(projects)
+                .where(projects.c.id == task.project_id)
+                .values(hierarchical_integration_mode="train")
+            )
+        monkeypatch.setattr(
+            db,
+            "get_integration_checkpoint",
+            AsyncMock(
+                return_value={
+                    "task_id": task.id,
+                    "repository_id": "repo-1",
+                    "generation": 2,
+                    "checkpoint_sha": "a" * 40,
+                    "episode_id": None,
+                    "state": "working",
+                }
+            ),
+        )
+        monkeypatch.setattr(
+            db, "get_repo", AsyncMock(return_value=SimpleNamespace(default_branch="main"))
+        )
+        listing = AsyncMock(return_value=receipts)
+        monkeypatch.setattr(db, "list_integration_delivery_receipts", listing)
+        monkeypatch.setattr(
+            db,
+            "get_integration_review_evidence",
+            AsyncMock(side_effect=lambda evidence_id: reviews.get(evidence_id)),
+        )
+        return listing
+
+    @staticmethod
+    def _root_receipt(receipt_id, head, evidence_id, disposition="code", batch_id="b1"):
+        return {
+            "id": receipt_id,
+            "source_task_id": "task-1",
+            "reviewed_head_sha": head,
+            "disposition": disposition,
+            "batch_id": batch_id,
+            "review_evidence": {"review_evidence_id": evidence_id},
+        }
+
+    async def test_root_task_shows_exact_root_batch_receipt(
+        self, handler, db, task, monkeypatch
+    ):
+        exact = self._root_receipt("r-exact", "a" * 40, "ev-current")
+        listing = await self._root_delivery_fixture(
+            db,
+            task,
+            monkeypatch,
+            receipts=[exact],
+            reviews={
+                "ev-current": {
+                    "source_task_id": task.id,
+                    "reviewed_head_sha": "a" * 40,
+                    "generation": 2,
+                }
+            },
+        )
+
+        result = await handler.execute("task_show", {"task_id": task.id})
+
+        delivery = result["integration_delivery"]
+        assert delivery["outcome"] == "delivered"
+        assert delivery["receipts"] == [exact]
+        listing.assert_awaited_once_with(
+            source_task_id=task.id, repository_id="repo-1", target_branch="refs/heads/main"
+        )
+
+    async def test_root_task_ignores_changed_head_and_old_generation_receipts(
+        self, handler, db, task, monkeypatch
+    ):
+        await self._root_delivery_fixture(
+            db,
+            task,
+            monkeypatch,
+            receipts=[
+                self._root_receipt("r-old-head", "b" * 40, "ev-old-head"),
+                self._root_receipt("r-old-gen", "a" * 40, "ev-old-gen"),
+                self._root_receipt("r-noop", "a" * 40, "ev-current", disposition="noop"),
+                self._root_receipt("r-parent", "a" * 40, "ev-current", batch_id=None),
+            ],
+            reviews={
+                "ev-old-head": {
+                    "source_task_id": task.id,
+                    "reviewed_head_sha": "b" * 40,
+                    "generation": 2,
+                },
+                "ev-old-gen": {
+                    "source_task_id": task.id,
+                    "reviewed_head_sha": "a" * 40,
+                    "generation": 1,
+                },
+                "ev-current": {
+                    "source_task_id": task.id,
+                    "reviewed_head_sha": "a" * 40,
+                    "generation": 2,
+                },
+            },
+        )
+
+        result = await handler.execute("task_show", {"task_id": task.id})
+
+        assert result["integration_delivery"]["outcome"] == "working"
+        assert result["integration_delivery"]["receipts"] == []
+
+    async def test_review_evidence_lookup_by_id_misses_cleanly(self, db):
+        assert await db.get_integration_review_evidence("missing") is None
+
     async def test_includes_latest_completion_story(self, handler, db, task):
         """A re-close must expose the newest durable completion account."""
         from src.models import TaskCompletion
