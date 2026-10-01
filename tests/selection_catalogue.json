@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:a8b8eb907a06fdeb5429bb1230072d8f434b5251b20be59d94e93cec087d4071",
+  "digest": "sha256:2751263d0a21ba17fb998bc91d77378c8285398957189b6c084c55a66d66f94a",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7504,7 +7504,11 @@
       "imports": [
         "src.commands.principal",
         "src.database",
+        "src.database.queries.integration_schedule_queries",
         "src.database.tables",
+        "src.integration",
+        "src.integration.candidates",
+        "src.integration.main_promotion",
         "src.integration.scheduler",
         "src.integration.settling",
         "src.models",
