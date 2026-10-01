@@ -705,7 +705,7 @@ async def test_crossing_edge_read_uses_the_dependency_indexes(pg_small):
 
     A plan is a cost decision, so the table is first made big enough that the
     decision is not a coin toss: ~60k unrelated rows, bulk-loaded in one
-    statement, then ``ANALYZE``.  Measured on top of the §9 fixture plus one
+    statement per table, each followed by ``ANALYZE``.  Measured on top of the §9 fixture plus one
     560k-edge project, the two forms ran 232ms (seq scan) against 84ms.
     """
     other = 60000
@@ -719,6 +719,14 @@ async def test_crossing_edge_read_uses_the_dependency_indexes(pg_small):
             f" SELECT 'ps'||g, 'planscale', 'ps'||g, '', 0, 0"
             f" FROM generate_series(0, {other}) g"
         )
+    # The edges' foreign-key checks run a per-backend cached plan.  A pooled
+    # connection that already checked keys while seeding planned it against a
+    # ~150-row ``tasks`` and seq-scans; reused here, every one of the 60k checks
+    # scans 60k tasks (minutes, CI run 36865774057).  Committing the tasks and
+    # analyzing them invalidates that plan before the edges are loaded.
+    async with pg_small._engine.begin() as conn:
+        await conn.exec_driver_sql("ANALYZE tasks")
+    async with pg_small._engine.begin() as conn:
         await conn.exec_driver_sql(
             "INSERT INTO task_dependencies (task_id, depends_on_task_id, dep_type)"
             f" SELECT 'ps'||g, 'ps'||(g-1), 'blocks' FROM generate_series(1, {other}) g"
