@@ -30,7 +30,12 @@ Codex 0.157 panes sat in, invisibly, on 2026-09-27.
 ``--fix`` presses Enter, gated on the same marker match.  That is the same
 key the operator would send by hand, and it can only ever submit text this
 daemon typed: a human draft never carries the marker, so it is never
-touched.  An unreadable record is never submitted by ``--fix``.
+touched.  An unreadable record is never submitted by ``--fix``.  One
+unreadable shape is AQ's own and marked ``clearable``: text the composer
+shows collapsed (``[Pasted text #N +M lines]``) or windowed (its last rows
+only).  ``--fix`` clears that with the harness's clear keys instead, exactly
+as the next nudge would, and the message behind it stays queued
+(2026-10-01, a task comment stranded a Claude worker that way).
 
 sessions.stall_unreachable — the rule
 -------------------------------------
@@ -156,6 +161,7 @@ async def _find_stuck(ctx: DoctorContext, *, resubmit: bool = False) -> list[dic
         if not detail or not detail.get("marker"):
             continue
         observable = bool(detail.get("observable", True))
+        clearable = not observable and bool(detail.get("clearable", False))
         entry = {
             "session_id": row.id,
             "name": row.name,
@@ -165,22 +171,25 @@ async def _find_stuck(ctx: DoctorContext, *, resubmit: bool = False) -> list[dic
             # False: the durable record says AQ typed this text, but no screen
             # parse can attribute the composer, so Enter is never pressed.
             "observable": observable,
+            # AQ's own text shown collapsed or windowed: never submitted, but
+            # --fix clears it and the message behind it is redelivered.
+            "clearable": clearable,
             # Providers can expose durable provenance without publishing the
             # injected text itself. Legacy/third-party hooks remain honest.
             "evidence": getattr(provider, "pending_submit_evidence", "provider_pending_submit"),
         }
-        if resubmit and not observable:
-            entry["recovered"] = False
-        elif resubmit:
-            fix = getattr(provider, "resubmit_pending", None)
+        if resubmit:
+            action = "resubmit_pending" if observable else "clear_pending" if clearable else None
+            fix = getattr(provider, action, None) if action else None
             recovered = False
             if fix is not None:
                 try:
                     recovered = bool(await fix(_handle(row)))
                 except Exception:
-                    logger.debug("could not resubmit composer for session %s", row.id, exc_info=True)
+                    logger.debug("could not repair composer for session %s", row.id, exc_info=True)
                     recovered = False
             entry["recovered"] = recovered
+            entry["action"] = ("resubmitted" if observable else "cleared") if recovered else None
         stuck.append(entry)
     return stuck
 
@@ -209,11 +218,19 @@ async def _check_stuck_composer(ctx: DoctorContext) -> CheckResult:
             f"{len(readable)} session(s) have a nudge stuck in the composer "
             f"(Enter was never confirmed): {_describe(readable)}"
         )
-    if unreadable:
+    clearable = [e for e in unreadable if e.get("clearable")]
+    unclearable = [e for e in unreadable if not e.get("clearable")]
+    if clearable:
+        parts.append(
+            f"{len(clearable)} session(s) hold AQ-typed text the composer shows collapsed "
+            f"or windowed, so it can never be submitted; --fix clears it and its message "
+            f"is redelivered: {_describe(clearable)}"
+        )
+    if unclearable:
         # --fix cannot help these: attaching and looking is the next step.
         parts.append(
-            f"{len(unreadable)} session(s) hold AQ-typed text the composer guard "
-            f"cannot read, so every later wake defers on it: {_describe(unreadable)}"
+            f"{len(unclearable)} session(s) hold AQ-typed text the composer guard "
+            f"cannot read, so every later wake defers on it: {_describe(unclearable)}"
         )
     return CheckResult(
         id=STUCK_CHECK_ID,
@@ -230,7 +247,11 @@ async def _fix_stuck_composer(ctx: DoctorContext) -> CheckResult:
     return CheckResult(
         id=STUCK_CHECK_ID,
         severity=Severity.OK if len(recovered) == len(repaired) else Severity.WARN,
-        detail=f"resubmitted {len(recovered)} of {len(repaired)} stuck composer(s)",
+        detail=(
+            f"resubmitted {sum(e['action'] == 'resubmitted' for e in recovered)} and cleared "
+            f"{sum(e['action'] == 'cleared' for e in recovered)} of {len(repaired)} "
+            "stuck composer(s)"
+        ),
         fixable=True,
         data={"recovered": recovered, "attempted": repaired},
     )

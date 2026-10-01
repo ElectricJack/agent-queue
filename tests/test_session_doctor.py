@@ -190,6 +190,38 @@ class TestStuckComposerCheck:
         assert not any(args[0] == "send-keys" for args in composer.mutations)
 
 
+    async def test_aq_text_the_composer_collapsed_is_cleared_never_submitted(
+        self, db, monkeypatch
+    ):
+        """2026-10-01: a task comment typed into a Claude worker showed as
+        ``[Pasted text #1 +6 lines]``, unsubmittable, and held back every later
+        wake.  The check names it clearable; --fix clears it -- no Enter -- and
+        the recheck goes green.  The message behind it stays queued."""
+        from src.sessions import tmux as tmux_module
+        from tests.test_tmux_nudge_drafts import provider_for
+        from tests.test_tmux_nudge_recovery import COLLAPSED_COMMENT, ClaudeComposer
+
+        monkeypatch.setattr(tmux_module, "_LANDED_POLL_SECONDS", 0.0)
+        monkeypatch.setattr(tmux_module, "_CLEAR_SETTLE_SECONDS", 0.0)
+        row = await _running_session(db, FakeProvider())
+        composer = ClaudeComposer(clear_keys=())
+        tmux = provider_for(composer)
+        with pytest.raises(NotSubmitted):
+            await tmux.nudge(_handle(row), COLLAPSED_COMMENT)
+        composer.environment["AQ_CLEAR_KEYS"] = "C-u"  # the operator added the key
+
+        result = await session_checks.run_check(db, _Handler(tmux), CHECK)
+        assert result.severity is Severity.WARN
+        assert result.data["sessions"][0]["clearable"] is True
+        assert "--fix clears it" in result.detail and row.name in result.detail
+
+        repaired = await session_checks.run_check(db, _Handler(tmux), CHECK, repair=True)
+        assert repaired.severity is Severity.OK
+        assert repaired.fix_applied is True
+        assert composer.chunks == [] and composer.submitted == []
+        assert "Enter" not in composer.sent_keys()
+
+
 # ---------------------------------------------------------------------------
 # messages.idle_worker_backlog
 # ---------------------------------------------------------------------------
