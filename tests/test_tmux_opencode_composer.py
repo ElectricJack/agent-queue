@@ -417,7 +417,7 @@ class TestNudge:
         await provider._remember_pending(handle(), record)
         pane.draft = REMINDER
         detail = await provider.pending_submit_detail(handle())
-        assert detail == {"marker": _marker_for(REMINDER), "observable": True}
+        assert detail == {"marker": _marker_for(REMINDER), "observable": True, "clearable": False}
         assert await provider.resubmit_pending(handle()) is True
         assert pane.submitted == [REMINDER]
 

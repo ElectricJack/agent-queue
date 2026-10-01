@@ -400,11 +400,15 @@ def _message_sent_payload(msg: Message) -> dict[str, Any]:
 
 
 def _render_nudge(batch: list[Message]) -> str:
-    """Render the text injected into a live session for a pending message."""
-    if batch[0].body_kind == "task_comment":
-        # Task comments are operational guidance, so the worker must see the
-        # bounded body and metadata without issuing a second inbox command.
-        return batch[0].body
+    """Render the text injected into a live session for a pending message.
+
+    Always one short line pointing at the durable body, task comments
+    included.  A rendered comment (six header lines plus up to 8 KB) typed in
+    whole is never shown verbatim by Claude: over 800 characters it collapses
+    to ``[Pasted text #N +M lines]``, and taller than the composer's row window
+    it shows only its last rows.  Unconfirmable, it sat unsubmitted and every
+    later nudge to the worker deferred behind it (2026-10-01).
+    """
     if batch[0].body_kind == "wait_result":
         # The durable message identity is also the wait pointer. Worker
         # grants include wait_get; no generic message command is needed.
