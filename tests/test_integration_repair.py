@@ -578,7 +578,63 @@ async def test_live_writer_of_an_ended_operation_is_told_not_to_retry_its_close(
     assert f"Integration operation operation is {operation_state}" in result["feedback"]
     assert f"retired ({disposition})" in result["feedback"]
     assert "Do not retry the close" in result["feedback"]
+    assert "aq session drain-ack" in result["feedback"]
+    assert result["retired"]["operation_id"] == "operation"
+    assert result["retired"]["disposition"] == disposition
     assert (await db.get_task("delegate")).status == TaskStatus.IN_PROGRESS
+
+
+@pytest.mark.parametrize("operation_state,retired", [
+    ("escalated", True),
+    # A human resume may revive the expired stage with this same writer.
+    ("human_required", False),
+])
+async def test_live_writer_of_an_expired_stage_learns_whether_it_is_retired(
+    orchestrator_factory, operation_state, retired
+):
+    """The expired stage-0 writer of batch 19cbd was told only "close is stale"."""
+    from src.integration.repair import RepairService
+
+    orchestrator = await orchestrator_factory()
+    db = orchestrator.db
+    await _configure_db(db)
+    await _seed_parent_operation(db)
+    await RepairService(db).start("operation", STARTING_SHA, "failed-check", now=100.0)
+    await db.create_task(Task(
+        id="delegate", project_id="p", title="Repair", description="",
+        status=TaskStatus.IN_PROGRESS, repo_id="repo", branch_name="aq/parent",
+    ))
+    stage = await _repair_stage(db, "operation", 0)
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(
+            repair_task_id="delegate", writer_kind="repair_delegate", state="expired"))
+        if operation_state == "escalated":
+            await conn.execute(insert(integration_repair_stages).values(
+                operation_id="operation", ordinal=1, policy=stage["policy"],
+                starting_sha=STARTING_SHA, attempts=0, state="active",
+            ))
+        await conn.execute(update(integration_repair_operations).values(
+            state=operation_state, active_stage=1 if operation_state == "escalated" else 0))
+    orchestrator._get_default_branch = AsyncMock(return_value="main")
+
+    result = await orchestrator.complete_session_task(
+        await db.get_task("delegate"), outcome="pass", session_live=True, session_id="writer",
+    )
+
+    assert result["verification_retry"] is True
+    assert (await db.get_task("delegate")).status == TaskStatus.IN_PROGRESS
+    if not retired:
+        assert "retired" not in result
+        assert result["feedback"] == "Repair stage is no longer active; close is stale."
+        return
+    assert result["feedback"].startswith(
+        "Repair stage 0 of integration operation operation is expired; the operation "
+        "moved on to stage 1: this delegate is retired (superseded)"
+    )
+    assert "retired (superseded)" in result["feedback"]
+    assert "Do not retry the close" in result["feedback"]
+    assert "aq session drain-ack" in result["feedback"]
+    assert (result["retired"]["stage"], result["retired"]["stage_state"]) == (0, "expired")
 
 
 @pytest.mark.parametrize("invalid", [None, "stage", "operation", "owner", "branch", "provenance"])

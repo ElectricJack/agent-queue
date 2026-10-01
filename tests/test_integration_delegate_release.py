@@ -93,6 +93,7 @@ async def _operation(
     batch_id: str | None = None,
     episode_id: str = "episode",
     verifier_task_id: str | None = None,
+    active_stage: int = 0,
 ) -> None:
     await conn.execute(
         insert(integration_repair_operations).values(
@@ -101,7 +102,7 @@ async def _operation(
             parent_task_id=parent_task_id,
             batch_id=batch_id,
             episode_id=episode_id,
-            active_stage=0,
+            active_stage=active_stage,
             state=state,
             policy_snapshot={},
             artifact_snapshot={},
@@ -119,11 +120,12 @@ async def _stage(
     operation_id: str = "operation",
     repair_task_id: str | None = None,
     state: str = "expired",
+    ordinal: int = 0,
 ) -> None:
     await conn.execute(
         insert(integration_repair_stages).values(
             operation_id=operation_id,
-            ordinal=0,
+            ordinal=ordinal,
             policy={},
             starting_sha=SHA,
             repair_task_id=repair_task_id,
@@ -835,3 +837,173 @@ async def test_a_candidate_only_delegate_is_released_by_its_resolution(db):
         assert (
             await conn.execute(select(tasks.c.status).where(tasks.c.id == "delegate"))
         ).scalar_one() == TaskStatus.FAILED.value
+
+
+# -- a writer seat that can never be used again (bold-impact-53) --------------
+#
+# ``get_retired_integration_writer`` is the proof the session reconciler needs
+# before it stops a drain-acknowledged pool worker that still holds a delegate
+# its close can never settle.  It answers only from durable integration state,
+# and anything a live operation could still hand back to the writer is not
+# retired.
+
+
+async def _writer_seat(
+    db,
+    *,
+    operation_state: str,
+    stage_state: str,
+    active_stage: int = 0,
+    delegate_status: TaskStatus = TaskStatus.IN_PROGRESS,
+) -> None:
+    await _task(db, "parent", TaskStatus.IN_PROGRESS)
+    await _task(db, "delegate", delegate_status)
+    async with db.immediate() as conn:
+        await _episode(conn, parent_task_id="parent")
+        await _operation(conn, state=operation_state, active_stage=active_stage)
+        await _stage(conn, repair_task_id="delegate", state=stage_state)
+        for ordinal in range(1, active_stage + 1):
+            await _stage(conn, ordinal=ordinal, state="active")
+
+
+@pytest.mark.parametrize(
+    ("operation_state", "active_stage", "stage_state", "disposition"),
+    [
+        # Delivered: the stage passed with its operation; the delegate never closed.
+        ("completed", 0, "passed", "superseded"),
+        ("completed", 0, "awaiting_completion", "superseded"),
+        ("cancelled", 0, "active", "cancelled"),
+        # Expired or failed, and the operation escalated to a successor stage.
+        ("escalated", 1, "expired", "superseded"),
+        ("escalated", 1, "failed", "superseded"),
+        ("active", 1, "cancelled", "cancelled"),
+    ],
+)
+async def test_a_writer_seat_no_transition_can_restore_is_proven_retired(
+    db, operation_state, active_stage, stage_state, disposition
+):
+    await _writer_seat(
+        db, operation_state=operation_state, stage_state=stage_state, active_stage=active_stage
+    )
+
+    proof = await db.get_retired_integration_writer("delegate")
+
+    assert proof is not None
+    assert (proof["operation_id"], proof["operation_state"]) == ("operation", operation_state)
+    assert (proof["role"], proof["stage"], proof["stage_state"]) == (
+        "repair_stage", 0, stage_state
+    )
+    assert proof["disposition"] == disposition
+    assert "integration operation operation" in proof["reason"]
+
+
+@pytest.mark.parametrize(
+    ("operation_state", "active_stage", "stage_state"),
+    [
+        # The current writer, before and after CI accepted its candidate.
+        ("active", 0, "active"),
+        ("active", 0, "awaiting_completion"),
+        ("escalated", 0, "pending"),
+        # Human gate: ``integration resume`` revives a failed/expired/cancelled
+        # stage of a human_required operation and may keep this exact writer.
+        ("human_required", 0, "expired"),
+        ("human_required", 0, "failed"),
+        ("human_required", 0, "cancelled"),
+        # Terminal but still the operation's current stage: not proven yet.
+        ("escalated", 0, "expired"),
+    ],
+)
+async def test_a_writer_seat_a_live_operation_can_still_use_is_not_retired(
+    db, operation_state, active_stage, stage_state
+):
+    await _writer_seat(
+        db, operation_state=operation_state, stage_state=stage_state, active_stage=active_stage
+    )
+
+    assert await db.get_retired_integration_writer("delegate") is None
+
+
+async def test_a_task_that_never_held_an_integration_seat_is_not_retired(db):
+    await _writer_seat(db, operation_state="completed", stage_state="passed")
+    await _task(db, "unrelated", TaskStatus.IN_PROGRESS)
+
+    assert await db.get_retired_integration_writer("unrelated") is None
+    # The parent of an ended operation is its target, never one of its writers.
+    assert await db.get_retired_integration_writer("parent") is None
+
+
+@pytest.mark.parametrize(("operation_state", "retired"), [
+    ("completed", True), ("cancelled", True), ("active", False), ("human_required", False),
+])
+async def test_a_verifier_seat_is_retired_only_with_its_operation(db, operation_state, retired):
+    await _task(db, "parent", TaskStatus.IN_PROGRESS)
+    await _task(db, "verifier", TaskStatus.IN_PROGRESS)
+    async with db.immediate() as conn:
+        await _episode(conn, parent_task_id="parent")
+        await _operation(conn, state=operation_state, verifier_task_id="verifier")
+
+    proof = await db.get_retired_integration_writer("verifier")
+
+    if not retired:
+        assert proof is None
+        return
+    assert (proof["role"], proof["stage"], proof["operation_state"]) == (
+        "verifier", None, operation_state
+    )
+
+
+async def test_a_seat_in_another_live_operation_keeps_the_writer(db):
+    """One retired seat proves nothing while a running operation still names the task."""
+    await _writer_seat(db, operation_state="completed", stage_state="passed")
+    await _task(db, "parent-2", TaskStatus.IN_PROGRESS)
+    async with db.immediate() as conn:
+        await _episode(conn, parent_task_id="parent-2", episode_id="episode-2")
+        await _operation(
+            conn, operation_id="operation-2", state="active", parent_task_id="parent-2",
+            episode_id="episode-2",
+        )
+        await _stage(
+            conn, operation_id="operation-2", repair_task_id="delegate", state="active"
+        )
+
+    assert await db.get_retired_integration_writer("delegate") is None
+
+
+async def test_a_live_candidate_reservation_keeps_its_writer(db):
+    await _candidate_resolution(db, operation_state="escalated", resolution_state="reserved")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(state="expired"))
+        await conn.execute(update(integration_repair_operations).values(active_stage=1))
+        await _stage(conn, ordinal=1, state="active")
+
+    assert await db.get_retired_integration_writer("delegate") is None
+
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_operations).values(state="completed"))
+    assert (await db.get_retired_integration_writer("delegate"))["disposition"] == "superseded"
+
+
+@pytest.mark.parametrize("operation_state", ["completed", "escalated"])
+async def test_an_accepted_candidate_repair_is_never_retired(db, operation_state):
+    """Its pass close, or the stopped-writer recovery, still completes it truthfully."""
+    await _candidate_resolution(db, operation_state=operation_state, resolution_state="accepted")
+    async with db.immediate() as conn:
+        await conn.execute(update(integration_repair_stages).values(state="passed"))
+        if operation_state == "escalated":
+            await conn.execute(update(integration_repair_operations).values(active_stage=1))
+            await _stage(conn, ordinal=1, state="active")
+
+    assert await db.get_retired_integration_writer("delegate") is None
+
+    async with db.immediate() as conn:
+        await conn.execute(
+            update(integration_candidate_resolutions).values(
+                state="rejected", rejection_evidence={"reason": "stale candidate"}
+            )
+        )
+    proof = await db.get_retired_integration_writer("delegate")
+    if operation_state == "completed":
+        assert proof["disposition"] == "superseded"
+    else:
+        # A rejected reservation under a running operation is still its seat.
+        assert proof is None

@@ -91,6 +91,27 @@ def retired_delegate_message(operation_id: str, state: str, *, action: str) -> s
     )
 
 
+def retired_writer_close_feedback(retirement: dict[str, Any]) -> str:
+    """What a retired delegate's writer is told when its close is refused.
+
+    *retirement* is ``get_retired_integration_writer``'s proof.  The close can
+    never be accepted, so the worker is told to stop and acknowledge its
+    drain; the session reconciler stops a drain-acknowledged worker holding a
+    proven-retired delegate, and owner recovery preserves its checkout before
+    anything is released (bold-impact-53).
+    """
+    reason = str(retirement["reason"])
+    return (
+        f"{reason[:1].upper()}{reason[1:]}: this delegate is retired "
+        f"({retirement['disposition']}), so there is nothing left to close. "
+        "Do not retry the close and do not close --outcome fail. Its branch and "
+        "workspace stay preserved for cleanup; stop working and run "
+        "`aq session drain-ack`. The session reconciler then stops this session, "
+        "owner recovery preserves its checkout, and the integration reconciler "
+        "records the retirement."
+    )
+
+
 def _decoded(raw: Any) -> Any:
     """A ``task_metadata`` value; older rows may hold an unencoded string."""
     try:
