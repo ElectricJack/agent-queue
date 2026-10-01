@@ -38,10 +38,12 @@ build](#there-is-no-documentation-build).
 |---|---|---|
 | [`tests.yml`](../../.github/workflows/tests.yml) | `pull_request` into `main` (opened, synchronize, reopened, ready_for_review); push to `aq/integration/**` and `aq/parent/**`; `workflow_dispatch`; `workflow_call` | Eight default shards, three specialized arms and four stateful CLI scenario groups against real PostgreSQL services. |
 | [`main-attestation.yml`](../../.github/workflows/main-attestation.yml) | Push to `main` | Verifies the pushed SHA's integration attestation; only an unattested push in App mode calls `tests.yml`. See [below](#main-attestationyml). |
+| [`venv-cache.yml`](../../.github/workflows/venv-cache.yml) | Push to `main` that changes a dependency manifest; daily schedule; `workflow_dispatch` | Saves the `.venv` cache entry `tests.yml` restores, in `main`'s scope. Runs no tests. See [dependency cache](#dependency-cache). |
 | [`macos-acceptance.yml`](../../.github/workflows/macos-acceptance.yml) | Push to `ci/macos-acceptance**`; `workflow_dispatch` | The native macOS install journey, recorded by a human rather than gating a merge. |
 
 > **Note.** A push to `main` runs no tests of its own, only the attestation
-> audit. Everything that reaches `main` was tested first: by its PR's run, as
+> audit and, when it changes a dependency manifest, the venv cache seed.
+> Everything that reaches `main` was tested first: by its PR's run, as
 > the integration candidate the train promotes by exact SHA, or by the development publisher's pre-publish
 > validation ([pull requests and delivery](pull-requests.md)). The per-commit
 > `main` run this replaced repeated that work: 66 runs in the two days before
@@ -191,6 +193,21 @@ editable with `--no-deps --no-build-isolation`. This keeps the current source,
 entry points and generated client in use even when their code changed without
 a dependency change. Cached dependencies need no download or resolution on a
 hit. Bump the `venv-v1` key prefix to rebuild unchanged dependency manifests.
+
+Actions caches are ref-scoped: a run restores only entries saved on its own
+ref or on `main`, the default branch. `tests.yml` never runs on `main`, so
+[`venv-cache.yml`](../../.github/workflows/venv-cache.yml) seeds `main`'s
+entry. Its one job builds `.venv` exactly as a cache miss does and saves it
+under the same key; it runs no tests. It runs on a push to `main` that
+changes a manifest the key hashes (or the seed itself), daily for a runner's
+new Python patch version and against GitHub's seven-day eviction of unused
+entries, and on `workflow_dispatch`. Before it existed, the first run on
+every PR merge ref and every new integration or parent ref installed about
+80 MB from PyPI inside the ten-minute job budget and saved one more copy of
+the same key; a slow PyPI cost run 36828686954 three jobs.
+[`tests/test_ci_trigger_policy.py`](../../tests/test_ci_trigger_policy.py)
+holds the seed's checkout, Python, cache and install steps equal to
+`tests.yml`'s, so change them together.
 
 This removes repeated setup work; it does not establish a five-minute job
 budget. The default shards and the integration smoke tests still need their
@@ -366,7 +383,8 @@ python3 docs/plans/documentation-overhaul/refresh_inventory.py --check
 | A push to `aq/integration/**` or `aq/parent/**` | Fifteen check runs on that exact SHA, which the integration service reads as candidate or parent evidence |
 | A draft PR, or a same-repository PR from `aq/integration/**` | A skipped job; the push run covers the integration head |
 | `workflow_dispatch` | The same matrix, on demand, from the Actions tab |
-| A push to `main` | One `Main attestation` check run; with the Actions variables set and no valid attestation, also fifteen `unattested-ci / …` check runs |
+| A push to `main` | One `Main attestation` check run; with the Actions variables set and no valid attestation, also fifteen `unattested-ci / …` check runs; when it changes a dependency manifest, also one `Seed venv cache` check run |
+| The daily schedule | One `Seed venv cache` run on `main`, which installs and saves only on a cache miss |
 
 ## State ownership
 
@@ -382,6 +400,7 @@ pushes nothing.
 | No `Tests` check on your PR | The PR is a draft, or it does not target `main`. | Mark it ready for review, or run `gh workflow run tests.yml --ref <branch>`. |
 | No `Tests` run on a `main` commit | Expected — a push to `main` is not a trigger. A promoted candidate's commit shows its integration run's checks. | `gh workflow run tests.yml --ref main` if you need one. |
 | `unattested-ci / Tests (…)` checks on a `main` commit | The push carried no valid integration attestation: a break-glass push, or the `Main attestation` step's `reason`. | Read the `Main attestation` run's summary; fix forward if the suite is red. |
+| A PR's or candidate's first run installs dependencies in every job | `main` holds no entry for the current key: the seed has not run since a manifest or the runner's Python changed, or it failed. | `gh workflow run venv-cache.yml --ref main`, then re-run the jobs. |
 | `default` arm red, others green | An ordinary regression. | Reproduce locally: `aq test <the failing file>`. |
 | `migration-and-slow` red only | You touched schema or a migration. | Reproduce with `-m "migration or slow"` on those files. |
 | `postgres-integration` red only | A statement-count budget moved, or an `integration`-marked test. | `aq test -m "integration or perf" <file>` on a quiet box. |
@@ -401,6 +420,7 @@ pushes nothing.
 
 [`.github/workflows/tests.yml`](../../.github/workflows/tests.yml),
 [`.github/workflows/main-attestation.yml`](../../.github/workflows/main-attestation.yml),
+[`.github/workflows/venv-cache.yml`](../../.github/workflows/venv-cache.yml),
 [`src/integration/hosted_attestation.py`](../../src/integration/hosted_attestation.py),
 [`src/integration/parent_ci.py`](../../src/integration/parent_ci.py),
 [`.github/agent-queue-integration.example.json`](../../.github/agent-queue-integration.example.json).

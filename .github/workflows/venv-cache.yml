@@ -1,0 +1,73 @@
+name: Venv cache
+
+# Seeds, in `main`'s cache scope, the `.venv` that `tests.yml` restores.
+#
+# Actions caches are ref-scoped: a run restores only caches saved on its own
+# ref or on the default branch. `tests.yml` never runs on a push to `main`, so
+# without this workflow every PR merge ref and every new `aq/integration/**` or
+# `aq/parent/**` ref missed on its first run and installed ~80 MB from PyPI
+# inside a ten-minute job budget (run 36828686954 lost three jobs to a slow
+# PyPI). This job builds `.venv` exactly as a `tests.yml` cache miss does and
+# saves it under the same key. It runs no tests.
+#
+# * A push to `main` that changes a manifest the key hashes seeds the new key.
+# * The daily schedule seeds a key that changed with the runner's Python patch
+#   version, and keeps the entry from GitHub's seven-day unused eviction.
+# * `workflow_dispatch` seeds by hand. Dispatch it on `main`: a cache saved on
+#   any other ref serves only that ref.
+#
+# tests/test_ci_trigger_policy.py holds the checkout, Python, cache and install
+# steps to tests.yml's.
+on:
+  push:
+    branches: [main]
+    paths:
+      - pyproject.toml
+      - packages/aq-client/pyproject.toml
+      - uv.lock
+      - poetry.lock
+      - packages/aq-client/poetry.lock
+      - .github/workflows/venv-cache.yml
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: venv-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    name: Seed venv cache
+    runs-on: ubuntu-latest
+    # No suite follows the install, so a slow PyPI has room to finish it.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Python
+        id: python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # An exact hit leaves nothing to seed. On a miss, actions/cache saves the
+      # new venv once the job succeeds.
+      - name: Cache virtual environment
+        id: venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-v1-${{ runner.os }}-${{ runner.arch }}-py${{ steps.python.outputs.python-version }}-${{ hashFiles('pyproject.toml', 'packages/aq-client/pyproject.toml', 'uv.lock', 'poetry.lock', 'packages/aq-client/poetry.lock') }}
+
+      - name: Install dependencies on cache miss
+        if: steps.venv.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -e ".[dev,cli]" "poetry-core>=2.0.0,<3.0.0"

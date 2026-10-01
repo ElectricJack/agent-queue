@@ -96,11 +96,131 @@ def test_push_ci_only_covers_integration_boundaries(branch, expected):
     assert _pushed(workflow()['on'], branch) is expected
 
 
-def test_only_the_attestation_audit_runs_on_a_push_to_main():
+SEED = 'venv-cache.yml'
+INSTALL = 'Install dependencies on cache miss'
+
+
+def test_only_the_attestation_audit_and_venv_seed_run_on_a_push_to_main():
     files = sorted(WORKFLOWS.glob('*.yml')) + sorted(WORKFLOWS.glob('*.yaml'))
     assert files
     pushed = {path.name for path in files if _pushed(workflow(path.name)['on'], 'main')}
-    assert pushed == {'main-attestation.yml'}
+    assert pushed == {'main-attestation.yml', SEED}
+
+
+def _step(job, name):
+    (step,) = [step for step in job['steps'] if step.get('name') == name]
+    return step
+
+
+def _venv_commands(script):
+    """Each ``-m venv`` and ``-m pip`` command in a step script, network tuning aside.
+
+    A retry loop, ``--timeout`` or ``--retries`` decides whether an install
+    survives a slow PyPI, not which environment it builds.
+    """
+    commands = []
+    for line in script.replace('\\\n', ' ').splitlines():
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=';&|')
+        lexer.whitespace_split = True
+        command = []
+        for word in [*lexer, ';']:
+            if word.strip(';&|'):
+                command.append(word)
+                continue
+            module = next((i for i in range(1, len(command) - 1) if command[i] == '-m'), None)
+            if module is not None and command[module + 1] in ('venv', 'pip'):
+                commands.append(_without_network_options(command[module - 1:]))
+            command = []
+    return commands
+
+
+def _without_network_options(command):
+    kept, skip = [], False
+    for word in command:
+        if skip:
+            skip = False
+        elif word in ('--timeout', '--retries'):
+            skip = True
+        elif not word.startswith(('--timeout=', '--retries=')):
+            kept.append(word)
+    return kept
+
+
+def test_venv_command_comparison_ignores_install_retries():
+    plain = 'python -m venv .venv\n.venv/bin/python -m pip install -e ".[dev,cli]" pkg\n'
+    retried = (
+        'python -m venv .venv\n'
+        '# Retry the complete install.\n'
+        'for attempt in 1 2 3; do\n'
+        '  if .venv/bin/python -m pip install --timeout 60 \\\n'
+        '    -e ".[dev,cli]" pkg; then\n'
+        '    exit 0\n'
+        '  fi\n'
+        '  echo "::warning::pip install attempt $attempt of 3 failed"\n'
+        'done\n'
+    )
+    assert _venv_commands(retried) == _venv_commands(plain) == [
+        ['python', '-m', 'venv', '.venv'],
+        ['.venv/bin/python', '-m', 'pip', 'install', '-e', '.[dev,cli]', 'pkg'],
+    ]
+    assert _venv_commands(plain.replace('pkg', 'other')) != _venv_commands(plain)
+
+
+@pytest.mark.parametrize('job', ['test', 'e2e-cli'])
+def test_venv_seed_saves_the_venv_each_suite_job_restores(job):
+    # Actions caches are ref-scoped: a run restores only its own ref's caches
+    # or main's. tests.yml never runs on main, so the seed saves main's entry
+    # and every PR's or candidate's first run restores it.
+    seed = workflow(SEED)['jobs']['seed']
+    suite = workflow()['jobs'][job]
+    assert seed['runs-on'] == suite['runs-on']
+    for name in ('Checkout repository', 'Set up Python', 'Cache virtual environment'):
+        assert _step(seed, name) == _step(suite, name)
+    # An exact key only: a venv is bound to its interpreter's path.
+    assert 'restore-keys' not in _step(seed, 'Cache virtual environment')['with']
+    install = _step(seed, INSTALL)
+    assert install['if'] == _step(suite, INSTALL)['if']
+    commands = _venv_commands(install['run'])
+    assert [command[:3] for command in commands] == [
+        ['python', '-m', 'venv'],
+        ['.venv/bin/python', '-m', 'pip'],
+    ]
+    assert commands == _venv_commands(_step(suite, INSTALL)['run'])
+
+
+def test_venv_seed_runs_no_suite():
+    seed = workflow(SEED)
+    assert seed['permissions'] == {'contents': 'read'}
+    assert seed['concurrency'] == {
+        'group': 'venv-cache-${{ github.ref }}',
+        'cancel-in-progress': 'true',
+    }
+    assert list(seed['jobs']) == ['seed']
+    job = seed['jobs']['seed']
+    assert 'uses' not in job and 'services' not in job
+    assert [step['name'] for step in job['steps']] == [
+        'Checkout repository',
+        'Set up Python',
+        'Cache virtual environment',
+        INSTALL,
+    ]
+
+
+def test_venv_seed_runs_whenever_mains_key_can_change():
+    triggers = workflow(SEED)['on']
+    assert list(triggers) == ['push', 'schedule', 'workflow_dispatch']
+    assert triggers['push']['branches'] == ['main']
+    # A manifest the key hashes, or the seed itself, changed on main.
+    key = _step(workflow()['jobs']['test'], 'Cache virtual environment')['with']['key']
+    (hashed,) = re.findall(r'hashFiles\(([^)]*)\)', key)
+    manifests = re.findall(r"'([^']+)'", hashed)
+    assert manifests
+    assert triggers['push']['paths'] == [*manifests, f'.github/workflows/{SEED}']
+    # A runner's new Python patch version and GitHub's seven-day eviction of
+    # an unused entry change no file, so a daily run seeds those keys.
+    (schedule,) = triggers['schedule']
+    minute, hour, *days = schedule['cron'].split()
+    assert minute.isdigit() and hour.isdigit() and days == ['*', '*', '*']
 
 
 def test_pull_requests_into_main_run_ci():
