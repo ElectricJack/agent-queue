@@ -1,3 +1,5 @@
+import { ArrowDownTrayIcon } from "@heroicons/react/24/outline";
+
 export type RevisionSummary = {
   revision: number;
   changes_note?: string | null;
@@ -14,6 +16,8 @@ export function RevisionHeader({
   onRevisionChange,
   showDiff,
   onShowDiffChange,
+  onDownloadMarkdown,
+  downloadDisabled,
 }: {
   state: string;
   revisions: RevisionSummary[];
@@ -21,6 +25,8 @@ export function RevisionHeader({
   onRevisionChange: (revision: number) => void;
   showDiff: boolean;
   onShowDiffChange: (show: boolean) => void;
+  onDownloadMarkdown: () => void;
+  downloadDisabled: boolean;
 }) {
   const current = revisions.find((item) => item.revision === revision);
   return (
@@ -44,6 +50,15 @@ export function RevisionHeader({
         </label>
       )}
       {current?.changes_note && <p className="text-xs text-gray-400">{current.changes_note}</p>}
+      <button
+        type="button"
+        onClick={onDownloadMarkdown}
+        disabled={downloadDisabled}
+        className="ml-auto flex min-h-11 items-center gap-2 rounded border border-gray-700 px-3 py-1.5 text-xs text-gray-200 hover:bg-gray-800 focus-visible:outline-2 focus-visible:outline-indigo-400 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <ArrowDownTrayIcon className="h-4 w-4" aria-hidden="true" />
+        Download Markdown
+      </button>
     </header>
   );
 }
