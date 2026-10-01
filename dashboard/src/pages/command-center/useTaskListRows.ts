@@ -28,6 +28,8 @@ export function activityToTask(item: TaskActivityItem): Task {
 
 export interface TaskListRows {
   rows: Task[];
+  /** Counts ignore the status selector, retaining search, time and provider scope. */
+  statusCounts: Record<string, number>;
   isLoading: boolean;
   error: boolean;
   inWindow: boolean;
@@ -77,11 +79,24 @@ export function useTaskListRows(): TaskListRows {
     }));
   }, [graph, inWindow, activity.data]);
   const names = useMemo(() => new Map(projects.map((p) => [p.id, p.name || p.id])), [projects]);
-  const rows = useMemo(
-    () => tasks.filter((task) => (!projectId || task.project_id === projectId)
+  const scopedTasks = useMemo(() => {
+    // An explicit status still reaches finished history, including legacy URLs
+    // without completed=1. The shortcuts themselves only count unfinished states.
+    const countFilters = { ...filters, status: "", showCompleted: filters.showCompleted || !!filters.status };
+    return tasks.filter((task) => (!projectId || task.project_id === projectId)
       && (!filters.held || heldById.has(task.id))
-      && matchesTask(task, filters, names.get(task.project_id ?? "") ?? "")),
-    [tasks, projectId, filters, names, heldById],
-  );
-  return { rows, isLoading, error: !!error, inWindow, activity, activityById, held, heldById, names };
+      && matchesTask(task, countFilters, names.get(task.project_id ?? "") ?? ""));
+  }, [tasks, projectId, filters, names, heldById]);
+  const statusCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const task of scopedTasks) {
+      const status = (task.status ?? "").toUpperCase();
+      counts[status] = (counts[status] ?? 0) + 1;
+    }
+    return counts;
+  }, [scopedTasks]);
+  const rows = useMemo(() => scopedTasks.filter((task) =>
+    !filters.status || (task.status ?? "").toUpperCase() === filters.status),
+  [scopedTasks, filters.status]);
+  return { rows, statusCounts, isLoading, error: !!error, inWindow, activity, activityById, held, heldById, names };
 }

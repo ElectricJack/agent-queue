@@ -11,6 +11,25 @@ export async function run(t) {
   await t.page.goto(t.url(`/projects/${PROJECT}/tasks`), { waitUntil: "networkidle0" });
   await t.page.waitForSelector("[data-task-row]");
   const compact = t.page.viewport().width < 768;
+  await t.shot("initial");
+  const blocked = '[aria-label="Blocked: 30 tasks"]';
+  await t.page.focus(blocked);
+  await t.page.keyboard.press("Enter");
+  await t.page.waitForFunction((selector) => new URL(location.href).searchParams.get("status") === "BLOCKED" && document.querySelector(selector)?.getAttribute("aria-pressed") === "true", {}, blocked);
+  assert.equal(await t.page.$eval(blocked, (el) => el.getAttribute("aria-pressed")), "true");
+  assert.equal(await t.page.$eval('[aria-label="In progress: 30 tasks"]', (el) => el.getAttribute("aria-pressed")), "false");
+  await t.page.keyboard.press("Enter");
+  await t.page.waitForFunction((selector) => !new URL(location.href).searchParams.has("status") && document.querySelector(selector)?.getAttribute("aria-pressed") === "false", {}, blocked);
+  if (compact) {
+    await expectLayout(t, { primary: ['[aria-label="Search tasks"]', '[aria-label="Task status"]', '[aria-label="Filters"]', '[title="Add task (N)"]', blocked] });
+    await t.page.focus('[aria-label="Filters"]');
+    await t.page.keyboard.press("Enter");
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Filters"]')?.getAttribute("aria-expanded") === "true");
+    await expectLayout(t, { primary: ['[aria-label="Time range"]'] });
+    await t.shot("filters");
+    await t.page.keyboard.press("Enter");
+    await t.page.waitForFunction(() => document.querySelector('[aria-label="Filters"]')?.getAttribute("aria-expanded") === "false");
+  }
   if (!compact) {
     assert.ok(await t.page.$("tr[data-task-row]"), "the desktop table is gone");
     await expectLayout(t);
