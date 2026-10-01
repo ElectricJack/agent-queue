@@ -549,7 +549,7 @@ def _selecting_arms(path, markers):
     return sorted(selected)
 
 
-@pytest.mark.parametrize('flags', product([False, True], repeat=5))
+@pytest.mark.parametrize('flags', list(product([False, True], repeat=5)))
 def test_ci_marker_partition_runs_every_selected_test_once(flags):
     names = ('migration', 'slow', 'integration', 'perf', 'tmux')
     markers = {name for name, enabled in zip(names, flags) if enabled}
