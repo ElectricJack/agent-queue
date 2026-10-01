@@ -1314,7 +1314,7 @@
       ]
     }
   },
-  "digest": "sha256:eb22ebde286a572a645039257ecd1d76ec67eb500240aeb10f125ee6baf8b17e",
+  "digest": "sha256:c8ef66dcd0889e98af039599241438a1aa50332450c5cdb6f208b6d689e3d871",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -1474,8 +1474,10 @@
       ],
       "default_arm": false,
       "imports": [
+        "src",
         "src.commands.handler",
-        "src.task_graph.formulas"
+        "src.task_graph.formulas",
+        "src.task_names"
       ],
       "markers": [
         "perf"
