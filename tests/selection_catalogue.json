@@ -1316,7 +1316,7 @@
       ]
     }
   },
-  "digest": "sha256:7c3ec0081e3556970c8754cb818e836728b135dd1b55c796c635a44c34b47934",
+  "digest": "sha256:03f069a12a060fb4117decb22a3ea3b0c9d3b48e00790576f16dbb91b183aab0",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -6002,6 +6002,7 @@
         "src.commands.principal",
         "src.config",
         "src.database",
+        "src.database.tables",
         "src.git.identity",
         "src.git.manager",
         "src.intelligence_classes",
