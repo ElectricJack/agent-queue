@@ -325,6 +325,47 @@ async def test_materialize_root_requires_operator_and_exact_apply_head(db, monke
     run.assert_not_awaited()
 
 
+async def test_close_delivered_pr_requires_operator_and_exact_apply_head(db, monkeypatch):
+    run = AsyncMock(return_value={"outcome": "would_close", "project_id": "p", "pr_number": 7})
+
+    class _Closure:
+        def __init__(self, database, promotion):
+            assert database is db
+            assert promotion == "promotion-service"
+            self.run = run
+
+    monkeypatch.setattr(
+        "src.integration.pr_delivery.DeliveredPullRequestClosure", _Closure
+    )
+    handler = IntegrationCommandsMixin()
+    handler.db = db
+    handler._integration_promotion_service = lambda: "promotion-service"
+    local = await handler._cmd_integration_close_delivered_pr({"project_id": "p", "pr_number": 7})
+    assert (local["success"], local["outcome"], local["dry_run"]) == (True, "would_close", True)
+    assert run.await_args.args == ("p", 7)
+    assert run.await_args.kwargs["operator_id"] == "human:local-operator"
+    with principal_context(_session("super-p", "p")):
+        supervised = await handler._cmd_integration_close_delivered_pr(
+            {"project_id": "p", "pr_number": 7}
+        )
+    assert supervised["outcome"] == "would_close"
+    run.reset_mock()
+    for invalid in (
+        {"project_id": "p", "pr_number": 7, "dry_run": False, "reason": "no head"},
+        {"project_id": "p", "pr_number": 7, "dry_run": False, "expected_head_sha": "a" * 40},
+        {"project_id": "p", "pr_number": 0},
+        {"project_id": "p", "pr_number": 7, "expected_head_sha": "abc"},
+    ):
+        assert (await handler._cmd_integration_close_delivered_pr(invalid))["outcome"] == "invalid"
+    for session_id in ("worker", "super-other"):
+        with principal_context(_session(session_id, "p" if session_id == "worker" else "other")):
+            refused = await handler._cmd_integration_close_delivered_pr(
+                {"project_id": "p", "pr_number": 7}
+            )
+        assert refused["outcome"] == "unauthorized"
+    run.assert_not_awaited()
+
+
 async def test_redrive_child_runs_under_the_derived_operator_label(db, monkeypatch):
     from src.models import Task
 

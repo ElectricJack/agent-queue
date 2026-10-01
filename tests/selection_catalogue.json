@@ -533,13 +533,14 @@
       ]
     },
     "integration-promotion": {
-      "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication and legacy deliveries.",
+      "description": "Integration promotion and repair: child-to-parent and root-to-main promotion, assembling completed children into a collecting parent, parent completion, root pull requests, bounded repair stages, trusted review evidence, parent CI publication, legacy deliveries and proven closure of delivered PRs.",
       "modules": [
         "tests/test_integration_child_delivery.py",
         "tests/test_integration_legacy_deliveries.py",
         "tests/test_integration_legacy_repositories.py",
         "tests/test_integration_main_promotion.py",
         "tests/test_integration_parent_completion.py",
+        "tests/test_integration_pr_delivery.py",
         "tests/test_integration_promotion.py",
         "tests/test_integration_repair.py",
         "tests/test_integration_repair_rollover.py",
@@ -1315,7 +1316,7 @@
       ]
     }
   },
-  "digest": "sha256:35bd0bae22e317c38cc743d6d908b90156ec4a06178ea9291eb25626c56dbd24",
+  "digest": "sha256:7c3ec0081e3556970c8754cb818e836728b135dd1b55c796c635a44c34b47934",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -7491,6 +7492,23 @@
         "parametrize"
       ],
       "summary": "Receipt-driven parent collection and guarded completion."
+    },
+    "tests/test_integration_pr_delivery.py": {
+      "areas": [
+        "integration-promotion"
+      ],
+      "default_arm": true,
+      "imports": [
+        "src.database.tables",
+        "src.git.manager",
+        "src.integration.pr_delivery",
+        "src.integration.promotion",
+        "src.models"
+      ],
+      "markers": [
+        "parametrize"
+      ],
+      "summary": "An open PR closes only once Git proves its work is on the default branch."
     },
     "tests/test_integration_promotion.py": {
       "areas": [

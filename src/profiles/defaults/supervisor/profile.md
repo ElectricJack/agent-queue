@@ -124,6 +124,7 @@ its outbox; transport failures never need a new author turn.
     "integration_bind_legacy_repositories",
     "integration_cancel_preserving",
     "integration_clear_stale_request",
+    "integration_close_delivered_pr",
     "integration_develop",
     "integration_development_sweep",
     "integration_eject",
@@ -380,6 +381,15 @@ its outbox; transport failures never need a new author turn.
   `blocked` (a reviewer rejected the head or is still open, the remote branch
   moved, a no-code child, a parent not collecting) are reported, never forced;
   a no-code child takes `aq integration record-noop`.
+- **An open PR whose work already landed.** GitHub closes a PR as merged once
+  its exact head reaches the default branch. For one still open — work
+  delivered under other commits, or an untracked operator branch — run `aq
+  integration close-delivered-pr <p> <number>` (a dry run). `would_close`
+  names the proof (`ancestor`, `patch_equivalent`, `content_equivalent`);
+  close it with `--apply --head <head_sha> --reason ...`. `undelivered` says
+  what is still missing: report it and never close that PR by hand. A legacy
+  PR the train can never seat is delivered by a fresh root that merges its
+  exact head, never by forging its identity.
 - **A task that inherited a deleted task's identity.** `aq doctor --check
   integration.reused_task_identity` lists tasks whose branch origin predates
   them. For each one, run `aq integration rebind-reused-identity --task-id

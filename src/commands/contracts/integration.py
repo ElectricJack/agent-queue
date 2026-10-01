@@ -89,6 +89,7 @@ DESIGN_INTEGRATION_COMMANDS = frozenset(
         "integration_rebind_repair",
         "integration_adopt_legacy_deliveries",
         "integration_bind_legacy_repositories",
+        "integration_close_delivered_pr",
         "integration_resolve_candidate_member",
     }
 )
@@ -382,6 +383,30 @@ class IntegrationBindLegacyRepositoriesArgs(CommandArgs):
         return self
 
 
+class IntegrationCloseDeliveredPrArgs(CommandArgs):
+    project_id: str = Field(min_length=1)
+    pr_number: int = Field(gt=0)
+    #: Prove only.  Closing needs the head the dry run reported and a reason.
+    dry_run: bool = True
+    expected_head_sha: str | None = Field(default=None, min_length=1)
+    reason: str | None = Field(default=None, min_length=1)
+
+    @field_validator("expected_head_sha")
+    @classmethod
+    def expected_head_is_a_commit(cls, value: str | None) -> str | None:
+        if value is not None and not is_valid_git_oid(value):
+            raise ValueError("expected_head_sha must be a full commit id")
+        return value
+
+    @model_validator(mode="after")
+    def applying_names_the_head_and_a_reason(self) -> IntegrationCloseDeliveredPrArgs:
+        if not self.dry_run and (
+            self.expected_head_sha is None or self.reason is None or not self.reason.strip()
+        ):
+            raise ValueError("applying requires expected_head_sha and reason")
+        return self
+
+
 class IntegrationRecoverCandidateMemberArgs(CommandArgs):
     reservation_id: str = Field(min_length=1)
 
@@ -555,6 +580,22 @@ class IntegrationMaterializeRootValue(CommandValue):
     pr_url: str | None = None
     head_sha: str | None = None
     base_sha: str | None = None
+    reason: str | None = None
+
+
+class IntegrationCloseDeliveredPrValue(CommandValue):
+    """Git's proof that an open PR's work is on the default branch."""
+
+    project_id: str | None = None
+    pr_number: int | None = None
+    pr_url: str | None = None
+    branch: str | None = None
+    head_sha: str | None = None
+    target_sha: str | None = None
+    state: str | None = None
+    task_ids: list[str] = Field(default_factory=list)
+    proof: dict[str, Any] | None = None
+    undelivered: dict[str, Any] | None = None
     reason: str | None = None
 
 
@@ -1304,6 +1345,27 @@ INTEGRATION_BIND_LEGACY_REPOSITORIES = _operational_contract(
     ("bound", "nothing_to_bind", "invalid", "not_found"),
     successes=frozenset({"bound", "nothing_to_bind"}),
     side_effect=SideEffectClass.COMPOSITE,
+)
+
+CLOSE_DELIVERED_PR_OUTCOMES = (
+    "would_close",
+    "closed",
+    "nothing_to_close",
+    "undelivered",
+    "changed",
+    "blocked",
+    "not_eligible",
+    "not_found",
+    "invalid",
+)
+
+INTEGRATION_CLOSE_DELIVERED_PR = _operational_contract(
+    "integration_close_delivered_pr",
+    IntegrationCloseDeliveredPrArgs,
+    CLOSE_DELIVERED_PR_OUTCOMES,
+    successes=frozenset({"would_close", "closed", "nothing_to_close"}),
+    side_effect=SideEffectClass.COMPOSITE,
+    result_model=IntegrationCloseDeliveredPrValue,
 )
 
 INTEGRATION_RECOVER_CANDIDATE_MEMBER = CommandContract(
@@ -2789,6 +2851,15 @@ async def _adopt_legacy_deliveries_adapter(
     )
 
 
+async def _close_delivered_pr_adapter(
+    args: IntegrationCloseDeliveredPrArgs, ctx: CommandContext | None
+):
+    return await _hierarchy_adapter(
+        "integration_close_delivered_pr", args, ctx,
+        IntegrationCloseDeliveredPrValue, set(CLOSE_DELIVERED_PR_OUTCOMES),
+    )
+
+
 async def _bind_legacy_repositories_adapter(
     args: IntegrationBindLegacyRepositoriesArgs, ctx: CommandContext | None
 ):
@@ -2912,6 +2983,7 @@ def register_integration_contracts(registry: ContractRegistry) -> None:
         (INTEGRATION_REBIND_REPAIR, _rebind_repair_adapter),
         (INTEGRATION_ADOPT_LEGACY_DELIVERIES, _adopt_legacy_deliveries_adapter),
         (INTEGRATION_BIND_LEGACY_REPOSITORIES, _bind_legacy_repositories_adapter),
+        (INTEGRATION_CLOSE_DELIVERED_PR, _close_delivered_pr_adapter),
         (INTEGRATION_RECOVER_CANDIDATE_MEMBER, _recover_candidate_member_adapter),
         (INTEGRATION_SCHEDULE_DUE, _schedule_due_adapter),
         (INTEGRATION_SEAL, _seal_adapter),
