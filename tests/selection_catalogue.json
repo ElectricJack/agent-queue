@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:a8b8eb907a06fdeb5429bb1230072d8f434b5251b20be59d94e93cec087d4071",
+  "digest": "sha256:cc982543b4593b611d4693da9f4c5b39bf07e3ae1ed0a6fa1ecd65dcaeb71009",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -3603,7 +3603,8 @@
         "src.tools.registry"
       ],
       "markers": [
-        "parametrize"
+        "parametrize",
+        "perf"
       ],
       "summary": "Bounded message long-poll on the same durable wait, with lossless cursors."
     },
@@ -5063,7 +5064,9 @@
         "src.doctor.models",
         "src.doctor.runner",
         "src.git.github_contracts",
+        "src.integration.candidates",
         "src.integration.development",
+        "src.integration.scheduler",
         "src.models"
       ],
       "markers": [
@@ -6846,12 +6849,16 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.integration_commands",
         "src.commands.principal",
         "src.database.tables",
+        "src.doctor.integration_checks",
+        "src.doctor.models",
         "src.git.github_app",
         "src.git.manager",
         "src.integration.candidate_ci",
         "src.integration.candidates",
+        "src.integration.controls",
         "src.integration.models",
         "src.integration.ownership",
         "src.integration.recovery_controls",
@@ -7021,11 +7028,14 @@
         "src.database.tables",
         "src.integration.candidates",
         "src.integration.controls",
+        "src.integration.repair",
         "src.integration.scheduler",
         "src.models",
         "src.profiles.capabilities"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "Manual ejection preserves review approval and restores future eligibility."
     },
     "tests/test_integration_finished_owners.py": {
@@ -7526,6 +7536,7 @@
         "src.database.tables",
         "src.git.manager",
         "src.integration.epic_dependencies",
+        "src.integration.migration_heads",
         "src.integration.models",
         "src.integration.scheduler",
         "src.integration.settling",
@@ -8728,7 +8739,11 @@
       ],
       "default_arm": false,
       "imports": [
-        "src.database"
+        "src.database",
+        "src.database.tables",
+        "src.integration.controls",
+        "src.integration.scheduler",
+        "src.models"
       ],
       "markers": [
         "migration"

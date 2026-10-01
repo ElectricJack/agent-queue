@@ -224,7 +224,7 @@ Balancing alone did not fit the former five-minute cap: in run
 [36786775568](https://github.com/ElectricJack/agent-queue/actions/runs/36786775568)
 the `graphs` group passed in a 236.68-second test, but a cold dependency
 installation (37 seconds) left the job cancelled at 5:03 during finalization.
-The smoke subprocess retains its 270-second deadline; the eight-minute job
+The smoke subprocess retains its 270-second deadline; the ten-minute job
 budget also covers cold installation and post-job cache/container cleanup.
 Fresh hosted runs must verify the complete job result, including finalization.
 
@@ -239,11 +239,9 @@ covers cold dependency installation and post-job cache/container cleanup:
 run [36654088476](https://github.com/ElectricJack/agent-queue/actions/runs/36654088476)
 passed all six failover scenarios in a 231.30-second test but exceeded the
 former five-minute job limit during cleanup.
-S15 runs with claims and S6 runs with failover, keeping S1–S3 together and
-every scenario covered once. Run [36784304939](https://github.com/ElectricJack/agent-queue/actions/runs/36784304939)
-measured claims at 190.12 seconds, failover at 205.31 seconds, S15 at 59.4
-seconds and S6 at 18.8 seconds. Moving those independent scenarios leaves
-headroom within the unchanged smoke deadline in all four groups.
+Run [36784304939](https://github.com/ElectricJack/agent-queue/actions/runs/36784304939)
+measured S15 at 59.4 seconds and S6 at 18.8 seconds; every scenario stays covered
+once and S1–S3 stay together.
 `--durations=0` also reports the complete group call, including environment
 setup and cleanup, alongside pytest fixture setup and teardown.
 The earlier five-minute job cap cancelled healthy groups on a cold cache:
