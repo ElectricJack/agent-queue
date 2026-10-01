@@ -2048,7 +2048,7 @@ history after archive and refuse hard deletion through the integration guard.
 | `source_head` | TEXT | PRIMARY KEY | Exact observed source head |
 | `generation` | INTEGER | PRIMARY KEY, `>= 0` | Source checkpoint generation |
 | `policy_generation` | INTEGER | NOT NULL | Observed project policy generation |
-| `state` | TEXT | NOT NULL | green, red, cancelled or pending |
+| `state` | TEXT | NOT NULL | green, red, cancelled, pending or conflict (no required check ran and GitHub reports the PR unmergeable) |
 | `evidence` | JSONB | NOT NULL | Trusted required-check facts and links |
 | `repair_task_id` | TEXT | nullable, indexed | Current deduplicated repair |
 | `repair_attempt` | INTEGER | NOT NULL, default 0, `>= 0` | Successor count |
