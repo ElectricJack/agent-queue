@@ -21,10 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # Keep S1-S3 together: the claim and filing cases use the pool S1 creates.
 # Provider outage and recovery prepare independent fixtures in separate groups.
 SCENARIO_GROUPS = {
-    "claims": ("S1", "S2", "S3", "S6", "S7", "S19"),
+    "claims": ("S1", "S2", "S3", "S7", "S15", "S19"),
     "cli": ("S5", "S8", "S9", "S12", "S17"),
     "graphs": ("S10", "S16b", "S18"),
-    "failover": ("S4", "S11", "S13", "S14", "S15", "S16a"),
+    "failover": ("S4", "S6", "S11", "S13", "S14", "S16a"),
 }
 
 
@@ -71,9 +71,9 @@ def test_disposable_daemon_stateful_cli_smoke(tmp_path, scenarios):
             capture_output=True,
             check=False,
             text=True,
-            # CI gives each group its own runner and a five-minute job budget.
-            # Leave thirty seconds for environment setup and cleanup; daemon
-            # startup is part of this subprocess, alongside the scenarios.
+            # Bound the smoke separately from CI's eight-minute job budget,
+            # which also covers installation, environment setup and cleanup.
+            # Daemon startup is part of this subprocess with the scenarios.
             timeout=270,
         )
         # Keep the scenario durations visible on successful CI runs too;

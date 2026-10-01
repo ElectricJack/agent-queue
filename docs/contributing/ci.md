@@ -103,7 +103,7 @@ at 10 minutes, including installation and migrations. These limits bound
 failures and improve diagnostics. Profiling on 2026-09-26 measured the
 unsharded default suite at about 21 minutes; it now runs in eight shards as
 described below. The original stateful CLI smoke measured 11–16 minutes; its scenarios now
-run in four separate jobs with five-minute caps, as described below. Hosted
+run in four separate jobs with eight-minute caps, as described below. Hosted
 runner timings must confirm that the groups finish within those caps. A longer test marker does not make that job fit within its cap.
 
 Worker counts are explicit: four for the broad suite arms, matching the
@@ -200,14 +200,14 @@ test time measured on hosted runners after any performance changes.
 
 The `e2e-cli` job runs the [Tier 1 end-to-end kit](../guides/e2e-swarm.md) on
 the same PR, candidate and parent events. Its four matrix entries run in
-parallel, with a five-minute budget per job and `fail-fast: false`:
+parallel, with an eight-minute budget per job and `fail-fast: false`:
 
 | Group | Scenarios |
 |---|---|
-| `claims` | S1–S3, S6–S7, S19 |
+| `claims` | S1–S3, S7, S15, S19 |
 | `cli` | S5, S8–S9, S12, S17 |
 | `graphs` | S10, S16b, S18 |
-| `failover` | S4, S11, S13–S15, S16a |
+| `failover` | S4, S6, S11, S13–S14, S16a |
 
 Each runner selects one parametrized node from `tests/test_e2e_cli_stateful.py`
 with `-m integration -s`. It creates and cleans up its own database, daemon,
@@ -215,6 +215,16 @@ port, vault and repositories. S16a covers outage detection and rerouting;
 S16b prepares its own outage to cover recovery, undo and every provider down.
 Together they retain the original S16 assertions. No xdist workers or other test suites share
 these runners, and successful runs print every scenario's duration.
+The smoke subprocess retains its 270-second deadline. The job budget also
+covers cold dependency installation and post-job cache/container cleanup:
+run [36654088476](https://github.com/ElectricJack/agent-queue/actions/runs/36654088476)
+passed all six failover scenarios in a 231.30-second test but exceeded the
+former five-minute job limit during cleanup.
+S15 runs with claims and S6 runs with failover, keeping S1–S3 together and
+every scenario covered once. Run [36784304939](https://github.com/ElectricJack/agent-queue/actions/runs/36784304939)
+measured claims at 190.12 seconds, failover at 205.31 seconds, S15 at 59.4
+seconds and S6 at 18.8 seconds. Moving those independent scenarios leaves
+headroom within the unchanged smoke deadline in all four groups.
 `--durations=0` also reports the complete group call, including environment
 setup and cleanup, alongside pytest fixture setup and teardown.
 Fixture registration/cleanup and background state inspection use the public
