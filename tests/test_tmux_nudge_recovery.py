@@ -518,6 +518,23 @@ class TestHarnessWrappedInput:
         assert composer.submitted == [LONG_REMINDER]
 
     @pytest.mark.parametrize("make", [codex_composer, claude_composer], ids=["codex", "claude"])
+    async def test_an_agent_question_answer_is_a_pointer_the_composer_shows(
+        self, fast_polls, make
+    ):
+        """bold-bridge: the answer used to be typed whole.  Claude Code 2.1.286
+        collapses a burst over 800 characters to ``[Pasted text #N +M lines]``
+        and shows only the last 7 rows of taller input, so a 16000-character
+        answer could never be confirmed; the pointer is one short line."""
+        from src.sessions.questions import _answer_nudge
+
+        text = _answer_nudge("aq-" + "0123456789abcdef" * 2)
+        assert "\n" not in text and len(text) <= 800
+        assert len(textwrap.wrap("❯ " + text, 80, subsequent_indent="  ")) <= 7
+        composer = make()
+        await provider_for(composer).nudge(handle(), text)
+        assert composer.submitted == [text]
+
+    @pytest.mark.parametrize("make", [codex_composer, claude_composer], ids=["codex", "claude"])
     async def test_a_stale_injection_is_submitted_then_the_new_wake_typed(self, fast_polls, make):
         """The reminder names its idle minutes, so no later nudge ever matched
         the text left behind; deferring on "a different AQ injection" was a

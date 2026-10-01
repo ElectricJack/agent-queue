@@ -444,6 +444,16 @@ uses `aq message send --to user:dashboard`. Human gates remain available for
 playbook/task-graph policy and are resolved only on explicit human instruction
 (§4 Rules).
 
+An accepted answer is stored as an `agent_question` message addressed to the asking
+session (id `question:<question-id>:answer`, stamped delivered so the message engine
+never nudges it). It reaches the worker's terminal, under the question's claim fence,
+only as the one line ``[aq question answered] Handle `aq message status
+question:<question-id>:answer --json`.``, and the worker reads the body with the
+`message_status` it already holds. The answer itself is never typed: a harness composer
+does not show long or multi-line input verbatim, so its submission could not be
+confirmed. While `messages.enabled` is false the answer is held, because
+`message_status` would refuse.
+
 ---
 
 ## 9. The planner flow — replacing `break_plan_into_tasks()`

@@ -6,6 +6,7 @@ import time
 from contextlib import asynccontextmanager
 
 from sqlalchemy import insert, or_, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
 from src.database.tables import (
@@ -148,6 +149,35 @@ class AgentQuestionQueriesMixin:
                     priority=50,
                     body_kind="agent_question",
                 )
+            )
+
+    async def ensure_agent_question_answer_message(self, question, message_id, body, now) -> None:
+        """Store an accepted answer where the asking session can read it.
+
+        The worker's terminal receives only a one-line pointer to this row.
+        ``AgentQuestionService`` owns that claim-fenced delivery, so the row is
+        stamped delivered on insert: the message engine must never nudge it a
+        second time.  Idempotent, because a retried delivery reaches it again.
+        """
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                pg_insert(messages)
+                .values(
+                    id=message_id,
+                    project_id=question["project_id"],
+                    from_kind="system",
+                    from_id="agent-questions",
+                    to_kind="session",
+                    to_id=question["session_id"],
+                    body=body,
+                    subject="Answer to question " + question["id"],
+                    created_at=now,
+                    delivered_at=now,
+                    via="agent_question",
+                    priority=50,
+                    body_kind="agent_question",
+                )
+                .on_conflict_do_nothing(index_elements=["id"])
             )
 
     async def list_overdue_supervisor_incident_messages(self, cutoff: float) -> list[dict]:
