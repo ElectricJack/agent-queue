@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { connectTerminal, terminalDimensions, type TerminalConnection, type TerminalConnectionState } from "../ws/terminalSocket";
 import { canFocusTerminal } from "./terminalFocus";
+import { TerminalToolbar, TERMINAL_TOOL } from "./TerminalPane";
 
 const encoder = new TextEncoder();
 
@@ -122,38 +123,35 @@ export default function InteractiveTerminal({ sessionId, name, focusRequest }: {
   const reconnect = state.status === "reconnecting";
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col">
-      {/* One control row only: the terminal itself owns every other pixel of height. */}
-      <div ref={controlsRef} tabIndex={-1} className="flex shrink-0 items-center gap-2 border-b border-gray-800 px-3 py-1 text-[10px] text-gray-500">
-        <span>Live tmux · interactive</span>
-        <span id={hintId} className="sr-only">{disabled ? "Keyboard input unavailable until the terminal connects" : "Click to type · Ctrl+M releases keyboard"}</span>
-        <span role="status" aria-label={name + " terminal connection"} className="ml-auto capitalize">
-          {reconnect ? `Reconnecting… (attempt ${state.attempt})` : state.status}{disabled && " · input unavailable"}
-        </span>
-        <button ref={focusButton} type="button" aria-label={"Focus " + name + " terminal"} disabled={disabled}
-          onClick={() => terminalRef.current?.focus()}
-          className="rounded border border-gray-700 px-1.5 py-0.5 text-gray-300 hover:bg-gray-800 disabled:opacity-40">Type</button>
-        <button type="button" aria-label={"Send Enter to " + name} disabled={disabled}
-          onClick={() => connectionRef.current?.sendInput(encoder.encode("\r"))}
-          className="rounded border border-gray-700 px-1.5 py-0.5 text-gray-300 hover:bg-gray-800 disabled:opacity-40">Enter</button>
-        <button type="button" aria-label={"Interrupt " + name} disabled={disabled}
-          onClick={() => connectionRef.current?.sendInput(encoder.encode("\x03"))}
-          className="rounded border border-gray-700 px-1.5 py-0.5 text-gray-300 hover:bg-gray-800 disabled:opacity-40">Ctrl+C</button>
-      </div>
+      <TerminalToolbar title={name} primary={
+        <div ref={controlsRef} tabIndex={-1} className="flex shrink-0 items-center gap-1">
+          <span id={hintId} className="sr-only">{disabled ? "Keyboard input unavailable until the terminal connects" : "Click to type · Ctrl+M releases keyboard"}</span>
+          <span role="status" aria-label={name + " terminal connection"}
+            title={reconnect ? `Reconnecting… (attempt ${state.attempt})` : state.message || state.status}>
+            <span aria-hidden="true" className={"block h-2 w-2 rounded-full " + (disabled ? "bg-amber-400" : "bg-emerald-400")} />
+            <span className="sr-only">{reconnect ? `Reconnecting… (attempt ${state.attempt})` : state.status}{disabled && " · input unavailable"}</span>
+          </span>
+          <button ref={focusButton} type="button" data-primary-control aria-label={"Focus " + name + " terminal"} disabled={disabled}
+            onClick={() => terminalRef.current?.focus()} className={TERMINAL_TOOL}>Type</button>
+        </div>
+      } details={<>
+        <p>Live tmux · interactive</p>
+        <p>{disabled ? "Keyboard input unavailable until the terminal connects" : "Click to type · Ctrl+M releases keyboard"}</p>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" data-primary-control aria-label={"Send Enter to " + name} disabled={disabled}
+            onClick={() => connectionRef.current?.sendInput(encoder.encode("\r"))} className={TERMINAL_TOOL}>Enter</button>
+          <button type="button" data-primary-control aria-label={"Interrupt " + name} disabled={disabled}
+            onClick={() => connectionRef.current?.sendInput(encoder.encode("\x03"))} className={TERMINAL_TOOL}>Ctrl+C</button>
+        </div>
+        {state.message && <div role={state.status === "error" ? "alert" : "status"}>
+          <p>{state.message}</p>
+          {reconnect && <button type="button" data-primary-control onClick={() => connectionRef.current?.reconnect()} className={TERMINAL_TOOL}>Reconnect now</button>}
+        </div>}
+      </>} />
       <div className="min-h-0 min-w-0 flex-1 overflow-hidden bg-[#0d1117] p-2">
         <div ref={hostRef} data-interactive-terminal title={disabled ? "Keyboard input unavailable until the terminal connects" : "Click to type · Ctrl+M releases keyboard"}
           onKeyDown={(event) => event.stopPropagation()} className="h-full w-full [&_.xterm]:h-full" />
       </div>
-      {state.message && (
-        <div role={state.status === "error" ? "alert" : "status"} className="shrink-0 border-t border-gray-800 px-3 py-2 text-xs text-gray-300">
-          <p>{state.message}</p>
-          {reconnect && (
-            <button type="button" onClick={() => connectionRef.current?.reconnect()}
-              className="mt-2 rounded border border-gray-700 px-2 py-1 hover:bg-gray-800">
-              Reconnect now
-            </button>
-          )}
-        </div>
-      )}
     </div>
   );
 }

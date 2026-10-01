@@ -24,7 +24,9 @@ export async function run(t) {
       continue;
     }
     await waitForText(t.page, view.text);
+    await t.page.click('[aria-label^="Details for "]');
     await expectLayout(t, { primary: ['[aria-label="Open navigation"]', '[aria-label="Full screen"]', '[aria-label="Larger text"]'] });
+    await t.page.keyboard.press("Escape");
     assert.equal(await t.page.$eval('a[aria-label="Full screen"]', (a) => a.getAttribute("href")), view.href);
     await t.shot(view.agent.startsWith("pool:") ? "pool" : "agent");
   }

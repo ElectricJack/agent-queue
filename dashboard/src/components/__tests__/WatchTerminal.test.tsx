@@ -47,6 +47,7 @@ function renderWatch(focusHref?: string) {
 describe("WatchTerminal", () => {
   it("font size changes rendering only: 12–20 px, no new stream, no terminal socket", () => {
     renderWatch();
+    fireEvent.click(screen.getByRole("button", { name: "Details for worker-a" }));
     frame("hello");
     const consoleBox = () => screen.getByText("hello").closest("[data-allow-overflow-x]");
     expect(consoleBox()).toHaveStyle({ fontSize: `${FONT_MIN}px` });
@@ -65,6 +66,7 @@ describe("WatchTerminal", () => {
 
   it("keeps the last screen visibly stale after a drop, and Retry reconnects at once", () => {
     renderWatch();
+    fireEvent.click(screen.getByRole("button", { name: "Details for worker-a" }));
     frame("last good screen");
     expect(status()).toHaveTextContent(/^Live$/);
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
@@ -97,6 +99,7 @@ describe("WatchTerminal", () => {
 
   it("an error frame keeps the screen and offers Retry, which opens a fresh stream", () => {
     renderWatch();
+    fireEvent.click(screen.getByRole("button", { name: "Details for worker-a" }));
     frame("kept");
     act(() => latest().onmessage?.({ data: JSON.stringify({ type: "error", message: "tmux is gone", seq: 2 }) }));
     expect(status()).toHaveTextContent(/^Stream error/);
@@ -161,8 +164,8 @@ describe("WatchTerminal typing (mobile interactive terminal)", () => {
   it("opens watch only: no input bar, no keys, no socket, and a tap types nothing", () => {
     renderWatch();
     frame("screen");
-    expect(screen.getByRole("button", { name: "Watch only" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "Type" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByRole("button", { name: "Watch only" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Type" })).toHaveAttribute("aria-description", "Watch only. Enable typing.");
     fireEvent.click(screen.getByText("screen"));
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.queryByRole("toolbar")).toBeNull();
@@ -175,7 +178,7 @@ describe("WatchTerminal typing (mobile interactive terminal)", () => {
     expect(terminal.connect).toHaveBeenCalledOnce();
     expect(options).toMatchObject({ sessionId: "s1", mode: "input" });
     expect(options).not.toHaveProperty("cols");
-    expect(screen.getByRole("button", { name: "Type" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Watch only" })).toHaveAttribute("aria-description", "Typing is active. Switch to watch only.");
     // Until the socket is ready nothing can be sent.
     expect(screen.getByRole("status", { name: "worker-a keyboard status" })).toHaveTextContent("Connecting the keyboard…");
     expect(screen.getByRole("button", { name: "Send Escape" })).toBeDisabled();
@@ -267,7 +270,7 @@ describe("WatchTerminal typing (mobile interactive terminal)", () => {
     Object.defineProperty(window, "innerHeight", { configurable: true, writable: true, value: 844 });
     try {
       startTyping();
-      const root = () => screen.getByRole("group", { name: "worker-a terminal input" }).closest("[tabindex='-1']") as HTMLElement;
+      const root = () => screen.getByRole("button", { name: "Watch only" }).closest("[tabindex='-1']") as HTMLElement;
       expect(root()).not.toHaveAttribute("data-keyboard-open");
       fireEvent.focus(input());
       tick(20);

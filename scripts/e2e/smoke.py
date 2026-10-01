@@ -626,7 +626,7 @@ def fresh_workers(
         project_id=project_id,
     )
     for task_id in fillers:
-        aq("task", "delete", "--task-id", task_id)
+        api_checked("delete_task", {"task_id": task_id, "cascade": True})
     return [Worker.adopt(s["id"]) for s in live[:count]]
 
 
@@ -989,6 +989,8 @@ def s4_formulas(state: dict) -> str:
     for _ in range(2):
         _close_next_child(container)
 
+    # Exercise the CLI list surface once; session readiness polling uses the API.
+    aq("session", "list")
     progress = aq("task", "progress", "--task-id", container)
     check(progress["done"] == 2, f"container progress not settled: {progress}")
 
@@ -1010,11 +1012,11 @@ def _close_next_child(container: str) -> None:
     """Wait for the next child to be picked up, then close it as its session."""
     def _held():
         for child in collection_rows(
-            aq("task", "children", "--task-id", container), "children"
+            api_checked("task_children", {"task_id": container}), "children"
         ):
             if child["status"] in ("COMPLETED", "DONE"):
                 continue
-            sessions = collection_rows(aq("session", "list"), "sessions")
+            sessions = collection_rows(api_checked("session_list", {}), "sessions")
             for s in sessions:
                 if s.get("task_id") == child["id"] and s["state"] in ("starting", "running"):
                     return (child["id"], s["id"])
@@ -1411,7 +1413,7 @@ def s9_task_lifecycle(state: dict) -> str:
 
 def _workspace_by_path(path: str) -> dict | None:
     rows = collection_rows(
-        aq("project", "list-workspaces", "--project-id", PROJECT), "workspaces"
+        api_checked("list_workspaces", {"project_id": PROJECT}), "workspaces"
     )
     wanted = os.path.realpath(path)
     return next(
@@ -1566,18 +1568,13 @@ def s10_workspace_file_git_note(state: dict) -> str:
             "note", "read", "--project-id", PROJECT, "--title", note_title, check_ok=False
         )
         check(missing_note.get("_error") is not None, "deleted note remained readable")
+        # This removal is a CLI acceptance check; finally only cleans fixtures.
+        aq("project", "remove-workspace", "--workspace-id", workspace_id,
+           "--project-id", PROJECT)
     finally:
-        aq("note", "delete", "--project-id", PROJECT, "--title", note_title, check_ok=False)
+        api("delete_note", {"project_id": PROJECT, "title": note_title})
         if workspace_id:
-            aq(
-                "project",
-                "remove-workspace",
-                "--workspace-id",
-                workspace_id,
-                "--project-id",
-                PROJECT,
-                check_ok=False,
-            )
+            api("remove_workspace", {"workspace_id": workspace_id, "project_id": PROJECT})
         if os.path.exists(forbidden):
             os.unlink(forbidden)
 
@@ -1794,10 +1791,12 @@ def s15_development_delivery(state: dict) -> str:
                  "--reason", "unlabelled legacy generation", check_ok=False)
     check("provenance migration" in str(refused.get("_error")),
           f"adoption invented legacy completion identity: {refused}")
-    aq("task", "set-status", "--task-id", task_id, "--status", "READY")
-    api_checked("pause_task", {"task_id": task_id})
-    check(task_show(task_id)["branch_name"] == "fixture-feature",
-          "legacy fixture source branch changed before adoption")
+    # Reopen outside the claim frontier, then hold the fixture before adoption.
+    # A READY interval can let workspace preparation replace its branch name.
+    aq("task", "set-status", "--task-id", task_id, "--status", "DEFINED")
+    paused = api_checked("pause_task", {"task_id": task_id})
+    check(paused.get("status") == "PAUSED", f"adoption fixture was not paused: {paused}")
+    aq("task", "set", task_id, "--branch", "fixture-feature")
     adopted = aq("integration", "adopt", "e2e-development", "--task", task_id,
                  "--target-ref", feature_ref, "--head-sha", head,
                  "--reason", "operator creates an exact completion generation")
@@ -1841,8 +1840,8 @@ def s15_development_delivery(state: dict) -> str:
     # session, so stop it and retry the public delete until it lands.
     def _delete_successor() -> bool:
         for session in pool_sessions("e2e-development"):
-            aq("session", "kill", session["id"], check_ok=False)
-        deleted = aq("task", "delete", "--task-id", successor_id, check_ok=False)
+            api("session_kill", {"session_id": session["id"]})
+        deleted = api("delete_task", {"task_id": successor_id})
         return deleted.get("deleted") == successor_id
 
     wait_for(_delete_successor, what=f"S15 successor {successor_id} to be removed")
@@ -1928,7 +1927,7 @@ def set_failover_policy_enabled(enabled: bool) -> None:
 
 
 def held_tasks() -> dict[str, dict]:
-    rows = collection_rows(aq("provider", "held-tasks", "--project-id", PROJECT), "tasks")
+    rows = collection_rows(api_checked("provider_held_tasks", {"project_id": PROJECT}), "tasks")
     return {row["task_id"]: row for row in rows}
 
 
@@ -1943,7 +1942,7 @@ def login_deaths(key: str, *, since: float) -> list[dict]:
     every one is ``startup_dialog`` evidence on the provider.
     """
     rows = collection_rows(
-        aq("provider", "status", "--provider", key, "--verbose"), "providers"
+        api_checked("provider_status", {"provider": key, "verbose": True}), "providers"
     )
     return [
         e for e in rows[0].get("evidence") or []
@@ -1983,7 +1982,7 @@ def failover_task(title: str, profile: str, cls: str, *, priority: int, pin: boo
 
 
 def provider_escalations() -> list[dict]:
-    payload = aq("escalation", "list", "--project-id", PROJECT)
+    payload = api_checked("escalation_list", {"project_id": PROJECT})
     rows = payload.get("escalations", []) if isinstance(payload, dict) else payload
     return [row for row in rows if row.get("source_kind") == "provider_availability"]
 

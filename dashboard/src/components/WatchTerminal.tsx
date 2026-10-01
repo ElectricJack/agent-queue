@@ -4,6 +4,7 @@ import { ArrowsPointingInIcon, ArrowsPointingOutIcon, EyeIcon, PencilSquareIcon 
 import LivePaneConsole from "./LivePaneConsole";
 import TerminalInputBar from "./TerminalInputBar";
 import TerminalKeyStrip from "./TerminalKeyStrip";
+import { TerminalToolbar, TERMINAL_TOOL } from "./TerminalPane";
 import { usePaneStream, type PaneState } from "../ws/usePaneStream";
 import { useTerminalInput, type TerminalInput } from "../ws/useTerminalInput";
 import { useHistoryOverlay } from "../hooks/useHistoryOverlay";
@@ -14,9 +15,8 @@ export const FONT_MIN = 12;
 export const FONT_MAX = 20;
 const FONT_STEP = 2;
 
-const TOOL =
-  "inline-flex shrink-0 items-center justify-center gap-1 rounded border border-gray-700 px-2 text-xs text-gray-200 hover:bg-gray-800 disabled:opacity-40";
-const MODE = "inline-flex shrink-0 items-center justify-center gap-1 px-2 text-xs";
+const TOOL = TERMINAL_TOOL;
+const MODE = TERMINAL_TOOL;
 const MODE_ON = " bg-gray-200 font-medium text-gray-950";
 const MODE_OFF = " text-gray-300 hover:bg-gray-800";
 
@@ -128,76 +128,23 @@ export default function WatchTerminal({
           ? "fixed z-50 flex flex-col bg-black px-safe outline-none"
           : full.open
             ? "fixed inset-0 z-50 flex flex-col bg-black pt-safe pb-safe px-safe outline-none"
-            : "flex min-h-0 flex-1 flex-col outline-none"
+            : "flex h-full min-h-0 flex-1 flex-col outline-none"
       }
     >
-      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-gray-800 bg-gray-950 px-2 py-1">
-        {/* Its own row on a narrow phone, so the controls never squeeze it away. */}
-        <span
-          role="status"
-          aria-label={`${name} terminal status`}
-          className="min-w-0 grow basis-full truncate text-xs text-gray-400 sm:basis-0"
-        >
-          {statusText(stream)}
+      <TerminalToolbar title={name} standalone={full.open || !!keyboard} primary={<>
+        <span role="status" aria-label={`${name} terminal status`} title={statusText(stream)}>
+          <span aria-hidden="true" className={"block h-2 w-2 rounded-full " + (stale || stream.status !== "open" ? "bg-amber-400" : "bg-emerald-400")} />
+          <span className="sr-only">{statusText(stream)}</span>
         </span>
-        <button
-          type="button"
-          data-primary-control
-          aria-label="Smaller text"
-          className={TOOL}
-          disabled={fontSize <= FONT_MIN}
-          onClick={() => setFontSize((size) => Math.max(FONT_MIN, size - FONT_STEP))}
-        >
-          A−
+        <button type="button" data-primary-control aria-label={typing ? "Watch only" : "Type"}
+          aria-description={typing ? "Typing is active. Switch to watch only." : "Watch only. Enable typing."} className={MODE + (typing ? MODE_ON : MODE_OFF)}
+          onClick={() => { setTyping(!typing); setInputFocused(false); }}>
+          {typing ? <EyeIcon aria-hidden="true" className="h-4 w-4" /> : <PencilSquareIcon aria-hidden="true" className="h-4 w-4" />}
+          <span>{typing ? "Watch" : "Type"}</span>
         </button>
-        <output aria-label="Text size" className="w-10 shrink-0 text-center text-xs text-gray-400">
-          {fontSize}px
-        </output>
-        <button
-          type="button"
-          data-primary-control
-          aria-label="Larger text"
-          className={TOOL}
-          disabled={fontSize >= FONT_MAX}
-          onClick={() => setFontSize((size) => Math.min(FONT_MAX, size + FONT_STEP))}
-        >
-          A+
-        </button>
-        {/* Watch only is the default on every visit, so a stray tap never types into a worker. */}
-        <div role="group" aria-label={`${name} terminal input`} className="inline-flex shrink-0 overflow-hidden rounded border border-gray-700">
-          <button
-            type="button"
-            data-primary-control
-            aria-pressed={!typing}
-            className={MODE + (typing ? MODE_OFF : MODE_ON)}
-            onClick={() => {
-              setTyping(false);
-              setInputFocused(false); // the input bar unmounts without a blur
-            }}
-          >
-            <EyeIcon className="h-4 w-4" />
-            <span>Watch only</span>
-          </button>
-          <button
-            type="button"
-            data-primary-control
-            aria-pressed={typing}
-            className={MODE + (typing ? MODE_ON : MODE_OFF)}
-            onClick={() => setTyping(true)}
-          >
-            <PencilSquareIcon className="h-4 w-4" />
-            <span>Type</span>
-          </button>
-        </div>
-        {stale && (
-          <button type="button" data-primary-control className={TOOL} onClick={stream.reconnect}>
-            Retry
-          </button>
-        )}
         {focusHref ? (
           <Link to={focusHref} data-primary-control aria-label="Full screen" className={TOOL}>
-            <ArrowsPointingOutIcon className="h-4 w-4" />
-            <span>Full screen</span>
+            <ArrowsPointingOutIcon aria-hidden="true" className="h-4 w-4" />
           </Link>
         ) : (
           // One button for both states, so focus stays on it across the switch.
@@ -208,11 +155,42 @@ export default function WatchTerminal({
             className={TOOL}
             onClick={full.open ? full.hide : enterFull}
           >
-            {full.open ? <ArrowsPointingInIcon className="h-4 w-4" /> : <ArrowsPointingOutIcon className="h-4 w-4" />}
-            <span>{full.open ? "Exit full screen" : "Full screen"}</span>
+            {full.open ? <ArrowsPointingInIcon aria-hidden="true" className="h-4 w-4" /> : <ArrowsPointingOutIcon aria-hidden="true" className="h-4 w-4" />}
           </button>
         )}
-      </div>
+      </>} details={<>
+        <p>{statusText(stream)}</p>
+        <div className="flex flex-wrap items-center gap-1">
+          <button
+            type="button"
+            data-primary-control
+            aria-label="Smaller text"
+            className={TOOL}
+            disabled={fontSize <= FONT_MIN}
+            onClick={() => setFontSize((size) => Math.max(FONT_MIN, size - FONT_STEP))}
+          >
+            A−
+          </button>
+          <output aria-label="Text size" className="w-10 shrink-0 text-center text-xs text-gray-400">
+            {fontSize}px
+          </output>
+          <button
+            type="button"
+            data-primary-control
+            aria-label="Larger text"
+            className={TOOL}
+            disabled={fontSize >= FONT_MAX}
+            onClick={() => setFontSize((size) => Math.min(FONT_MAX, size + FONT_STEP))}
+          >
+            A+
+          </button>
+        </div>
+        {stale && (
+          <button type="button" data-primary-control className={TOOL} onClick={stream.reconnect}>
+            Retry
+          </button>
+        )}
+      </>} />
       <div className="flex min-h-0 flex-1 flex-col" onClick={typing ? focusInput : undefined}>
         <LivePaneConsole
           screen={stream.screen}

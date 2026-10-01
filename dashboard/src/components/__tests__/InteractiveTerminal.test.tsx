@@ -26,6 +26,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.cle
 function terminal() {
   const view = render(<InteractiveTerminal name="Builder" sessionId="session-b" />);
   act(() => vi.runOnlyPendingTimers());
+  fireEvent.click(screen.getByRole("button", { name: "Details for Builder" }));
   return { view, term: TerminalMock.instances[0]!, socket: TerminalSocketMock.instances[0]! };
 }
 function inputs(socket: TerminalSocketMock) { return socket.inputs().map((bytes) => new TextDecoder().decode(bytes)); }
@@ -123,6 +124,7 @@ describe("Interactive live terminal", () => {
     expect(socket.controls()).toEqual([]);
     expect(term.disposed).toBe(true);
     expect(TerminalSocketMock.instances[1]!.url).toContain("/ws/terminal/session-c");
+    if (!screen.queryByRole("button", { name: "Send Enter to Reviewer" })) fireEvent.click(screen.getByRole("button", { name: "Details for Reviewer" }));
     expect(screen.getByRole("button", { name: "Send Enter to Reviewer" })).toBeDisabled();
   });
 

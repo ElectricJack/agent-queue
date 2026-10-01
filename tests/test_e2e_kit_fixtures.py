@@ -198,12 +198,16 @@ def test_development_validation_preset_checks_the_committed_readme(tmp_path):
     preset, args = finite_command(smoke.DEVELOPMENT_VALIDATION_COMMAND)
     command = validate_args(presets(REPO_ROOT)[preset], args, tmp_path, worker_cap=1)
 
-    passed = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    passed = subprocess.run(
+        command, cwd=tmp_path, capture_output=True, check=False, text=True, timeout=30
+    )
     assert passed.returncode == 0, passed.stdout + passed.stderr
     assert "1 passed" in passed.stdout
 
     readme.unlink()
-    failed = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    failed = subprocess.run(
+        command, cwd=tmp_path, capture_output=True, check=False, text=True, timeout=30
+    )
     assert failed.returncode == 1, failed.stdout + failed.stderr
     assert "test_readme_exists" in failed.stdout and "1 failed" in failed.stdout
 
@@ -240,15 +244,19 @@ def test_s4_child_close_reports_a_no_op_work_outcome(monkeypatch):
 
     def fake_aq(*args, **kwargs):
         calls.append((args, kwargs))
-        if args[:2] == ("task", "children"):
-            return {"children": [{"id": "child-1", "status": "IN_PROGRESS"}]}
-        if args[:2] == ("session", "list"):
-            return {"sessions": [{"id": "sess-1", "task_id": "child-1", "state": "running"}]}
         if args[:2] == ("task", "close"):
             return {"success": True}
         raise AssertionError(f"unexpected aq call: {args}")
 
+    def fake_api(command, args):
+        if command == "task_children":
+            assert args == {"task_id": "container-1"}
+            return {"children": [{"id": "child-1", "status": "IN_PROGRESS"}]}
+        assert command == "session_list" and args == {}
+        return {"sessions": [{"id": "sess-1", "task_id": "child-1", "state": "running"}]}
+
     monkeypatch.setattr(smoke, "aq", fake_aq)
+    monkeypatch.setattr(smoke, "api", fake_api)
     monkeypatch.setattr(smoke, "session_token", lambda session_id: f"tok-{session_id}")
 
     smoke._close_next_child("container-1")

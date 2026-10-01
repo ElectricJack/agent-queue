@@ -118,6 +118,8 @@ export async function startStubServer({ distDir, fixtures }) {
   const paneFailures = new Map(); // sessionId -> status
   const eventSockets = new Set();
   const inputSockets = new Set();
+  const terminalScreens = new Map();
+  const terminalViewers = [];
 
   function openPane(sessionId, res) {
     const failure = paneFailures.get(sessionId);
@@ -182,6 +184,25 @@ export async function startStubServer({ distDir, fixtures }) {
     if (path.startsWith("/ws/terminal")) {
       // A focus route or a compact terminal must never attach (spec §4).
       terminalUpgrades.push(req.url);
+      const sessionId = decodeURIComponent(path.split("/")[3]);
+      if (terminalScreens.has(sessionId)) {
+        const record = { sessionId, frames: [], socket };
+        terminalViewers.push(record);
+        acceptUpgrade(req, socket, "aq-terminal-v1");
+        socket.write(wsFrame(0x1, Buffer.from(JSON.stringify({ type: "ready", session_id: sessionId }))));
+        socket.write(wsFrame(0x2, Buffer.from(terminalScreens.get(sessionId))));
+        socket.on("data", wsReader((opcode, payload) => {
+          if (opcode === 0x2) record.frames.push(payload.toString("utf8"));
+          if (opcode === 0x1) {
+            const control = JSON.parse(payload.toString("utf8"));
+            record.frames.push(control);
+            if (control.type === "ping") socket.write(wsFrame(0x1, Buffer.from(JSON.stringify({ type: "pong" }))));
+          }
+        }));
+        inputSockets.add(socket);
+        socket.on("close", () => inputSockets.delete(socket));
+        return;
+      }
       socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
       return;
     }
@@ -196,6 +217,9 @@ export async function startStubServer({ distDir, fixtures }) {
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     requests, unhandled, terminalUpgrades, terminalInputs,
+    terminalViewers,
+    // Attach is refused by default. Individual geometry checks opt in to a fake live PTY.
+    allowTerminal: (sessionId, screen) => terminalScreens.set(sessionId, screen),
     /** Every binary input frame the phone sent to `sessionId`, decoded, in order. */
     typed: (sessionId) => terminalInputs.filter((r) => r.sessionId === sessionId).flatMap((r) => r.frames.filter((f) => typeof f === "string")),
     statePuts: () => requests.filter((r) => r.path === "/api/dashboard/state-put").map((r) => JSON.parse(r.body)),
