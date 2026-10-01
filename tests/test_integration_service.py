@@ -21,8 +21,21 @@ from src.database.tables import (
 )
 from src.integration.models import HierarchicalIntegrationPolicy
 from src.integration.scheduler import IntegrationScheduler
-from src.integration.service import IntegrationService
+from src.integration.service import IntegrationService as _IntegrationService
 from src.integration.settling import note_approval
+
+
+class IntegrationService(_IntegrationService):
+    """Existing synthetic-time scenarios explicitly own their operation clock."""
+
+    def __init__(self, *args, **kwargs):
+        self._test_now = 0.0
+        kwargs.setdefault("clock", lambda: self._test_now)
+        super().__init__(*args, **kwargs)
+
+    async def tick(self, now, **kwargs):
+        self._test_now = now
+        await super().tick(now, **kwargs)
 
 
 @pytest.fixture
@@ -843,3 +856,21 @@ async def test_selector_failure_isolates_source_and_background_loop_recovers_cle
     assert scheduler.mark_due.await_args.args[0] == "p"
     assert scheduler.mark_due.await_args.args[2] == "periodic"
     assert outbox_calls == 2
+
+
+async def test_each_item_observes_clock_after_prior_slow_handler():
+    now = [10.0]
+    observed = []
+    service = IntegrationService(
+        SimpleNamespace(), SimpleNamespace(), SimpleNamespace(), SimpleNamespace(),
+        clock=lambda: now[0],
+    )
+
+    async def slow(row, observed_at):
+        observed.append((row["project_id"], observed_at))
+        now[0] += 180
+
+    await service._run_optional(
+        "candidate CI", [{"project_id": "p"}, {"project_id": "q"}], slow, 10,
+    )
+    assert observed == [("p", 10), ("q", 190)]

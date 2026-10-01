@@ -1724,7 +1724,10 @@ class Orchestrator(
             )
 
         self.integration_scheduler = IntegrationScheduler(self.db)
-        self.integration_outbox = IntegrationOutbox(self.db, accept_integration_event)
+        self.integration_outbox = IntegrationOutbox(
+            self.db, accept_integration_event,
+            before_dispatch=self.integration_scheduler.maintain_lease,
+        )
         github_clients = {}
 
         def github_client(binding):

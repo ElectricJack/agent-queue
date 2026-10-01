@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
+from collections.abc import Callable
 from typing import Any, Literal
 
 from sqlalchemy import delete, insert, or_, select, update
@@ -47,8 +49,21 @@ class IntegrationScheduler:
 
     DEFAULT_INTERVAL_SECONDS = 300
 
-    def __init__(self, db: Any):
+    def __init__(self, db: Any, *, clock: Callable[[], float] = time.time):
         self.db = db
+        self._clock = clock
+
+    async def maintain_lease(self, project_id: str) -> None:
+        """Refresh only the outstanding batch's exact authority before dispatch."""
+        async with self.db.immediate() as conn:
+            await self.db.lock_hierarchy_project(conn, project_id)
+            schedule = (await conn.execute(
+                select(project_integration_schedules)
+                .where(project_integration_schedules.c.project_id == project_id)
+                .with_for_update()
+            )).mappings().one_or_none()
+            if schedule is not None:
+                await self._maintain_batch_lease_on(conn, project_id, schedule, self._clock())
 
     async def configure(
         self,
@@ -273,6 +288,7 @@ class IntegrationScheduler:
             .mappings()
             .one_or_none()
         )
+        now = self._clock()
         renew_by = now + INTEGRATION_LEASE_RENEW_WITHIN_SECONDS
         if lease is None or float(lease["expires_at"]) > renew_by:
             return
@@ -297,7 +313,6 @@ class IntegrationScheduler:
             not in {"sealed", "building", "testing", "repairing", "human_blocked", "promoting"}
         ):
             return
-        expired = float(lease["expires_at"]) <= now
         # A prepared root intent already freezes project-lease authority. Renew
         # that exact owner/fence; replacing it would orphan a possible remote push.
         bound_intent = (await conn.execute(
@@ -312,13 +327,30 @@ class IntegrationScheduler:
             bound_intent["project_lease_owner_id"] != lease["owner_id"]
             or int(bound_intent["project_lease_fence_token"]) != int(lease["fence_token"])
         ):
+            logger.warning(
+                "integration lease renewal refused project=%s batch=%s owner=%s fence=%s "
+                "intent=%s: bound root authority differs",
+                project_id, batch["id"], lease["owner_id"], lease["fence_token"],
+                bound_intent["id"],
+            )
             return
+        # Locks and authority reads may themselves wait. The guarded renewal
+        # must buy a full horizon from this operation, not the poll's timestamp.
+        now = self._clock()
+        expired = float(lease["expires_at"]) <= now
         recovered = expired and bound_intent is None
         fence = int(lease["fence_token"]) + int(recovered)
         await conn.execute(
             update(project_integration_leases)
             .where(project_integration_leases.c.project_id == project_id)
             .values(heartbeat_at=now, expires_at=now + INTEGRATION_LEASE_SECONDS, fence_token=fence)
+        )
+        logger.info(
+            "integration lease renewed project=%s batch=%s owner=%s fence=%s "
+            "remaining_before=%.3fs expires_at=%.3f recovered=%s bound_intent=%s",
+            project_id, batch["id"], lease["owner_id"], fence,
+            float(lease["expires_at"]) - now, now + INTEGRATION_LEASE_SECONDS,
+            recovered, bound_intent["id"] if bound_intent else None,
         )
         if recovered:
             operation_id = (

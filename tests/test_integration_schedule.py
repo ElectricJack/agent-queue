@@ -524,7 +524,7 @@ async def test_tick_leaves_promotion_claim_headroom_on_the_batch_lease(db, remai
     )
     from src.integration.main_promotion import _CLAIM_SECONDS
 
-    scheduler = IntegrationScheduler(db)
+    scheduler = IntegrationScheduler(db, clock=lambda: 20.0)
     await scheduler.configure(project_id="p", now=0.0, enabled=True, interval_seconds=300)
     first = await scheduler.mark_due(project_id="p", now=10.0, trigger="manual")
     async with db.immediate() as conn:

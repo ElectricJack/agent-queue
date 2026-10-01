@@ -1725,11 +1725,12 @@ async def test_scheduler_renews_expired_frozen_root_authority(prepared_db, inten
         intent_before = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
         await conn.execute(update(project_integration_leases).values(expires_at=20))
     now[0] = 400
-    scheduler = IntegrationScheduler(db)
+    scheduler = IntegrationScheduler(db, clock=lambda: now[0])
     assert [row["project_id"] for row in await db.due_integration_schedule_page(
         now=400, after=None, limit=10
     )] == ["p"]
-    await scheduler.mark_due("p", 400, "periodic")
+    # A stale caller timestamp must not shorten frozen authority's renewal.
+    await scheduler.mark_due("p", 10, "periodic")
     async with db._engine.connect() as conn:
         lease = (await conn.execute(select(project_integration_leases))).mappings().one()
         intent_after = dict((await conn.execute(select(integration_promotion_intents))).mappings().one())
@@ -2827,3 +2828,148 @@ async def test_reconciler_leaves_the_first_wakeup_to_the_ci_publisher(prepared_d
         if row["id"].startswith("integration-green-continuation-")
     ]
     assert [row["id"] for row in continuations] == [lost["event_id"]]
+
+
+async def test_slow_tick_naturally_promotes_and_releases_through_reviewed_outbox(
+    prepared_db, command_handler_factory, caplog,
+):
+    from src.config import PlaybooksConfig
+    from src.commands.contracts.builtin import set_handler_provider
+    from src.database.tables import integration_operation_artifact_pins, playbook_pending_events
+    from src.integration.outbox import IntegrationOutbox, enqueue_integration_event
+    from src.integration.green_continuation import GreenPromotionReconciler
+    from src.integration.release import IntegrationReleaseService
+    from src.integration.scheduler import IntegrationScheduler
+    from src.integration.service import IntegrationService
+    from src.playbooks.artifact_store import ArtifactStore
+    from src.playbooks.definition import load_definition_json
+    from src.playbooks.runtime import V2PlaybookRuntime
+
+    db, data_dir = prepared_db
+    now = [10.0]
+
+    def clock():
+        return now[0]
+
+    compiled = data_dir / "compiled"
+    definition = load_definition_json(Path(
+        "src/prompts/reviewed_playbooks/root-train/artifact.json"
+    ).read_text())
+    store = ArtifactStore(str(compiled))
+    ref = store.put(
+        definition, source_digest=definition.source_hash,
+        contract_fingerprint=definition.contract_fingerprint(), profile_fingerprint="",
+        compiler_build="test", version=definition.version,
+    )
+    await db.upsert_playbook_artifact(
+        ref, scope="system", scope_identifier="", path=store.path_for(ref.artifact_sha256),
+        size_bytes=len(store.canonical_bytes(definition)),
+    )
+    await db.set_playbook_activation(
+        playbook_id="root-train", scope="system", scope_identifier="",
+        artifact_sha256=ref.artifact_sha256, enabled=True, activated_by="test",
+        health="ready", reasons="[]",
+    )
+    boundary = {
+        **_policy()["root"],
+        "repair": {"debug_intelligence_class": "deep"},
+        "route": {"playbook_id": "root-train", "scope": "system",
+                  "scope_identifier": "", "artifact": ref.as_dict()},
+    }
+    policy = {"version": 1, "parent": boundary, "root": boundary,
+              "branchless_parent": "skip", "on_failed_child": "block"}
+    await db.update_project("p", hierarchical_integration_policy=policy)
+    async with db.immediate() as conn:
+        await conn.execute(update(project_integration_leases).values(
+            owner_id="sealer-batch", expires_at=300,
+        ))
+        await conn.execute(insert(project_integration_schedules).values(
+            project_id="p", enabled=True, interval_seconds=3600, next_due_at=3601,
+            request_sequence=1, outstanding_request_id="request", outstanding_trigger="manual",
+            outstanding_requested_at=1, updated_at=1,
+        ))
+        await conn.execute(update(integration_repair_operations).values(
+            route_playbook_id="root-train", route_scope="system", route_scope_identifier="",
+        ))
+        await conn.execute(insert(integration_operation_artifact_pins).values(
+            operation_id="root-op", artifact_sha256=ref.artifact_sha256,
+        ))
+        for event_id, event_type in (("a-old", "integration.branch_materialization_pending"),
+                                     ("b-green", "integration.candidate_green")):
+            await enqueue_integration_event(
+                conn, event_id=event_id, dedup_key=event_id, project_id="p", event_type=event_type,
+                payload={"operation_id": "root-op", "batch_id": "batch", "revision": 0},
+                available_at=10,
+            )
+    app = FakeAppClient()
+    git = PushGit(app)
+    handler = await command_handler_factory()
+    unused_db = handler.db
+    handler.orchestrator.db = db
+    handler.orchestrator.root_promotion_service = RootPromotionService(
+        db, data_dir=data_dir, git_manager=git, app_client=app, clock=clock,
+    )
+    handler.orchestrator.integration_release_service = IntegrationReleaseService(db)
+    runtime = V2PlaybookRuntime(
+        config=SimpleNamespace(compiled_root=str(compiled), playbooks=PlaybooksConfig(enabled=True),
+                               security=SimpleNamespace(capability_enforcement="enforce")),
+        db=db, handler=handler, llm=None, bus=None,
+    )
+    set_handler_provider(lambda: handler)
+    await runtime.refresh()
+    scheduler = IntegrationScheduler(db, clock=clock)
+    outbox = IntegrationOutbox(
+        db, runtime.accept_integration_event, clock=clock, page_size=1,
+        before_dispatch=scheduler.maintain_lease,
+    )
+    entered = asyncio.Event()
+    blocked = asyncio.Event()
+    calls = 0
+
+    async def slow_materialization(_now):
+        nonlocal calls
+        calls += 1
+        now[0] += 180
+        entered.set()
+        await blocked.wait()
+
+    service = IntegrationService(
+        db, scheduler, SimpleNamespace(), outbox, clock=clock, interval_seconds=0.01,
+        branch_materialization_handler=slow_materialization,
+        green_promotion_handler=GreenPromotionReconciler(
+            db, promotion=handler.orchestrator.root_promotion_service, clock=clock,
+        ).tick,
+    )
+    try:
+        service.start()
+        await asyncio.wait_for(entered.wait(), timeout=2)
+        async with asyncio.timeout(10):
+            while True:
+                async with db._engine.connect() as conn:
+                    request = await conn.scalar(select(
+                        project_integration_schedules.c.outstanding_request_id
+                    ))
+                if request is None:
+                    break
+                await asyncio.sleep(0.01)
+        assert now[0] == 190
+        assert calls == 1  # Still blocked; no overlapping remote pass was spawned.
+        assert app.remote == HEAD
+        assert len(git.pushes) == 1
+        async with db._engine.connect() as conn:
+            assert await conn.scalar(select(func.count()).select_from(task_delivery_receipts)) == 2
+            assert await conn.scalar(select(func.count()).select_from(project_integration_leases)) == 0
+            pending = (await conn.execute(select(playbook_pending_events))).mappings().all()
+            assert any(row["event_id"] == "b-green" and row["resolution"] == "dispatched"
+                       for row in pending)
+            old = (await conn.execute(select(integration_outbox).where(
+                integration_outbox.c.id == "a-old"
+            ))).mappings().one()
+            assert old["delivered_at"] is None
+            assert old["available_at"] == 191
+    finally:
+        await service.stop()
+        await runtime.shutdown()
+        set_handler_provider(None)
+        await unused_db.close()
+    assert "elapsed=180.000s" in caplog.text

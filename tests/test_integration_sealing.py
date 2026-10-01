@@ -1471,7 +1471,7 @@ async def test_scheduler_maintains_batch_lease_before_next_sweep(db, expired):
 
     await _enable_train(db)
     await _seed_leaf(db, "root", "b" * 40)
-    scheduler = IntegrationScheduler(db)
+    scheduler = IntegrationScheduler(db, clock=lambda: now)
     await scheduler.configure(project_id="p", now=1.0, enabled=True, interval_seconds=3600)
     request = await _request(db)
     sealed = await TrainService(db).seal("p", request["request_id"], 20.0)
@@ -1515,7 +1515,7 @@ async def test_scheduler_does_not_renew_or_recover_another_lease_owner(db, expir
 
     await _enable_train(db)
     await _seed_leaf(db, "root", "b" * 40)
-    scheduler = IntegrationScheduler(db)
+    scheduler = IntegrationScheduler(db, clock=lambda: now)
     await scheduler.configure(project_id="p", now=1.0, enabled=True, interval_seconds=3600)
     request = await _request(db)
     await TrainService(db).seal("p", request["request_id"], 20.0)
@@ -1549,7 +1549,7 @@ async def test_disabled_schedule_maintains_existing_batch_without_new_sweep(db, 
 
     await _enable_train(db)
     await _seed_leaf(db, "root", "b" * 40)
-    scheduler = IntegrationScheduler(db)
+    scheduler = IntegrationScheduler(db, clock=lambda: now)
     await scheduler.configure(project_id="p", now=1, enabled=True, interval_seconds=3600)
     request = await _request(db)
     sealed = await TrainService(db).seal("p", request["request_id"], 20)

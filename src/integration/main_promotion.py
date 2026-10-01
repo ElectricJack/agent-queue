@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import inspect
+import logging
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -47,6 +48,7 @@ from src.git.github_contracts import GitHubAccessError, GitHubRepositoryBinding
 
 _IDENTITY_NAMESPACE = uuid.UUID("2cfd2eea-e0e5-4397-b1c4-2dd6c40d64dd")
 _CLAIM_SECONDS = 135.0
+logger = logging.getLogger(__name__)
 
 
 class RootPromotionResult(BaseModel):
@@ -1576,6 +1578,15 @@ class RootPromotionService:
             minimum_lease_expires_at = self.clock() + _CLAIM_SECONDS
         if batch["lifecycle"] not in {"testing", "promoting"}:
             return "wait", f"batch lifecycle is {batch['lifecycle']}, not testing"
+        if lease is not None and float(lease["expires_at"]) < minimum_lease_expires_at:
+            logger.warning(
+                "root promotion waiting for lease headroom project=%s batch=%s revision=%s "
+                "owner=%s fence=%s expires_at=%.3f required_expires_at=%.3f "
+                "shortfall=%.3fs; guarded schedule maintenance must renew exact authority",
+                batch["project_id"], batch["id"], revision, lease["owner_id"],
+                lease["fence_token"], float(lease["expires_at"]), minimum_lease_expires_at,
+                minimum_lease_expires_at - float(lease["expires_at"]),
+            )
         if (
             operation is None
             or operation["target_kind"] != "batch"
