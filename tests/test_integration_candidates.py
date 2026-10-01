@@ -449,6 +449,45 @@ def _make_conflicting_origin(
     return origin, work, base, members
 
 
+def _make_generated_origin(tmp_path: Path):
+    origin = tmp_path / "origin.git"
+    work = tmp_path / "work"
+    _git(tmp_path, "init", "--bare", "--initial-branch=main", str(origin))
+    _git(tmp_path, "clone", str(origin), str(work))
+    _git(work, "config", "user.name", "Candidate Test")
+    _git(work, "config", "user.email", "candidate@example.test")
+    (work / ".gitattributes").write_text("generated.txt merge=aq-generated\n")
+    (work / "shared.txt").write_text("base\n")
+    _git(work, "add", ".gitattributes", "shared.txt")
+    _git(work, "commit", "-m", "base")
+    base = _git(work, "rev-parse", "HEAD")
+    _git(work, "push", "origin", "main")
+    members = []
+    for ordinal, text in enumerate(("gen-a\n", "gen-b\n")):
+        _git(work, "switch", "-C", f"root-{ordinal}", base)
+        (work / "generated.txt").write_text(text)
+        _git(work, "add", "generated.txt")
+        _git(work, "commit", "-m", f"member {ordinal}")
+        head = _git(work, "rev-parse", "HEAD")
+        tree = _git(work, "rev-parse", f"{head}^{{tree}}")
+        _git(work, "push", "origin", f"HEAD:refs/heads/root-{ordinal}")
+        members.append((base, head, tree))
+    return origin, work, base, members
+
+
+def _write_regenerator(tmp_path: Path, *, fail: bool = False) -> Path:
+    stub = tmp_path / "regen.sh"
+    stub.write_text(
+        "#!/bin/sh\n"
+        f"touch '{tmp_path / 'regen-ran'}'\n"
+        + ("printf 'rebuilt\\n' > generated.txt\n" if not fail else "")
+        + f"echo {'regenerator failed' if fail else 'regenerating'}\n"
+        + (f"exit 1\n" if fail else "exit 0\n")
+    )
+    stub.chmod(0o755)
+    return stub
+
+
 class _AuditForge:
     def __init__(self, backing=None):
         self.backing = backing if backing is not None else {"result": None, "calls": []}
@@ -3927,3 +3966,129 @@ async def test_two_commit_source_repair_may_resolve_with_only_its_tip(db, tmp_pa
         )
         is None
     )
+
+
+async def test_generated_conflict_advances_with_rebuilt_tree(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, work, base, members = _make_generated_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    regenerate = _write_regenerator(tmp_path, fail=False)
+    service = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        regenerate_command=str(regenerate),
+        clock=lambda: 100.0,
+    )
+
+    result = await service.build("batch")
+
+    assert result.outcome == "built"
+    store = next((tmp_path / "data" / "integration-repositories").iterdir())
+    # The regenerator ran exactly once and overwrote the member-1 side's value.
+    assert (tmp_path / "regen-ran").exists()
+    assert _git(store, "show", f"{result.head_sha}:generated.txt") == "rebuilt"
+    # Non-generated state survives the merge intact.
+    assert _git(store, "show", f"{result.head_sha}:shared.txt") == "base"
+    async with db._engine.connect() as conn:
+        applied = (
+            (
+                await conn.execute(
+                    select(integration_candidate_member_results).order_by(
+                        integration_candidate_member_results.c.member_ordinal
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert [row["result"] for row in applied] == ["applied", "applied"]
+
+
+async def test_non_generated_conflict_still_dispatches(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, work, base, members = _make_conflicting_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    regenerate = _write_regenerator(tmp_path, fail=False)
+    service = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        regenerate_command=str(regenerate),
+        clock=lambda: 100.0,
+    )
+
+    result = await service.build("batch")
+
+    assert result.outcome == "conflict"
+    # The conflict is not confined to generated files, so the regenerator must
+    # not have run.
+    assert not (tmp_path / "regen-ran").exists()
+    async with db._engine.connect() as conn:
+        applied = (
+            (
+                await conn.execute(
+                    select(integration_candidate_member_results).order_by(
+                        integration_candidate_member_results.c.member_ordinal
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert [row["result"] for row in applied] == ["applied", "conflict"]
+
+
+async def test_generated_conflict_falls_back_when_regenerator_fails(db, tmp_path):
+    from src.git.github_app import GitHubRepositoryBinding
+    from src.integration.candidates import CandidateService
+
+    origin, work, base, members = _make_generated_origin(tmp_path)
+    await db.update_repo("repo", url=str(origin))
+    await _seed_batch(db, members=members, base_sha=base)
+    app = _AppClient(origin)
+    app.repository = GitHubRepositoryBinding(repository_id=9, full_name="example/repo")
+    regenerate = _write_regenerator(tmp_path, fail=True)
+    service = CandidateService(
+        db,
+        data_dir=tmp_path / "data",
+        git_manager=_LocalPushGit(origin),
+        forge_provider=_AuditForge(),
+        app_client=app,
+        regenerate_command=str(regenerate),
+        clock=lambda: 100.0,
+    )
+
+    result = await service.build("batch")
+
+    # The regenerator did run but failed, so the candidate must not advance
+    # and the conflict is surfaced for repair.
+    assert result.outcome == "conflict"
+    assert (tmp_path / "regen-ran").exists()
+    async with db._engine.connect() as conn:
+        applied = (
+            (
+                await conn.execute(
+                    select(integration_candidate_member_results).order_by(
+                        integration_candidate_member_results.c.member_ordinal
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    assert [row["result"] for row in applied] == ["applied", "conflict"]
