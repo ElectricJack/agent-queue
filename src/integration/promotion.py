@@ -33,8 +33,6 @@ _COAUTHOR_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 _IDENTITY_NAMESPACE = uuid.UUID("44f3c614-4c2c-4a03-a76d-33575d722b8d")
-_INTEGRATION_NAME = "Agent Queue Integration"
-_INTEGRATION_EMAIL = "integration@agent-queue.invalid"
 _MAX_CONFLICT_BYTES = 65536
 
 
@@ -187,19 +185,18 @@ class PromotionService:
             )
 
             created_at = float(int(self.clock()))
-            primary = (
-                authors[0]
-                if authors
-                else {
-                    "name": _INTEGRATION_NAME,
-                    "email": _INTEGRATION_EMAIL,
-                }
-            )
+            # Authors are preserved from the source; the merge is committed
+            # as the project's resolved identity, pinned in the intent so a
+            # retry rebuilds the identical commit (git-identity spec).
+            integrator = self.git.resolve_commit_identity(
+                await self.db.get_project(context["project_id"])
+            ).as_dict()
+            primary = authors[0] if authors else integrator
             message = self._message(request.source_task_id, intent_id, receipt_id, authors)
             commit_metadata = {
                 "message": message,
                 "author": primary,
-                "committer": {"name": _INTEGRATION_NAME, "email": _INTEGRATION_EMAIL},
+                "committer": integrator,
                 "timestamp": int(created_at),
             }
             provenance = await self._provenance(

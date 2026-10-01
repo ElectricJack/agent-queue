@@ -46,15 +46,6 @@ from src.integration.delivery_path import (
 )
 from src.models import INTEGRATION_MODE_PULL_REQUEST, TaskStatus
 
-_IDENTITY = {
-    "GIT_AUTHOR_NAME": "Agent Queue",
-    "GIT_AUTHOR_EMAIL": "aq@localhost",
-    "GIT_COMMITTER_NAME": "Agent Queue",
-    "GIT_COMMITTER_EMAIL": "aq@localhost",
-    "LC_ALL": "C",
-}
-
-
 #: Terminal-BLOCKED contexts a passed close can end in: the completion
 #: pipeline stopped (verification or delivery), or integration hit a conflict.
 _PASSED_BLOCK_CONTEXTS = frozenset({"session_close_pipeline_stop", "merge_conflict"})
@@ -149,6 +140,9 @@ class ManualDelivery:
                 workdir, task, url, branch, default_branch,
                 reason=reason.strip(), operator_id=operator_id, dry_run=dry_run,
                 expected_head=(expected_head or "").strip().lower() or None,
+                # The merge is the project's own AQ-authored commit; the
+                # branch's commits keep their authors.
+                identity=self.git.resolve_commit_identity(project),
             )
         finally:
             await asyncio.to_thread(shutil.rmtree, workdir, True)
@@ -177,6 +171,7 @@ class ManualDelivery:
         operator_id: str,
         dry_run: bool,
         expected_head: str | None,
+        identity,
     ) -> dict:
         repo_dir = workdir / "repository.git"
         for cwd, args in (
@@ -245,7 +240,7 @@ class ManualDelivery:
             )
             commit = await self._git(
                 repo_dir, "commit-tree", lines[0], "-p", base, "-p", head,
-                stdin=message, env=_IDENTITY,
+                stdin=message, env={**identity.env(), "LC_ALL": "C"},
             )
             if commit.returncode or not commit.stdout.strip():
                 return _refused(

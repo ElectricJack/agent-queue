@@ -12,6 +12,7 @@ import json
 import re
 from dataclasses import asdict, dataclass
 
+from src.git.identity import LEDGER_IDENTITY
 from src.git.manager import GitError, RemoteRefState, is_valid_git_oid
 
 PREFIX = "aq-provenance/"
@@ -194,9 +195,9 @@ class GitProvenance:
         tree = await self.run("rev-parse", source + "^{tree}")
         # Deterministic metadata object makes retry after an uncertain push
         # idempotent. Plumbing leaves the index, hooks and worktree untouched.
+        # A ledger object, not authored work: fixed identity (LEDGER_IDENTITY).
         oid = await self.run("commit-tree", tree, "-p", source, stdin=body + "\n", env={
-            "GIT_AUTHOR_NAME": "Agent Queue", "GIT_AUTHOR_EMAIL": "aq@localhost",
-            "GIT_COMMITTER_NAME": "Agent Queue", "GIT_COMMITTER_EMAIL": "aq@localhost",
+            **LEDGER_IDENTITY.env(),
             "GIT_AUTHOR_DATE": "@0 +0000", "GIT_COMMITTER_DATE": "@0 +0000",
         })
         await self._validate(record, oid)

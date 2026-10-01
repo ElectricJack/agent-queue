@@ -87,6 +87,20 @@ migration. The final removal of compatibility clients and a live disposable
 private-repository acceptance run are still outstanding; see the
 [design and acceptance plan](../specs/github-access.md#11-verification-and-acceptance).
 
+## Commit identity
+
+Every commit AQ makes for a project carries one identity: the project's override
+from Project Settings, else the installation default chosen at `aq install` (or
+later with `aq system config git-identity`), else the documented fallback
+`Agent Queue <agent-queue@localhost>` while none is chosen. Worker sessions get
+it through `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, and daemon-side merges,
+checkpoints and integration commits resolve it the same way. Merges keep the
+original authors and commit as the project's identity. Every AQ publication,
+whether a worker's `aq git push` or the close pipeline's own push, refuses new
+commits committed as anyone else. It reports kept authors without blocking
+them. A pool session launched under an older identity is retired at
+its next claim. See [Git commit identity](../specs/git-identity.md).
+
 ## A realistic example
 
 Assumes the daemon is running. Substitute your own project id. The output

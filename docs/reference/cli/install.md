@@ -8,8 +8,10 @@ on every supported host.
 
 GitHub CLI (`gh`) is a separate prerequisite for GitHub onboarding and
 AQ-owned GitHub operations in both existing-login and GitHub App modes. The
-installer does not install or check it. Install it on the daemon host before
-using those features; [GitHub configuration](../configuration.md#github-credentials)
+installer does not install or require it; when it is present and signed in,
+the wizard only reads the account's public facts to suggest a [Git commit
+identity](#git-commit-identity-configgit-identity). Install it on the daemon
+host before using those features; [GitHub configuration](../configuration.md#github-credentials)
 explains the two alternative credential setups.
 
 It is the only `aq` command that expects **no running daemon** — it runs the
@@ -39,6 +41,7 @@ aq install --with provider.codex            # select one optional agent CLI
 aq install --with postgres-managed          # let AQ install and run PostgreSQL
 aq install --repair             # reconcile this installation against the host
 aq install --upgrade            # repair, and record the version transition
+aq install --git-name "Ada Lovelace" --git-email ada@example.com   # commit identity, unattended
 ```
 
 To remove an installation, see [`aq uninstall`](uninstall.md).
@@ -58,12 +61,23 @@ Setting up AQ on this machine. Press Enter to accept each default.
   (AQ creates and works on projects inside this folder)
   Where do your code projects live? [~/Shared/AI]:
 
+  (looking up your GitHub account with gh...)
+  Git commit identity — AQ's commits in your projects use this name and email
+  (a project can override it in its settings).
+  Suggestions:
+    1. Ada Lovelace <ada@example.com>
+       GitHub @ada: public profile email; name from your GitHub profile
+    2. Ada Lovelace <1234567+ada@users.noreply.github.com>
+       GitHub @ada: GitHub noreply address (keeps your email private); name from your GitHub profile
+  Use 1-2, e to enter your own, or s to set it up later [1]:
+
 AQ will:
   • Coding agents: Claude Code
   • Database: use the PostgreSQL server already running on this machine
   • Settings tuned for this machine (10 cores, 32 GiB)
   • Start AQ in the background, build the dashboard and open it in your browser
   • Projects folder: ~/Shared/AI
+  • Commit as: Ada Lovelace <ada@example.com>
 Go ahead? [Y/n]:
 ```
 
@@ -72,6 +86,7 @@ Go ahead? [Y/n]:
 | Use Claude Code / Codex / Gemini? | **yes** | defaults to the ones already installed (a read-only `PATH` and `--version` probe). At least one is required: a machine with no coding agent cannot run a task, so the questions are asked again. |
 | Use graft (recommended)? | **yes** | graft is a per-repo code graph whose MCP tools and hooks cut file reads. Defaults to yes when graft is installed, or when it is missing and `npm` is on PATH to install it; otherwise no. See [graft](#graft-graftcli-graftrepos). |
 | Where do your code projects live? | **yes**, unless a project root is already configured | defaults to the folder the install was started from when it is a normal folder under your home, else `~/Projects`. The home folder itself, the filesystem root and AQ's own directories are refused. Recorded by `config.project-root`, which creates the folder if needed. |
+| Which Git identity should AQ commit as? | **yes**, unless one is already configured or `--git-name`/`--git-email` gave it | suggested from the authenticated `gh` account for github.com and the global git config, each labelled with where it came from (see [Git commit identity](#git-commit-identity-configgit-identity)). Enter confirms the first suggestion, a number picks another, `e` edits it, `s` sets it up later. An invalid name or email is asked again. Recorded by `config.git-identity`. |
 | Install and run a local PostgreSQL server? | only under `--advanced` | installed when nothing answers on the configured host and port, reused when a server does. |
 | Start the AQ daemon? | only under `--advanced` | yes — it runs every task, and the dashboard server beside it serves the dashboard. |
 | Deliver digests and escalations to Discord? | only under `--advanced` | no; nothing else depends on it. Add it later with `--with discord`. |
@@ -79,7 +94,8 @@ Go ahead? [Y/n]:
 Answering "Go ahead?" approves the whole plan, so the steps then run without a
 prompt each. `--advanced` asks every choice and keeps the per-step approval
 prompts. `--yes` takes every default without asking anything (and records no
-projects folder). The questions are skipped entirely when the selection has
+projects folder, and no Git identity: a suggestion is never saved without a
+person confirming it). The questions are skipped entirely when the selection has
 already been made — `--with`, `--config`, or `--json` (a script parsing stdout
 is driving consent, not being onboarded) — and an unattended run never asks
 anything; its mutating steps need `--approve`/`--yes`.
@@ -98,6 +114,7 @@ anything; its mutating steps need `--approve`/`--yes`.
 | `--restart-from STEP` | Redo `STEP` and the steps that depend on it. Nothing else is re-executed. |
 | `--state-file PATH` | Where the resume record lives. Defaults to `~/.agent-queue/install-state.json`. |
 | `--list-steps` | Print the registered steps and exit. |
+| `--git-name NAME` / `--git-email EMAIL` | The Git identity AQ's commits use, given together; recorded by `config.git-identity` with `source: manual`. They answer the wizard's identity question, win over `settings.git_identity` in the input file, and **replace** an identity already configured (an explicit flag is the operator choosing; the wizard never overwrites one). An invalid or half-given pair exits `11` before anything runs. |
 | `--advanced` | Full control: ask every choice (database, daemon, Discord) and approve each step. Without it `aq install` asks only which coding agents to use and where your projects live, then one "Go ahead?". |
 
 ## Agent CLI providers
@@ -199,6 +216,7 @@ before the credential that lets it reach its database was written.
 | --- | --- | --- | --- |
 | `config.defaults` | yes | — | Creates `~/.agent-queue/config.yaml` when it is absent and adds resource-aware defaults derived from this box's cores and memory (the same values `aq system config tune --apply` writes). A section you have already written is **kept**, and a numbered backup is taken only when something is actually written. It also selects the session provider: because `prereq.tmux` has already required tmux, this step writes `sessions.provider: tmux` when tmux is on PATH, so an installed box can attach, peek and nudge its agents and re-adopt them after a restart — a `sessions.provider` you have already chosen is kept like any other. Rationale for every value: [default tuning](../../guides/default-tuning.md). |
 | `config.project-root` | no | — | Adds the projects folder the wizard asked for to `project_roots` (id from the folder name, URL-safe), creating the folder when it does not exist. Existing roots are kept; with no folder chosen (`--yes`, unattended) it changes nothing. A dry run writes nothing. |
+| `config.git-identity` | no | — | Advisory. Writes `git_identity: {name, email, source}` when the wizard's question was answered or `--git-name`/`--git-email` (or `settings.git_identity`) gave one, with a numbered backup only when it writes. Otherwise it changes nothing and reports the configured identity, or that AQ commits as `Agent Queue <agent-queue@localhost>` until `aq system config git-identity` sets one. It runs no `gh` or `git` command itself, and it never stops or fails a run. See [Git commit identity](#git-commit-identity-configgit-identity). |
 | `config.check` | no | — | Loads the configuration exactly as the daemon does, including `${VAR}` references, and reports where AQ stores things. A configuration that does not parse stops the run here rather than at a daemon that dies with a stack trace. |
 | `config.discord` | yes | `discord` | Optional. Points the hourly digest and escalation threads at one channel. |
 | `daemon.start` | yes | `daemon` | Runs `aq start` and waits for `/health`. A daemon that already answers is reused, never restarted. `aq start` uses the PostgreSQL the configuration names; it reaches for the checkout's `docker-compose.yml` only when nothing is listening there and that file exists, so an installed native server needs no Docker. |
@@ -207,6 +225,44 @@ before the credential that lets it reach its database was written.
 | `dashboard.serve` | yes | `daemon` | Runs `aq dashboard start` and waits until the dashboard server answers `/__aq/health` with this install's verified bundle and `GET /` with `200`. A dashboard server already serving that bundle is left alone; one still serving an older build (after a rebuild) is restarted. With `dashboard.server.enabled: false` it starts nothing. A port held by another program, or a server that exits during startup, fails the step with the server's own last log lines and names `aq dashboard status` and `~/.agent-queue/dashboard-server.log`. |
 | `daemon.dashboard` | no | — | Reports the dashboard server's URL and whether it answers, or the one command that fixes it when it does not. Never blocks a run. |
 | `dashboard.open` | no | — | Opens the dashboard server's URL in the browser (`open` on macOS, `wslview` or `explorer.exe` on WSL) the first time an interactive install reaches it. An unattended run never opens a browser, and a rerun never opens another window. |
+
+### Git commit identity (`config.git-identity`)
+
+Every commit AQ creates is attributed to one installation default
+(`git_identity:` in `config.yaml`) unless a project overrides it in its
+settings; until one is chosen AQ commits as the documented fallback
+`Agent Queue <agent-queue@localhost>`. The wizard asks for it once, on a fresh
+interactive install, and only while none is configured.
+
+Its suggestions come from read-only probes, each with a short timeout and no
+terminal:
+
+| Suggestion | Where it comes from | Label |
+| --- | --- | --- |
+| Public profile email | `gh api user` for the active account on github.com | `GitHub @<login>: public profile email` |
+| Verified address | `gh api user/emails`, asked only when the profile email is private and only answered when the token already has the scope; a refusal is skipped silently — the installer never runs `gh auth refresh` or asks for a scope | `GitHub @<login>: verified primary email` (or `verified email`) |
+| Noreply address | `<id>+<login>@users.noreply.github.com`, from the numeric id and login `gh api user` returned | `GitHub @<login>: GitHub noreply address (keeps your email private)` |
+| Global git config | `git config --global user.name` / `user.email`, after the GitHub suggestions; its name also stands in for a GitHub profile with no name | `global git config (user.name / user.email)` |
+
+No address is ever invented: anything that fails AQ's identity validation is
+dropped, and the confirmed suggestion's provenance is recorded as `source`
+(`gh:<login>`, `git-config`, or `manual` for an edited or typed identity). When
+`gh` is not installed, not signed in, offline or slow, the wizard says so in one
+line and offers manual entry; pressing Enter leaves it unset and the install
+carries on.
+
+An unattended run never guesses: without `--git-name`/`--git-email` or
+`settings.git_identity` it records nothing and says so in a note (also in the
+JSON `messages`):
+
+```text
+Git identity: not configured — AQ commits as Agent Queue <agent-queue@localhost> until you run `aq system config git-identity`
+```
+
+`aq system config git-identity` is the interactive "set up later" path on an
+existing install: it shows the current default, offers the same suggestions
+and saves the one you confirm; `--name/--email`, `--clear` and `--show` do the
+same without prompting.
 
 ### Discord is optional
 
@@ -359,8 +415,10 @@ protected:
   daemon and the dashboard, which do not depend on it, are still done.
 * **Advisory** (`advisory: true`): the run continues *and* the outcome ignores
   it, so an install whose only unfinished business is advisory exits `0`.
-  `postgres.boot` is the one, since the database it is about is already
-  reachable and only its behaviour after a restart is unsettled.
+  `postgres.boot` is one, since the database it is about is already
+  reachable and only its behaviour after a restart is unsettled;
+  `config.git-identity` is another, since AQ commits as its fallback identity
+  until one is chosen.
 
 Both appear in the step list and in the resume record exactly like any other
 step, with their own state and remediation; neither is ever the `blocking_step`,
@@ -557,6 +615,9 @@ Rerunning `aq install` is the normal recovery path, and it is safe:
 * `--restart-from STEP` redoes exactly `STEP` and its dependents. Unrelated
   completed steps are left alone. It never deletes a recorded resource:
   removing something is an explicit uninstall action, not a side effect.
+* The Git identity is never asked again once one is configured, and a rerun,
+  `--repair` or `--upgrade` never changes it. Only an explicit
+  `--git-name`/`--git-email` (or `settings.git_identity`) replaces it.
 * Selecting an optional capability on a later run installs it. `aq install
   --with provider.codex` runs the Codex step even though an earlier run
   recorded it as `skipped` — a skip that was only "you did not ask for this"
@@ -634,13 +695,19 @@ capabilities: [provider.codex]
 approve: ["prereq.data-dir"]     # or ["*"] for every mutating step
 settings:
   some-adapter-option: value
+  git_identity:                  # optional; recorded by config.git-identity
+    name: Ada Lovelace
+    email: ada@example.com
 ```
 
 Unknown top-level keys, a non-list `capabilities`/`approve`, an unknown
 capability name and an unknown step id are all rejected with exit code `11`
 before anything runs — an unattended installer that silently ignored a
-misspelled key would install the wrong thing. Command-line flags are merged
-with the file and win where they overlap.
+misspelled key would install the wrong thing. The same goes for
+`settings.git_identity`: an unknown key (only `name`, `email` and `source` are
+recognised), a name without an email, or a value AQ's identity validation
+refuses exits `11`. Command-line flags are merged with the file and win where
+they overlap.
 
 An unattended run never prompts, never opens a browser and never invents an
 approval: a mutating step with no approval stops the run as `needs_user`

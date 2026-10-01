@@ -756,6 +756,21 @@ Maps to `MetricsConfig`. The YAML key is `metrics`. Full behaviour in
 | `perf_host_budget_ms` | `float` | `20.0` | Wall-clock budget for one host read (pressure-stall information, test-slot occupancy, ungated load). An overrun backs the reader off and marks the host block `stale` with reason `over_budget`. Must be `> 0`. |
 | `perf_relay_poll_seconds` | `float` | `5.0` | How often the sampler polls the dashboard server's relay counters (`GET /__aq/metrics`) and records their deltas. The poll runs on the sampler tick. Must be `>= interval_seconds`. |
 
+### 4.15 `git_identity` Section
+
+Maps to `GitIdentityConfig`. The installation's default Git commit identity:
+every project commits as it unless its Project Settings override it. Full
+semantics in [git identity](git-identity.md). Hot-reloadable; not portable.
+
+| YAML key | Type | Default | Description |
+|---|---|---|---|
+| `name` | `str` | `""` | Author and committer name. Set together with `email`, or leave both empty. |
+| `email` | `str` | `""` | Author and committer email, one `name@domain` address. Both empty means the install is unset and AQ commits as the fallback `Agent Queue <agent-queue@localhost>`. |
+| `source` | `str` | `""` | Where the confirmed value came from (`gh:<login>`, `git-config`, `manual`). Informational only. |
+
+Set by `aq install` (wizard, `--git-name/--git-email`, or
+`settings.git_identity` in `--config`) and by `aq system config git-identity`.
+
 ---
 
 ## 5. Loading Behavior

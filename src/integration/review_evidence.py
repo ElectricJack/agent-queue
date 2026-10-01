@@ -28,6 +28,7 @@ from src.git.manager import RemoteRefState
 from src.integration.epic_dependencies import dependents_of
 from src.integration.settling import note_approval
 from src.integration.models import HierarchicalIntegrationPolicy
+from src.integration.root_authorization import POLICY_KINDS, exact_root_authorization_on
 from src.models import TaskStatus
 
 
@@ -54,8 +55,10 @@ class ReviewEvidenceProducer:
         """Pin task authorization without impersonating a human review.
 
         Only an explicit operator-enabled project policy admits completed
-        feature/bugfix tasks and explicitly named tasks this way. Holds, open gates and reviewer rejections
-        remain binding. Git still proves the exact remote head and tree.
+        feature/bugfix tasks and explicitly named tasks this way, plus a source
+        an operator authorized exactly (``integration_root_authorizations``).
+        Holds, open gates and reviewer rejections remain binding. Git still
+        proves the exact remote head and tree.
         """
         return await self._snapshot_pull_request(
             epic_task_id, verdict="approved", reviewer_login="task-authorization",
@@ -81,7 +84,13 @@ class ReviewEvidenceProducer:
                 or not row["hierarchical_integration_policy"]):
             return False
         policy = HierarchicalIntegrationPolicy.model_validate(row["hierarchical_integration_policy"])
-        if row["task_type"] not in {"feature", "bugfix"} and task_id not in policy.root.authorized_task_ids:
+        if (
+            row["task_type"] not in POLICY_KINDS
+            and task_id not in policy.root.authorized_task_ids
+            # An operator's grant for exactly this source stands in for the
+            # kind allowlist only; every check below still applies.
+            and await exact_root_authorization_on(conn, task_id, source) is None
+        ):
             return False
         if policy.root.admission != "authorized" and not allow_reviewed:
             return False

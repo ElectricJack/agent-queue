@@ -14,7 +14,10 @@ state, substitutes credentials, or writes directly to the operator database.
 Observe authorized feature and bugfix sources using immutable task, repository,
 base, head and completion identities. The explicit `root.authorized_task_ids`
 allowlist also admits individually authorized chores such as `steady-delta`,
-preserving their type and genuine parent/child verification. Failed and cancelled source checks create
+preserving their type and genuine parent/child verification. While the train
+runs, an operator admits one more explicitly authorized root by its exact source
+(`aq integration authorize-root`) without a policy generation swap
+(`2026-10-01-explicit-root-authorization-design.md`). Failed and cancelled source checks create
 one actionable repair per source revision. Repair keeps source lineage and returns
 the repaired head to admission. GitHub runs no `pull_request` workflow on a PR
 whose head conflicts with its base, so a conflicting source never acquires checks

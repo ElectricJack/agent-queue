@@ -146,6 +146,10 @@ def test_supervisor_holds_every_operator_integration_control():
     assert "integration_redrive_root" in granted
     assert "integration_materialize_root" in OPERATOR_INTEGRATION_CONTROLS
     assert "integration_materialize_root" in granted
+    # The exact per-root authorization of a user-authorized source while the
+    # train keeps running (keen-beacon-16).
+    assert "integration_authorize_root" in OPERATOR_INTEGRATION_CONTROLS
+    assert "integration_authorize_root" in granted
     # Its twin for a completed child its parent never assembled (vivid-ridge).
     assert "integration_redrive_child" in OPERATOR_INTEGRATION_CONTROLS
     assert "integration_redrive_child" in granted

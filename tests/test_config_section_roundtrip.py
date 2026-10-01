@@ -39,6 +39,8 @@ NON_DEFAULT_VALUES = {
     # An IP literal or ``localhost`` only; a name DNS could re-point is refused.
     ("dashboard_server", "host"): "0.0.0.0",
     ("test_selection", "api_key_env"): "CUSTOM_TYPESAFE_KEY",
+    # A name/email pair: both or neither, and the email must be an address.
+    ("git_identity", "email"): "probe@example.com",
 }
 
 # Sections that do not read every field they declare.

@@ -6,6 +6,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from src.api.models.project import EffectiveGitIdentity
+
 
 class TaskStatusSummary(BaseModel):
     total: int = 0
@@ -327,6 +329,32 @@ class DeleteIntelligenceClassResponse(BaseModel):
     retired_file: str
 
 
+class GitIdentityValue(BaseModel):
+    name: str
+    email: str
+
+
+class GetGitIdentityResponse(BaseModel):
+    """The installation default, the fallback, and optionally one project's effective identity."""
+
+    success: bool = True
+    configured: bool
+    installation: GitIdentityValue | None = None
+    installation_source: str | None = None
+    fallback: GitIdentityValue
+    project_id: str | None = None
+    effective: EffectiveGitIdentity | None = None
+
+
+class SetGitIdentityResponse(BaseModel):
+    success: bool = True
+    configured: bool
+    installation: GitIdentityValue | None = None
+    previous: GitIdentityValue | None = None
+    changed: bool = False
+    applies_to: str = ""
+
+
 RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_status": GetStatusResponse,
     "get_token_usage": GetTokenUsageResponse,
@@ -343,6 +371,8 @@ RESPONSE_MODELS: dict[str, type[BaseModel]] = {
     "get_config": GetConfigResponse,
     "get_config_schema": GetConfigSchemaResponse,
     "update_config": UpdateConfigResponse,
+    "get_git_identity": GetGitIdentityResponse,
+    "set_git_identity": SetGitIdentityResponse,
     "preview_portable_config": PortableConfigResponse,
     "export_portable_config": PortableConfigResponse,
     "import_portable_config": PortableConfigResponse,

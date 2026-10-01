@@ -78,6 +78,13 @@ async def supervise(directory: Path) -> None:
         cm = None
         child = None
 
+        async def stop_owned():
+            if job["contract"].get("native_windows"):
+                from src.jobs.matter import cancel_native
+
+                await cancel_native(directory)
+            await stop_tree(nonce)
+
         def waiting(*_):
             if (directory / "cancel.json").exists():
                 raise InterruptedError("job cancelled while queued for capacity")
@@ -114,6 +121,13 @@ async def supervise(directory: Path) -> None:
                 tail_bytes=job["contract"].get("tail_bytes", 63 * 1024**2),
             )
             argv = list(job["argv"])
+            if job["preset"] == "matter_render":
+                argv += [str(directory / "capture"), str(job["run_timeout"]),
+                         job["contract"]["adapter_sha256"]]
+                if job["contract"].get("native_windows"):
+                    from src.jobs.matter import native_request
+
+                    argv = await native_request(job, directory, argv, started)
             junit_path = None
             if job["contract"].get("pytest"):
                 # Respect caller flags; artifact parsing refuses symlinks
@@ -165,7 +179,7 @@ async def supervise(directory: Path) -> None:
                         await asyncio.to_thread(store.append, chunk)
                     except OSError:
                         output_failed = True
-                        await stop_tree(nonce)
+                        await stop_owned()
                         raise
 
             pumping = asyncio.create_task(pump())
@@ -175,17 +189,27 @@ async def supervise(directory: Path) -> None:
                 while not wait_child.done():
                     if (directory / "cancel.json").exists():
                         cancelled = True
-                        await stop_tree(nonce)
+                        await stop_owned()
                     elif time.monotonic() >= deadline:
                         infra = "run_timeout"
-                        await stop_tree(nonce)
+                        await stop_owned()
                     await asyncio.wait({wait_child}, timeout=0.1)
                 exit_code = await wait_child
+                if time.monotonic() >= deadline:
+                    infra = "run_timeout"
                 # Descendants may retain pipes and locks after the leader exits.
                 # Finite presets never leave those descendants alive.
                 if [p for p in await processes(nonce) if p.pid != os.getpid()]:
-                    await stop_tree(nonce)
+                    await stop_owned()
                 await pumping
+                if job["contract"].get("native_windows"):
+                    native_completion = read_json(directory / "native-completion.json")
+                    if not native_completion or native_completion.get("nonce") != nonce:
+                        infra = infra or "native_receipt_missing"
+                    else:
+                        exit_code = native_completion["exit_code"]
+                        infra = infra or native_completion.get("infra_reason")
+                        cancelled = cancelled or native_completion.get("cancelled", False)
             finally:
                 if not pumping.done():
                     pumping.cancel()
@@ -248,13 +272,30 @@ async def supervise(directory: Path) -> None:
             infra = infra or ("output_store_failed" if output_failed else "runner_failed")
             report = parser.finish()
             if child:
-                await stop_tree(nonce)
+                await stop_owned()
         finally:
             # Pin/locks are held until this check; never certify cleanup on /proc
             # uncertainty. A killed supervisor writes no receipt at all.
             remaining = [p for p in await processes(nonce) if p.pid != os.getpid()]
             if remaining:
                 return
+            if job["contract"].get("native_windows") and child:
+                from src.jobs.matter import native_status
+
+                native = await native_status(job, directory)
+                if native["owner_alive"] or native["active_processes"]:
+                    return
+            capture = None
+            if job["preset"] == "matter_render" and exit_code == 0 and not infra and not cancelled:
+                from src.jobs.matter import retain_capture
+
+                try:
+                    capture = await asyncio.to_thread(
+                        retain_capture, directory, job["contract"]["artifact_bytes"],
+                        job["contract"]["capture_expected"],
+                    )
+                except (OSError, ValueError, TypeError, KeyError):
+                    infra = "capture_artifact_invalid"
             completion = {
                 **intent,
                 "exit_code": exit_code,
@@ -277,6 +318,8 @@ async def supervise(directory: Path) -> None:
                 else "",
                 **(store.stats() if store else {}),
             }
+            if job["preset"] == "matter_render":
+                completion["capture"] = capture
             tail = b""
             if store:
                 read = await asyncio.to_thread(

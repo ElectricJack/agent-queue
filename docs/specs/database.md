@@ -434,6 +434,8 @@ At most `MAX_SUBTASKS_PER_TASK` (200) rows per task, and at most `MAX_SUBTASKS_P
 | `hierarchical_integration_draining` | BOOLEAN | NOT NULL DEFAULT false | True while in-flight batches/repairs are being drained before the effective mode drops to the desired one. Added by Alembic `a11a5e1e4f04` |
 | `hierarchical_integration_generation` | INTEGER | NOT NULL DEFAULT 0 | Monotone rollout fence (`>= 0`); every mode transition increments it and is recorded in `integration_rollout_transitions`. Operator controls pass `expected_generation` and are rejected on mismatch. Added by Alembic `a11a5e1e4f04` |
 | `review_delegate_to` | TEXT | nullable, `ck_projects_review_delegate_to` | Who decides the project's new document reviews: `user` or `supervisor`; NULL means `user`. Sets a new review's `doc_reviews.decider` (`supervisor` → `user_or_supervisor`). Added by Alembic `a00000000014` |
+| `git_identity_name` | TEXT | nullable, `ck_projects_git_identity_pair` | This project's Git commit identity override, set together with `git_identity_email`; a NULL pair inherits the installation default `git_identity` ([git identity](git-identity.md)). Added by Alembic `a00000000053` |
+| `git_identity_email` | TEXT | nullable, `ck_projects_git_identity_pair` | The override's email; `(git_identity_name IS NULL) = (git_identity_email IS NULL)`. Added by Alembic `a00000000053` |
 | `created_at` | REAL | NOT NULL | Unix timestamp, set on insert |
 
 No `updated_at` on projects. The `discord_control_channel_id` column exists for backward compatibility — `_row_to_project` falls back to it when `discord_channel_id` is NULL.
@@ -1352,6 +1354,7 @@ Agent session rows (session-runtime). One row per launched harness session.
 | `ended_at` | REAL | nullable | Observed end time; unknown for legacy sessions |
 | `end_reason` | TEXT | nullable | Specific exit, stop, quarantine or sleep reason |
 | `hooks_provisioned` | BOOLEAN | NOT NULL DEFAULT 0 | Whether this launch wired the harness's subagent hooks; written once from the SessionSpec, never re-derived |
+| `git_identity_digest` | TEXT | nullable | Digest of the Git identity injected into this launch's env; a pool claim retires the session when the project now resolves to another identity. `legacy` marks rows from before Alembic `a00000000053` (always stale); NULL means none was recorded ([git identity](git-identity.md) §7) |
 
 ### Table: `task_session_attempts`
 
@@ -2054,6 +2057,36 @@ history after archive and refuse hard deletion through the integration guard.
 | `repair_attempt` | INTEGER | NOT NULL, default 0, `>= 0` | Successor count |
 | `repair_history` | JSONB | NOT NULL, default `[]` | Previous repair task/attempt identities |
 | `observed_at` | REAL | NOT NULL | Unix timestamp |
+
+### Table: `integration_root_authorizations`
+
+Append-only operator authorization of one exact train root source. Root
+`admission: authorized` admits a COMPLETED root whose kind the policy does not
+(not feature/bugfix, not in `root.authorized_task_ids`) only while a row matches
+its exact source; holds, open gates, rejected reviews, generation-pinned
+authorization evidence and source CI still bind. Written by `aq integration
+authorize-root`; there is no update or delete path. See
+`docs/superpowers/specs/2026-10-01-explicit-root-authorization-design.md`.
+
+| Column | Type | Constraints | Notes |
+|---|---|---|---|
+| `id` | TEXT | PRIMARY KEY | `root-authorization-<uuid5>` of the exact identity |
+| `project_id` | TEXT | NOT NULL | Project |
+| `task_id` | TEXT | NOT NULL, UNIQUE with the source identity | Authorized root task |
+| `repository_id` | TEXT | NOT NULL | Designated integration repository |
+| `source_base` | TEXT | NOT NULL | Branch-origin base of the source |
+| `source_head` | TEXT | NOT NULL | Exact authorized head |
+| `generation` | INTEGER | NOT NULL, `>= 0` | Source checkpoint generation |
+| `review_kind` | TEXT | NOT NULL | `leaf` or `parent` |
+| `pr_url` | TEXT | NOT NULL | Pull request of the source |
+| `task_type` | TEXT | nullable | Task kind when authorized (audit) |
+| `policy_generation` | INTEGER | NOT NULL, `>= 0` | Project generation when authorized (audit only; never a fence) |
+| `operator_id` | TEXT | NOT NULL | Operator or supervisor label |
+| `reason` | TEXT | NOT NULL | Audit reason |
+| `created_at` | REAL | NOT NULL | Unix timestamp |
+
+Unique constraint `uq_integration_root_authorizations_source` on `(task_id,
+repository_id, source_base, source_head, generation)`.
 
 ### Table: `integration_review_evidence`
 

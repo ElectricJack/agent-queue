@@ -55,6 +55,12 @@ def _client(result):
           "--reason", "recover legacy PR"], "integration_materialize_root",
          {"task_id": "legacy", "dry_run": False, "expected_head_sha": "a" * 40,
           "reason": "recover legacy PR"}),
+        (["authorize-root", "chore"], "integration_authorize_root",
+         {"task_id": "chore", "dry_run": True}),
+        (["authorize-root", "chore", "--apply", "--head", "a" * 40,
+          "--reason", "user authorized PR 711"], "integration_authorize_root",
+         {"task_id": "chore", "dry_run": False, "expected_head_sha": "a" * 40,
+          "reason": "user authorized PR 711"}),
         (
             ["sweep", "p", "--recover-child", "child"],
             "integration_development_sweep",

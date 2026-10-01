@@ -30,6 +30,10 @@ class EditProjectRequest:
             (its router binding). It must be active and grant task_route_apply; a project is never unbound.
         repo_default_branch (None | str | Unset): Default git branch for the project (e.g. main, dev, master)
         review_delegate_to (None | str | Unset): LOCAL-only default document-review decider; empty clears it.
+        git_identity_name (None | str | Unset): Operator-only Git commit name override for this project. Set with
+            git_identity_email; empty on both resets the project to inherit the installation default (see get_git_identity).
+        git_identity_email (None | str | Unset): Operator-only Git commit email override, paired with git_identity_name;
+            empty on both resets to inheritance.
         integration_repository_id (None | str | Unset): LOCAL-only designated integration repository ID.
         hierarchical_integration_policy (EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset): LOCAL-
             only complete typed hierarchical integration policy.
@@ -45,6 +49,8 @@ class EditProjectRequest:
     assignment_playbook_id: None | str | Unset = UNSET
     repo_default_branch: None | str | Unset = UNSET
     review_delegate_to: None | str | Unset = UNSET
+    git_identity_name: None | str | Unset = UNSET
+    git_identity_email: None | str | Unset = UNSET
     integration_repository_id: None | str | Unset = UNSET
     hierarchical_integration_policy: EditProjectRequestHierarchicalIntegrationPolicyType0 | None | Unset = UNSET
     expected_integration_generation: int | None | Unset = UNSET
@@ -100,6 +106,18 @@ class EditProjectRequest:
         else:
             review_delegate_to = self.review_delegate_to
 
+        git_identity_name: None | str | Unset
+        if isinstance(self.git_identity_name, Unset):
+            git_identity_name = UNSET
+        else:
+            git_identity_name = self.git_identity_name
+
+        git_identity_email: None | str | Unset
+        if isinstance(self.git_identity_email, Unset):
+            git_identity_email = UNSET
+        else:
+            git_identity_email = self.git_identity_email
+
         integration_repository_id: None | str | Unset
         if isinstance(self.integration_repository_id, Unset):
             integration_repository_id = UNSET
@@ -147,6 +165,10 @@ class EditProjectRequest:
             field_dict["repo_default_branch"] = repo_default_branch
         if review_delegate_to is not UNSET:
             field_dict["review_delegate_to"] = review_delegate_to
+        if git_identity_name is not UNSET:
+            field_dict["git_identity_name"] = git_identity_name
+        if git_identity_email is not UNSET:
+            field_dict["git_identity_email"] = git_identity_email
         if integration_repository_id is not UNSET:
             field_dict["integration_repository_id"] = integration_repository_id
         if hierarchical_integration_policy is not UNSET:
@@ -230,6 +252,24 @@ class EditProjectRequest:
 
         review_delegate_to = _parse_review_delegate_to(d.pop("review_delegate_to", UNSET))
 
+        def _parse_git_identity_name(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        git_identity_name = _parse_git_identity_name(d.pop("git_identity_name", UNSET))
+
+        def _parse_git_identity_email(data: object) -> None | str | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            return cast(None | str | Unset, data)
+
+        git_identity_email = _parse_git_identity_email(d.pop("git_identity_email", UNSET))
+
         def _parse_integration_repository_id(data: object) -> None | str | Unset:
             if data is None:
                 return data
@@ -291,6 +331,8 @@ class EditProjectRequest:
             assignment_playbook_id=assignment_playbook_id,
             repo_default_branch=repo_default_branch,
             review_delegate_to=review_delegate_to,
+            git_identity_name=git_identity_name,
+            git_identity_email=git_identity_email,
             integration_repository_id=integration_repository_id,
             hierarchical_integration_policy=hierarchical_integration_policy,
             expected_integration_generation=expected_integration_generation,

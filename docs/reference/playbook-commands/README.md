@@ -21,7 +21,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 
 ## The commands
 
-137 commands are registered.
+138 commands are registered.
 
 ### Tasks, gates and routing
 
@@ -83,6 +83,7 @@ See [code generation](../../contributing/codegen.md#the-playbook-command-pages).
 | [`integration_adopt`](integration_adopt.md) | Integration Adopt | Authenticated hierarchical integration operational control. |
 | [`integration_adopt_legacy_deliveries`](integration_adopt_legacy_deliveries.md) | Integration Adopt Legacy Deliveries | Authenticated hierarchical integration operational control. |
 | [`integration_app_verify`](integration_app_verify.md) | Integration App Verify | Check the App credential, repository, producer, trust manifest, Actions variables, protection and audit workflow App mode depends on; one item each. |
+| [`integration_authorize_root`](integration_authorize_root.md) | Integration Authorize Root | Authenticated hierarchical integration operational control. |
 | [`integration_bind_legacy_repositories`](integration_bind_legacy_repositories.md) | Integration Bind Legacy Repositories | Authenticated hierarchical integration operational control. |
 | [`integration_build_candidate`](integration_build_candidate.md) | Build exact root candidate | Build exact root candidate |
 | [`integration_cancel_preserving`](integration_cancel_preserving.md) | Integration Cancel Preserving | Authenticated hierarchical integration operational control. |

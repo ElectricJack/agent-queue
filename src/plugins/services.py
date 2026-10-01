@@ -244,6 +244,8 @@ class ConfigService(Protocol):
     def llm(self) -> Any: ...
     @property
     def inbox(self) -> dict: ...
+    @property
+    def git_identity(self) -> Any: ...
 
 
 @runtime_checkable
@@ -605,6 +607,11 @@ class ConfigServiceImpl:
     @property
     def inbox(self) -> dict:
         return self._config.inbox
+
+    @property
+    def git_identity(self) -> Any:
+        """The installation's default commit identity section (read per use)."""
+        return self._config.git_identity
 
 
 # ---------------------------------------------------------------------------

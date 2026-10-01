@@ -45,6 +45,7 @@ from src.models import (
     Task,
     TaskStatus,
 )
+from src.git.identity import resolve_git_identity
 from src.orchestrator.base_workspace import base_checkout_refusal
 from src.pool_claims import idle_pool_claim_loop_stalled, pool_claim_loop_stall_seconds
 from src.scheduler import (
@@ -1080,6 +1081,7 @@ class PoolsMixin:
                 epoch=self.daemon_epoch,
                 api_token=api_token,
                 workspace_source_type=workspace.source_type,
+                git_identity=resolve_git_identity(self.config, project).identity,
             )
 
             launched_at = time.time()
@@ -1142,6 +1144,7 @@ class PoolsMixin:
                         **resolve_launch_settings(profile, harness, self.session_spec_builder),
                         last_activity=now,
                         hooks_provisioned=spec.hooks_provisioned,
+                        git_identity_digest=spec.git_identity_digest,
                     ),
                     release_agent_reservation=True,
                 )

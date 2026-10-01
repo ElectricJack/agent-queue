@@ -2372,11 +2372,22 @@ class JobsConfig:
     log_budget_bytes: int = 2 * 1024**3
     log_days: int = 14
     result_days: int = 90
+    matter_python: str = ""
+    matter_capture_script: str = ""
+    matter_editor: str = ""
+    matter_gpu_id: str = "default"
+    matter_artifact_bytes: int = 256 * 1024**2
 
     def validate(self) -> list[ConfigError]:
         errors = []
         if not isinstance(self.enabled, bool):
             errors.append(ConfigError("resources.jobs", "enabled", "must be a boolean"))
+        for name in ("matter_python", "matter_capture_script", "matter_editor", "matter_gpu_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or "\0" in value or (
+                name == "matter_gpu_id" and not value.strip()
+            ):
+                errors.append(ConfigError("resources.jobs", name, "must be a valid string"))
         if not isinstance(self.test_database_url, str) or (
             self.test_database_url and not is_postgres_url(self.test_database_url)
         ):
@@ -2397,6 +2408,7 @@ class JobsConfig:
             "log_budget_bytes",
             "log_days",
             "result_days",
+            "matter_artifact_bytes",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -3335,6 +3347,44 @@ class DocsConfig:
 
 
 @dataclass
+class GitIdentityConfig:
+    """The installation's default Git commit identity (``git_identity:``).
+
+    Every project commits as this pair unless its Project Settings override
+    it; while both fields are empty the install is *unset* and AQ commits as
+    the documented fallback (``src/git/identity.py``).  ``aq install`` asks
+    for it once, suggesting the authenticated ``gh`` account; ``aq system
+    config git-identity`` edits it later.  ``source`` records where the confirmed
+    suggestion came from (``gh:<login>``, ``git-config``, ``manual``) and is
+    informational only.
+    """
+
+    name: str = ""
+    email: str = ""
+    source: str = ""
+
+    def validate(self) -> list[ConfigError]:
+        from src.git.identity import GitIdentityError, validate_git_email, validate_git_name
+
+        if not self.name and not self.email:
+            return []
+        if not self.name or not self.email:
+            return [ConfigError(
+                "git_identity", "name" if not self.name else "email",
+                "set both name and email, or neither (unset uses the fallback identity)",
+            )]
+        errors = []
+        for key, check in (("name", validate_git_name), ("email", validate_git_email)):
+            try:
+                check(getattr(self, key))
+            except GitIdentityError as exc:
+                errors.append(ConfigError("git_identity", key, exc.message))
+        if not isinstance(self.source, str):
+            errors.append(ConfigError("git_identity", "source", "must be a string"))
+        return errors
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration aggregating all subsystem configs.
 
@@ -3370,6 +3420,7 @@ class AppConfig:
     supervisor: SupervisorConfig = field(default_factory=SupervisorConfig)
     health_check: HealthCheckConfig = field(default_factory=HealthCheckConfig)
     docs: DocsConfig = field(default_factory=DocsConfig)
+    git_identity: GitIdentityConfig = field(default_factory=GitIdentityConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
     archive: ArchiveConfig = field(default_factory=ArchiveConfig)
@@ -3621,6 +3672,7 @@ class AppConfig:
         errors.extend(self.provider_failover.validate())
         errors.extend(self.routing.validate())
         errors.extend(self.graph_layout.validate())
+        errors.extend(self.git_identity.validate())
         errors.extend(self.dashboard_server.validate())
         if self.dashboard_server.port == self.mcp_server.port:
             errors.append(ConfigError(
@@ -3739,6 +3791,7 @@ class AppConfig:
         updated.providers = fresh.providers
         updated.provider_failover = fresh.provider_failover
         updated.routing = fresh.routing
+        updated.git_identity = fresh.git_identity
 
         return updated
 
@@ -3797,6 +3850,10 @@ HOT_RELOADABLE_SECTIONS = {
     "pricing",
     "surface",
     "project_roots",
+    # Resolved per use (session launch, claim, push, integration commit), so
+    # an edit governs the next launch and retires stale pool sessions at
+    # their next claim (docs/specs/git-identity.md).
+    "git_identity",
 }
 """Config sections that can be safely updated at runtime without restart."""
 
@@ -4365,6 +4422,10 @@ def load_config(path: str, profile: str | None = None) -> AppConfig:
         config.workspace_dir = raw["workspace_dir"]
     if "docs" in raw and isinstance(raw["docs"], dict):
         config.docs = DocsConfig(**_dataclass_kwargs(DocsConfig, raw["docs"]))
+    if "git_identity" in raw and isinstance(raw["git_identity"], dict):
+        config.git_identity = GitIdentityConfig(
+            **_dataclass_kwargs(GitIdentityConfig, raw["git_identity"])
+        )
     if "project_roots" in raw:
         config.project_roots, config._project_roots_errors = _load_project_roots(
             raw["project_roots"]

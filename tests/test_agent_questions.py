@@ -16,6 +16,8 @@ from src.models import Agent, AgentState, Project, SessionRecord, Task, TaskStat
 from src.sessions import SessionProviderRegistry
 from src.sessions.fake import FakeProvider
 from src.sessions.provider import NudgeDeferred, SessionSpec
+from src.sessions.questions import _machine_input
+from src.sessions.reconciler import stall_reminder
 from src.sessions.transcripts.base import TranscriptEntry
 from tests.db_fixtures import lease_dsn
 
@@ -241,11 +243,7 @@ async def test_terminal_reply_resolves_but_machine_stall_nudge_does_not(env):
     await svc.observe(
         env.row,
         [
-            entry(
-                'No progress for 8 min. Report status, finish the task, or report a blocker with `aq message send --to user:dashboard --project "$AQ_PROJECT_ID" --body "Blocked: <question>"`.',
-                role="user",
-                ident="nudge",
-            )
+            entry(stall_reminder("t1", 8), role="user", ident="nudge")
         ],
     )
     assert (await env.db.get_agent_question(q["id"]))["state"] == "supervisor"
@@ -253,6 +251,37 @@ async def test_terminal_reply_resolves_but_machine_stall_nudge_does_not(env):
     assert (await env.db.get_agent_question(q["id"]))["state"] == "resolved"
     await svc.observe(env.row, [entry()])
     assert await env.db.list_agent_questions() == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        stall_reminder("repair-repair-batch-integration-batch-a15aca37ba71d0ed81b96d73a8f624b7-1", 12),
+        (
+            "No progress for 12 min on task wise-ember.17. Close or continue: if the work is "
+            'done run `aq task close wise-ember.17 --outcome pass|fail --summary "..."` then ...'
+        ),
+        (
+            "No progress for 8 min. Report status, finish the task, or report a blocker with "
+            "`aq message send --to user:dashboard`."
+        ),
+    ],
+    ids=["current", "close-or-continue", "report-status"],
+)
+def test_every_stall_reminder_wording_is_machine_input(text):
+    """A transcript can replay a reminder typed by an older daemon."""
+    assert _machine_input(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "No progress for 12 min on task t1: `aq task close`, or keep working. Also use staging.",
+        "No progress on the flaky test yet -- keep the staging database?",
+    ],
+)
+def test_a_reply_that_merely_starts_like_a_reminder_is_not_machine_input(text):
+    assert not _machine_input(text)
 
 
 async def test_routine_routes_once_to_logical_project_supervisor_without_timeout(env):
@@ -330,7 +359,9 @@ async def test_answer_exact_instance_once_concurrent_and_restart(env):
     assert saved["state"] == "delivered"
     assert len(env.provider.sent_nudges) == 1
     assert env.provider.sent_nudges[0][0] == "p-worker"
-    assert saved["answer"] in env.provider.sent_nudges[0][1]
+    assert f"question:{q['id']}:answer" in env.provider.sent_nudges[0][1]
+    stored = await env.db.get_message(f"question:{q['id']}:answer")
+    assert stored.body.endswith("\n" + saved["answer"])
     assert (await env.db.get_session("s")).last_activity >= env.now
 
 
@@ -389,6 +420,114 @@ async def test_draft_defers_without_losing_answer(env):
     await service(env).tick()
     assert (await env.db.get_agent_question(q["id"]))["state"] == "delivered"
     assert len(provider.sent_nudges) == 1
+
+
+#: Within the 16000-character answer limit, and far beyond what a harness
+#: composer shows verbatim: 180 lines of 80 columns.
+LONG_ANSWER = "\n".join(
+    f"Step {i:03}: " + " ".join(["check the fixture before the run."] * 2) for i in range(180)
+)
+
+
+@pytest.mark.parametrize("answer", ["tests/config.py", LONG_ANSWER], ids=["short", "long"])
+async def test_answer_nudge_is_one_line_pointing_at_a_body_the_worker_can_read(env, answer):
+    """Claude Code collapses a typed burst over 800 characters to ``[Pasted
+    text #N +M lines]`` and shows only the last rows of input taller than its
+    window, so a typed answer could never be confirmed as submitted
+    (bold-bridge, after clear-lantern-82).  The terminal gets one line naming
+    the durable answer; the worker reads it with its own ``message_status``."""
+    import textwrap
+
+    from src.commands.handler import CommandHandler
+    from src.sessions.questions import _machine_input
+
+    svc, q = await capture(env, "Where is the test configuration?")
+    assert not q["requires_human"]
+    assert len(answer) <= 16000
+    result = await svc.answer(q["id"], answer, actor="session:super", human=False)
+    assert result["state"] == "delivered"
+
+    message_id = f"question:{q['id']}:answer"
+    pointer = f"[aq question answered] Handle `aq message status {message_id} --json`."
+    assert env.provider.sent_nudges == [("p-worker", pointer)]
+    # Two rows of an 80-column composer, whatever the answer; and machine
+    # framing, so its echo in the transcript is never read as a human reply.
+    assert len(textwrap.wrap("❯ " + pointer, 80, subsequent_indent="  ")) <= 2
+    assert _machine_input(pointer)
+
+    stored = await env.db.get_message(message_id)
+    assert stored.body == f"[aq question {q['id']} answer from session:super]\n{answer}"
+    assert (stored.project_id, stored.to_kind, stored.to_id) == ("p", "session", "s")
+    assert stored.body_kind == "agent_question"
+    # The question service owns the claim-fenced delivery; the message engine
+    # must never type a second notification for the same answer.
+    assert stored.delivered_at is not None
+    assert await env.db.get_pending_messages("session", "s") == []
+
+    handler = CommandHandler(
+        SimpleNamespace(db=env.db, bus=env.bus, agent_questions=svc, plugin_registry=None),
+        env.config,
+    )
+    worker = {"kind": "session", "session_id": "s", "task_id": "t", "project_id": "p"}
+    read = await handler.execute(
+        "message_status", {"message_id": message_id, "_scope": {**worker, "elevated": False}}
+    )
+    assert read["message"]["body"] == stored.body
+    other = {**worker, "session_id": "other-session", "elevated": False}
+    refused = await handler.execute("message_status", {"message_id": message_id, "_scope": other})
+    assert refused == {"error": f"Message '{message_id}' not found"}
+
+    await service(env).tick()
+    assert len(env.provider.sent_nudges) == 1
+
+
+async def test_retried_answer_delivery_reuses_one_durable_body(env):
+    class DraftProvider(FakeProvider):
+        drafts = 2
+
+        async def nudge(self, handle, text):
+            if self.drafts:
+                self.drafts -= 1
+                raise NudgeDeferred("user draft")
+            await super().nudge(handle, text)
+
+    provider = DraftProvider()
+    provider.sessions = env.provider.sessions
+    env.registry._instances["fake"] = provider
+    svc, q = await capture(env)
+    assert (await escalated_answer(svc, q, "Use staging"))["state"] == "answered"
+    message_id = f"question:{q['id']}:answer"
+    first = await env.db.get_message(message_id)
+    assert first.body == f"[aq question {q['id']} answer from human]\nUse staging"
+    await service(env).tick()
+    assert (await env.db.get_agent_question(q["id"]))["state"] == "answered"
+    await service(env).tick()
+    assert (await env.db.get_agent_question(q["id"]))["state"] == "delivered"
+    assert provider.sent_nudges == [
+        ("p-worker", f"[aq question answered] Handle `aq message status {message_id} --json`.")
+    ]
+    assert (await env.db.get_message(message_id)).created_at == first.created_at
+
+
+async def test_disabled_messages_hold_the_answer_until_its_pointer_can_be_read(env):
+    """``message_status`` refuses while messages are disabled, so a pointer
+    typed then would strand the answer behind a delivered receipt."""
+    svc, q = await capture(env)
+    escalation_id = await reserve_escalated_answer(svc, q)
+    env.config.messages.enabled = False
+    result = await svc.answer(
+        q["id"], "Use staging", actor="human", human=True, verified_escalation_id=escalation_id
+    )
+    assert result["state"] == "answered" and "error" not in result
+    await service(env).tick()
+    assert env.provider.sent_nudges == []
+    assert await env.db.get_message(f"question:{q['id']}:answer") is None
+    assert await service(env).is_waiting(env.row)
+
+    env.config.messages.enabled = True
+    await service(env).tick()
+    assert (await env.db.get_agent_question(q["id"]))["state"] == "delivered"
+    assert len(env.provider.sent_nudges) == 1
 
 
 async def test_human_questions_have_one_durable_supervisor_handoff_and_no_direct_notification(env):
