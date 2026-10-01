@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import ReviewPaneView from "../index";
+import { reviewMarkdownFilename } from "../download";
 
 const hooks = vi.hoisted(() => ({
   useReview: vi.fn(),
@@ -67,6 +68,125 @@ beforeEach(() => {
 });
 
 describe("review pane", () => {
+  describe("Markdown download", () => {
+    let downloads: { filename: string; href: string; connected: boolean }[];
+
+    beforeEach(() => {
+      downloads = [];
+      vi.stubGlobal("URL", class extends URL {
+        static createObjectURL = vi.fn(() => "blob:review-markdown");
+        static revokeObjectURL = vi.fn();
+      });
+      vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+        downloads.push({ filename: this.download, href: this.href, connected: this.isConnected });
+      });
+    });
+
+    afterEach(async () => {
+      await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledTimes(
+        vi.mocked(URL.createObjectURL).mock.calls.length,
+      ));
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    });
+
+    async function downloadedText() {
+      const blob = vi.mocked(URL.createObjectURL).mock.calls[0]![0] as Blob;
+      expect(blob.type).toBe("text/markdown;charset=utf-8");
+      return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.onerror = reject;
+        reader.readAsText(blob);
+      });
+    }
+
+    it.each(["spec", "plan", "other"])("downloads exact raw %s Markdown even with a diff shown", async (kind) => {
+      const raw = "---\r\nstatus: draft\r\n---\r\n# Café 日本語 🐈\r\n\r\n## Goal\r\n\r\n**Raw** [link](https://example.test)  \r\n\r\n";
+      hooks.useReview.mockReturnValue({
+        data: { ...response, review: { ...response.review, kind }, revision: { revision: 2, content: raw } },
+        isLoading: false, error: null,
+      });
+      renderPane();
+      fireEvent.click(screen.getByLabelText("Changes since previous"));
+      expect(screen.getByText("new paragraph")).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Download Markdown" }));
+      expect(await downloadedText()).toBe(raw);
+      expect(downloads).toEqual([{ filename: "Review title-rev-2.md", href: "blob:review-markdown", connected: true }]);
+      expect(document.querySelector('a[download]')).toBeNull();
+      await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:review-markdown"));
+      expect(hooks.decide.mutateAsync).not.toHaveBeenCalled();
+      expect(hooks.comment.mutateAsync).not.toHaveBeenCalled();
+    });
+
+    it("downloads the selected historical revision of a closed review", async () => {
+      const historical = "# Original plan\n\nOnly in revision one.\n";
+      hooks.useReview.mockImplementation((_id: string, opts?: { revision?: number }) => ({
+        data: {
+          ...response, review: { ...response.review, state: "approved" },
+          revision: opts?.revision === 1 ? { revision: 1, content: historical } : response.revision,
+        },
+        isLoading: false, error: null,
+      }));
+      renderPane();
+      fireEvent.change(screen.getByLabelText("Review revision"), { target: { value: "1" } });
+      expect(screen.getByText("Only in revision one.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Approve" })).toBeDisabled();
+      fireEvent.click(screen.getByRole("button", { name: "Download Markdown" }));
+      expect(await downloadedText()).toBe(historical);
+      expect(downloads[0]?.filename).toBe("Review title-rev-1.md");
+    });
+
+    it("disables download while the response is for a different revision", () => {
+      const { rerender } = renderPane();
+      fireEvent.change(screen.getByLabelText("Review revision"), { target: { value: "1" } });
+      const button = screen.getByRole("button", { name: "Download Markdown" });
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+      hooks.useReview.mockReturnValue({
+        data: { ...response, revision: { revision: 1, content: "# Historical" } },
+        isLoading: false, error: null,
+      });
+      rerender(<MemoryRouter><ReviewPaneView args={{ reviewId: "rev-x" }} close={vi.fn()} setArgs={vi.fn()} setToolbar={vi.fn()} setShortcuts={vi.fn()} /></MemoryRouter>);
+      expect(screen.getByRole("button", { name: "Download Markdown" })).toBeEnabled();
+    });
+
+    it("has no download action before review data loads", () => {
+      hooks.useReview.mockReturnValue({ data: undefined, isLoading: true, error: null });
+      renderPane();
+      expect(screen.getByText("Loading review…")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Download Markdown" })).not.toBeInTheDocument();
+    });
+
+    it("disables unavailable content but permits an empty document", async () => {
+      hooks.useReview.mockReturnValue({
+        data: { ...response, revision: { revision: 2, content: undefined } },
+        isLoading: false, error: null,
+      });
+      const { rerender } = renderPane();
+      expect(screen.getByRole("button", { name: "Download Markdown" })).toBeDisabled();
+      hooks.useReview.mockReturnValue({
+        data: { ...response, revision: { revision: 2, content: "" } },
+        isLoading: false, error: null,
+      });
+      rerender(<MemoryRouter><ReviewPaneView args={{ reviewId: "rev-x" }} close={vi.fn()} setArgs={vi.fn()} setToolbar={vi.fn()} setShortcuts={vi.fn()} /></MemoryRouter>);
+      fireEvent.click(screen.getByRole("button", { name: "Download Markdown" }));
+      expect(await downloadedText()).toBe("");
+    });
+
+    it.each([
+      ["Café 日本語", "rev-x", "Café 日本語-rev-3.md"],
+      ["../Plan\\draft:what?*<>|\"\u0000\u007f\u202e\r\n", "rev-x", "Plan-draft-what-rev-3.md"],
+      [" .. ", "rev/backup\\id", "rev-backup-id-rev-3.md"],
+      ["", "../\u0000", "review-rev-3.md"],
+      ["x".repeat(200), "rev-x", `${"x".repeat(50)}-rev-3.md`],
+      ["🐈".repeat(100), "rev-x", `${"🐈".repeat(50)}-rev-3.md`],
+    ])("uses a safe readable filename for %j", (title, id, filename) => {
+      expect(reviewMarkdownFilename(title, id, 3)).toBe(filename);
+    });
+  });
+
   it("renders the document title, metadata, TOC, and markdown body", () => {
     renderPane();
     expect(screen.getByRole("heading", { name: "Review title" })).toBeInTheDocument();

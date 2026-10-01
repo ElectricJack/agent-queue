@@ -15,6 +15,7 @@ import { DecisionBar, type ResponseRoute, type ReviewDecision } from "./Decision
 import type { ReviewArgs } from "./manifest";
 import { RevisionHeader, type RevisionSummary } from "./RevisionHeader";
 import { ReviewAttachments } from "./ReviewAttachments";
+import { downloadReviewMarkdown } from "./download";
 
 type ReviewRecord = {
   id: string;
@@ -106,6 +107,9 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
   useRawEventSubscription(onEvent);
 
   const content = response?.revision.content ?? "";
+  const canDownload = !query.error && response?.review.id === reviewId
+    && response.revision.revision === viewedRevision
+    && typeof response.revision.content === "string";
   const parsed = useMemo(() => parseFrontmatter(content), [content]);
   const renderedBody = useMemo(() => stripLeadingH1(parsed.content), [parsed.content]);
   const toc = useMemo(() => extractToc(renderedBody), [renderedBody]);
@@ -253,6 +257,15 @@ function ReviewPaneContent({ reviewId, setShortcuts }: { reviewId: string; setSh
         }}
         showDiff={showDiff}
         onShowDiffChange={setShowDiff}
+        downloadDisabled={!canDownload}
+        onDownloadMarkdown={() => {
+          if (canDownload) {
+            downloadReviewMarkdown(
+              response.revision.content, response.review.title, response.review.id,
+              response.revision.revision,
+            );
+          }
+        }}
       />
       <div className="border-b border-gray-800 p-4">
         <h1 className="mb-2 text-xl font-semibold">{title}</h1>
