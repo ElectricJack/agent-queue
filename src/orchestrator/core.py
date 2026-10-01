@@ -1850,6 +1850,7 @@ class Orchestrator(
         )
         from src.integration.development import DevelopmentIntegration
         from src.integration.github_review_poll import GitHubReviewPoller
+        from src.integration.green_continuation import GreenPromotionReconciler
         from src.integration.owner_recovery import owner_recovery_for
         from src.integration.review_evidence import ReviewEvidenceProducer
         from src.integration.root_pull_requests import RootPullRequestReconciler
@@ -1900,6 +1901,9 @@ class Orchestrator(
             ).tick,
             root_pull_request_handler=RootPullRequestReconciler(self.db, self.git).tick,
             repair_dispatch_handler=self._dispatch_pending_integration_repairs,
+            green_promotion_handler=GreenPromotionReconciler(
+                self.db, promotion=self.root_promotion_service
+            ).tick,
         )
         self.integration_service.start()
 

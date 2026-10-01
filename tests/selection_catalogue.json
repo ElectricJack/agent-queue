@@ -1303,7 +1303,7 @@
       ]
     }
   },
-  "digest": "sha256:cc982543b4593b611d4693da9f4c5b39bf07e3ae1ed0a6fa1ecd65dcaeb71009",
+  "digest": "sha256:7c1f34e0577ca3a62ef2b4c77426cc20ecb2ca5d6d42019247f22bd9563a178e",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -5409,6 +5409,8 @@
       ],
       "default_arm": true,
       "imports": [
+        "src.commands.contracts",
+        "src.commands.contracts.builtin",
         "src.commands.principal",
         "src.database",
         "src.database.tables",
@@ -5418,8 +5420,10 @@
         "src.integration.ci",
         "src.integration.cleanup",
         "src.integration.epic_pr",
+        "src.integration.green_continuation",
         "src.integration.main_promotion",
         "src.integration.models",
+        "src.integration.outbox",
         "src.integration.ownership",
         "src.integration.promotion",
         "src.integration.release",
@@ -5427,6 +5431,9 @@
         "src.integration.review_evidence",
         "src.integration.scheduler",
         "src.models",
+        "src.playbooks.definition",
+        "src.playbooks.engine",
+        "src.playbooks.executors.base",
         "src.profiles.capabilities"
       ],
       "markers": [
@@ -7176,8 +7183,10 @@
         "src.integration.attestation",
         "src.integration.candidates",
         "src.integration.ci",
+        "src.integration.green_continuation",
         "src.integration.main_promotion",
         "src.integration.models",
+        "src.integration.outbox",
         "src.integration.ownership",
         "src.integration.promotion",
         "src.integration.repair",
@@ -7262,6 +7271,7 @@
         "src.commands.project_commands",
         "src.commands.supervisor_authority",
         "src.database.tables",
+        "src.integration.main_promotion",
         "src.integration.owner_recovery",
         "src.models",
         "src.profiles.capabilities"

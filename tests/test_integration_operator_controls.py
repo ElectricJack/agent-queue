@@ -667,3 +667,68 @@ def test_integration_configuration_scope_admits_supervisors_and_refuses_workers(
         assert refusal == (
             "out of scope: integration configuration requires local operator or supervisor"
         ), field
+
+
+@pytest.mark.parametrize(
+    ("session_id", "project_id", "elevated", "admitted"),
+    [
+        ("super-p", "p", True, True),
+        ("super-global", None, True, True),
+        ("super-stopped", "p", True, False),
+        ("super-other", "other", True, False),
+        ("worker", "p", False, False),
+        # Elevation on the token alone is not a supervisor: the row decides.
+        ("worker", "p", True, False),
+    ],
+)
+async def test_live_supervisor_may_redrive_root_train_subject_commands(
+    db, session_id, project_id, elevated, admitted
+):
+    """Recovery admits the live named supervisor; workers and other scopes stay out."""
+    from src.integration.main_promotion import RootPromotionResult
+
+    class _BatchDB:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        async def get_integration_batch(self, batch_id):
+            return {"id": batch_id, "project_id": "p"}
+
+    promotion = AsyncMock()
+    promotion.promote.return_value = RootPromotionResult(
+        outcome="wait", batch_id="batch", revision=0, reason="writer attached",
+    )
+    handler = IntegrationCommandsMixin()
+    handler.db = _BatchDB(db)
+    handler.orchestrator = SimpleNamespace(root_promotion_service=promotion)
+    with principal_context(_session(session_id, project_id, elevated=elevated)):
+        result = await handler._cmd_integration_promote_main({"batch_id": "batch", "revision": 0})
+        redrive = {
+            capability: await handler._integration_delivery_authorized("p", capability)
+            for capability in (
+                "integration_build_candidate", "integration_ci_evidence",
+                "integration_release", "integration_cleanup",
+                "integration_repair_close_current",
+            )
+        }
+        writers = {
+            capability: await handler._integration_delivery_authorized("p", capability)
+            for capability in (
+                "integration_seal", "integration_schedule_due", "integration_mutate_hierarchy",
+                "integration_file_children", "integration_checkpoint_parent",
+            )
+        }
+    if admitted:
+        assert result == {
+            "success": False, "outcome": "wait", "batch_id": "batch", "revision": 0,
+            "intent_id": None, "receipt_ids": [], "head_sha": None, "error": "writer attached",
+        }
+        promotion.promote.assert_awaited_once_with("batch", 0)
+    else:
+        assert result["outcome"] == "unauthorized"
+        promotion.promote.assert_not_awaited()
+    assert set(redrive.values()) == {admitted}
+    assert set(writers.values()) == {False}
