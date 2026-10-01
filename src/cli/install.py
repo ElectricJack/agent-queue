@@ -148,14 +148,20 @@ def build_options(
     state_path: Path | None,
     target_version: str | None = None,
     mode: LifecycleMode = LifecycleMode.INSTALL,
+    git_name: str | None = None,
+    git_email: str | None = None,
 ) -> InstallOptions:
     """Fold flags and the optional input file into one validated options value.
 
     Flags win over the file: a script that passes both is asking for an
     override, and silently preferring the file would make the override
-    invisible.
+    invisible.  ``--git-name``/``--git-email`` therefore replace
+    ``settings.git_identity`` as a pair.
     """
     payload = load_install_input(config_path) if config_path else {}
+    settings = _git_identity_settings(
+        dict(payload.get("settings") or {}), git_name=git_name, git_email=git_email
+    )
     selected = list(payload.get("capabilities") or []) + list(capabilities)
     approved = list(payload.get("approve") or []) + list(approve)
     if assume_yes:
@@ -196,9 +202,33 @@ def build_options(
         mode=mode,
         capabilities=frozenset(str(name) for name in selected),
         approve=frozenset(str(name) for name in approved),
-        settings=dict(payload.get("settings") or {}),
+        settings=settings,
         state_path=state_path,
     )
+
+
+def _git_identity_settings(
+    settings: dict[str, Any], *, git_name: str | None, git_email: str | None
+) -> dict[str, Any]:
+    """Merge ``--git-name``/``--git-email`` into *settings* and validate the result.
+
+    An unusable identity is ``invalid_input`` before anything runs, exactly
+    like an unknown capability: an unattended run that quietly dropped a
+    misspelled email would commit as the fallback identity instead.
+    """
+    from src.install.git_identity import SOURCE_MANUAL, parse_setting
+
+    if (git_name is None) != (git_email is None):
+        raise InstallInputError("--git-name and --git-email must be given together")
+    if git_name is not None:
+        settings["git_identity"] = {"name": git_name, "email": git_email, "source": SOURCE_MANUAL}
+    try:
+        parsed = parse_setting(settings.get("git_identity"))
+    except ValueError as error:
+        raise InstallInputError(f"invalid Git identity: {error}") from error
+    if parsed is None and git_name is not None:
+        raise InstallInputError("--git-name and --git-email must not be empty")
+    return settings
 
 
 def _consent() -> Any:
@@ -294,6 +324,50 @@ def configured_project_roots() -> list[str]:
     return [str(root.get("path")) for root in roots if isinstance(root, dict)]
 
 
+def configured_git_identity() -> Any:
+    """The installation's Git identity the existing configuration holds, or ``None``."""
+    from src.install.git_identity import configured_identity
+    from src.install.onboarding import _read_config, config_path_for
+
+    return configured_identity(_read_config(config_path_for()))
+
+
+def git_identity_discovery() -> Any:
+    """Probe ``gh`` and ``git config`` for identity suggestions.
+
+    Read-only, short timeouts, no terminal: a missing, signed-out or offline
+    ``gh`` yields no GitHub suggestion and the person types one instead.
+    """
+    from src.install.git_identity import discover
+
+    return discover()
+
+
+def ask_git_identity() -> Any:
+    """Suggest a commit identity and let the person confirm, edit or skip it.
+
+    Returns the :class:`~src.install.git_identity.Choice`, or ``None`` to set
+    it up later (``aq system config git-identity``).
+    """
+    from src.install.git_identity import interview
+
+    click.echo("  (looking up your GitHub account with gh...)", err=True)
+    return interview(git_identity_discovery())
+
+
+def _git_identity_note(result: InstallResult) -> str | None:
+    """The "not configured" note when this run left the identity unset."""
+    from src.install.git_identity import NOT_CONFIGURED_NOTE
+    from src.install.onboarding import STEP_GIT_IDENTITY
+
+    for step in result.steps:
+        if step.step_id != STEP_GIT_IDENTITY:
+            continue
+        if step.detail.get("configured") is False and "would_set" not in step.detail:
+            return NOT_CONFIGURED_NOTE
+    return None
+
+
 def resolve_project_folder(
     chosen: Path | None,
     *,
@@ -354,8 +428,13 @@ def describe_plan(
     *,
     project_folder: Path | None,
     system: str,
+    git_identity: str | None = None,
 ) -> list[str]:
-    """What the install is about to do, in the words a person decides on."""
+    """What the install is about to do, in the words a person decides on.
+
+    ``git_identity`` is the plan's line about the commit identity, when the
+    wizard asked for one.
+    """
     from src.config_tuning import MachineResources
     from src.install.providers import provider_installers
     from src.install.wizard import capabilities_for
@@ -391,6 +470,8 @@ def describe_plan(
             else str(project_folder)
         )
         lines.append(f"Projects folder: {shown}")
+    if git_identity:
+        lines.append(git_identity)
     if system == "darwin":
         lines.append("Anything missing (tmux, Git) comes from Homebrew")
     return lines
@@ -531,6 +612,16 @@ def render_result(result: InstallResult, target: Console) -> None:
         "Without it AQ asks only which coding agents to use and where your projects live."
     ),
 )
+@click.option(
+    "--git-name",
+    metavar="NAME",
+    help="Commit name for AQ's commits (with --git-email); replaces a configured one.",
+)
+@click.option(
+    "--git-email",
+    metavar="EMAIL",
+    help="Commit email for AQ's commits (with --git-name); replaces a configured one.",
+)
 @click.pass_context
 def install(
     ctx: click.Context,
@@ -549,6 +640,8 @@ def install(
     state_file: Path | None,
     list_steps: bool,
     advanced: bool,
+    git_name: str | None,
+    git_email: str | None,
 ) -> None:
     """Set up this machine to run AQ, from prerequisites to a ready dashboard.
 
@@ -599,6 +692,10 @@ def install(
     # capability the operator installed on purpose, so the record's own
     # selection is what those modes carry forward.
     project_folder: Path | None = None
+    # The commit identity is asked once, by the fresh-install wizard, and only
+    # while none is configured: a rerun never re-asks and never overwrites an
+    # existing choice.  An explicit --git-name/--git-email has already answered.
+    git_choice: Any = None
     if interactive and not as_json and not capabilities and not config_path and not mode.reconciles:
         from src.install.providers import provider_installers
         from src.install.wizard import questions_to_ask
@@ -620,6 +717,17 @@ def install(
                 click.echo("  AQ needs at least one coding agent to run tasks.\n", err=True)
             if not configured_project_roots():
                 project_folder = ask_project_folder()
+            identity_line: str | None = None
+            if git_name is None and git_email is None and configured_git_identity() is None:
+                from src.install.git_identity import NOT_CONFIGURED_NOTE
+
+                click.echo("", err=True)
+                git_choice = ask_git_identity()
+                identity_line = (
+                    f"Commit as: {git_choice.formatted()}"
+                    if git_choice is not None
+                    else NOT_CONFIGURED_NOTE
+                )
             click.echo("", err=True)
             if not advanced:
                 click.echo("AQ will:", err=True)
@@ -628,6 +736,7 @@ def install(
                     answers,
                     project_folder=project_folder,
                     system=support.facts.system,
+                    git_identity=identity_line,
                 ):
                     click.echo(f"  • {line}", err=True)
                 if not dry_run and not click.confirm("Go ahead?", default=True, err=True):
@@ -653,7 +762,13 @@ def install(
         config_path=config_path,
         state_path=state_file,
         mode=mode,
+        git_name=git_name,
+        git_email=git_email,
     )
+    if git_choice is not None:
+        options = replace(
+            options, settings={**options.settings, "git_identity": git_choice.as_setting()}
+        )
     options = _carry_forward_capabilities(options, state_file)
     project_folder = resolve_project_folder(project_folder, dry_run=dry_run)
     if project_folder is not None:
@@ -727,6 +842,12 @@ def install(
                 messages=result.messages
                 + tuple(f"Profile activation: {message}" for message in guidance.values()),
             )
+
+    # An install that left the commit identity unset says so, and names the
+    # command that sets it, in both the human output and the JSON messages.
+    identity_note = _git_identity_note(result)
+    if identity_note:
+        result = replace(result, messages=result.messages + (identity_note,))
 
     # The summary is derived from the result, so a human and a script are told
     # the same things: what is ready, where the data lives, which URL to open

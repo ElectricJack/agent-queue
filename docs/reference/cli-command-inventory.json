@@ -2,31 +2,31 @@
   "schema_version": 1,
   "generated_by": "scripts/generate-cli-command-inventory.py",
   "counts": {
-    "leaf_commands": 467,
+    "leaf_commands": 470,
     "registration": {
-      "generated": 300,
-      "handwritten": 167
+      "generated": 302,
+      "handwritten": 168
     },
     "ownership": {
-      "core": 428,
+      "core": 431,
       "external-plugin": 2,
       "internal-plugin": 37
     },
     "support": {
       "deprecated": 1,
-      "supported": 466
+      "supported": 469
     },
     "evidence_level": {
       "behavioral": 14,
-      "dispatch": 300,
-      "registration": 153
+      "dispatch": 302,
+      "registration": 154
     },
     "acceptance_status": {
       "working": 59,
       "broken": 0,
       "obsolete": 1,
       "unsupported": 0,
-      "untested": 407
+      "untested": 410
     }
   },
   "commands": [
@@ -3517,6 +3517,8 @@
           "--state-file",
           "--list-steps",
           "--advanced",
+          "--git-name",
+          "--git-email",
           "--brief",
           "--api-url"
         ],
@@ -10705,6 +10707,41 @@
       }
     },
     {
+      "path": "aq system config git-identity",
+      "registration": "handwritten",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": null,
+      "callback": "src.cli.system_config.config_git_identity",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "registration",
+      "evidence": [
+        "click-registration"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--name",
+          "--email",
+          "--source",
+          "--clear",
+          "--show",
+          "--project",
+          "--host",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
       "path": "aq system config schema",
       "registration": "handwritten",
       "owner_kind": "core",
@@ -11273,6 +11310,38 @@
           "--project-id",
           "--since",
           "--group-by",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system get-git-identity",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "get_git_identity",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--project-id",
           "--json",
           "--brief",
           "--api-url"
@@ -12971,6 +13040,41 @@
         "optional": [
           "--text",
           "--key",
+          "--json",
+          "--brief",
+          "--api-url"
+        ],
+        "structured": [],
+        "nullable": []
+      }
+    },
+    {
+      "path": "aq system set-git-identity",
+      "registration": "generated",
+      "owner_kind": "core",
+      "owner": "agent-queue",
+      "backend_command": "set_git_identity",
+      "callback": "src.cli.auto_commands.callback",
+      "support": "supported",
+      "alias_for": null,
+      "deprecation": null,
+      "unsupported_reason": null,
+      "evidence_level": "dispatch",
+      "evidence": [
+        "click-registration",
+        "json-schema",
+        "mock-dispatch",
+        "core-handler"
+      ],
+      "acceptance_status": "untested",
+      "acceptance_evidence": [],
+      "parameters": {
+        "required": [],
+        "optional": [
+          "--name",
+          "--email",
+          "--source",
+          "--clear",
           "--json",
           "--brief",
           "--api-url"

@@ -285,6 +285,9 @@ class _FakeOrchestrator:
     async def _emit_text_notify(self, message: str, project_id: str | None = None) -> None:
         self._notifications.append(message)
 
+    async def _publish_policy(self, task):
+        return None  # the Git identity check is covered by tests/test_git_identity.py
+
     from src.orchestrator import Orchestrator as _Orch
 
     _create_pr_for_task = _Orch._create_pr_for_task

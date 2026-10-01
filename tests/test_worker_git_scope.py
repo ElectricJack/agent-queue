@@ -12,7 +12,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import create_autospec
+from unittest.mock import ANY, create_autospec
 
 import pytest
 
@@ -182,8 +182,11 @@ async def test_worker_push_uses_claimed_worktree_and_task_branch(
     w.git.apush_validated_delivery.assert_awaited_once_with(
         w.work_dir, "refs/remotes/origin/main", "aq/calm-ember-48", "aq/calm-ember-48",
         expected_remote_oid=None, repository_url=_REPOSITORY,
-        event_bus=w.handler._bus, project_id="p",
+        event_bus=w.handler._bus, project_id="p", identity_policy=ANY,
     )
+    # The worker's publication is held to the project's Git identity.
+    policy = w.git.apush_validated_delivery.await_args.kwargs["identity_policy"]
+    assert policy.enforce and policy.source == "fallback"
     w.git.apush_branch.assert_not_awaited()
     w.git.aget_current_branch.assert_not_awaited()
 
@@ -323,12 +326,19 @@ async def test_worker_squash_lease_workflow_through_the_command(
     env, tmp_path, internal_plugins_handler,
 ):
     """The documented push → squash → ``--expected-remote-oid`` flow, end to end."""
+    import os
     import subprocess
+
+    from src.git.identity import FALLBACK_IDENTITY
+
+    # A worker commits as its project's resolved identity (here the unset
+    # install's fallback): the session env carries it, and publishing checks it.
+    git_env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    git_env.update(FALLBACK_IDENTITY.env())
 
     def git(*args: str, cwd: Path = tmp_path) -> str:
         return subprocess.run(
-            ["git", "-c", "user.name=Test", "-c", "user.email=t@t.test", *args],
-            cwd=cwd, check=True, capture_output=True, text=True,
+            ["git", *args], cwd=cwd, env=git_env, check=True, capture_output=True, text=True,
         ).stdout.strip()
 
     def commit(content: str) -> str:

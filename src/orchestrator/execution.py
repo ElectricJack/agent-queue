@@ -915,6 +915,9 @@ class ExecutionMixin:
             },
         )
 
+        from src.git.identity import resolve_git_identity
+
+        project = await self.db.get_project(task.project_id)
         spec = self.session_spec_builder.build_task_spec(
             task=task,
             profile=profile,
@@ -927,6 +930,7 @@ class ExecutionMixin:
             resume_key=resume_key,
             workspace_source_type=source_type,
             extra_env={"AQ_CLAIM_EPOCH": str(claim_epoch)},
+            git_identity=resolve_git_identity(self.config, project).identity,
         )
 
         launched_at = time.time()
@@ -944,9 +948,9 @@ class ExecutionMixin:
             work_dir=work_dir, epoch=self.daemon_epoch, instance_token=instance_token,
             started_at=launched_at, last_activity=launched_at,
             hooks_provisioned=spec.hooks_provisioned,
+            git_identity_digest=spec.git_identity_digest,
         )
 
-        project = await self.db.get_project(task.project_id)
         hierarchy_enabled = getattr(
             project, "hierarchical_integration_mode", "disabled"
         ) in {"hierarchy", "train"}
@@ -1373,19 +1377,15 @@ class ExecutionMixin:
                         "completion_record_id": accepted["completion_id"],
                         "preserve_terminal_task": True,
                     }
-            terminal = await self.db.get_terminal_integration_delegate_operation(task.id)
-            if terminal is not None:
+            retired = await self.db.get_retired_integration_writer(task.id)
+            if retired is not None:
                 # Not a stale race the writer can fix by retrying: the
-                # operation ended, so no close of this delegate can ever be
-                # accepted.  Say so, so the worker stops instead of waiting.
-                disposition = "cancelled" if terminal["state"] == "cancelled" else "superseded"
-                feedback = (
-                    f"Integration operation {terminal['id']} is {terminal['state']}: this "
-                    f"delegate is retired ({disposition}), so there is nothing left to close. "
-                    "Do not retry the close. Its branch and workspace stay preserved for "
-                    "cleanup; stop working and end this session. The integration reconciler "
-                    "records the retirement once the session has stopped."
-                )
+                # operation ended, or its stage expired and the operation moved
+                # on, so no close of this delegate can ever be accepted.  Say
+                # so, so the worker acknowledges its drain instead of waiting.
+                from src.integration.delegate_release import retired_writer_close_feedback
+
+                feedback = retired_writer_close_feedback(retired)
                 return {
                     "status": task.status.value,
                     "pr_url": None,
@@ -1394,6 +1394,7 @@ class ExecutionMixin:
                     "verification_retry": True,
                     "issues": [feedback],
                     "feedback": feedback,
+                    "retired": retired,
                 }
             return {
                 "status": task.status.value,

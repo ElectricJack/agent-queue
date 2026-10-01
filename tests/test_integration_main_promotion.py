@@ -1627,20 +1627,33 @@ async def test_publication_and_main_are_ordered_in_both_directions(prepared_db):
             ).subject()
         )
     )
-    await asyncio.wait_for(reserved.wait(), timeout=1)
-    root_app = FakeAppClient()
-    root = _RootPromotionService(
-        db,
-        data_dir=data_dir,
-        git_manager=PushGit(root_app),
-        app_client=root_app,
-        attestation_resolver=publication.resolve,
-        clock=lambda: 10.0,
-    )
+    reached = asyncio.create_task(reserved.wait())
+    try:
+        # This wait guards synchronization, not publication latency. Real
+        # PostgreSQL preparation can exceed a second on a busy runner; a
+        # publication that ends before its reservation still fails here.
+        await asyncio.wait(
+            {reached, publish_task}, timeout=30.0, return_when=asyncio.FIRST_COMPLETED
+        )
+        if publish_task.done():
+            pytest.fail(f"publication ended before its reservation: {publish_task.result()!r}")
+        assert reserved.is_set()
+        root_app = FakeAppClient()
+        root = _RootPromotionService(
+            db,
+            data_dir=data_dir,
+            git_manager=PushGit(root_app),
+            app_client=root_app,
+            attestation_resolver=publication.resolve,
+            clock=lambda: 10.0,
+        )
 
-    blocked = await root.prepare("batch", 0)
-    assert blocked.outcome == "configuration_blocked"
-    release.set()
+        blocked = await root.prepare("batch", 0)
+        assert blocked.outcome == "configuration_blocked"
+    finally:
+        release.set()
+        reached.cancel()
+        await asyncio.gather(reached, publish_task, return_exceptions=True)
     published = await publish_task
     assert published.outcome == "published"
     assert provider.posts == 1

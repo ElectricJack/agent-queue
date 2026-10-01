@@ -9,7 +9,7 @@ is available only through explicit policy.
 """
 
 import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -746,6 +746,7 @@ class TestPhaseVerifyByMode:
             repository_url="https://github.com/org/repo.git",
             event_bus=orch.bus,
             project_id="p-1",
+            identity_policy=ANY,  # held to the project's Git identity
         )
 
     async def test_pr_close_does_not_recreate_deleted_branch_after_merge(self, orch):
@@ -941,6 +942,7 @@ class TestTaskBranchPublication:
             force_with_lease=True,
             event_bus=orch.bus,
             project_id="p-1",
+            identity_policy=ANY,
         )
         orch.git.apush_branch.assert_not_awaited()
 

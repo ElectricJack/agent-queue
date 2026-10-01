@@ -120,6 +120,39 @@ async def test_merges_when_default_moved_on(db, tmp_path, remote):
     assert "Delivered by hand for task t-1" in message
 
 
+async def test_the_merge_commits_as_the_project_identity_and_keeps_authors(
+    db, tmp_path, remote
+):
+    """Git identity spec §4: AQ's merge is the project's; the work keeps its author."""
+    from src.config import AppConfig, GitIdentityConfig
+    from src.git.identity import resolve_git_identity
+
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", str(remote.origin), str(other))
+    (other / "other.txt").write_text("other\n")
+    _git(other, "add", "-A")
+    _git(other, "commit", "-m", "someone else")
+    _git(other, "push", "origin", "main")
+    work_author = _git(remote.origin, "log", "-1", "--format=%an <%ae>", "aq/t-1")
+    config = AppConfig()
+    config.git_identity = GitIdentityConfig("Install Default", "default@aq.test")
+    await db.update_project(
+        "site", git_identity_name="Site Bot", git_identity_email="bot@site.test"
+    )
+    git = GitManager()
+    git.set_identity_resolver(lambda project: resolve_git_identity(config, project).identity)
+
+    result = await ManualDelivery(db, git, data_dir=tmp_path / "data").deliver(
+        "t-1", operator_id="human:local-operator", default_mode="pull_request",
+        reason="worker passed; PR impossible on a local remote",
+    )
+
+    assert result["method"] == "merge", result
+    merge = _git(remote.origin, "log", "-1", "--format=%an <%ae>|%cn <%ce>", "main")
+    assert merge == "Site Bot <bot@site.test>|Site Bot <bot@site.test>"
+    assert _git(remote.origin, "log", "-1", "--format=%an <%ae>", "main^2") == work_author
+
+
 async def test_dry_run_changes_nothing(db, tmp_path, remote):
     main_before = _git(remote.origin, "rev-parse", "main")
 

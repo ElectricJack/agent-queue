@@ -57,7 +57,7 @@ from src.sessions.usage_limit_screen import USAGE_LIMIT_PEEK_LINES, match_usage_
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["DRAIN_ACK_KEY", "AdoptReport", "SessionReconciler"]
+__all__ = ["DRAIN_ACK_KEY", "AdoptReport", "SessionReconciler", "stall_reminder"]
 
 #: Provider-side metadata key the agent's ``aq session drain-ack`` sets.
 DRAIN_ACK_KEY = "AQ_DRAIN_ACK"
@@ -67,6 +67,23 @@ DRAIN_ACK_KEY = "AQ_DRAIN_ACK"
 #: concept starts as a key.
 META_STALL_NUDGES = "stall_nudges"
 META_STALL_LAST_ACTION = "stall_last_action_at"
+
+
+def stall_reminder(task_id: str, minutes: int) -> str:
+    """The stall ladder's nudge text, kept to two rows of an 80-column pane.
+
+    The provider confirms a submit by finding the exact text in the composer,
+    and Claude Code 2.1.286 in an 80x24 pool pane shows only the last 7 rows
+    of taller input.  The previous reminder spelled out four commands and
+    named the task id three times: 562 characters, 9 rows, for a 72-character
+    repair id, so it could never be confirmed.  The id is named once;
+    ``aq task close`` resolves the session's own task without it, and the
+    close's ``next_step`` names ``drain-ack``.  Agent-question replay must
+    still read this as machine input (``_MACHINE_STALL`` in
+    ``src/sessions/questions.py``).
+    """
+    return f"No progress for {minutes} min on task {task_id}: `aq task close`, or keep working."
+
 
 _LIVE_STATES = ("starting", "running", "draining")
 #: Task statuses in which a session still holds the task's claim.
@@ -399,6 +416,14 @@ class SessionReconciler:
                     continue
                 if row.task_id is not None:
                     if not await self.db.release_displaced_pool_claim(row.id, now=now):
+                        # Still the holder: wait for the close -- unless the
+                        # held delegate is retired and no close can come.
+                        try:
+                            await self._stop_retired_delegate_writer(row)
+                        except Exception:
+                            logger.exception(
+                                "Pool session %s: retired delegate stop failed", row.id
+                            )
                         continue
                     row = await self.db.get_session(row.id)
                     if row is None:
@@ -440,6 +465,92 @@ class SessionReconciler:
                 task_id=row.task_id,
                 project_id=row.project_id,
             )
+
+    async def _stop_retired_delegate_writer(self, row: SessionRecord) -> bool:
+        """Stop a drain-acked pool worker whose held delegate can never close.
+
+        The pool branch tears a worker down only once its held task is
+        closed.  A delegate whose integration operation ended -- or whose
+        stage expired after the operation moved on -- refuses every close and
+        tells the worker to ``aq session drain-ack``, so that wait never ended:
+        twice on 2026-09-30 a supervisor had to ``session kill`` the idle
+        worker before the branch could be preserved or handed on
+        (bold-impact-53).  Both of these must hold before anything is stopped:
+
+        * the agent itself acknowledged its drain (the provider meta key), so
+          it says its work is saved -- an operator drain or a pool scale-down
+          writes ``desired_state`` but is not that statement; and
+        * ``get_retired_integration_writer`` proves from durable state that no
+          running operation can hand the seat back, human gates included.
+
+        The teardown is ``_terminate_pool_session``, the path a supervisor
+        kill reaches through the exit classifier: a confirmed stop comes
+        first; an attached integration owner keeps the claim, checkout and
+        session binding as the evidence owner recovery reads before it
+        preserves the work and releases anything.  The task is never closed
+        here and no pass is manufactured.  Returns whether the stop was
+        confirmed; an unconfirmed one releases nothing and retries next tick.
+        """
+        if self.orchestrator is None or row.task_id is None or row.desired_state != "stopped":
+            return False
+        # The indexed database proof first: a worker drained over ordinary
+        # work reaches this branch every tick, and the provider read is a
+        # subprocess call.
+        retirement = await self.db.get_retired_integration_writer(row.task_id)
+        if retirement is None:
+            return False
+        provider = self._provider_for(row)
+        if provider is None:
+            return False
+        try:
+            ack = await provider.get_meta(self._handle(row), DRAIN_ACK_KEY)
+        except Exception:
+            logger.debug("get_meta failed for %s", row.id, exc_info=True)
+            return False
+        if ack != "1":
+            return False
+        logger.warning(
+            "Pool session %s drain-acked holding retired integration delegate %s (%s) "
+            "— stopping it",
+            row.id,
+            row.task_id,
+            retirement["reason"],
+        )
+        await self.orchestrator._terminate_pool_session(row, reason="retired_delegate")
+        current = await self.db.get_session(row.id)
+        if current is None or current.state != "stopped":
+            logger.warning(
+                "Pool session %s: stop of retired delegate writer unconfirmed; retrying",
+                row.id,
+            )
+            return False
+        try:
+            await self.db.add_task_comment(
+                row.task_id,
+                (
+                    f"Session {row.id} ({row.name}) ran `aq session drain-ack` while "
+                    f"still holding this task, and {retirement['reason']}: this delegate "
+                    f"is retired ({retirement['disposition']}) and no close of it can be "
+                    "accepted. The session reconciler stopped the session; the task was "
+                    "not closed or marked passed. Its checkout and branch stay preserved: "
+                    "owner recovery snapshots unpushed work to aq/preserved/<owner-row> "
+                    "before it releases the branch."
+                ),
+                author_kind="supervisor",
+                author_id="session-reconciler",
+            )
+        except Exception:
+            logger.debug("could not record retired delegate stop for %s", row.task_id,
+                         exc_info=True)
+        await self._emit(
+            "session.retired_delegate_stopped",
+            session_id=row.id,
+            name=row.name,
+            task_id=row.task_id,
+            project_id=row.project_id,
+            retirement=retirement,
+        )
+        return True
 
     async def _premature_drain(self, provider, row: SessionRecord, task, now: float) -> None:
         """Ack arrived with the task still open — nudge once, then classify."""
@@ -1413,15 +1524,7 @@ class SessionReconciler:
                 # rung that runs *before* any exit handling, which is the
                 # point: an idle prompt should be talked to, not reaped.
                 delivered = await self._try_nudge(
-                    provider,
-                    row,
-                    f"No progress for {minutes} min on task {row.task_id}. "
-                    "Close or continue: if the work is done run "
-                    f"`aq task close {row.task_id} --outcome pass|fail --summary \"...\"` "
-                    "then `aq session drain-ack`; if it is not done, keep working and "
-                    f"run `aq task heartbeat {row.task_id}`; if you are blocked, say so "
-                    'with `aq message send --to user:dashboard --project "$AQ_PROJECT_ID" '
-                    '--body "Blocked: <question>"`.',
+                    provider, row, stall_reminder(row.task_id, minutes)
                 )
                 if delivered is None:
                     # The input belongs to the user, or cannot be inspected.

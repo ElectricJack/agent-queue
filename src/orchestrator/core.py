@@ -254,6 +254,14 @@ class Orchestrator(
         self.github_runner = self.github_access.runner
         self.git = GitManager(github_access=self.github_access)
         self.git.set_lock_provider(self._resolve_git_lock)
+        # Daemon-side commits resolve their identity per commit (project
+        # override > installation default > fallback) so an edit applies at
+        # once -- never the daemon user's own git config (git-identity spec).
+        from src.git.identity import resolve_git_identity
+
+        self.git.set_identity_resolver(
+            lambda project: resolve_git_identity(self.config, project).identity
+        )
         self._runtimes = runtimes
         # Lazy-creates agent rows when work needs them; runs at the top of
         # each scheduling tick before Scheduler.schedule().  See
@@ -1129,7 +1137,12 @@ class Orchestrator(
         if deferrable and state.get("next_attempt_at", 0) > time.time():
             return False
         try:
-            await capture_checkpoint(self.db, self.git, task_id, ws.workspace_path)
+            from src.git.manager import commit_identity
+
+            task = await self.db.get_task(task_id)
+            project = await self.db.get_project(task.project_id) if task else None
+            with commit_identity(self.git.resolve_commit_identity(project)):
+                await capture_checkpoint(self.db, self.git, task_id, ws.workspace_path)
         except Exception as exc:
             reason = str(exc) or exc.__class__.__name__
         else:

@@ -427,6 +427,10 @@ class Project:
     # (None = "user").  Document-review spec §6.
     review_delegate_to: str | None = None
     preferred_provider: str | None = None
+    # Git commit identity override, set as a pair (None = inherit the
+    # installation default ``git_identity``; see ``src/git/identity.py``).
+    git_identity_name: str | None = None
+    git_identity_email: str | None = None
 
 
 @dataclass
@@ -1460,3 +1464,10 @@ class SessionRecord:
     #: insert, because it is a property of the argv this process was
     #: started with, not of whatever the harness file says today.
     hooks_provisioned: bool = False
+
+    #: Digest of the Git identity in this launch's environment
+    #: (:func:`src.git.identity.identity_digest`); ``"legacy"`` for a session
+    #: launched by an earlier release (migration ``a00000000053``), ``None``
+    #: when none was recorded.  A pool claim retires the session when the
+    #: project's identity resolves to something else now.
+    git_identity_digest: str | None = None

@@ -145,7 +145,8 @@ class GitHubReviewPoller:
         if self.source_ci_handler is not None:
             from src.integration.source_ci import observe_source_ci
             await observe_source_ci(
-                row=row, source=source, client=client, handler=self.source_ci_handler
+                row=row, source=source, client=client, handler=self.source_ci_handler,
+                pull=pull,
             )
         policy = row.get("hierarchical_integration_policy") or {}
         if policy.get("root", {}).get("admission") == "authorized":

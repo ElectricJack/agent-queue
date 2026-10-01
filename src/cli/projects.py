@@ -8,6 +8,7 @@ multiple API calls or provide friendly key aliasing.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -206,6 +207,17 @@ def project_details(ctx: click.Context, project_id: str) -> None:
     emit(ctx, data, legacy_data={"project": p, "tasks": tasks}, render=_render)
 
 
+def _git_identity_args(value: str) -> dict[str, str]:
+    """``Name <email>`` -> the edit_project pair; ``inherit`` clears both."""
+    text = value.strip()
+    if text.lower() in ("inherit", "clear", "none", "default", ""):
+        return {"git_identity_name": "", "git_identity_email": ""}
+    match = re.fullmatch(r"(.+?)\s*<([^<>]+)>", text)
+    if not match:
+        raise click.UsageError('git-identity must be "Name <email>" or inherit')
+    return {"git_identity_name": match.group(1).strip(), "git_identity_email": match.group(2).strip()}
+
+
 @project.command("set")
 @click.argument("project_id")
 @click.argument("key")
@@ -233,6 +245,10 @@ def project_set(
     (local operator only). The playbook must be active and grant
     task_route_apply. A project has no default profile: its router routes
     every task.
+
+    `git-identity "Name <email>"` overrides the Git commit identity of this
+    project's AQ-authored commits; `git-identity inherit` resets it to the
+    installation default (`aq system get-git-identity`).
     """
     api_url = ctx.obj.get("api_url") if ctx.obj else None
 
@@ -248,6 +264,7 @@ def project_set(
         "integration-policy": "hierarchical_integration_policy",
         "integration-review-mode": "integration_mode",
         "review-delegate-to": "review_delegate_to",
+        "git-identity": "git_identity",
     }
 
     field = KEY_MAP.get(key)
@@ -299,6 +316,9 @@ def project_set(
     if field == "default_branch":
         cmd = "set_default_branch"
         args = {"project_id": project_id, "branch": value}
+    elif field == "git_identity":
+        cmd = "edit_project"
+        args = {"project_id": project_id, **_git_identity_args(value)}
     else:
         cmd = "edit_project"
         args = {"project_id": project_id, field: coerced}

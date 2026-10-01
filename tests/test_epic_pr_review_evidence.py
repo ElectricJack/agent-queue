@@ -198,6 +198,87 @@ def test_cancelled_old_check_cannot_supersede_newer_run():
                                   head="a" * 40, required=required)[0] == "pending"
 
 
+def test_conflicting_pull_request_without_checks_is_conflict_not_pending():
+    from src.integration.models import RequiredCheckSet
+    from src.integration.source_ci import classify_source_checks, pull_request_conflicts
+    required = RequiredCheckSet(version="v1", names=("Tests",), producer_id="7")
+    head = "a" * 40
+    dirty = {"mergeable": False, "mergeable_state": "dirty"}
+    assert pull_request_conflicts(dirty)
+    assert not pull_request_conflicts({"mergeable": None, "mergeable_state": "unknown"})
+    assert not pull_request_conflicts({"mergeable": True, "mergeable_state": "clean"})
+    assert classify_source_checks([], head=head, required=required)[0] == "pending"
+    assert classify_source_checks(
+        [], head=head, required=required, conflicting=True)[0] == "conflict"
+    # Any run of a required check on the exact head supersedes the conflict.
+    def run(status, conclusion):
+        return {"id": 1, "name": "Tests", "head_sha": head, "app": {"id": 7},
+                "status": status, "conclusion": conclusion}
+    for status, conclusion, expected in [
+        ("in_progress", None, "pending"), ("completed", "failure", "red"),
+        ("completed", "cancelled", "cancelled"), ("completed", "success", "green"),
+    ]:
+        assert classify_source_checks(
+            [run(status, conclusion)], head=head, required=required, conflicting=True,
+        )[0] == expected
+
+
+@pytest.mark.parametrize("conflict_scope", ["batch", "member"])
+async def test_conflicting_source_is_admitted_only_under_batch_conflict_scope(
+    case, conflict_scope
+):
+    policy = await _continuous_policy(case)
+    if conflict_scope == "member":
+        policy["root"]["repair"]["conflict_scope"] = "member"
+        await case["db"].update_project("p", hierarchical_integration_policy=policy)
+    db = case["db"]
+    async with db.immediate() as conn:
+        generation = (await conn.execute(select(task_integration_checkpoints.c.generation).where(
+            task_integration_checkpoints.c.task_id == "e1"))).scalar_one()
+        await conn.execute(insert(integration_source_ci).values(
+            task_id="e1", repository_id="repo", source_base=case["base"],
+            source_head=case["first"], generation=generation, policy_generation=0,
+            state="conflict", evidence={}, observed_at=1000.0))
+    assert await case["producer"].snapshot_authorized(
+        "e1", reviewed_sha=case["first"], policy_generation=0)
+    async with db.immediate() as conn:
+        members = await TrainService(db)._eligible_members(
+            conn, project_id="p", repository_id="repo", project_mode="pull_request")
+    expected = {"e1"} if conflict_scope == "batch" else set()
+    assert {item["task_id"] for item in members} == expected
+
+
+async def test_conflict_observation_files_no_source_repair(case, tmp_path):
+    from unittest.mock import AsyncMock
+
+    from src.commands.handler import CommandHandler
+    from src.config import AppConfig, DatabaseConfig, DiscordConfig
+    from src.integration.source_ci import SourceCIObservation
+    from src.orchestrator import Orchestrator
+    from src.vault import ensure_default_intelligence_classes
+
+    await _continuous_policy(case)
+    data = str(tmp_path / "handler-data")
+    ensure_default_intelligence_classes(data)
+    config = AppConfig(discord=DiscordConfig(bot_token="t", guild_id="1"),
+                       database=DatabaseConfig(url=lease_dsn("source-ci.db")), data_dir=data)
+    orch = Orchestrator(config)
+    orch.db = case["db"]
+    handler = CommandHandler(orch, config)
+    handler._cmd_ensure_task = AsyncMock()
+    async with case["db"]._engine.connect() as conn:
+        source = await case["producer"]._pull_request_source_on(conn, "e1")
+    assert await case["producer"].snapshot_authorized(
+        "e1", reviewed_sha=source["head"], policy_generation=0)
+    result = await handler._cmd_observe_integration_source_ci(
+        SourceCIObservation("e1", source, 0, "conflict", {"checks": [], "failing_checks": []}))
+    assert result == {"success": True, "outcome": "observed", "state": "conflict"}
+    async with case["db"].immediate() as conn:
+        record = (await conn.execute(select(integration_source_ci))).mappings().one()
+    assert record["state"] == "conflict" and record["repair_task_id"] is None
+    handler._cmd_ensure_task.assert_not_called()
+
+
 @pytest.mark.parametrize("source_blocker", [
     "hold", "repair_hold", "gate", "rejected", "generation", "policy",
 ])

@@ -47,6 +47,7 @@ from src.commands.wait_commands import WaitCommandsMixin
 from src.commands.collaboration_commands import CollaborationCommandsMixin
 from src.commands.collaboration_lifecycle import CollaborationLifecycleMixin
 from src.commands.system_commands import SystemCommandsMixin
+from src.commands.git_identity_commands import GitIdentityCommandsMixin
 from src.commands.project_commands import ProjectCommandsMixin
 from src.commands.project_onboarding_commands import ProjectOnboardingCommandsMixin
 from src.commands.task_commands import TaskCommandsMixin
@@ -349,6 +350,7 @@ class CommandHandler(
     ClaimCommandsMixin,
     QuestionCommandsMixin,
     SystemCommandsMixin,
+    GitIdentityCommandsMixin,
     ProjectCommandsMixin,
     ProjectOnboardingCommandsMixin,
     TaskCommandsMixin,

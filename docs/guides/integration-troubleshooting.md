@@ -543,7 +543,7 @@ as the doctor check's report. Dry runs do not write an audit row.
 
 | Refusal | Meaning | Fix |
 |---|---|---|
-| `writer_live` | The provider probe says the writer is still running, or a newer live session names the task. | Wait for the writer to exit, or confirm the task is truly cancelled/archived, then retry. |
+| `writer_live` | The provider probe says the writer is still running, or a newer live session names the task. | Wait for the writer to exit, or confirm the task is truly cancelled/archived, then retry. A drain-acked pool worker holding a retired repair delegate is stopped automatically (see the repair-delegate section). |
 | `checkout_in_use` | A live session holds the worktree the branch is checked out in. | Close that session or hand it off, then retry. |
 | `origin_unreachable` | `git fetch` or the preservation push failed (network, auth, rate limit). | Fix connectivity or auth, then retry. |
 | `stale_fence` | The row changed between the check and the release — a new writer attached, or the fence was bumped by another recovery attempt. | Re-run; the new writer will be the one the check evaluates. |
@@ -1194,6 +1194,27 @@ orphan-pause recovery leaves it held, and generic `aq task recover` refuses it.
 A live writer that tries to close such a delegate is told the operation ended
 and not to retry the close, instead of a generic stale-close refusal. Its
 pending recovery incident is superseded as retired rather than re-sent.
+
+The same refusal covers the writer of an expired or failed stage once its
+`active`/`escalated` operation has moved on to a later stage. Either way the
+close returns `result: verification_failed` with a `retired` record (operation,
+stage, disposition, reason) and `next_step: aq session drain-ack`. A pool
+worker that runs `aq session drain-ack` while still holding such a delegate is
+stopped by the session reconciler on its next tick. No supervisor
+`aq session kill` is needed (`session.retired_delegate_stopped`, plus a task
+comment from `session-reconciler`). The stop happens only when the agent's own
+drain-ack is recorded and the retirement is proven from durable state. A pending,
+active or awaiting-completion stage keeps the worker waiting for its close. So
+does any stage of a `human_required` operation, because `aq integration resume`
+may revive it with the same writer. A terminal stage that is still the
+operation's current stage also keeps it waiting, as does the verifier, parent or
+candidate-resolution seat of a running operation. An `accepted` candidate repair also keeps it
+waiting, because its close still completes it truthfully. The stop is the same
+`_terminate_pool_session` teardown a kill reaches. The task is not closed or
+marked passed. An attached branch owner keeps the stopped session's claim,
+checkout and binding, so owner recovery can snapshot unpushed work to
+`aq/preserved/<owner-row-id>` before it releases the branch to the successor
+stage. If that push cannot happen (`origin_unreachable`), nothing is released.
 
 Every integration command wraps its internal error as
 `{"success": false, "outcome": "blocked", "error": "<message>"}`

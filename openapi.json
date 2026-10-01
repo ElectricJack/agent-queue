@@ -9864,8 +9864,8 @@
         "tags": [
           "project"
         ],
-        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, assignment_playbook_id (LOCAL-only router binding), repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
-        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, assignment_playbook_id (LOCAL-only router binding), repo_default_branch, or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
+        "summary": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
+        "description": "Edit a project's properties: name, credit_weight, max_concurrent_agents, budget_limit, assignment_playbook_id (LOCAL-only router binding), repo_default_branch, the operator-only Git commit identity override (git_identity_name/git_identity_email; empty on both inherits the installation default), or LOCAL-only hierarchical integration configuration. Use this to rename projects, adjust scheduling weight, set token budgets, or change the default git branch. A project has no default profile: its router routes every task.",
         "operationId": "edit_project",
         "requestBody": {
           "content": {
@@ -13101,6 +13101,53 @@
         }
       }
     },
+    "/api/system/get-git-identity": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Show the Git commit identity AQ writes with: the installation default (config git_identity), whether it is configured, the documented fallback used while it is unset, and, given project_id, that project's effective identity and its source (project override, installation default or fallback).",
+        "description": "Show the Git commit identity AQ writes with: the installation default (config git_identity), whether it is configured, the documented fallback used while it is unset, and, given project_id, that project's effective identity and its source (project override, installation default or fallback).",
+        "operationId": "get_git_identity",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetGitIdentityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetGitIdentityResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/get-recent-events": {
       "post": {
         "tags": [
@@ -14440,6 +14487,53 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SessionDesiredStateResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Command error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/set-git-identity": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Operator-only: set or clear the installation's default Git commit identity (config git_identity). Every project without its own override commits as it. Applies to sessions launched afterwards; running pool sessions launched under another identity retire at their next claim. Never rewrites existing history.",
+        "description": "Operator-only: set or clear the installation's default Git commit identity (config git_identity). Every project without its own override commits as it. Applies to sessions launched afterwards; running pool sessions launched under another identity retire at their next claim. Never rewrites existing history.",
+        "operationId": "set_git_identity",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetGitIdentityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SetGitIdentityResponse"
                 }
               }
             }
@@ -22384,6 +22478,41 @@
         ],
         "title": "CommandCenterProjectViewDocument"
       },
+      "CommitAuthorNote": {
+        "properties": {
+          "commit": {
+            "type": "string",
+            "title": "Commit"
+          },
+          "author": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author"
+          },
+          "committer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Committer"
+          }
+        },
+        "type": "object",
+        "required": [
+          "commit"
+        ],
+        "title": "CommitAuthorNote"
+      },
       "CommitChangesRequest": {
         "properties": {
           "project_id": {
@@ -26758,6 +26887,30 @@
             "title": "Review Delegate To",
             "description": "LOCAL-only default document-review decider; empty clears it."
           },
+          "git_identity_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Identity Name",
+            "description": "Operator-only Git commit name override for this project. Set with git_identity_email; empty on both resets the project to inherit the installation default (see get_git_identity)."
+          },
+          "git_identity_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Identity Email",
+            "description": "Operator-only Git commit email override, paired with git_identity_name; empty on both resets to inheritance."
+          },
           "integration_repository_id": {
             "anyOf": [
               {
@@ -27263,6 +27416,64 @@
         ],
         "title": "EffectClauseDTO",
         "description": "One typed effect clause from the command contract.\n\n``detail`` is rendered by the backend from the clause and its resolved\ninputs.  The frontend lays this out; it never re-derives command meaning\n(design spec: \"The frontend lays out this structure but does not\nreinterpret command semantics\")."
+      },
+      "EffectiveGitIdentity": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "project",
+              "installation",
+              "fallback"
+            ],
+            "title": "Source"
+          },
+          "configured": {
+            "type": "boolean",
+            "title": "Configured"
+          },
+          "installation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GitIdentityPair"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_override": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GitIdentityPair"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fallback": {
+            "$ref": "#/components/schemas/GitIdentityPair"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "email",
+          "source",
+          "configured",
+          "fallback"
+        ],
+        "title": "EffectiveGitIdentity",
+        "description": "The identity a project's AQ-authored commits use, and where it came from.\n\n``source`` is ``project`` (its override), ``installation`` (the\n``git_identity`` default) or ``fallback`` (no default chosen yet;\n``configured`` is then false)."
       },
       "EnsureTaskRequest": {
         "properties": {
@@ -30765,6 +30976,89 @@
         "type": "object",
         "title": "GetDownstreamTasksResponse"
       },
+      "GetGitIdentityRequest": {
+        "properties": {
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id",
+            "description": "Also resolve this project's effective identity (optional)"
+          }
+        },
+        "type": "object",
+        "title": "GetGitIdentityRequest"
+      },
+      "GetGitIdentityResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "configured": {
+            "type": "boolean",
+            "title": "Configured"
+          },
+          "installation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GitIdentityValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "installation_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Installation Source"
+          },
+          "fallback": {
+            "$ref": "#/components/schemas/GitIdentityValue"
+          },
+          "project_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Project Id"
+          },
+          "effective": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffectiveGitIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "configured",
+          "fallback"
+        ],
+        "title": "GetGitIdentityResponse",
+        "description": "The installation default, the fallback, and optionally one project's effective identity."
+      },
       "GetGitStatusRequest": {
         "properties": {
           "project_id": {
@@ -31306,6 +31600,38 @@
               }
             ],
             "title": "Assignment Playbook Id"
+          },
+          "git_identity_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Identity Name"
+          },
+          "git_identity_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Git Identity Email"
+          },
+          "git_identity": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EffectiveGitIdentity"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object",
@@ -32685,6 +33011,42 @@
         ],
         "title": "GitHubIssueTriageResponse"
       },
+      "GitIdentityPair": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "email"
+        ],
+        "title": "GitIdentityPair"
+      },
+      "GitIdentityValue": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "email": {
+            "type": "string",
+            "title": "Email"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "email"
+        ],
+        "title": "GitIdentityValue"
+      },
       "GitLogRequest": {
         "properties": {
           "project_id": {
@@ -32970,6 +33332,25 @@
               }
             ],
             "title": "Oid"
+          },
+          "identity_notes": {
+            "items": {
+              "$ref": "#/components/schemas/CommitAuthorNote"
+            },
+            "type": "array",
+            "title": "Identity Notes",
+            "default": []
+          },
+          "identity_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity Warning"
           }
         },
         "type": "object",
@@ -49925,6 +50306,25 @@
               }
             ],
             "title": "Oid"
+          },
+          "identity_notes": {
+            "items": {
+              "$ref": "#/components/schemas/CommitAuthorNote"
+            },
+            "type": "array",
+            "title": "Identity Notes",
+            "default": []
+          },
+          "identity_warning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identity Warning"
           }
         },
         "type": "object",
@@ -55544,6 +55944,108 @@
           "default_branch"
         ],
         "title": "SetDefaultBranchResponse"
+      },
+      "SetGitIdentityRequest": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Commit author/committer name"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email",
+            "description": "Commit author/committer email"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source",
+            "description": "Where the value came from, e.g. gh:<login> (informational)"
+          },
+          "clear": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Clear",
+            "description": "Clear the default (AQ commits as the fallback until set)"
+          }
+        },
+        "type": "object",
+        "title": "SetGitIdentityRequest"
+      },
+      "SetGitIdentityResponse": {
+        "properties": {
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": true
+          },
+          "configured": {
+            "type": "boolean",
+            "title": "Configured"
+          },
+          "installation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GitIdentityValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GitIdentityValue"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "applies_to": {
+            "type": "string",
+            "title": "Applies To",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "configured"
+        ],
+        "title": "SetGitIdentityResponse"
       },
       "SetPlaybookActivationResponse": {
         "properties": {

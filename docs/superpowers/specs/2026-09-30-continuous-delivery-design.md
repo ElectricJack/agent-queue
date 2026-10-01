@@ -16,7 +16,16 @@ base, head and completion identities. The explicit `root.authorized_task_ids`
 allowlist also admits individually authorized chores such as `steady-delta`,
 preserving their type and genuine parent/child verification. Failed and cancelled source checks create
 one actionable repair per source revision. Repair keeps source lineage and returns
-the repaired head to admission. An approved aggregate may cover smaller branches
+the repaired head to admission. GitHub runs no `pull_request` workflow on a PR
+whose head conflicts with its base, so a conflicting source never acquires checks
+and would stay `pending` forever. When no required check has run on the exact
+head and GitHub reports the PR unmergeable (`mergeable: false`,
+`mergeable_state: dirty`), the source is recorded as `conflict`. With
+`repair.conflict_scope: batch` a `conflict` source is admitted like a green one:
+the conflict is resolved collectively by the batch repair workspace and the
+candidate's own exact green CI is the gate. With member scope it stays
+unadmitted. A recorded `conflict` never files a per-source repair, and any run
+of a required check on the head (pending, red, cancelled or green) supersedes it. An approved aggregate may cover smaller branches
 only with Git/content evidence; PR count is not evidence of distinct work.
 Untracked branches require original authorization and an overlap audit.
 

@@ -513,6 +513,30 @@
       "type": "object",
       "x-reload": "restart"
     },
+    "git_identity": {
+      "additionalProperties": false,
+      "default": {
+        "email": "",
+        "name": "",
+        "source": ""
+      },
+      "properties": {
+        "email": {
+          "default": "",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "type": "string"
+        },
+        "source": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object",
+      "x-reload": "hot"
+    },
     "global_token_budget_daily": {
       "default": null,
       "type": [
@@ -2909,6 +2933,7 @@
       "auto_task",
       "dashboard_server",
       "docs",
+      "git_identity",
       "global_token_budget_daily",
       "graph_layout",
       "llm_logging",

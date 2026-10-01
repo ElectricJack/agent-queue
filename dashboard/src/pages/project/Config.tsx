@@ -14,8 +14,20 @@ import {
   useResumeProject,
 } from "../../api/hooks";
 import DeleteProjectModal from "../../components/DeleteProjectModal";
+import GitIdentitySection from "./GitIdentitySection";
+import {
+  GIT_IDENTITY_SECTION_HINT,
+  type GitIdentityFieldErrors,
+  type GitIdentityFormFields,
+  type GitIdentityProjectData,
+  gitIdentityErrors,
+  gitIdentityFormFields,
+  gitIdentityPayload,
+  gitIdentitySaveError,
+  hasGitIdentityErrors,
+} from "./gitIdentity";
 
-export interface FormState {
+export interface FormState extends GitIdentityFormFields {
   name: string;
   repo_default_branch: string;
   max_concurrent_agents: string;
@@ -29,6 +41,9 @@ const EMPTY_FORM: FormState = {
   max_concurrent_agents: "",
   credit_weight: "",
   budget_limit: "",
+  git_identity_override: false,
+  git_identity_name: "",
+  git_identity_email: "",
 };
 
 export default function ProjectConfig() {
@@ -41,6 +56,7 @@ export default function ProjectConfig() {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [fatal, setFatal] = useState<string | null>(null);
+  const [identityServerErrors, setIdentityServerErrors] = useState<GitIdentityFieldErrors>({});
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   useEffect(() => {
@@ -53,17 +69,38 @@ export default function ProjectConfig() {
   const startEdit = () => {
     setForm(projectToForm(project));
     setFatal(null);
+    setIdentityServerErrors({});
     setEditing(true);
   };
 
   const cancel = () => {
     setForm(projectToForm(project));
     setFatal(null);
+    setIdentityServerErrors({});
     setEditing(false);
+  };
+
+  const identityClientErrors = gitIdentityErrors(form);
+  const identityInvalid = hasGitIdentityErrors(identityClientErrors);
+
+  // The identity controls also work from the read-only view: the first
+  // change opens the editor with it staged, so Save / Cancel still decide.
+  const changeIdentity = (next: GitIdentityFormFields) => {
+    setIdentityServerErrors({});
+    if (!editing) {
+      setFatal(null);
+      setForm({ ...projectToForm(project), ...next });
+      setEditing(true);
+    } else {
+      setForm((prev) => ({ ...prev, ...next }));
+    }
   };
 
   const save = async () => {
     setFatal(null);
+    setIdentityServerErrors({});
+    if (identityInvalid) return;
+    const identity = gitIdentityPayload(projectToForm(project), form);
     try {
       const body = {
         project_id: project.id,
@@ -72,11 +109,14 @@ export default function ProjectConfig() {
         max_concurrent_agents: parseOptionalInt(form.max_concurrent_agents),
         credit_weight: parseOptionalFloat(form.credit_weight),
         budget_limit: parseOptionalFloat(form.budget_limit),
+        ...identity,
       };
       await editProject.mutateAsync(body);
       setEditing(false);
     } catch (err) {
-      setFatal(err instanceof Error ? err.message : String(err));
+      const identityError = "git_identity_name" in identity ? gitIdentitySaveError(err) : null;
+      if (identityError) setIdentityServerErrors(identityError);
+      else setFatal(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -204,6 +244,25 @@ export default function ProjectConfig() {
         </Row>
       </div>
 
+      <section
+        aria-labelledby="project-git-identity-heading"
+        className="space-y-3 rounded-lg border border-gray-800 bg-gray-900 p-4"
+      >
+        <div>
+          <h3 id="project-git-identity-heading" className="text-sm font-semibold text-gray-200">
+            Git commit identity
+          </h3>
+          <p className="mt-0.5 text-xs text-gray-500">{GIT_IDENTITY_SECTION_HINT}</p>
+        </div>
+        <GitIdentitySection
+          identity={project.git_identity}
+          value={form}
+          onChange={changeIdentity}
+          editing={editing}
+          errors={{ ...identityServerErrors, ...identityClientErrors }}
+        />
+      </section>
+
       {editing && (
         <div className="space-y-3">
           {fatal && (
@@ -223,7 +282,7 @@ export default function ProjectConfig() {
             <button
               type="button"
               onClick={save}
-              disabled={editProject.isPending}
+              disabled={editProject.isPending || identityInvalid}
               className="rounded-md bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-gray-700"
             >
               {editProject.isPending ? "Saving..." : "Save"}
@@ -329,7 +388,7 @@ function NumberInput({
   );
 }
 
-export interface ProjectData {
+export interface ProjectData extends GitIdentityProjectData {
   name?: string | null;
   repo_default_branch?: string | null;
   max_concurrent_agents?: number | null;
@@ -345,6 +404,7 @@ export function projectToForm(p: ProjectData): FormState {
       p.max_concurrent_agents != null ? String(p.max_concurrent_agents) : "",
     credit_weight: p.credit_weight != null ? String(p.credit_weight) : "",
     budget_limit: p.budget_limit != null ? String(p.budget_limit) : "",
+    ...gitIdentityFormFields(p),
   };
 }
 
