@@ -1313,7 +1313,7 @@
       ]
     }
   },
-  "digest": "sha256:13303768bd7be8e14c69450a87d180d19d7ce73f3de16b97a7168f49712a7d1d",
+  "digest": "sha256:ed3fc10b9e707a4b32fe299156015fc8853ab3aab61f53a3f3b7a2e7c825e122",
   "generator_version": 1,
   "modules": {
     "tests/llm/test_cli.py": {
@@ -9341,7 +9341,9 @@
         "src.models",
         "src.object_loop.contracts"
       ],
-      "markers": [],
+      "markers": [
+        "parametrize"
+      ],
       "summary": "AQ-2 object-loop identity, budget and crash recovery contracts."
     },
     "tests/test_onboarding_queries.py": {
