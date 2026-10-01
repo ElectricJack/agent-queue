@@ -101,12 +101,17 @@ available to the scenarios. This does not extend the job deadline.
 See [pytest-timeout's documentation](https://github.com/pytest-dev/pytest-timeout)
 for marker precedence and timeout behavior.
 
-`fail-fast: false`, so one red arm does not hide the others; each job times out
-at 10 minutes, including installation and migrations. These limits bound
-failures and improve diagnostics. Profiling on 2026-09-26 measured the
+`fail-fast: false`, so one red arm does not hide the others. A cache-miss
+dependency install has a 12-minute step deadline and the test step a 10-minute
+one (11 minutes for an E2E scenario group, a minute above its 600-second test
+limit); each job times out at their sum plus three minutes for checkout,
+PostgreSQL, migrations and cleanup (25 minutes, 26 for `e2e-cli`). A shared 10-minute total let a slow PyPI spend the
+tests' time: in the 40 runs up to 36831813696, eight jobs were cancelled after
+installs of 306–600 seconds, while no test or scenario step took over 332
+seconds. These limits bound failures and improve diagnostics. Profiling on 2026-09-26 measured the
 unsharded default suite at about 21 minutes; it now runs in eight shards as
 described below. The original stateful CLI smoke measured 11–16 minutes; its scenarios now
-run in four separate jobs with twenty-minute caps, as described below. Hosted
+run in four separate jobs with 11-minute scenario steps, as described below. Hosted
 runner timings must confirm that the groups finish within those caps. A longer test marker does not make that job fit within its cap.
 
 Worker counts are explicit: four for the broad suite arms, matching the
@@ -203,13 +208,13 @@ test time measured on hosted runners after any performance changes.
 
 The `e2e-cli` job runs the [Tier 1 end-to-end kit](../guides/e2e-swarm.md) on
 the same PR, candidate and parent events. Its four matrix entries run in
-parallel, with a twenty-minute budget per job and `fail-fast: false`. No
-`main` run populates the venv cache, so a branch's first run installs from
-PyPI, which took 25 seconds to 7.5 minutes on hosted runners; run 36829390463
-spent 5m06s installing and its failover group was cancelled at the former
-ten-minute cap while finishing S16a. The budget covers that install on top of
-the group's 600-second test limit, so a hung group fails under pytest's
-timeout, with its diagnostics, rather than being cancelled.
+parallel, each with an 11-minute scenario step and `fail-fast: false`. A
+branch's first run can install from PyPI, which took 25 seconds to 7.5 minutes
+on hosted runners; run 36829390463 spent 5m06s installing and its failover
+group was cancelled at the former shared ten-minute cap while finishing S16a.
+The install's own step deadline keeps that time out of the scenario step, so a
+hung group fails under pytest's 600-second limit, with its diagnostics, rather
+than being cancelled:
 
 | Group | Scenarios |
 |---|---|
@@ -232,8 +237,8 @@ Balancing alone did not fit the former five-minute cap: in run
 [36786775568](https://github.com/ElectricJack/agent-queue/actions/runs/36786775568)
 the `graphs` group passed in a 236.68-second test, but a cold dependency
 installation (37 seconds) left the job cancelled at 5:03 during finalization.
-The smoke subprocess retains its 270-second deadline; the ten-minute job
-budget also covers cold installation and post-job cache/container cleanup.
+The smoke subprocess now shares the group's 600-second test limit, and the
+job budget also covers cold installation and post-job cache/container cleanup.
 Fresh hosted runs must verify the complete job result, including finalization.
 
 Each runner selects one parametrized node from `tests/test_e2e_cli_stateful.py`
@@ -242,7 +247,7 @@ port, vault and repositories. S16a covers outage detection and rerouting;
 S16b prepares its own outage to cover recovery, undo and every provider down.
 Together they retain the original S16 assertions. No xdist workers or other test suites share
 these runners, and successful runs print every scenario's duration.
-The smoke subprocess retains its 270-second deadline. The job budget also
+The smoke subprocess shares the 600-second test limit. The job budget also
 covers cold dependency installation and post-job cache/container cleanup:
 run [36654088476](https://github.com/ElectricJack/agent-queue/actions/runs/36654088476)
 passed all six failover scenarios in a 231.30-second test but exceeded the
@@ -255,9 +260,10 @@ setup and cleanup, alongside pytest fixture setup and teardown.
 The earlier five-minute job cap cancelled healthy groups on a cold cache:
 [run 36787814561](https://github.com/ElectricJack/agent-queue/actions/runs/36787814561)
 logged every `cli` and `failover` scenario passing, but cancelled the jobs
-before they could finish pytest or action cleanup. The ten-minute cap leaves
-room for the existing 540-second test deadline and runner overhead; setup,
-smoke and cleanup subprocess limits remain 180, 270 and 90 seconds.
+before they could finish pytest or action cleanup. The scenario step's
+11-minute deadline leaves room for the 600-second test limit and runner
+overhead; setup is limited to 180 seconds, the smoke subprocess gets the rest
+of the limit less 90 seconds reserved for fallback cleanup.
 Fixture registration/cleanup and background state inspection use the public
 command API to avoid repeated Python CLI startup. Scenario mutations, scope
 refusals and explicit CLI output assertions still run through the CLI.

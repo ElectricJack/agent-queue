@@ -305,6 +305,32 @@ def test_e2e_groups_cover_every_scenario_once_and_keep_claim_dependencies_togeth
     assert SCENARIO_GROUPS['claims'][:3] == ('S1', 'S2', 'S3')
 
 
+@pytest.mark.parametrize(
+    ('job', 'run_step', 'run_seconds'),
+    [
+        # The slowest passing default shard in the 40 runs up to 36831813696.
+        ('test', 'Run tests', 332),
+        # tests/test_e2e_cli_stateful.py gives each group its own limit; let it
+        # fire first, with a minute for its diagnostics and runner overhead.
+        ('e2e-cli', 'Run scenario group', E2E_TEST_TIMEOUT_SECONDS + 59),
+    ],
+)
+def test_a_slow_cache_miss_install_cannot_spend_the_run_budget(job, run_step, run_seconds):
+    # Run 36830122857 spent 439 s of E2E CLI (cli)'s shared 10-minute job
+    # budget installing from PyPI at 40-300 kB/s, then cancelled the passing
+    # group 158 s into its scenarios. Eight jobs in 40 runs died that way, with
+    # installs of 306-600 s and run steps no longer than 332 s.
+    spec = workflow()['jobs'][job]
+    steps = {step['name']: step for step in spec['steps']}
+    install = int(steps['Install dependencies on cache miss']['timeout-minutes'])
+    run = int(steps[run_step]['timeout-minutes'])
+    assert install * 60 > 600
+    assert run * 60 > run_seconds
+    # Checkout, PostgreSQL, interpreter, cache restore and save, the editable
+    # refresh, migrations and artifact upload take well under three minutes.
+    assert int(spec['timeout-minutes']) >= install + run + 3
+
+
 def _install_steps():
     jobs = workflow()['jobs']
     return {

@@ -80,14 +80,17 @@ S6–S7, S11, S14, S19), `cli` (S5, S8–S9, S13, S17), `graphs` (S10, S12, S16b
 and `failover` (S4, S15, S18, S16a). S16a covers outage detection/rerouting; S16b prepares a separate
 outage through public commands and covers recovery/undo/all-down. Both retain
 the original assertions; select `S16` to run the full serial transcript. Each job
-owns a fresh disposable world and a twenty-minute job budget, including
-dependency setup and post-job cleanup. The graph group's scenarios alone took
-261 seconds on a hosted runner; a five-minute total cancelled that passing run
-during cleanup. A cold dependency install can take several minutes, and a
-ten-minute total cancelled a failover group after a 5m06s install. The test
-itself has 600 seconds: setup, then the smoke with whatever setup left unused,
-with 90 seconds held back for fallback cleanup. The finite budgets cover the
-full lifecycle while retaining all scenario assertions. To reproduce one
+owns a fresh disposable world. The scenario step has an eleven-minute deadline,
+a minute above the group's own 600-second pytest limit, and a cache-miss
+dependency install has a separate twelve-minute deadline. The 26-minute job
+budget is their sum plus setup and post-job cleanup. The graph group's scenarios
+alone took 261 seconds on a hosted runner; a five-minute total cancelled that
+passing run during cleanup. Run 36830122857 spent 439 seconds installing from a
+slow PyPI and a shared ten-minute total then cancelled the passing `cli` group,
+so neither phase can spend the other's time. Within the test, setup runs first,
+then the smoke with whatever setup left unused, with 90 seconds held back for
+fallback cleanup. Every scenario assertion is retained.
+To reproduce one
 group locally through the same acceptance test:
 
 ```bash
